@@ -39,7 +39,7 @@ export function Projects() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-end">
-        <Button size="sm" variant="outline" onClick={openNewProject}>
+        <Button size="sm" variant="outline" onClick={() => openNewProject()}>
           <Plus className="h-4 w-4 mr-1" />
           Add Project
         </Button>

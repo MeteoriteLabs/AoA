@@ -16,13 +16,18 @@ interface OnboardingOptions {
   companyId?: string;
 }
 
+interface NewProjectDefaults {
+  type?: "department" | "project";
+}
+
 interface DialogContextValue {
   newIssueOpen: boolean;
   newIssueDefaults: NewIssueDefaults;
   openNewIssue: (defaults?: NewIssueDefaults) => void;
   closeNewIssue: () => void;
   newProjectOpen: boolean;
-  openNewProject: () => void;
+  newProjectDefaults: NewProjectDefaults;
+  openNewProject: (defaults?: NewProjectDefaults) => void;
   closeNewProject: () => void;
   newGoalOpen: boolean;
   newGoalDefaults: NewGoalDefaults;
@@ -43,6 +48,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const [newIssueOpen, setNewIssueOpen] = useState(false);
   const [newIssueDefaults, setNewIssueDefaults] = useState<NewIssueDefaults>({});
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectDefaults, setNewProjectDefaults] = useState<NewProjectDefaults>({});
   const [newGoalOpen, setNewGoalOpen] = useState(false);
   const [newGoalDefaults, setNewGoalDefaults] = useState<NewGoalDefaults>({});
   const [newAgentOpen, setNewAgentOpen] = useState(false);
@@ -59,12 +65,14 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     setNewIssueDefaults({});
   }, []);
 
-  const openNewProject = useCallback(() => {
+  const openNewProject = useCallback((defaults: NewProjectDefaults = {}) => {
+    setNewProjectDefaults(defaults);
     setNewProjectOpen(true);
   }, []);
 
   const closeNewProject = useCallback(() => {
     setNewProjectOpen(false);
+    setNewProjectDefaults({});
   }, []);
 
   const openNewGoal = useCallback((defaults: NewGoalDefaults = {}) => {
@@ -103,6 +111,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         openNewIssue,
         closeNewIssue,
         newProjectOpen,
+        newProjectDefaults,
         openNewProject,
         closeNewProject,
         newGoalOpen,
