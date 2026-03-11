@@ -1,4 +1,4 @@
-import type { IssuePriority, IssueStatus } from "../constants.js";
+import type { IssuePriority, IssueSource, IssueStatus } from "../constants.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 
@@ -73,6 +73,9 @@ export interface Issue {
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
+  source: IssueSource | null;
+  reviewerUserId: string | null;
+  dueDate: Date | null;
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;

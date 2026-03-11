@@ -14,6 +14,7 @@ import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { authUsers } from "./auth.js";
 
 export const issues = pgTable(
   "issues",
@@ -40,6 +41,9 @@ export const issues = pgTable(
     requestDepth: integer("request_depth").notNull().default(0),
     billingCode: text("billing_code"),
     assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<Record<string, unknown>>(),
+    source: text("source"),
+    reviewerUserId: text("reviewer_user_id").references(() => authUsers.id, { onDelete: "set null" }),
+    dueDate: timestamp("due_date", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),

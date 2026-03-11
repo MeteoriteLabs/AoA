@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ISSUE_PRIORITIES, ISSUE_STATUSES } from "../constants.js";
+import { ISSUE_PRIORITIES, ISSUE_SOURCES, ISSUE_STATUSES } from "../constants.js";
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
@@ -21,6 +21,9 @@ export const createIssueSchema = z.object({
   requestDepth: z.number().int().nonnegative().optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
+  source: z.enum(ISSUE_SOURCES).optional().nullable(),
+  reviewerUserId: z.string().optional().nullable(),
+  dueDate: z.string().datetime().optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
 
