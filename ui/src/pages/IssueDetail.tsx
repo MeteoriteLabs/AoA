@@ -52,14 +52,14 @@ type CommentReassignment = {
 };
 
 const ACTION_LABELS: Record<string, string> = {
-  "issue.created": "created the issue",
-  "issue.updated": "updated the issue",
-  "issue.checked_out": "checked out the issue",
-  "issue.released": "released the issue",
+  "issue.created": "created the task",
+  "issue.updated": "updated the task",
+  "issue.checked_out": "checked out the task",
+  "issue.released": "released the task",
   "issue.comment_added": "added a comment",
   "issue.attachment_added": "added an attachment",
   "issue.attachment_removed": "removed an attachment",
-  "issue.deleted": "deleted the issue",
+  "issue.deleted": "deleted the task",
   "agent.created": "created an agent",
   "agent.updated": "updated the agent",
   "agent.paused": "paused the agent",
@@ -120,8 +120,8 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
     if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
       parts.push(
         details.assigneeAgentId || details.assigneeUserId
-          ? "assigned the issue"
-          : "unassigned the issue",
+          ? "assigned the task"
+          : "unassigned the task",
       );
     }
     if (details.title !== undefined) parts.push("updated the title");
@@ -405,7 +405,7 @@ export function IssueDetail() {
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
     onSuccess: (updated) => {
       invalidateIssue();
-      const issueRef = updated.identifier ?? `Issue ${updated.id.slice(0, 8)}`;
+      const issueRef = updated.identifier ?? `Task ${updated.id.slice(0, 8)}`;
       pushToast({
         dedupeKey: `activity:issue.updated:${updated.id}`,
         title: `${issueRef} updated`,
@@ -422,7 +422,7 @@ export function IssueDetail() {
     onSuccess: (comment) => {
       invalidateIssue();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
-      const issueRef = issue?.identifier ?? (issueId ? `Issue ${issueId.slice(0, 8)}` : "Issue");
+      const issueRef = issue?.identifier ?? (issueId ? `Task ${issueId.slice(0, 8)}` : "Task");
       pushToast({
         dedupeKey: `activity:issue.comment_added:${issueId}:${comment.id}`,
         title: `Comment posted on ${issueRef}`,
@@ -452,7 +452,7 @@ export function IssueDetail() {
     onSuccess: (updated) => {
       invalidateIssue();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
-      const issueRef = updated.identifier ?? (issueId ? `Issue ${issueId.slice(0, 8)}` : "Issue");
+      const issueRef = updated.identifier ?? (issueId ? `Task ${issueId.slice(0, 8)}` : "Task");
       pushToast({
         dedupeKey: `activity:issue.reassigned:${updated.id}`,
         title: `${issueRef} reassigned`,
@@ -491,9 +491,9 @@ export function IssueDetail() {
   });
 
   useEffect(() => {
-    const titleLabel = issue?.title ?? issueId ?? "Issue";
+    const titleLabel = issue?.title ?? issueId ?? "Task";
     setBreadcrumbs([
-      { label: "Issues", href: "/issues" },
+      { label: "Tasks", href: "/issues" },
       { label: hasLiveRuns ? `🔵 ${titleLabel}` : titleLabel },
     ]);
   }, [setBreadcrumbs, issue, issueId, hasLiveRuns]);
@@ -564,7 +564,7 @@ export function IssueDetail() {
       {issue.hiddenAt && (
         <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <EyeOff className="h-4 w-4 shrink-0" />
-          This issue is hidden
+          This task is hidden
         </div>
       )}
 
@@ -668,7 +668,7 @@ export function IssueDetail() {
                 }}
               >
                 <EyeOff className="h-3 w-3" />
-                Hide this Issue
+                Hide this Task
               </button>
             </PopoverContent>
             </Popover>
@@ -779,7 +779,7 @@ export function IssueDetail() {
           </TabsTrigger>
           <TabsTrigger value="subissues" className="gap-1.5">
             <ListTree className="h-3.5 w-3.5" />
-            Sub-issues
+            Sub-tasks
           </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
@@ -818,7 +818,7 @@ export function IssueDetail() {
 
         <TabsContent value="subissues">
           {childIssues.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No sub-issues.</p>
+            <p className="text-xs text-muted-foreground">No sub-tasks.</p>
           ) : (
             <div className="border border-border rounded-lg divide-y divide-border">
               {childIssues.map((child) => (

@@ -270,10 +270,10 @@ export function NewIssueDialog() {
       closeNewIssue();
       pushToast({
         dedupeKey: `activity:issue.created:${issue.id}`,
-        title: `${issue.identifier ?? "Issue"} created`,
+        title: `${issue.identifier ?? "Task"} created`,
         body: issue.title,
         tone: "success",
-        action: { label: `View ${issue.identifier ?? "issue"}`, href: `/issues/${issue.identifier ?? issue.id}` },
+        action: { label: `View ${issue.identifier ?? "task"}`, href: `/issues/${issue.identifier ?? issue.id}` },
       });
     },
   });
@@ -607,7 +607,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New issue</span>
+            <span>New task</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -633,7 +633,7 @@ export function NewIssueDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <textarea
             className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-            placeholder="Issue title"
+            placeholder="Task title"
             rows={1}
             value={title}
             onChange={(e) => {
@@ -957,7 +957,7 @@ export function NewIssueDialog() {
             disabled={!title.trim() || createIssue.isPending}
             onClick={handleSubmit}
           >
-            {createIssue.isPending ? "Creating..." : "Create Issue"}
+            {createIssue.isPending ? "Creating..." : "Create Task"}
           </Button>
         </div>
       </DialogContent>

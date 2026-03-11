@@ -236,7 +236,7 @@ function FailedRunCard({
           </Link>
         ) : (
           <span className="block text-sm text-muted-foreground">
-            {run.errorCode ? `Error code: ${run.errorCode}` : "No linked issue"}
+            {run.errorCode ? `Error code: ${run.errorCode}` : "No linked task"}
           </span>
         )}
 
@@ -622,7 +622,7 @@ export function Inbox() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="everything">All categories</SelectItem>
-                <SelectItem value="issues_i_touched">My recent issues</SelectItem>
+                <SelectItem value="issues_i_touched">My recent tasks</SelectItem>
                 <SelectItem value="join_requests">Join requests</SelectItem>
                 <SelectItem value="approvals">Approvals</SelectItem>
                 <SelectItem value="failed_runs">Failed runs</SelectItem>
@@ -662,7 +662,7 @@ export function Inbox() {
           icon={InboxIcon}
           message={
             tab === "new"
-              ? "No issues you're involved in yet."
+              ? "No tasks you're involved in yet."
               : "No inbox items match these filters."
           }
         />
