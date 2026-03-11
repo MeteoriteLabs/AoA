@@ -814,9 +814,9 @@ function AgentOverview({
         )}
       </div>
 
-      {/* Costs */}
+      {/* Budget */}
       <div className="space-y-3">
-        <h3 className="text-sm font-medium">Costs</h3>
+        <h3 className="text-sm font-medium">Budget</h3>
         <CostsSection runtimeState={runtimeState} runs={runs} />
       </div>
 

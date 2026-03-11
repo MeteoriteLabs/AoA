@@ -60,7 +60,7 @@ export function Costs() {
   const [customTo, setCustomTo] = useState("");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Costs" }]);
+    setBreadcrumbs([{ label: "Budget" }]);
   }, [setBreadcrumbs]);
 
   const { from, to } = useMemo(() => {
@@ -87,7 +87,7 @@ export function Costs() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={DollarSign} message="Select a company to view costs." />;
+    return <EmptyState icon={DollarSign} message="Select a company to view budget." />;
   }
 
   if (isLoading) {

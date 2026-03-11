@@ -2,19 +2,21 @@ import {
   Inbox,
   CircleDot,
   Target,
-  LayoutDashboard,
+  Home,
   DollarSign,
   History,
   Search,
   SquarePen,
-  Network,
+  Users,
   Settings,
+  FileText,
+  Brain,
+  Compass,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
-import { SidebarProjects } from "./SidebarProjects";
-import { SidebarAgents } from "./SidebarAgents";
+import { SidebarProjectsByType } from "./SidebarProjectsByType";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
@@ -44,7 +46,7 @@ export function Sidebar() {
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
+      {/* Top bar: Company name (bold) + Search */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         {selectedCompany?.brandColor && (
           <div
@@ -66,8 +68,8 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
+        {/* Top actions + nav */}
         <div className="flex flex-col gap-0.5">
-          {/* New Issue button aligned with nav items */}
           <button
             onClick={() => openNewIssue()}
             className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
@@ -75,7 +77,7 @@ export function Sidebar() {
             <SquarePen className="h-4 w-4 shrink-0" />
             <span className="truncate">New Task</span>
           </button>
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/dashboard" label="Home" icon={Home} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"
@@ -86,18 +88,27 @@ export function Sidebar() {
           />
         </div>
 
+        {/* WORK section */}
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
+          <SidebarNavItem to="/briefs" label="Briefs" icon={FileText} className="opacity-50 pointer-events-none" />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
         </SidebarSection>
 
-        <SidebarProjects />
+        {/* DEPARTMENTS section */}
+        <SidebarProjectsByType type="department" label="Departments" />
 
-        <SidebarAgents />
+        {/* PROJECTS section */}
+        <SidebarProjectsByType type="project" label="Projects" />
 
+        {/* TEAM */}
+        <SidebarNavItem to="/org" label="Team" icon={Users} />
+
+        {/* COMPANY section */}
         <SidebarSection label="Company">
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
+          <SidebarNavItem to="/vision" label="Vision & Mission" icon={Compass} className="opacity-50 pointer-events-none" />
+          <SidebarNavItem to="/memory" label="Memory" icon={Brain} className="opacity-50 pointer-events-none" />
+          <SidebarNavItem to="/costs" label="Budget" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
