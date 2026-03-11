@@ -12,7 +12,8 @@ export function goalRoutes(db: Db) {
   router.get("/companies/:companyId/goals", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+    const projectId = req.query.projectId as string | undefined;
+    const result = await svc.list(companyId, projectId);
     res.json(result);
   });
 
@@ -30,6 +31,13 @@ export function goalRoutes(db: Db) {
   router.post("/companies/:companyId/goals", validate(createGoalSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+
+    const { projectIds } = req.body;
+    if (!projectIds || !Array.isArray(projectIds) || projectIds.length === 0) {
+      res.status(400).json({ error: "At least one department or project is required (projectIds)" });
+      return;
+    }
+
     const goal = await svc.create(companyId, req.body);
     const actor = getActorInfo(req);
     await logActivity(db, {

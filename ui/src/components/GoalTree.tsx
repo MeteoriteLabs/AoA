@@ -1,7 +1,7 @@
 import type { Goal } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { StatusBadge } from "./StatusBadge";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, AlertTriangle } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useState } from "react";
 
@@ -25,6 +25,8 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
   const hasChildren = children.length > 0;
   const link = goalLink?.(goal);
 
+  const isUnassigned = !goal.projects || goal.projects.length === 0;
+
   const inner = (
     <>
       {hasChildren ? (
@@ -45,6 +47,26 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
       )}
       <span className="text-xs text-muted-foreground capitalize">{goal.level}</span>
       <span className="flex-1 truncate">{goal.title}</span>
+      {isUnassigned ? (
+        <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 text-amber-600 px-1.5 py-0.5 text-[10px] font-medium">
+          <AlertTriangle className="h-2.5 w-2.5" />
+          Unassigned
+        </span>
+      ) : (
+        goal.projects.map((p) => (
+          <span
+            key={p.id}
+            className={cn(
+              "rounded px-1.5 py-0.5 text-[10px] font-medium",
+              p.type === "department"
+                ? "bg-blue-500/15 text-blue-600"
+                : "bg-purple-500/15 text-purple-600",
+            )}
+          >
+            {p.name}
+          </span>
+        ))
+      )}
       <StatusBadge status={goal.status} />
     </>
   );

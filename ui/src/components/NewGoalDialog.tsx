@@ -4,6 +4,7 @@ import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { goalsApi } from "../api/goals";
+import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -21,6 +22,8 @@ import {
   Minimize2,
   Target,
   Layers,
+  FolderOpen,
+  Check,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
@@ -43,10 +46,12 @@ export function NewGoalDialog() {
   const [level, setLevel] = useState("task");
   const [parentId, setParentId] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
 
   const [statusOpen, setStatusOpen] = useState(false);
   const [levelOpen, setLevelOpen] = useState(false);
   const [parentOpen, setParentOpen] = useState(false);
+  const [projectsOpen, setProjectsOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
 
   // Apply defaults when dialog opens
@@ -55,6 +60,12 @@ export function NewGoalDialog() {
   const { data: goals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
     queryFn: () => goalsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && newGoalOpen,
+  });
+
+  const { data: allProjects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && newGoalOpen,
   });
 
@@ -81,16 +92,24 @@ export function NewGoalDialog() {
     setStatus("planned");
     setLevel("task");
     setParentId("");
+    setSelectedProjectIds([]);
     setExpanded(false);
   }
 
+  function toggleProjectId(id: string) {
+    setSelectedProjectIds((prev) =>
+      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id],
+    );
+  }
+
   function handleSubmit() {
-    if (!selectedCompanyId || !title.trim()) return;
+    if (!selectedCompanyId || !title.trim() || selectedProjectIds.length === 0) return;
     createGoal.mutate({
       title: title.trim(),
       description: description.trim() || undefined,
       status,
       level,
+      projectIds: selectedProjectIds,
       ...(appliedParentId ? { parentId: appliedParentId } : {}),
     });
   }
@@ -264,13 +283,72 @@ export function NewGoalDialog() {
               ))}
             </PopoverContent>
           </Popover>
+
+          {/* Department / Project (required, multi-select) */}
+          <Popover open={projectsOpen} onOpenChange={setProjectsOpen}>
+            <PopoverTrigger asChild>
+              <button
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+                  selectedProjectIds.length === 0
+                    ? "border-destructive text-destructive"
+                    : "border-border",
+                )}
+              >
+                <FolderOpen className="h-3 w-3 text-muted-foreground" />
+                {selectedProjectIds.length === 0
+                  ? "Dept / Project *"
+                  : `${selectedProjectIds.length} selected`}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-56 p-1" align="start">
+              {(allProjects ?? []).length === 0 ? (
+                <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                  No departments or projects found.
+                </p>
+              ) : (
+                <>
+                  {/* Departments first, then projects */}
+                  {(allProjects ?? [])
+                    .slice()
+                    .sort((a, b) => {
+                      if (a.type === b.type) return a.name.localeCompare(b.name);
+                      return a.type === "department" ? -1 : 1;
+                    })
+                    .map((p) => {
+                      const selected = selectedProjectIds.includes(p.id);
+                      return (
+                        <button
+                          key={p.id}
+                          className={cn(
+                            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                            selected && "bg-accent",
+                          )}
+                          onClick={() => toggleProjectId(p.id)}
+                        >
+                          {selected ? (
+                            <Check className="h-3 w-3 shrink-0" />
+                          ) : (
+                            <span className="w-3 shrink-0" />
+                          )}
+                          <span className="truncate">{p.name}</span>
+                          <span className="ml-auto text-[10px] text-muted-foreground capitalize">
+                            {p.type}
+                          </span>
+                        </button>
+                      );
+                    })}
+                </>
+              )}
+            </PopoverContent>
+          </Popover>
         </div>
 
         {/* Footer */}
         <div className="flex items-center justify-end px-4 py-2.5 border-t border-border">
           <Button
             size="sm"
-            disabled={!title.trim() || createGoal.isPending}
+            disabled={!title.trim() || selectedProjectIds.length === 0 || createGoal.isPending}
             onClick={handleSubmit}
           >
             {createGoal.isPending ? "Creating…" : newGoalDefaults.parentId ? "Create sub-goal" : "Create goal"}

@@ -18,7 +18,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus } from "lucide-react";
+import { Plus, AlertTriangle } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
 
 export function GoalDetail() {
@@ -84,12 +84,17 @@ export function GoalDetail() {
   });
 
   const childGoals = (allGoals ?? []).filter((g) => g.parentId === goalId);
+
+  // Use goal.projects from the API (project_goals join), with fallback to client-side filter
+  const goalProjectIds = new Set(goal?.projectIds ?? []);
   const linkedProjects = (allProjects ?? []).filter((p) => {
     if (!goalId) return false;
+    if (goalProjectIds.has(p.id)) return true;
     if (p.goalIds.includes(goalId)) return true;
     if (p.goals.some((goalRef) => goalRef.id === goalId)) return true;
     return p.goalId === goalId;
   });
+  const isUnassigned = goal ? (!goal.projects || goal.projects.length === 0) && linkedProjects.length === 0 : false;
 
   useEffect(() => {
     setBreadcrumbs([
@@ -117,11 +122,30 @@ export function GoalDetail() {
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs uppercase text-muted-foreground">
             {goal.level}
           </span>
           <StatusBadge status={goal.status} />
+          {isUnassigned ? (
+            <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 text-amber-600 px-1.5 py-0.5 text-[10px] font-medium">
+              <AlertTriangle className="h-2.5 w-2.5" />
+              Unassigned — click to assign
+            </span>
+          ) : (
+            (goal.projects ?? []).map((p) => (
+              <span
+                key={p.id}
+                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                  p.type === "department"
+                    ? "bg-blue-500/15 text-blue-600"
+                    : "bg-purple-500/15 text-purple-600"
+                }`}
+              >
+                {p.name}
+              </span>
+            ))
+          )}
         </div>
 
         <InlineEditor

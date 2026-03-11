@@ -2,7 +2,10 @@ import type { Goal } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const goalsApi = {
-  list: (companyId: string) => api.get<Goal[]>(`/companies/${companyId}/goals`),
+  list: (companyId: string, projectId?: string) => {
+    const params = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    return api.get<Goal[]>(`/companies/${companyId}/goals${params}`);
+  },
   get: (id: string) => api.get<Goal>(`/goals/${id}`),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Goal>(`/companies/${companyId}/goals`, data),

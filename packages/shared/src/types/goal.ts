@@ -1,5 +1,11 @@
 import type { GoalLevel, GoalStatus } from "../constants.js";
 
+export interface GoalProjectRef {
+  id: string;
+  name: string;
+  type: string;
+}
+
 export interface Goal {
   id: string;
   companyId: string;
@@ -9,6 +15,8 @@ export interface Goal {
   status: GoalStatus;
   parentId: string | null;
   ownerAgentId: string | null;
+  projects: GoalProjectRef[];
+  projectIds: string[];
   createdAt: Date;
   updatedAt: Date;
 }
