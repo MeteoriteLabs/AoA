@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -12,6 +12,8 @@ import {
   costEvents,
   issues,
   projectWorkspaces,
+  memoryItems,
+  companies,
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -475,6 +477,74 @@ export function heartbeatService(db: Db) {
 
     const runtimeForRun = await getRuntimeState(agent.id);
     return runtimeForRun?.sessionId ?? null;
+  }
+
+  async function fetchMemoryContext(companyId: string, issueId: string | null) {
+    // Fetch company info (name/description — vision/mission added in V2)
+    const company = await db
+      .select({
+        name: companies.name,
+        description: companies.description,
+      })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+
+    // Determine issue's department/project for scoped memory lookup
+    let issueProjectId: string | null = null;
+    if (issueId) {
+      issueProjectId = await db
+        .select({ projectId: issues.projectId })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+        .then((rows) => rows[0]?.projectId ?? null);
+    }
+
+    // Query approved memory items:
+    // - company-wide preferences (category='preference')
+    // - department-scoped items matching the task's project/department
+    // Priority: preferences first, then department-specific, then recent
+    // Cap at 10 items
+    const conditions = [
+      eq(memoryItems.companyId, companyId),
+      eq(memoryItems.status, "approved"),
+    ];
+
+    const scopeConditions = issueProjectId
+      ? or(
+          eq(memoryItems.category, "preference"),
+          eq(memoryItems.departmentId, issueProjectId),
+          eq(memoryItems.projectId, issueProjectId),
+        )
+      : eq(memoryItems.category, "preference");
+
+    const items = await db
+      .select({
+        title: memoryItems.title,
+        content: memoryItems.content,
+        category: memoryItems.category,
+        tags: memoryItems.tags,
+      })
+      .from(memoryItems)
+      .where(and(...conditions, scopeConditions))
+      .orderBy(
+        // preferences first (0), then others (1)
+        sql`CASE WHEN ${memoryItems.category} = 'preference' THEN 0 ELSE 1 END`,
+        desc(memoryItems.updatedAt),
+      )
+      .limit(10);
+
+    return {
+      company: company
+        ? { name: company.name, description: company.description }
+        : null,
+      memory: items.map((item) => ({
+        title: item.title,
+        content: item.content,
+        category: item.category,
+        tags: item.tags ?? [],
+      })),
+    };
   }
 
   async function resolveWorkspaceForRun(
@@ -1128,6 +1198,23 @@ export function heartbeatService(db: Db) {
     if (resolvedWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = resolvedWorkspace.projectId;
     }
+
+    // Enrich context with memory items and company info for the agent
+    try {
+      const memoryContext = await fetchMemoryContext(agent.companyId, issueId);
+      if (memoryContext.company) {
+        context.company = memoryContext.company;
+      }
+      if (memoryContext.memory.length > 0) {
+        context.memory = memoryContext.memory;
+      }
+    } catch (err) {
+      logger.warn(
+        { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
+        "Failed to fetch memory context for agent run; continuing without memory enrichment",
+      );
+    }
+
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
     const previousSessionDisplayId = truncateDisplayId(
       taskSessionForRun?.sessionDisplayId ??
