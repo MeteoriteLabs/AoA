@@ -2,12 +2,13 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { createDebriefSchema, updateDebriefSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { debriefService, logActivity } from "../services/index.js";
+import { debriefService, extractionService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function debriefRoutes(db: Db) {
   const router = Router();
   const svc = debriefService(db);
+  const extraction = extractionService(db);
 
   router.get("/companies/:companyId/debriefs", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -47,6 +48,12 @@ export function debriefRoutes(db: Db) {
       entityId: debrief.id,
       details: { title: debrief.title, inputType: debrief.inputType },
     });
+
+    // Fire-and-forget: trigger LLM extraction in background
+    extraction.extractFromDebrief(companyId, debrief.id).catch(() => {
+      // Error already logged and status updated inside extractFromDebrief
+    });
+
     res.status(201).json(debrief);
   });
 
