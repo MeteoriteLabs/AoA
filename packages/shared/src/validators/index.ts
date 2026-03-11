@@ -87,6 +87,22 @@ export {
 } from "./memory.js";
 
 export {
+  createDebriefSchema,
+  updateDebriefSchema,
+  type CreateDebrief,
+  type UpdateDebrief,
+} from "./debrief.js";
+
+export {
+  updateBriefSchema,
+  createBriefItemSchema,
+  updateBriefItemSchema,
+  type UpdateBrief,
+  type CreateBriefItem,
+  type UpdateBriefItem,
+} from "./brief.js";
+
+export {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,

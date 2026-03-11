@@ -253,6 +253,33 @@ export const MEMORY_ITEM_STATUSES = [
 ] as const;
 export type MemoryItemStatus = (typeof MEMORY_ITEM_STATUSES)[number];
 
+export const DEBRIEF_INPUT_TYPES = ["paste", "write", "mcp"] as const;
+export type DebriefInputType = (typeof DEBRIEF_INPUT_TYPES)[number];
+
+export const DEBRIEF_STATUSES = [
+  "processing",
+  "processing_failed",
+  "ready",
+  "archived",
+] as const;
+export type DebriefStatus = (typeof DEBRIEF_STATUSES)[number];
+
+export const BRIEF_STATUSES = [
+  "draft",
+  "ready",
+  "reviewed",
+  "approved",
+  "rejected",
+  "partially_approved",
+] as const;
+export type BriefStatus = (typeof BRIEF_STATUSES)[number];
+
+export const BRIEF_ITEM_TYPES = ["decision", "task", "insight", "context"] as const;
+export type BriefItemType = (typeof BRIEF_ITEM_TYPES)[number];
+
+export const BRIEF_ITEM_STATUSES = ["pending", "approved", "rejected", "edited"] as const;
+export type BriefItemStatus = (typeof BRIEF_ITEM_STATUSES)[number];
+
 export const PERMISSION_KEYS = [
   "agents:create",
   "users:invite",

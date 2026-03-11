@@ -32,3 +32,6 @@ export { activityLog } from "./activity_log.js";
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { memoryItems } from "./memory_items.js";
+export { debriefs } from "./debriefs.js";
+export { briefs } from "./briefs.js";
+export { briefItems } from "./brief_items.js";
