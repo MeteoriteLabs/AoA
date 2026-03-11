@@ -1,4 +1,4 @@
-import type { ProjectStatus } from "../constants.js";
+import type { ProjectStatus, ProjectType } from "../constants.js";
 
 export interface ProjectGoalRef {
   id: string;
@@ -27,6 +27,7 @@ export interface Project {
   goalId: string | null;
   goalIds: string[];
   goals: ProjectGoalRef[];
+  type: ProjectType;
   name: string;
   description: string | null;
   status: ProjectStatus;

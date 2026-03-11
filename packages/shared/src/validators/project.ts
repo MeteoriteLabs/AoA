@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PROJECT_STATUSES } from "../constants.js";
+import { PROJECT_STATUSES, PROJECT_TYPES } from "../constants.js";
 
 const projectWorkspaceFields = {
   name: z.string().min(1).optional(),
@@ -34,6 +34,7 @@ export const updateProjectWorkspaceSchema = z.object({
 export type UpdateProjectWorkspace = z.infer<typeof updateProjectWorkspaceSchema>;
 
 const projectFields = {
+  type: z.enum(PROJECT_TYPES).optional().default("department"),
   /** @deprecated Use goalIds instead */
   goalId: z.string().uuid().optional().nullable(),
   goalIds: z.array(z.string().uuid()).optional(),

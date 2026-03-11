@@ -115,6 +115,9 @@ export type GoalLevel = (typeof GOAL_LEVELS)[number];
 export const GOAL_STATUSES = ["planned", "active", "achieved", "cancelled"] as const;
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 
+export const PROJECT_TYPES = ["department", "project"] as const;
+export type ProjectType = (typeof PROJECT_TYPES)[number];
+
 export const PROJECT_STATUSES = [
   "backlog",
   "planned",
