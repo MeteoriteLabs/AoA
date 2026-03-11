@@ -106,7 +106,7 @@ export function Sidebar() {
 
         {/* COMPANY section */}
         <SidebarSection label="Company">
-          <SidebarNavItem to="/vision" label="Vision & Mission" icon={Compass} className="opacity-50 pointer-events-none" />
+          <SidebarNavItem to="/vision" label="Vision & Mission" icon={Compass} />
           <SidebarNavItem to="/memory" label="Memory" icon={Brain} className="opacity-50 pointer-events-none" />
           <SidebarNavItem to="/costs" label="Budget" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
