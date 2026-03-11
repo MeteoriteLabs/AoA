@@ -9,6 +9,7 @@ interface NewIssueDefaults {
 
 interface NewGoalDefaults {
   parentId?: string;
+  projectIds?: string[];
 }
 
 interface OnboardingOptions {

@@ -56,6 +56,9 @@ export function NewGoalDialog() {
 
   // Apply defaults when dialog opens
   const appliedParentId = parentId || newGoalDefaults.parentId || "";
+  const appliedProjectIds = selectedProjectIds.length > 0
+    ? selectedProjectIds
+    : newGoalDefaults.projectIds ?? [];
 
   const { data: goals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -97,19 +100,20 @@ export function NewGoalDialog() {
   }
 
   function toggleProjectId(id: string) {
-    setSelectedProjectIds((prev) =>
-      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id],
-    );
+    setSelectedProjectIds((prev) => {
+      const base = prev.length > 0 ? prev : (newGoalDefaults.projectIds ?? []);
+      return base.includes(id) ? base.filter((p) => p !== id) : [...base, id];
+    });
   }
 
   function handleSubmit() {
-    if (!selectedCompanyId || !title.trim() || selectedProjectIds.length === 0) return;
+    if (!selectedCompanyId || !title.trim() || appliedProjectIds.length === 0) return;
     createGoal.mutate({
       title: title.trim(),
       description: description.trim() || undefined,
       status,
       level,
-      projectIds: selectedProjectIds,
+      projectIds: appliedProjectIds,
       ...(appliedParentId ? { parentId: appliedParentId } : {}),
     });
   }
@@ -290,15 +294,15 @@ export function NewGoalDialog() {
               <button
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
-                  selectedProjectIds.length === 0
+                  appliedProjectIds.length === 0
                     ? "border-destructive text-destructive"
                     : "border-border",
                 )}
               >
                 <FolderOpen className="h-3 w-3 text-muted-foreground" />
-                {selectedProjectIds.length === 0
+                {appliedProjectIds.length === 0
                   ? "Dept / Project *"
-                  : `${selectedProjectIds.length} selected`}
+                  : `${appliedProjectIds.length} selected`}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-56 p-1" align="start">
@@ -316,7 +320,7 @@ export function NewGoalDialog() {
                       return a.type === "department" ? -1 : 1;
                     })
                     .map((p) => {
-                      const selected = selectedProjectIds.includes(p.id);
+                      const selected = appliedProjectIds.includes(p.id);
                       return (
                         <button
                           key={p.id}
@@ -348,7 +352,7 @@ export function NewGoalDialog() {
         <div className="flex items-center justify-end px-4 py-2.5 border-t border-border">
           <Button
             size="sm"
-            disabled={!title.trim() || selectedProjectIds.length === 0 || createGoal.isPending}
+            disabled={!title.trim() || appliedProjectIds.length === 0 || createGoal.isPending}
             onClick={handleSubmit}
           >
             {createGoal.isPending ? "Creating…" : newGoalDefaults.parentId ? "Create sub-goal" : "Create goal"}

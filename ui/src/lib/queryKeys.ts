@@ -39,6 +39,8 @@ export const queryKeys = {
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
+    listByProject: (companyId: string, projectId: string) =>
+      ["goals", companyId, "project", projectId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
   },
   approvals: {

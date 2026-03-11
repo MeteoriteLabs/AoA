@@ -4,27 +4,30 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PROJECT_COLORS, isUuidLike } from "@paperclipai/shared";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
+import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
+import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { IssuesList } from "../components/IssuesList";
+import { GoalTree } from "../components/GoalTree";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { projectRouteRef, cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { SlidersHorizontal } from "lucide-react";
+import { SlidersHorizontal, Plus } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
-type ProjectTab = "overview" | "list";
+type ProjectTab = "overview" | "list" | "goals";
 
 function resolveProjectTab(pathname: string, projectId: string): ProjectTab | null {
   const segments = pathname.split("/").filter(Boolean);
@@ -33,6 +36,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   const tab = segments[projectsIdx + 2];
   if (tab === "overview") return "overview";
   if (tab === "issues") return "list";
+  if (tab === "goals") return "goals";
   return null;
 }
 
@@ -189,6 +193,42 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   );
 }
 
+/* ── Goals tab content ── */
+
+function ProjectGoals({ projectId, companyId }: { projectId: string; companyId: string }) {
+  const { openNewGoal } = useDialog();
+
+  const { data: goals, isLoading } = useQuery({
+    queryKey: queryKeys.goals.listByProject(companyId, projectId),
+    queryFn: () => goalsApi.list(companyId, projectId),
+    enabled: !!companyId,
+  });
+
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading goals…</p>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium text-muted-foreground">
+          {goals?.length ?? 0} {(goals?.length ?? 0) === 1 ? "goal" : "goals"}
+        </h3>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="gap-1.5 text-xs"
+          onClick={() => openNewGoal({ projectIds: [projectId] })}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New Goal
+        </Button>
+      </div>
+      <GoalTree goals={goals ?? []} goalLink={(g) => `/goals/${g.id}`} />
+    </div>
+  );
+}
+
 /* ── Main project page ── */
 
 export function ProjectDetail() {
@@ -272,6 +312,10 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/issues`, { replace: true });
       return;
     }
+    if (activeTab === "goals") {
+      navigate(`/projects/${canonicalProjectRef}/goals`, { replace: true });
+      return;
+    }
     navigate(`/projects/${canonicalProjectRef}`, { replace: true });
   }, [project, routeProjectRef, canonicalProjectRef, activeTab, filter, navigate]);
 
@@ -294,6 +338,8 @@ export function ProjectDetail() {
   const handleTabChange = (tab: ProjectTab) => {
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
+    } else if (tab === "goals") {
+      navigate(`/projects/${canonicalProjectRef}/goals`);
     } else {
       navigate(`/projects/${canonicalProjectRef}/issues`);
     }
@@ -359,6 +405,16 @@ export function ProjectDetail() {
         >
           List
         </button>
+        <button
+          className={`px-3 py-2 text-sm font-medium transition-colors border-b-2 ${
+            activeTab === "goals"
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+          onClick={() => handleTabChange("goals")}
+        >
+          Goals
+        </button>
       </div>
 
       {/* Tab content */}
@@ -375,6 +431,10 @@ export function ProjectDetail() {
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
+      )}
+
+      {activeTab === "goals" && project?.id && resolvedCompanyId && (
+        <ProjectGoals projectId={project.id} companyId={resolvedCompanyId} />
       )}
 
       {/* Mobile properties drawer */}
