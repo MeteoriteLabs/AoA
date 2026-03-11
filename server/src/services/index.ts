@@ -15,6 +15,7 @@ export { sidebarBadgeService } from "./sidebar-badges.js";
 export { accessService } from "./access.js";
 export { memoryService, type MemoryFilters } from "./memory.js";
 export { debriefService, type DebriefFilters } from "./debriefs.js";
+export { briefService, type BriefFilters } from "./briefs.js";
 export { extractionService } from "./extraction.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
