@@ -80,6 +80,13 @@ export {
 } from "./goal.js";
 
 export {
+  createMemoryItemSchema,
+  updateMemoryItemSchema,
+  type CreateMemoryItem,
+  type UpdateMemoryItem,
+} from "./memory.js";
+
+export {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,

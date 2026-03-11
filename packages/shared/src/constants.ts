@@ -227,6 +227,32 @@ export type JoinRequestType = (typeof JOIN_REQUEST_TYPES)[number];
 export const JOIN_REQUEST_STATUSES = ["pending_approval", "approved", "rejected"] as const;
 export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
+export const MEMORY_ITEM_CATEGORIES = [
+  "decision",
+  "reference",
+  "context",
+  "insight",
+  "preference",
+] as const;
+export type MemoryItemCategory = (typeof MEMORY_ITEM_CATEGORIES)[number];
+
+export const MEMORY_ITEM_SOURCES = [
+  "brief",
+  "founder",
+  "agent",
+  "mcp",
+  "document",
+] as const;
+export type MemoryItemSource = (typeof MEMORY_ITEM_SOURCES)[number];
+
+export const MEMORY_ITEM_STATUSES = [
+  "pending",
+  "approved",
+  "archived",
+  "rejected",
+] as const;
+export type MemoryItemStatus = (typeof MEMORY_ITEM_STATUSES)[number];
+
 export const PERMISSION_KEYS = [
   "agents:create",
   "users:invite",
