@@ -1,48 +1,139 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { dashboardApi } from "../api/dashboard";
-import { activityApi } from "../api/activity";
-import { issuesApi } from "../api/issues";
-import { agentsApi } from "../api/agents";
-import { projectsApi } from "../api/projects";
-import { heartbeatsApi } from "../api/heartbeats";
+import { homeApi } from "../api/dashboard";
+import { authApi } from "../api/auth";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
-import { StatusIcon } from "../components/StatusIcon";
-import { PriorityIcon } from "../components/PriorityIcon";
-import { ActivityRow } from "../components/ActivityRow";
-import { Identity } from "../components/Identity";
-import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard } from "lucide-react";
-import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
-import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
-import type { Agent, Issue } from "@paperclipai/shared";
+import { timeAgo } from "../lib/timeAgo";
+import {
+  Home,
+  FileText,
+  CheckCircle2,
+  CalendarClock,
+  Ban,
+  Brain,
+  Activity,
+} from "lucide-react";
+import type { HomeSummary, RecentActivityItem } from "@paperclipai/shared";
 
-function getRecentIssues(issues: Issue[]): Issue[] {
-  return [...issues]
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+function getGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
+function buildPulseLine(data: HomeSummary): string {
+  const parts: string[] = [];
+  if (data.briefsAwaitingReview > 0) {
+    parts.push(`${data.briefsAwaitingReview} brief${data.briefsAwaitingReview === 1 ? "" : "s"} to review`);
+  }
+  if (data.tasksInReview > 0) {
+    parts.push(`${data.tasksInReview} task${data.tasksInReview === 1 ? "" : "s"} in review`);
+  }
+  if (data.myTasksDueToday.length > 0) {
+    parts.push(`${data.myTasksDueToday.length} task${data.myTasksDueToday.length === 1 ? "" : "s"} due today`);
+  }
+  if (data.blockedTasks > 0) {
+    parts.push(`${data.blockedTasks} blocked task${data.blockedTasks === 1 ? "" : "s"}`);
+  }
+  if (data.pendingMemoryItems > 0) {
+    parts.push(`${data.pendingMemoryItems} pending memory item${data.pendingMemoryItems === 1 ? "" : "s"}`);
+  }
+  if (parts.length === 0) return "All clear — nothing needs your attention right now.";
+  return parts.join(", ");
+}
+
+interface ActionQueueItem {
+  key: string;
+  icon: React.ElementType;
+  label: string;
+  count?: number;
+  to: string;
+  priority: number;
+}
+
+function buildActionQueue(data: HomeSummary): ActionQueueItem[] {
+  const items: ActionQueueItem[] = [];
+
+  if (data.briefsAwaitingReview > 0) {
+    items.push({
+      key: "briefs",
+      icon: FileText,
+      label: `${data.briefsAwaitingReview} brief${data.briefsAwaitingReview === 1 ? "" : "s"} awaiting review`,
+      to: "/briefs",
+      priority: 0,
+    });
+  }
+
+  if (data.tasksInReview > 0) {
+    items.push({
+      key: "review",
+      icon: CheckCircle2,
+      label: `${data.tasksInReview} task${data.tasksInReview === 1 ? "" : "s"} in review`,
+      to: "/issues?status=in_review",
+      priority: 1,
+    });
+  }
+
+  for (const task of data.myTasksDueToday) {
+    items.push({
+      key: `due-${task.id}`,
+      icon: CalendarClock,
+      label: task.title,
+      to: `/issues/${task.id}`,
+      priority: 2,
+    });
+  }
+
+  if (data.blockedTasks > 0) {
+    items.push({
+      key: "blocked",
+      icon: Ban,
+      label: `${data.blockedTasks} blocked task${data.blockedTasks === 1 ? "" : "s"}`,
+      to: "/issues?status=blocked",
+      priority: 3,
+    });
+  }
+
+  if (data.pendingMemoryItems > 0) {
+    items.push({
+      key: "memory",
+      icon: Brain,
+      label: `${data.pendingMemoryItems} pending memory item${data.pendingMemoryItems === 1 ? "" : "s"}`,
+      to: "/memory?status=pending",
+      priority: 4,
+    });
+  }
+
+  return items.sort((a, b) => a.priority - b.priority);
+}
+
+function formatAction(item: RecentActivityItem): string {
+  const verb = item.action.replace(/[._]/g, " ");
+  return verb;
+}
+
+function activityEntityName(item: RecentActivityItem): string {
+  const details = item.details as Record<string, unknown> | null;
+  if (details?.title && typeof details.title === "string") return details.title;
+  if (details?.name && typeof details.name === "string") return details.name;
+  return item.entityType;
 }
 
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
-  const seenActivityIdsRef = useRef<Set<string>>(new Set());
-  const hydratedActivityRef = useRef(false);
-  const activityAnimationTimersRef = useRef<number[]>([]);
 
-  const { data: agents } = useQuery({
-    queryKey: queryKeys.agents.list(selectedCompanyId!),
-    queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
   });
 
   useEffect(() => {
@@ -50,123 +141,16 @@ export function Dashboard() {
   }, [setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.dashboard(selectedCompanyId!),
-    queryFn: () => dashboardApi.summary(selectedCompanyId!),
+    queryKey: queryKeys.home(selectedCompanyId!),
+    queryFn: () => homeApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-
-  const { data: activity } = useQuery({
-    queryKey: queryKeys.activity(selectedCompanyId!),
-    queryFn: () => activityApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-
-  const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-
-  const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-
-  const { data: runs } = useQuery({
-    queryKey: queryKeys.heartbeats(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-
-  const recentIssues = issues ? getRecentIssues(issues) : [];
-  const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
-
-  useEffect(() => {
-    for (const timer of activityAnimationTimersRef.current) {
-      window.clearTimeout(timer);
-    }
-    activityAnimationTimersRef.current = [];
-    seenActivityIdsRef.current = new Set();
-    hydratedActivityRef.current = false;
-    setAnimatedActivityIds(new Set());
-  }, [selectedCompanyId]);
-
-  useEffect(() => {
-    if (recentActivity.length === 0) return;
-
-    const seen = seenActivityIdsRef.current;
-    const currentIds = recentActivity.map((event) => event.id);
-
-    if (!hydratedActivityRef.current) {
-      for (const id of currentIds) seen.add(id);
-      hydratedActivityRef.current = true;
-      return;
-    }
-
-    const newIds = currentIds.filter((id) => !seen.has(id));
-    if (newIds.length === 0) {
-      for (const id of currentIds) seen.add(id);
-      return;
-    }
-
-    setAnimatedActivityIds((prev) => {
-      const next = new Set(prev);
-      for (const id of newIds) next.add(id);
-      return next;
-    });
-
-    for (const id of newIds) seen.add(id);
-
-    const timer = window.setTimeout(() => {
-      setAnimatedActivityIds((prev) => {
-        const next = new Set(prev);
-        for (const id of newIds) next.delete(id);
-        return next;
-      });
-      activityAnimationTimersRef.current = activityAnimationTimersRef.current.filter((t) => t !== timer);
-    }, 980);
-    activityAnimationTimersRef.current.push(timer);
-  }, [recentActivity]);
-
-  useEffect(() => {
-    return () => {
-      for (const timer of activityAnimationTimersRef.current) {
-        window.clearTimeout(timer);
-      }
-    };
-  }, []);
-
-  const agentMap = useMemo(() => {
-    const map = new Map<string, Agent>();
-    for (const a of agents ?? []) map.set(a.id, a);
-    return map;
-  }, [agents]);
-
-  const entityNameMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.identifier ?? i.id.slice(0, 8));
-    for (const a of agents ?? []) map.set(`agent:${a.id}`, a.name);
-    for (const p of projects ?? []) map.set(`project:${p.id}`, p.name);
-    return map;
-  }, [issues, agents, projects]);
-
-  const entityTitleMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.title);
-    return map;
-  }, [issues]);
-
-  const agentName = (id: string | null) => {
-    if (!id || !agents) return null;
-    return agents.find((a) => a.id === id)?.name ?? null;
-  };
 
   if (!selectedCompanyId) {
     if (companies.length === 0) {
       return (
         <EmptyState
-          icon={LayoutDashboard}
+          icon={Home}
           message="Welcome to AoA. Set up your first company and agent to get started."
           action="Get Started"
           onAction={openOnboarding}
@@ -174,7 +158,7 @@ export function Dashboard() {
       );
     }
     return (
-      <EmptyState icon={LayoutDashboard} message="Create or select a company to get started." />
+      <EmptyState icon={Home} message="Create or select a company to get started." />
     );
   }
 
@@ -182,167 +166,84 @@ export function Dashboard() {
     return <PageSkeleton variant="dashboard" />;
   }
 
-  const hasNoAgents = agents !== undefined && agents.length === 0;
+  const userName = session?.user?.name?.split(" ")[0] ?? null;
+  const greeting = userName ? `${getGreeting()}, ${userName}` : getGreeting();
+  const actionQueue = data ? buildActionQueue(data) : [];
+  const pulseLine = data ? buildPulseLine(data) : "";
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-3xl">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      {hasNoAgents && (
-        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
-          <div className="flex items-center gap-2.5">
-            <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
-            <p className="text-sm text-amber-900 dark:text-amber-100">
-              You have no agents.
-            </p>
+      {/* Greeting */}
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          {greeting}
+        </h1>
+        {data && (
+          <p className="text-sm text-muted-foreground mt-1">{pulseLine}</p>
+        )}
+      </div>
+
+      {/* Action Queue */}
+      {actionQueue.length > 0 && (
+        <div>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+            Action Queue
+          </h2>
+          <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
+            {actionQueue.map((item) => {
+              const Icon = item.icon;
+              return (
+                <Link
+                  key={item.key}
+                  to={item.to}
+                  className="flex items-center gap-3 px-4 py-3 text-sm hover:bg-accent/50 transition-colors no-underline text-inherit"
+                >
+                  <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="flex-1 min-w-0 truncate">{item.label}</span>
+                  {item.key.startsWith("due-") && (
+                    <span className="text-xs text-muted-foreground shrink-0">Due today</span>
+                  )}
+                </Link>
+              );
+            })}
           </div>
-          <button
-            onClick={() => openOnboarding({ initialStep: 2, companyId: selectedCompanyId! })}
-            className="text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 underline underline-offset-2 shrink-0"
-          >
-            Create one here
-          </button>
         </div>
       )}
 
-      <ActiveAgentsPanel companyId={selectedCompanyId!} />
-
-      {data && (
-        <>
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
-            <MetricCard
-              icon={Bot}
-              value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
-              label="Agents Enabled"
-              to="/agents"
-              description={
-                <span>
-                  {data.agents.running} running{", "}
-                  {data.agents.paused} paused{", "}
-                  {data.agents.error} errors
+      {/* Today's Activity */}
+      {data && data.recentActivity.length > 0 && (
+        <div>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+            Today's Activity
+          </h2>
+          <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
+            {data.recentActivity.map((item) => (
+              <div
+                key={item.id}
+                className="flex items-center gap-3 px-4 py-2.5 text-sm"
+              >
+                <Activity className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                <span className="flex-1 min-w-0 truncate">
+                  <span className="text-muted-foreground">{formatAction(item)}</span>
+                  {" "}
+                  <span className="font-medium">{activityEntityName(item)}</span>
                 </span>
-              }
-            />
-            <MetricCard
-              icon={CircleDot}
-              value={data.tasks.inProgress}
-              label="Tasks In Progress"
-              to="/issues"
-              description={
-                <span>
-                  {data.tasks.open} open{", "}
-                  {data.tasks.blocked} blocked
+                <span className="text-xs text-muted-foreground shrink-0">
+                  {timeAgo(item.createdAt)}
                 </span>
-              }
-            />
-            <MetricCard
-              icon={DollarSign}
-              value={formatCents(data.costs.monthSpendCents)}
-              label="Month Spend"
-              to="/costs"
-              description={
-                <span>
-                  {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
-                </span>
-              }
-            />
-            <MetricCard
-              icon={ShieldCheck}
-              value={data.pendingApprovals}
-              label="Pending Approvals"
-              to="/approvals"
-              description={
-                <span>
-                  {data.staleTasks} stale tasks
-                </span>
-              }
-            />
-          </div>
-
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <ChartCard title="Run Activity" subtitle="Last 14 days">
-              <RunActivityChart runs={runs ?? []} />
-            </ChartCard>
-            <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
-              <PriorityChart issues={issues ?? []} />
-            </ChartCard>
-            <ChartCard title="Tasks by Status" subtitle="Last 14 days">
-              <IssueStatusChart issues={issues ?? []} />
-            </ChartCard>
-            <ChartCard title="Success Rate" subtitle="Last 14 days">
-              <SuccessRateChart runs={runs ?? []} />
-            </ChartCard>
-          </div>
-
-          <div className="grid md:grid-cols-2 gap-4">
-            {/* Recent Activity */}
-            {recentActivity.length > 0 && (
-              <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Recent Activity
-                </h3>
-                <div className="border border-border divide-y divide-border overflow-hidden">
-                  {recentActivity.map((event) => (
-                    <ActivityRow
-                      key={event.id}
-                      event={event}
-                      agentMap={agentMap}
-                      entityNameMap={entityNameMap}
-                      entityTitleMap={entityTitleMap}
-                      className={animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined}
-                    />
-                  ))}
-                </div>
               </div>
-            )}
-
-            {/* Recent Tasks */}
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Recent Tasks
-              </h3>
-              {recentIssues.length === 0 ? (
-                <div className="border border-border p-4">
-                  <p className="text-sm text-muted-foreground">No tasks yet.</p>
-                </div>
-              ) : (
-                <div className="border border-border divide-y divide-border overflow-hidden">
-                  {recentIssues.slice(0, 10).map((issue) => (
-                    <Link
-                      key={issue.id}
-                      to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="px-4 py-2 text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
-                    >
-                      <div className="flex gap-3">
-                        <div className="flex items-start gap-2 min-w-0 flex-1">
-                          <div className="flex items-center gap-2 shrink-0 mt-0.5">
-                            <PriorityIcon priority={issue.priority} />
-                            <StatusIcon status={issue.status} />
-                          </div>
-                          <p className="min-w-0 flex-1 truncate">
-                            <span>{issue.title}</span>
-                            {issue.assigneeAgentId && (() => {
-                              const name = agentName(issue.assigneeAgentId);
-                              return name
-                                ? <span className="hidden sm:inline"><Identity name={name} size="sm" className="ml-2 inline-flex" /></span>
-                                : null;
-                            })()}
-                          </p>
-                        </div>
-                        <span className="text-xs text-muted-foreground shrink-0 pt-0.5">
-                          {timeAgo(issue.updatedAt)}
-                        </span>
-                      </div>
-                    </Link>
-                  ))}
-                </div>
-              )}
-            </div>
+            ))}
           </div>
+        </div>
+      )}
 
-        </>
+      {/* All clear state */}
+      {data && actionQueue.length === 0 && data.recentActivity.length === 0 && (
+        <div className="border border-border rounded-md p-8 text-center">
+          <p className="text-sm text-muted-foreground">Nothing needs your attention right now.</p>
+        </div>
       )}
     </div>
   );
