@@ -14,6 +14,10 @@ const ACTION_VERBS: Record<string, string> = {
   "issue.attachment_removed": "removed attachment from",
   "issue.commented": "commented on",
   "issue.deleted": "deleted",
+  "issue.read_marked": "marked as read",
+  "issue.approval_linked": "linked approval to",
+  "issue.approval_unlinked": "unlinked approval from",
+  "issue.checkout_lock_adopted": "adopted checkout lock on",
   "agent.created": "created",
   "agent.updated": "updated",
   "agent.paused": "paused",
@@ -62,7 +66,7 @@ function formatVerb(action: string, details?: Record<string, unknown> | null): s
         : `changed priority to ${humanizeValue(details.priority)} on`;
     }
   }
-  return ACTION_VERBS[action] ?? action.replace(/[._]/g, " ");
+  return ACTION_VERBS[action] ?? action.replace(/[._]/g, " ").replace(/\bissue\b/g, "task");
 }
 
 function entityLink(entityType: string, entityId: string, name?: string | null): string | null {

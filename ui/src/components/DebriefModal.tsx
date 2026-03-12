@@ -95,7 +95,7 @@ export function DebriefModal() {
   }
 
   function handleSubmit() {
-    if (!content.trim()) return;
+    if (!content.trim() || !selectedCompanyId) return;
     createMutation.mutate({
       inputType: tab,
       rawContent: content.trim(),
@@ -184,8 +184,9 @@ export function DebriefModal() {
 
             <div className="flex justify-end pt-2">
               <Button
+                type="button"
                 onClick={handleSubmit}
-                disabled={!content.trim()}
+                disabled={!content.trim() || !selectedCompanyId}
               >
                 Process Debrief
               </Button>
