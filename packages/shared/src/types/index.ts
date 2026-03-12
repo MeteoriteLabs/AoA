@@ -52,6 +52,7 @@ export type {
   JoinRequest,
   InstanceUserRoleGrant,
 } from "./access.js";
+export type { TaskDependency } from "./task-dependency.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilitySecretRequirement,
