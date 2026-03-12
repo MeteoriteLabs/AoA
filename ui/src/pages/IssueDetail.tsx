@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import { dependenciesApi } from "../api/dependencies";
 import { activityApi } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
@@ -30,18 +31,24 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Activity as ActivityIcon,
   ChevronDown,
   ChevronRight,
   EyeOff,
   Hexagon,
+  Link2,
   ListTree,
   MessageSquare,
   MoreHorizontal,
   Paperclip,
+  Plus,
+  Search,
   SlidersHorizontal,
   Trash2,
+  X,
 } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
 import type { Agent, IssueAttachment } from "@paperclipai/shared";
@@ -158,6 +165,8 @@ export function IssueDetail() {
     approvals: false,
     cost: false,
   });
+  const [depPickerOpen, setDepPickerOpen] = useState(false);
+  const [depSearch, setDepSearch] = useState("");
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
@@ -211,6 +220,12 @@ export function IssueDetail() {
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled: !!issueId,
     refetchInterval: 3000,
+  });
+
+  const { data: deps } = useQuery({
+    queryKey: queryKeys.issues.dependencies(issueId!),
+    queryFn: () => dependenciesApi.list(selectedCompanyId!, issueId!),
+    enabled: !!issueId && !!selectedCompanyId,
   });
 
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
@@ -382,6 +397,7 @@ export function IssueDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.dependencies(issueId!) });
     if (selectedCompanyId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
@@ -489,6 +505,47 @@ export function IssueDetail() {
       setAttachmentError(err instanceof Error ? err.message : "Delete failed");
     },
   });
+
+  const addDependency = useMutation({
+    mutationFn: (dependencyIssueId: string) =>
+      dependenciesApi.add(selectedCompanyId!, issueId!, dependencyIssueId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.dependencies(issueId!) });
+      invalidateIssue();
+      setDepPickerOpen(false);
+      setDepSearch("");
+    },
+  });
+
+  const removeDependency = useMutation({
+    mutationFn: (dependencyIssueId: string) =>
+      dependenciesApi.remove(selectedCompanyId!, issueId!, dependencyIssueId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.dependencies(issueId!) });
+      invalidateIssue();
+    },
+  });
+
+  const upstreamDeps = deps?.upstream ?? [];
+  const downstreamDeps = deps?.downstream ?? [];
+  const hasUnmetDeps = upstreamDeps.some((d) => d.status !== "done");
+
+  const depPickerCandidates = useMemo(() => {
+    if (!allIssues || !issue) return [];
+    const existingDepIds = new Set([
+      issue.id,
+      ...upstreamDeps.map((d) => d.dependencyIssueId!),
+    ]);
+    return allIssues
+      .filter((i) => !existingDepIds.has(i.id) && i.status !== "cancelled")
+      .filter((i) =>
+        depSearch
+          ? i.title.toLowerCase().includes(depSearch.toLowerCase()) ||
+            (i.identifier ?? "").toLowerCase().includes(depSearch.toLowerCase())
+          : true,
+      )
+      .slice(0, 20);
+  }, [allIssues, issue, upstreamDeps, depSearch]);
 
   useEffect(() => {
     const titleLabel = issue?.title ?? issueId ?? "Task";
@@ -696,6 +753,127 @@ export function IssueDetail() {
           }}
         />
       </div>
+
+      {/* Dependencies */}
+      {(upstreamDeps.length > 0 || downstreamDeps.length > 0 || true) && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+              <Link2 className="h-3.5 w-3.5" />
+              Dependencies
+            </h3>
+            <Button variant="outline" size="sm" onClick={() => setDepPickerOpen(true)}>
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              Add
+            </Button>
+          </div>
+
+          {hasUnmetDeps && issue.status === "blocked" && (
+            <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+              <Link2 className="h-4 w-4 shrink-0" />
+              Blocked — waiting for {upstreamDeps.filter((d) => d.status !== "done").length} dependency task{upstreamDeps.filter((d) => d.status !== "done").length !== 1 ? "s" : ""} to complete
+            </div>
+          )}
+
+          {upstreamDeps.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground mb-1.5">Waiting for</p>
+              <div className="border border-border rounded-lg divide-y divide-border">
+                {upstreamDeps.map((dep) => (
+                  <div key={dep.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                    <Link
+                      to={`/issues/${dep.identifier ?? dep.dependencyIssueId}`}
+                      className="flex items-center gap-2 min-w-0 hover:text-foreground transition-colors"
+                    >
+                      <StatusIcon status={dep.status} />
+                      <span className="font-mono text-xs text-muted-foreground shrink-0">
+                        {dep.identifier ?? dep.dependencyIssueId?.slice(0, 8)}
+                      </span>
+                      <span className="truncate">{dep.title}</span>
+                      <StatusBadge status={dep.status} />
+                    </Link>
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-destructive shrink-0 ml-2"
+                      onClick={() => removeDependency.mutate(dep.dependencyIssueId!)}
+                      title="Remove dependency"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {downstreamDeps.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground mb-1.5">Blocking</p>
+              <div className="border border-border rounded-lg divide-y divide-border">
+                {downstreamDeps.map((dep) => (
+                  <Link
+                    key={dep.id}
+                    to={`/issues/${dep.identifier ?? dep.dependentIssueId}`}
+                    className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
+                  >
+                    <StatusIcon status={dep.status} />
+                    <span className="font-mono text-xs text-muted-foreground shrink-0">
+                      {dep.identifier ?? dep.dependentIssueId?.slice(0, 8)}
+                    </span>
+                    <span className="truncate">{dep.title}</span>
+                    <StatusBadge status={dep.status} />
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {upstreamDeps.length === 0 && downstreamDeps.length === 0 && (
+            <p className="text-xs text-muted-foreground">No dependencies.</p>
+          )}
+        </div>
+      )}
+
+      {/* Add Dependency Picker Dialog */}
+      <Dialog open={depPickerOpen} onOpenChange={(open) => { setDepPickerOpen(open); if (!open) setDepSearch(""); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Dependency</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">Select a task that must be completed before this one can start.</p>
+          <div className="relative">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search tasks..."
+              value={depSearch}
+              onChange={(e) => setDepSearch(e.target.value)}
+              className="pl-9"
+              autoFocus
+            />
+          </div>
+          <div className="max-h-64 overflow-y-auto -mx-1">
+            {depPickerCandidates.length === 0 ? (
+              <p className="text-xs text-muted-foreground text-center py-4">No matching tasks found.</p>
+            ) : (
+              depPickerCandidates.map((candidate) => (
+                <button
+                  key={candidate.id}
+                  type="button"
+                  className="flex items-center gap-2 w-full px-3 py-2 text-sm text-left hover:bg-accent/50 rounded-md transition-colors"
+                  onClick={() => addDependency.mutate(candidate.id)}
+                  disabled={addDependency.isPending}
+                >
+                  <StatusIcon status={candidate.status} />
+                  <span className="font-mono text-xs text-muted-foreground shrink-0">
+                    {candidate.identifier ?? candidate.id.slice(0, 8)}
+                  </span>
+                  <span className="truncate">{candidate.title}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-2">

@@ -121,6 +121,7 @@ export function dependencyService(db: Db) {
         dependencyIssueId: taskDependencies.dependencyIssueId,
         title: issues.title,
         status: issues.status,
+        identifier: issues.identifier,
         createdAt: taskDependencies.createdAt,
       })
       .from(taskDependencies)
@@ -140,6 +141,7 @@ export function dependencyService(db: Db) {
         dependentIssueId: taskDependencies.dependentIssueId,
         title: issues.title,
         status: issues.status,
+        identifier: issues.identifier,
         createdAt: taskDependencies.createdAt,
       })
       .from(taskDependencies)
