@@ -27,6 +27,7 @@ import { accessRoutes } from "./routes/access.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { debriefRoutes } from "./routes/debriefs.js";
 import { briefRoutes } from "./routes/briefs.js";
+import { dependencyRoutes } from "./routes/dependencies.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -108,6 +109,7 @@ export async function createApp(
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService));
+  api.use(dependencyRoutes(db));
   api.use(goalRoutes(db));
   api.use(memoryRoutes(db));
   api.use(debriefRoutes(db));

@@ -20,6 +20,13 @@ import {
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { Link2 } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
 
 const boardStatuses = [
@@ -157,6 +164,20 @@ function KanbanCard({
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
             </span>
+          )}
+          {issue.status === "blocked" && (
+            <TooltipProvider delayDuration={200}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400 shrink-0 ml-auto">
+                    <Link2 className="h-3 w-3" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">
+                  Blocked by dependencies
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           )}
         </div>
         <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
