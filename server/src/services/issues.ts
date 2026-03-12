@@ -15,9 +15,11 @@ import {
   labels,
   projectWorkspaces,
   projects,
+  taskDependencies,
 } from "@paperclipai/db";
 import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { dependencyService } from "./dependencies.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -297,6 +299,23 @@ function withActiveRuns(
 }
 
 export function issueService(db: Db) {
+  const deps = dependencyService(db);
+
+  async function hasUnmetDependencies(companyId: string, issueId: string): Promise<boolean> {
+    const upstream = await db
+      .select({ status: issues.status })
+      .from(taskDependencies)
+      .innerJoin(issues, eq(issues.id, taskDependencies.dependencyIssueId))
+      .where(
+        and(
+          eq(taskDependencies.companyId, companyId),
+          eq(taskDependencies.dependentIssueId, issueId),
+        ),
+      );
+    if (upstream.length === 0) return false;
+    return upstream.some((r) => r.status !== "done");
+  }
+
   async function assertAssignableAgent(companyId: string, agentId: string) {
     const assignee = await db
       .select({
@@ -718,7 +737,7 @@ export function issueService(db: Db) {
         patch.checkoutRunId = null;
       }
 
-      return db.transaction(async (tx) => {
+      const result = await db.transaction(async (tx) => {
         const updated = await tx
           .update(issues)
           .set(patch)
@@ -732,6 +751,17 @@ export function issueService(db: Db) {
         const [enriched] = await withIssueLabels(tx, [updated]);
         return enriched;
       });
+
+      // Dependency side effects (after transaction commits)
+      if (result && issueData.status && issueData.status !== existing.status) {
+        if (issueData.status === "done") {
+          await deps.resolveDependencies(existing.companyId, id);
+        } else if (issueData.status === "cancelled") {
+          await deps.handleCancelledDependency(existing.companyId, id);
+        }
+      }
+
+      return result;
     },
 
     remove: (id: string) =>
@@ -766,6 +796,11 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(issueCompany.companyId, agentId);
+
+      // Reject checkout if task has unmet dependencies (safety check — prevents race conditions)
+      if (await hasUnmetDependencies(issueCompany.companyId, id)) {
+        throw conflict("Task has unmet dependencies");
+      }
 
       const now = new Date();
       const sameRunAssigneeCondition = checkoutRunId
