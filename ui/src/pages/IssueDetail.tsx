@@ -535,6 +535,7 @@ export function IssueDetail() {
     const existingDepIds = new Set([
       issue.id,
       ...upstreamDeps.map((d) => d.dependencyIssueId!),
+      ...downstreamDeps.map((d) => d.dependentIssueId!),
     ]);
     return allIssues
       .filter((i) => !existingDepIds.has(i.id) && i.status !== "cancelled")
@@ -545,7 +546,7 @@ export function IssueDetail() {
           : true,
       )
       .slice(0, 20);
-  }, [allIssues, issue, upstreamDeps, depSearch]);
+  }, [allIssues, issue, upstreamDeps, downstreamDeps, depSearch]);
 
   useEffect(() => {
     const titleLabel = issue?.title ?? issueId ?? "Task";
@@ -754,8 +755,8 @@ export function IssueDetail() {
         />
       </div>
 
-      {/* Dependencies */}
-      {(upstreamDeps.length > 0 || downstreamDeps.length > 0 || true) && (
+      {/* Dependencies — always shown so user can add the first dependency */}
+      {(
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">

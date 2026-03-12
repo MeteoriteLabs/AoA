@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
+import { useParams, useNavigate, useLocation, Navigate, Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PROJECT_COLORS, isUuidLike } from "@paperclipai/shared";
 import { projectsApi } from "../api/projects";
+import type { ProjectAgentAssignment, ProjectBudget } from "../api/projects";
 import { issuesApi } from "../api/issues";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
@@ -23,11 +24,11 @@ import { projectRouteRef, cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { SlidersHorizontal, Plus } from "lucide-react";
+import { SlidersHorizontal, Plus, Bot, X, DollarSign, AlertTriangle } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
-type ProjectTab = "overview" | "list" | "goals";
+type ProjectTab = "overview" | "list" | "goals" | "team" | "budget";
 
 function resolveProjectTab(pathname: string, projectId: string): ProjectTab | null {
   const segments = pathname.split("/").filter(Boolean);
@@ -37,6 +38,8 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "overview") return "overview";
   if (tab === "issues") return "list";
   if (tab === "goals") return "goals";
+  if (tab === "team") return "team";
+  if (tab === "budget") return "budget";
   return null;
 }
 
@@ -229,6 +232,229 @@ function ProjectGoals({ projectId, companyId }: { projectId: string; companyId: 
   );
 }
 
+/* ── Team tab content ── */
+
+function ProjectTeam({ projectId, companyId, projectType }: { projectId: string; companyId: string; projectType?: string }) {
+  const queryClient = useQueryClient();
+  const [showDropdown, setShowDropdown] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const { data: assignedAgents, isLoading } = useQuery({
+    queryKey: queryKeys.projects.agents(projectId),
+    queryFn: () => projectsApi.listAgents(projectId),
+    enabled: !!projectId,
+  });
+
+  const { data: allAgents } = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+    enabled: !!companyId,
+  });
+
+  const assignMutation = useMutation({
+    mutationFn: (agentId: string) => projectsApi.assignAgent(projectId, agentId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.agents(projectId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.budget(projectId) });
+      setShowDropdown(false);
+    },
+  });
+
+  const unassignMutation = useMutation({
+    mutationFn: (agentId: string) => projectsApi.unassignAgent(projectId, agentId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.agents(projectId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.budget(projectId) });
+    },
+  });
+
+  useEffect(() => {
+    if (!showDropdown) return;
+    function handleClick(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setShowDropdown(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showDropdown]);
+
+  const assignedIds = new Set(assignedAgents?.map((a) => a.agentId) ?? []);
+  const availableAgents = (allAgents ?? []).filter(
+    (a) => !assignedIds.has(a.id) && a.status !== "terminated",
+  );
+
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading team…</p>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium text-muted-foreground">
+          {assignedAgents?.length ?? 0} agent{(assignedAgents?.length ?? 0) === 1 ? "" : "s"} assigned
+        </h3>
+        <div className="relative" ref={dropdownRef}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 text-xs"
+            onClick={() => setShowDropdown(!showDropdown)}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Assign Agent
+          </Button>
+          {showDropdown && (
+            <div className="absolute right-0 top-full mt-1 w-56 bg-popover border border-border rounded-md shadow-lg z-50 overflow-hidden">
+              {availableAgents.length === 0 ? (
+                <p className="px-3 py-2 text-xs text-muted-foreground">No agents available</p>
+              ) : (
+                availableAgents.map((agent) => (
+                  <button
+                    key={agent.id}
+                    onClick={() => assignMutation.mutate(agent.id)}
+                    className="flex items-center gap-2 w-full px-3 py-2 text-sm hover:bg-accent/50 transition-colors text-left"
+                  >
+                    <Bot className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <span className="truncate">{agent.name}</span>
+                    <span className="text-xs text-muted-foreground ml-auto shrink-0">{agent.role}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {(assignedAgents?.length ?? 0) === 0 ? (
+        <div className="border border-border rounded-md p-6 text-center">
+          <Bot className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
+          <p className="text-sm text-muted-foreground">No agents assigned to this {projectType === "project" ? "project" : "department"} yet.</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Assign agents to track their work and spending here.
+          </p>
+        </div>
+      ) : (
+        <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
+          {assignedAgents?.map((agent) => (
+            <div
+              key={agent.agentId}
+              className="flex items-center gap-3 px-4 py-3 text-sm"
+            >
+              <Bot className="h-4 w-4 text-muted-foreground shrink-0" />
+              <Link
+                to={`/agents/${agent.agentId}`}
+                className="font-medium hover:underline no-underline text-inherit"
+              >
+                {agent.name}
+              </Link>
+              <span className="text-xs text-muted-foreground">{agent.role}</span>
+              {agent.title && (
+                <span className="text-xs text-muted-foreground">· {agent.title}</span>
+              )}
+              <StatusBadge status={agent.status} />
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="ml-auto shrink-0"
+                onClick={() => unassignMutation.mutate(agent.agentId)}
+                title="Unassign agent"
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Budget tab content ── */
+
+function formatCents(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+function ProjectBudgetTab({ projectId, companyId, projectType }: { projectId: string; companyId: string; projectType?: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: queryKeys.projects.budget(projectId),
+    queryFn: () => projectsApi.budget(projectId),
+    enabled: !!projectId,
+  });
+
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading budget…</p>;
+  }
+
+  if (!data || data.agents.length === 0) {
+    return (
+      <div className="border border-border rounded-md p-6 text-center">
+        <DollarSign className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
+        <p className="text-sm text-muted-foreground">No spending data available.</p>
+        <p className="text-xs text-muted-foreground mt-1">
+          Assign agents to this {projectType === "project" ? "project" : "department"} to track their budget usage.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium text-muted-foreground">This Month</h3>
+        <span className="text-sm font-semibold">{formatCents(data.totalSpendCents)} total</span>
+      </div>
+
+      <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
+        <div className="grid grid-cols-4 gap-2 px-4 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide bg-muted/30">
+          <span>Agent</span>
+          <span className="text-right">Budget</span>
+          <span className="text-right">Spent</span>
+          <span className="text-right">Usage</span>
+        </div>
+        {data.agents.map((agent) => {
+          const usagePercent =
+            agent.budgetMonthlyCents > 0
+              ? Math.round((agent.spendCents / agent.budgetMonthlyCents) * 100)
+              : null;
+          const isOverBudget = usagePercent !== null && usagePercent >= 100;
+
+          return (
+            <div
+              key={agent.agentId}
+              className="grid grid-cols-4 gap-2 px-4 py-2.5 text-sm items-center"
+            >
+              <Link
+                to={`/agents/${agent.agentId}`}
+                className="font-medium truncate hover:underline no-underline text-inherit"
+              >
+                {agent.agentName}
+              </Link>
+              <span className="text-right text-muted-foreground">
+                {agent.budgetMonthlyCents > 0 ? formatCents(agent.budgetMonthlyCents) : "—"}
+              </span>
+              <span className={`text-right ${isOverBudget ? "text-destructive font-medium" : ""}`}>
+                {formatCents(agent.spendCents)}
+              </span>
+              <span className="text-right">
+                {usagePercent !== null ? (
+                  <span className={`inline-flex items-center gap-1 ${isOverBudget ? "text-destructive" : ""}`}>
+                    {isOverBudget && <AlertTriangle className="h-3 w-3" />}
+                    {usagePercent}%
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /* ── Main project page ── */
 
 export function ProjectDetail() {
@@ -300,20 +526,19 @@ export function ProjectDetail() {
   useEffect(() => {
     if (!project) return;
     if (routeProjectRef === canonicalProjectRef) return;
-    if (activeTab === "overview") {
-      navigate(`/projects/${canonicalProjectRef}/overview`, { replace: true });
+    if (activeTab === "list" && filter) {
+      navigate(`/projects/${canonicalProjectRef}/issues/${filter}`, { replace: true });
       return;
     }
-    if (activeTab === "list") {
-      if (filter) {
-        navigate(`/projects/${canonicalProjectRef}/issues/${filter}`, { replace: true });
-        return;
-      }
-      navigate(`/projects/${canonicalProjectRef}/issues`, { replace: true });
-      return;
-    }
-    if (activeTab === "goals") {
-      navigate(`/projects/${canonicalProjectRef}/goals`, { replace: true });
+    const tabPaths: Record<ProjectTab, string> = {
+      overview: "overview",
+      list: "issues",
+      goals: "goals",
+      team: "team",
+      budget: "budget",
+    };
+    if (activeTab) {
+      navigate(`/projects/${canonicalProjectRef}/${tabPaths[activeTab]}`, { replace: true });
       return;
     }
     navigate(`/projects/${canonicalProjectRef}`, { replace: true });
@@ -336,13 +561,14 @@ export function ProjectDetail() {
   if (!project) return null;
 
   const handleTabChange = (tab: ProjectTab) => {
-    if (tab === "overview") {
-      navigate(`/projects/${canonicalProjectRef}/overview`);
-    } else if (tab === "goals") {
-      navigate(`/projects/${canonicalProjectRef}/goals`);
-    } else {
-      navigate(`/projects/${canonicalProjectRef}/issues`);
-    }
+    const tabPaths: Record<ProjectTab, string> = {
+      overview: "overview",
+      list: "issues",
+      goals: "goals",
+      team: "team",
+      budget: "budget",
+    };
+    navigate(`/projects/${canonicalProjectRef}/${tabPaths[tab]}`);
   };
 
   return (
@@ -403,7 +629,7 @@ export function ProjectDetail() {
           }`}
           onClick={() => handleTabChange("list")}
         >
-          List
+          Board
         </button>
         <button
           className={`px-3 py-2 text-sm font-medium transition-colors border-b-2 ${
@@ -414,6 +640,26 @@ export function ProjectDetail() {
           onClick={() => handleTabChange("goals")}
         >
           Goals
+        </button>
+        <button
+          className={`px-3 py-2 text-sm font-medium transition-colors border-b-2 ${
+            activeTab === "team"
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+          onClick={() => handleTabChange("team")}
+        >
+          Team
+        </button>
+        <button
+          className={`px-3 py-2 text-sm font-medium transition-colors border-b-2 ${
+            activeTab === "budget"
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+          onClick={() => handleTabChange("budget")}
+        >
+          Budget
         </button>
       </div>
 
@@ -435,6 +681,14 @@ export function ProjectDetail() {
 
       {activeTab === "goals" && project?.id && resolvedCompanyId && (
         <ProjectGoals projectId={project.id} companyId={resolvedCompanyId} />
+      )}
+
+      {activeTab === "team" && project?.id && resolvedCompanyId && (
+        <ProjectTeam projectId={project.id} companyId={resolvedCompanyId} projectType={project.type} />
+      )}
+
+      {activeTab === "budget" && project?.id && resolvedCompanyId && (
+        <ProjectBudgetTab projectId={project.id} companyId={resolvedCompanyId} projectType={project.type} />
       )}
 
       {/* Mobile properties drawer */}

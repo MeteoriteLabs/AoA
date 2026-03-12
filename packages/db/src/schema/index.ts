@@ -36,3 +36,4 @@ export { debriefs } from "./debriefs.js";
 export { briefs } from "./briefs.js";
 export { briefItems } from "./brief_items.js";
 export { taskDependencies } from "./task_dependencies.js";
+export { agentProjects } from "./agent_projects.js";

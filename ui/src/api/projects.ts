@@ -30,4 +30,34 @@ export const projectsApi = {
   removeWorkspace: (projectId: string, workspaceId: string, companyId?: string) =>
     api.delete<ProjectWorkspace>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`)),
   remove: (id: string, companyId?: string) => api.delete<Project>(projectPath(id, companyId)),
+  listAgents: (projectId: string, companyId?: string) =>
+    api.get<ProjectAgentAssignment[]>(projectPath(projectId, companyId, "/agents")),
+  assignAgent: (projectId: string, agentId: string, companyId?: string) =>
+    api.post<{ ok: true }>(projectPath(projectId, companyId, "/agents"), { agentId }),
+  unassignAgent: (projectId: string, agentId: string, companyId?: string) =>
+    api.delete<{ ok: true }>(projectPath(projectId, companyId, `/agents/${encodeURIComponent(agentId)}`)),
+  budget: (projectId: string, companyId?: string) =>
+    api.get<ProjectBudget>(projectPath(projectId, companyId, "/budget")),
 };
+
+export interface ProjectAgentAssignment {
+  agentId: string;
+  name: string;
+  role: string;
+  title: string | null;
+  icon: string | null;
+  status: string;
+  createdAt: string;
+}
+
+export interface ProjectBudgetAgent {
+  agentId: string;
+  agentName: string;
+  budgetMonthlyCents: number;
+  spendCents: number;
+}
+
+export interface ProjectBudget {
+  totalSpendCents: number;
+  agents: ProjectBudgetAgent[];
+}

@@ -1,4 +1,4 @@
-import { and, eq, ilike, sql } from "drizzle-orm";
+import { and, eq, ilike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { memoryItems } from "@paperclipai/db";
 
@@ -34,7 +34,10 @@ export function memoryService(db: Db) {
       }
       if (filters.search) {
         conditions.push(
-          ilike(memoryItems.title, `%${filters.search}%`),
+          or(
+            ilike(memoryItems.title, `%${filters.search}%`),
+            ilike(memoryItems.content, `%${filters.search}%`),
+          )!,
         );
       }
       if (filters.tags && filters.tags.length > 0) {

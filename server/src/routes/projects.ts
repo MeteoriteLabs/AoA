@@ -1,5 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
+import { agentProjects, agents, costEvents } from "@paperclipai/db";
+import { and, eq, gte, lte, sql, desc } from "drizzle-orm";
 import {
   createProjectSchema,
   createProjectWorkspaceSchema,
@@ -267,7 +269,17 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const project = await svc.remove(id);
+
+    let project;
+    try {
+      project = await svc.remove(id);
+    } catch (err: any) {
+      if (err.status === 409) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
@@ -285,6 +297,197 @@ export function projectRoutes(db: Db) {
     });
 
     res.json(project);
+  });
+
+  /* ── Agent-Project assignment ── */
+
+  router.get("/projects/:id/agents", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+
+    const rows = await db
+      .select({
+        agentId: agentProjects.agentId,
+        name: agents.name,
+        role: agents.role,
+        title: agents.title,
+        icon: agents.icon,
+        status: agents.status,
+        createdAt: agentProjects.createdAt,
+      })
+      .from(agentProjects)
+      .innerJoin(agents, eq(agentProjects.agentId, agents.id))
+      .where(eq(agentProjects.projectId, id));
+
+    res.json(rows);
+  });
+
+  router.post("/projects/:id/agents", async (req, res) => {
+    const id = req.params.id as string;
+    const { agentId } = req.body as { agentId?: string };
+    if (!agentId) {
+      res.status(422).json({ error: "agentId is required" });
+      return;
+    }
+
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+
+    // Verify agent exists and belongs to same company
+    const agent = await db
+      .select({ id: agents.id, companyId: agents.companyId })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, project.companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    // Upsert (ignore if already assigned)
+    await db
+      .insert(agentProjects)
+      .values({ agentId, projectId: id, companyId: project.companyId })
+      .onConflictDoNothing();
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.agent_assigned",
+      entityType: "project",
+      entityId: id,
+      details: { assignedAgentId: agentId },
+    });
+
+    res.status(201).json({ ok: true });
+  });
+
+  router.delete("/projects/:id/agents/:agentId", async (req, res) => {
+    const id = req.params.id as string;
+    const agentId = req.params.agentId as string;
+
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+
+    const deleted = await db
+      .delete(agentProjects)
+      .where(and(eq(agentProjects.projectId, id), eq(agentProjects.agentId, agentId)))
+      .returning();
+
+    if (deleted.length === 0) {
+      res.status(404).json({ error: "Agent not assigned to this project" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.agent_unassigned",
+      entityType: "project",
+      entityId: id,
+      details: { unassignedAgentId: agentId },
+    });
+
+    res.json({ ok: true });
+  });
+
+  /* ── Project budget ── */
+
+  router.get("/projects/:id/budget", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+
+    // Current month boundaries
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    // Get assigned agent IDs
+    const assignedAgentRows = await db
+      .select({ agentId: agentProjects.agentId })
+      .from(agentProjects)
+      .where(eq(agentProjects.projectId, id));
+
+    const agentIds = assignedAgentRows.map((r) => r.agentId);
+
+    if (agentIds.length === 0) {
+      res.json({ totalSpendCents: 0, agents: [] });
+      return;
+    }
+
+    // Get spending per agent this month (from cost_events linked to this project or to assigned agents)
+    const agentSpend = await db
+      .select({
+        agentId: costEvents.agentId,
+        agentName: agents.name,
+        budgetMonthlyCents: agents.budgetMonthlyCents,
+        spendCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+      })
+      .from(costEvents)
+      .innerJoin(agents, eq(costEvents.agentId, agents.id))
+      .where(
+        and(
+          eq(costEvents.companyId, project.companyId),
+          sql`${costEvents.agentId} = ANY(${agentIds})`,
+          gte(costEvents.occurredAt, monthStart),
+          lte(costEvents.occurredAt, monthEnd),
+        ),
+      )
+      .groupBy(costEvents.agentId, agents.name, agents.budgetMonthlyCents)
+      .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
+
+    const totalSpendCents = agentSpend.reduce((sum, row) => sum + Number(row.spendCents), 0);
+
+    // Include agents with zero spend
+    const spendMap = new Map(agentSpend.map((r) => [r.agentId, r]));
+    const allAgents = await db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        budgetMonthlyCents: agents.budgetMonthlyCents,
+      })
+      .from(agents)
+      .where(sql`${agents.id} = ANY(${agentIds})`);
+
+    const agentBreakdown = allAgents.map((a) => {
+      const spend = spendMap.get(a.id);
+      return {
+        agentId: a.id,
+        agentName: a.name,
+        budgetMonthlyCents: a.budgetMonthlyCents,
+        spendCents: spend ? Number(spend.spendCents) : 0,
+      };
+    });
+
+    // Sort by spend descending
+    agentBreakdown.sort((a, b) => b.spendCents - a.spendCents);
+
+    res.json({ totalSpendCents, agents: agentBreakdown });
   });
 
   return router;

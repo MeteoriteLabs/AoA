@@ -225,6 +225,13 @@
       "when": 1773306414380,
       "tag": "0031_bored_hemingway",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1773308077153,
+      "tag": "0032_burly_tusk",
+      "breakpoints": true
     }
   ]
 }

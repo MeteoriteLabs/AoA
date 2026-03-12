@@ -1,6 +1,6 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { projects, projectGoals, goals, projectWorkspaces } from "@paperclipai/db";
+import { projects, projectGoals, goals, projectWorkspaces, issues } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
@@ -326,16 +326,32 @@ export function projectService(db: Db) {
       return enriched ?? null;
     },
 
-    remove: (id: string) =>
-      db
+    remove: async (id: string) => {
+      // Decision #63: Block deletion if project has tasks or goals
+      const [taskCount] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issues)
+        .where(eq(issues.projectId, id));
+      if ((taskCount?.count ?? 0) > 0) {
+        throw Object.assign(new Error("Cannot delete: project has tasks. Reassign or cancel them first."), { status: 409 });
+      }
+
+      const [goalCount] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(projectGoals)
+        .where(eq(projectGoals.projectId, id));
+      if ((goalCount?.count ?? 0) > 0) {
+        throw Object.assign(new Error("Cannot delete: project has goals. Reassign or remove them first."), { status: 409 });
+      }
+
+      const row = await db
         .delete(projects)
         .where(eq(projects.id, id))
         .returning()
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          if (!row) return null;
-          return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
+    },
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db

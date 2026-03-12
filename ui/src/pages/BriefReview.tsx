@@ -478,16 +478,23 @@ export function BriefReview() {
 
       {/* Process Brief button */}
       {!isProcessed && hasActionedItems && (
-        <div className="flex justify-end pt-4 border-t border-border">
-          <Button
-            onClick={() => approveMutation.mutate()}
-            disabled={approveMutation.isPending}
-          >
-            {approveMutation.isPending && (
-              <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-            )}
-            Process Brief
-          </Button>
+        <div className="pt-4 border-t border-border space-y-2">
+          {pendingCount > 0 && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {pendingCount} item{pendingCount !== 1 ? "s" : ""} still pending — they will be skipped during processing.
+            </p>
+          )}
+          <div className="flex justify-end">
+            <Button
+              onClick={() => approveMutation.mutate()}
+              disabled={approveMutation.isPending}
+            >
+              {approveMutation.isPending && (
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              )}
+              Process Brief
+            </Button>
+          </div>
         </div>
       )}
     </div>

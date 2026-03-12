@@ -26,7 +26,7 @@ import {
   ChevronRight,
   AlertTriangle,
 } from "lucide-react";
-import type { HomeSummary, RecentActivityItem, SetupStatus, GoalGapNudge } from "@paperclipai/shared";
+import type { HomeSummary, RecentActivityItem, SetupStatus, GoalGapNudge, GoalProgress } from "@paperclipai/shared";
 
 function getGreeting(): string {
   const hour = new Date().getHours();
@@ -371,6 +371,49 @@ export function Dashboard() {
                 </Link>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* Goal Progress */}
+      {!showOnboarding && data && data.goalProgress && data.goalProgress.length > 0 && (
+        <div>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+            Active Goals
+          </h2>
+          <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
+            {data.goalProgress.map((goal: GoalProgress) => (
+              <Link
+                key={goal.id}
+                to={`/goals/${goal.id}`}
+                className="flex items-center gap-3 px-4 py-3 text-sm hover:bg-accent/50 transition-colors no-underline text-inherit"
+              >
+                <Target className="h-4 w-4 text-muted-foreground shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium truncate">{goal.title}</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full shrink-0 ${
+                      goal.status === "at_risk"
+                        ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                        : "bg-primary/10 text-primary"
+                    }`}>
+                      {goal.status === "at_risk" ? "At Risk" : "Active"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-primary rounded-full transition-all"
+                        style={{ width: `${goal.progressPercent}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-muted-foreground shrink-0 tabular-nums">
+                      {goal.doneTasks}/{goal.totalTasks} tasks
+                    </span>
+                  </div>
+                </div>
+              </Link>
+            ))}
           </div>
         </div>
       )}
