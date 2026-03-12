@@ -11,6 +11,10 @@ export interface Brief {
   reviewedBy: string | null;
   createdAt: string;
   updatedAt: string;
+  sourceType: string | null;
+  departmentName: string | null;
+  projectName: string | null;
+  itemCount: number;
 }
 
 export interface BriefItem {

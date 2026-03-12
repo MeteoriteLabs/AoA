@@ -5,8 +5,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { briefsApi } from "../api/briefs";
 import { queryKeys } from "../lib/queryKeys";
-import { Badge } from "@/components/ui/badge";
-import { Loader2, FileText } from "lucide-react";
+import { Loader2, FileText, ClipboardPen, PenLine, Plug } from "lucide-react";
 import { cn } from "../lib/utils";
 
 const STATUS_BADGES: Record<string, string> = {
@@ -16,6 +15,12 @@ const STATUS_BADGES: Record<string, string> = {
   approved: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
   rejected: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
   partially_approved: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+};
+
+const SOURCE_BADGES: Record<string, { label: string; class: string; icon: typeof FileText }> = {
+  paste: { label: "Paste", class: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300", icon: ClipboardPen },
+  write: { label: "Write", class: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300", icon: PenLine },
+  mcp: { label: "MCP", class: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300", icon: Plug },
 };
 
 export function Briefs() {
@@ -39,6 +44,16 @@ export function Briefs() {
     enabled: !!selectedCompanyId,
   });
 
+  // Sort: ready briefs first, then by date descending
+  const sorted = useMemo(() => {
+    if (!briefs) return [];
+    return [...briefs].sort((a, b) => {
+      if (a.status === "ready" && b.status !== "ready") return -1;
+      if (a.status !== "ready" && b.status === "ready") return 1;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  }, [briefs]);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -59,13 +74,14 @@ export function Briefs() {
           <option value="all">All statuses</option>
           <option value="ready">Ready for review</option>
           <option value="draft">Draft</option>
+          <option value="reviewed">Reviewed</option>
           <option value="approved">Approved</option>
           <option value="rejected">Rejected</option>
           <option value="partially_approved">Partially approved</option>
         </select>
       </div>
 
-      {!briefs || briefs.length === 0 ? (
+      {sorted.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
           <FileText className="h-10 w-10 mb-3 opacity-40" />
           <p className="text-sm">No briefs yet</p>
@@ -73,33 +89,68 @@ export function Briefs() {
         </div>
       ) : (
         <div className="space-y-2">
-          {briefs.map((brief) => (
-            <Link
-              key={brief.id}
-              to={`/briefs/${brief.id}`}
-              className="flex items-center justify-between rounded-lg border border-border bg-card p-4 hover:bg-accent/50 transition-colors"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-                <div className="min-w-0">
-                  <p className="text-sm font-medium truncate">
-                    Brief — {new Date(brief.createdAt).toLocaleDateString()}
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {new Date(brief.createdAt).toLocaleTimeString()}
-                  </p>
-                </div>
-              </div>
-              <span
+          {sorted.map((brief) => {
+            const isReady = brief.status === "ready";
+            const source = brief.sourceType ? SOURCE_BADGES[brief.sourceType] : null;
+            const SourceIcon = source?.icon ?? FileText;
+            const scopeLabel = brief.departmentName ?? brief.projectName ?? null;
+
+            return (
+              <Link
+                key={brief.id}
+                to={`/briefs/${brief.id}`}
                 className={cn(
-                  "inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-medium shrink-0",
-                  STATUS_BADGES[brief.status] ?? "bg-muted text-muted-foreground",
+                  "flex items-center justify-between rounded-lg border p-4 transition-colors",
+                  isReady
+                    ? "border-blue-300 bg-blue-50/60 hover:bg-blue-100/60 dark:border-blue-800 dark:bg-blue-950/30 dark:hover:bg-blue-950/50"
+                    : "border-border bg-card hover:bg-accent/50",
                 )}
               >
-                {brief.status.replace("_", " ")}
-              </span>
-            </Link>
-          ))}
+                <div className="flex items-center gap-3 min-w-0">
+                  <FileText className={cn("h-4 w-4 shrink-0", isReady ? "text-blue-600 dark:text-blue-400" : "text-muted-foreground")} />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium truncate">
+                        Brief — {new Date(brief.createdAt).toLocaleDateString()}
+                      </p>
+                      {isReady && (
+                        <span className="inline-flex items-center rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-semibold text-white shrink-0">
+                          Needs Review
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(brief.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {brief.itemCount} {brief.itemCount === 1 ? "item" : "items"}
+                      </span>
+                      {source && (
+                        <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium", source.class)}>
+                          <SourceIcon className="h-3 w-3" />
+                          {source.label}
+                        </span>
+                      )}
+                      {scopeLabel && (
+                        <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                          {scopeLabel}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <span
+                  className={cn(
+                    "inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-medium shrink-0 capitalize",
+                    STATUS_BADGES[brief.status] ?? "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {brief.status.replace("_", " ")}
+                </span>
+              </Link>
+            );
+          })}
         </div>
       )}
     </div>

@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { briefs, briefItems } from "@paperclipai/db";
+import { briefs, briefItems, debriefs } from "@paperclipai/db";
 import { issueService } from "./issues.js";
 import { memoryService } from "./memory.js";
 
@@ -28,7 +28,7 @@ export function briefService(db: Db) {
   const memory = memoryService(db);
 
   return {
-    list: (companyId: string, filters: BriefFilters = {}) => {
+    list: async (companyId: string, filters: BriefFilters = {}) => {
       const conditions = [eq(briefs.companyId, companyId)];
 
       if (filters.status) {
@@ -38,7 +38,29 @@ export function briefService(db: Db) {
         conditions.push(eq(briefs.departmentId, filters.departmentId));
       }
 
-      return db.select().from(briefs).where(and(...conditions));
+      const rows = await db
+        .select({
+          id: briefs.id,
+          companyId: briefs.companyId,
+          debriefId: briefs.debriefId,
+          status: briefs.status,
+          departmentId: briefs.departmentId,
+          projectId: briefs.projectId,
+          reviewedAt: briefs.reviewedAt,
+          reviewedBy: briefs.reviewedBy,
+          createdAt: briefs.createdAt,
+          updatedAt: briefs.updatedAt,
+          sourceType: debriefs.inputType,
+          departmentName: sql<string | null>`(SELECT name FROM projects WHERE id = ${briefs.departmentId})`,
+          projectName: sql<string | null>`(SELECT name FROM projects WHERE id = ${briefs.projectId})`,
+          itemCount: sql<number>`(SELECT count(*)::int FROM brief_items WHERE brief_items.brief_id = ${briefs.id})`,
+        })
+        .from(briefs)
+        .innerJoin(debriefs, eq(briefs.debriefId, debriefs.id))
+        .where(and(...conditions))
+        .orderBy(sql`${briefs.createdAt} DESC`);
+
+      return rows;
     },
 
     getById: async (companyId: string, id: string) => {
