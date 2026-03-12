@@ -108,6 +108,7 @@ export type {
   HomeSummary,
   GoalProgress,
   RecentActivityItem,
+  SetupStatus,
   ActivityEvent,
   SidebarBadges,
   CompanyMembership,

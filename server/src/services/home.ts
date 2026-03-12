@@ -1,7 +1,7 @@
 import { and, eq, gte, lte, sql, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { briefs, issues, memoryItems, activityLog, goals } from "@paperclipai/db";
-import type { HomeSummary, GoalProgress, RecentActivityItem } from "@paperclipai/shared";
+import { briefs, issues, memoryItems, activityLog, goals, companies, projects, agents } from "@paperclipai/db";
+import type { HomeSummary, GoalProgress, RecentActivityItem, SetupStatus } from "@paperclipai/shared";
 
 export function homeService(db: Db) {
   return {
@@ -15,6 +15,7 @@ export function homeService(db: Db) {
         dueTodayTasks,
         recentActivityRows,
         goalProgressData,
+        setupStatus,
       ] = await Promise.all([
         // 1. Briefs awaiting review (status = 'ready')
         db
@@ -151,10 +152,43 @@ export function homeService(db: Db) {
             };
           });
         })(),
+
+        // 8. Setup status for onboarding flow
+        (async (): Promise<SetupStatus> => {
+          const [company, deptCount, agentCount, goalCount] = await Promise.all([
+            db
+              .select({ vision: companies.vision, mission: companies.mission })
+              .from(companies)
+              .where(eq(companies.id, companyId))
+              .then((rows) => rows[0] ?? null),
+            db
+              .select({ count: sql<number>`count(*)` })
+              .from(projects)
+              .where(and(eq(projects.companyId, companyId), eq(projects.type, "department")))
+              .then((rows) => Number(rows[0]?.count ?? 0)),
+            db
+              .select({ count: sql<number>`count(*)` })
+              .from(agents)
+              .where(eq(agents.companyId, companyId))
+              .then((rows) => Number(rows[0]?.count ?? 0)),
+            db
+              .select({ count: sql<number>`count(*)` })
+              .from(goals)
+              .where(eq(goals.companyId, companyId))
+              .then((rows) => Number(rows[0]?.count ?? 0)),
+          ]);
+          return {
+            hasVisionMission: !!(company?.vision?.trim() || company?.mission?.trim()),
+            hasDepartment: deptCount > 0,
+            hasAgent: agentCount > 0,
+            hasGoal: goalCount > 0,
+          };
+        })(),
       ]);
 
       return {
         companyId,
+        setupStatus,
         briefsAwaitingReview: briefsCount,
         tasksInReview: reviewCount,
         myTasksDueToday: dueTodayTasks.map((t) => ({

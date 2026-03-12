@@ -20,8 +20,16 @@ export interface RecentActivityItem {
   createdAt: string;
 }
 
+export interface SetupStatus {
+  hasVisionMission: boolean;
+  hasDepartment: boolean;
+  hasAgent: boolean;
+  hasGoal: boolean;
+}
+
 export interface HomeSummary {
   companyId: string;
+  setupStatus: SetupStatus;
   briefsAwaitingReview: number;
   tasksInReview: number;
   myTasksDueToday: {
