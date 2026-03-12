@@ -88,8 +88,10 @@ export {
 
 export {
   createDebriefSchema,
+  mcpDebriefSchema,
   updateDebriefSchema,
   type CreateDebrief,
+  type McpDebrief,
   type UpdateDebrief,
 } from "./debrief.js";
 

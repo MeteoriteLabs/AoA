@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { createDebriefSchema, updateDebriefSchema } from "@paperclipai/shared";
+import { createDebriefSchema, mcpDebriefSchema, updateDebriefSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { debriefService, extractionService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -55,6 +55,47 @@ export function debriefRoutes(db: Db) {
     });
 
     res.status(201).json(debrief);
+  });
+
+  // MCP inbound — external content always enters via Debrief pipeline (Decision #14)
+  router.post("/companies/:companyId/debriefs/mcp", validate(mcpDebriefSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const actor = getActorInfo(req);
+
+    const { content, title, departmentId, projectId, source } = req.body;
+
+    const debrief = await svc.create(companyId, {
+      title: title ?? null,
+      inputType: "mcp",
+      rawContent: content,
+      departmentId: departmentId ?? null,
+      projectId: projectId ?? null,
+      sourceInfo: source ?? null,
+      createdBy: actor.actorId,
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "debrief.created",
+      entityType: "debrief",
+      entityId: debrief.id,
+      details: { title: debrief.title, inputType: "mcp", source },
+    });
+
+    // Fire-and-forget: trigger LLM extraction in background
+    extraction.extractFromDebrief(companyId, debrief.id).catch(() => {
+      // Error already logged and status updated inside extractFromDebrief
+    });
+
+    res.status(201).json({
+      debriefId: debrief.id,
+      status: "processing",
+      message: "Debrief received. Brief will be generated.",
+    });
   });
 
   router.patch("/companies/:companyId/debriefs/:id", validate(updateDebriefSchema), async (req, res) => {
