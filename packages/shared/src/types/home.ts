@@ -27,6 +27,13 @@ export interface SetupStatus {
   hasGoal: boolean;
 }
 
+export interface GoalGapNudge {
+  type: "goal_gap";
+  goalId: string;
+  goalTitle: string;
+  message: string;
+}
+
 export interface HomeSummary {
   companyId: string;
   setupStatus: SetupStatus;
@@ -45,4 +52,5 @@ export interface HomeSummary {
   pendingMemoryItems: number;
   recentActivity: RecentActivityItem[];
   goalProgress: GoalProgress[];
+  nudges: GoalGapNudge[];
 }

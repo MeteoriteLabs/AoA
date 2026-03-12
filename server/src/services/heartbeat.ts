@@ -19,6 +19,7 @@ import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { logActivity } from "./activity-log.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
@@ -1067,6 +1068,85 @@ export function heartbeatService(db: Db) {
           updatedAt: new Date(),
         })
         .where(eq(agents.id, agent.id));
+
+      // Budget alert checks
+      if (agent.budgetMonthlyCents > 0) {
+        await checkBudgetAlerts(agent, run);
+      }
+    }
+  }
+
+  async function checkBudgetAlerts(
+    agent: typeof agents.$inferSelect,
+    run: typeof heartbeatRuns.$inferSelect,
+  ) {
+    // Sum cost_events for this agent in the current calendar month
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [result] = await db
+      .select({ total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)` })
+      .from(costEvents)
+      .where(
+        and(
+          eq(costEvents.agentId, agent.id),
+          gt(costEvents.occurredAt, monthStart),
+        ),
+      );
+
+    const totalSpent = Number(result?.total ?? 0);
+    const budget = agent.budgetMonthlyCents;
+    const ratio = totalSpent / budget;
+
+    if (ratio >= 1) {
+      // At or over 100% — pause the agent and log budget_exceeded
+      await db
+        .update(agents)
+        .set({ status: "paused", updatedAt: new Date() })
+        .where(eq(agents.id, agent.id));
+
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "system",
+        actorId: "budget-monitor",
+        action: "budget.exceeded",
+        entityType: "agent",
+        entityId: agent.id,
+        agentId: agent.id,
+        runId: run.id,
+        details: {
+          totalSpentCents: totalSpent,
+          budgetCents: budget,
+          percentUsed: Math.round(ratio * 100),
+        },
+      });
+
+      logger.warn(
+        { agentId: agent.id, totalSpentCents: totalSpent, budgetCents: budget },
+        "agent budget exceeded — agent paused",
+      );
+    } else if (ratio >= 0.8) {
+      // At or over 80% — log budget_warning
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "system",
+        actorId: "budget-monitor",
+        action: "budget.warning",
+        entityType: "agent",
+        entityId: agent.id,
+        agentId: agent.id,
+        runId: run.id,
+        details: {
+          totalSpentCents: totalSpent,
+          budgetCents: budget,
+          percentUsed: Math.round(ratio * 100),
+        },
+      });
+
+      logger.info(
+        { agentId: agent.id, totalSpentCents: totalSpent, budgetCents: budget },
+        "agent budget warning — 80% threshold reached",
+      );
     }
   }
 

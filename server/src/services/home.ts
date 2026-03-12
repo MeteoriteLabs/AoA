@@ -1,7 +1,9 @@
 import { and, eq, gte, lte, sql, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { briefs, issues, memoryItems, activityLog, goals, companies, projects, agents } from "@paperclipai/db";
-import type { HomeSummary, GoalProgress, RecentActivityItem, SetupStatus } from "@paperclipai/shared";
+import type { HomeSummary, GoalProgress, GoalGapNudge, RecentActivityItem, SetupStatus } from "@paperclipai/shared";
+
+const TERMINAL_STATUSES = ["done", "cancelled"];
 
 export function homeService(db: Db) {
   return {
@@ -14,7 +16,7 @@ export function homeService(db: Db) {
         pendingMemoryCount,
         dueTodayTasks,
         recentActivityRows,
-        goalProgressData,
+        goalData,
         setupStatus,
       ] = await Promise.all([
         // 1. Briefs awaiting review (status = 'ready')
@@ -96,8 +98,8 @@ export function homeService(db: Db) {
             .limit(20);
         })(),
 
-        // 7. Goal progress — active goals with task counts
-        (async () => {
+        // 7. Goal progress + gap nudges — active goals with task counts
+        (async (): Promise<{ progress: GoalProgress[]; nudges: GoalGapNudge[] }> => {
           const activeGoals = await db
             .select({ id: goals.id, title: goals.title, status: goals.status })
             .from(goals)
@@ -108,7 +110,7 @@ export function homeService(db: Db) {
               ),
             );
 
-          if (activeGoals.length === 0) return [];
+          if (activeGoals.length === 0) return { progress: [], nudges: [] };
 
           const goalIds = activeGoals.map((g) => g.id);
           const taskCounts = await db
@@ -134,13 +136,18 @@ export function homeService(db: Db) {
             countMap.set(row.goalId, entry);
           }
 
-          return activeGoals.map((g): GoalProgress => {
+          const progress: GoalProgress[] = [];
+          const nudges: GoalGapNudge[] = [];
+
+          for (const g of activeGoals) {
             const counts = countMap.get(g.id) ?? {};
             const total = Object.values(counts).reduce((a, b) => a + b, 0);
             const done = counts["done"] ?? 0;
+            const cancelled = counts["cancelled"] ?? 0;
             const inProgress = counts["in_progress"] ?? 0;
             const blocked = counts["blocked"] ?? 0;
-            return {
+
+            progress.push({
               id: g.id,
               title: g.title,
               status: g.status,
@@ -149,8 +156,21 @@ export function homeService(db: Db) {
               inProgressTasks: inProgress,
               blockedTasks: blocked,
               progressPercent: total > 0 ? Math.round((done / total) * 100) : 0,
-            };
-          });
+            });
+
+            // Gap: zero tasks in non-terminal statuses
+            const nonTerminalCount = total - done - cancelled;
+            if (nonTerminalCount === 0) {
+              nudges.push({
+                type: "goal_gap",
+                goalId: g.id,
+                goalTitle: g.title,
+                message: "This goal has no active tasks — consider creating some.",
+              });
+            }
+          }
+
+          return { progress, nudges };
         })(),
 
         // 8. Setup status for onboarding flow
@@ -201,7 +221,8 @@ export function homeService(db: Db) {
           ...a,
           createdAt: a.createdAt.toISOString(),
         })),
-        goalProgress: goalProgressData,
+        goalProgress: goalData.progress,
+        nudges: goalData.nudges,
       };
     },
   };

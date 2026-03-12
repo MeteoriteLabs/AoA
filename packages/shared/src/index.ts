@@ -107,6 +107,7 @@ export type {
   DashboardSummary,
   HomeSummary,
   GoalProgress,
+  GoalGapNudge,
   RecentActivityItem,
   SetupStatus,
   ActivityEvent,

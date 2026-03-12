@@ -24,8 +24,9 @@ import {
   Target,
   Check,
   ChevronRight,
+  AlertTriangle,
 } from "lucide-react";
-import type { HomeSummary, RecentActivityItem, SetupStatus } from "@paperclipai/shared";
+import type { HomeSummary, RecentActivityItem, SetupStatus, GoalGapNudge } from "@paperclipai/shared";
 
 function getGreeting(): string {
   const hour = new Date().getHours();
@@ -115,6 +116,18 @@ function buildActionQueue(data: HomeSummary): ActionQueueItem[] {
       to: "/memory?status=pending",
       priority: 4,
     });
+  }
+
+  if (data.nudges) {
+    for (const nudge of data.nudges) {
+      items.push({
+        key: `nudge-${nudge.goalId}`,
+        icon: AlertTriangle,
+        label: `${nudge.goalTitle} — ${nudge.message}`,
+        to: `/goals/${nudge.goalId}`,
+        priority: 5,
+      });
+    }
   }
 
   return items.sort((a, b) => a.priority - b.priority);
@@ -343,14 +356,15 @@ export function Dashboard() {
           <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
             {actionQueue.map((item) => {
               const Icon = item.icon;
+              const isNudge = item.key.startsWith("nudge-");
               return (
                 <Link
                   key={item.key}
                   to={item.to}
                   className="flex items-center gap-3 px-4 py-3 text-sm hover:bg-accent/50 transition-colors no-underline text-inherit"
                 >
-                  <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
-                  <span className="flex-1 min-w-0 truncate">{item.label}</span>
+                  <Icon className={`h-4 w-4 shrink-0 ${isNudge ? "text-yellow-500" : "text-muted-foreground"}`} />
+                  <span className={`flex-1 min-w-0 truncate ${isNudge ? "text-muted-foreground" : ""}`}>{item.label}</span>
                   {item.key.startsWith("due-") && (
                     <span className="text-xs text-muted-foreground shrink-0">Due today</span>
                   )}
