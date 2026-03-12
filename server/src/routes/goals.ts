@@ -61,7 +61,16 @@ export function goalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const goal = await svc.update(id, req.body);
+    let goal;
+    try {
+      goal = await svc.update(id, req.body);
+    } catch (err: any) {
+      if (err.status === 400) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });
       return;

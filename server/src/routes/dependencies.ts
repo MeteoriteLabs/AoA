@@ -1,7 +1,13 @@
 import { Router } from "express";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
+import { validate } from "../middleware/validate.js";
 import { dependencyService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+
+const addDependencySchema = z.object({
+  dependencyIssueId: z.string().uuid(),
+});
 
 export function dependencyRoutes(db: Db) {
   const router = Router();
@@ -21,15 +27,12 @@ export function dependencyRoutes(db: Db) {
   });
 
   // POST /companies/:companyId/issues/:issueId/dependencies
-  router.post("/companies/:companyId/issues/:issueId/dependencies", async (req, res) => {
-    const { companyId, issueId } = req.params;
+  router.post("/companies/:companyId/issues/:issueId/dependencies", validate(addDependencySchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const issueId = req.params.issueId as string;
     assertCompanyAccess(req, companyId);
 
     const { dependencyIssueId } = req.body;
-    if (!dependencyIssueId || typeof dependencyIssueId !== "string") {
-      res.status(400).json({ error: "dependencyIssueId is required" });
-      return;
-    }
 
     const row = await deps.addDependency(companyId, issueId, dependencyIssueId);
 

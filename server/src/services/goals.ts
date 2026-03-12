@@ -1,6 +1,15 @@
 import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { goals, projectGoals, projects } from "@paperclipai/db";
+import type { GoalStatus } from "@paperclipai/shared";
+
+const GOAL_TRANSITIONS: Record<string, GoalStatus[]> = {
+  planned: ["active", "cancelled"],
+  active: ["at_risk", "achieved", "cancelled"],
+  at_risk: ["active", "achieved", "cancelled"],
+  achieved: [],
+  cancelled: [],
+};
 
 /** Attach project associations to a list of goals */
 async function attachProjects(
@@ -103,6 +112,24 @@ export function goalService(db: Db) {
       id: string,
       data: Partial<typeof goals.$inferInsert> & { projectIds?: string[] },
     ) => {
+      // Validate status transition if status is being changed
+      if (data.status) {
+        const existing = await db
+          .select({ status: goals.status })
+          .from(goals)
+          .where(eq(goals.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (existing && existing.status !== data.status) {
+          const allowed = GOAL_TRANSITIONS[existing.status] ?? [];
+          if (!allowed.includes(data.status as GoalStatus)) {
+            throw Object.assign(
+              new Error(`Invalid goal status transition from '${existing.status}' to '${data.status}'`),
+              { status: 400 },
+            );
+          }
+        }
+      }
+
       const { projectIds, ...goalData } = data;
       const goal = await db
         .update(goals)

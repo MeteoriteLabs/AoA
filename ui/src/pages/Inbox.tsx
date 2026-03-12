@@ -957,7 +957,7 @@ export function Inbox() {
           {showSeparatorBefore("issues_i_touched") && <Separator />}
           <div>
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              My Recent Issues
+              My Recent Tasks
             </h3>
             <div className="divide-y divide-border border border-border">
               {touchedIssues.map((issue) => {

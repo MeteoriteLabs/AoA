@@ -55,14 +55,6 @@ export function debriefService(db: Db) {
         .returning()
         .then((rows) => rows[0]),
 
-    updateStatus: (companyId: string, id: string, status: string) =>
-      db
-        .update(debriefs)
-        .set({ status })
-        .where(and(eq(debriefs.id, id), eq(debriefs.companyId, companyId)))
-        .returning()
-        .then((rows) => rows[0] ?? null),
-
     update: (
       companyId: string,
       id: string,
