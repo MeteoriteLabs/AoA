@@ -14,6 +14,9 @@ import {
   projectWorkspaces,
   memoryItems,
   companies,
+  taskDependencies,
+  issueAttachments,
+  assets,
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -546,6 +549,80 @@ export function heartbeatService(db: Db) {
         tags: item.tags ?? [],
       })),
     };
+  }
+
+  /**
+   * Fetch completed dependency tasks and their attachments for agent context.
+   * Returns the 5 most recently completed dependencies with attachment metadata.
+   */
+  async function fetchDependencyOutputs(companyId: string, issueId: string) {
+    // Get dependencies (upstream blocking tasks) for this issue
+    const deps = await db
+      .select({
+        dependencyIssueId: taskDependencies.dependencyIssueId,
+        title: issues.title,
+        description: issues.description,
+        status: issues.status,
+        updatedAt: issues.updatedAt,
+      })
+      .from(taskDependencies)
+      .innerJoin(issues, eq(issues.id, taskDependencies.dependencyIssueId))
+      .where(
+        and(
+          eq(taskDependencies.companyId, companyId),
+          eq(taskDependencies.dependentIssueId, issueId),
+          eq(issues.status, "done"),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(5);
+
+    if (deps.length === 0) return [];
+
+    // Fetch attachments for all completed dependency tasks in one query
+    const depIssueIds = deps.map((d) => d.dependencyIssueId);
+    const attachmentRows = await db
+      .select({
+        issueId: issueAttachments.issueId,
+        assetId: assets.id,
+        originalFilename: assets.originalFilename,
+        contentType: assets.contentType,
+        byteSize: assets.byteSize,
+        objectKey: assets.objectKey,
+        provider: assets.provider,
+      })
+      .from(issueAttachments)
+      .innerJoin(assets, eq(assets.id, issueAttachments.assetId))
+      .where(
+        and(
+          eq(issueAttachments.companyId, companyId),
+          inArray(issueAttachments.issueId, depIssueIds),
+        ),
+      );
+
+    // Group attachments by issueId
+    const attachmentsByIssue = new Map<string, typeof attachmentRows>();
+    for (const row of attachmentRows) {
+      const existing = attachmentsByIssue.get(row.issueId) ?? [];
+      existing.push(row);
+      attachmentsByIssue.set(row.issueId, existing);
+    }
+
+    return deps.map((dep) => {
+      const depAttachments = attachmentsByIssue.get(dep.dependencyIssueId) ?? [];
+      return {
+        taskTitle: dep.title,
+        taskDescription: dep.description,
+        status: dep.status,
+        attachments: depAttachments.map((a) => ({
+          filename: a.originalFilename ?? a.objectKey,
+          contentType: a.contentType,
+          byteSize: a.byteSize,
+          provider: a.provider,
+          objectKey: a.objectKey,
+        })),
+      };
+    });
   }
 
   async function resolveWorkspaceForRun(
@@ -1293,6 +1370,21 @@ export function heartbeatService(db: Db) {
         { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
         "Failed to fetch memory context for agent run; continuing without memory enrichment",
       );
+    }
+
+    // Enrich context with completed dependency task outputs
+    if (issueId) {
+      try {
+        const depOutputs = await fetchDependencyOutputs(agent.companyId, issueId);
+        if (depOutputs.length > 0) {
+          context.dependency_outputs = depOutputs;
+        }
+      } catch (err) {
+        logger.warn(
+          { companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId, err },
+          "Failed to fetch dependency outputs for agent run; continuing without dependency context",
+        );
+      }
     }
 
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
