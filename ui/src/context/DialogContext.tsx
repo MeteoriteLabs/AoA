@@ -41,6 +41,9 @@ interface DialogContextValue {
   onboardingOptions: OnboardingOptions;
   openOnboarding: (options?: OnboardingOptions) => void;
   closeOnboarding: () => void;
+  debriefOpen: boolean;
+  openDebrief: () => void;
+  closeDebrief: () => void;
 }
 
 const DialogContext = createContext<DialogContextValue | null>(null);
@@ -55,6 +58,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const [newAgentOpen, setNewAgentOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingOptions, setOnboardingOptions] = useState<OnboardingOptions>({});
+  const [debriefOpen, setDebriefOpen] = useState(false);
 
   const openNewIssue = useCallback((defaults: NewIssueDefaults = {}) => {
     setNewIssueDefaults(defaults);
@@ -104,6 +108,14 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     setOnboardingOptions({});
   }, []);
 
+  const openDebrief = useCallback(() => {
+    setDebriefOpen(true);
+  }, []);
+
+  const closeDebrief = useCallback(() => {
+    setDebriefOpen(false);
+  }, []);
+
   return (
     <DialogContext.Provider
       value={{
@@ -126,6 +138,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         onboardingOptions,
         openOnboarding,
         closeOnboarding,
+        debriefOpen,
+        openDebrief,
+        closeDebrief,
       }}
     >
       {children}

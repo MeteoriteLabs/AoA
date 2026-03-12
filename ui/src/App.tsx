@@ -26,6 +26,9 @@ import { CompanySettings } from "./pages/CompanySettings";
 import { VisionMission } from "./pages/VisionMission";
 import { DesignGuide } from "./pages/DesignGuide";
 import { OrgChart } from "./pages/OrgChart";
+import { Briefs } from "./pages/Briefs";
+import { BriefReview } from "./pages/BriefReview";
+import { DebriefModal } from "./components/DebriefModal";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { InviteLandingPage } from "./pages/InviteLanding";
@@ -122,6 +125,8 @@ function boardRoutes() {
       <Route path="issues/:issueId" element={<IssueDetail />} />
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
+      <Route path="briefs" element={<Briefs />} />
+      <Route path="briefs/:briefId" element={<BriefReview />} />
       <Route path="memory" element={<Memory />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />
@@ -222,6 +227,8 @@ export function App() {
           <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
+          <Route path="briefs" element={<UnprefixedBoardRedirect />} />
+          <Route path="briefs/:briefId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
@@ -233,6 +240,7 @@ export function App() {
         </Route>
       </Routes>
       <OnboardingWizard />
+      <DebriefModal />
     </>
   );
 }

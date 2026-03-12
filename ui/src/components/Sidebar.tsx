@@ -7,6 +7,7 @@ import {
   History,
   Search,
   SquarePen,
+  MessageSquarePlus,
   Users,
   Settings,
   FileText,
@@ -25,7 +26,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 
 export function Sidebar() {
-  const { openNewIssue } = useDialog();
+  const { openNewIssue, openDebrief } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { data: sidebarBadges } = useQuery({
     queryKey: queryKeys.sidebarBadges(selectedCompanyId!),
@@ -77,6 +78,13 @@ export function Sidebar() {
             <SquarePen className="h-4 w-4 shrink-0" />
             <span className="truncate">New Task</span>
           </button>
+          <button
+            onClick={() => openDebrief()}
+            className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+          >
+            <MessageSquarePlus className="h-4 w-4 shrink-0" />
+            <span className="truncate">Debrief</span>
+          </button>
           <SidebarNavItem to="/dashboard" label="Home" icon={Home} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
@@ -91,7 +99,7 @@ export function Sidebar() {
         {/* WORK section */}
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
-          <SidebarNavItem to="/briefs" label="Briefs" icon={FileText} className="opacity-50 pointer-events-none" />
+          <SidebarNavItem to="/briefs" label="Briefs" icon={FileText} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
         </SidebarSection>
 

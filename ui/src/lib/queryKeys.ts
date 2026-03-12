@@ -77,4 +77,12 @@ export const queryKeys = {
     list: (companyId: string) => ["memory", companyId] as const,
     detail: (companyId: string, id: string) => ["memory", companyId, id] as const,
   },
+  debriefs: {
+    list: (companyId: string) => ["debriefs", companyId] as const,
+    detail: (companyId: string, id: string) => ["debriefs", companyId, id] as const,
+  },
+  briefs: {
+    list: (companyId: string) => ["briefs", companyId] as const,
+    detail: (companyId: string, id: string) => ["briefs", companyId, id] as const,
+  },
 };
