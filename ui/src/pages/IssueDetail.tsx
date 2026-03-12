@@ -67,6 +67,10 @@ const ACTION_LABELS: Record<string, string> = {
   "issue.attachment_added": "added an attachment",
   "issue.attachment_removed": "removed an attachment",
   "issue.deleted": "deleted the task",
+  "issue.read_marked": "marked the task as read",
+  "issue.approval_linked": "linked approval to the task",
+  "issue.approval_unlinked": "unlinked approval from the task",
+  "issue.checkout_lock_adopted": "adopted checkout lock on the task",
   "agent.created": "created an agent",
   "agent.updated": "updated the agent",
   "agent.paused": "paused the agent",
@@ -136,7 +140,7 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
 
     if (parts.length > 0) return parts.join(", ");
   }
-  return ACTION_LABELS[action] ?? action.replace(/[._]/g, " ");
+  return ACTION_LABELS[action] ?? action.replace(/[._]/g, " ").replace(/\bissue\b/g, "task");
 }
 
 function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<string, Agent> }) {

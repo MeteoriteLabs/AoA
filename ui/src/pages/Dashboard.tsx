@@ -179,7 +179,7 @@ function buildSetupSteps(s: SetupStatus): SetupStepDef[] {
 }
 
 function formatAction(item: RecentActivityItem): string {
-  const verb = item.action.replace(/[._]/g, " ");
+  const verb = item.action.replace(/[._]/g, " ").replace(/\bissue\b/g, "task");
   return verb;
 }
 
