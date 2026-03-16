@@ -5,11 +5,29 @@ import { logActivity } from "./activity-log.js";
 import { heartbeatService } from "./heartbeat.js";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+interface WakeTask {
+  agentId: string;
+  issueId: string;
+}
+
 const TERMINAL_STATUSES = ["done", "cancelled"];
 const MAX_CHAIN_DEPTH = 50;
 
 export function dependencyService(db: Db) {
   const heartbeat = heartbeatService(db);
+
+  async function fireWakeups(tasks: WakeTask[]) {
+    for (const wake of tasks) {
+      await heartbeat.wakeup(wake.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "dependency_unblocked",
+        payload: { issueId: wake.issueId },
+      });
+    }
+  }
 
   async function addDependency(
     companyId: string,
@@ -109,7 +127,8 @@ export function dependencyService(db: Db) {
     });
 
     // Re-evaluate: should the dependent be unblocked?
-    await maybeUnblock(companyId, dependentIssueId);
+    const wakeups = await maybeUnblockTx(companyId, dependentIssueId, db);
+    await fireWakeups(wakeups);
 
     return deleted;
   }
@@ -134,8 +153,8 @@ export function dependencyService(db: Db) {
       );
   }
 
-  async function getDependents(companyId: string, issueId: string) {
-    return db
+  async function getDependentsTx(companyId: string, issueId: string, tx: Tx | Db) {
+    return (tx as Db)
       .select({
         id: taskDependencies.id,
         dependentIssueId: taskDependencies.dependentIssueId,
@@ -154,14 +173,27 @@ export function dependencyService(db: Db) {
       );
   }
 
-  async function resolveDependencies(companyId: string, completedIssueId: string) {
-    const dependents = await getDependents(companyId, completedIssueId);
+  async function getDependents(companyId: string, issueId: string) {
+    return getDependentsTx(companyId, issueId, db);
+  }
+
+  /**
+   * Core resolution logic — runs all DB ops through the provided tx/db.
+   * Returns tasks that need wakeup (to be called after transaction commits).
+   */
+  async function resolveDependenciesTx(
+    companyId: string,
+    completedIssueId: string,
+    tx: Tx | Db,
+  ): Promise<WakeTask[]> {
+    const dependents = await getDependentsTx(companyId, completedIssueId, tx);
+    const wakeups: WakeTask[] = [];
 
     for (const dep of dependents) {
       if (dep.status !== "blocked") continue;
 
       // Check if ALL dependencies of this dependent are now done
-      const remaining = await db
+      const remaining = await (tx as Db)
         .select({ status: issues.status })
         .from(taskDependencies)
         .innerJoin(issues, eq(issues.id, taskDependencies.dependencyIssueId))
@@ -176,12 +208,12 @@ export function dependencyService(db: Db) {
       if (!allDone) continue;
 
       // Unblock → todo
-      await db
+      await (tx as Db)
         .update(issues)
         .set({ status: "todo", updatedAt: new Date() })
         .where(eq(issues.id, dep.dependentIssueId));
 
-      await logActivity(db, {
+      await logActivity(tx as Db, {
         companyId,
         actorType: "system",
         actorId: "system",
@@ -191,28 +223,107 @@ export function dependencyService(db: Db) {
         details: { resolvedByIssueId: completedIssueId },
       });
 
-      // Wake agent if assigned
-      const [task] = await db
+      // Collect agent for wakeup (after tx commits)
+      const [task] = await (tx as Db)
         .select({ assigneeAgentId: issues.assigneeAgentId })
         .from(issues)
         .where(eq(issues.id, dep.dependentIssueId));
 
       if (task?.assigneeAgentId) {
-        await heartbeat.wakeup(task.assigneeAgentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "dependency_unblocked",
-          payload: { issueId: dep.dependentIssueId },
-        });
+        wakeups.push({ agentId: task.assigneeAgentId, issueId: dep.dependentIssueId });
       }
     }
+
+    return wakeups;
   }
 
-  async function handleCancelledDependency(companyId: string, cancelledIssueId: string) {
-    const dependents = await getDependents(companyId, cancelledIssueId);
+  /**
+   * Public API: resolves dependencies with optional outer transaction.
+   * When outerTx is provided, DB ops run inside it and wakeups are returned (caller handles them after commit).
+   * When called standalone, wraps in its own transaction and fires wakeups after.
+   */
+  async function resolveDependencies(
+    companyId: string,
+    completedIssueId: string,
+    outerTx?: Tx,
+  ): Promise<{ tasksToWake: WakeTask[] }> {
+    if (outerTx) {
+      const tasksToWake = await resolveDependenciesTx(companyId, completedIssueId, outerTx);
+      return { tasksToWake };
+    }
+
+    const tasksToWake = await db.transaction(async (tx) => {
+      return resolveDependenciesTx(companyId, completedIssueId, tx);
+    });
+    await fireWakeups(tasksToWake);
+    return { tasksToWake };
+  }
+
+  /**
+   * Core maybeUnblock logic — runs through tx/db, returns wakeups.
+   */
+  async function maybeUnblockTx(
+    companyId: string,
+    dependentIssueId: string,
+    tx: Tx | Db,
+  ): Promise<WakeTask[]> {
+    const [task] = await (tx as Db)
+      .select({ status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.id, dependentIssueId), eq(issues.companyId, companyId)));
+
+    if (!task || task.status !== "blocked") return [];
+
+    const remaining = await (tx as Db)
+      .select({ status: issues.status })
+      .from(taskDependencies)
+      .innerJoin(issues, eq(issues.id, taskDependencies.dependencyIssueId))
+      .where(
+        and(
+          eq(taskDependencies.companyId, companyId),
+          eq(taskDependencies.dependentIssueId, dependentIssueId),
+        ),
+      );
+
+    // No remaining deps or all done → unblock
+    if (remaining.length === 0 || remaining.every((r) => r.status === "done")) {
+      await (tx as Db)
+        .update(issues)
+        .set({ status: "todo", updatedAt: new Date() })
+        .where(eq(issues.id, dependentIssueId));
+
+      await logActivity(tx as Db, {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "dependency.unblocked",
+        entityType: "issue",
+        entityId: dependentIssueId,
+      });
+
+      const [unblocked] = await (tx as Db)
+        .select({ assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(eq(issues.id, dependentIssueId));
+
+      if (unblocked?.assigneeAgentId) {
+        return [{ agentId: unblocked.assigneeAgentId, issueId: dependentIssueId }];
+      }
+    }
+
+    return [];
+  }
+
+  async function handleCancelledDependency(
+    companyId: string,
+    cancelledIssueId: string,
+    outerTx?: Tx,
+  ) {
+    const tx = outerTx ?? db;
+    const dependents = await getDependentsTx(companyId, cancelledIssueId, tx);
 
     for (const dep of dependents) {
-      await logActivity(db, {
+      await logActivity(tx as Db, {
         companyId,
         actorType: "system",
         actorId: "system",
@@ -259,59 +370,6 @@ export function dependencyService(db: Db) {
     }
 
     throw unprocessable("Dependency chain exceeds maximum depth of 50");
-  }
-
-  async function maybeUnblock(companyId: string, dependentIssueId: string) {
-    // Only unblock if the task is currently blocked
-    const [task] = await db
-      .select({ status: issues.status })
-      .from(issues)
-      .where(and(eq(issues.id, dependentIssueId), eq(issues.companyId, companyId)));
-
-    if (!task || task.status !== "blocked") return;
-
-    const remaining = await db
-      .select({ status: issues.status })
-      .from(taskDependencies)
-      .innerJoin(issues, eq(issues.id, taskDependencies.dependencyIssueId))
-      .where(
-        and(
-          eq(taskDependencies.companyId, companyId),
-          eq(taskDependencies.dependentIssueId, dependentIssueId),
-        ),
-      );
-
-    // No remaining deps or all done → unblock
-    if (remaining.length === 0 || remaining.every((r) => r.status === "done")) {
-      await db
-        .update(issues)
-        .set({ status: "todo", updatedAt: new Date() })
-        .where(eq(issues.id, dependentIssueId));
-
-      await logActivity(db, {
-        companyId,
-        actorType: "system",
-        actorId: "system",
-        action: "dependency.unblocked",
-        entityType: "issue",
-        entityId: dependentIssueId,
-      });
-
-      // Wake agent if assigned
-      const [unblocked] = await db
-        .select({ assigneeAgentId: issues.assigneeAgentId })
-        .from(issues)
-        .where(eq(issues.id, dependentIssueId));
-
-      if (unblocked?.assigneeAgentId) {
-        await heartbeat.wakeup(unblocked.assigneeAgentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "dependency_unblocked",
-          payload: { issueId: dependentIssueId },
-        });
-      }
-    }
   }
 
   return {

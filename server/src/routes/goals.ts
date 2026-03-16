@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { goalService, logActivity } from "../services/index.js";
+import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function goalRoutes(db: Db) {
@@ -45,6 +46,7 @@ export function goalRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "goal.created",
       entityType: "goal",
       entityId: goal.id,
@@ -64,9 +66,9 @@ export function goalRoutes(db: Db) {
     let goal;
     try {
       goal = await svc.update(id, req.body);
-    } catch (err: any) {
-      if (err.status === 400) {
-        res.status(400).json({ error: err.message });
+    } catch (err) {
+      if (err instanceof HttpError) {
+        res.status(err.status).json({ error: err.message });
         return;
       }
       throw err;

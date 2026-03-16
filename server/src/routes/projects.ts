@@ -11,7 +11,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity } from "../services/index.js";
-import { conflict } from "../errors.js";
+import { conflict, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function projectRoutes(db: Db) {
@@ -100,6 +100,7 @@ export function projectRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "project.created",
       entityType: "project",
       entityId: project.id,
@@ -131,6 +132,7 @@ export function projectRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "project.updated",
       entityType: "project",
       entityId: project.id,
@@ -172,6 +174,7 @@ export function projectRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "project.workspace_created",
       entityType: "project",
       entityId: id,
@@ -215,6 +218,7 @@ export function projectRoutes(db: Db) {
         actorType: actor.actorType,
         actorId: actor.actorId,
         agentId: actor.agentId,
+        runId: actor.runId,
         action: "project.workspace_updated",
         entityType: "project",
         entityId: id,
@@ -249,6 +253,7 @@ export function projectRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "project.workspace_deleted",
       entityType: "project",
       entityId: id,
@@ -273,9 +278,9 @@ export function projectRoutes(db: Db) {
     let project;
     try {
       project = await svc.remove(id);
-    } catch (err: any) {
-      if (err.status === 409) {
-        res.status(409).json({ error: err.message });
+    } catch (err) {
+      if (err instanceof HttpError) {
+        res.status(err.status).json({ error: err.message });
         return;
       }
       throw err;
@@ -291,6 +296,7 @@ export function projectRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "project.deleted",
       entityType: "project",
       entityId: project.id,
@@ -366,6 +372,7 @@ export function projectRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "project.agent_assigned",
       entityType: "project",
       entityId: id,
@@ -402,6 +409,7 @@ export function projectRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "project.agent_unassigned",
       entityType: "project",
       entityId: id,

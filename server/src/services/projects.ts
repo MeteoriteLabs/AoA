@@ -9,6 +9,7 @@ import {
   type ProjectGoalRef,
   type ProjectWorkspace,
 } from "@paperclipai/shared";
+import { conflict } from "../errors.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -333,7 +334,7 @@ export function projectService(db: Db) {
         .from(issues)
         .where(eq(issues.projectId, id));
       if ((taskCount?.count ?? 0) > 0) {
-        throw Object.assign(new Error("Cannot delete: project has tasks. Reassign or cancel them first."), { status: 409 });
+        throw conflict("Cannot delete: project has tasks. Reassign or cancel them first.");
       }
 
       const [goalCount] = await db
@@ -341,7 +342,7 @@ export function projectService(db: Db) {
         .from(projectGoals)
         .where(eq(projectGoals.projectId, id));
       if ((goalCount?.count ?? 0) > 0) {
-        throw Object.assign(new Error("Cannot delete: project has goals. Reassign or remove them first."), { status: 409 });
+        throw conflict("Cannot delete: project has goals. Reassign or remove them first.");
       }
 
       const row = await db

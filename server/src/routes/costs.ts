@@ -31,6 +31,7 @@ export function costRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "cost.reported",
       entityType: "cost_event",
       entityId: event.id,
@@ -79,10 +80,13 @@ export function costRoutes(db: Db) {
       return;
     }
 
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
       action: "company.budget_updated",
       entityType: "company",
       entityId: companyId,
@@ -119,6 +123,7 @@ export function costRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "agent.budget_updated",
       entityType: "agent",
       entityId: updated.id,

@@ -57,10 +57,11 @@ export function memoryService(db: Db) {
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .then((rows) => rows[0] ?? null),
 
-    create: (companyId: string, data: Omit<typeof memoryItems.$inferInsert, "companyId">) => {
+    create: (companyId: string, data: Omit<typeof memoryItems.$inferInsert, "companyId">, tx?: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
       // Critical rule #6: Founder-created items are auto-approved; all others default to pending
-      const status = data.source === "founder" ? "approved" : "pending";
-      return db
+      // Respect explicit status when provided (e.g. from brief approval where founder has already approved)
+      const status = data.status ?? (data.source === "founder" ? "approved" : "pending");
+      return (tx ?? db)
         .insert(memoryItems)
         .values({ ...data, companyId, status })
         .returning()

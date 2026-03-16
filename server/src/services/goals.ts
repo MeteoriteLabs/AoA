@@ -2,6 +2,7 @@ import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { goals, projectGoals, projects } from "@paperclipai/db";
 import type { GoalStatus } from "@paperclipai/shared";
+import { badRequest } from "../errors.js";
 
 const GOAL_TRANSITIONS: Record<string, GoalStatus[]> = {
   planned: ["active", "cancelled"],
@@ -122,10 +123,7 @@ export function goalService(db: Db) {
         if (existing && existing.status !== data.status) {
           const allowed = GOAL_TRANSITIONS[existing.status] ?? [];
           if (!allowed.includes(data.status as GoalStatus)) {
-            throw Object.assign(
-              new Error(`Invalid goal status transition from '${existing.status}' to '${data.status}'`),
-              { status: 400 },
-            );
+            throw badRequest(`Invalid goal status transition from '${existing.status}' to '${data.status}'`);
           }
         }
       }

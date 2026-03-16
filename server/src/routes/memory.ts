@@ -40,13 +40,14 @@ export function memoryRoutes(db: Db) {
   router.post("/companies/:companyId/memory", validate(createMemoryItemSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const item = await svc.create(companyId, req.body);
     const actor = getActorInfo(req);
+    const item = await svc.create(companyId, { ...req.body, createdBy: actor.actorId });
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "memory.created",
       entityType: "memory_item",
       entityId: item.id,
@@ -75,6 +76,7 @@ export function memoryRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "memory.updated",
       entityType: "memory_item",
       entityId: item.id,
@@ -103,6 +105,7 @@ export function memoryRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "memory.deleted",
       entityType: "memory_item",
       entityId: item.id,
@@ -131,6 +134,7 @@ export function memoryRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "memory.approved",
       entityType: "memory_item",
       entityId: item.id,
@@ -159,6 +163,7 @@ export function memoryRoutes(db: Db) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "memory.rejected",
       entityType: "memory_item",
       entityId: item.id,

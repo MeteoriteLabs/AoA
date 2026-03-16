@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agents,
   assets,
   companies,
@@ -20,6 +21,7 @@ import {
 import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { dependencyService } from "./dependencies.js";
+import { heartbeatService } from "./heartbeat.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -300,6 +302,7 @@ function withActiveRuns(
 
 export function issueService(db: Db) {
   const deps = dependencyService(db);
+  const heartbeat = heartbeatService(db);
 
   async function hasUnmetDependencies(companyId: string, issueId: string): Promise<boolean> {
     const upstream = await db
@@ -639,6 +642,7 @@ export function issueService(db: Db) {
     create: async (
       companyId: string,
       data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
+      outerTx?: Parameters<Parameters<typeof db.transaction>[0]>[0],
     ) => {
       const { labelIds: inputLabelIds, ...issueData } = data;
       if (data.assigneeAgentId && data.assigneeUserId) {
@@ -653,7 +657,7 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      const run = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
         const [company] = await tx
           .update(companies)
           .set({ issueCounter: sql`${companies.issueCounter} + 1` })
@@ -680,7 +684,8 @@ export function issueService(db: Db) {
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
-      });
+      };
+      return outerTx ? run(outerTx) : db.transaction(run);
     },
 
     update: async (id: string, data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] }) => {
@@ -737,28 +742,41 @@ export function issueService(db: Db) {
         patch.checkoutRunId = null;
       }
 
-      const result = await db.transaction(async (tx) => {
+      const { result, tasksToWake } = await db.transaction(async (tx) => {
         const updated = await tx
           .update(issues)
           .set(patch)
           .where(eq(issues.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (!updated) return null;
+        if (!updated) return { result: null, tasksToWake: [] as { agentId: string; issueId: string }[] };
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
-        return enriched;
+
+        // Dependency side effects — inside transaction for atomicity
+        let wake: { agentId: string; issueId: string }[] = [];
+        if (enriched && issueData.status && issueData.status !== existing.status) {
+          if (issueData.status === "done") {
+            const resolved = await deps.resolveDependencies(existing.companyId, id, tx);
+            wake = resolved.tasksToWake;
+          } else if (issueData.status === "cancelled") {
+            await deps.handleCancelledDependency(existing.companyId, id, tx);
+          }
+        }
+
+        return { result: enriched, tasksToWake: wake };
       });
 
-      // Dependency side effects (after transaction commits)
-      if (result && issueData.status && issueData.status !== existing.status) {
-        if (issueData.status === "done") {
-          await deps.resolveDependencies(existing.companyId, id);
-        } else if (issueData.status === "cancelled") {
-          await deps.handleCancelledDependency(existing.companyId, id);
-        }
+      // Fire wakeups after transaction commits (side effects)
+      for (const wake of tasksToWake) {
+        await heartbeat.wakeup(wake.agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "dependency_unblocked",
+          payload: { issueId: wake.issueId },
+        });
       }
 
       return result;
@@ -766,6 +784,74 @@ export function issueService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
+        // Fetch the issue first to get companyId (needed for activity log)
+        const [issueToDelete] = await tx
+          .select({ companyId: issues.companyId })
+          .from(issues)
+          .where(eq(issues.id, id));
+
+        if (issueToDelete) {
+          // Auto-unblock dependents before cascade deletes the dependency rows
+          const dependents = await tx
+            .select({
+              dependentIssueId: taskDependencies.dependentIssueId,
+              dependentStatus: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+            })
+            .from(taskDependencies)
+            .innerJoin(issues, eq(issues.id, taskDependencies.dependentIssueId))
+            .where(
+              and(
+                eq(taskDependencies.companyId, issueToDelete.companyId),
+                eq(taskDependencies.dependencyIssueId, id),
+              ),
+            );
+
+          // Delete dependency rows manually (before cascade) so we can evaluate remaining deps
+          await tx
+            .delete(taskDependencies)
+            .where(
+              and(
+                eq(taskDependencies.companyId, issueToDelete.companyId),
+                eq(taskDependencies.dependencyIssueId, id),
+              ),
+            );
+
+          // For each blocked dependent, check if it can be unblocked
+          for (const dep of dependents) {
+            if (dep.dependentStatus !== "blocked") continue;
+
+            const remaining = await tx
+              .select({ status: issues.status })
+              .from(taskDependencies)
+              .innerJoin(issues, eq(issues.id, taskDependencies.dependencyIssueId))
+              .where(
+                and(
+                  eq(taskDependencies.companyId, issueToDelete.companyId),
+                  eq(taskDependencies.dependentIssueId, dep.dependentIssueId),
+                ),
+              );
+
+            const allDone = remaining.length === 0 || remaining.every((r) => r.status === "done");
+            if (!allDone) continue;
+
+            await tx
+              .update(issues)
+              .set({ status: "todo", updatedAt: new Date() })
+              .where(eq(issues.id, dep.dependentIssueId));
+
+            await tx.insert(activityLog).values({
+              companyId: issueToDelete.companyId,
+              actorType: "system",
+              actorId: "system",
+              action: "dependency.unblocked_by_deletion",
+              entityType: "issue",
+              entityId: dep.dependentIssueId,
+              details: { deletedDependencyIssueId: id },
+            });
+          }
+        }
+
         const attachmentAssetIds = await tx
           .select({ assetId: issueAttachments.assetId })
           .from(issueAttachments)
@@ -788,6 +874,9 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
+    // Concurrency: Uses atomic conditional UPDATE (WHERE status = expected AND assignee conditions)
+    // rather than SELECT FOR UPDATE. Two simultaneous checkout attempts will issue the same UPDATE,
+    // but only one will match the WHERE clause — a valid optimistic concurrency pattern that avoids deadlocks.
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })

@@ -235,61 +235,63 @@ export function extractionService(db: Db) {
         const extractedItems = await callLLM(prompt, debrief.rawContent);
         log.info({ itemCount: extractedItems.length }, "Extraction complete");
 
-        // 4. Create Brief (status: 'ready', even if zero items)
-        const [brief] = await db
-          .insert(briefs)
-          .values({
-            companyId,
-            debriefId,
-            status: "ready",
-            departmentId: debrief.departmentId,
-            projectId: debrief.projectId,
-          })
-          .returning();
+        // 4-6. Create Brief + BriefItems + update debrief atomically
+        await db.transaction(async (tx) => {
+          const [brief] = await tx
+            .insert(briefs)
+            .values({
+              companyId,
+              debriefId,
+              status: "ready",
+              departmentId: debrief.departmentId,
+              projectId: debrief.projectId,
+            })
+            .returning();
 
-        // 5. Create BriefItems
-        if (extractedItems.length > 0) {
-          const itemValues = extractedItems.map((item) => {
-            // Resolve department name to ID
-            let suggestedDepartmentId: string | null = null;
-            let suggestedProjectId: string | null = null;
+          // 5. Create BriefItems
+          if (extractedItems.length > 0) {
+            const itemValues = extractedItems.map((item) => {
+              // Resolve department name to ID
+              let suggestedDepartmentId: string | null = null;
+              let suggestedProjectId: string | null = null;
 
-            if (item.department) {
-              const match = deptLookup.get(item.department.toLowerCase());
-              if (match) {
-                if (match.type === "department") {
-                  suggestedDepartmentId = match.id;
-                } else {
-                  suggestedProjectId = match.id;
+              if (item.department) {
+                const match = deptLookup.get(item.department.toLowerCase());
+                if (match) {
+                  if (match.type === "department") {
+                    suggestedDepartmentId = match.id;
+                  } else {
+                    suggestedProjectId = match.id;
+                  }
                 }
               }
-            }
 
-            return {
-              briefId: brief.id,
-              type: item.type,
-              title: item.title,
-              description: item.description || null,
-              suggestedPriority: item.priority || null,
-              suggestedDepartmentId,
-              suggestedProjectId,
-              status: "pending" as const,
-            };
-          });
+              return {
+                briefId: brief.id,
+                type: item.type,
+                title: item.title,
+                description: item.description || null,
+                suggestedPriority: item.priority || null,
+                suggestedDepartmentId,
+                suggestedProjectId,
+                status: "pending" as const,
+              };
+            });
 
-          await db.insert(briefItems).values(itemValues);
-        }
+            await tx.insert(briefItems).values(itemValues);
+          }
 
-        // 6. Update debrief status to 'ready'
-        await db
-          .update(debriefs)
-          .set({ status: "ready" })
-          .where(eq(debriefs.id, debriefId));
+          // 6. Update debrief status to 'ready'
+          await tx
+            .update(debriefs)
+            .set({ status: "ready" })
+            .where(eq(debriefs.id, debriefId));
 
-        log.info(
-          { briefId: brief.id, itemCount: extractedItems.length },
-          "Brief created successfully",
-        );
+          log.info(
+            { briefId: brief.id, itemCount: extractedItems.length },
+            "Brief created successfully",
+          );
+        });
       } catch (err) {
         const log = logger.child({
           service: "extraction",

@@ -127,97 +127,100 @@ export function briefService(db: Db) {
         .from(briefItems)
         .where(eq(briefItems.briefId, briefId));
 
-      const createdTaskIds: string[] = [];
-      const createdMemoryIds: string[] = [];
-      let approvedCount = 0;
-      let rejectedCount = 0;
+      // Wrap entire approval in a transaction so all items succeed or none do
+      return db.transaction(async (tx) => {
+        const createdTaskIds: string[] = [];
+        const createdMemoryIds: string[] = [];
+        let approvedCount = 0;
+        let rejectedCount = 0;
 
-      for (const item of items) {
-        // Treat 'edited' as approved (founder modified it, so it's accepted)
-        const isApproved = item.status === "approved" || item.status === "edited";
-        const isRejected = item.status === "rejected";
+        for (const item of items) {
+          // Treat 'edited' as approved (founder modified it, so it's accepted)
+          const isApproved = item.status === "approved" || item.status === "edited";
+          const isRejected = item.status === "rejected";
 
-        if (isRejected) {
-          rejectedCount++;
-          continue;
-        }
-
-        if (!isApproved) {
-          // pending items — skip, not yet decided
-          continue;
-        }
-
-        approvedCount++;
-        const { departmentId, projectId } = resolveDepartment(item, brief);
-
-        if (item.type === "task") {
-          // Create a real task (issue)
-          const task = await issues.create(companyId, {
-            title: item.title,
-            description: item.description,
-            priority: item.suggestedPriority ?? "medium",
-            source: "brief",
-            projectId: departmentId ?? projectId ?? undefined,
-            assigneeAgentId: item.suggestedAssigneeId,
-            status: item.suggestedAssigneeId ? "todo" : "backlog",
-          });
-
-          if (task) {
-            createdTaskIds.push(task.id);
-            await db
-              .update(briefItems)
-              .set({ resultTaskId: task.id, updatedAt: new Date() })
-              .where(eq(briefItems.id, item.id));
+          if (isRejected) {
+            rejectedCount++;
+            continue;
           }
+
+          if (!isApproved) {
+            // pending items — skip, not yet decided
+            continue;
+          }
+
+          approvedCount++;
+          const { departmentId, projectId } = resolveDepartment(item, brief);
+
+          if (item.type === "task") {
+            // Create a real task (issue) — pass tx for atomicity
+            const task = await issues.create(companyId, {
+              title: item.title,
+              description: item.description,
+              priority: item.suggestedPriority ?? "medium",
+              source: "brief",
+              projectId: departmentId ?? projectId ?? undefined,
+              assigneeAgentId: item.suggestedAssigneeId,
+              status: item.suggestedAssigneeId ? "todo" : "backlog",
+            }, tx);
+
+            if (task) {
+              createdTaskIds.push(task.id);
+              await tx
+                .update(briefItems)
+                .set({ resultTaskId: task.id, updatedAt: new Date() })
+                .where(eq(briefItems.id, item.id));
+            }
+          } else {
+            // decision, insight, context → create memory item — pass tx for atomicity
+            const memoryItem = await memory.create(companyId, {
+              title: item.title,
+              content: item.description ?? item.title,
+              category: item.type as "decision" | "insight" | "context",
+              source: "brief",
+              status: "approved",
+              departmentId,
+              projectId,
+              createdBy: reviewedBy,
+            }, tx);
+
+            if (memoryItem) {
+              createdMemoryIds.push(memoryItem.id);
+              await tx
+                .update(briefItems)
+                .set({ resultMemoryId: memoryItem.id, updatedAt: new Date() })
+                .where(eq(briefItems.id, item.id));
+            }
+          }
+        }
+
+        // Determine final brief status
+        let finalStatus: string;
+        if (approvedCount > 0 && rejectedCount === 0) {
+          finalStatus = "approved";
+        } else if (approvedCount === 0 && rejectedCount > 0) {
+          finalStatus = "rejected";
         } else {
-          // decision, insight, context → create memory item
-          const memoryItem = await memory.create(companyId, {
-            title: item.title,
-            content: item.description ?? item.title,
-            category: item.type as "decision" | "insight" | "context",
-            source: "brief",
-            status: "approved",
-            departmentId,
-            projectId,
-            createdBy: reviewedBy,
-          });
-
-          if (memoryItem) {
-            createdMemoryIds.push(memoryItem.id);
-            await db
-              .update(briefItems)
-              .set({ resultMemoryId: memoryItem.id, updatedAt: new Date() })
-              .where(eq(briefItems.id, item.id));
-          }
+          finalStatus = "partially_approved";
         }
-      }
 
-      // Determine final brief status
-      let finalStatus: string;
-      if (approvedCount > 0 && rejectedCount === 0) {
-        finalStatus = "approved";
-      } else if (approvedCount === 0 && rejectedCount > 0) {
-        finalStatus = "rejected";
-      } else {
-        finalStatus = "partially_approved";
-      }
+        const [updatedBrief] = await tx
+          .update(briefs)
+          .set({
+            status: finalStatus,
+            reviewedAt: new Date(),
+            reviewedBy,
+            updatedAt: new Date(),
+          })
+          .where(eq(briefs.id, briefId))
+          .returning();
 
-      const [updatedBrief] = await db
-        .update(briefs)
-        .set({
-          status: finalStatus,
-          reviewedAt: new Date(),
-          reviewedBy,
-          updatedAt: new Date(),
-        })
-        .where(eq(briefs.id, briefId))
-        .returning();
-
-      return {
-        brief: updatedBrief,
-        createdTaskIds,
-        createdMemoryIds,
-      };
+        return {
+          brief: updatedBrief,
+          createdTaskIds,
+          createdMemoryIds,
+        };
+      });
     },
   };
 }
