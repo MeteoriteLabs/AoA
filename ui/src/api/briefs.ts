@@ -42,6 +42,8 @@ export interface BriefApproveResult {
   brief: Brief;
   createdTaskIds: string[];
   createdMemoryIds: string[];
+  createdDependencyCount: number;
+  skippedDependencyCount: number;
 }
 
 export const briefsApi = {
@@ -70,9 +72,13 @@ export const briefsApi = {
       `/companies/${companyId}/briefs/${briefId}/items/${itemId}`,
       data,
     ),
-  approve: (companyId: string, briefId: string) =>
+  approve: (
+    companyId: string,
+    briefId: string,
+    dependencies?: Array<{ dependentItemId: string; dependencyItemId: string }>,
+  ) =>
     api.post<BriefApproveResult>(
       `/companies/${companyId}/briefs/${briefId}/approve`,
-      {},
+      { dependencies },
     ),
 };

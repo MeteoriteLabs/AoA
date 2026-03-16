@@ -42,7 +42,7 @@ function BootstrapPendingPage() {
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">Instance setup required</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          No instance admin exists yet. Run this command in your Paperclip environment to generate
+          No instance admin exists yet. Run this command in your AoA environment to generate
           the first admin invite URL:
         </p>
         <pre className="mt-4 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
@@ -96,8 +96,8 @@ function CloudAccessGate() {
 function boardRoutes() {
   return (
     <>
-      <Route index element={<Navigate to="dashboard" replace />} />
-      <Route path="dashboard" element={<Dashboard />} />
+      <Route index element={<Navigate to="home" replace />} />
+      <Route path="home" element={<Dashboard />} />
       <Route path="companies" element={<Companies />} />
       <Route path="vision" element={<VisionMission />} />
       <Route path="company/settings" element={<CompanySettings />} />
@@ -162,7 +162,7 @@ function CompanyRootRedirect() {
     return <NoCompaniesStartPage />;
   }
 
-  return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
+  return <Navigate to={`/${targetCompany.issuePrefix}/home`} replace />;
 }
 
 function UnprefixedBoardRedirect() {

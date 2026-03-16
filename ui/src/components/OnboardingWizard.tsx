@@ -45,10 +45,12 @@ import {
   Loader2,
   FolderOpen,
   ChevronDown,
-  X
+  X,
+  FileText,
+  ArrowRightLeft,
 } from "lucide-react";
 
-type Step = 1 | 2 | 3 | 4;
+type Step = 1 | 2 | 3 | 4 | 5;
 type AdapterType =
   | "claude_local"
   | "codex_local"
@@ -505,10 +507,10 @@ export function OnboardingWizard() {
       return;
     }
     if (createdCompanyPrefix) {
-      navigate(`/${createdCompanyPrefix}/dashboard`);
+      navigate(`/${createdCompanyPrefix}/home`);
       return;
     }
-    navigate("/dashboard");
+    navigate("/home");
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -517,7 +519,8 @@ export function OnboardingWizard() {
       if (step === 1 && companyName.trim()) handleStep1Next();
       else if (step === 2 && agentName.trim()) handleStep2Next();
       else if (step === 3 && taskTitle.trim()) handleStep3Next();
-      else if (step === 4) handleLaunch();
+      else if (step === 4) setStep(5);
+      else if (step === 5) handleLaunch();
     }
   }
 
@@ -553,10 +556,10 @@ export function OnboardingWizard() {
                 <Sparkles className="h-4 w-4 text-muted-foreground" />
                 <span className="text-sm font-medium">Get Started</span>
                 <span className="text-sm text-muted-foreground/60">
-                  Step {step} of 4
+                  Step {step} of 5
                 </span>
                 <div className="flex items-center gap-1.5 ml-auto">
-                  {[1, 2, 3, 4].map((s) => (
+                  {[1, 2, 3, 4, 5].map((s) => (
                     <div
                       key={s}
                       className={cn(
@@ -748,7 +751,7 @@ export function OnboardingWizard() {
                           <label className="text-xs text-muted-foreground">
                             Working directory
                           </label>
-                          <HintIcon text="Paperclip works best if you create a new folder for your agents to keep their memories and stay organized. Create a new folder and put the path here." />
+                          <HintIcon text="AoA works best if you create a new folder for your agents to keep their memories and stay organized. Create a new folder and put the path here." />
                         </div>
                         <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
                           <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -1034,6 +1037,65 @@ export function OnboardingWizard() {
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
+                      <FileText className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium">Debriefs & Briefs</h3>
+                      <p className="text-xs text-muted-foreground">
+                        The primary way to feed work into your agents.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="bg-muted/30 rounded-md border border-border px-4 py-3 space-y-3 text-sm">
+                    <div>
+                      <p className="font-medium mb-1">What's a Debrief?</p>
+                      <p className="text-muted-foreground text-xs leading-relaxed">
+                        Paste meeting notes, research findings, or ideas. The AI
+                        extracts decisions, tasks, and insights — creating a
+                        Brief you review and refine before your agents start
+                        work.
+                      </p>
+                    </div>
+                    <div>
+                      <p className="font-medium mb-1">How it flows</p>
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono flex-wrap">
+                        <span className="rounded bg-muted px-1.5 py-0.5">Paste / Write</span>
+                        <ArrowRightLeft className="h-3 w-3 shrink-0" />
+                        <span className="rounded bg-muted px-1.5 py-0.5">AI Extract</span>
+                        <ArrowRightLeft className="h-3 w-3 shrink-0" />
+                        <span className="rounded bg-muted px-1.5 py-0.5">Brief</span>
+                        <ArrowRightLeft className="h-3 w-3 shrink-0" />
+                        <span className="rounded bg-muted px-1.5 py-0.5">Approve</span>
+                        <ArrowRightLeft className="h-3 w-3 shrink-0" />
+                        <span className="rounded bg-blue-100 dark:bg-blue-900/30 px-1.5 py-0.5 text-blue-700 dark:text-blue-300">Tasks + Memory</span>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="font-medium mb-1">Why this matters</p>
+                      <p className="text-muted-foreground text-xs leading-relaxed">
+                        Direct task creation works for quick one-offs (you just
+                        did one!). But Debriefs let you dump raw information and
+                        let the AI structure it — extracting multiple tasks,
+                        decisions, and context in one go.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-border/60 bg-muted/10 px-3 py-2">
+                    <p className="text-xs text-muted-foreground">
+                      You can create your first Debrief anytime from the{" "}
+                      <span className="font-medium text-foreground">+ Debrief</span>{" "}
+                      button in the sidebar. For now, let's finish setup.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {step === 5 && (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-3 mb-1">
+                    <div className="bg-muted/50 p-2">
                       <Rocket className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
@@ -1149,6 +1211,12 @@ export function OnboardingWizard() {
                     </Button>
                   )}
                   {step === 4 && (
+                    <Button size="sm" onClick={() => setStep(5)}>
+                      <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                      Next
+                    </Button>
+                  )}
+                  {step === 5 && (
                     <Button size="sm" disabled={loading} onClick={handleLaunch}>
                       {loading ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />

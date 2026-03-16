@@ -64,7 +64,7 @@ export function Layout() {
       const fallback =
         (selectedCompanyId ? companies.find((company) => company.id === selectedCompanyId) : null)
         ?? companies[0]!;
-      navigate(`/${fallback.issuePrefix}/dashboard`, { replace: true });
+      navigate(`/${fallback.issuePrefix}/home`, { replace: true });
       return;
     }
 

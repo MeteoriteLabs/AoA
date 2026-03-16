@@ -19,7 +19,7 @@ export function VisionMission() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Company", href: "/home" },
       { label: "Vision & Mission" },
     ]);
   }, [setBreadcrumbs, selectedCompany?.name]);

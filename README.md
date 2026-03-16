@@ -228,7 +228,7 @@ pnpm db:generate      # Generate DB migration
 pnpm db:migrate       # Apply migrations
 ```
 
-See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
+See [docs/aoa/guides/developing.md](docs/aoa/guides/developing.md) for the full development guide.
 
 <br/>
 

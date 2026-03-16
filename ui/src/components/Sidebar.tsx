@@ -85,7 +85,7 @@ export function Sidebar() {
             <MessageSquarePlus className="h-4 w-4 shrink-0" />
             <span className="truncate">Debrief</span>
           </button>
-          <SidebarNavItem to="/dashboard" label="Home" icon={Home} liveCount={liveRunCount} />
+          <SidebarNavItem to="/home" label="Home" icon={Home} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"

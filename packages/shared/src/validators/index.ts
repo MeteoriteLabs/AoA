@@ -99,9 +99,11 @@ export {
   updateBriefSchema,
   createBriefItemSchema,
   updateBriefItemSchema,
+  approveBriefSchema,
   type UpdateBrief,
   type CreateBriefItem,
   type UpdateBriefItem,
+  type ApproveBrief,
 } from "./brief.js";
 
 export {

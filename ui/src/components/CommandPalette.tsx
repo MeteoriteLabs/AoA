@@ -138,7 +138,7 @@ export function CommandPalette() {
         <CommandSeparator />
 
         <CommandGroup heading="Pages">
-          <CommandItem onSelect={() => go("/dashboard")}>
+          <CommandItem onSelect={() => go("/home")}>
             <LayoutDashboard className="mr-2 h-4 w-4" />
             Home
           </CommandItem>

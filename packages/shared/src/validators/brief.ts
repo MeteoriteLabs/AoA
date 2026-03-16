@@ -35,3 +35,15 @@ export const updateBriefItemSchema = z.object({
 });
 
 export type UpdateBriefItem = z.infer<typeof updateBriefItemSchema>;
+
+export const approveBriefSchema = z.object({
+  dependencies: z.array(z.object({
+    dependentItemId: z.string().uuid(),
+    dependencyItemId: z.string().uuid(),
+  }).refine(
+    (d) => d.dependentItemId !== d.dependencyItemId,
+    { message: "A task cannot depend on itself" },
+  )).optional(),
+});
+
+export type ApproveBrief = z.infer<typeof approveBriefSchema>;

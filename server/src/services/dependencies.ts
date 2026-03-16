@@ -33,7 +33,10 @@ export function dependencyService(db: Db) {
     companyId: string,
     dependentIssueId: string,
     dependencyIssueId: string,
+    outerTx?: Tx,
   ) {
+    const conn = (outerTx ?? db) as Db;
+
     // No self-dependency
     if (dependentIssueId === dependencyIssueId) {
       throw unprocessable("A task cannot depend on itself");
@@ -41,12 +44,12 @@ export function dependencyService(db: Db) {
 
     // Verify both issues exist and belong to company
     const [dependent, dependency] = await Promise.all([
-      db
+      conn
         .select({ id: issues.id, status: issues.status })
         .from(issues)
         .where(and(eq(issues.id, dependentIssueId), eq(issues.companyId, companyId)))
         .then((r) => r[0] ?? null),
-      db
+      conn
         .select({ id: issues.id, status: issues.status })
         .from(issues)
         .where(and(eq(issues.id, dependencyIssueId), eq(issues.companyId, companyId)))
@@ -57,10 +60,10 @@ export function dependencyService(db: Db) {
     if (!dependency) throw notFound("Dependency task not found");
 
     // Circular dependency check — walk upstream from dependencyIssueId
-    await assertNoCycle(companyId, dependencyIssueId, dependentIssueId);
+    await assertNoCycle(companyId, dependencyIssueId, dependentIssueId, conn);
 
     // Insert (unique constraint catches duplicates)
-    const [row] = await db
+    const [row] = await conn
       .insert(taskDependencies)
       .values({ companyId, dependentIssueId, dependencyIssueId })
       .returning()
@@ -79,13 +82,13 @@ export function dependencyService(db: Db) {
       !TERMINAL_STATUSES.includes(dependent.status) &&
       dependent.status !== "blocked"
     ) {
-      await db
+      await conn
         .update(issues)
         .set({ status: "blocked", updatedAt: new Date() })
         .where(eq(issues.id, dependentIssueId));
     }
 
-    await logActivity(db, {
+    await logActivity(conn, {
       companyId,
       actorType: "system",
       actorId: "system",
@@ -344,6 +347,7 @@ export function dependencyService(db: Db) {
     companyId: string,
     startIssueId: string,
     targetIssueId: string,
+    conn: Tx | Db = db,
   ) {
     // Walk upstream from startIssueId. If we ever reach targetIssueId, it's a cycle.
     let currentIds = [startIssueId];
@@ -351,7 +355,7 @@ export function dependencyService(db: Db) {
     for (let depth = 0; depth < MAX_CHAIN_DEPTH; depth++) {
       if (currentIds.length === 0) return; // no more upstream — no cycle
 
-      const upstream = await db
+      const upstream = await (conn as Db)
         .select({ depId: taskDependencies.dependencyIssueId })
         .from(taskDependencies)
         .where(

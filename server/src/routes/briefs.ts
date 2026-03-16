@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { updateBriefItemSchema } from "@paperclipai/shared";
+import { updateBriefItemSchema, approveBriefSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { briefService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -76,13 +76,14 @@ export function briefRoutes(db: Db) {
   );
 
   // POST /companies/:companyId/briefs/:id/approve — approve brief
-  router.post("/companies/:companyId/briefs/:id/approve", async (req, res) => {
+  router.post("/companies/:companyId/briefs/:id/approve", validate(approveBriefSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const briefId = req.params.id as string;
     assertCompanyAccess(req, companyId);
     const actor = getActorInfo(req);
 
-    const result = await svc.approveBrief(companyId, briefId, actor.actorId);
+    const { dependencies } = req.body;
+    const result = await svc.approveBrief(companyId, briefId, actor.actorId, dependencies);
     if (!result) {
       res.status(404).json({ error: "Brief not found" });
       return;

@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { briefs, briefItems, debriefs } from "@paperclipai/db";
 import { issueService } from "./issues.js";
 import { memoryService } from "./memory.js";
+import { dependencyService } from "./dependencies.js";
 
 export interface BriefFilters {
   status?: string;
@@ -26,6 +27,7 @@ function resolveDepartment(
 export function briefService(db: Db) {
   const issues = issueService(db);
   const memory = memoryService(db);
+  const deps = dependencyService(db);
 
   return {
     list: async (companyId: string, filters: BriefFilters = {}) => {
@@ -111,7 +113,12 @@ export function briefService(db: Db) {
         .then((rows) => rows[0] ?? null);
     },
 
-    approveBrief: async (companyId: string, briefId: string, reviewedBy: string) => {
+    approveBrief: async (
+      companyId: string,
+      briefId: string,
+      reviewedBy: string,
+      dependencies?: Array<{ dependentItemId: string; dependencyItemId: string }>,
+    ) => {
       // Fetch brief
       const brief = await db
         .select()
@@ -131,6 +138,7 @@ export function briefService(db: Db) {
       return db.transaction(async (tx) => {
         const createdTaskIds: string[] = [];
         const createdMemoryIds: string[] = [];
+        const itemIdToTaskId = new Map<string, string>();
         let approvedCount = 0;
         let rejectedCount = 0;
 
@@ -166,6 +174,7 @@ export function briefService(db: Db) {
 
             if (task) {
               createdTaskIds.push(task.id);
+              itemIdToTaskId.set(item.id, task.id);
               await tx
                 .update(briefItems)
                 .set({ resultTaskId: task.id, updatedAt: new Date() })
@@ -190,6 +199,26 @@ export function briefService(db: Db) {
                 .update(briefItems)
                 .set({ resultMemoryId: memoryItem.id, updatedAt: new Date() })
                 .where(eq(briefItems.id, item.id));
+            }
+          }
+        }
+
+        // Create task dependencies (with cycle detection, auto-blocking, activity logging)
+        let createdDependencyCount = 0;
+        let skippedDependencyCount = 0;
+        if (dependencies && dependencies.length > 0) {
+          for (const dep of dependencies) {
+            const dependentTaskId = itemIdToTaskId.get(dep.dependentItemId);
+            const dependencyTaskId = itemIdToTaskId.get(dep.dependencyItemId);
+            if (dependentTaskId && dependencyTaskId) {
+              try {
+                await deps.addDependency(companyId, dependentTaskId, dependencyTaskId, tx);
+                createdDependencyCount++;
+              } catch {
+                skippedDependencyCount++;
+              }
+            } else {
+              skippedDependencyCount++;
             }
           }
         }
@@ -219,6 +248,8 @@ export function briefService(db: Db) {
           brief: updatedBrief,
           createdTaskIds,
           createdMemoryIds,
+          createdDependencyCount,
+          skippedDependencyCount,
         };
       });
     },

@@ -22,6 +22,7 @@ import {
   XCircle,
   Loader2,
   ExternalLink,
+  Link as LinkIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 
@@ -61,10 +62,18 @@ function BriefItemCard({
   item,
   departments,
   onUpdate,
+  taskItems,
+  dependencies,
+  onAddDependency,
+  onRemoveDependency,
 }: {
   item: BriefItem;
   departments: { id: string; name: string }[];
   onUpdate: (itemId: string, data: Record<string, unknown>) => void;
+  taskItems?: BriefItem[];
+  dependencies?: Array<{ dependentItemId: string; dependencyItemId: string }>;
+  onAddDependency?: (dependentItemId: string, dependencyItemId: string) => void;
+  onRemoveDependency?: (dependentItemId: string, dependencyItemId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(item.title);
@@ -200,6 +209,63 @@ function BriefItemCard({
                   <ExternalLink className="h-3 w-3" /> View in memory
                 </Link>
               )}
+              {/* Dependency selector for task items */}
+              {item.type === "task" && taskItems && taskItems.length > 1 && onAddDependency && onRemoveDependency && (
+                <div className="mt-2 pt-2 border-t border-border/50">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <LinkIcon className="h-3 w-3 text-muted-foreground" />
+                    <span className="text-xs text-muted-foreground font-medium">Depends on</span>
+                  </div>
+                  {/* Show current dependencies */}
+                  <div className="flex flex-wrap gap-1 mb-1.5">
+                    {dependencies
+                      ?.filter((d) => d.dependentItemId === item.id)
+                      .map((d) => {
+                        const depItem = taskItems.find((t) => t.id === d.dependencyItemId);
+                        return depItem ? (
+                          <span
+                            key={d.dependencyItemId}
+                            className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-300"
+                          >
+                            {depItem.title.length > 30 ? depItem.title.slice(0, 30) + "..." : depItem.title}
+                            <button
+                              onClick={() => onRemoveDependency(item.id, d.dependencyItemId)}
+                              className="text-blue-400 hover:text-blue-600"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </span>
+                        ) : null;
+                      })}
+                  </div>
+                  {/* Add dependency dropdown */}
+                  <select
+                    className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs"
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        onAddDependency(item.id, e.target.value);
+                        e.target.value = "";
+                      }
+                    }}
+                  >
+                    <option value="">Select a dependency...</option>
+                    {taskItems
+                      .filter(
+                        (t) =>
+                          t.id !== item.id &&
+                          !dependencies?.some(
+                            (d) => d.dependentItemId === item.id && d.dependencyItemId === t.id,
+                          ),
+                      )
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.title}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
             </div>
             {!isActioned && (
               <div className="flex items-center gap-1 shrink-0">
@@ -250,7 +316,12 @@ export function BriefReview() {
   const [approveResult, setApproveResult] = useState<{
     taskCount: number;
     memoryCount: number;
+    createdDependencyCount: number;
+    skippedDependencyCount: number;
   } | null>(null);
+  const [dependencies, setDependencies] = useState<
+    Array<{ dependentItemId: string; dependencyItemId: string }>
+  >([]);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -283,6 +354,67 @@ export function BriefReview() {
     [projects],
   );
 
+  const taskItems = useMemo(
+    () => brief?.items.filter((i) => i.type === "task") ?? [],
+    [brief],
+  );
+
+  function addDependency(dependentItemId: string, dependencyItemId: string) {
+    if (dependentItemId === dependencyItemId) return;
+    const alreadyExists = dependencies.some(
+      (d) => d.dependentItemId === dependentItemId && d.dependencyItemId === dependencyItemId,
+    );
+    if (alreadyExists) return;
+    const next = [...dependencies, { dependentItemId, dependencyItemId }];
+    if (detectCycles(next)) {
+      pushToast({ title: "Adding this dependency would create a cycle.", tone: "warn" });
+      return;
+    }
+    setDependencies(next);
+  }
+
+  function removeDependency(dependentItemId: string, dependencyItemId: string) {
+    setDependencies((prev) =>
+      prev.filter(
+        (d) => !(d.dependentItemId === dependentItemId && d.dependencyItemId === dependencyItemId),
+      ),
+    );
+  }
+
+  /** Detect cycles in the dependency graph before submitting. */
+  function detectCycles(
+    deps: Array<{ dependentItemId: string; dependencyItemId: string }>,
+  ): boolean {
+    // Build adjacency list: dependentItemId -> [dependencyItemIds]
+    const graph = new Map<string, string[]>();
+    for (const d of deps) {
+      const edges = graph.get(d.dependentItemId) ?? [];
+      edges.push(d.dependencyItemId);
+      graph.set(d.dependentItemId, edges);
+    }
+
+    // DFS cycle detection
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+
+    function hasCycle(node: string): boolean {
+      if (visiting.has(node)) return true;
+      if (visited.has(node)) return false;
+      visiting.add(node);
+      for (const neighbor of graph.get(node) ?? []) {
+        if (hasCycle(neighbor)) return true;
+      }
+      visiting.delete(node);
+      visited.add(node);
+      return false;
+    }
+
+    for (const node of graph.keys()) {
+      if (hasCycle(node)) return true;
+    }
+    return false;
+  }
+
   const updateItemMutation = useMutation({
     mutationFn: ({ itemId, data }: { itemId: string; data: Record<string, unknown> }) =>
       briefsApi.updateItem(selectedCompanyId!, briefId!, itemId, data),
@@ -297,11 +429,13 @@ export function BriefReview() {
   });
 
   const approveMutation = useMutation({
-    mutationFn: () => briefsApi.approve(selectedCompanyId!, briefId!),
+    mutationFn: () => briefsApi.approve(selectedCompanyId!, briefId!, dependencies),
     onSuccess: (result) => {
       setApproveResult({
         taskCount: result.createdTaskIds.length,
         memoryCount: result.createdMemoryIds.length,
+        createdDependencyCount: result.createdDependencyCount,
+        skippedDependencyCount: result.skippedDependencyCount,
       });
       queryClient.invalidateQueries({
         queryKey: queryKeys.briefs.detail(selectedCompanyId!, briefId!),
@@ -317,8 +451,9 @@ export function BriefReview() {
       });
       pushToast({ title: "Brief processed successfully", tone: "success" });
     },
-    onError: () => {
-      pushToast({ title: "Failed to process brief", tone: "warn" });
+    onError: (error: unknown) => {
+      const message = error instanceof Error ? error.message : "Failed to process brief";
+      pushToast({ title: message, tone: "warn" });
     },
   });
 
@@ -403,7 +538,15 @@ export function BriefReview() {
           <p className="mt-1 text-sm text-green-700 dark:text-green-400">
             Created {approveResult.taskCount} task{approveResult.taskCount !== 1 ? "s" : ""} and{" "}
             {approveResult.memoryCount} memory item{approveResult.memoryCount !== 1 ? "s" : ""}
+            {approveResult.createdDependencyCount > 0 && (
+              <> with {approveResult.createdDependencyCount} dependency{approveResult.createdDependencyCount !== 1 ? " links" : " link"}</>
+            )}
           </p>
+          {approveResult.skippedDependencyCount > 0 && (
+            <p className="mt-1 text-sm text-amber-600 dark:text-amber-400">
+              {approveResult.skippedDependencyCount} dependency{approveResult.skippedDependencyCount !== 1 ? " links were" : " link was"} skipped because one or both items were rejected or pending.
+            </p>
+          )}
         </div>
       )}
 
@@ -469,6 +612,10 @@ export function BriefReview() {
                   item={item}
                   departments={departments}
                   onUpdate={handleUpdateItem}
+                  taskItems={item.type === "task" ? taskItems : undefined}
+                  dependencies={item.type === "task" ? dependencies : undefined}
+                  onAddDependency={item.type === "task" ? addDependency : undefined}
+                  onRemoveDependency={item.type === "task" ? removeDependency : undefined}
                 />
               ))}
             </div>
@@ -484,9 +631,20 @@ export function BriefReview() {
               {pendingCount} item{pendingCount !== 1 ? "s" : ""} still pending — they will be skipped during processing.
             </p>
           )}
+          {dependencies.length > 0 && (
+            <p className="text-xs text-blue-600 dark:text-blue-400">
+              {dependencies.length} task dependency{dependencies.length !== 1 ? "ies" : ""} configured.
+            </p>
+          )}
           <div className="flex justify-end">
             <Button
-              onClick={() => approveMutation.mutate()}
+              onClick={() => {
+                if (dependencies.length > 0 && detectCycles(dependencies)) {
+                  pushToast({ title: "Circular dependency detected — please remove the cycle before processing.", tone: "warn" });
+                  return;
+                }
+                approveMutation.mutate();
+              }}
               disabled={approveMutation.isPending}
             >
               {approveMutation.isPending && (

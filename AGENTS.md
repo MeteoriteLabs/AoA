@@ -5,20 +5,20 @@ Guidance for human and AI contributors working in this repository.
 ## 1. Purpose
 
 Paperclip is a control plane for AI-agent companies.
-The current implementation target is V1 and is defined in `doc/SPEC-implementation.md`.
+The current implementation target is V1 and is defined in `docs/aoa/specs/paperclip-impl_spec.md`.
 
 ## 2. Read This First
 
 Before making changes, read in this order:
 
-1. `doc/GOAL.md`
-2. `doc/PRODUCT.md`
-3. `doc/SPEC-implementation.md`
-4. `doc/DEVELOPING.md`
-5. `doc/DATABASE.md`
+1. `docs/aoa/reference/goal.md`
+2. `docs/aoa/reference/product.md`
+3. `docs/aoa/specs/paperclip-impl_spec.md`
+4. `docs/aoa/guides/developing.md`
+5. `docs/aoa/reference/database.md`
 
-`doc/SPEC.md` is long-horizon product context.
-`doc/SPEC-implementation.md` is the concrete V1 build contract.
+`docs/aoa/specs/paperclip_spec.md` is long-horizon product context.
+`docs/aoa/specs/paperclip-impl_spec.md` is the concrete V1 build contract.
 
 ## 3. Repo Map
 
@@ -76,7 +76,7 @@ If you change schema/API behavior, update all impacted layers:
 - Activity logging for mutating actions
 
 4. Do not replace strategic docs wholesale unless asked.
-Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
+Prefer additive updates. Keep `docs/aoa/specs/paperclip_spec.md` and `docs/aoa/specs/paperclip-impl_spec.md` aligned.
 
 ## 6. Database Change Workflow
 
@@ -136,7 +136,7 @@ When adding endpoints:
 
 A change is done when all are true:
 
-1. Behavior matches `doc/SPEC-implementation.md`
+1. Behavior matches `docs/aoa/specs/paperclip-impl_spec.md`
 2. Typecheck, tests, and build pass
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change
