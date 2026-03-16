@@ -29,6 +29,9 @@ export const AGENT_ADAPTER_TYPES = [
   "opencode_local",
   "cursor",
   "openclaw",
+  "claude_api",
+  "openai_api",
+  "gemini_api",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
