@@ -98,20 +98,30 @@ const PROVIDER_LABELS: Record<string, string> = {
   google: "Google",
 };
 
+type SecretResolver = (companyId: string, name: string) => Promise<string>;
+let _defaultResolver: SecretResolver | null = null;
+
+/**
+ * Register the default secret resolver. Called once at server startup
+ * (e.g., from heartbeatService) so API adapters can resolve secrets
+ * without a direct DB dependency.
+ */
+export function setSecretResolver(resolver: SecretResolver): void {
+  _defaultResolver = resolver;
+}
+
 export async function resolveApiKey(
   companyId: string,
   provider: string,
-  _resolveByName?: (companyId: string, name: string) => Promise<string>,
+  _resolveByName?: SecretResolver,
 ): Promise<string> {
   const secretName = PROVIDER_SECRET_NAMES[provider];
   if (!secretName) throw new Error(`Unknown LLM provider: ${provider}`);
 
-  // Lazy import to avoid module-level DB dependency
-  const resolve = _resolveByName ?? (async (cId: string, name: string) => {
-    const { secretService } = await import("../services/secrets.js");
-    const { db } = await import("../db.js");
-    return secretService(db).resolveByName(cId, name);
-  });
+  const resolve = _resolveByName ?? _defaultResolver;
+  if (!resolve) {
+    throw new Error("Secret resolver not configured. Call setSecretResolver() at startup.");
+  }
 
   try {
     return await resolve(companyId, secretName);
