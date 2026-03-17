@@ -27,6 +27,7 @@ import { VisionMission } from "./pages/VisionMission";
 import { DesignGuide } from "./pages/DesignGuide";
 import { OrgChart } from "./pages/OrgChart";
 import { Briefs } from "./pages/Briefs";
+import { ActiveAgents } from "./pages/ActiveAgents";
 import { BriefReview } from "./pages/BriefReview";
 import { DebriefModal } from "./components/DebriefModal";
 import { AuthPage } from "./pages/Auth";
@@ -129,6 +130,7 @@ function boardRoutes() {
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="briefs" element={<Briefs />} />
       <Route path="briefs/:briefId" element={<BriefReview />} />
+      <Route path="active-agents" element={<ActiveAgents />} />
       <Route path="memory" element={<Memory />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />

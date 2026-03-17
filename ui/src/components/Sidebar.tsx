@@ -13,6 +13,7 @@ import {
   FileText,
   Brain,
   Compass,
+  Bot,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -100,7 +101,7 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
           <SidebarNavItem to="/briefs" label="Briefs" icon={FileText} />
-
+          <SidebarNavItem to="/active-agents" label="Live Agents" icon={Bot} />
         </SidebarSection>
 
         {/* DEPARTMENTS section */}
