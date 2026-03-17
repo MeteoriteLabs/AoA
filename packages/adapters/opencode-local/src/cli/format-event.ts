@@ -74,21 +74,25 @@ export function printOpenCodeStreamEvent(raw: string, _debug: boolean): void {
   if (type === "tool_use") {
     const part = asRecord(parsed.part);
     const tool = asString(part?.tool, "tool");
+    const callID = asString(part?.callID, asString(part?.id));
     const state = asRecord(part?.state);
     const status = asString(state?.status);
-    const summary = `tool_${status || "event"}: ${tool}`;
     const isError = status === "error";
-    console.log((isError ? pc.red : pc.yellow)(summary));
-    const input = state?.input;
-    if (input !== undefined) {
-      try {
-        console.log(pc.gray(JSON.stringify(input, null, 2)));
-      } catch {
-        console.log(pc.gray(String(input)));
+    const callLabel = callID ? `${tool} (${callID})` : tool;
+    console.log((isError ? pc.red : pc.yellow)(`tool_call: ${callLabel}`));
+    if (status === "completed" || status === "error") {
+      const metadata = asRecord(state?.metadata);
+      const exit = metadata ? asNumber(metadata.exit, -1) : null;
+      const resultParts = [`tool_result status=${status}`];
+      if (exit !== null) resultParts[0] += ` exit=${exit}`;
+      console.log((isError ? pc.red : pc.gray)(resultParts[0]));
+      const output = asString(state?.output) || asString(state?.error);
+      if (output) {
+        for (const outputLine of output.trimEnd().split("\n")) {
+          console.log((isError ? pc.red : pc.gray)(outputLine));
+        }
       }
     }
-    const output = asString(state?.output) || asString(state?.error);
-    if (output) console.log((isError ? pc.red : pc.gray)(output));
     return;
   }
 
@@ -101,7 +105,8 @@ export function printOpenCodeStreamEvent(raw: string, _debug: boolean): void {
     const cached = asNumber(cache?.read, 0);
     const cost = asNumber(part?.cost, 0);
     const reason = asString(part?.reason, "step");
-    console.log(pc.blue(`step finished (${reason}) tokens: in=${input} out=${output} cached=${cached} cost=$${cost.toFixed(6)}`));
+    console.log(pc.blue(`step finished: reason=${reason}`));
+    console.log(pc.gray(`tokens: in=${input} out=${output} cached=${cached} cost=$${cost.toFixed(6)}`));
     return;
   }
 

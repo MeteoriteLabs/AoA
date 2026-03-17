@@ -125,7 +125,7 @@ export async function ensureCursorSkillsInjected(
     return;
   }
 
-  const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target));
+  const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target, process.platform === "win32" ? "junction" : undefined));
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const source = path.join(skillsDir, entry.name);
