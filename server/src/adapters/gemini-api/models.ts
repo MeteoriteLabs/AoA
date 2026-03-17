@@ -8,9 +8,5 @@ export const GEMINI_MODELS: AdapterModel[] = [
 export const DEFAULT_MODEL = "gemini-2.0-flash";
 
 export async function listGeminiModels(): Promise<AdapterModel[]> {
-  try {
-    return GEMINI_MODELS;
-  } catch {
-    return GEMINI_MODELS;
-  }
+  return GEMINI_MODELS;
 }

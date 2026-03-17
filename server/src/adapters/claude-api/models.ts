@@ -9,9 +9,5 @@ export const CLAUDE_MODELS: AdapterModel[] = [
 export const DEFAULT_MODEL = "claude-sonnet-4-6";
 
 export async function listClaudeModels(): Promise<AdapterModel[]> {
-  try {
-    return CLAUDE_MODELS;
-  } catch {
-    return CLAUDE_MODELS;
-  }
+  return CLAUDE_MODELS;
 }

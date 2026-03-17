@@ -10,9 +10,5 @@ export const OPENAI_MODELS: AdapterModel[] = [
 export const DEFAULT_MODEL = "gpt-4o";
 
 export async function listOpenAIModels(): Promise<AdapterModel[]> {
-  try {
-    return OPENAI_MODELS;
-  } catch {
-    return OPENAI_MODELS;
-  }
+  return OPENAI_MODELS;
 }
