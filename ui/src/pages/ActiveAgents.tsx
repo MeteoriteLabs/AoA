@@ -73,7 +73,7 @@ export function ActiveAgents() {
     if (runs.length === 0) return;
 
     const completedWithoutFeed = runs.filter(
-      (r) => !isRunActive(r) && !feedByRun.has(r.id) && !fetchedLogRunsRef.current.has(r.id),
+      (r) => !isRunActive(r) && !fetchedLogRunsRef.current.has(r.id),
     );
     if (completedWithoutFeed.length === 0) return;
 
@@ -142,7 +142,6 @@ export function ActiveAgents() {
     };
 
     fetchLogs();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runs]);
 
   // Clean up pending buffers for ended runs
