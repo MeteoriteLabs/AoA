@@ -277,6 +277,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "codex_local" ||
     adapterType === "opencode_local" ||
     adapterType === "cursor";
+  const isApiAdapter =
+    adapterType === "claude_api" ||
+    adapterType === "openai_api" ||
+    adapterType === "gemini_api";
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
 
   // Fetch adapter models for the effective adapter type
@@ -533,6 +537,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {testEnvironment.data && (
             <AdapterEnvironmentResult result={testEnvironment.data} />
+          )}
+
+          {isApiAdapter && (
+            <p className="text-xs text-muted-foreground mt-1">
+              API key must be configured in Settings &gt; LLM Providers.
+            </p>
           )}
 
           {/* Working directory */}
@@ -891,7 +901,7 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local", "cursor"]);
+const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local", "cursor", "claude_api", "openai_api", "gemini_api"]);
 
 /** Display list includes all real adapter types plus UI-only coming-soon entries. */
 const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [

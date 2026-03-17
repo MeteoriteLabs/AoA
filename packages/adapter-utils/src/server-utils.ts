@@ -223,7 +223,9 @@ export async function runChildProcess(
     const child = spawn(command, args, {
       cwd: opts.cwd,
       env: mergedEnv,
-      shell: false,
+      // Windows requires shell:true to execute .cmd wrappers for npm-installed CLIs.
+      // The `command` value comes from trusted adapter configuration, not user input.
+      shell: process.platform === "win32",
       stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
     }) as ChildProcessWithEvents;
 

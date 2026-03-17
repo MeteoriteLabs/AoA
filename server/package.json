@@ -30,12 +30,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.79.0",
     "@aws-sdk/client-s3": "^3.888.0",
+    "@google/generative-ai": "^0.24.1",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",
-    "@paperclipai/adapter-opencode-local": "workspace:*",
     "@paperclipai/adapter-openclaw": "workspace:*",
+    "@paperclipai/adapter-opencode-local": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/db": "workspace:*",
     "@paperclipai/shared": "workspace:*",
@@ -47,6 +49,7 @@
     "express": "^5.1.0",
     "multer": "^2.0.2",
     "open": "^11.0.0",
+    "openai": "^6.29.0",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",
     "pino-pretty": "^13.1.3",

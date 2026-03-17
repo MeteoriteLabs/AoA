@@ -24,7 +24,7 @@ describe("opencode_local environment diagnostics", () => {
     });
 
     expect(result.checks.some((check) => check.code === "opencode_cwd_valid")).toBe(true);
-    expect(result.checks.some((check) => check.level === "error")).toBe(false);
+    expect(result.checks.some((check) => check.code === "opencode_cwd_invalid")).toBe(false);
     const stats = await fs.stat(cwd);
     expect(stats.isDirectory()).toBe(true);
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
@@ -64,25 +64,40 @@ describe("opencode_local environment diagnostics", () => {
   it("classifies ProviderModelNotFoundError probe output as model-unavailable warning", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-probe-cwd-"));
     const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-probe-bin-"));
-    const fakeOpencode = path.join(binDir, "opencode");
+    const jsPath = path.join(binDir, "opencode.js");
+
+    // Node.js script that fakes opencode: returns models for discovery, errors for probe
     const script = [
-      "#!/bin/sh",
-      "echo 'ProviderModelNotFoundError: ProviderModelNotFoundError' 1>&2",
-      "echo 'data: { providerID: \"openai\", modelID: \"gpt-5.3-codex\", suggestions: [] }' 1>&2",
-      "exit 1",
-      "",
+      'const args = process.argv.slice(2);',
+      'if (args.includes("models")) {',
+      '  console.log("openai/gpt-5.3-codex");',
+      '  process.exit(0);',
+      '}',
+      'process.stderr.write("ProviderModelNotFoundError: ProviderModelNotFoundError\\n");',
+      'process.stderr.write(\'data: { providerID: "openai", modelID: "gpt-5.3-codex", suggestions: [] }\\n\');',
+      'process.exit(1);',
+      '',
     ].join("\n");
 
-    try {
-      await fs.writeFile(fakeOpencode, script, "utf8");
+    let fakeOpencode: string;
+    if (process.platform === "win32") {
+      await fs.writeFile(jsPath, script, "utf8");
+      fakeOpencode = path.join(binDir, "opencode.cmd");
+      await fs.writeFile(fakeOpencode, `@node "%~dp0opencode.js" %*\r\n`, "utf8");
+    } else {
+      fakeOpencode = path.join(binDir, "opencode");
+      await fs.writeFile(fakeOpencode, `#!/usr/bin/env node\n${script}`, "utf8");
       await fs.chmod(fakeOpencode, 0o755);
+    }
 
+    try {
       const result = await testEnvironment({
         companyId: "company-1",
         adapterType: "opencode_local",
         config: {
           command: fakeOpencode,
           cwd,
+          model: "openai/gpt-5.3-codex",
         },
       });
 

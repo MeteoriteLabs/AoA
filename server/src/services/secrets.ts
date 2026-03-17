@@ -160,6 +160,12 @@ export function secretService(db: Db) {
     getById,
     getByName,
 
+    async resolveByName(companyId: string, name: string): Promise<string> {
+      const secret = await getByName(companyId, name);
+      if (!secret) throw notFound(`Secret not found: ${name}`);
+      return resolveSecretValue(companyId, secret.id, "latest");
+    },
+
     create: async (
       companyId: string,
       input: {

@@ -59,7 +59,7 @@ export async function testEnvironment(
   const cwd = asString(config.cwd, process.cwd());
 
   try {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: false });
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
     checks.push({
       code: "opencode_cwd_valid",
       level: "info",
@@ -80,6 +80,15 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
+
+  if ("OPENAI_API_KEY" in envConfig && asString(envConfig.OPENAI_API_KEY, "").trim() === "") {
+    checks.push({
+      code: "opencode_openai_api_key_missing",
+      level: "warn",
+      message: "OPENAI_API_KEY is configured but empty.",
+      hint: "The OPENAI_API_KEY environment variable override is empty. Set a valid API key or remove the override to use the host value.",
+    });
+  }
 
   const cwdInvalid = checks.some((check) => check.code === "opencode_cwd_invalid");
   if (cwdInvalid) {
@@ -225,6 +234,14 @@ export async function testEnvironment(
             : {
                 hint: "Run `opencode run --format json` manually and prompt `Respond with hello` to inspect output.",
               }),
+        });
+      } else if (/ProviderModelNotFoundError/i.test(`${probe.stderr}\n${probe.stdout}`)) {
+        checks.push({
+          code: "opencode_hello_probe_model_unavailable",
+          level: "warn",
+          message: "OpenCode probe failed because the configured model was not found.",
+          ...(detail ? { detail } : {}),
+          hint: "Run `opencode models` to see available models, then update the agent's model setting.",
         });
       } else if (OPENCODE_AUTH_REQUIRED_RE.test(authEvidence)) {
         checks.push({

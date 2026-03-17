@@ -38,7 +38,8 @@ Goals, Agents, Company, Settings, Activity, Inbox — unchanged.
 
 - **Heartbeat system:** Push-based agent execution. `heartbeat.wakeup()` → HeartbeatRun → adapter executes. Agents don't pull tasks — they get told what to work on.
 - **Atomic checkout:** Issues use `SELECT FOR UPDATE NO WAIT` for single-agent locking.
-- **Adapters:** claude_local, opencode_local, openclaw, http, process, cursor, codex_local. Registered in `server/src/adapters/registry.ts`.
+- **Adapters:** claude_local, opencode_local, openclaw, http, process, cursor, codex_local, claude_api, openai_api, gemini_api. Registered in `server/src/adapters/registry.ts`.
+- **API Adapters (claude_api, openai_api, gemini_api):** Call LLM provider APIs directly using stored API keys from LLM Providers settings. No local CLI required. Same heartbeat/cost/budget pipeline as local adapters.
 - **Debrief → Brief pipeline:** Raw content → Artifact → LLM extraction → Structured Brief → Founder approval → Tasks + Memory items.
 - **Memory (V1):** Flat company knowledge store. Categories: decision, reference, context, insight, preference. Approval-gated. Founder is sole gatekeeper.
 - **Task dependencies:** `task_dependencies` table links tasks in blocking relationships. When a dependency task completes → dependent auto-unblocks. Separate from `parentId` (which is subtask hierarchy, not blocking). Tasks can be blocked from any non-terminal status (backlog, todo, in_progress).
