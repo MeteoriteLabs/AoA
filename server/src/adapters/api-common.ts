@@ -198,7 +198,7 @@ export function mapErrorToResult(
   if (
     code === 401 ||
     msg.toLowerCase().includes("authentication") ||
-    msg.toLowerCase().includes("invalid.*api.*key") ||
+    /invalid.*api.*key/i.test(msg) ||
     err.constructor.name.includes("Authentication")
   ) {
     return {

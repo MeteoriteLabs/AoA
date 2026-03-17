@@ -127,6 +127,21 @@ describe("mapErrorToResult", () => {
     expect(result.errorMessage).toContain("API key");
   });
 
+  it("maps 'Invalid API key' messages to authentication_error", () => {
+    const err = new Error("Invalid Anthropic API key provided");
+    const result = mapErrorToResult(err, "anthropic");
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("authentication_error");
+    expect(result.errorMessage).toContain("Invalid API key");
+  });
+
+  it("maps 'invalid api key' messages case-insensitively", () => {
+    const err = new Error("Error: invalid api key format");
+    const result = mapErrorToResult(err, "openai");
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("authentication_error");
+  });
+
   it("maps unknown errors", () => {
     const result = mapErrorToResult(new Error("something weird"), "openai");
     expect(result.exitCode).toBe(1);
