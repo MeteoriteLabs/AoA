@@ -14,6 +14,9 @@ const TIMEOUT_MS = 300_000; // 5 minutes
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, context, agent, onLog, onMeta } = ctx;
   const model = (config.model as string) || DEFAULT_MODEL;
+  const maxTokens = typeof config.maxTokens === "number" && config.maxTokens > 0
+    ? config.maxTokens
+    : 4096;
 
   try {
     const apiKey = await resolveApiKey(agent.companyId, "anthropic");
@@ -32,7 +35,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const response = await client.messages.create({
       model,
-      max_tokens: 4096,
+      max_tokens: maxTokens,
       system: systemPrompt,
       messages: [{ role: "user", content: userMessage }],
     });

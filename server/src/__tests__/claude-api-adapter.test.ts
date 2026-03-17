@@ -109,6 +109,34 @@ describe("claude_api execute", () => {
     expect(result.errorCode).toBe("missing_api_key");
   });
 
+  it("uses config.maxTokens when provided", async () => {
+    createMock.mockResolvedValue({
+      content: [{ type: "text", text: "ok" }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+      stop_reason: "end_turn",
+    });
+
+    await execute(makeCtx({ maxTokens: 8192 }));
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ max_tokens: 8192 }),
+    );
+  });
+
+  it("defaults to 4096 max_tokens when not configured", async () => {
+    createMock.mockResolvedValue({
+      content: [{ type: "text", text: "ok" }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+      stop_reason: "end_turn",
+    });
+
+    await execute(makeCtx({ maxTokens: undefined }));
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ max_tokens: 4096 }),
+    );
+  });
+
   it("handles empty response", async () => {
     createMock.mockResolvedValue({
       content: [],

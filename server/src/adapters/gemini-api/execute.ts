@@ -14,6 +14,9 @@ const TIMEOUT_MS = 300_000;
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, context, agent, onLog, onMeta } = ctx;
   const modelId = (config.model as string) || DEFAULT_MODEL;
+  const maxOutputTokens = typeof config.maxTokens === "number" && config.maxTokens > 0
+    ? config.maxTokens
+    : undefined;
 
   try {
     const apiKey = await resolveApiKey(agent.companyId, "google");
@@ -37,7 +40,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const result = await model.generateContent({
       contents: [{ role: "user", parts: [{ text: userMessage }] }],
-      generationConfig: {},
+      generationConfig: {
+        ...(maxOutputTokens !== undefined && { maxOutputTokens }),
+      },
     });
 
     const response = result.response;

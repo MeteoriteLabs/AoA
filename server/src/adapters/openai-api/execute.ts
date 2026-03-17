@@ -14,6 +14,9 @@ const TIMEOUT_MS = 300_000;
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, context, agent, onLog, onMeta } = ctx;
   const model = (config.model as string) || DEFAULT_MODEL;
+  const maxTokens = typeof config.maxTokens === "number" && config.maxTokens > 0
+    ? config.maxTokens
+    : undefined;
 
   try {
     const apiKey = await resolveApiKey(agent.companyId, "openai");
@@ -36,6 +39,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage },
       ],
+      ...(maxTokens !== undefined && { max_tokens: maxTokens }),
     });
 
     const responseText = response.choices?.[0]?.message?.content ?? "";
