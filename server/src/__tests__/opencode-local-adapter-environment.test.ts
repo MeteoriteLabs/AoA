@@ -24,8 +24,7 @@ describe("opencode_local environment diagnostics", () => {
     });
 
     expect(result.checks.some((check) => check.code === "opencode_cwd_valid")).toBe(true);
-    // Model/probe checks may error since process.execPath isn't a real opencode binary;
-    // the test validates CWD creation, not model discovery.
+    expect(result.checks.some((check) => check.code === "opencode_cwd_invalid")).toBe(false);
     const stats = await fs.stat(cwd);
     expect(stats.isDirectory()).toBe(true);
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
