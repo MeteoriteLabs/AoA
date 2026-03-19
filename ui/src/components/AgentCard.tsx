@@ -59,8 +59,7 @@ export function AgentCard({ agent, liveRun, currentTaskTitle }: AgentCardProps) 
   return (
     <div
       className={cn(
-        "group relative border border-border bg-card rounded-lg p-4 transition-all duration-150 cursor-pointer",
-        "hover:border-border/80 hover:shadow-md hover:shadow-black/5",
+        "group relative border border-border bg-card rounded-lg p-4 transition-all duration-150 cursor-pointer agent-card-hover",
         isLive && "border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.06)]"
       )}
       onClick={() => navigate(agentUrl(agent))}

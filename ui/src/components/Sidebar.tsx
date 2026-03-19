@@ -85,10 +85,10 @@ export function Sidebar() {
 
         {/* WORK section */}
         <SidebarSection label="Work">
-          <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
-          <SidebarNavItem to="/briefs" label="Briefs" icon={FileText} />
-          <SidebarNavItem to="/active-agents" label="Agents" icon={Bot} />
-          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} entityColor="var(--entity-task)" />
+          <SidebarNavItem to="/briefs" label="Briefs" icon={FileText} entityColor="var(--entity-brief)" />
+          <SidebarNavItem to="/active-agents" label="Agents" icon={Bot} entityColor="var(--entity-agent)" />
+          <SidebarNavItem to="/goals" label="Goals" icon={Target} entityColor="var(--entity-goal)" />
         </SidebarSection>
 
         {/* DEPARTMENTS section */}
@@ -100,7 +100,7 @@ export function Sidebar() {
         {/* COMPANY section */}
         <SidebarSection label="Company">
           <SidebarNavItem to="/vision" label="Vision & Mission" icon={Compass} />
-          <SidebarNavItem to="/memory" label="Memory" icon={Brain} />
+          <SidebarNavItem to="/memory" label="Memory" icon={Brain} entityColor="var(--entity-memory)" />
           <SidebarNavItem to="/org" label="Team" icon={Users} />
         </SidebarSection>
       </nav>

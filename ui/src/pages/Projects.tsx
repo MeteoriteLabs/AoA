@@ -50,8 +50,9 @@ export function Projects() {
       {projects && projects.length === 0 && (
         <EmptyState
           icon={Hexagon}
-          message="No projects yet."
-          action="Add Project"
+          message="No projects yet"
+          description="Projects group related tasks and goals together. Create a project to organize your work."
+          action="Create your first project"
           onAction={openNewProject}
         />
       )}

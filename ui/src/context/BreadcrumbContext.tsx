@@ -8,15 +8,29 @@ export interface Breadcrumb {
 interface BreadcrumbContextValue {
   breadcrumbs: Breadcrumb[];
   setBreadcrumbs: (crumbs: Breadcrumb[]) => void;
+  subtitle: string | null;
+  setSubtitle: (sub: string | null) => void;
+  entityColor: string | null;
+  setEntityColor: (color: string | null) => void;
 }
 
 const BreadcrumbContext = createContext<BreadcrumbContextValue | null>(null);
 
 export function BreadcrumbProvider({ children }: { children: ReactNode }) {
   const [breadcrumbs, setBreadcrumbsState] = useState<Breadcrumb[]>([]);
+  const [subtitle, setSubtitleState] = useState<string | null>(null);
+  const [entityColor, setEntityColorState] = useState<string | null>(null);
 
   const setBreadcrumbs = useCallback((crumbs: Breadcrumb[]) => {
     setBreadcrumbsState(crumbs);
+  }, []);
+
+  const setSubtitle = useCallback((sub: string | null) => {
+    setSubtitleState(sub);
+  }, []);
+
+  const setEntityColor = useCallback((color: string | null) => {
+    setEntityColorState(color);
   }, []);
 
   useEffect(() => {
@@ -29,7 +43,7 @@ export function BreadcrumbProvider({ children }: { children: ReactNode }) {
   }, [breadcrumbs]);
 
   return (
-    <BreadcrumbContext.Provider value={{ breadcrumbs, setBreadcrumbs }}>
+    <BreadcrumbContext.Provider value={{ breadcrumbs, setBreadcrumbs, subtitle, setSubtitle, entityColor, setEntityColor }}>
       {children}
     </BreadcrumbContext.Provider>
   );

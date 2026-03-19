@@ -118,12 +118,27 @@ export function Agents() {
     return map;
   }, [agents]);
 
+  const { setSubtitle, setEntityColor } = useBreadcrumbs();
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
-  }, [setBreadcrumbs]);
+    setEntityColor("var(--entity-agent)");
+    return () => { setSubtitle(null); setEntityColor(null); };
+  }, [setBreadcrumbs, setSubtitle, setEntityColor]);
+
+  // Compute subtitle counts
+  useEffect(() => {
+    if (!agents) return;
+    const active = agents.filter((a) => a.status === "active" || a.status === "running" || a.status === "idle").length;
+    const idle = agents.filter((a) => a.status === "idle").length;
+    const parts: string[] = [];
+    if (active > 0) parts.push(`${active} active`);
+    if (idle > 0) parts.push(`${idle} idle`);
+    setSubtitle(parts.length > 0 ? parts.join(" \u00B7 ") : null);
+  }, [agents, setSubtitle]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message="Select a company to view agents" description="Agents are AI workers that execute tasks autonomously on your behalf." entityColor="var(--entity-agent)" />;
   }
 
   if (isLoading) {
@@ -230,9 +245,11 @@ export function Agents() {
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
-          action="New Agent"
+          message="No agents yet"
+          description="Agents are AI workers that execute tasks on your behalf. Create your first agent to start building your team."
+          action="Create your first agent"
           onAction={openNewAgent}
+          entityColor="var(--entity-agent)"
         />
       )}
 

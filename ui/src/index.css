@@ -45,6 +45,13 @@
 :root {
   color-scheme: light;
   --radius: 0;
+
+  /* Entity-specific color accents */
+  --entity-task: hsl(210 100% 60%);
+  --entity-agent: hsl(160 60% 50%);
+  --entity-brief: hsl(270 60% 60%);
+  --entity-goal: hsl(40 90% 55%);
+  --entity-memory: hsl(30 10% 50%);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -234,6 +241,17 @@
   .activity-row-enter {
     animation: none;
   }
+}
+
+/* Entity hover effects for cards */
+.kanban-card-hover:not([class*="opacity-30"]):not([class*="shadow-lg"]):hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  border-color: color-mix(in srgb, var(--entity-task) 25%, var(--border));
+}
+
+.agent-card-hover:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  border-color: color-mix(in srgb, var(--entity-agent) 25%, var(--border));
 }
 
 /* MDXEditor theme integration */
