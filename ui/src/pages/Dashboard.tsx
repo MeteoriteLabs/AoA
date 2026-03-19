@@ -197,7 +197,7 @@ function activityEntityName(item: RecentActivityItem): string {
   const details = item.details as Record<string, unknown> | null;
   if (details?.title && typeof details.title === "string") return details.title;
   if (details?.name && typeof details.name === "string") return details.name;
-  return item.entityType;
+  return item.entityType === "issue" ? "task" : item.entityType;
 }
 
 // --- Collapsible Action Group Component (T10) ---
@@ -378,7 +378,7 @@ export function Dashboard() {
       {showOnboarding && data?.setupStatus && (
         <div>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+            <h2 className="text-sm font-semibold text-muted-foreground">
               Getting Started
             </h2>
             <span className="text-xs text-muted-foreground">
@@ -450,7 +450,7 @@ export function Dashboard() {
       {/* Action Queue — Categorized Groups (T10) */}
       {!showOnboarding && actionGroups.length > 0 && (
         <div className="space-y-3">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+          <h2 className="text-sm font-semibold text-muted-foreground">
             Action Queue
           </h2>
           {actionGroups.map((group) => (
@@ -462,7 +462,7 @@ export function Dashboard() {
       {/* Goal Progress */}
       {!showOnboarding && data && data.goalProgress && data.goalProgress.length > 0 && (
         <div>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+          <h2 className="text-sm font-semibold text-muted-foreground mb-3">
             Active Goals
           </h2>
           <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
@@ -505,7 +505,7 @@ export function Dashboard() {
       {/* Today's Activity */}
       {data && data.recentActivity.length > 0 && (
         <div>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+          <h2 className="text-sm font-semibold text-muted-foreground mb-3">
             Today's Activity
           </h2>
           <div className="border border-border divide-y divide-border rounded-md overflow-hidden">

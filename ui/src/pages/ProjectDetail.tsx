@@ -65,21 +65,6 @@ function OverviewContent({
         imageUploadHandler={imageUploadHandler}
       />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-        <div>
-          <span className="text-muted-foreground">Status</span>
-          <div className="mt-1">
-            <StatusBadge status={project.status} />
-          </div>
-        </div>
-        {project.targetDate && (
-          <div>
-            <span className="text-muted-foreground">Target Date</span>
-            <p>{project.targetDate}</p>
-          </div>
-        )}
-      </div>
-
       {/* Properties section */}
       <div className="rounded-lg border border-border p-4 space-y-1">
         <h3 className="text-sm font-medium text-muted-foreground mb-3">Properties</h3>
