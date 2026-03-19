@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useCallback, useRef } from "react";
-import { useSearchParams } from "@/lib/router";
+import { useParams, useSearchParams, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -9,13 +9,55 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
+import { TaskSlideOver } from "../components/TaskSlideOver";
 import { CircleDot } from "lucide-react";
 
 export function Issues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { issueId: routeIssueId } = useParams<{ issueId?: string }>();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
+
+  // Resolve issue ID from either route param (issues/:issueId) or query param (?selected=:id)
+  const selectedQueryParam = searchParams.get("selected");
+  const selectedIssueId = routeIssueId || selectedQueryParam || null;
+
+  const slideOverOpen = !!selectedIssueId;
+
+  // markIssueRead side effect (migrated from IssueDetail.tsx per G14)
+  const lastMarkedReadIssueIdRef = useRef<string | null>(null);
+  const markIssueRead = useMutation({
+    mutationFn: (id: string) => issuesApi.markRead(id),
+    onSuccess: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+      }
+    },
+  });
+
+  useEffect(() => {
+    if (!selectedIssueId) {
+      lastMarkedReadIssueIdRef.current = null;
+      return;
+    }
+    if (lastMarkedReadIssueIdRef.current === selectedIssueId) return;
+    lastMarkedReadIssueIdRef.current = selectedIssueId;
+    markIssueRead.mutate(selectedIssueId);
+  }, [selectedIssueId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Close slide-over: navigate to /issues (clean URL)
+  const handleCloseSlideOver = useCallback(() => {
+    navigate("/issues", { replace: true });
+  }, [navigate]);
+
+  // Open slide-over for a task: set ?selected=:id query param
+  const handleSelectIssue = useCallback((issueIdentifier: string) => {
+    navigate(`/issues?selected=${encodeURIComponent(issueIdentifier)}`, { replace: true });
+  }, [navigate]);
 
   const initialSearch = searchParams.get("q") ?? "";
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -86,17 +128,25 @@ export function Issues() {
   }
 
   return (
-    <IssuesList
-      issues={issues ?? []}
-      isLoading={isLoading}
-      error={error as Error | null}
-      agents={agents}
-      liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
-      initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
-      initialSearch={initialSearch}
-      onSearchChange={handleSearchChange}
-      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-    />
+    <>
+      <IssuesList
+        issues={issues ?? []}
+        isLoading={isLoading}
+        error={error as Error | null}
+        agents={agents}
+        liveIssueIds={liveIssueIds}
+        viewStateKey="paperclip:issues-view"
+        initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
+        initialSearch={initialSearch}
+        onSearchChange={handleSearchChange}
+        onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+        onSelectIssue={handleSelectIssue}
+      />
+      <TaskSlideOver
+        issueId={selectedIssueId}
+        open={slideOverOpen}
+        onClose={handleCloseSlideOver}
+      />
+    </>
   );
 }

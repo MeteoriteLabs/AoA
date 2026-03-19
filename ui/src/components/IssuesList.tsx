@@ -145,6 +145,7 @@ interface IssuesListProps {
   initialSearch?: string;
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  onSelectIssue?: (issueIdentifier: string) => void;
 }
 
 export function IssuesList({
@@ -159,6 +160,7 @@ export function IssuesList({
   initialSearch,
   onSearchChange,
   onUpdateIssue,
+  onSelectIssue,
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
@@ -571,6 +573,7 @@ export function IssuesList({
           agents={agents}
           liveIssueIds={liveIssueIds}
           onUpdateIssue={onUpdateIssue}
+          onSelectIssue={onSelectIssue}
         />
       ) : (
         groupedContent.map((group) => (
@@ -609,6 +612,10 @@ export function IssuesList({
                   key={issue.id}
                   to={`/issues/${issue.identifier ?? issue.id}`}
                   className="flex items-center gap-2 py-2 pl-1 pr-3 text-sm border-b border-border last:border-b-0 cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit"
+                  onClick={onSelectIssue ? (e) => {
+                    e.preventDefault();
+                    onSelectIssue(issue.identifier ?? issue.id);
+                  } : undefined}
                 >
                   {/* Spacer matching caret width so status icon aligns with group title (hidden on mobile) */}
                   <div className="w-3.5 shrink-0 hidden sm:block" />

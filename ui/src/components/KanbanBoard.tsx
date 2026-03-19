@@ -53,6 +53,7 @@ interface KanbanBoardProps {
   agents?: Agent[];
   liveIssueIds?: Set<string>;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  onSelectIssue?: (issueIdentifier: string) => void;
 }
 
 /* ── Droppable Column ── */
@@ -62,11 +63,13 @@ function KanbanColumn({
   issues,
   agents,
   liveIssueIds,
+  onSelectIssue,
 }: {
   status: string;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  onSelectIssue?: (issueIdentifier: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
@@ -97,6 +100,7 @@ function KanbanColumn({
               issue={issue}
               agents={agents}
               isLive={liveIssueIds?.has(issue.id)}
+              onSelectIssue={onSelectIssue}
             />
           ))}
         </SortableContext>
@@ -112,11 +116,13 @@ function KanbanCard({
   agents,
   isLive,
   isOverlay,
+  onSelectIssue,
 }: {
   issue: Issue;
   agents?: Agent[];
   isLive?: boolean;
   isOverlay?: boolean;
+  onSelectIssue?: (issueIdentifier: string) => void;
 }) {
   const {
     attributes,
@@ -152,7 +158,11 @@ function KanbanCard({
         className="block no-underline text-inherit"
         onClick={(e) => {
           // Prevent navigation during drag
-          if (isDragging) e.preventDefault();
+          if (isDragging) { e.preventDefault(); return; }
+          if (onSelectIssue) {
+            e.preventDefault();
+            onSelectIssue(issue.identifier ?? issue.id);
+          }
         }}
       >
         <div className="flex items-start gap-1.5 mb-1.5">
@@ -206,6 +216,7 @@ export function KanbanBoard({
   agents,
   liveIssueIds,
   onUpdateIssue,
+  onSelectIssue,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
 
@@ -282,6 +293,7 @@ export function KanbanBoard({
             issues={columnIssues[status] ?? []}
             agents={agents}
             liveIssueIds={liveIssueIds}
+            onSelectIssue={onSelectIssue}
           />
         ))}
       </div>
