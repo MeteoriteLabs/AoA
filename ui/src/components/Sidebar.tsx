@@ -87,7 +87,7 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} entityColor="var(--entity-task)" />
           <SidebarNavItem to="/briefs" label="Briefs" icon={FileText} entityColor="var(--entity-brief)" />
-          <SidebarNavItem to="/active-agents" label="Agents" icon={Bot} entityColor="var(--entity-agent)" />
+          <SidebarNavItem to="/agents/all" label="Agents" icon={Bot} entityColor="var(--entity-agent)" />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} entityColor="var(--entity-goal)" />
         </SidebarSection>
 
