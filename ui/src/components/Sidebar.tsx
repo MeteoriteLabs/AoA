@@ -18,8 +18,8 @@ import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjectsByType } from "./SidebarProjectsByType";
 import { useCompany } from "../context/CompanyContext";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
-import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
+import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
 import { Button } from "@/components/ui/button";
 
 export function Sidebar() {
@@ -30,13 +30,7 @@ export function Sidebar() {
     queryFn: () => sidebarBadgesApi.get(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-    refetchInterval: 10_000,
-  });
-  const liveRunCount = liveRuns?.length ?? 0;
+  const liveRunCount = useLiveAgentCount();
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
