@@ -12,7 +12,6 @@ import { assetsApi } from "../api/assets";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
@@ -22,8 +21,7 @@ import { GoalTree } from "../components/GoalTree";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { projectRouteRef, cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { SlidersHorizontal, Plus, Bot, X, DollarSign, AlertTriangle, ChevronDown } from "lucide-react";
+import { Plus, Bot, X, DollarSign, AlertTriangle } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
@@ -48,10 +46,12 @@ function OverviewContent({
   project,
   onUpdate,
   imageUploadHandler,
+  propertiesContent,
 }: {
   project: { description: string | null; status: string; targetDate: string | null };
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
+  propertiesContent: React.ReactNode;
 }) {
   return (
     <div className="space-y-6">
@@ -78,6 +78,12 @@ function OverviewContent({
             <p>{project.targetDate}</p>
           </div>
         )}
+      </div>
+
+      {/* Properties section */}
+      <div className="rounded-lg border border-border p-4 space-y-1">
+        <h3 className="text-sm font-medium text-muted-foreground mb-3">Properties</h3>
+        {propertiesContent}
       </div>
     </div>
   );
@@ -464,8 +470,6 @@ export function ProjectDetail() {
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { isMobile } = useSidebar();
-  const [propsOpen, setPropsOpen] = useState(true);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -632,6 +636,7 @@ export function ProjectDetail() {
             const asset = await uploadImage.mutateAsync(file);
             return asset.contentPath;
           }}
+          propertiesContent={propertiesContent}
         />
       )}
 
@@ -670,43 +675,10 @@ export function ProjectDetail() {
     </div>
   );
 
-  if (isMobile) {
-    return (
-      <div className="space-y-6">
-        {headerContent}
-        {tabContent}
-        <Collapsible open={propsOpen} onOpenChange={setPropsOpen}>
-          <CollapsibleTrigger asChild>
-            <Button variant="ghost" size="sm" className="gap-2 w-full justify-between">
-              <span className="flex items-center gap-2">
-                <SlidersHorizontal className="h-4 w-4" />
-                Properties
-              </span>
-              <ChevronDown className={`h-4 w-4 transition-transform ${propsOpen ? "rotate-180" : ""}`} />
-            </Button>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="border border-border rounded-md p-4 mt-2">
-              {propertiesContent}
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex gap-6">
-      <div className="space-y-6 min-w-0 flex-1">
-        {headerContent}
-        {tabContent}
-      </div>
-      <aside className="w-80 shrink-0 border-l border-border pl-6">
-        <div className="sticky top-0">
-          <h3 className="text-sm font-medium mb-4">Properties</h3>
-          {propertiesContent}
-        </div>
-      </aside>
+    <div className="space-y-6">
+      {headerContent}
+      {tabContent}
     </div>
   );
 }

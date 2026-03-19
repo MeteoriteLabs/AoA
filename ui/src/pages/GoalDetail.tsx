@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
@@ -7,7 +7,6 @@ import { assetsApi } from "../api/assets";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { GoalProperties } from "../components/GoalProperties";
 import { GoalTree } from "../components/GoalTree";
@@ -17,9 +16,8 @@ import { EntityRow } from "../components/EntityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, AlertTriangle, ChevronDown, SlidersHorizontal } from "lucide-react";
+import { Plus, AlertTriangle } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
 
 export function GoalDetail() {
@@ -27,8 +25,6 @@ export function GoalDetail() {
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewGoal } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { isMobile } = useSidebar();
-  const [propsOpen, setPropsOpen] = useState(true);
   const queryClient = useQueryClient();
 
   const {
@@ -124,6 +120,7 @@ export function GoalDetail() {
             {goal.level}
           </span>
           <StatusBadge status={goal.status} />
+
           {isUnassigned ? (
             <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 text-amber-600 px-1.5 py-0.5 text-[10px] font-medium">
               <AlertTriangle className="h-2.5 w-2.5" />
@@ -212,42 +209,18 @@ export function GoalDetail() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Properties section */}
+      <div className="rounded-lg border border-border p-4 space-y-1">
+        <h3 className="text-sm font-medium text-muted-foreground mb-3">Properties</h3>
+        {propertiesContent}
+      </div>
     </div>
   );
 
-  if (isMobile) {
-    return (
-      <div className="space-y-6">
-        {mainContent}
-        <Collapsible open={propsOpen} onOpenChange={setPropsOpen}>
-          <CollapsibleTrigger asChild>
-            <Button variant="ghost" size="sm" className="gap-2 w-full justify-between">
-              <span className="flex items-center gap-2">
-                <SlidersHorizontal className="h-4 w-4" />
-                Properties
-              </span>
-              <ChevronDown className={`h-4 w-4 transition-transform ${propsOpen ? "rotate-180" : ""}`} />
-            </Button>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="border border-border rounded-md p-4 mt-2">
-              {propertiesContent}
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex gap-6">
+    <div className="space-y-6">
       {mainContent}
-      <aside className="w-80 shrink-0 border-l border-border pl-6">
-        <div className="sticky top-0">
-          <h3 className="text-sm font-medium mb-4">Properties</h3>
-          {propertiesContent}
-        </div>
-      </aside>
     </div>
   );
 }
