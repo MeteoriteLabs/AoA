@@ -1,6 +1,7 @@
 import { NavLink } from "@/lib/router";
 import { cn } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LucideIcon } from "lucide-react";
 
 interface SidebarNavItemProps {
@@ -15,6 +16,7 @@ interface SidebarNavItemProps {
   liveCount?: number;
   /** CSS color variable for entity accent (e.g. "var(--entity-task)") */
   entityColor?: string;
+  collapsed?: boolean;
 }
 
 export function SidebarNavItem({
@@ -28,8 +30,62 @@ export function SidebarNavItem({
   alert = false,
   liveCount,
   entityColor,
+  collapsed,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen } = useSidebar();
+
+  if (collapsed) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <NavLink
+            to={to}
+            end={end}
+            onClick={() => { if (isMobile) setSidebarOpen(false); }}
+            className={({ isActive }) =>
+              cn(
+                "flex items-center justify-center w-10 h-8 rounded-md transition-colors mx-auto",
+                isActive
+                  ? "bg-accent text-foreground"
+                  : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+                className,
+              )
+            }
+          >
+            {({ isActive }: { isActive: boolean }) => (
+              <span className="relative shrink-0">
+                <Icon
+                  className="h-4 w-4 transition-colors duration-150"
+                  style={entityColor && isActive ? { color: entityColor } : undefined}
+                />
+                {alert && (
+                  <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
+                )}
+                {/* Dot indicator for badge in collapsed mode */}
+                {!alert && badge != null && badge > 0 && (
+                  <span
+                    className={cn(
+                      "absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full shadow-[0_0_0_2px_hsl(var(--background))]",
+                      badgeTone === "danger" ? "bg-red-500" : "bg-primary",
+                    )}
+                  />
+                )}
+                {/* Dot indicator for live count in collapsed mode */}
+                {!alert && (badge == null || badge <= 0) && liveCount != null && liveCount > 0 && (
+                  <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
+                )}
+              </span>
+            )}
+          </NavLink>
+        </TooltipTrigger>
+        <TooltipContent side="right" sideOffset={8}>
+          {label}
+          {badge != null && badge > 0 && ` (${badge})`}
+          {liveCount != null && liveCount > 0 && ` - ${liveCount} live`}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
 
   return (
     <NavLink
