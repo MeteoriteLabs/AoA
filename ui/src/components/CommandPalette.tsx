@@ -24,10 +24,11 @@ import {
   Target,
   LayoutDashboard,
   Inbox,
-  DollarSign,
-  History,
+  Settings,
   SquarePen,
   Plus,
+  FileText,
+  ArrowLeftRight,
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
@@ -37,7 +38,7 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue, openNewAgent } = useDialog();
+  const { openNewIssue, openNewAgent, openNewGoal, openDebrief } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
   const searchQuery = query.trim();
 
@@ -117,8 +118,26 @@ export function CommandPalette() {
             }}
           >
             <SquarePen className="mr-2 h-4 w-4" />
-            Create new task
+            New Task
             <span className="ml-auto text-xs text-muted-foreground">C</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              openDebrief();
+            }}
+          >
+            <FileText className="mr-2 h-4 w-4" />
+            New Debrief
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              openNewGoal();
+            }}
+          >
+            <Target className="mr-2 h-4 w-4" />
+            New Goal
           </CommandItem>
           <CommandItem
             onSelect={() => {
@@ -127,11 +146,18 @@ export function CommandPalette() {
             }}
           >
             <Plus className="mr-2 h-4 w-4" />
-            Create new agent
+            New Agent
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Plus className="mr-2 h-4 w-4" />
-            Create new project
+            New Project
+          </CommandItem>
+          <CommandItem onSelect={() => {
+            setOpen(false);
+            navigate("/");
+          }}>
+            <ArrowLeftRight className="mr-2 h-4 w-4" />
+            Switch Company
           </CommandItem>
         </CommandGroup>
 
@@ -162,13 +188,9 @@ export function CommandPalette() {
             <Bot className="mr-2 h-4 w-4" />
             Agents
           </CommandItem>
-          <CommandItem onSelect={() => go("/costs")}>
-            <DollarSign className="mr-2 h-4 w-4" />
-            Budget
-          </CommandItem>
-          <CommandItem onSelect={() => go("/activity")}>
-            <History className="mr-2 h-4 w-4" />
-            Activity
+          <CommandItem onSelect={() => go("/settings")}>
+            <Settings className="mr-2 h-4 w-4" />
+            Settings
           </CommandItem>
         </CommandGroup>
 
