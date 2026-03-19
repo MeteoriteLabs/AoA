@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Moon, Sun } from "lucide-react";
 import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
-import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { BreadcrumbBar } from "./BreadcrumbBar";
@@ -30,7 +29,7 @@ export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { togglePanelVisible } = usePanel();
-  const { companies, loading: companiesLoading, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { companies, loading: companiesLoading, selectedCompanyId, selectionSource, setSelectedCompanyId } = useCompany();
   const { theme, toggleTheme } = useTheme();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
@@ -44,6 +43,11 @@ export function Layout() {
     queryFn: () => healthApi.get(),
     retry: false,
   });
+
+  // G1: Clean up stale localStorage key from removed CompanyRail
+  useEffect(() => {
+    localStorage.removeItem("paperclip.companyOrder");
+  }, []);
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
@@ -87,6 +91,17 @@ export function Layout() {
     selectedCompanyId,
     setSelectedCompanyId,
   ]);
+
+  // G8: Navigate when company is manually switched (Cmd+1-9, etc.)
+  // ONLY triggers on "manual" source to avoid 4 race conditions.
+  useEffect(() => {
+    if (selectionSource === "manual" && selectedCompanyId) {
+      const company = companies.find((c) => c.id === selectedCompanyId);
+      if (company) {
+        navigate(`/${company.issuePrefix}/home`, { replace: true });
+      }
+    }
+  }, [selectedCompanyId, selectionSource, companies, navigate]);
 
   const togglePanel = togglePanelVisible;
 
@@ -201,7 +216,7 @@ export function Layout() {
         />
       )}
 
-      {/* Combined sidebar area: company rail + inner sidebar + docs bar */}
+      {/* Sidebar + docs bar */}
       {isMobile ? (
         <div
           className={cn(
@@ -210,7 +225,6 @@ export function Layout() {
           )}
         >
           <div className="flex flex-1 min-h-0 overflow-hidden">
-            <CompanyRail />
             <Sidebar />
           </div>
           <div className="border-t border-r border-border px-3 py-2 bg-background">
@@ -238,7 +252,6 @@ export function Layout() {
       ) : (
         <div className="flex flex-col shrink-0 h-full">
           <div className="flex flex-1 min-h-0">
-            <CompanyRail />
             <div
               className={cn(
                 "overflow-hidden transition-[width] duration-100 ease-out",

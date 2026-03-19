@@ -12,6 +12,7 @@ import {
   Target,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjectsByType } from "./SidebarProjectsByType";
@@ -23,6 +24,7 @@ import { Button } from "@/components/ui/button";
 
 export function Sidebar() {
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const navigate = useNavigate();
   const { data: sidebarBadges } = useQuery({
     queryKey: queryKeys.sidebarBadges(selectedCompanyId!),
     queryFn: () => sidebarBadgesApi.get(selectedCompanyId!),
@@ -42,7 +44,7 @@ export function Sidebar() {
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top bar: Company name (prominent) + Search (Cmd+K) */}
+      {/* Top bar: Company name (clickable → Lobby) + Search (Cmd+K) */}
       <div className="flex items-center gap-1.5 px-3 h-12 shrink-0 border-b border-border">
         {selectedCompany?.brandColor && (
           <div
@@ -50,9 +52,17 @@ export function Sidebar() {
             style={{ backgroundColor: selectedCompany.brandColor }}
           />
         )}
-        <span className="flex-1 text-sm font-semibold text-foreground truncate">
+        <a
+          href="/"
+          onClick={(e) => {
+            e.preventDefault();
+            navigate("/");
+          }}
+          className="flex-1 text-sm font-semibold text-foreground truncate hover:text-foreground/80 transition-colors"
+          title="Back to all companies"
+        >
           {selectedCompany?.name ?? "Select company"}
-        </span>
+        </a>
         <Button
           variant="ghost"
           size="icon-sm"
