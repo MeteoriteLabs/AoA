@@ -243,6 +243,17 @@
   }
 }
 
+/* Entity hover effects for cards */
+.kanban-card-hover:not([class*="opacity-30"]):not([class*="shadow-lg"]):hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  border-color: color-mix(in srgb, var(--entity-task) 25%, var(--border));
+}
+
+.agent-card-hover:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  border-color: color-mix(in srgb, var(--entity-agent) 25%, var(--border));
+}
+
 /* MDXEditor theme integration */
 .paperclip-mdxeditor-scope,
 .paperclip-mdxeditor {

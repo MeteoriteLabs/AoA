@@ -631,7 +631,7 @@ export function IssuesList({
                 <Link
                   key={issue.id}
                   to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="group/row flex items-start gap-2 py-2.5 pl-1 pr-3 text-sm border-b border-border last:border-b-0 cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit"
+                  className="group/row flex items-start gap-2 py-2.5 pl-1 pr-3 text-sm border-b border-border last:border-b-0 cursor-pointer hover:bg-accent/50 transition-all duration-150 no-underline text-inherit border-l-2 border-l-transparent hover:border-l-[var(--entity-task)]"
                   onClick={onSelectIssue ? (e) => {
                     e.preventDefault();
                     onSelectIssue(issue.identifier ?? issue.id);
