@@ -202,11 +202,13 @@ vi.mock("../components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: any) => <div data-testid="markdown-body">{children}</div>,
 }));
 
-// Mock the Sheet component to just render children when open
-vi.mock("@/components/ui/sheet", () => ({
-  Sheet: ({ open, children, onOpenChange }: any) =>
-    open ? <div data-testid="sheet" data-open={open}>{children}</div> : null,
-  SheetContent: ({ children }: any) => <div data-testid="sheet-content">{children}</div>,
+// Mock the Dialog component to just render children when open
+vi.mock("@/components/ui/dialog", () => ({
+  Dialog: ({ open, children, onOpenChange }: any) =>
+    open ? <div data-testid="dialog" data-open={open}>{children}</div> : null,
+  DialogContent: ({ children }: any) => <div data-testid="dialog-content">{children}</div>,
+  DialogHeader: ({ children }: any) => <div>{children}</div>,
+  DialogTitle: ({ children }: any) => <div>{children}</div>,
 }));
 
 vi.mock("@/components/ui/scroll-area", () => ({
@@ -228,13 +230,6 @@ vi.mock("@/components/ui/collapsible", () => ({
   Collapsible: ({ children }: any) => <div>{children}</div>,
   CollapsibleContent: ({ children }: any) => <div>{children}</div>,
   CollapsibleTrigger: ({ children }: any) => <div>{children}</div>,
-}));
-
-vi.mock("@/components/ui/dialog", () => ({
-  Dialog: ({ children, open }: any) => open ? <div>{children}</div> : null,
-  DialogContent: ({ children }: any) => <div>{children}</div>,
-  DialogHeader: ({ children }: any) => <div>{children}</div>,
-  DialogTitle: ({ children }: any) => <div>{children}</div>,
 }));
 
 vi.mock("@/components/ui/button", () => ({
@@ -273,12 +268,12 @@ describe("TaskSlideOver", () => {
 
   it("renders nothing when open=false", () => {
     const { container } = renderSlideOver({ issueId: "issue-1", open: false });
-    expect(container.querySelector("[data-testid='sheet']")).not.toBeInTheDocument();
+    expect(container.querySelector("[data-testid='dialog']")).not.toBeInTheDocument();
   });
 
   it("opens when issueId is set and open=true", () => {
     renderSlideOver({ issueId: "issue-1", open: true });
-    expect(screen.getByTestId("sheet")).toBeInTheDocument();
+    expect(screen.getByTestId("dialog")).toBeInTheDocument();
   });
 
   it("renders task title when issue data is loaded", () => {

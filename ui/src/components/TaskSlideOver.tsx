@@ -22,7 +22,6 @@ import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { StatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
-import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -576,11 +575,17 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
   /* ── Render ── */
 
   return (
-    <Sheet open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <SheetContent
-        side="right"
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent
         showCloseButton={false}
-        className="w-full md:w-[60%] md:max-w-none sm:max-w-none p-0 gap-0"
+        aria-describedby={undefined}
+        className="sm:max-w-4xl max-h-[calc(100dvh-2rem)] p-0 gap-0 overflow-hidden flex flex-col"
+        onPointerDownOutside={(event) => {
+          const target = event.detail.originalEvent.target as HTMLElement | null;
+          if (target?.closest("[data-radix-popper-content-wrapper]")) {
+            event.preventDefault();
+          }
+        }}
       >
         {/* Custom header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
@@ -1083,7 +1088,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
             )}
           </div>
         </ScrollArea>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   );
 }
