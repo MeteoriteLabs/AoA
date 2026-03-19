@@ -1,25 +1,20 @@
 import {
   Inbox,
   CircleDot,
-
   Home,
-  DollarSign,
-  History,
   Search,
-  SquarePen,
-  MessageSquarePlus,
   Users,
   Settings,
   FileText,
   Brain,
   Compass,
   Bot,
+  Target,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjectsByType } from "./SidebarProjectsByType";
-import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -27,7 +22,6 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 
 export function Sidebar() {
-  const { openNewIssue, openDebrief } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { data: sidebarBadges } = useQuery({
     queryKey: queryKeys.sidebarBadges(selectedCompanyId!),
@@ -70,22 +64,8 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
-        {/* Top actions + nav */}
+        {/* Top nav: Home + Inbox */}
         <div className="flex flex-col gap-0.5">
-          <button
-            onClick={() => openNewIssue()}
-            className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
-          >
-            <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">New Task</span>
-          </button>
-          <button
-            onClick={() => openDebrief()}
-            className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
-          >
-            <MessageSquarePlus className="h-4 w-4 shrink-0" />
-            <span className="truncate">Debrief</span>
-          </button>
           <SidebarNavItem to="/home" label="Home" icon={Home} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
@@ -101,7 +81,8 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
           <SidebarNavItem to="/briefs" label="Briefs" icon={FileText} />
-          <SidebarNavItem to="/active-agents" label="Live Agents" icon={Bot} />
+          <SidebarNavItem to="/active-agents" label="Agents" icon={Bot} />
+          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
         </SidebarSection>
 
         {/* DEPARTMENTS section */}
@@ -110,18 +91,18 @@ export function Sidebar() {
         {/* PROJECTS section */}
         <SidebarProjectsByType type="project" label="Projects" />
 
-        {/* TEAM */}
-        <SidebarNavItem to="/org" label="Team" icon={Users} />
-
         {/* COMPANY section */}
         <SidebarSection label="Company">
           <SidebarNavItem to="/vision" label="Vision & Mission" icon={Compass} />
           <SidebarNavItem to="/memory" label="Memory" icon={Brain} />
-          <SidebarNavItem to="/costs" label="Budget" icon={DollarSign} />
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+          <SidebarNavItem to="/org" label="Team" icon={Users} />
         </SidebarSection>
       </nav>
+
+      {/* Settings at bottom, above any footer */}
+      <div className="shrink-0 border-t border-border px-3 py-2">
+        <SidebarNavItem to="/settings" label="Settings" icon={Settings} />
+      </div>
     </aside>
   );
 }
