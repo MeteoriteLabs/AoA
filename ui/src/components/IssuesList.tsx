@@ -574,9 +574,11 @@ export function IssuesList({
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No tasks match the current filters or search."
+          message="No tasks match the current filters or search"
+          description="Try adjusting your filters, or create a new task to get started."
           action="Create Task"
           onAction={() => openNewIssue(newIssueDefaults())}
+          entityColor="var(--entity-task)"
         />
       )}
 

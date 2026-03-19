@@ -56,9 +56,11 @@ export function Goals() {
       {goals && goals.length === 0 && (
         <EmptyState
           icon={Target}
-          message="No goals yet."
-          action="Add Goal"
+          message="No goals yet"
+          description="Goals help you track high-level objectives and align your agents' work toward measurable outcomes."
+          action="Create your first goal"
           onAction={() => openNewGoal()}
+          entityColor="var(--entity-goal)"
         />
       )}
 

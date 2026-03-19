@@ -232,9 +232,11 @@ export function Memory() {
       {sorted.length === 0 ? (
         <EmptyState
           icon={Brain}
-          message="No memory items found."
+          message="No memory items found"
+          description="Memory stores decisions, references, and context that your agents use to produce better work."
           action="Add to Memory"
           onAction={() => setCreateOpen(true)}
+          entityColor="var(--entity-memory)"
         />
       ) : (
         <div className="space-y-2">

@@ -139,7 +139,7 @@ export function Issues() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={CircleDot} message="Select a company to view tasks." />;
+    return <EmptyState icon={CircleDot} message="Select a company to view tasks" description="Tasks are the primary unit of work that agents execute on your behalf." entityColor="var(--entity-task)" />;
   }
 
   return (

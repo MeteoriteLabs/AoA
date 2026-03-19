@@ -7,6 +7,7 @@ import { briefsApi } from "../api/briefs";
 import { queryKeys } from "../lib/queryKeys";
 import { Loader2, FileText, ClipboardPen, PenLine, Plug, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
+import { EmptyState } from "../components/EmptyState";
 
 const STATUS_BADGES: Record<string, string> = {
   draft: "bg-muted text-muted-foreground",
@@ -131,11 +132,12 @@ export function Briefs() {
       </div>
 
       {sorted.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-          <FileText className="h-10 w-10 mb-3 opacity-40" />
-          <p className="text-sm">No briefs yet</p>
-          <p className="text-xs mt-1">Submit a debrief to generate your first brief</p>
-        </div>
+        <EmptyState
+          icon={FileText}
+          message="No briefs yet"
+          description="Submit a debrief to generate your first brief. Briefs extract structured insights, tasks, and decisions from raw content."
+          entityColor="var(--entity-brief)"
+        />
       ) : (
         <div className="space-y-2">
           {sorted.map((brief) => {

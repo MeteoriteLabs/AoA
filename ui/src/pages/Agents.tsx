@@ -138,7 +138,7 @@ export function Agents() {
   }, [agents, setSubtitle]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message="Select a company to view agents" description="Agents are AI workers that execute tasks autonomously on your behalf." entityColor="var(--entity-agent)" />;
   }
 
   if (isLoading) {
@@ -245,9 +245,11 @@ export function Agents() {
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
-          action="New Agent"
+          message="No agents yet"
+          description="Agents are AI workers that execute tasks on your behalf. Create your first agent to start building your team."
+          action="Create your first agent"
           onAction={openNewAgent}
+          entityColor="var(--entity-agent)"
         />
       )}
 
