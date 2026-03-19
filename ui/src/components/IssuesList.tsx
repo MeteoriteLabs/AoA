@@ -52,7 +52,7 @@ const defaultViewState: IssueViewState = {
   sortField: "updated",
   sortDir: "desc",
   groupBy: "none",
-  viewMode: "list",
+  viewMode: "board",
   collapsedGroups: [],
 };
 
