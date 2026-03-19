@@ -54,7 +54,7 @@ export function Lobby() {
           onClick={() => {
             // Navigate to first company's settings if available, otherwise no-op
             const first = visibleCompanies[0];
-            if (first) navigate(`/${first.issuePrefix}/company/settings`);
+            if (first) navigate(`/${first.issuePrefix}/settings`);
           }}
           className={cn(
             "flex items-center justify-center h-8 w-8 rounded-md text-muted-foreground",

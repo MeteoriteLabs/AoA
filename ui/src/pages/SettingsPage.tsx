@@ -1,0 +1,1148 @@
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCompany } from "../context/CompanyContext";
+import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { companiesApi } from "../api/companies";
+import { accessApi } from "../api/access";
+import { costsApi } from "../api/costs";
+import { activityApi } from "../api/activity";
+import { agentsApi } from "../api/agents";
+import { issuesApi } from "../api/issues";
+import { projectsApi } from "../api/projects";
+import { goalsApi } from "../api/goals";
+import { queryKeys } from "../lib/queryKeys";
+import { formatCents, formatTokens } from "../lib/utils";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent,
+} from "@/components/ui/collapsible";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Settings,
+  Check,
+  ChevronRight,
+  DollarSign,
+  History,
+  Puzzle,
+} from "lucide-react";
+import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import {
+  Field,
+  ToggleField,
+  HintIcon,
+} from "../components/agent-config-primitives";
+import { LLMProvidersSection } from "../components/LLMProvidersSection";
+import { EmptyState } from "../components/EmptyState";
+import { PageSkeleton } from "../components/PageSkeleton";
+import { Identity } from "../components/Identity";
+import { StatusBadge } from "../components/StatusBadge";
+import { ActivityRow } from "../components/ActivityRow";
+import type { Agent } from "@paperclipai/shared";
+
+// ─── Section header helper ────────────────────────────────────────────
+function SectionHeader({
+  title,
+  subtitle,
+  open,
+}: {
+  title: string;
+  subtitle?: string;
+  open: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2 py-3 w-full">
+      <ChevronRight
+        className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${
+          open ? "rotate-90" : ""
+        }`}
+      />
+      <span className="text-sm font-medium">{title}</span>
+      {subtitle && !open && (
+        <span className="text-xs text-muted-foreground ml-auto">
+          {subtitle}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ─── Agent snippet helpers (from CompanySettings.tsx) ─────────────────
+type AgentSnippetInput = {
+  onboardingTextUrl: string;
+  connectionCandidates?: string[] | null;
+  testResolutionUrl?: string | null;
+};
+
+function buildCandidateOnboardingUrls(input: AgentSnippetInput): string[] {
+  const candidates = (input.connectionCandidates ?? [])
+    .map((candidate) => candidate.trim())
+    .filter(Boolean);
+  const urls = new Set<string>();
+  let onboardingUrl: URL | null = null;
+
+  try {
+    onboardingUrl = new URL(input.onboardingTextUrl);
+    urls.add(onboardingUrl.toString());
+  } catch {
+    const trimmed = input.onboardingTextUrl.trim();
+    if (trimmed) {
+      urls.add(trimmed);
+    }
+  }
+
+  if (!onboardingUrl) {
+    for (const candidate of candidates) {
+      urls.add(candidate);
+    }
+    return Array.from(urls);
+  }
+
+  const onboardingPath = `${onboardingUrl.pathname}${onboardingUrl.search}`;
+  for (const candidate of candidates) {
+    try {
+      const base = new URL(candidate);
+      urls.add(`${base.origin}${onboardingPath}`);
+    } catch {
+      urls.add(candidate);
+    }
+  }
+
+  return Array.from(urls);
+}
+
+function buildResolutionTestUrl(input: AgentSnippetInput): string | null {
+  const explicit = input.testResolutionUrl?.trim();
+  if (explicit) return explicit;
+
+  try {
+    const onboardingUrl = new URL(input.onboardingTextUrl);
+    const testPath = onboardingUrl.pathname.replace(
+      /\/onboarding\.txt$/,
+      "/test-resolution"
+    );
+    return `${onboardingUrl.origin}${testPath}`;
+  } catch {
+    return null;
+  }
+}
+
+function buildAgentSnippet(input: AgentSnippetInput) {
+  const candidateUrls = buildCandidateOnboardingUrls(input);
+  const resolutionTestUrl = buildResolutionTestUrl(input);
+
+  const candidateList =
+    candidateUrls.length > 0
+      ? candidateUrls.map((u) => `- ${u}`).join("\n")
+      : "- (No candidate URLs available yet.)";
+
+  const connectivityBlock =
+    candidateUrls.length === 0
+      ? `No candidate URLs are available. Ask your user to configure a reachable hostname in AoA, then retry.
+Suggested steps:
+- choose a hostname that resolves to the AoA host from your runtime
+- run: pnpm paperclipai allowed-hostname <host>
+- restart AoA
+- verify with: curl -fsS http://<host>:3100/api/health
+- regenerate this invite snippet`
+      : `If none are reachable, ask your user to add a reachable hostname in AoA, restart, and retry.
+Suggested command:
+- pnpm paperclipai allowed-hostname <host>
+Then verify with: curl -fsS <base-url>/api/health`;
+
+  const resolutionLine = resolutionTestUrl
+    ? `\nYou MUST test callback reachability, call: ${resolutionTestUrl}?url=<urlencoded-webhook-url> (well using the hostname that worked above). Do not assume your 172.x is necessarily reachable from AoA. Test it. `
+    : "";
+
+  return `You're invited to join an AoA organization.
+
+The URLs you should try are:
+${candidateList}
+
+Connectivity guidance:
+If you are running on a different machine than AoA, AoA must be reachable at one of the hostnames used above.
+Verify the hostname works from your runtime with: GET <base-url>/api/health
+
+${connectivityBlock}
+
+For your "agentName", just use your own agent name (OpenClaw or whatever your name is) and send it directly.
+You also need to send a webhook URL that AoA can access. Check your config and include that URL.${resolutionLine}
+
+---
+
+In order for AoA to work smoothly, you need to enable \`gateway.http.endpoints.responses.enabled=true\` in your OpenClaw config.
+
+Please enable that setting and notify your user that we did so.
+
+Before you do anything, please respond to your user that you understand the instructions and you're going to work on them. Then do the step above in another session called "paperclip-onboarding" and then tell your user when you're done. Update your user in intermediate steps along the way so they know what's going on.
+
+Then after you've connected to AoA (exchanged keys etc.) you MUST review and follow the onboarding instructions in onboarding.txt they give you.
+
+`;
+}
+
+// ─── Budget date range helpers (from Costs.tsx) ───────────────────────
+type DatePreset = "mtd" | "7d" | "30d" | "ytd" | "all" | "custom";
+
+const PRESET_LABELS: Record<DatePreset, string> = {
+  mtd: "Month to Date",
+  "7d": "Last 7 Days",
+  "30d": "Last 30 Days",
+  ytd: "Year to Date",
+  all: "All Time",
+  custom: "Custom",
+};
+
+function computeRange(preset: DatePreset): { from: string; to: string } {
+  const now = new Date();
+  const to = now.toISOString();
+  switch (preset) {
+    case "mtd": {
+      const d = new Date(now.getFullYear(), now.getMonth(), 1);
+      return { from: d.toISOString(), to };
+    }
+    case "7d": {
+      const d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      return { from: d.toISOString(), to };
+    }
+    case "30d": {
+      const d = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      return { from: d.toISOString(), to };
+    }
+    case "ytd": {
+      const d = new Date(now.getFullYear(), 0, 1);
+      return { from: d.toISOString(), to };
+    }
+    case "all":
+      return { from: "", to: "" };
+    case "custom":
+      return { from: "", to: "" };
+  }
+}
+
+// ─── General Section ──────────────────────────────────────────────────
+function GeneralSection() {
+  const {
+    companies,
+    selectedCompany,
+    selectedCompanyId,
+    setSelectedCompanyId,
+  } = useCompany();
+  const queryClient = useQueryClient();
+
+  const [companyName, setCompanyName] = useState("");
+  const [description, setDescription] = useState("");
+  const [brandColor, setBrandColor] = useState("");
+
+  useEffect(() => {
+    if (!selectedCompany) return;
+    setCompanyName(selectedCompany.name);
+    setDescription(selectedCompany.description ?? "");
+    setBrandColor(selectedCompany.brandColor ?? "");
+  }, [selectedCompany]);
+
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
+  const [snippetCopied, setSnippetCopied] = useState(false);
+  const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
+
+  const generalDirty =
+    !!selectedCompany &&
+    (companyName !== selectedCompany.name ||
+      description !== (selectedCompany.description ?? "") ||
+      brandColor !== (selectedCompany.brandColor ?? ""));
+
+  const generalMutation = useMutation({
+    mutationFn: (data: {
+      name: string;
+      description: string | null;
+      brandColor: string | null;
+    }) => companiesApi.update(selectedCompanyId!, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+  });
+
+  const settingsMutation = useMutation({
+    mutationFn: (requireApproval: boolean) =>
+      companiesApi.update(selectedCompanyId!, {
+        requireBoardApprovalForNewAgents: requireApproval,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+  });
+
+  const inviteMutation = useMutation({
+    mutationFn: () =>
+      accessApi.createCompanyInvite(selectedCompanyId!, {
+        allowedJoinTypes: "agent",
+      }),
+    onSuccess: async (invite) => {
+      setInviteError(null);
+      const base = window.location.origin.replace(/\/+$/, "");
+      const onboardingTextLink =
+        invite.onboardingTextUrl ??
+        invite.onboardingTextPath ??
+        `/api/invites/${invite.token}/onboarding.txt`;
+      const absoluteUrl = onboardingTextLink.startsWith("http")
+        ? onboardingTextLink
+        : `${base}${onboardingTextLink}`;
+      setSnippetCopied(false);
+      setSnippetCopyDelightId(0);
+      let snippet: string;
+      try {
+        const manifest = await accessApi.getInviteOnboarding(invite.token);
+        snippet = buildAgentSnippet({
+          onboardingTextUrl: absoluteUrl,
+          connectionCandidates:
+            manifest.onboarding.connectivity?.connectionCandidates ?? null,
+          testResolutionUrl:
+            manifest.onboarding.connectivity?.testResolutionEndpoint?.url ??
+            null,
+        });
+      } catch {
+        snippet = buildAgentSnippet({
+          onboardingTextUrl: absoluteUrl,
+          connectionCandidates: null,
+          testResolutionUrl: null,
+        });
+      }
+      setInviteSnippet(snippet);
+      try {
+        await navigator.clipboard.writeText(snippet);
+        setSnippetCopied(true);
+        setSnippetCopyDelightId((prev) => prev + 1);
+        setTimeout(() => setSnippetCopied(false), 2000);
+      } catch {
+        /* clipboard may not be available */
+      }
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.sidebarBadges(selectedCompanyId!),
+      });
+    },
+    onError: (err) => {
+      setInviteError(
+        err instanceof Error ? err.message : "Failed to create invite"
+      );
+    },
+  });
+
+  useEffect(() => {
+    setInviteError(null);
+    setInviteSnippet(null);
+    setSnippetCopied(false);
+    setSnippetCopyDelightId(0);
+  }, [selectedCompanyId]);
+
+  const archiveMutation = useMutation({
+    mutationFn: ({
+      companyId,
+      nextCompanyId,
+    }: {
+      companyId: string;
+      nextCompanyId: string | null;
+    }) => companiesApi.archive(companyId).then(() => ({ nextCompanyId })),
+    onSuccess: async ({ nextCompanyId }) => {
+      if (nextCompanyId) {
+        setSelectedCompanyId(nextCompanyId);
+      }
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.all,
+      });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.stats,
+      });
+    },
+  });
+
+  if (!selectedCompany) {
+    return (
+      <div className="text-sm text-muted-foreground">
+        No company selected. Select a company from the switcher above.
+      </div>
+    );
+  }
+
+  function handleSaveGeneral() {
+    generalMutation.mutate({
+      name: companyName.trim(),
+      description: description.trim() || null,
+      brandColor: brandColor || null,
+    });
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* General */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          General
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <Field label="Company name" hint="The display name for your company.">
+            <input
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              type="text"
+              value={companyName}
+              onChange={(e) => setCompanyName(e.target.value)}
+            />
+          </Field>
+          <Field
+            label="Description"
+            hint="Optional description shown in the company profile."
+          >
+            <input
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              type="text"
+              value={description}
+              placeholder="Optional company description"
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </Field>
+        </div>
+      </div>
+
+      {/* Appearance */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Appearance
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <div className="flex items-start gap-4">
+            <div className="shrink-0">
+              <CompanyPatternIcon
+                companyName={companyName || selectedCompany.name}
+                brandColor={brandColor || null}
+                className="rounded-[14px]"
+              />
+            </div>
+            <div className="flex-1 space-y-2">
+              <Field
+                label="Brand color"
+                hint="Sets the hue for the company icon. Leave empty for auto-generated color."
+              >
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={brandColor || "#6366f1"}
+                    onChange={(e) => setBrandColor(e.target.value)}
+                    className="h-8 w-8 cursor-pointer rounded border border-border bg-transparent p-0"
+                  />
+                  <input
+                    type="text"
+                    value={brandColor}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "" || /^#[0-9a-fA-F]{0,6}$/.test(v)) {
+                        setBrandColor(v);
+                      }
+                    }}
+                    placeholder="Auto"
+                    className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                  />
+                  {brandColor && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setBrandColor("")}
+                      className="text-xs text-muted-foreground"
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </div>
+              </Field>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Save button for General + Appearance */}
+      {generalDirty && (
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            onClick={handleSaveGeneral}
+            disabled={generalMutation.isPending || !companyName.trim()}
+          >
+            {generalMutation.isPending ? "Saving..." : "Save changes"}
+          </Button>
+          {generalMutation.isSuccess && (
+            <span className="text-xs text-muted-foreground">Saved</span>
+          )}
+          {generalMutation.isError && (
+            <span className="text-xs text-destructive">
+              {generalMutation.error instanceof Error
+                ? generalMutation.error.message
+                : "Failed to save"}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Hiring */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Hiring
+        </div>
+        <div className="rounded-md border border-border px-4 py-3">
+          <ToggleField
+            label="Require board approval for new hires"
+            hint="New agent hires stay pending until approved by board."
+            checked={!!selectedCompany.requireBoardApprovalForNewAgents}
+            onChange={(v) => settingsMutation.mutate(v)}
+          />
+        </div>
+      </div>
+
+      {/* Invites */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Invites
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">
+              Generate an agent snippet for join flows.
+            </span>
+            <HintIcon text="Creates an agent-only invite (10m) and renders a copy-ready snippet." />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => inviteMutation.mutate()}
+              disabled={inviteMutation.isPending}
+            >
+              {inviteMutation.isPending
+                ? "Generating..."
+                : "Generate agent snippet"}
+            </Button>
+          </div>
+          {inviteError && (
+            <p className="text-sm text-destructive">{inviteError}</p>
+          )}
+          {inviteSnippet && (
+            <div className="rounded-md border border-border bg-muted/30 p-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs text-muted-foreground">
+                  Agent Snippet
+                </div>
+                {snippetCopied && (
+                  <span
+                    key={snippetCopyDelightId}
+                    className="flex items-center gap-1 text-xs text-green-600 animate-pulse"
+                  >
+                    <Check className="h-3 w-3" />
+                    Copied
+                  </span>
+                )}
+              </div>
+              <div className="mt-1 space-y-1.5">
+                <textarea
+                  className="h-[28rem] w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
+                  value={inviteSnippet}
+                  readOnly
+                />
+                <div className="flex justify-end">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(inviteSnippet);
+                        setSnippetCopied(true);
+                        setSnippetCopyDelightId((prev) => prev + 1);
+                        setTimeout(() => setSnippetCopied(false), 2000);
+                      } catch {
+                        /* clipboard may not be available */
+                      }
+                    }}
+                  >
+                    {snippetCopied ? "Copied snippet" : "Copy snippet"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Danger Zone */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-destructive uppercase tracking-wide">
+          Danger Zone
+        </div>
+        <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            Archive this company to hide it from the sidebar. This persists in
+            the database.
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={
+                archiveMutation.isPending ||
+                selectedCompany.status === "archived"
+              }
+              onClick={() => {
+                if (!selectedCompanyId) return;
+                const confirmed = window.confirm(
+                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                );
+                if (!confirmed) return;
+                const nextCompanyId =
+                  companies.find(
+                    (company) =>
+                      company.id !== selectedCompanyId &&
+                      company.status !== "archived"
+                  )?.id ?? null;
+                archiveMutation.mutate({
+                  companyId: selectedCompanyId,
+                  nextCompanyId,
+                });
+              }}
+            >
+              {archiveMutation.isPending
+                ? "Archiving..."
+                : selectedCompany.status === "archived"
+                  ? "Already archived"
+                  : "Archive company"}
+            </Button>
+            {archiveMutation.isError && (
+              <span className="text-xs text-destructive">
+                {archiveMutation.error instanceof Error
+                  ? archiveMutation.error.message
+                  : "Failed to archive company"}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Budget Section ───────────────────────────────────────────────────
+function BudgetSection() {
+  const { selectedCompanyId } = useCompany();
+
+  const [preset, setPreset] = useState<DatePreset>("mtd");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+
+  const { from, to } = useMemo(() => {
+    if (preset === "custom") {
+      return {
+        from: customFrom ? new Date(customFrom).toISOString() : "",
+        to: customTo
+          ? new Date(customTo + "T23:59:59.999Z").toISOString()
+          : "",
+      };
+    }
+    return computeRange(preset);
+  }, [preset, customFrom, customTo]);
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.costs(
+      selectedCompanyId!,
+      from || undefined,
+      to || undefined
+    ),
+    queryFn: async () => {
+      const [summary, byAgent, byProject] = await Promise.all([
+        costsApi.summary(selectedCompanyId!, from || undefined, to || undefined),
+        costsApi.byAgent(selectedCompanyId!, from || undefined, to || undefined),
+        costsApi.byProject(
+          selectedCompanyId!,
+          from || undefined,
+          to || undefined
+        ),
+      ]);
+      return { summary, byAgent, byProject };
+    },
+    enabled: !!selectedCompanyId,
+  });
+
+  if (!selectedCompanyId) {
+    return (
+      <EmptyState
+        icon={DollarSign}
+        message="Select a company to view budget."
+      />
+    );
+  }
+
+  if (isLoading) {
+    return <PageSkeleton variant="costs" />;
+  }
+
+  const presetKeys: DatePreset[] = [
+    "mtd",
+    "7d",
+    "30d",
+    "ytd",
+    "all",
+    "custom",
+  ];
+
+  return (
+    <div className="space-y-6">
+      {/* Date range selector */}
+      <div className="flex flex-wrap items-center gap-2">
+        {presetKeys.map((p) => (
+          <Button
+            key={p}
+            variant={preset === p ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => setPreset(p)}
+          >
+            {PRESET_LABELS[p]}
+          </Button>
+        ))}
+        {preset === "custom" && (
+          <div className="flex items-center gap-2 ml-2">
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+            />
+            <span className="text-sm text-muted-foreground">to</span>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+            />
+          </div>
+        )}
+      </div>
+
+      {error && <p className="text-sm text-destructive">{error.message}</p>}
+
+      {data && (
+        <>
+          {/* Summary card */}
+          <Card>
+            <CardContent className="p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-muted-foreground">
+                  {PRESET_LABELS[preset]}
+                </p>
+                {data.summary.budgetCents > 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    {data.summary.utilizationPercent}% utilized
+                  </p>
+                )}
+              </div>
+              <p className="text-2xl font-bold">
+                {formatCents(data.summary.spendCents)}{" "}
+                <span className="text-base font-normal text-muted-foreground">
+                  {data.summary.budgetCents > 0
+                    ? `/ ${formatCents(data.summary.budgetCents)}`
+                    : "Unlimited budget"}
+                </span>
+              </p>
+              {data.summary.budgetCents > 0 && (
+                <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-[width,background-color] duration-150 ${
+                      data.summary.utilizationPercent > 90
+                        ? "bg-red-400"
+                        : data.summary.utilizationPercent > 70
+                          ? "bg-yellow-400"
+                          : "bg-green-400"
+                    }`}
+                    style={{
+                      width: `${Math.min(100, data.summary.utilizationPercent)}%`,
+                    }}
+                  />
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* By Agent / By Project */}
+          <div className="grid md:grid-cols-2 gap-4">
+            <Card>
+              <CardContent className="p-4">
+                <h3 className="text-sm font-semibold mb-3">By Agent</h3>
+                {data.byAgent.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No cost events yet.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {data.byAgent.map((row) => (
+                      <div
+                        key={row.agentId}
+                        className="flex items-start justify-between text-sm"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Identity
+                            name={row.agentName ?? row.agentId}
+                            size="sm"
+                          />
+                          {row.agentStatus === "terminated" && (
+                            <StatusBadge status="terminated" />
+                          )}
+                        </div>
+                        <div className="text-right shrink-0 ml-2">
+                          <span className="font-medium block">
+                            {formatCents(row.costCents)}
+                          </span>
+                          <span className="text-xs text-muted-foreground block">
+                            in {formatTokens(row.inputTokens)} / out{" "}
+                            {formatTokens(row.outputTokens)} tok
+                          </span>
+                          {(row.apiRunCount > 0 ||
+                            row.subscriptionRunCount > 0) && (
+                            <span className="text-xs text-muted-foreground block">
+                              {row.apiRunCount > 0
+                                ? `api runs: ${row.apiRunCount}`
+                                : null}
+                              {row.apiRunCount > 0 &&
+                              row.subscriptionRunCount > 0
+                                ? " | "
+                                : null}
+                              {row.subscriptionRunCount > 0
+                                ? `subscription runs: ${row.subscriptionRunCount} (${formatTokens(row.subscriptionInputTokens)} in / ${formatTokens(row.subscriptionOutputTokens)} out tok)`
+                                : null}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-4">
+                <h3 className="text-sm font-semibold mb-3">By Project</h3>
+                {data.byProject.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No project-attributed run costs yet.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {data.byProject.map((row) => (
+                      <div
+                        key={row.projectId ?? "na"}
+                        className="flex items-center justify-between text-sm"
+                      >
+                        <span className="truncate">
+                          {row.projectName ?? row.projectId ?? "Unattributed"}
+                        </span>
+                        <span className="font-medium">
+                          {formatCents(row.costCents)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Activity Section ─────────────────────────────────────────────────
+function ActivitySection() {
+  const { selectedCompanyId } = useCompany();
+  const [filter, setFilter] = useState("all");
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.activity(selectedCompanyId!),
+    queryFn: () => activityApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: issues } = useQuery({
+    queryKey: queryKeys.issues.list(selectedCompanyId!),
+    queryFn: () => issuesApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: goals } = useQuery({
+    queryKey: queryKeys.goals.list(selectedCompanyId!),
+    queryFn: () => goalsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const agentMap = useMemo(() => {
+    const map = new Map<string, Agent>();
+    for (const a of agents ?? []) map.set(a.id, a);
+    return map;
+  }, [agents]);
+
+  const entityNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const i of issues ?? [])
+      map.set(`issue:${i.id}`, i.identifier ?? i.id.slice(0, 8));
+    for (const a of agents ?? []) map.set(`agent:${a.id}`, a.name);
+    for (const p of projects ?? []) map.set(`project:${p.id}`, p.name);
+    for (const g of goals ?? []) map.set(`goal:${g.id}`, g.title);
+    return map;
+  }, [issues, agents, projects, goals]);
+
+  const entityTitleMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.title);
+    return map;
+  }, [issues]);
+
+  if (!selectedCompanyId) {
+    return (
+      <EmptyState
+        icon={History}
+        message="Select a company to view activity."
+      />
+    );
+  }
+
+  if (isLoading) {
+    return <PageSkeleton variant="list" />;
+  }
+
+  const filtered =
+    data && filter !== "all"
+      ? data.filter((e) => e.entityType === filter)
+      : data;
+
+  const entityTypes = data
+    ? [...new Set(data.map((e) => e.entityType))].sort()
+    : [];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-end">
+        <Select value={filter} onValueChange={setFilter}>
+          <SelectTrigger className="w-[140px] h-8 text-xs">
+            <SelectValue placeholder="Filter by type" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All types</SelectItem>
+            {entityTypes.map((type) => (
+              <SelectItem key={type} value={type}>
+                {type.charAt(0).toUpperCase() + type.slice(1)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {error && <p className="text-sm text-destructive">{error.message}</p>}
+
+      {filtered && filtered.length === 0 && (
+        <EmptyState icon={History} message="No activity yet." />
+      )}
+
+      {filtered && filtered.length > 0 && (
+        <div className="border border-border divide-y divide-border">
+          {filtered.map((event) => (
+            <ActivityRow
+              key={event.id}
+              event={event}
+              agentMap={agentMap}
+              entityNameMap={entityNameMap}
+              entityTitleMap={entityTitleMap}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Budget Headline (collapsed summary) ──────────────────────────────
+function useBudgetHeadline() {
+  const { selectedCompanyId } = useCompany();
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const { data } = useQuery({
+    queryKey: queryKeys.costs(
+      selectedCompanyId!,
+      monthStart.toISOString(),
+      now.toISOString()
+    ),
+    queryFn: () =>
+      costsApi.summary(
+        selectedCompanyId!,
+        monthStart.toISOString(),
+        now.toISOString()
+      ),
+    enabled: !!selectedCompanyId,
+  });
+
+  if (!data) return null;
+  return `${formatCents(data.spendCents)} spent this month`;
+}
+
+// ─── Activity Headline (collapsed summary) ────────────────────────────
+function useActivityHeadline() {
+  const { selectedCompanyId } = useCompany();
+
+  const { data } = useQuery({
+    queryKey: queryKeys.activity(selectedCompanyId!),
+    queryFn: () => activityApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  if (!data) return null;
+  const now = Date.now();
+  const dayAgo = now - 24 * 60 * 60 * 1000;
+  const recent = data.filter(
+    (e) => new Date(e.createdAt).getTime() > dayAgo
+  ).length;
+  return `Last 24h: ${recent} events`;
+}
+
+// ─── Main SettingsPage ────────────────────────────────────────────────
+export function SettingsPage() {
+  const { setBreadcrumbs } = useBreadcrumbs();
+  const { selectedCompany } = useCompany();
+
+  const [generalOpen, setGeneralOpen] = useState(true);
+  const [llmOpen, setLlmOpen] = useState(true);
+  const [budgetOpen, setBudgetOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [integrationsOpen, setIntegrationsOpen] = useState(true);
+
+  const budgetHeadline = useBudgetHeadline();
+  const activityHeadline = useActivityHeadline();
+
+  useEffect(() => {
+    setBreadcrumbs([
+      { label: selectedCompany?.name ?? "Company", href: "/home" },
+      { label: "Settings" },
+    ]);
+  }, [setBreadcrumbs, selectedCompany?.name]);
+
+  return (
+    <div className="max-w-3xl space-y-1">
+      <div className="flex items-center gap-2 mb-6">
+        <Settings className="h-5 w-5 text-muted-foreground" />
+        <h1 className="text-lg font-semibold">Settings</h1>
+      </div>
+
+      {/* General */}
+      <Collapsible open={generalOpen} onOpenChange={setGeneralOpen}>
+        <CollapsibleTrigger asChild>
+          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
+            <SectionHeader title="General" open={generalOpen} />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="pb-6 pt-1 px-2 -mx-2">
+            <GeneralSection />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+
+      <div className="border-t border-border" />
+
+      {/* LLM Providers */}
+      <Collapsible open={llmOpen} onOpenChange={setLlmOpen}>
+        <CollapsibleTrigger asChild>
+          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
+            <SectionHeader title="LLM Providers" open={llmOpen} />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="pb-6 pt-1 px-2 -mx-2">
+            <LLMProvidersSection />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+
+      <div className="border-t border-border" />
+
+      {/* Budget */}
+      <Collapsible open={budgetOpen} onOpenChange={setBudgetOpen}>
+        <CollapsibleTrigger asChild>
+          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
+            <SectionHeader
+              title="Budget"
+              subtitle={budgetHeadline ?? undefined}
+              open={budgetOpen}
+            />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="pb-6 pt-1 px-2 -mx-2">
+            <BudgetSection />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+
+      <div className="border-t border-border" />
+
+      {/* Activity */}
+      <Collapsible open={activityOpen} onOpenChange={setActivityOpen}>
+        <CollapsibleTrigger asChild>
+          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
+            <SectionHeader
+              title="Activity"
+              subtitle={activityHeadline ?? undefined}
+              open={activityOpen}
+            />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="pb-6 pt-1 px-2 -mx-2">
+            <ActivitySection />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+
+      <div className="border-t border-border" />
+
+      {/* Integrations */}
+      <Collapsible open={integrationsOpen} onOpenChange={setIntegrationsOpen}>
+        <CollapsibleTrigger asChild>
+          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
+            <SectionHeader title="Integrations" open={integrationsOpen} />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="pb-6 pt-1 px-2 -mx-2">
+            <div className="rounded-md border border-dashed border-border px-4 py-8 text-center">
+              <Puzzle className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
+              <p className="text-sm text-muted-foreground">
+                No integrations configured. Coming soon.
+              </p>
+            </div>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  );
+}
