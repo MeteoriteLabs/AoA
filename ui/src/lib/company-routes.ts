@@ -2,6 +2,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "dashboard",
   "companies",
   "company",
+  "home",
   "org",
   "agents",
   "projects",
@@ -14,6 +15,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "costs",
   "activity",
   "inbox",
+  "settings",
   "design-guide",
   "active-agents",
 ]);
