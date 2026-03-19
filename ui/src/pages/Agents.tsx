@@ -118,9 +118,24 @@ export function Agents() {
     return map;
   }, [agents]);
 
+  const { setSubtitle, setEntityColor } = useBreadcrumbs();
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
-  }, [setBreadcrumbs]);
+    setEntityColor("var(--entity-agent)");
+    return () => { setSubtitle(null); setEntityColor(null); };
+  }, [setBreadcrumbs, setSubtitle, setEntityColor]);
+
+  // Compute subtitle counts
+  useEffect(() => {
+    if (!agents) return;
+    const active = agents.filter((a) => a.status === "active" || a.status === "running" || a.status === "idle").length;
+    const idle = agents.filter((a) => a.status === "idle").length;
+    const parts: string[] = [];
+    if (active > 0) parts.push(`${active} active`);
+    if (idle > 0) parts.push(`${idle} idle`);
+    setSubtitle(parts.length > 0 ? parts.join(" \u00B7 ") : null);
+  }, [agents, setSubtitle]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Bot} message="Select a company to view agents." />;

@@ -105,15 +105,30 @@ export function Issues() {
     return ids;
   }, [liveRuns]);
 
+  const { setSubtitle, setEntityColor } = useBreadcrumbs();
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Tasks" }]);
-  }, [setBreadcrumbs]);
+    setEntityColor("var(--entity-task)");
+    return () => { setSubtitle(null); setEntityColor(null); };
+  }, [setBreadcrumbs, setSubtitle, setEntityColor]);
 
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
     queryFn: () => issuesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  // Compute subtitle counts
+  useEffect(() => {
+    if (!issues) return;
+    const active = issues.filter((i) => ["todo", "in_progress", "blocked"].includes(i.status)).length;
+    const inReview = issues.filter((i) => i.status === "in_review").length;
+    const parts: string[] = [];
+    if (active > 0) parts.push(`${active} active`);
+    if (inReview > 0) parts.push(`${inReview} in review`);
+    setSubtitle(parts.length > 0 ? parts.join(" \u00B7 ") : null);
+  }, [issues, setSubtitle]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>

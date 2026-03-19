@@ -16,15 +16,30 @@ export function Goals() {
   const { openNewGoal } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
 
+  const { setSubtitle, setEntityColor } = useBreadcrumbs();
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Goals" }]);
-  }, [setBreadcrumbs]);
+    setEntityColor("var(--entity-goal)");
+    return () => { setSubtitle(null); setEntityColor(null); };
+  }, [setBreadcrumbs, setSubtitle, setEntityColor]);
 
   const { data: goals, isLoading, error } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  // Compute subtitle counts
+  useEffect(() => {
+    if (!goals) return;
+    const active = goals.filter((g) => g.status === "active").length;
+    const atRisk = goals.filter((g) => g.status === "at_risk").length;
+    const parts: string[] = [];
+    if (active > 0) parts.push(`${active} active`);
+    if (atRisk > 0) parts.push(`${atRisk} at risk`);
+    setSubtitle(parts.length > 0 ? parts.join(" \u00B7 ") : null);
+  }, [goals, setSubtitle]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Target} message="Select a company to view goals." />;

@@ -38,9 +38,13 @@ export function Briefs() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
 
+  const { setSubtitle, setEntityColor } = useBreadcrumbs();
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Briefs" }]);
-  }, [setBreadcrumbs]);
+    setEntityColor("var(--entity-brief)");
+    return () => { setSubtitle(null); setEntityColor(null); };
+  }, [setBreadcrumbs, setSubtitle, setEntityColor]);
 
   // Always fetch all briefs so we can compute counts per status
   const { data: briefs, isLoading } = useQuery({
@@ -48,6 +52,13 @@ export function Briefs() {
     queryFn: () => briefsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  // Compute subtitle counts
+  useEffect(() => {
+    if (!briefs) return;
+    const ready = briefs.filter((b) => b.status === "ready").length;
+    setSubtitle(ready > 0 ? `${ready} ready for review` : null);
+  }, [briefs, setSubtitle]);
 
   // Compute status counts for the pipeline bar
   const statusCounts = useMemo(() => {
@@ -82,10 +93,6 @@ export function Briefs() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold">Briefs</h1>
-      </div>
-
       {/* Status pipeline bar */}
       <div className="flex items-center gap-1 flex-wrap">
         {/* "All" chip */}
