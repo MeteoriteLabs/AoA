@@ -148,8 +148,8 @@ export function SidebarProjectsByType({ type, label, collapsed }: SidebarProject
   // Collapsed mode: single folder icon with popover
   if (collapsed) {
     return (
-      <div>
-        <div className="mx-2 my-1.5 border-t border-border" />
+      <div className="w-full">
+        <div className="mx-auto w-8 my-1.5 border-t border-border" />
         <Popover>
           <Tooltip>
             <TooltipTrigger asChild>

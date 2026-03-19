@@ -95,9 +95,9 @@ export function Sidebar() {
         )}
       </div>
 
-      <nav className={cn("flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 py-2", collapsed ? "px-1" : "px-3")}>
+      <nav className={cn("flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 py-2", collapsed ? "px-0 items-center" : "px-3")}>
         {/* Top nav: Home + Inbox */}
-        <div className="flex flex-col gap-0.5">
+        <div className={cn("flex flex-col gap-0.5", collapsed && "w-full items-center")}>
           <SidebarNavItem to="/home" label="Home" icon={Home} liveCount={liveRunCount} collapsed={collapsed} />
           <SidebarNavItem
             to="/inbox"
@@ -133,7 +133,7 @@ export function Sidebar() {
       </nav>
 
       {/* Settings at bottom, above any footer */}
-      <div className={cn("shrink-0 border-t border-border py-2", collapsed ? "px-1" : "px-3")}>
+      <div className={cn("shrink-0 border-t border-border py-2", collapsed ? "px-0 flex justify-center" : "px-3")}>
         <SidebarNavItem to="/settings" label="Settings" icon={Settings} collapsed={collapsed} />
       </div>
     </aside>

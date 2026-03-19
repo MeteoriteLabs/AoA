@@ -9,9 +9,9 @@ interface SidebarSectionProps {
 export function SidebarSection({ label, children, collapsed }: SidebarSectionProps) {
   if (collapsed) {
     return (
-      <div>
-        <div className="mx-2 my-1.5 border-t border-border" />
-        <div className="flex flex-col gap-0.5 mt-0.5">{children}</div>
+      <div className="w-full">
+        <div className="mx-auto w-8 my-1.5 border-t border-border" />
+        <div className="flex flex-col gap-0.5 mt-0.5 items-center">{children}</div>
       </div>
     );
   }
