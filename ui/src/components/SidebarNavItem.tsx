@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from "@/lib/router";
+import { Link, NavLink, useLocation } from "@/lib/router";
 import { cn } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -49,9 +49,8 @@ export function SidebarNavItem({
     return (
       <Tooltip>
         <TooltipTrigger asChild>
-          <NavLink
-            to={to}
-            end={end}
+          <Link
+            to={fullPath}
             onClick={() => { if (isMobile) setSidebarOpen(false); }}
             className={cn(
               "flex items-center justify-center w-10 h-8 rounded-md transition-colors mx-auto",
@@ -83,7 +82,7 @@ export function SidebarNavItem({
                 <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
               )}
             </span>
-          </NavLink>
+          </Link>
         </TooltipTrigger>
         <TooltipContent side="right" sideOffset={8}>
           {label}
