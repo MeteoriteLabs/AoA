@@ -81,9 +81,13 @@ export function Memory() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
+  const { setSubtitle, setEntityColor } = useBreadcrumbs();
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Memory" }]);
-  }, [setBreadcrumbs]);
+    setEntityColor("var(--entity-memory)");
+    return () => { setSubtitle(null); setEntityColor(null); };
+  }, [setBreadcrumbs, setSubtitle, setEntityColor]);
 
   const filters = useMemo(() => {
     const f: Record<string, string> = {};
@@ -110,6 +114,17 @@ export function Memory() {
     () => (projects ?? []).filter((p: Project) => p.type === "department"),
     [projects],
   );
+
+  // Compute subtitle counts
+  useEffect(() => {
+    if (!items) return;
+    const total = items.length;
+    const pending = items.filter((i: MemoryItem) => i.status === "pending").length;
+    const parts: string[] = [];
+    if (total > 0) parts.push(`${total} items`);
+    if (pending > 0) parts.push(`${pending} pending`);
+    setSubtitle(parts.length > 0 ? parts.join(" \u00B7 ") : null);
+  }, [items, setSubtitle]);
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => memoryApi.approve(selectedCompanyId!, id),
@@ -217,9 +232,11 @@ export function Memory() {
       {sorted.length === 0 ? (
         <EmptyState
           icon={Brain}
-          message="No memory items found."
+          message="No memory items found"
+          description="Memory stores decisions, references, and context that your agents use to produce better work."
           action="Add to Memory"
           onAction={() => setCreateOpen(true)}
+          entityColor="var(--entity-memory)"
         />
       ) : (
         <div className="space-y-2">

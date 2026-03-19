@@ -9,7 +9,6 @@ import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
-import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -22,9 +21,7 @@ import { GoalTree } from "../components/GoalTree";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { projectRouteRef, cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { SlidersHorizontal, Plus, Bot, X, DollarSign, AlertTriangle } from "lucide-react";
+import { Plus, Bot, X, DollarSign, AlertTriangle } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
@@ -49,10 +46,12 @@ function OverviewContent({
   project,
   onUpdate,
   imageUploadHandler,
+  propertiesContent,
 }: {
   project: { description: string | null; status: string; targetDate: string | null };
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
+  propertiesContent: React.ReactNode;
 }) {
   return (
     <div className="space-y-6">
@@ -66,19 +65,10 @@ function OverviewContent({
         imageUploadHandler={imageUploadHandler}
       />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-        <div>
-          <span className="text-muted-foreground">Status</span>
-          <div className="mt-1">
-            <StatusBadge status={project.status} />
-          </div>
-        </div>
-        {project.targetDate && (
-          <div>
-            <span className="text-muted-foreground">Target Date</span>
-            <p>{project.targetDate}</p>
-          </div>
-        )}
+      {/* Properties section */}
+      <div className="rounded-lg border border-border p-4 space-y-1">
+        <h3 className="text-sm font-medium text-muted-foreground mb-3">Properties</h3>
+        {propertiesContent}
       </div>
     </div>
   );
@@ -464,9 +454,7 @@ export function ProjectDetail() {
     filter?: string;
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
-  const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -544,13 +532,6 @@ export function ProjectDetail() {
     navigate(`/projects/${canonicalProjectRef}`, { replace: true });
   }, [project, routeProjectRef, canonicalProjectRef, activeTab, filter, navigate]);
 
-  useEffect(() => {
-    if (project) {
-      openPanel(<ProjectProperties project={project} onUpdate={(data) => updateProject.mutate(data)} />);
-    }
-    return () => closePanel();
-  }, [project]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Redirect bare /projects/:id to /projects/:id/issues
   if (routeProjectRef && activeTab === null) {
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
@@ -571,44 +552,12 @@ export function ProjectDetail() {
     navigate(`/projects/${canonicalProjectRef}/${tabPaths[tab]}`);
   };
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-start gap-3">
-        <div className="h-7 flex items-center">
-          <ColorPicker
-            currentColor={project.color ?? "#6366f1"}
-            onSelect={(color) => updateProject.mutate({ color })}
-          />
-        </div>
-        <InlineEditor
-          value={project.name}
-          onSave={(name) => updateProject.mutate({ name })}
-          as="h2"
-          className="text-xl font-bold"
-        />
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          className="ml-auto md:hidden shrink-0"
-          onClick={() => setMobilePropsOpen(true)}
-          title="Properties"
-        >
-          <SlidersHorizontal className="h-4 w-4" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          className={cn(
-            "shrink-0 ml-auto transition-opacity duration-200 hidden md:flex",
-            panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
-          )}
-          onClick={() => setPanelVisible(true)}
-          title="Show properties"
-        >
-          <SlidersHorizontal className="h-4 w-4" />
-        </Button>
-      </div>
+  const propertiesContent = (
+    <ProjectProperties project={project} onUpdate={(data) => updateProject.mutate(data)} />
+  );
 
+  const tabContent = (
+    <>
       {/* Top-level project tabs */}
       <div className="flex items-center gap-1 border-b border-border">
         <button
@@ -672,6 +621,7 @@ export function ProjectDetail() {
             const asset = await uploadImage.mutateAsync(file);
             return asset.contentPath;
           }}
+          propertiesContent={propertiesContent}
         />
       )}
 
@@ -690,20 +640,30 @@ export function ProjectDetail() {
       {activeTab === "budget" && project?.id && resolvedCompanyId && (
         <ProjectBudgetTab projectId={project.id} companyId={resolvedCompanyId} projectType={project.type} />
       )}
+    </>
+  );
 
-      {/* Mobile properties drawer */}
-      <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
-        <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
-          <SheetHeader>
-            <SheetTitle className="text-sm">Properties</SheetTitle>
-          </SheetHeader>
-          <ScrollArea className="flex-1 overflow-y-auto">
-            <div className="px-4 pb-4">
-              <ProjectProperties project={project} onUpdate={(data) => updateProject.mutate(data)} />
-            </div>
-          </ScrollArea>
-        </SheetContent>
-      </Sheet>
+  const headerContent = (
+    <div className="flex items-start gap-3">
+      <div className="h-7 flex items-center">
+        <ColorPicker
+          currentColor={project.color ?? "#6366f1"}
+          onSelect={(color) => updateProject.mutate({ color })}
+        />
+      </div>
+      <InlineEditor
+        value={project.name}
+        onSave={(name) => updateProject.mutate({ name })}
+        as="h2"
+        className="text-xl font-bold"
+      />
+    </div>
+  );
+
+  return (
+    <div className="space-y-6">
+      {headerContent}
+      {tabContent}
     </div>
   );
 }

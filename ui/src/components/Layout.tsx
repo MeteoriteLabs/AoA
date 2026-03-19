@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Moon, Sun } from "lucide-react";
-import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
-import { CompanyRail } from "./CompanyRail";
+import { NavLink, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { BreadcrumbBar } from "./BreadcrumbBar";
-import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
 import { NewIssueDialog } from "./NewIssueDialog";
 import { NewProjectDialog } from "./NewProjectDialog";
@@ -15,7 +13,6 @@ import { NewAgentDialog } from "./NewAgentDialog";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { useDialog } from "../context/DialogContext";
-import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
@@ -25,12 +22,12 @@ import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 export function Layout() {
-  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
+  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, collapsed, toggleCollapse } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
-  const { togglePanelVisible } = usePanel();
-  const { companies, loading: companiesLoading, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { companies, loading: companiesLoading, selectedCompanyId, selectionSource, setSelectedCompanyId } = useCompany();
   const { theme, toggleTheme } = useTheme();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
@@ -44,6 +41,12 @@ export function Layout() {
     queryFn: () => healthApi.get(),
     retry: false,
   });
+
+  // G1 + G15: Clean up stale localStorage keys from removed CompanyRail and PropertiesPanel
+  useEffect(() => {
+    localStorage.removeItem("paperclip.companyOrder");
+    localStorage.removeItem("paperclip:panel-visible");
+  }, []);
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
@@ -88,7 +91,16 @@ export function Layout() {
     setSelectedCompanyId,
   ]);
 
-  const togglePanel = togglePanelVisible;
+  // G8: Navigate when company is manually switched (Cmd+1-9, etc.)
+  // ONLY triggers on "manual" source to avoid 4 race conditions.
+  useEffect(() => {
+    if (selectionSource === "manual" && selectedCompanyId) {
+      const company = companies.find((c) => c.id === selectedCompanyId);
+      if (company) {
+        navigate(`/${company.issuePrefix}/home`, { replace: true });
+      }
+    }
+  }, [selectedCompanyId, selectionSource, companies, navigate]);
 
   // Cmd+1..9 to switch companies
   const switchCompany = useCallback(
@@ -104,8 +116,7 @@ export function Layout() {
 
   useKeyboardShortcuts({
     onNewIssue: () => openNewIssue(),
-    onToggleSidebar: toggleSidebar,
-    onTogglePanel: togglePanel,
+    onToggleSidebar: isMobile ? toggleSidebar : toggleCollapse,
     onSwitchCompany: switchCompany,
   });
 
@@ -201,7 +212,7 @@ export function Layout() {
         />
       )}
 
-      {/* Combined sidebar area: company rail + inner sidebar + docs bar */}
+      {/* Sidebar + docs bar */}
       {isMobile ? (
         <div
           className={cn(
@@ -210,7 +221,6 @@ export function Layout() {
           )}
         >
           <div className="flex flex-1 min-h-0 overflow-hidden">
-            <CompanyRail />
             <Sidebar />
           </div>
           <div className="border-t border-r border-border px-3 py-2 bg-background">
@@ -238,35 +248,57 @@ export function Layout() {
       ) : (
         <div className="flex flex-col shrink-0 h-full">
           <div className="flex flex-1 min-h-0">
-            <CompanyRail />
             <div
               className={cn(
                 "overflow-hidden transition-[width] duration-100 ease-out",
-                sidebarOpen ? "w-60" : "w-0"
+                collapsed ? "w-12" : "w-60"
               )}
             >
               <Sidebar />
             </div>
           </div>
-          <div className="border-t border-r border-border px-3 py-2">
+          <div className={cn("border-t border-r border-border py-2", collapsed ? "px-1" : "px-3")}>
             <div className="flex items-center gap-1">
-              <SidebarNavItem
-                to="/docs"
-                label="Documentation"
-                icon={BookOpen}
-                className="flex-1 min-w-0"
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground shrink-0"
-                onClick={toggleTheme}
-                aria-label={`Switch to ${nextTheme} mode`}
-                title={`Switch to ${nextTheme} mode`}
-              >
-                {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </Button>
+              {collapsed ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <NavLink
+                      to="/docs"
+                      className={({ isActive }) =>
+                        cn(
+                          "flex items-center justify-center w-10 h-8 rounded-md transition-colors",
+                          isActive
+                            ? "bg-accent text-foreground"
+                            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
+                        )
+                      }
+                    >
+                      <BookOpen className="h-4 w-4" />
+                    </NavLink>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>Documentation</TooltipContent>
+                </Tooltip>
+              ) : (
+                <SidebarNavItem
+                  to="/docs"
+                  label="Documentation"
+                  icon={BookOpen}
+                  className="flex-1 min-w-0"
+                />
+              )}
+              {!collapsed && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground shrink-0"
+                  onClick={toggleTheme}
+                  aria-label={`Switch to ${nextTheme} mode`}
+                  title={`Switch to ${nextTheme} mode`}
+                >
+                  {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                </Button>
+              )}
             </div>
           </div>
         </div>
@@ -275,17 +307,14 @@ export function Layout() {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 h-full">
         <BreadcrumbBar />
-        <div className="flex flex-1 min-h-0">
-          <main
-            id="main-content"
-            tabIndex={-1}
-            className={cn("flex-1 overflow-auto p-4 md:p-6", isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]")}
-            onScroll={handleMainScroll}
-          >
-            <Outlet />
-          </main>
-          <PropertiesPanel />
-        </div>
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className={cn("flex-1 overflow-auto p-4 md:p-6", isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]")}
+          onScroll={handleMainScroll}
+        >
+          <Outlet />
+        </main>
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />

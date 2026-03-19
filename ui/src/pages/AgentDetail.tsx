@@ -7,7 +7,6 @@ import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
 import { issuesApi } from "../api/issues";
-import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
@@ -15,6 +14,8 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { adapterLabels, roleLabels } from "../components/agent-config-primitives";
+import { Tabs } from "@/components/ui/tabs";
+import { PageTabBar } from "../components/PageTabBar";
 import { getUIAdapter, buildTranscript } from "../adapters";
 import type { TranscriptEntry } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
@@ -233,7 +234,6 @@ export function AgentDetail() {
     runId?: string;
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
-  const { closePanel } = usePanel();
   const { openNewIssue } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -411,11 +411,6 @@ export function AgentDetail() {
     }
     setBreadcrumbs(crumbs);
   }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId]);
-
-  useEffect(() => {
-    closePanel();
-    return () => closePanel();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useBeforeUnload(
     useCallback((event) => {
@@ -621,6 +616,34 @@ export function AgentDetail() {
         </div>
       )}
 
+      {/* Tab navigation */}
+      {!urlRunId && (
+        <Tabs
+          value={activeView}
+          onValueChange={(v) => {
+            const target = v === "overview"
+              ? `/agents/${canonicalAgentRef}`
+              : `/agents/${canonicalAgentRef}/${v === "configure" ? "configure" : "runs"}`;
+            navigate(target);
+          }}
+        >
+          <PageTabBar
+            items={[
+              { value: "overview", label: "Overview" },
+              { value: "runs", label: "Runs" },
+              { value: "configure", label: "Config" },
+            ]}
+            value={activeView}
+            onValueChange={(v) => {
+              const target = v === "overview"
+                ? `/agents/${canonicalAgentRef}`
+                : `/agents/${canonicalAgentRef}/${v === "configure" ? "configure" : "runs"}`;
+              navigate(target);
+            }}
+          />
+        </Tabs>
+      )}
+
       {/* View content */}
       {activeView === "overview" && (
         <AgentOverview
@@ -763,8 +786,53 @@ function AgentOverview({
   agentId: string;
   agentRouteId: string;
 }) {
+  // Compute quick stats
+  const now = new Date();
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  const runsThisWeek = runs.filter((r) => new Date(r.createdAt) >= weekAgo);
+  const completedRunsThisWeek = runsThisWeek.filter((r) => r.status === "succeeded" || r.status === "failed");
+  const succeededThisWeek = runsThisWeek.filter((r) => r.status === "succeeded").length;
+  const successRate = completedRunsThisWeek.length > 0
+    ? Math.round((succeededThisWeek / completedRunsThisWeek.length) * 100)
+    : null;
+
+  const tasksCompletedThisWeek = assignedIssues.filter(
+    (i) => i.status === "done" && new Date(i.createdAt) >= weekAgo
+  ).length;
+
+  const costThisWeek = runsThisWeek.reduce((sum, r) => {
+    const m = runMetrics(r);
+    return sum + m.cost;
+  }, 0);
+
   return (
     <div className="space-y-8">
+      {/* Quick stats */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="border border-border rounded-lg p-4">
+          <span className="text-xs text-muted-foreground block">Status</span>
+          <div className="mt-1">
+            <StatusBadge status={agent.status} />
+          </div>
+        </div>
+        <div className="border border-border rounded-lg p-4">
+          <span className="text-xs text-muted-foreground block">Tasks completed</span>
+          <span className="text-2xl font-semibold block mt-1">{tasksCompletedThisWeek}</span>
+          <span className="text-[11px] text-muted-foreground">this week</span>
+        </div>
+        <div className="border border-border rounded-lg p-4">
+          <span className="text-xs text-muted-foreground block">Success rate</span>
+          <span className="text-2xl font-semibold block mt-1">{successRate !== null ? `${successRate}%` : "\u2014"}</span>
+          <span className="text-[11px] text-muted-foreground">this week ({completedRunsThisWeek.length} runs)</span>
+        </div>
+        <div className="border border-border rounded-lg p-4">
+          <span className="text-xs text-muted-foreground block">Cost</span>
+          <span className="text-2xl font-semibold block mt-1">${costThisWeek.toFixed(2)}</span>
+          <span className="text-[11px] text-muted-foreground">this week</span>
+        </div>
+      </div>
+
       {/* Latest Run */}
       <LatestRunCard runs={runs} agentId={agentRouteId} />
 

@@ -4,7 +4,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
-import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -25,7 +24,6 @@ export function GoalDetail() {
   const { goalId } = useParams<{ goalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewGoal } = useDialog();
-  const { openPanel, closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
@@ -103,30 +101,26 @@ export function GoalDetail() {
     ]);
   }, [setBreadcrumbs, goal, goalId]);
 
-  useEffect(() => {
-    if (goal) {
-      openPanel(
-        <GoalProperties
-          goal={goal}
-          onUpdate={(data) => updateGoal.mutate(data)}
-        />
-      );
-    }
-    return () => closePanel();
-  }, [goal]); // eslint-disable-line react-hooks/exhaustive-deps
-
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!goal) return null;
 
-  return (
-    <div className="space-y-6">
+  const propertiesContent = (
+    <GoalProperties
+      goal={goal}
+      onUpdate={(data) => updateGoal.mutate(data)}
+    />
+  );
+
+  const mainContent = (
+    <div className="space-y-6 min-w-0 flex-1">
       <div className="space-y-3">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs uppercase text-muted-foreground">
             {goal.level}
           </span>
           <StatusBadge status={goal.status} />
+
           {isUnassigned ? (
             <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 text-amber-600 px-1.5 py-0.5 text-[10px] font-medium">
               <AlertTriangle className="h-2.5 w-2.5" />
@@ -215,6 +209,18 @@ export function GoalDetail() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Properties section */}
+      <div className="rounded-lg border border-border p-4 space-y-1">
+        <h3 className="text-sm font-medium text-muted-foreground mb-3">Properties</h3>
+        {propertiesContent}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-6">
+      {mainContent}
     </div>
   );
 }

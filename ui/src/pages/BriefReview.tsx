@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Check,
   X,
@@ -19,12 +20,14 @@ import {
   ChevronDown,
   ChevronRight,
   CheckCheck,
+  CheckSquare,
   XCircle,
   Loader2,
   ExternalLink,
   Link as LinkIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
+import { BRIEF_STATUS_BADGES as STATUS_BADGES } from "../lib/brief-constants";
 
 const TYPE_LABELS: Record<string, string> = {
   decision: "Decisions",
@@ -49,15 +52,6 @@ const PRIORITY_COLORS: Record<string, string> = {
   low: "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-300",
 };
 
-const STATUS_BADGES: Record<string, string> = {
-  draft: "bg-muted text-muted-foreground",
-  ready: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-  reviewed: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
-  approved: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-  rejected: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
-  partially_approved: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-};
-
 function BriefItemCard({
   item,
   departments,
@@ -66,6 +60,8 @@ function BriefItemCard({
   dependencies,
   onAddDependency,
   onRemoveDependency,
+  selected,
+  onToggleSelect,
 }: {
   item: BriefItem;
   departments: { id: string; name: string }[];
@@ -74,6 +70,8 @@ function BriefItemCard({
   dependencies?: Array<{ dependentItemId: string; dependencyItemId: string }>;
   onAddDependency?: (dependentItemId: string, dependencyItemId: string) => void;
   onRemoveDependency?: (dependentItemId: string, dependencyItemId: string) => void;
+  selected?: boolean;
+  onToggleSelect?: (itemId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(item.title);
@@ -109,10 +107,11 @@ function BriefItemCard({
   return (
     <div
       className={cn(
-        "rounded-lg border border-border bg-card p-4 transition-colors",
-        item.status === "approved" && "border-green-200 bg-green-50/50 dark:border-green-800/30 dark:bg-green-900/10",
-        item.status === "rejected" && "border-red-200 bg-red-50/50 opacity-60 dark:border-red-800/30 dark:bg-red-900/10",
-        item.status === "edited" && "border-blue-200 bg-blue-50/50 dark:border-blue-800/30 dark:bg-blue-900/10",
+        "rounded-lg border p-4 transition-colors",
+        item.status === "pending" && "border-border bg-card",
+        item.status === "approved" && "border-green-300 bg-green-50/70 dark:border-green-700/40 dark:bg-green-950/30",
+        item.status === "rejected" && "border-red-300 bg-red-50/50 opacity-50 dark:border-red-700/40 dark:bg-red-950/20",
+        item.status === "edited" && "border-blue-300 bg-blue-50/70 dark:border-blue-700/40 dark:bg-blue-950/30",
       )}
     >
       {editing ? (
@@ -159,11 +158,20 @@ function BriefItemCard({
       ) : (
         <div className="flex flex-col gap-2">
           <div className="flex items-start justify-between gap-2">
+            {/* Selection checkbox for pending items */}
+            {item.status === "pending" && onToggleSelect && (
+              <div className="pt-0.5 shrink-0">
+                <Checkbox
+                  checked={selected}
+                  onCheckedChange={() => onToggleSelect(item.id)}
+                />
+              </div>
+            )}
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-sm font-medium">{item.title}</span>
                 <span className={cn(
-                  "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium",
+                  "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
                   TYPE_COLORS[item.type] ?? "bg-muted text-muted-foreground",
                 )}>
                   {item.type}
@@ -312,6 +320,7 @@ export function BriefReview() {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
 
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [rawContentOpen, setRawContentOpen] = useState(false);
   const [approveResult, setApproveResult] = useState<{
     taskCount: number;
@@ -467,6 +476,35 @@ export function BriefReview() {
     for (const item of pendingItems) {
       updateItemMutation.mutate({ itemId: item.id, data: { status } });
     }
+    setSelectedItems(new Set());
+  }
+
+  function handleApproveSelected() {
+    if (!brief || selectedItems.size === 0) return;
+    for (const itemId of selectedItems) {
+      updateItemMutation.mutate({ itemId, data: { status: "approved" } });
+    }
+    setSelectedItems(new Set());
+  }
+
+  function toggleSelectItem(itemId: string) {
+    setSelectedItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (!brief) return;
+    const pendingIds = brief.items.filter((i) => i.status === "pending").map((i) => i.id);
+    const allSelected = pendingIds.length > 0 && pendingIds.every((id) => selectedItems.has(id));
+    if (allSelected) {
+      setSelectedItems(new Set());
+    } else {
+      setSelectedItems(new Set(pendingIds));
+    }
   }
 
   // Group items by type
@@ -574,9 +612,19 @@ export function BriefReview() {
         </div>
       )}
 
-      {/* Bulk actions */}
+      {/* Batch actions */}
       {!isProcessed && pendingCount > 0 && (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap rounded-lg border border-border bg-card/50 p-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={toggleSelectAll}
+            className="text-xs"
+          >
+            <CheckSquare className="h-3.5 w-3.5 mr-1.5" />
+            {selectedItems.size > 0 && selectedItems.size === pendingCount ? "Deselect All" : "Select All"}
+          </Button>
+          <div className="h-4 w-px bg-border" />
           <Button
             variant="outline"
             size="sm"
@@ -585,6 +633,16 @@ export function BriefReview() {
             <CheckCheck className="h-4 w-4 mr-1.5" />
             Approve All ({pendingCount})
           </Button>
+          {selectedItems.size > 0 && (
+            <Button
+              size="sm"
+              onClick={handleApproveSelected}
+              className="bg-green-600 hover:bg-green-700 text-white"
+            >
+              <Check className="h-4 w-4 mr-1.5" />
+              Approve Selected ({selectedItems.size})
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -616,6 +674,8 @@ export function BriefReview() {
                   dependencies={item.type === "task" ? dependencies : undefined}
                   onAddDependency={item.type === "task" ? addDependency : undefined}
                   onRemoveDependency={item.type === "task" ? removeDependency : undefined}
+                  selected={selectedItems.has(item.id)}
+                  onToggleSelect={!isProcessed ? toggleSelectItem : undefined}
                 />
               ))}
             </div>

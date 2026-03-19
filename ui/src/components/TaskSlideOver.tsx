@@ -1,0 +1,1094 @@
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { Link, useNavigate } from "@/lib/router";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { issuesApi } from "../api/issues";
+import { dependenciesApi } from "../api/dependencies";
+import { activityApi } from "../api/activity";
+import { heartbeatsApi } from "../api/heartbeats";
+import { agentsApi } from "../api/agents";
+import { authApi } from "../api/auth";
+import { projectsApi } from "../api/projects";
+import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
+import { queryKeys } from "../lib/queryKeys";
+import { useProjectOrder } from "../hooks/useProjectOrder";
+import { relativeTime, cn, formatTokens } from "../lib/utils";
+import { InlineEditor } from "./InlineEditor";
+import { CommentThread } from "./CommentThread";
+import { IssueProperties } from "./IssueProperties";
+import { LiveRunWidget } from "./LiveRunWidget";
+import type { MentionOption } from "./MarkdownEditor";
+import { StatusIcon } from "./StatusIcon";
+import { PriorityIcon } from "./PriorityIcon";
+import { StatusBadge } from "./StatusBadge";
+import { Identity } from "./Identity";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Activity as ActivityIcon,
+  ChevronDown,
+  ChevronRight,
+  EyeOff,
+  Hexagon,
+  Link2,
+  ListTree,
+  MessageSquare,
+  MoreHorizontal,
+  Paperclip,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import type { ActivityEvent } from "@paperclipai/shared";
+import type { Agent, IssueAttachment } from "@paperclipai/shared";
+
+/* ── Helpers (shared with IssueDetail) ── */
+
+type CommentReassignment = {
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+};
+
+const ACTION_LABELS: Record<string, string> = {
+  "issue.created": "created the task",
+  "issue.updated": "updated the task",
+  "issue.checked_out": "checked out the task",
+  "issue.released": "released the task",
+  "issue.comment_added": "added a comment",
+  "issue.attachment_added": "added an attachment",
+  "issue.attachment_removed": "removed an attachment",
+  "issue.deleted": "deleted the task",
+  "issue.read_marked": "marked the task as read",
+  "issue.approval_linked": "linked approval to the task",
+  "issue.approval_unlinked": "unlinked approval from the task",
+  "issue.checkout_lock_adopted": "adopted checkout lock on the task",
+  "agent.created": "created an agent",
+  "agent.updated": "updated the agent",
+  "agent.paused": "paused the agent",
+  "agent.resumed": "resumed the agent",
+  "agent.terminated": "terminated the agent",
+  "heartbeat.invoked": "invoked a heartbeat",
+  "heartbeat.cancelled": "cancelled a heartbeat",
+  "approval.created": "requested approval",
+  "approval.approved": "approved",
+  "approval.rejected": "rejected",
+};
+
+function humanizeValue(value: unknown): string {
+  if (typeof value !== "string") return String(value ?? "none");
+  return value.replace(/_/g, " ");
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
+  if (!usage) return 0;
+  for (const key of keys) {
+    const value = usage[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return 0;
+}
+
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max - 1) + "\u2026";
+}
+
+function formatAction(action: string, details?: Record<string, unknown> | null): string {
+  if (action === "issue.updated" && details) {
+    const previous = (details._previous ?? {}) as Record<string, unknown>;
+    const parts: string[] = [];
+
+    if (details.status !== undefined) {
+      const from = previous.status;
+      parts.push(
+        from
+          ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
+          : `changed the status to ${humanizeValue(details.status)}`
+      );
+    }
+    if (details.priority !== undefined) {
+      const from = previous.priority;
+      parts.push(
+        from
+          ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
+          : `changed the priority to ${humanizeValue(details.priority)}`
+      );
+    }
+    if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
+      parts.push(
+        details.assigneeAgentId || details.assigneeUserId
+          ? "assigned the task"
+          : "unassigned the task",
+      );
+    }
+    if (details.title !== undefined) parts.push("updated the title");
+    if (details.description !== undefined) parts.push("updated the description");
+
+    if (parts.length > 0) return parts.join(", ");
+  }
+  return ACTION_LABELS[action] ?? action.replace(/[._]/g, " ").replace(/\bissue\b/g, "task");
+}
+
+function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<string, Agent> }) {
+  const id = evt.actorId;
+  if (evt.actorType === "agent") {
+    const agent = agentMap.get(id);
+    return <Identity name={agent?.name ?? id.slice(0, 8)} size="sm" />;
+  }
+  if (evt.actorType === "system") return <Identity name="System" size="sm" />;
+  if (evt.actorType === "user") return <Identity name="Board" size="sm" />;
+  return <Identity name={id || "Unknown"} size="sm" />;
+}
+
+/* ── Props ── */
+
+interface TaskSlideOverProps {
+  issueId: string | null;
+  open: boolean;
+  onClose: () => void;
+}
+
+/* ── Component ── */
+
+export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
+  const { selectedCompanyId } = useCompany();
+  const { pushToast } = useToast();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [detailTab, setDetailTab] = useState("comments");
+  const [secondaryOpen, setSecondaryOpen] = useState({
+    approvals: false,
+    cost: false,
+  });
+  const [depPickerOpen, setDepPickerOpen] = useState(false);
+  const [depSearch, setDepSearch] = useState("");
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  /* ── Data fetching ── */
+
+  const { data: issue, isLoading, error } = useQuery({
+    queryKey: queryKeys.issues.detail(issueId!),
+    queryFn: () => issuesApi.get(issueId!),
+    enabled: !!issueId && open,
+  });
+
+  const { data: comments } = useQuery({
+    queryKey: queryKeys.issues.comments(issueId!),
+    queryFn: () => issuesApi.listComments(issueId!),
+    enabled: !!issueId && open,
+  });
+
+  const { data: activity } = useQuery({
+    queryKey: queryKeys.issues.activity(issueId!),
+    queryFn: () => activityApi.forIssue(issueId!),
+    enabled: !!issueId && open,
+  });
+
+  const { data: linkedRuns } = useQuery({
+    queryKey: queryKeys.issues.runs(issueId!),
+    queryFn: () => activityApi.runsForIssue(issueId!),
+    enabled: !!issueId && open,
+    refetchInterval: 5000,
+  });
+
+  const { data: linkedApprovals } = useQuery({
+    queryKey: queryKeys.issues.approvals(issueId!),
+    queryFn: () => issuesApi.listApprovals(issueId!),
+    enabled: !!issueId && open,
+  });
+
+  const { data: attachments } = useQuery({
+    queryKey: queryKeys.issues.attachments(issueId!),
+    queryFn: () => issuesApi.listAttachments(issueId!),
+    enabled: !!issueId && open,
+  });
+
+  const { data: liveRuns } = useQuery({
+    queryKey: queryKeys.issues.liveRuns(issueId!),
+    queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
+    enabled: !!issueId && open,
+    refetchInterval: 3000,
+  });
+
+  const { data: activeRun } = useQuery({
+    queryKey: queryKeys.issues.activeRun(issueId!),
+    queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
+    enabled: !!issueId && open,
+    refetchInterval: 3000,
+  });
+
+  const { data: deps } = useQuery({
+    queryKey: queryKeys.issues.dependencies(issueId!),
+    queryFn: () => dependenciesApi.list(selectedCompanyId!, issueId!),
+    enabled: !!issueId && !!selectedCompanyId && open,
+  });
+
+  const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
+
+  const timelineRuns = useMemo(() => {
+    const liveIds = new Set<string>();
+    for (const r of liveRuns ?? []) liveIds.add(r.id);
+    if (activeRun) liveIds.add(activeRun.id);
+    if (liveIds.size === 0) return linkedRuns ?? [];
+    return (linkedRuns ?? []).filter((r) => !liveIds.has(r.runId));
+  }, [linkedRuns, liveRuns, activeRun]);
+
+  const { data: allIssues } = useQuery({
+    queryKey: queryKeys.issues.list(selectedCompanyId!),
+    queryFn: () => issuesApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const { orderedProjects } = useProjectOrder({
+    projects: projects ?? [],
+    companyId: selectedCompanyId,
+    userId: currentUserId,
+  });
+
+  const agentMap = useMemo(() => {
+    const map = new Map<string, Agent>();
+    for (const a of agents ?? []) map.set(a.id, a);
+    return map;
+  }, [agents]);
+
+  const mentionOptions = useMemo<MentionOption[]>(() => {
+    const options: MentionOption[] = [];
+    const activeAgents = [...(agents ?? [])]
+      .filter((agent) => agent.status !== "terminated")
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const agent of activeAgents) {
+      options.push({
+        id: `agent:${agent.id}`,
+        name: agent.name,
+        kind: "agent",
+      });
+    }
+    for (const project of orderedProjects) {
+      options.push({
+        id: `project:${project.id}`,
+        name: project.name,
+        kind: "project",
+        projectId: project.id,
+        projectColor: project.color,
+      });
+    }
+    return options;
+  }, [agents, orderedProjects]);
+
+  const childIssues = useMemo(() => {
+    if (!allIssues || !issue) return [];
+    return allIssues
+      .filter((i) => i.parentId === issue.id)
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }, [allIssues, issue]);
+
+  const commentReassignOptions = useMemo(() => {
+    const options: Array<{ id: string; label: string; searchText?: string }> = [];
+    const activeAgents = [...(agents ?? [])]
+      .filter((agent) => agent.status !== "terminated")
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const agent of activeAgents) {
+      options.push({ id: `agent:${agent.id}`, label: agent.name });
+    }
+    if (currentUserId) {
+      const label = currentUserId === "local-board" ? "Board" : "Me (Board)";
+      options.push({ id: `user:${currentUserId}`, label });
+    }
+    return options;
+  }, [agents, currentUserId]);
+
+  const currentAssigneeValue = useMemo(() => {
+    if (issue?.assigneeAgentId) return `agent:${issue.assigneeAgentId}`;
+    if (issue?.assigneeUserId) return `user:${issue.assigneeUserId}`;
+    return "";
+  }, [issue?.assigneeAgentId, issue?.assigneeUserId]);
+
+  const commentsWithRunMeta = useMemo(() => {
+    const runMetaByCommentId = new Map<string, { runId: string; runAgentId: string | null }>();
+    const agentIdByRunId = new Map<string, string>();
+    for (const run of linkedRuns ?? []) {
+      agentIdByRunId.set(run.runId, run.agentId);
+    }
+    for (const evt of activity ?? []) {
+      if (evt.action !== "issue.comment_added" || !evt.runId) continue;
+      const details = evt.details ?? {};
+      const commentId = typeof details["commentId"] === "string" ? details["commentId"] : null;
+      if (!commentId || runMetaByCommentId.has(commentId)) continue;
+      runMetaByCommentId.set(commentId, {
+        runId: evt.runId,
+        runAgentId: evt.agentId ?? agentIdByRunId.get(evt.runId) ?? null,
+      });
+    }
+    return (comments ?? []).map((comment) => {
+      const meta = runMetaByCommentId.get(comment.id);
+      return meta ? { ...comment, ...meta } : comment;
+    });
+  }, [activity, comments, linkedRuns]);
+
+  const issueCostSummary = useMemo(() => {
+    let input = 0;
+    let output = 0;
+    let cached = 0;
+    let cost = 0;
+    let hasCost = false;
+    let hasTokens = false;
+
+    for (const run of linkedRuns ?? []) {
+      const usage = asRecord(run.usageJson);
+      const result = asRecord(run.resultJson);
+      const runInput = usageNumber(usage, "inputTokens", "input_tokens");
+      const runOutput = usageNumber(usage, "outputTokens", "output_tokens");
+      const runCached = usageNumber(
+        usage,
+        "cachedInputTokens",
+        "cached_input_tokens",
+        "cache_read_input_tokens",
+      );
+      const runCost =
+        usageNumber(usage, "costUsd", "cost_usd", "total_cost_usd") ||
+        usageNumber(result, "total_cost_usd", "cost_usd", "costUsd");
+      if (runCost > 0) hasCost = true;
+      if (runInput + runOutput + runCached > 0) hasTokens = true;
+      input += runInput;
+      output += runOutput;
+      cached += runCached;
+      cost += runCost;
+    }
+
+    return {
+      input,
+      output,
+      cached,
+      cost,
+      totalTokens: input + output,
+      hasCost,
+      hasTokens,
+    };
+  }, [linkedRuns]);
+
+  /* ── Mutations ── */
+
+  const invalidateIssue = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.dependencies(issueId!) });
+    if (selectedCompanyId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+    }
+  };
+
+  const updateIssue = useMutation({
+    mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
+    onSuccess: (updated) => {
+      invalidateIssue();
+      const issueRef = updated.identifier ?? `Task ${updated.id.slice(0, 8)}`;
+      pushToast({
+        dedupeKey: `activity:issue.updated:${updated.id}`,
+        title: `${issueRef} updated`,
+        body: truncate(updated.title, 96),
+        tone: "success",
+        action: { label: `View ${issueRef}`, href: `/issues/${updated.identifier ?? updated.id}` },
+      });
+    },
+  });
+
+  const addComment = useMutation({
+    mutationFn: ({ body, reopen }: { body: string; reopen?: boolean }) =>
+      issuesApi.addComment(issueId!, body, reopen),
+    onSuccess: (comment) => {
+      invalidateIssue();
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+      const issueRef = issue?.identifier ?? (issueId ? `Task ${issueId.slice(0, 8)}` : "Task");
+      pushToast({
+        dedupeKey: `activity:issue.comment_added:${issueId}:${comment.id}`,
+        title: `Comment posted on ${issueRef}`,
+        body: issue?.title ? truncate(issue.title, 96) : undefined,
+        tone: "success",
+        action: issueId ? { label: `View ${issueRef}`, href: `/issues/${issue?.identifier ?? issueId}` } : undefined,
+      });
+    },
+  });
+
+  const addCommentAndReassign = useMutation({
+    mutationFn: ({
+      body,
+      reopen,
+      reassignment,
+    }: {
+      body: string;
+      reopen?: boolean;
+      reassignment: CommentReassignment;
+    }) =>
+      issuesApi.update(issueId!, {
+        comment: body,
+        assigneeAgentId: reassignment.assigneeAgentId,
+        assigneeUserId: reassignment.assigneeUserId,
+        ...(reopen ? { status: "todo" } : {}),
+      }),
+    onSuccess: (updated) => {
+      invalidateIssue();
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+      const issueRef = updated.identifier ?? (issueId ? `Task ${issueId.slice(0, 8)}` : "Task");
+      pushToast({
+        dedupeKey: `activity:issue.reassigned:${updated.id}`,
+        title: `${issueRef} reassigned`,
+        body: issue?.title ? truncate(issue.title, 96) : undefined,
+        tone: "success",
+        action: issueId ? { label: `View ${issueRef}`, href: `/issues/${issue?.identifier ?? issueId}` } : undefined,
+      });
+    },
+  });
+
+  const uploadAttachment = useMutation({
+    mutationFn: async (file: File) => {
+      if (!selectedCompanyId) throw new Error("No company selected");
+      return issuesApi.uploadAttachment(selectedCompanyId, issueId!, file);
+    },
+    onSuccess: () => {
+      setAttachmentError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
+      invalidateIssue();
+    },
+    onError: (err) => {
+      setAttachmentError(err instanceof Error ? err.message : "Upload failed");
+    },
+  });
+
+  const deleteAttachment = useMutation({
+    mutationFn: (attachmentId: string) => issuesApi.deleteAttachment(attachmentId),
+    onSuccess: () => {
+      setAttachmentError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
+      invalidateIssue();
+    },
+    onError: (err) => {
+      setAttachmentError(err instanceof Error ? err.message : "Delete failed");
+    },
+  });
+
+  const addDependency = useMutation({
+    mutationFn: (dependencyIssueId: string) =>
+      dependenciesApi.add(selectedCompanyId!, issueId!, dependencyIssueId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.dependencies(issueId!) });
+      invalidateIssue();
+      setDepPickerOpen(false);
+      setDepSearch("");
+    },
+  });
+
+  const removeDependency = useMutation({
+    mutationFn: (dependencyIssueId: string) =>
+      dependenciesApi.remove(selectedCompanyId!, issueId!, dependencyIssueId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.dependencies(issueId!) });
+      invalidateIssue();
+    },
+  });
+
+  /* ── Derived data ── */
+
+  const upstreamDeps = deps?.upstream ?? [];
+  const downstreamDeps = deps?.downstream ?? [];
+  const hasUnmetDeps = upstreamDeps.some((d) => d.status !== "done");
+
+  const depPickerCandidates = useMemo(() => {
+    if (!allIssues || !issue) return [];
+    const existingDepIds = new Set([
+      issue.id,
+      ...upstreamDeps.map((d) => d.dependencyIssueId!),
+      ...downstreamDeps.map((d) => d.dependentIssueId!),
+    ]);
+    return allIssues
+      .filter((i) => !existingDepIds.has(i.id) && i.status !== "cancelled")
+      .filter((i) =>
+        depSearch
+          ? i.title.toLowerCase().includes(depSearch.toLowerCase()) ||
+            (i.identifier ?? "").toLowerCase().includes(depSearch.toLowerCase())
+          : true,
+      )
+      .slice(0, 20);
+  }, [allIssues, issue, upstreamDeps, downstreamDeps, depSearch]);
+
+  /* ── Side effects ── */
+
+  // Reset tab when issue changes
+  useEffect(() => {
+    if (issueId) {
+      setDetailTab("comments");
+      setSecondaryOpen({ approvals: false, cost: false });
+    }
+  }, [issueId]);
+
+  /* ── Handlers ── */
+
+  const handleFilePicked = async (evt: ChangeEvent<HTMLInputElement>) => {
+    const file = evt.target.files?.[0];
+    if (!file) return;
+    await uploadAttachment.mutateAsync(file);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
+
+  /* ── Render ── */
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent
+        showCloseButton={false}
+        aria-describedby={undefined}
+        className="sm:max-w-4xl max-h-[calc(100dvh-2rem)] p-0 gap-0 overflow-hidden flex flex-col"
+        onPointerDownOutside={(event) => {
+          const target = event.detail.originalEvent.target as HTMLElement | null;
+          if (target?.closest("[data-radix-popper-content-wrapper]")) {
+            event.preventDefault();
+          }
+        }}
+      >
+        {/* Custom header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            {issue && (
+              <>
+                <StatusIcon
+                  status={issue.status}
+                  onChange={(status) => updateIssue.mutate({ status })}
+                />
+                <PriorityIcon
+                  priority={issue.priority}
+                  onChange={(priority) => updateIssue.mutate({ priority })}
+                />
+                <span className="text-sm font-mono text-muted-foreground shrink-0">
+                  {issue.identifier ?? issue.id.slice(0, 8)}
+                </span>
+                {hasLiveRuns && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400" />
+                    </span>
+                    Live
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            {issue && (
+              <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+                <PopoverTrigger asChild>
+                  <Button variant="ghost" size="icon-xs" className="shrink-0">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-44 p-1" align="end">
+                  <button
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                    onClick={() => {
+                      updateIssue.mutate(
+                        { hiddenAt: new Date().toISOString() },
+                        { onSuccess: () => onClose() },
+                      );
+                      setMoreOpen(false);
+                    }}
+                  >
+                    <EyeOff className="h-3 w-3" />
+                    Hide this Task
+                  </button>
+                </PopoverContent>
+              </Popover>
+            )}
+            <Button variant="ghost" size="icon-xs" onClick={onClose} className="shrink-0">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <ScrollArea className="flex-1 overflow-y-auto">
+          <div className="p-4 space-y-6">
+            {isLoading && (
+              <p className="text-sm text-muted-foreground">Loading...</p>
+            )}
+            {error && (
+              <p className="text-sm text-destructive">{(error as Error).message}</p>
+            )}
+            {!isLoading && !error && !issue && (
+              <p className="text-sm text-muted-foreground">Task not found.</p>
+            )}
+
+            {issue && (
+              <>
+                {/* Parent chain */}
+                {(issue.ancestors ?? []).length > 0 && (
+                  <nav className="flex items-center gap-1 text-xs text-muted-foreground flex-wrap">
+                    {[...(issue.ancestors ?? [])].reverse().map((ancestor, i) => (
+                      <span key={ancestor.id} className="flex items-center gap-1">
+                        {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
+                        <Link
+                          to={`/issues/${ancestor.identifier ?? ancestor.id}`}
+                          className="hover:text-foreground transition-colors truncate max-w-[200px]"
+                          title={ancestor.title}
+                        >
+                          {ancestor.title}
+                        </Link>
+                      </span>
+                    ))}
+                    <ChevronRight className="h-3 w-3 shrink-0" />
+                    <span className="text-foreground/60 truncate max-w-[200px]">{issue.title}</span>
+                  </nav>
+                )}
+
+                {issue.hiddenAt && (
+                  <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                    <EyeOff className="h-4 w-4 shrink-0" />
+                    This task is hidden
+                  </div>
+                )}
+
+                {/* Title + Description */}
+                <div className="space-y-3">
+                  <InlineEditor
+                    value={issue.title}
+                    onSave={(title) => updateIssue.mutate({ title })}
+                    as="h2"
+                    className="text-xl font-bold"
+                  />
+
+                  <InlineEditor
+                    value={issue.description ?? ""}
+                    onSave={(description) => updateIssue.mutate({ description })}
+                    as="p"
+                    className="text-sm text-muted-foreground"
+                    placeholder="Add a description..."
+                    multiline
+                    mentions={mentionOptions}
+                    imageUploadHandler={async (file) => {
+                      const attachment = await uploadAttachment.mutateAsync(file);
+                      return attachment.contentPath;
+                    }}
+                  />
+                </div>
+
+                {/* Inline Properties */}
+                <div className="rounded-lg border border-border p-3">
+                  <IssueProperties
+                    issue={issue}
+                    onUpdate={(data) => updateIssue.mutate(data)}
+                    inline
+                  />
+                </div>
+
+                {/* Dependencies */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                      <Link2 className="h-3.5 w-3.5" />
+                      Dependencies
+                    </h3>
+                    <Button variant="outline" size="sm" onClick={() => setDepPickerOpen(true)}>
+                      <Plus className="h-3.5 w-3.5 mr-1.5" />
+                      Add
+                    </Button>
+                  </div>
+
+                  {hasUnmetDeps && issue.status === "blocked" && (
+                    <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+                      <Link2 className="h-4 w-4 shrink-0" />
+                      Blocked — waiting for {upstreamDeps.filter((d) => d.status !== "done").length} dependency task{upstreamDeps.filter((d) => d.status !== "done").length !== 1 ? "s" : ""} to complete
+                    </div>
+                  )}
+
+                  {upstreamDeps.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-1.5">Waiting for</p>
+                      <div className="border border-border rounded-lg divide-y divide-border">
+                        {upstreamDeps.map((dep) => (
+                          <div key={dep.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                            <Link
+                              to={`/issues/${dep.identifier ?? dep.dependencyIssueId}`}
+                              className="flex items-center gap-2 min-w-0 hover:text-foreground transition-colors"
+                            >
+                              <StatusIcon status={dep.status} />
+                              <span className="font-mono text-xs text-muted-foreground shrink-0">
+                                {dep.identifier ?? dep.dependencyIssueId?.slice(0, 8)}
+                              </span>
+                              <span className="truncate">{dep.title}</span>
+                              <StatusBadge status={dep.status} />
+                            </Link>
+                            <button
+                              type="button"
+                              className="text-muted-foreground hover:text-destructive shrink-0 ml-2"
+                              onClick={() => removeDependency.mutate(dep.dependencyIssueId!)}
+                              title="Remove dependency"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {downstreamDeps.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-1.5">Blocking</p>
+                      <div className="border border-border rounded-lg divide-y divide-border">
+                        {downstreamDeps.map((dep) => (
+                          <Link
+                            key={dep.id}
+                            to={`/issues/${dep.identifier ?? dep.dependentIssueId}`}
+                            className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
+                          >
+                            <StatusIcon status={dep.status} />
+                            <span className="font-mono text-xs text-muted-foreground shrink-0">
+                              {dep.identifier ?? dep.dependentIssueId?.slice(0, 8)}
+                            </span>
+                            <span className="truncate">{dep.title}</span>
+                            <StatusBadge status={dep.status} />
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {upstreamDeps.length === 0 && downstreamDeps.length === 0 && (
+                    <p className="text-xs text-muted-foreground">No dependencies.</p>
+                  )}
+                </div>
+
+                {/* Dependency Picker Dialog */}
+                <Dialog open={depPickerOpen} onOpenChange={(o) => { setDepPickerOpen(o); if (!o) setDepSearch(""); }}>
+                  <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                      <DialogTitle>Add Dependency</DialogTitle>
+                    </DialogHeader>
+                    <p className="text-xs text-muted-foreground">Select a task that must be completed before this one can start.</p>
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                      <Input
+                        placeholder="Search tasks..."
+                        value={depSearch}
+                        onChange={(e) => setDepSearch(e.target.value)}
+                        className="pl-9"
+                        autoFocus
+                      />
+                    </div>
+                    <div className="max-h-64 overflow-y-auto -mx-1">
+                      {depPickerCandidates.length === 0 ? (
+                        <p className="text-xs text-muted-foreground text-center py-4">No matching tasks found.</p>
+                      ) : (
+                        depPickerCandidates.map((candidate) => (
+                          <button
+                            key={candidate.id}
+                            type="button"
+                            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-left hover:bg-accent/50 rounded-md transition-colors"
+                            onClick={() => addDependency.mutate(candidate.id)}
+                            disabled={addDependency.isPending}
+                          >
+                            <StatusIcon status={candidate.status} />
+                            <span className="font-mono text-xs text-muted-foreground shrink-0">
+                              {candidate.identifier ?? candidate.id.slice(0, 8)}
+                            </span>
+                            <span className="truncate">{candidate.title}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </DialogContent>
+                </Dialog>
+
+                {/* Attachments */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
+                    <div className="flex items-center gap-2">
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        className="hidden"
+                        onChange={handleFilePicked}
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={uploadAttachment.isPending}
+                      >
+                        <Paperclip className="h-3.5 w-3.5 mr-1.5" />
+                        {uploadAttachment.isPending ? "Uploading..." : "Upload image"}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {attachmentError && (
+                    <p className="text-xs text-destructive">{attachmentError}</p>
+                  )}
+
+                  {(!attachments || attachments.length === 0) ? (
+                    <p className="text-xs text-muted-foreground">No attachments yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {attachments.map((attachment) => (
+                        <div key={attachment.id} className="border border-border rounded-md p-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <a
+                              href={attachment.contentPath}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs hover:underline truncate"
+                              title={attachment.originalFilename ?? attachment.id}
+                            >
+                              {attachment.originalFilename ?? attachment.id}
+                            </a>
+                            <button
+                              type="button"
+                              className="text-muted-foreground hover:text-destructive"
+                              onClick={() => deleteAttachment.mutate(attachment.id)}
+                              disabled={deleteAttachment.isPending}
+                              title="Delete attachment"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
+                          </p>
+                          {isImageAttachment(attachment) && (
+                            <a href={attachment.contentPath} target="_blank" rel="noreferrer">
+                              <img
+                                src={attachment.contentPath}
+                                alt={attachment.originalFilename ?? "attachment"}
+                                className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
+                                loading="lazy"
+                              />
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <Separator />
+
+                {/* Tabs: Comments, Sub-tasks, Activity */}
+                <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
+                  <TabsList variant="line" className="w-full justify-start gap-1">
+                    <TabsTrigger value="comments" className="gap-1.5">
+                      <MessageSquare className="h-3.5 w-3.5" />
+                      Comments
+                    </TabsTrigger>
+                    <TabsTrigger value="subissues" className="gap-1.5">
+                      <ListTree className="h-3.5 w-3.5" />
+                      Sub-tasks
+                    </TabsTrigger>
+                    <TabsTrigger value="activity" className="gap-1.5">
+                      <ActivityIcon className="h-3.5 w-3.5" />
+                      Activity
+                    </TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="comments">
+                    <CommentThread
+                      comments={commentsWithRunMeta}
+                      linkedRuns={timelineRuns}
+                      issueStatus={issue.status}
+                      agentMap={agentMap}
+                      draftKey={`paperclip:issue-comment-draft:${issue.id}`}
+                      enableReassign
+                      reassignOptions={commentReassignOptions}
+                      currentAssigneeValue={currentAssigneeValue}
+                      mentions={mentionOptions}
+                      onAdd={async (body, reopen, reassignment) => {
+                        if (reassignment) {
+                          await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
+                          return;
+                        }
+                        await addComment.mutateAsync({ body, reopen });
+                      }}
+                      imageUploadHandler={async (file) => {
+                        const attachment = await uploadAttachment.mutateAsync(file);
+                        return attachment.contentPath;
+                      }}
+                      onAttachImage={async (file) => {
+                        await uploadAttachment.mutateAsync(file);
+                      }}
+                      liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
+                    />
+                  </TabsContent>
+
+                  <TabsContent value="subissues">
+                    {childIssues.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No sub-tasks.</p>
+                    ) : (
+                      <div className="border border-border rounded-lg divide-y divide-border">
+                        {childIssues.map((child) => (
+                          <Link
+                            key={child.id}
+                            to={`/issues/${child.identifier ?? child.id}`}
+                            className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <StatusIcon status={child.status} />
+                              <PriorityIcon priority={child.priority} />
+                              <span className="font-mono text-muted-foreground shrink-0">
+                                {child.identifier ?? child.id.slice(0, 8)}
+                              </span>
+                              <span className="truncate">{child.title}</span>
+                            </div>
+                            {child.assigneeAgentId && (() => {
+                              const name = agentMap.get(child.assigneeAgentId)?.name;
+                              return name
+                                ? <Identity name={name} size="sm" />
+                                : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
+                            })()}
+                          </Link>
+                        ))}
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="activity">
+                    {!activity || activity.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No activity yet.</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {activity.slice(0, 20).map((evt) => (
+                          <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <ActorIdentity evt={evt} agentMap={agentMap} />
+                            <span>{formatAction(evt.action, evt.details)}</span>
+                            <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </TabsContent>
+                </Tabs>
+
+                {/* Linked Approvals (collapsible) */}
+                {linkedApprovals && linkedApprovals.length > 0 && (
+                  <Collapsible
+                    open={secondaryOpen.approvals}
+                    onOpenChange={(o) => setSecondaryOpen((prev) => ({ ...prev, approvals: o }))}
+                    className="rounded-lg border border-border"
+                  >
+                    <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
+                      <span className="text-sm font-medium text-muted-foreground">
+                        Linked Approvals ({linkedApprovals.length})
+                      </span>
+                      <ChevronDown
+                        className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.approvals && "rotate-180")}
+                      />
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <div className="border-t border-border divide-y divide-border">
+                        {linkedApprovals.map((approval) => (
+                          <Link
+                            key={approval.id}
+                            to={`/approvals/${approval.id}`}
+                            className="flex items-center justify-between px-3 py-2 text-xs hover:bg-accent/20 transition-colors"
+                          >
+                            <div className="flex items-center gap-2">
+                              <StatusBadge status={approval.status} />
+                              <span className="font-medium">
+                                {approval.type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                              </span>
+                              <span className="font-mono text-muted-foreground">{approval.id.slice(0, 8)}</span>
+                            </div>
+                            <span className="text-muted-foreground">{relativeTime(approval.createdAt)}</span>
+                          </Link>
+                        ))}
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
+
+                {/* Cost Summary (collapsible) */}
+                {linkedRuns && linkedRuns.length > 0 && (
+                  <Collapsible
+                    open={secondaryOpen.cost}
+                    onOpenChange={(o) => setSecondaryOpen((prev) => ({ ...prev, cost: o }))}
+                    className="rounded-lg border border-border"
+                  >
+                    <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
+                      <span className="text-sm font-medium text-muted-foreground">Cost Summary</span>
+                      <ChevronDown
+                        className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.cost && "rotate-180")}
+                      />
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <div className="border-t border-border px-3 py-2">
+                        {!issueCostSummary.hasCost && !issueCostSummary.hasTokens ? (
+                          <div className="text-xs text-muted-foreground">No cost data yet.</div>
+                        ) : (
+                          <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                            {issueCostSummary.hasCost && (
+                              <span className="font-medium text-foreground">
+                                ${issueCostSummary.cost.toFixed(4)}
+                              </span>
+                            )}
+                            {issueCostSummary.hasTokens && (
+                              <span>
+                                Tokens {formatTokens(issueCostSummary.totalTokens)}
+                                {issueCostSummary.cached > 0
+                                  ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
+                                  : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
+              </>
+            )}
+          </div>
+        </ScrollArea>
+      </DialogContent>
+    </Dialog>
+  );
+}

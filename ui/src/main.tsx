@@ -6,7 +6,6 @@ import { App } from "./App";
 import { CompanyProvider } from "./context/CompanyContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
 import { BreadcrumbProvider } from "./context/BreadcrumbContext";
-import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
 import { ToastProvider } from "./context/ToastContext";
@@ -41,11 +40,9 @@ createRoot(document.getElementById("root")!).render(
                 <TooltipProvider>
                   <BreadcrumbProvider>
                     <SidebarProvider>
-                      <PanelProvider>
-                        <DialogProvider>
-                          <App />
-                        </DialogProvider>
-                      </PanelProvider>
+                      <DialogProvider>
+                        <App />
+                      </DialogProvider>
                     </SidebarProvider>
                   </BreadcrumbProvider>
                 </TooltipProvider>

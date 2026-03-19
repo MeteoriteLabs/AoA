@@ -13,11 +13,12 @@ import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { AgentCard } from "../components/AgentCard";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
+import { Bot, Plus, List, GitBranch, LayoutGrid, SlidersHorizontal } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 
 const adapterLabels: Record<string, string> = {
@@ -37,6 +38,7 @@ const roleLabels: Record<string, string> = {
 };
 
 type FilterTab = "all" | "active" | "paused" | "error";
+type ViewMode = "cards" | "list" | "org";
 
 function matchesFilter(status: string, tab: FilterTab, showTerminated: boolean): boolean {
   if (status === "terminated") return showTerminated;
@@ -70,9 +72,9 @@ export function Agents() {
   const { isMobile } = useSidebar();
   const pathSegment = location.pathname.split("/").pop() ?? "all";
   const tab: FilterTab = (pathSegment === "all" || pathSegment === "active" || pathSegment === "paused" || pathSegment === "error") ? pathSegment : "all";
-  const [view, setView] = useState<"list" | "org">("org");
+  const [view, setView] = useState<ViewMode>("cards");
   const forceListView = isMobile;
-  const effectiveView: "list" | "org" = forceListView ? "list" : view;
+  const effectiveView: ViewMode = forceListView ? "cards" : view;
   const [showTerminated, setShowTerminated] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -116,12 +118,27 @@ export function Agents() {
     return map;
   }, [agents]);
 
+  const { setSubtitle, setEntityColor } = useBreadcrumbs();
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
-  }, [setBreadcrumbs]);
+    setEntityColor("var(--entity-agent)");
+    return () => { setSubtitle(null); setEntityColor(null); };
+  }, [setBreadcrumbs, setSubtitle, setEntityColor]);
+
+  // Compute subtitle counts
+  useEffect(() => {
+    if (!agents) return;
+    const active = agents.filter((a) => a.status === "active" || a.status === "running" || a.status === "idle").length;
+    const idle = agents.filter((a) => a.status === "idle").length;
+    const parts: string[] = [];
+    if (active > 0) parts.push(`${active} active`);
+    if (idle > 0) parts.push(`${idle} idle`);
+    setSubtitle(parts.length > 0 ? parts.join(" \u00B7 ") : null);
+  }, [agents, setSubtitle]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message="Select a company to view agents" description="Agents are AI workers that execute tasks autonomously on your behalf." entityColor="var(--entity-agent)" />;
   }
 
   if (isLoading) {
@@ -177,15 +194,26 @@ export function Agents() {
               </div>
             )}
           </div>
-          {/* View toggle */}
+          {/* View toggle: Cards / List / Org Chart */}
           {!forceListView && (
             <div className="flex items-center border border-border">
+              <button
+                className={cn(
+                  "p-1.5 transition-colors",
+                  effectiveView === "cards" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                )}
+                onClick={() => setView("cards")}
+                title="Cards view"
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
+              </button>
               <button
                 className={cn(
                   "p-1.5 transition-colors",
                   effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
                 onClick={() => setView("list")}
+                title="List view"
               >
                 <List className="h-3.5 w-3.5" />
               </button>
@@ -195,6 +223,7 @@ export function Agents() {
                   effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
                 onClick={() => setView("org")}
+                title="Org chart view"
               >
                 <GitBranch className="h-3.5 w-3.5" />
               </button>
@@ -216,10 +245,31 @@ export function Agents() {
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
-          action="New Agent"
+          message="No agents yet"
+          description="Agents are AI workers that execute tasks on your behalf. Create your first agent to start building your team."
+          action="Create your first agent"
           onAction={openNewAgent}
+          entityColor="var(--entity-agent)"
         />
+      )}
+
+      {/* Cards view */}
+      {effectiveView === "cards" && filtered.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filtered.map((agent) => (
+            <AgentCard
+              key={agent.id}
+              agent={agent}
+              liveRun={liveRunByAgent.get(agent.id) ?? null}
+            />
+          ))}
+        </div>
+      )}
+
+      {effectiveView === "cards" && agents && agents.length > 0 && filtered.length === 0 && (
+        <p className="text-sm text-muted-foreground text-center py-8">
+          No agents match the selected filter.
+        </p>
       )}
 
       {/* List view */}
@@ -264,7 +314,7 @@ export function Agents() {
                         {adapterLabels[agent.adapterType] ?? agent.adapterType}
                       </span>
                       <span className="text-xs text-muted-foreground w-16 text-right">
-                        {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
+                        {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "\u2014"}
                       </span>
                       <span className="w-20 flex justify-end">
                         <StatusBadge status={agent.status} />
@@ -365,7 +415,7 @@ function OrgTreeNode({
                   {adapterLabels[agent.adapterType] ?? agent.adapterType}
                 </span>
                 <span className="text-xs text-muted-foreground w-16 text-right">
-                  {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
+                  {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "\u2014"}
                 </span>
               </>
             )}

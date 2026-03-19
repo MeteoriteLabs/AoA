@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { homeApi } from "../api/dashboard";
@@ -6,6 +6,7 @@ import { authApi } from "../api/auth";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -24,7 +25,12 @@ import {
   Target,
   Check,
   ChevronRight,
+  ChevronDown,
   AlertTriangle,
+  AlertCircle,
+  Clock,
+  Lightbulb,
+  Plus,
 } from "lucide-react";
 import type { HomeSummary, RecentActivityItem, SetupStatus, GoalGapNudge, GoalProgress } from "@paperclipai/shared";
 
@@ -35,103 +41,105 @@ function getGreeting(): string {
   return "Good evening";
 }
 
-function buildPulseLine(data: HomeSummary): string {
-  const parts: string[] = [];
-  if (data.briefsAwaitingReview > 0) {
-    parts.push(`${data.briefsAwaitingReview} brief${data.briefsAwaitingReview === 1 ? "" : "s"} to review`);
-  }
-  if (data.tasksInReview > 0) {
-    parts.push(`${data.tasksInReview} task${data.tasksInReview === 1 ? "" : "s"} in review`);
-  }
-  if (data.myTasksDueToday.length > 0) {
-    parts.push(`${data.myTasksDueToday.length} task${data.myTasksDueToday.length === 1 ? "" : "s"} due today`);
-  }
-  if (data.blockedTasks > 0) {
-    parts.push(`${data.blockedTasks} blocked task${data.blockedTasks === 1 ? "" : "s"}`);
-  }
-  if (data.pendingMemoryItems > 0) {
-    parts.push(`${data.pendingMemoryItems} pending memory item${data.pendingMemoryItems === 1 ? "" : "s"}`);
-  }
-  if (parts.length === 0) return "All clear — nothing needs your attention right now.";
-  return parts.join(", ");
-}
+// --- Action Queue Group Types (T10) ---
 
-interface ActionQueueItem {
+interface ActionGroupItem {
   key: string;
-  icon: React.ElementType;
   label: string;
-  count?: number;
+  sublabel?: string;
   to: string;
-  priority: number;
 }
 
-function buildActionQueue(data: HomeSummary): ActionQueueItem[] {
-  const items: ActionQueueItem[] = [];
+interface ActionGroup {
+  id: string;
+  title: string;
+  icon: React.ElementType;
+  items: ActionGroupItem[];
+}
 
+function buildActionGroups(data: HomeSummary): ActionGroup[] {
+  const groups: ActionGroup[] = [];
+
+  // Needs Review: briefs awaiting review + tasks in review
+  const needsReviewItems: ActionGroupItem[] = [];
   if (data.briefsAwaitingReview > 0) {
-    items.push({
-      key: "briefs",
-      icon: FileText,
+    needsReviewItems.push({
+      key: "briefs-review",
       label: `${data.briefsAwaitingReview} brief${data.briefsAwaitingReview === 1 ? "" : "s"} awaiting review`,
       to: "/briefs",
-      priority: 0,
     });
   }
-
   if (data.tasksInReview > 0) {
-    items.push({
-      key: "review",
-      icon: CheckCircle2,
+    needsReviewItems.push({
+      key: "tasks-review",
       label: `${data.tasksInReview} task${data.tasksInReview === 1 ? "" : "s"} in review`,
       to: "/issues?status=in_review",
-      priority: 1,
     });
   }
-
-  for (const task of data.myTasksDueToday) {
-    items.push({
-      key: `due-${task.id}`,
-      icon: CalendarClock,
-      label: task.title,
-      to: `/issues/${task.id}`,
-      priority: 2,
-    });
+  if (needsReviewItems.length > 0) {
+    groups.push({ id: "needs-review", title: "Needs Review", icon: Eye, items: needsReviewItems });
   }
 
+  // Blocked
   if (data.blockedTasks > 0) {
-    items.push({
-      key: "blocked",
-      icon: Ban,
-      label: `${data.blockedTasks} blocked task${data.blockedTasks === 1 ? "" : "s"}`,
-      to: "/issues?status=blocked",
-      priority: 3,
+    groups.push({
+      id: "blocked",
+      title: "Blocked",
+      icon: AlertCircle,
+      items: [{
+        key: "blocked-tasks",
+        label: `${data.blockedTasks} blocked task${data.blockedTasks === 1 ? "" : "s"}`,
+        to: "/issues?status=blocked",
+      }],
     });
   }
 
+  // Due Today
+  if (data.myTasksDueToday.length > 0) {
+    groups.push({
+      id: "due-today",
+      title: "Due Today",
+      icon: Clock,
+      items: data.myTasksDueToday.map((task) => ({
+        key: `due-${task.id}`,
+        label: task.title,
+        sublabel: task.status === "in_progress" ? "In progress" : task.status === "todo" ? "To do" : task.status,
+        to: `/issues/${task.id}`,
+      })),
+    });
+  }
+
+  // Suggestions: pending memory items + goal nudges
+  const suggestionItems: ActionGroupItem[] = [];
   if (data.pendingMemoryItems > 0) {
-    items.push({
-      key: "memory",
-      icon: Brain,
+    suggestionItems.push({
+      key: "memory-pending",
       label: `${data.pendingMemoryItems} pending memory item${data.pendingMemoryItems === 1 ? "" : "s"}`,
       to: "/memory?status=pending",
-      priority: 4,
     });
   }
-
   if (data.nudges) {
     for (const nudge of data.nudges) {
-      items.push({
+      suggestionItems.push({
         key: `nudge-${nudge.goalId}`,
-        icon: AlertTriangle,
-        label: `${nudge.goalTitle} — ${nudge.message}`,
+        label: nudge.goalTitle,
+        sublabel: nudge.message,
         to: `/goals/${nudge.goalId}`,
-        priority: 5,
       });
     }
   }
+  if (suggestionItems.length > 0) {
+    groups.push({ id: "suggestions", title: "Suggestions", icon: Lightbulb, items: suggestionItems });
+  }
 
-  return items.sort((a, b) => a.priority - b.priority);
+  return groups;
 }
+
+function getTotalActionCount(groups: ActionGroup[]): number {
+  return groups.reduce((sum, g) => sum + g.items.length, 0);
+}
+
+// --- Setup helpers ---
 
 function isSetupComplete(s: SetupStatus): boolean {
   return s.hasVisionMission && s.hasDepartment && s.hasAgent && s.hasGoal;
@@ -178,6 +186,8 @@ function buildSetupSteps(s: SetupStatus): SetupStepDef[] {
   ];
 }
 
+// --- Activity helpers ---
+
 function formatAction(item: RecentActivityItem): string {
   const verb = item.action.replace(/[._]/g, " ").replace(/\bissue\b/g, "task");
   return verb;
@@ -187,14 +197,84 @@ function activityEntityName(item: RecentActivityItem): string {
   const details = item.details as Record<string, unknown> | null;
   if (details?.title && typeof details.title === "string") return details.title;
   if (details?.name && typeof details.name === "string") return details.name;
-  return item.entityType;
+  return item.entityType === "issue" ? "task" : item.entityType;
 }
+
+// --- Collapsible Action Group Component (T10) ---
+
+function ActionQueueGroup({ group }: { group: ActionGroup }) {
+  const [expanded, setExpanded] = useState(true);
+  const Icon = group.icon;
+
+  return (
+    <div className="border border-border rounded-md overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm font-medium hover:bg-accent/30 transition-colors"
+      >
+        <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
+        <span className="flex-1 text-left">{group.title}</span>
+        <span className="text-xs font-normal bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full tabular-nums">
+          {group.items.length}
+        </span>
+        <ChevronDown
+          className={`h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-150 ${
+            expanded ? "" : "-rotate-90"
+          }`}
+        />
+      </button>
+      {expanded && (
+        <div className="border-t border-border divide-y divide-border">
+          {group.items.map((item) => (
+            <Link
+              key={item.key}
+              to={item.to}
+              className="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-accent/50 transition-colors no-underline text-inherit"
+            >
+              <span className="flex-1 min-w-0 truncate">{item.label}</span>
+              {item.sublabel && (
+                <span className="text-xs text-muted-foreground shrink-0">{item.sublabel}</span>
+              )}
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Quick Action Card Component (T8) ---
+
+function QuickActionCard({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: React.ElementType;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-2.5 px-4 py-3 border border-border rounded-md hover:bg-accent/50 hover:border-accent transition-colors text-sm font-medium group"
+    >
+      <div className="h-7 w-7 rounded-md bg-muted flex items-center justify-center shrink-0 group-hover:bg-primary/10 transition-colors">
+        <Icon className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
+      </div>
+      <span>{label}</span>
+    </button>
+  );
+}
+
+// --- Main Dashboard Component ---
 
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
-  const { openOnboarding, openNewProject, openNewAgent, openNewGoal } = useDialog();
+  const { openOnboarding, openNewIssue, openDebrief, openNewProject, openNewAgent, openNewGoal } = useDialog();
   const navigate = useNavigate();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const liveAgentCount = useLiveAgentCount();
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -234,8 +314,20 @@ export function Dashboard() {
   const userName = session?.user?.name?.split(" ")[0] ?? null;
   const greeting = userName ? `${getGreeting()}, ${userName}` : getGreeting();
   const showOnboarding = data?.setupStatus && !isSetupComplete(data.setupStatus);
-  const actionQueue = data ? buildActionQueue(data) : [];
-  const pulseLine = data ? buildPulseLine(data) : "";
+  const actionGroups = data ? buildActionGroups(data) : [];
+  const totalActions = getTotalActionCount(actionGroups);
+
+  // Build status line: "{X} agents working · {Y} tasks need attention"
+  const statusParts: string[] = [];
+  if (liveAgentCount > 0) {
+    statusParts.push(`${liveAgentCount} agent${liveAgentCount === 1 ? "" : "s"} working`);
+  }
+  if (totalActions > 0) {
+    statusParts.push(`${totalActions} task${totalActions === 1 ? "" : "s"} need attention`);
+  }
+  const statusLine = statusParts.length > 0
+    ? statusParts.join(" \u00B7 ")
+    : "All clear \u2014 nothing needs your attention right now.";
 
   const handleStepClick = (key: string) => {
     switch (key) {
@@ -258,13 +350,13 @@ export function Dashboard() {
     <div className="space-y-6 max-w-3xl">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      {/* Greeting */}
+      {/* Greeting + Status Line */}
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">
           {greeting}
         </h1>
         {data && !showOnboarding && (
-          <p className="text-sm text-muted-foreground mt-1">{pulseLine}</p>
+          <p className="text-sm text-muted-foreground mt-1">{statusLine}</p>
         )}
         {showOnboarding && (
           <p className="text-sm text-muted-foreground mt-1">
@@ -273,11 +365,20 @@ export function Dashboard() {
         )}
       </div>
 
+      {/* Quick Action Cards (T8) */}
+      {!showOnboarding && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <QuickActionCard icon={Plus} label="+ New Task" onClick={() => openNewIssue()} />
+          <QuickActionCard icon={FileText} label="+ Debrief" onClick={() => openDebrief()} />
+          <QuickActionCard icon={Target} label="+ New Goal" onClick={() => openNewGoal()} />
+        </div>
+      )}
+
       {/* Onboarding Setup Flow */}
       {showOnboarding && data?.setupStatus && (
         <div>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+            <h2 className="text-sm font-semibold text-muted-foreground">
               Getting Started
             </h2>
             <span className="text-xs text-muted-foreground">
@@ -298,7 +399,6 @@ export function Dashboard() {
           <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
             {buildSetupSteps(data.setupStatus).map((step) => {
               const Icon = step.icon;
-              // First incomplete step is the current one
               const steps = buildSetupSteps(data.setupStatus);
               const currentStepKey = steps.find((s) => !s.done)?.key;
               const isCurrent = step.key === currentStepKey;
@@ -347,38 +447,22 @@ export function Dashboard() {
         </div>
       )}
 
-      {/* Action Queue */}
-      {!showOnboarding && actionQueue.length > 0 && (
-        <div>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+      {/* Action Queue — Categorized Groups (T10) */}
+      {!showOnboarding && actionGroups.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-sm font-semibold text-muted-foreground">
             Action Queue
           </h2>
-          <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
-            {actionQueue.map((item) => {
-              const Icon = item.icon;
-              const isNudge = item.key.startsWith("nudge-");
-              return (
-                <Link
-                  key={item.key}
-                  to={item.to}
-                  className="flex items-center gap-3 px-4 py-3 text-sm hover:bg-accent/50 transition-colors no-underline text-inherit"
-                >
-                  <Icon className={`h-4 w-4 shrink-0 ${isNudge ? "text-yellow-500" : "text-muted-foreground"}`} />
-                  <span className={`flex-1 min-w-0 truncate ${isNudge ? "text-muted-foreground" : ""}`}>{item.label}</span>
-                  {item.key.startsWith("due-") && (
-                    <span className="text-xs text-muted-foreground shrink-0">Due today</span>
-                  )}
-                </Link>
-              );
-            })}
-          </div>
+          {actionGroups.map((group) => (
+            <ActionQueueGroup key={group.id} group={group} />
+          ))}
         </div>
       )}
 
       {/* Goal Progress */}
       {!showOnboarding && data && data.goalProgress && data.goalProgress.length > 0 && (
         <div>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+          <h2 className="text-sm font-semibold text-muted-foreground mb-3">
             Active Goals
           </h2>
           <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
@@ -421,7 +505,7 @@ export function Dashboard() {
       {/* Today's Activity */}
       {data && data.recentActivity.length > 0 && (
         <div>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+          <h2 className="text-sm font-semibold text-muted-foreground mb-3">
             Today's Activity
           </h2>
           <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
@@ -446,7 +530,7 @@ export function Dashboard() {
       )}
 
       {/* All clear state */}
-      {!showOnboarding && data && actionQueue.length === 0 && data.recentActivity.length === 0 && (
+      {!showOnboarding && data && actionGroups.length === 0 && data.recentActivity.length === 0 && (
         <div className="border border-border rounded-md p-8 text-center">
           <p className="text-sm text-muted-foreground">Nothing needs your attention right now.</p>
         </div>

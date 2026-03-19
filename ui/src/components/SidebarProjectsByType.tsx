@@ -25,6 +25,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Project } from "@paperclipai/shared";
 
 function SortableProjectItem({
@@ -86,9 +87,10 @@ function SortableProjectItem({
 interface SidebarProjectsByTypeProps {
   type: "department" | "project";
   label: string;
+  collapsed?: boolean;
 }
 
-export function SidebarProjectsByType({ type, label }: SidebarProjectsByTypeProps) {
+export function SidebarProjectsByType({ type, label, collapsed }: SidebarProjectsByTypeProps) {
   const [open, setOpen] = useState(true);
   const { selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
@@ -142,6 +144,44 @@ export function SidebarProjectsByType({ type, label }: SidebarProjectsByTypeProp
 
   const newLabel = type === "department" ? "New Department" : "New Project";
 
+  // Collapsed mode: individual color dot per department/project + "new" button
+  if (collapsed) {
+    return (
+      <div className="w-full">
+        <div className="mx-auto w-8 my-1.5 border-t border-border" />
+        <div className="flex flex-col gap-0.5 items-center">
+          {orderedProjects.map((project: Project) => {
+            const routeRef = projectRouteRef(project);
+            const isActive = activeProjectRef === routeRef || activeProjectRef === project.id;
+            return (
+              <Tooltip key={project.id}>
+                <TooltipTrigger asChild>
+                  <NavLink
+                    to={`/projects/${routeRef}/issues`}
+                    onClick={() => { if (isMobile) setSidebarOpen(false); }}
+                    className={cn(
+                      "flex items-center justify-center w-10 h-8 rounded-md transition-colors",
+                      isActive
+                        ? "bg-accent"
+                        : "hover:bg-accent/50",
+                    )}
+                  >
+                    <span
+                      className="h-3.5 w-3.5 rounded-sm shrink-0"
+                      style={{ backgroundColor: project.color ?? "#6366f1" }}
+                    />
+                  </NavLink>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>{project.name}</TooltipContent>
+              </Tooltip>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // Expanded mode: collapsible list with drag-drop
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="group">

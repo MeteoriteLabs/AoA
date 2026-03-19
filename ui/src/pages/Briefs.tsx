@@ -5,17 +5,10 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { briefsApi } from "../api/briefs";
 import { queryKeys } from "../lib/queryKeys";
-import { Loader2, FileText, ClipboardPen, PenLine, Plug } from "lucide-react";
+import { Loader2, FileText, ClipboardPen, PenLine, Plug, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
-
-const STATUS_BADGES: Record<string, string> = {
-  draft: "bg-muted text-muted-foreground",
-  ready: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-  reviewed: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
-  approved: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-  rejected: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
-  partially_approved: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-};
+import { BRIEF_STATUS_BADGES as STATUS_BADGES } from "../lib/brief-constants";
+import { EmptyState } from "../components/EmptyState";
 
 const SOURCE_BADGES: Record<string, { label: string; class: string; icon: typeof FileText }> = {
   paste: { label: "Paste", class: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300", icon: ClipboardPen },
@@ -23,36 +16,65 @@ const SOURCE_BADGES: Record<string, { label: string; class: string; icon: typeof
   mcp: { label: "MCP", class: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300", icon: Plug },
 };
 
+/** Pipeline statuses in order, with display labels and active chip styles */
+const PIPELINE_STATUSES = [
+  { value: "draft", label: "Draft", activeClass: "bg-muted text-foreground border-border" },
+  { value: "ready", label: "Ready", activeClass: "bg-blue-600 text-white border-blue-600 dark:bg-blue-500 dark:border-blue-500" },
+  { value: "reviewed", label: "Reviewed", activeClass: "bg-purple-600 text-white border-purple-600 dark:bg-purple-500 dark:border-purple-500" },
+  { value: "approved", label: "Approved", activeClass: "bg-green-600 text-white border-green-600 dark:bg-green-500 dark:border-green-500" },
+  { value: "partially_approved", label: "Partial", activeClass: "bg-amber-600 text-white border-amber-600 dark:bg-amber-500 dark:border-amber-500" },
+  { value: "rejected", label: "Rejected", activeClass: "bg-red-600 text-white border-red-600 dark:bg-red-500 dark:border-red-500" },
+] as const;
+
 export function Briefs() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<string | null>(null);
+
+  const { setSubtitle, setEntityColor } = useBreadcrumbs();
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Briefs" }]);
-  }, [setBreadcrumbs]);
+    setEntityColor("var(--entity-brief)");
+    return () => { setSubtitle(null); setEntityColor(null); };
+  }, [setBreadcrumbs, setSubtitle, setEntityColor]);
 
-  const filters = useMemo(() => {
-    const f: Record<string, string> = {};
-    if (statusFilter !== "all") f.status = statusFilter;
-    return f;
-  }, [statusFilter]);
-
+  // Always fetch all briefs so we can compute counts per status
   const { data: briefs, isLoading } = useQuery({
-    queryKey: [...queryKeys.briefs.list(selectedCompanyId!), filters],
-    queryFn: () => briefsApi.list(selectedCompanyId!, filters),
+    queryKey: queryKeys.briefs.list(selectedCompanyId!),
+    queryFn: () => briefsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
-  // Sort: ready briefs first, then by date descending
+  // Compute subtitle counts
+  useEffect(() => {
+    if (!briefs) return;
+    const ready = briefs.filter((b) => b.status === "ready").length;
+    setSubtitle(ready > 0 ? `${ready} ready for review` : null);
+  }, [briefs, setSubtitle]);
+
+  // Compute status counts for the pipeline bar
+  const statusCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const s of PIPELINE_STATUSES) counts[s.value] = 0;
+    if (briefs) {
+      for (const b of briefs) {
+        if (counts[b.status] !== undefined) counts[b.status]++;
+      }
+    }
+    return counts;
+  }, [briefs]);
+
+  // Client-side filtering + sorting: ready briefs first, then by date descending
   const sorted = useMemo(() => {
     if (!briefs) return [];
-    return [...briefs].sort((a, b) => {
+    const filtered = statusFilter ? briefs.filter((b) => b.status === statusFilter) : briefs;
+    return [...filtered].sort((a, b) => {
       if (a.status === "ready" && b.status !== "ready") return -1;
       if (a.status !== "ready" && b.status === "ready") return 1;
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
-  }, [briefs]);
+  }, [briefs, statusFilter]);
 
   if (isLoading) {
     return (
@@ -64,29 +86,50 @@ export function Briefs() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold">Briefs</h1>
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="flex h-8 rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      {/* Status pipeline bar */}
+      <div className="flex items-center gap-1 flex-wrap">
+        {/* "All" chip */}
+        <button
+          onClick={() => setStatusFilter(null)}
+          className={cn(
+            "inline-flex items-center rounded-full px-3 py-1.5 text-xs font-medium border transition-colors",
+            statusFilter === null
+              ? "bg-foreground text-background border-foreground"
+              : "bg-transparent text-muted-foreground border-border hover:bg-accent hover:text-accent-foreground",
+          )}
         >
-          <option value="all">All statuses</option>
-          <option value="ready">Ready for review</option>
-          <option value="draft">Draft</option>
-          <option value="reviewed">Reviewed</option>
-          <option value="approved">Approved</option>
-          <option value="rejected">Rejected</option>
-          <option value="partially_approved">Partially approved</option>
-        </select>
+          All ({briefs?.length ?? 0})
+        </button>
+        {PIPELINE_STATUSES.map((status, index) => {
+          const count = statusCounts[status.value];
+          const isActive = statusFilter === status.value;
+          return (
+            <div key={status.value} className="flex items-center gap-1">
+              <ChevronRight className="h-3 w-3 text-muted-foreground/50 shrink-0" />
+              <button
+                onClick={() => setStatusFilter(isActive ? null : status.value)}
+                className={cn(
+                  "inline-flex items-center rounded-full px-3 py-1.5 text-xs font-medium border transition-colors",
+                  isActive
+                    ? status.activeClass
+                    : "bg-transparent text-muted-foreground border-border hover:bg-accent hover:text-accent-foreground",
+                  count === 0 && !isActive && "opacity-50",
+                )}
+              >
+                {count} {status.label}
+              </button>
+            </div>
+          );
+        })}
       </div>
 
       {sorted.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-          <FileText className="h-10 w-10 mb-3 opacity-40" />
-          <p className="text-sm">No briefs yet</p>
-          <p className="text-xs mt-1">Submit a debrief to generate your first brief</p>
-        </div>
+        <EmptyState
+          icon={FileText}
+          message="No briefs yet"
+          description="Submit a debrief to generate your first brief. Briefs extract structured insights, tasks, and decisions from raw content."
+          entityColor="var(--entity-brief)"
+        />
       ) : (
         <div className="space-y-2">
           {sorted.map((brief) => {
