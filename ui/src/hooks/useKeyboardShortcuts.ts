@@ -3,11 +3,10 @@ import { useEffect } from "react";
 interface ShortcutHandlers {
   onNewIssue?: () => void;
   onToggleSidebar?: () => void;
-  onTogglePanel?: () => void;
   onSwitchCompany?: (index: number) => void;
 }
 
-export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onTogglePanel, onSwitchCompany }: ShortcutHandlers) {
+export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onSwitchCompany }: ShortcutHandlers) {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       // Don't fire shortcuts when typing in inputs
@@ -34,15 +33,9 @@ export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onTogglePane
         e.preventDefault();
         onToggleSidebar?.();
       }
-
-      // ] → Toggle Panel
-      if (e.key === "]" && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault();
-        onTogglePanel?.();
-      }
     }
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onNewIssue, onToggleSidebar, onTogglePanel, onSwitchCompany]);
+  }, [onNewIssue, onToggleSidebar, onSwitchCompany]);
 }

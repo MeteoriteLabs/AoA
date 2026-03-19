@@ -7,7 +7,6 @@ import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
 import { issuesApi } from "../api/issues";
-import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
@@ -235,7 +234,6 @@ export function AgentDetail() {
     runId?: string;
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
-  const { closePanel } = usePanel();
   const { openNewIssue } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -413,11 +411,6 @@ export function AgentDetail() {
     }
     setBreadcrumbs(crumbs);
   }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId]);
-
-  useEffect(() => {
-    closePanel();
-    return () => closePanel();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useBeforeUnload(
     useCallback((event) => {

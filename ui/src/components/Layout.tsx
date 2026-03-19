@@ -5,7 +5,6 @@ import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { BreadcrumbBar } from "./BreadcrumbBar";
-import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
 import { NewIssueDialog } from "./NewIssueDialog";
 import { NewProjectDialog } from "./NewProjectDialog";
@@ -14,7 +13,6 @@ import { NewAgentDialog } from "./NewAgentDialog";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { useDialog } from "../context/DialogContext";
-import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
@@ -28,7 +26,6 @@ import { Button } from "@/components/ui/button";
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
-  const { togglePanelVisible } = usePanel();
   const { companies, loading: companiesLoading, selectedCompanyId, selectionSource, setSelectedCompanyId } = useCompany();
   const { theme, toggleTheme } = useTheme();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
@@ -44,9 +41,10 @@ export function Layout() {
     retry: false,
   });
 
-  // G1: Clean up stale localStorage key from removed CompanyRail
+  // G1 + G15: Clean up stale localStorage keys from removed CompanyRail and PropertiesPanel
   useEffect(() => {
     localStorage.removeItem("paperclip.companyOrder");
+    localStorage.removeItem("paperclip:panel-visible");
   }, []);
 
   useEffect(() => {
@@ -103,8 +101,6 @@ export function Layout() {
     }
   }, [selectedCompanyId, selectionSource, companies, navigate]);
 
-  const togglePanel = togglePanelVisible;
-
   // Cmd+1..9 to switch companies
   const switchCompany = useCallback(
     (index: number) => {
@@ -120,7 +116,6 @@ export function Layout() {
   useKeyboardShortcuts({
     onNewIssue: () => openNewIssue(),
     onToggleSidebar: toggleSidebar,
-    onTogglePanel: togglePanel,
     onSwitchCompany: switchCompany,
   });
 
@@ -288,17 +283,14 @@ export function Layout() {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 h-full">
         <BreadcrumbBar />
-        <div className="flex flex-1 min-h-0">
-          <main
-            id="main-content"
-            tabIndex={-1}
-            className={cn("flex-1 overflow-auto p-4 md:p-6", isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]")}
-            onScroll={handleMainScroll}
-          >
-            <Outlet />
-          </main>
-          <PropertiesPanel />
-        </div>
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className={cn("flex-1 overflow-auto p-4 md:p-6", isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]")}
+          onScroll={handleMainScroll}
+        >
+          <Outlet />
+        </main>
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />

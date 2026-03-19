@@ -1,13 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
-import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { GoalProperties } from "../components/GoalProperties";
 import { GoalTree } from "../components/GoalTree";
@@ -17,16 +17,18 @@ import { EntityRow } from "../components/EntityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, AlertTriangle } from "lucide-react";
+import { Plus, AlertTriangle, ChevronDown, SlidersHorizontal } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
 
 export function GoalDetail() {
   const { goalId } = useParams<{ goalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewGoal } = useDialog();
-  const { openPanel, closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { isMobile } = useSidebar();
+  const [propsOpen, setPropsOpen] = useState(true);
   const queryClient = useQueryClient();
 
   const {
@@ -103,24 +105,19 @@ export function GoalDetail() {
     ]);
   }, [setBreadcrumbs, goal, goalId]);
 
-  useEffect(() => {
-    if (goal) {
-      openPanel(
-        <GoalProperties
-          goal={goal}
-          onUpdate={(data) => updateGoal.mutate(data)}
-        />
-      );
-    }
-    return () => closePanel();
-  }, [goal]); // eslint-disable-line react-hooks/exhaustive-deps
-
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!goal) return null;
 
-  return (
-    <div className="space-y-6">
+  const propertiesContent = (
+    <GoalProperties
+      goal={goal}
+      onUpdate={(data) => updateGoal.mutate(data)}
+    />
+  );
+
+  const mainContent = (
+    <div className="space-y-6 min-w-0 flex-1">
       <div className="space-y-3">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs uppercase text-muted-foreground">
@@ -215,6 +212,42 @@ export function GoalDetail() {
           )}
         </TabsContent>
       </Tabs>
+    </div>
+  );
+
+  if (isMobile) {
+    return (
+      <div className="space-y-6">
+        {mainContent}
+        <Collapsible open={propsOpen} onOpenChange={setPropsOpen}>
+          <CollapsibleTrigger asChild>
+            <Button variant="ghost" size="sm" className="gap-2 w-full justify-between">
+              <span className="flex items-center gap-2">
+                <SlidersHorizontal className="h-4 w-4" />
+                Properties
+              </span>
+              <ChevronDown className={`h-4 w-4 transition-transform ${propsOpen ? "rotate-180" : ""}`} />
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="border border-border rounded-md p-4 mt-2">
+              {propertiesContent}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-6">
+      {mainContent}
+      <aside className="w-80 shrink-0 border-l border-border pl-6">
+        <div className="sticky top-0">
+          <h3 className="text-sm font-medium mb-4">Properties</h3>
+          {propertiesContent}
+        </div>
+      </aside>
     </div>
   );
 }
