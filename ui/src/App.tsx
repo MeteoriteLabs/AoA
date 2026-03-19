@@ -101,7 +101,7 @@ function boardRoutes() {
       <Route path="companies" element={<Companies />} />
       <Route path="vision" element={<VisionMission />} />
       <Route path="settings" element={<SettingsPage />} />
-      <Route path="company/settings" element={<Navigate to="settings" replace />} />
+      <Route path="company/settings" element={<Navigate to="../settings" replace />} />
       <Route path="org" element={<OrgChart />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
@@ -136,8 +136,8 @@ function boardRoutes() {
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
-      <Route path="costs" element={<Navigate to="settings" replace />} />
-      <Route path="activity" element={<Navigate to="settings" replace />} />
+      <Route path="costs" element={<Navigate to="../settings" replace />} />
+      <Route path="activity" element={<Navigate to="../settings" replace />} />
       <Route path="inbox" element={<Navigate to="/inbox/new" replace />} />
       <Route path="inbox/new" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />
