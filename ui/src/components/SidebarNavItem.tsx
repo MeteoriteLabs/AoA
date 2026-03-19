@@ -1,7 +1,8 @@
-import { NavLink } from "@/lib/router";
+import { NavLink, useLocation, useMatch } from "@/lib/router";
 import { cn } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useCompany } from "../context/CompanyContext";
 import type { LucideIcon } from "lucide-react";
 
 interface SidebarNavItemProps {
@@ -33,6 +34,14 @@ export function SidebarNavItem({
   collapsed,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen } = useSidebar();
+  const { selectedCompany } = useCompany();
+  const prefix = selectedCompany?.issuePrefix ?? "";
+  const fullPath = `/${prefix}${to}`;
+  const location = useLocation();
+  // Determine active: exact match for `end` routes, prefix match otherwise
+  const isActive = end
+    ? location.pathname === fullPath
+    : location.pathname.startsWith(fullPath);
 
   if (collapsed) {
     return (
@@ -42,40 +51,36 @@ export function SidebarNavItem({
             to={to}
             end={end}
             onClick={() => { if (isMobile) setSidebarOpen(false); }}
-            className={({ isActive }) =>
-              cn(
-                "flex items-center justify-center w-10 h-8 rounded-md transition-colors mx-auto",
-                isActive
-                  ? "bg-accent text-foreground"
-                  : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
-                className,
-              )
-            }
-          >
-            {({ isActive }: { isActive: boolean }) => (
-              <span className="relative shrink-0">
-                <Icon
-                  className="h-4 w-4 transition-colors duration-150"
-                  style={entityColor && isActive ? { color: entityColor } : undefined}
-                />
-                {alert && (
-                  <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
-                )}
-                {/* Dot indicator for badge in collapsed mode */}
-                {!alert && badge != null && badge > 0 && (
-                  <span
-                    className={cn(
-                      "absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full shadow-[0_0_0_2px_hsl(var(--background))]",
-                      badgeTone === "danger" ? "bg-red-500" : "bg-primary",
-                    )}
-                  />
-                )}
-                {/* Dot indicator for live count in collapsed mode */}
-                {!alert && (badge == null || badge <= 0) && liveCount != null && liveCount > 0 && (
-                  <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
-                )}
-              </span>
+            className={cn(
+              "flex items-center justify-center w-10 h-8 rounded-md transition-colors mx-auto",
+              isActive
+                ? "bg-accent text-foreground"
+                : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+              className,
             )}
+          >
+            <span className="relative shrink-0">
+              <Icon
+                className="h-4 w-4 transition-colors duration-150"
+                style={entityColor && isActive ? { color: entityColor } : undefined}
+              />
+              {alert && (
+                <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
+              )}
+              {/* Dot indicator for badge in collapsed mode */}
+              {!alert && badge != null && badge > 0 && (
+                <span
+                  className={cn(
+                    "absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full shadow-[0_0_0_2px_hsl(var(--background))]",
+                    badgeTone === "danger" ? "bg-red-500" : "bg-primary",
+                  )}
+                />
+              )}
+              {/* Dot indicator for live count in collapsed mode */}
+              {!alert && (badge == null || badge <= 0) && liveCount != null && liveCount > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
+              )}
+            </span>
           </NavLink>
         </TooltipTrigger>
         <TooltipContent side="right" sideOffset={8}>

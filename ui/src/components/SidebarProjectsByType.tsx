@@ -176,19 +176,6 @@ export function SidebarProjectsByType({ type, label, collapsed }: SidebarProject
               </Tooltip>
             );
           })}
-          {/* + New button */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => openNewProject({ type })}
-                className="flex items-center justify-center w-10 h-8 rounded-md transition-colors text-muted-foreground/60 hover:bg-accent/50 hover:text-foreground"
-                aria-label={newLabel}
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right" sideOffset={8}>{newLabel}</TooltipContent>
-          </Tooltip>
         </div>
       </div>
     );
