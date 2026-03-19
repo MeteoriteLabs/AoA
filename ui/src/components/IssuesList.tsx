@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search, ArrowDown } from "lucide-react";
+import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search, ArrowDown, Link2, ListTree } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import type { Issue } from "@paperclipai/shared";
 
@@ -220,6 +220,19 @@ export function IssuesList({
     if (!id || !agents) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
   }, [agents]);
+
+  // Compute subtask counts per parent issue
+  const subtaskStats = useMemo(() => {
+    const stats = new Map<string, { total: number; done: number }>();
+    for (const issue of issues) {
+      if (!issue.parentId) continue;
+      const entry = stats.get(issue.parentId) ?? { total: 0, done: 0 };
+      entry.total++;
+      if (issue.status === "done" || issue.status === "cancelled") entry.done++;
+      stats.set(issue.parentId, entry);
+    }
+    return stats;
+  }, [issues]);
 
   const filtered = useMemo(() => {
     const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
@@ -607,49 +620,80 @@ export function IssuesList({
               </div>
             )}
             <CollapsibleContent>
-              {group.items.map((issue) => (
+              {group.items.map((issue) => {
+                const subtaskStat = subtaskStats.get(issue.id);
+                const descriptionPreview = issue.description
+                  ? issue.description.split("\n")[0].slice(0, 120)
+                  : null;
+                return (
                 <Link
                   key={issue.id}
                   to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="flex items-center gap-2 py-2 pl-1 pr-3 text-sm border-b border-border last:border-b-0 cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit"
+                  className="group/row flex items-start gap-2 py-2.5 pl-1 pr-3 text-sm border-b border-border last:border-b-0 cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit"
                   onClick={onSelectIssue ? (e) => {
                     e.preventDefault();
                     onSelectIssue(issue.identifier ?? issue.id);
                   } : undefined}
                 >
                   {/* Spacer matching caret width so status icon aligns with group title (hidden on mobile) */}
-                  <div className="w-3.5 shrink-0 hidden sm:block" />
-                  <div className="shrink-0" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                  <div className="w-3.5 shrink-0 hidden sm:block mt-0.5" />
+                  <div className="shrink-0 mt-0.5" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
                     <StatusIcon
                       status={issue.status}
                       onChange={(s) => onUpdateIssue(issue.id, { status: s })}
                     />
                   </div>
-                  <span className="text-sm text-muted-foreground font-mono shrink-0">
-                    {issue.identifier ?? issue.id.slice(0, 8)}
-                  </span>
-                  <span className="truncate flex-1 min-w-0">{issue.title}</span>
-                  {(issue.labels ?? []).length > 0 && (
-                    <div className="hidden md:flex items-center gap-1 max-w-[240px] overflow-hidden">
-                      {(issue.labels ?? []).slice(0, 3).map((label) => (
-                        <span
-                          key={label.id}
-                          className="inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium"
-                          style={{
-                            borderColor: label.color,
-                            color: label.color,
-                            backgroundColor: `${label.color}1f`,
-                          }}
-                        >
-                          {label.name}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground font-mono shrink-0">
+                        {issue.identifier ?? issue.id.slice(0, 8)}
+                      </span>
+                      <span className="truncate">{issue.title}</span>
+                    </div>
+                    {/* Description preview + metadata row */}
+                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                      {descriptionPreview && (
+                        <span className="text-xs text-muted-foreground/70 truncate max-w-[300px] hidden md:inline">
+                          {descriptionPreview}
                         </span>
-                      ))}
-                      {(issue.labels ?? []).length > 3 && (
-                        <span className="text-[10px] text-muted-foreground">+{(issue.labels ?? []).length - 3}</span>
+                      )}
+                      {/* Labels */}
+                      {(issue.labels ?? []).length > 0 && (
+                        <div className="hidden md:flex items-center gap-1">
+                          {(issue.labels ?? []).slice(0, 3).map((label) => (
+                            <span
+                              key={label.id}
+                              className="inline-flex items-center rounded-full border px-1.5 py-0 text-[10px] font-medium leading-4"
+                              style={{
+                                borderColor: label.color,
+                                color: label.color,
+                                backgroundColor: `${label.color}1f`,
+                              }}
+                            >
+                              {label.name}
+                            </span>
+                          ))}
+                          {(issue.labels ?? []).length > 3 && (
+                            <span className="text-[10px] text-muted-foreground">+{(issue.labels ?? []).length - 3}</span>
+                          )}
+                        </div>
+                      )}
+                      {/* Dependency indicator */}
+                      {issue.status === "blocked" && (
+                        <span className="hidden sm:inline-flex items-center gap-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+                          <Link2 className="h-3 w-3" />
+                        </span>
+                      )}
+                      {/* Subtask progress */}
+                      {subtaskStat && (
+                        <span className="hidden sm:inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
+                          <ListTree className="h-3 w-3" />
+                          {subtaskStat.done}/{subtaskStat.total}
+                        </span>
                       )}
                     </div>
-                  )}
-                  <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto">
+                  </div>
+                  <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto mt-0.5">
                     {liveIssueIds?.has(issue.id) && (
                       <span className="inline-flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2 py-0.5 rounded-full bg-blue-500/10">
                         <span className="relative flex h-2 w-2">
@@ -659,7 +703,8 @@ export function IssuesList({
                         <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400 hidden sm:inline">Live</span>
                       </span>
                     )}
-                    <div className="hidden sm:block">
+                    {/* Hover quick actions (status + assignee) */}
+                    <div className="hidden sm:flex items-center gap-1 opacity-0 group-hover/row:opacity-100 transition-opacity">
                       <Popover
                         open={assigneePickerIssueId === issue.id}
                         onOpenChange={(open) => {
@@ -669,20 +714,19 @@ export function IssuesList({
                       >
                         <PopoverTrigger asChild>
                           <button
-                            className="flex w-[180px] shrink-0 items-center rounded-md px-2 py-1 hover:bg-accent/50 transition-colors"
+                            className="flex shrink-0 items-center rounded-md px-1.5 py-0.5 hover:bg-accent transition-colors"
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
                             }}
                           >
                             {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
-                              <Identity name={agentName(issue.assigneeAgentId)!} size="sm" />
+                              <Identity name={agentName(issue.assigneeAgentId)!} size="xs" />
                             ) : (
-                              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
-                                  <User className="h-3 w-3" />
+                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
+                                  <User className="h-2.5 w-2.5" />
                                 </span>
-                                Assignee
                               </span>
                             )}
                           </button>
@@ -739,12 +783,19 @@ export function IssuesList({
                         </PopoverContent>
                       </Popover>
                     </div>
+                    {/* Always-visible assignee (non-hover) */}
+                    <div className="hidden sm:block group-hover/row:hidden">
+                      {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
+                        <Identity name={agentName(issue.assigneeAgentId)!} size="xs" />
+                      ) : null}
+                    </div>
                     <span className="text-xs text-muted-foreground hidden sm:inline">
                       {formatDate(issue.createdAt)}
                     </span>
                   </div>
                 </Link>
-              ))}
+                );
+              })}
             </CollapsibleContent>
           </Collapsible>
         ))

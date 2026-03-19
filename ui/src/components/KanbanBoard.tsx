@@ -170,12 +170,15 @@ function KanbanCard({
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
           {isLive && (
-            <span className="relative flex h-2 w-2 shrink-0 mt-0.5">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+            <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 shrink-0 ml-auto">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+              </span>
+              <span className="text-[10px] font-medium text-blue-600 dark:text-blue-400">Live</span>
             </span>
           )}
-          {issue.status === "blocked" && (
+          {issue.status === "blocked" && !isLive && (
             <TooltipProvider delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -190,7 +193,33 @@ function KanbanCard({
             </TooltipProvider>
           )}
         </div>
-        <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
+        <p className="text-sm leading-snug line-clamp-2 mb-1">{issue.title}</p>
+        {issue.description && (
+          <p className="text-xs text-muted-foreground/70 line-clamp-2 mb-1.5 leading-relaxed">
+            {issue.description.split("\n")[0].slice(0, 140)}
+          </p>
+        )}
+        {/* Labels */}
+        {(issue.labels ?? []).length > 0 && (
+          <div className="flex items-center gap-1 flex-wrap mb-1.5">
+            {(issue.labels ?? []).slice(0, 3).map((label) => (
+              <span
+                key={label.id}
+                className="inline-flex items-center rounded-full border px-1.5 py-0 text-[9px] font-medium leading-4"
+                style={{
+                  borderColor: label.color,
+                  color: label.color,
+                  backgroundColor: `${label.color}1f`,
+                }}
+              >
+                {label.name}
+              </span>
+            ))}
+            {(issue.labels ?? []).length > 3 && (
+              <span className="text-[9px] text-muted-foreground">+{(issue.labels ?? []).length - 3}</span>
+            )}
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <PriorityIcon priority={issue.priority} />
           {issue.assigneeAgentId && (() => {
