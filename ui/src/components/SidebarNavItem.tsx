@@ -1,4 +1,4 @@
-import { NavLink, useLocation, useMatch } from "@/lib/router";
+import { NavLink, useLocation } from "@/lib/router";
 import { cn } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -38,7 +38,9 @@ export function SidebarNavItem({
   const prefix = selectedCompany?.issuePrefix ?? "";
   const fullPath = `/${prefix}${to}`;
   const location = useLocation();
-  // Determine active: exact match for `end` routes, prefix match otherwise
+  // Manual isActive detection needed in collapsed mode because NavLink's
+  // render-prop className/children conflict with Radix TooltipTrigger asChild.
+  // Expanded mode uses NavLink's built-in render props instead.
   const isActive = end
     ? location.pathname === fullPath
     : location.pathname.startsWith(fullPath);
