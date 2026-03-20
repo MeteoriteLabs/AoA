@@ -57,6 +57,12 @@ export type {
   InstanceUserRoleGrant,
 } from "./access.js";
 export type { TaskDependency } from "./task-dependency.js";
+export type { Artifact, ArtifactVersion } from "./artifact.js";
+export type { MemoryItemVersion } from "./memory-version.js";
+export type { Suggestion } from "./suggestion.js";
+export type { MemoryFeedbackPattern } from "./memory-feedback.js";
+export type { AgentTrustScore } from "./trust-score.js";
+export type { UserRoleAssignment } from "./user-role.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilitySecretRequirement,

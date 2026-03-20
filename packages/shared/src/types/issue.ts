@@ -80,6 +80,7 @@ export interface Issue {
   completedAt: Date | null;
   cancelledAt: Date | null;
   hiddenAt: Date | null;
+  artifactId: string | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   project?: Project | null;

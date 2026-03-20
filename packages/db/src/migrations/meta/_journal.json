@@ -232,6 +232,27 @@
       "when": 1773308077153,
       "tag": "0032_burly_tusk",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1774032824173,
+      "tag": "0033_motionless_gargoyle",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1774033083408,
+      "tag": "0034_wet_sebastian_shaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1774033612029,
+      "tag": "0035_living_zzzax",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,10 @@
-import type { MemoryItemCategory, MemoryItemSource, MemoryItemStatus } from "../constants.js";
+import type {
+  MemoryItemCategory,
+  MemoryItemSource,
+  MemoryItemStatus,
+  MemoryItemLayer,
+  MemoryItemVisibility,
+} from "../constants.js";
 
 export interface MemoryItem {
   id: string;
@@ -12,6 +18,17 @@ export interface MemoryItem {
   departmentId: string | null;
   projectId: string | null;
   createdBy: string;
+  // V2 fields
+  layer: MemoryItemLayer | null;
+  priority: number;
+  visibility: MemoryItemVisibility;
+  expiresAt: Date | null;
+  goalId: string | null;
+  taskId: string | null;
+  sourceArtifactId: string | null;
+  sourceContext: string | null;
+  accessedAt: Date | null;
+  currentVersionId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
