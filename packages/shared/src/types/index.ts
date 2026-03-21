@@ -66,7 +66,7 @@ export type { MemoryFeedbackPattern } from "./memory-feedback.js";
 export type { AgentTrustScore } from "./trust-score.js";
 export type { UserRoleAssignment } from "./user-role.js";
 export type {
-  SearchEntityType,
+  GlobalSearchEntityType,
   GlobalSearchResult,
   GlobalSearchGroup,
   GlobalSearchResponse,

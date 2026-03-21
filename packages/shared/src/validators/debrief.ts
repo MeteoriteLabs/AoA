@@ -8,6 +8,7 @@ export const createDebriefSchema = z.object({
   artifactUrl: z.string().optional().nullable(),
   departmentId: z.string().uuid().optional().nullable(),
   projectId: z.string().uuid().optional().nullable(),
+  goalId: z.string().uuid().optional().nullable(),
   sourceInfo: z.record(z.unknown()).optional().nullable(),
 });
 
@@ -36,6 +37,7 @@ export const updateDebriefSchema = z.object({
   status: z.enum(DEBRIEF_STATUSES).optional(),
   departmentId: z.string().uuid().optional().nullable(),
   projectId: z.string().uuid().optional().nullable(),
+  goalId: z.string().uuid().optional().nullable(),
 });
 
 export type UpdateDebrief = z.infer<typeof updateDebriefSchema>;

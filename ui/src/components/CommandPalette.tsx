@@ -1,7 +1,7 @@
 import { useState, useEffect, useDeferredValue, useMemo } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { GlobalSearchResult, SearchEntityType } from "@paperclipai/shared";
+import type { GlobalSearchEntityType, GlobalSearchResult } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -39,7 +39,7 @@ import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
 import { Badge } from "@/components/ui/badge";
 
-const TYPE_ICONS: Record<SearchEntityType, typeof CircleDot> = {
+const TYPE_ICONS: Record<GlobalSearchEntityType, typeof CircleDot> = {
   task: CircleDot,
   goal: Target,
   agent: Bot,
@@ -181,10 +181,13 @@ export function CommandPalette() {
   const groupedSearchResults = globalSearch?.groups ?? [];
 
   return (
-    <CommandDialog open={open} onOpenChange={(v) => {
-        setOpen(v);
-        if (v && isMobile) setSidebarOpen(false);
-      }}>
+    <CommandDialog
+      open={open}
+      onOpenChange={(value) => {
+        setOpen(value);
+        if (value && isMobile) setSidebarOpen(false);
+      }}
+    >
       <CommandInput
         placeholder="Search tasks, goals, agents, briefs, memory, artifacts..."
         value={query}
@@ -235,10 +238,12 @@ export function CommandPalette() {
             <Plus className="mr-2 h-4 w-4" />
             New Project
           </CommandItem>
-          <CommandItem onSelect={() => {
-            setOpen(false);
-            navigate("/");
-          }}>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              navigate("/");
+            }}
+          >
             <ArrowLeftRight className="mr-2 h-4 w-4" />
             Switch Company
           </CommandItem>
@@ -332,7 +337,9 @@ export function CommandPalette() {
                   <span className="flex-1 truncate">{issue.title}</span>
                   {issue.assigneeAgentId && (() => {
                     const name = agentName(issue.assigneeAgentId);
-                    return name ? <Identity name={name} size="sm" className="ml-2 hidden sm:inline-flex" /> : null;
+                    return name ? (
+                      <Identity name={name} size="sm" className="ml-2 hidden sm:inline-flex" />
+                    ) : null;
                   })()}
                 </CommandItem>
               ))}

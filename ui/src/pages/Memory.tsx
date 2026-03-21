@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "@/lib/router";
 import {
   Brain,
   Plus,
@@ -156,7 +156,9 @@ export function Memory() {
   const [layerFilter, setLayerFilter] = useState<string>("all");
   const [viewMode, setViewMode] = useState<"layer" | "flat">("layer");
   const [activeTab, setActiveTab] = useState<string>(searchParams.get("tab") ?? "all");
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(searchParams.get("item"));
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(
+    searchParams.get("item") ?? searchParams.get("selected"),
+  );
   const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
@@ -167,7 +169,7 @@ export function Memory() {
 
   useEffect(() => {
     setActiveTab(searchParams.get("tab") ?? "all");
-    setSelectedItemId(searchParams.get("item"));
+    setSelectedItemId(searchParams.get("item") ?? searchParams.get("selected"));
     const searchParam = searchParams.get("q");
     if (searchParam !== null) {
       setSearch(searchParam);

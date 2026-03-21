@@ -1,6 +1,4 @@
-import { describe, expect, it } from "vitest";
-
-import { vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: unknown[]) => args),

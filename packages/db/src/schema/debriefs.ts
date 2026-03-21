@@ -8,6 +8,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
+import { goals } from "./goals.js";
 
 export const debriefs = pgTable(
   "debriefs",
@@ -20,6 +21,7 @@ export const debriefs = pgTable(
     artifactUrl: text("artifact_url"),
     departmentId: uuid("department_id").references(() => projects.id, { onDelete: "set null" }),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    goalId: uuid("goal_id").references(() => goals.id, { onDelete: "set null" }),
     sourceInfo: jsonb("source_info").$type<Record<string, unknown>>(),
     status: text("status").notNull().default("processing"),
     createdBy: text("created_by").notNull(),

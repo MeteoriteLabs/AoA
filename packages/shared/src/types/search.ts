@@ -1,4 +1,4 @@
-export type SearchEntityType =
+export type GlobalSearchEntityType =
   | "task"
   | "goal"
   | "agent"
@@ -9,7 +9,7 @@ export type SearchEntityType =
 
 export interface GlobalSearchResult {
   id: string;
-  type: SearchEntityType;
+  type: GlobalSearchEntityType;
   title: string;
   subtitle: string | null;
   href: string;
@@ -17,17 +17,29 @@ export interface GlobalSearchResult {
   identifier?: string | null;
   status?: string | null;
   role?: string | null;
+  projectId?: string | null;
+  projectIds?: string[] | null;
   departmentName?: string | null;
+  departmentId?: string | null;
   category?: string | null;
   layer?: string | null;
   visibility?: string | null;
+  assigneeUserId?: string | null;
+  taskAssigneeUserId?: string | null;
   artifactType?: string | null;
   currentVersionNumber?: number | null;
+  linkedIssueProjectId?: string | null;
+  linkedIssueAssigneeUserId?: string | null;
   suggestionCategory?: string | null;
+  relatedMemoryItemId?: string | null;
+  relatedMemoryDepartmentId?: string | null;
+  relatedMemoryProjectId?: string | null;
+  relatedMemoryVisibility?: string | null;
+  relatedMemoryTaskAssigneeUserId?: string | null;
 }
 
 export interface GlobalSearchGroup {
-  type: SearchEntityType;
+  type: GlobalSearchEntityType;
   label: string;
   count: number;
   items: GlobalSearchResult[];

@@ -25,6 +25,7 @@ export function searchRoutes(db: Db) {
       includeArchived,
       limitPerType: Number.isFinite(limitPerType) ? limitPerType : undefined,
     });
+
     res.json(results);
   });
 

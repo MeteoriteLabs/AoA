@@ -1,7 +1,13 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { userRoles } from "@paperclipai/db";
-import type { GlobalSearchGroup, GlobalSearchResponse, GlobalSearchResult, SearchEntityType, UserRole } from "@paperclipai/shared";
+import type {
+  GlobalSearchEntityType,
+  GlobalSearchGroup,
+  GlobalSearchResponse,
+  GlobalSearchResult,
+  UserRole,
+} from "@paperclipai/shared";
 import { deriveAgentUrlKey } from "@paperclipai/shared";
 
 type Actor = {
@@ -101,7 +107,7 @@ type SearchSuggestionRow = {
   relatedMemoryTaskAssigneeUserId: string | null;
 };
 
-const GROUP_LABELS: Record<SearchEntityType, string> = {
+const GROUP_LABELS: Record<GlobalSearchEntityType, string> = {
   task: "Tasks",
   goal: "Goals",
   agent: "Agents",
@@ -187,8 +193,10 @@ function isVisibleToScope(
       return true;
     case "task":
       return scope.role === "team_lead"
-        ? isUnscoped(result.projectId as string | null | undefined) || scope.scopedProjectIds.has((result.projectId as string | null) ?? "")
-        : (result.assigneeUserId as string | null) === scope.userId || isUnscoped(result.projectId as string | null | undefined);
+        ? isUnscoped(result.projectId as string | null | undefined)
+          || scope.scopedProjectIds.has((result.projectId as string | null) ?? "")
+        : (result.assigneeUserId as string | null) === scope.userId
+          || isUnscoped(result.projectId as string | null | undefined);
     case "goal": {
       const projectIds = ((result.projectIds as string[] | null | undefined) ?? []).filter(Boolean);
       return scope.role === "team_lead"
@@ -197,10 +205,16 @@ function isVisibleToScope(
     }
     case "brief":
       return scope.role === "team_lead"
-        ? isUnscoped(result.projectId as string | null | undefined, result.departmentId as string | null | undefined)
+        ? isUnscoped(
+          result.projectId as string | null | undefined,
+          result.departmentId as string | null | undefined,
+        )
           || scope.scopedProjectIds.has((result.departmentId as string | null) ?? "")
           || scope.scopedProjectIds.has((result.projectId as string | null) ?? "")
-        : isUnscoped(result.projectId as string | null | undefined, result.departmentId as string | null | undefined);
+        : isUnscoped(
+          result.projectId as string | null | undefined,
+          result.departmentId as string | null | undefined,
+        );
     case "memory":
       if ((result.visibility as string | null) === "shared") return true;
       if (scope.role === "team_lead") {
@@ -622,7 +636,7 @@ export function searchService(db: Db) {
         .filter((result) => isVisibleToScope(result as GlobalSearchResult & Record<string, unknown>, scope))
         .sort((a, b) => b.score - a.score);
 
-      const groups: GlobalSearchGroup[] = (Object.keys(GROUP_LABELS) as SearchEntityType[])
+      const groups: GlobalSearchGroup[] = (Object.keys(GROUP_LABELS) as GlobalSearchEntityType[])
         .map((type) => {
           const items = allResults.filter((result) => result.type === type).slice(0, limitPerType);
           if (items.length === 0) return null;

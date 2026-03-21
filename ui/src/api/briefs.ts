@@ -7,6 +7,7 @@ export interface Brief {
   status: string;
   departmentId: string | null;
   projectId: string | null;
+  goalId: string | null;
   reviewedAt: string | null;
   reviewedBy: string | null;
   createdAt: string;
@@ -27,6 +28,11 @@ export interface BriefItem {
   suggestedPriority: string | null;
   suggestedDepartmentId: string | null;
   suggestedProjectId: string | null;
+  suggestedLayer: string | null;
+  layer: string | null;
+  dedupAction: "update_existing" | "create_separate" | "replace" | null;
+  selectedMemoryId: string | null;
+  mergedContent: string | null;
   status: string;
   resultTaskId: string | null;
   resultMemoryId: string | null;
@@ -62,6 +68,8 @@ export const briefsApi = {
   },
   get: (companyId: string, id: string) =>
     api.get<BriefWithItems>(`/companies/${companyId}/briefs/${id}`),
+  update: (companyId: string, id: string, data: Record<string, unknown>) =>
+    api.patch<Brief>(`/companies/${companyId}/briefs/${id}`, data),
   updateItem: (
     companyId: string,
     briefId: string,

@@ -4,6 +4,7 @@ import { createMemoryItemSchema, updateMemoryItemSchema } from "@paperclipai/sha
 import { validate } from "../middleware/validate.js";
 import { memoryService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertMemoryAccess, assertMemoryApproval } from "../middleware/rbac.js";
 
 export function memoryRoutes(db: Db) {
   const router = Router();
@@ -48,6 +49,7 @@ export function memoryRoutes(db: Db) {
   router.get("/companies/:companyId/memory", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "read");
     const filters = {
       category: req.query.category as string | undefined,
       status: req.query.status as string | undefined,
@@ -66,6 +68,7 @@ export function memoryRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "read");
     const item = await svc.getById(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -77,6 +80,10 @@ export function memoryRoutes(db: Db) {
   router.post("/companies/:companyId/memory", validate(createMemoryItemSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "create", {
+      layer: req.body.layer,
+      departmentId: req.body.departmentId,
+    });
     const actor = getActorInfo(req);
     const item = await svc.create(companyId, { ...req.body, createdBy: actor.actorId });
     await logActivity(db, {
@@ -102,6 +109,11 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
+    await assertMemoryAccess(db, req, companyId, "update", {
+      layer: existing.layer,
+      departmentId: existing.departmentId,
+      visibility: existing.visibility,
+    });
     const item = await svc.update(companyId, id, req.body);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -131,6 +143,11 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
+    await assertMemoryAccess(db, req, companyId, "delete", {
+      layer: existing.layer,
+      departmentId: existing.departmentId,
+      visibility: existing.visibility,
+    });
     const item = await svc.remove(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -160,6 +177,10 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
+    await assertMemoryApproval(db, req, companyId, {
+      layer: existing.layer,
+      departmentId: existing.departmentId,
+    });
     const item = await svc.approve(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -189,6 +210,10 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
+    await assertMemoryApproval(db, req, companyId, {
+      layer: existing.layer,
+      departmentId: existing.departmentId,
+    });
     const item = await svc.reject(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });

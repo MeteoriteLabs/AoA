@@ -1,6 +1,10 @@
 import type { MemoryItem, MemoryItemVersion } from "@paperclipai/shared";
 import { api } from "./client";
 
+export type SimilarMemoryItem = MemoryItem & {
+  similarity?: number | null;
+};
+
 export const memoryApi = {
   list: (
     companyId: string,
@@ -29,6 +33,18 @@ export const memoryApi = {
   },
   get: (companyId: string, id: string) =>
     api.get<MemoryItem>(`/companies/${companyId}/memory/${id}`),
+  findSimilarItems: (
+    companyId: string,
+    content: string,
+    filters?: { departmentId?: string; layer?: string },
+  ) => {
+    const params = new URLSearchParams({ content });
+    if (filters?.departmentId) params.set("departmentId", filters.departmentId);
+    if (filters?.layer) params.set("layer", filters.layer);
+    return api.get<SimilarMemoryItem[]>(
+      `/companies/${companyId}/memory/find-similar?${params.toString()}`,
+    );
+  },
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<MemoryItem>(`/companies/${companyId}/memory`, data),
   update: (companyId: string, id: string, data: Record<string, unknown>) =>
@@ -51,4 +67,22 @@ export const memoryApi = {
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/restore`, {}),
   touchAccessedAt: (companyId: string, id: string) =>
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/touch`, {}),
+  searchSemantic: (
+    companyId: string,
+    q: string,
+    filters?: {
+      layer?: string;
+      departmentId?: string;
+      limit?: number;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    params.set("q", q);
+    if (filters?.layer) params.set("layer", filters.layer);
+    if (filters?.departmentId) params.set("departmentId", filters.departmentId);
+    if (filters?.limit !== undefined) params.set("limit", String(filters.limit));
+    return api.get<Array<MemoryItem & { similarity: number | null }>>(
+      `/companies/${companyId}/memory/search?${params.toString()}`,
+    );
+  },
 };
