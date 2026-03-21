@@ -1,6 +1,12 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { briefs, briefItems, debriefs } from "@paperclipai/db";
+import {
+  briefs,
+  briefItems,
+  debriefs,
+  memoryItems,
+  memoryItemVersions,
+} from "@paperclipai/db";
 import { issueService } from "./issues.js";
 import { memoryService } from "./memory.js";
 import { dependencyService } from "./dependencies.js";
@@ -10,18 +16,44 @@ export interface BriefFilters {
   departmentId?: string;
 }
 
+type BriefItemRow = typeof briefItems.$inferSelect;
+type BriefRow = typeof briefs.$inferSelect;
+
+function isMemoryBriefType(type: string): type is "decision" | "insight" | "context" | "reference" | "preference" {
+  return type === "decision" || type === "insight" || type === "context" || type === "reference" || type === "preference";
+}
+
 /**
  * Resolve departmentId/projectId for a brief item using fallback chain.
  * Decision #61: item-level > brief-level > null
  */
-function resolveDepartment(
-  item: typeof briefItems.$inferSelect,
-  brief: typeof briefs.$inferSelect,
-) {
+function resolveDepartment(item: BriefItemRow, brief: BriefRow) {
   return {
     departmentId: item.suggestedDepartmentId ?? brief.departmentId ?? null,
     projectId: item.suggestedProjectId ?? brief.projectId ?? null,
   };
+}
+
+function resolveMemoryLayer(item: BriefItemRow) {
+  return item.layer ?? item.suggestedLayer ?? "domain";
+}
+
+function resolveMemoryContent(item: BriefItemRow) {
+  return item.mergedContent?.trim() || item.description?.trim() || item.title;
+}
+
+function mergeMemoryContent(existingContent: string, nextContent: string) {
+  const current = existingContent.trim();
+  const incoming = nextContent.trim();
+  if (!current) return incoming;
+  if (!incoming) return current;
+  if (current === incoming) return current;
+  return `${current}\n\n${incoming}`;
+}
+
+function buildSourceContext(briefTitle: string | null, debriefCreatedAt: Date) {
+  const safeTitle = briefTitle?.trim() || "Untitled brief";
+  return `Created from brief '${safeTitle}' (debrief: ${debriefCreatedAt.toISOString().slice(0, 10)})`;
 }
 
 export function briefService(db: Db) {
@@ -48,6 +80,7 @@ export function briefService(db: Db) {
           status: briefs.status,
           departmentId: briefs.departmentId,
           projectId: briefs.projectId,
+          goalId: briefs.goalId,
           reviewedAt: briefs.reviewedAt,
           reviewedBy: briefs.reviewedBy,
           createdAt: briefs.createdAt,
@@ -82,6 +115,18 @@ export function briefService(db: Db) {
       return { ...brief, items };
     },
 
+    updateBrief: async (
+      companyId: string,
+      briefId: string,
+      patch: Partial<Pick<typeof briefs.$inferInsert, "status" | "departmentId" | "projectId" | "goalId" | "reviewedBy">>,
+    ) =>
+      db
+        .update(briefs)
+        .set({ ...patch, updatedAt: new Date() })
+        .where(and(eq(briefs.id, briefId), eq(briefs.companyId, companyId)))
+        .returning()
+        .then((rows) => rows[0] ?? null),
+
     getItemById: async (briefId: string, itemId: string) => {
       return db
         .select()
@@ -94,10 +139,8 @@ export function briefService(db: Db) {
       companyId: string,
       briefId: string,
       itemId: string,
-      status: string,
-      edits?: { title?: string; description?: string | null },
+      patch: Partial<typeof briefItems.$inferInsert>,
     ) => {
-      // Verify brief belongs to company
       const brief = await db
         .select()
         .from(briefs)
@@ -106,16 +149,9 @@ export function briefService(db: Db) {
 
       if (!brief) return null;
 
-      const patch: Partial<typeof briefItems.$inferInsert> = {
-        status,
-        updatedAt: new Date(),
-      };
-      if (edits?.title) patch.title = edits.title;
-      if (edits?.description !== undefined) patch.description = edits.description;
-
       return db
         .update(briefItems)
-        .set(patch)
+        .set({ ...patch, updatedAt: new Date() })
         .where(and(eq(briefItems.id, itemId), eq(briefItems.briefId, briefId)))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -127,7 +163,6 @@ export function briefService(db: Db) {
       reviewedBy: string,
       dependencies?: Array<{ dependentItemId: string; dependencyItemId: string }>,
     ) => {
-      // Fetch brief
       const brief = await db
         .select()
         .from(briefs)
@@ -136,13 +171,19 @@ export function briefService(db: Db) {
 
       if (!brief) return null;
 
-      // Fetch all items
+      const debrief = await db
+        .select()
+        .from(debriefs)
+        .where(and(eq(debriefs.id, brief.debriefId), eq(debriefs.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+
+      if (!debrief) return null;
+
       const items = await db
         .select()
         .from(briefItems)
         .where(eq(briefItems.briefId, briefId));
 
-      // Wrap entire approval in a transaction so all items succeed or none do
       return db.transaction(async (tx) => {
         const createdTaskIds: string[] = [];
         const createdMemoryIds: string[] = [];
@@ -151,7 +192,6 @@ export function briefService(db: Db) {
         let rejectedCount = 0;
 
         for (const item of items) {
-          // Treat 'edited' as approved (founder modified it, so it's accepted)
           const isApproved = item.status === "approved" || item.status === "edited";
           const isRejected = item.status === "rejected";
 
@@ -159,9 +199,7 @@ export function briefService(db: Db) {
             rejectedCount++;
             continue;
           }
-
           if (!isApproved) {
-            // pending items — skip, not yet decided
             continue;
           }
 
@@ -169,13 +207,13 @@ export function briefService(db: Db) {
           const { departmentId, projectId } = resolveDepartment(item, brief);
 
           if (item.type === "task") {
-            // Create a real task (issue) — pass tx for atomicity
             const task = await issues.create(companyId, {
               title: item.title,
               description: item.description,
               priority: item.suggestedPriority ?? "medium",
               source: "brief",
               projectId: departmentId ?? projectId ?? undefined,
+              goalId: brief.goalId ?? undefined,
               assigneeAgentId: item.suggestedAssigneeId,
               status: item.suggestedAssigneeId ? "todo" : "backlog",
             }, tx);
@@ -188,30 +226,116 @@ export function briefService(db: Db) {
                 .set({ resultTaskId: task.id, updatedAt: new Date() })
                 .where(eq(briefItems.id, item.id));
             }
-          } else {
-            // decision, insight, context → create memory item — pass tx for atomicity
-            const memoryItem = await memory.create(companyId, {
-              title: item.title,
-              content: item.description ?? item.title,
-              category: item.type as "decision" | "insight" | "context",
-              source: "brief",
-              status: "approved",
-              departmentId,
-              projectId,
-              createdBy: reviewedBy,
-            }, tx);
+            continue;
+          }
 
-            if (memoryItem) {
-              createdMemoryIds.push(memoryItem.id);
-              await tx
-                .update(briefItems)
-                .set({ resultMemoryId: memoryItem.id, updatedAt: new Date() })
-                .where(eq(briefItems.id, item.id));
-            }
+          if (!isMemoryBriefType(item.type)) {
+            continue;
+          }
+
+          const layer = resolveMemoryLayer(item);
+          const content = resolveMemoryContent(item);
+          const sourceContext = buildSourceContext(debrief.title, debrief.createdAt);
+          const sourceTaskId =
+            typeof debrief.sourceInfo?.issueId === "string" && debrief.sourceInfo.issueId.length > 0
+              ? debrief.sourceInfo.issueId
+              : null;
+          const goalId = layer === "active_context" ? brief.goalId : null;
+          const taskId = layer === "working" ? sourceTaskId : null;
+          const similarItems = await memory.findSimilarItems(content, {
+            companyId,
+            departmentId: departmentId ?? undefined,
+            layer,
+          });
+
+          const selectedSimilarItem =
+            similarItems.find((match) => match.id === item.selectedMemoryId) ??
+            (similarItems.length === 1 ? similarItems[0] : null);
+
+          if ((item.dedupAction === "update_existing" || item.dedupAction === "replace") && !selectedSimilarItem) {
+            throw new Error(`Brief item '${item.title}' requires a selected matching memory item.`);
+          }
+
+          if (item.dedupAction === "update_existing" && selectedSimilarItem) {
+            const latestVersionNumber = await tx
+              .select({ versionNumber: memoryItemVersions.versionNumber })
+              .from(memoryItemVersions)
+              .where(eq(memoryItemVersions.memoryItemId, selectedSimilarItem.id))
+              .orderBy(desc(memoryItemVersions.versionNumber))
+              .limit(1)
+              .then((rows) => rows[0]?.versionNumber ?? 0);
+
+            const nextContent = item.mergedContent?.trim()
+              ? item.mergedContent.trim()
+              : mergeMemoryContent(selectedSimilarItem.content, content);
+
+            const [version] = await tx
+              .insert(memoryItemVersions)
+              .values({
+                memoryItemId: selectedSimilarItem.id,
+                versionNumber: latestVersionNumber + 1,
+                content: nextContent,
+                status: "approved",
+                createdBy: reviewedBy,
+              })
+              .returning();
+
+            await tx
+              .update(memoryItems)
+              .set({
+                title: item.title,
+                content: nextContent,
+                layer,
+                departmentId,
+                projectId,
+                goalId,
+                taskId,
+                sourceContext,
+                currentVersionId: version.id,
+                updatedAt: new Date(),
+                embedding: null,
+              })
+              .where(eq(memoryItems.id, selectedSimilarItem.id));
+
+            createdMemoryIds.push(selectedSimilarItem.id);
+            await tx
+              .update(briefItems)
+              .set({ resultMemoryId: selectedSimilarItem.id, updatedAt: new Date() })
+              .where(eq(briefItems.id, item.id));
+            continue;
+          }
+
+          if (item.dedupAction === "replace" && selectedSimilarItem) {
+            await tx
+              .update(memoryItems)
+              .set({ status: "archived", updatedAt: new Date() })
+              .where(eq(memoryItems.id, selectedSimilarItem.id));
+          }
+
+          const memoryItem = await memory.create(companyId, {
+            title: item.title,
+            content,
+            category: item.type,
+            source: "brief",
+            status: "approved",
+            departmentId,
+            projectId,
+            createdBy: reviewedBy,
+            layer,
+            goalId,
+            taskId,
+            sourceContext,
+          }, tx);
+
+          if (memoryItem) {
+            createdMemoryIds.push(memoryItem.id);
+            await tx
+              .update(briefItems)
+              .set({ resultMemoryId: memoryItem.id, updatedAt: new Date() })
+              .where(eq(briefItems.id, item.id));
           }
         }
 
-        // Create task dependencies (with cycle detection, auto-blocking, activity logging)
         let createdDependencyCount = 0;
         let skippedDependencyCount = 0;
         if (dependencies && dependencies.length > 0) {
@@ -231,7 +355,6 @@ export function briefService(db: Db) {
           }
         }
 
-        // Determine final brief status
         let finalStatus: string;
         if (approvedCount > 0 && rejectedCount === 0) {
           finalStatus = "approved";

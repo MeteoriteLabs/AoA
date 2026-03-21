@@ -4,11 +4,12 @@ import { debriefs, briefs, briefItems, projects } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 
 interface ExtractedItem {
-  type: "decision" | "task" | "insight" | "context";
+  type: "decision" | "task" | "insight" | "context" | "reference" | "preference";
   title: string;
   description: string;
   priority?: "urgent" | "high" | "medium" | "low";
   department?: string | null;
+  layer?: "identity" | "domain" | "active_context" | "working" | null;
 }
 
 const EXTRACTION_PROMPT_TEMPLATE = `You are analyzing content from a founder's debrief — raw notes, meeting summaries, brainstorming sessions, or pasted conversations.
@@ -22,13 +23,21 @@ Extract the following structured items:
 2. TASKS — action items that need to be done (include suggested priority if apparent)
 3. INSIGHTS — notable observations, patterns, or learnings worth remembering
 4. CONTEXT — background information, facts, or data points worth storing
+5. REFERENCES — durable facts, links, contacts, docs, or resources worth retrieving later
+6. PREFERENCES — founder or team preferences about style, tooling, process, or constraints
 
 For each item, provide:
-- type: 'decision' | 'task' | 'insight' | 'context'
+- type: 'decision' | 'task' | 'insight' | 'context' | 'reference' | 'preference'
 - title: concise one-line title
 - description: 1-3 sentence explanation
 - priority: 'urgent' | 'high' | 'medium' | 'low' (for tasks only, if determinable)
 - department: name of the most relevant department or project from the list above, or null if it doesn't clearly fit any
+- layer: suggest one memory layer using these heuristics:
+  - company-wide vision, principles, values, or enduring preferences => 'identity'
+  - department-specific process, standards, or guidelines => 'domain'
+  - goal or project-specific context that should persist while the work is active => 'active_context'
+  - task-specific working notes or execution details => 'working'
+  - if unclear, prefer 'domain'
 
 Return as JSON array. If the content doesn't contain a particular type, omit that type.
 Only extract items that are clearly present — do not infer or fabricate.
@@ -170,8 +179,9 @@ function parseExtractedItems(text: string): ExtractedItem[] {
     throw new Error("LLM response is not a JSON array");
   }
 
-  const validTypes = new Set(["decision", "task", "insight", "context"]);
+  const validTypes = new Set(["decision", "task", "insight", "context", "reference", "preference"]);
   const validPriorities = new Set(["urgent", "high", "medium", "low"]);
+  const validLayers = new Set(["identity", "domain", "active_context", "working"]);
 
   return parsed
     .filter((item: unknown) => {
@@ -196,6 +206,10 @@ function parseExtractedItems(text: string): ExtractedItem[] {
           : undefined,
       department:
         typeof item.department === "string" ? item.department : null,
+      layer:
+        typeof item.layer === "string" && validLayers.has(item.layer)
+          ? (item.layer as ExtractedItem["layer"])
+          : null,
     }));
 }
 
@@ -245,6 +259,7 @@ export function extractionService(db: Db) {
               status: "ready",
               departmentId: debrief.departmentId,
               projectId: debrief.projectId,
+              goalId: debrief.goalId,
             })
             .returning();
 
@@ -274,6 +289,8 @@ export function extractionService(db: Db) {
                 suggestedPriority: item.priority || null,
                 suggestedDepartmentId,
                 suggestedProjectId,
+                suggestedLayer: item.layer ?? "domain",
+                layer: item.layer ?? "domain",
                 status: "pending" as const,
               };
             });

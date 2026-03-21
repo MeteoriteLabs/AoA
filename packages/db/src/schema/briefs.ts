@@ -8,6 +8,7 @@ import {
 import { companies } from "./companies.js";
 import { debriefs } from "./debriefs.js";
 import { projects } from "./projects.js";
+import { goals } from "./goals.js";
 
 export const briefs = pgTable(
   "briefs",
@@ -18,6 +19,7 @@ export const briefs = pgTable(
     status: text("status").notNull().default("draft"),
     departmentId: uuid("department_id").references(() => projects.id, { onDelete: "set null" }),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    goalId: uuid("goal_id").references(() => goals.id, { onDelete: "set null" }),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     reviewedBy: text("reviewed_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
