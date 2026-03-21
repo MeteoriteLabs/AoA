@@ -149,14 +149,16 @@ export function Memory() {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
 
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(searchParams.get("q") ?? "");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [departmentFilter, setDepartmentFilter] = useState<string>("all");
   const [layerFilter, setLayerFilter] = useState<string>("all");
   const [viewMode, setViewMode] = useState<"layer" | "flat">("layer");
-  const [activeTab, setActiveTab] = useState<string>("all");
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<string>(searchParams.get("tab") ?? "all");
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(
+    searchParams.get("item") ?? searchParams.get("selected"),
+  );
   const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
@@ -166,8 +168,12 @@ export function Memory() {
   }, [setBreadcrumbs, setSubtitle, setEntityColor]);
 
   useEffect(() => {
-    const selectedFromUrl = searchParams.get("selected");
-    setSelectedItemId(selectedFromUrl);
+    setActiveTab(searchParams.get("tab") ?? "all");
+    setSelectedItemId(searchParams.get("item") ?? searchParams.get("selected"));
+    const searchParam = searchParams.get("q");
+    if (searchParam !== null) {
+      setSearch(searchParam);
+    }
   }, [searchParams]);
 
   const filters = useMemo(() => {

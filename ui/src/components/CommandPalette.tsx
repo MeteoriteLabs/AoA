@@ -1,11 +1,13 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useDeferredValue, useMemo } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { SearchResult, SearchResultsGrouped } from "@paperclipai/shared";
+import type { GlobalSearchEntityType, GlobalSearchResult } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
-import { memoryApi } from "../api/memory";
+import { issuesApi } from "../api/issues";
+import { agentsApi } from "../api/agents";
+import { projectsApi } from "../api/projects";
 import { searchApi } from "../api/search";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -21,7 +23,6 @@ import {
   CircleDot,
   Bot,
   Hexagon,
-  Brain,
   Target,
   LayoutDashboard,
   Inbox,
@@ -30,38 +31,81 @@ import {
   Plus,
   FileText,
   ArrowLeftRight,
+  Brain,
+  Lightbulb,
+  FolderSearch,
 } from "lucide-react";
+import { Identity } from "./Identity";
+import { agentUrl, projectUrl } from "../lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { agentUrl } from "../lib/utils";
 
-const EMPTY_GROUPS: SearchResultsGrouped = {
-  tasks: [],
-  goals: [],
-  agents: [],
-  memory: [],
+const TYPE_ICONS: Record<GlobalSearchEntityType, typeof CircleDot> = {
+  task: CircleDot,
+  goal: Target,
+  agent: Bot,
+  brief: FileText,
+  memory: Brain,
+  artifact: FolderSearch,
+  suggestion: Lightbulb,
 };
 
-export function mergeMemorySemanticScores(
-  grouped: SearchResultsGrouped,
-  semanticResults: Array<{ id: string; similarity: number | null }>,
-): SearchResultsGrouped {
-  if (semanticResults.length === 0) return grouped;
+function SearchResultBadges({ result }: { result: GlobalSearchResult }) {
+  if (result.type === "memory") {
+    return (
+      <>
+        {result.layer && (
+          <Badge variant="outline" className="hidden sm:inline-flex">
+            {result.layer.replace("_", " ")}
+          </Badge>
+        )}
+        {result.departmentName && (
+          <Badge variant="outline" className="hidden md:inline-flex">
+            {result.departmentName}
+          </Badge>
+        )}
+        {result.category && (
+          <Badge variant="outline" className="hidden md:inline-flex capitalize">
+            {result.category}
+          </Badge>
+        )}
+      </>
+    );
+  }
 
-  const similarityById = new Map(
-    semanticResults.map((result) => [result.id, result.similarity ?? null]),
-  );
+  if (result.type === "artifact") {
+    return (
+      <>
+        {result.artifactType && (
+          <Badge variant="outline" className="hidden sm:inline-flex capitalize">
+            {result.artifactType}
+          </Badge>
+        )}
+        {typeof result.currentVersionNumber === "number" && (
+          <Badge variant="outline" className="hidden md:inline-flex">
+            v{result.currentVersionNumber}
+          </Badge>
+        )}
+      </>
+    );
+  }
 
-  return {
-    ...grouped,
-    memory: grouped.memory.map((result) => ({
-      ...result,
-      score: similarityById.get(result.id) ?? result.score,
-    })),
-  };
-}
+  if (result.type === "suggestion" && result.suggestionCategory) {
+    return (
+      <Badge variant="outline" className="hidden md:inline-flex capitalize">
+        {result.suggestionCategory.replace("_", " ")}
+      </Badge>
+    );
+  }
 
-function hasSearchResults(grouped: SearchResultsGrouped) {
-  return Object.values(grouped).some((results) => results.length > 0);
+  if (result.status) {
+    return (
+      <Badge variant="outline" className="hidden md:inline-flex capitalize">
+        {result.status.replace("_", " ")}
+      </Badge>
+    );
+  }
+
+  return null;
 }
 
 export function CommandPalette() {
@@ -71,7 +115,8 @@ export function CommandPalette() {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue, openNewAgent, openNewGoal, openDebrief } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
-  const searchQuery = query.trim();
+  const deferredQuery = useDeferredValue(query);
+  const searchQuery = deferredQuery.trim();
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -89,16 +134,34 @@ export function CommandPalette() {
     if (!open) setQuery("");
   }, [open]);
 
-  const { data: groupedResults = EMPTY_GROUPS } = useQuery({
-    queryKey: queryKeys.search.global(selectedCompanyId!, searchQuery),
-    queryFn: () => searchApi.search(selectedCompanyId!, searchQuery),
+  const { data: issues = [] } = useQuery({
+    queryKey: queryKeys.issues.list(selectedCompanyId!),
+    queryFn: () => issuesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && open,
   });
 
-  const { data: semanticMemoryResults = [] } = useQuery({
-    queryKey: queryKeys.memory.semanticSearch(selectedCompanyId!, searchQuery),
-    queryFn: () => memoryApi.searchSemantic(selectedCompanyId!, searchQuery, { limit: 8 }),
+  const { data: searchedIssues = [] } = useQuery({
+    queryKey: queryKeys.issues.search(selectedCompanyId!, searchQuery),
+    queryFn: () => issuesApi.list(selectedCompanyId!, { q: searchQuery }),
     enabled: !!selectedCompanyId && open && searchQuery.length > 0,
+  });
+
+  const { data: globalSearch } = useQuery({
+    queryKey: queryKeys.search.global(selectedCompanyId!, searchQuery),
+    queryFn: () => searchApi.global(selectedCompanyId!, searchQuery, { limitPerType: 8 }),
+    enabled: !!selectedCompanyId && open && searchQuery.length > 0,
+  });
+
+  const { data: agents = [] } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && open,
+  });
+
+  const { data: projects = [] } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && open,
   });
 
   function go(path: string) {
@@ -106,25 +169,32 @@ export function CommandPalette() {
     navigate(path);
   }
 
-  const results = useMemo(
-    () => mergeMemorySemanticScores(groupedResults, semanticMemoryResults),
-    [groupedResults, semanticMemoryResults],
+  const agentName = (id: string | null) => {
+    if (!id) return null;
+    return agents.find((a) => a.id === id)?.name ?? null;
+  };
+
+  const visibleIssues = useMemo(
+    () => (searchQuery.length > 0 ? searchedIssues : issues),
+    [issues, searchedIssues, searchQuery],
   );
+  const groupedSearchResults = globalSearch?.groups ?? [];
 
   return (
-    <CommandDialog open={open} onOpenChange={(v) => {
-        setOpen(v);
-        if (v && isMobile) setSidebarOpen(false);
-      }}>
+    <CommandDialog
+      open={open}
+      onOpenChange={(value) => {
+        setOpen(value);
+        if (value && isMobile) setSidebarOpen(false);
+      }}
+    >
       <CommandInput
-        placeholder="Search tasks, goals, agents, memory..."
+        placeholder="Search tasks, goals, agents, briefs, memory, artifacts..."
         value={query}
         onValueChange={setQuery}
       />
       <CommandList>
-        {searchQuery.length > 0 && !hasSearchResults(results) && (
-          <CommandEmpty>No search results found.</CommandEmpty>
-        )}
+        <CommandEmpty>No results found.</CommandEmpty>
 
         <CommandGroup heading="Actions">
           <CommandItem
@@ -168,10 +238,12 @@ export function CommandPalette() {
             <Plus className="mr-2 h-4 w-4" />
             New Project
           </CommandItem>
-          <CommandItem onSelect={() => {
-            setOpen(false);
-            navigate("/");
-          }}>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              navigate("/");
+            }}
+          >
             <ArrowLeftRight className="mr-2 h-4 w-4" />
             Switch Company
           </CommandItem>
@@ -210,118 +282,94 @@ export function CommandPalette() {
           </CommandItem>
         </CommandGroup>
 
-        {results.tasks.length > 0 && (
+        {searchQuery.length > 0 && groupedSearchResults.length > 0 && (
+          <>
+            <CommandSeparator />
+            {groupedSearchResults.map((group) => (
+              <CommandGroup key={group.type} heading={`${group.label} (${group.count})`}>
+                {group.items.map((result) => {
+                  const Icon = TYPE_ICONS[result.type];
+                  return (
+                    <CommandItem
+                      key={`${result.type}-${result.id}`}
+                      value={`${group.label} ${result.identifier ?? ""} ${result.title} ${result.subtitle ?? ""}`}
+                      onSelect={() => go(result.href)}
+                    >
+                      <Icon className="mr-2 h-4 w-4" />
+                      {result.type === "task" && result.identifier ? (
+                        <span className="text-muted-foreground mr-2 font-mono text-xs">
+                          {result.identifier}
+                        </span>
+                      ) : null}
+                      <div className="flex min-w-0 flex-1 flex-col">
+                        <span className="truncate">{result.title}</span>
+                        {result.subtitle ? (
+                          <span className="text-muted-foreground truncate text-xs">
+                            {result.subtitle}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="ml-2 flex items-center gap-1">
+                        <SearchResultBadges result={result} />
+                      </div>
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+            ))}
+          </>
+        )}
+
+        {searchQuery.length === 0 && visibleIssues.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Tasks">
-              {results.tasks.map((issue) => (
+              {visibleIssues.slice(0, 10).map((issue) => (
                 <CommandItem
                   key={issue.id}
-                  value={`${issue.identifier ?? ""} ${issue.title} ${issue.subtitle ?? ""}`}
+                  value={issue.identifier ? `${issue.identifier} ${issue.title}` : issue.title}
                   onSelect={() => go(`/issues/${issue.identifier ?? issue.id}`)}
                 >
                   <CircleDot className="mr-2 h-4 w-4" />
                   <span className="text-muted-foreground mr-2 font-mono text-xs">
                     {issue.identifier ?? issue.id.slice(0, 8)}
                   </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate">{issue.title}</div>
-                    {issue.subtitle && (
-                      <div className="truncate text-xs text-muted-foreground">
-                        {issue.subtitle}
-                      </div>
-                    )}
-                  </div>
+                  <span className="flex-1 truncate">{issue.title}</span>
+                  {issue.assigneeAgentId && (() => {
+                    const name = agentName(issue.assigneeAgentId);
+                    return name ? (
+                      <Identity name={name} size="sm" className="ml-2 hidden sm:inline-flex" />
+                    ) : null;
+                  })()}
                 </CommandItem>
               ))}
             </CommandGroup>
           </>
         )}
 
-        {results.goals.length > 0 && (
-          <>
-            <CommandSeparator />
-            <CommandGroup heading="Goals">
-              {results.goals.map((goal) => (
-                <CommandItem
-                  key={goal.id}
-                  value={`${goal.title} ${goal.subtitle ?? ""}`}
-                  onSelect={() => go(`/goals/${goal.id}`)}
-                >
-                  <Target className="mr-2 h-4 w-4" />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate">{goal.title}</div>
-                    {goal.subtitle && (
-                      <div className="truncate text-xs text-muted-foreground">
-                        {goal.subtitle}
-                      </div>
-                    )}
-                  </div>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </>
-        )}
-
-        {results.agents.length > 0 && (
+        {searchQuery.length === 0 && agents.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Agents">
-              {results.agents.map((agent) => (
-                <CommandItem
-                  key={agent.id}
-                  value={`${agent.title} ${agent.role ?? ""}`}
-                  onSelect={() => go(agentUrl({ id: agent.id, name: agent.title }))}
-                >
+              {agents.slice(0, 10).map((agent) => (
+                <CommandItem key={agent.id} onSelect={() => go(agentUrl(agent))}>
                   <Bot className="mr-2 h-4 w-4" />
-                  <span className="flex-1 truncate">{agent.title}</span>
-                  {agent.role && (
-                    <span className="text-xs text-muted-foreground ml-2 capitalize">
-                      {agent.role}
-                    </span>
-                  )}
+                  {agent.name}
+                  <span className="text-xs text-muted-foreground ml-2">{agent.role}</span>
                 </CommandItem>
               ))}
             </CommandGroup>
           </>
         )}
 
-        {results.memory.length > 0 && (
+        {searchQuery.length === 0 && projects.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Memory">
-              {results.memory.map((item) => (
-                <CommandItem
-                  key={item.id}
-                  value={`${item.title} ${item.subtitle ?? ""} ${item.layer ?? ""} ${item.departmentName ?? ""} ${item.category ?? ""}`}
-                  onSelect={() => go(`/memory?selected=${encodeURIComponent(item.id)}`)}
-                >
-                  <Brain className="mr-2 h-4 w-4" />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate">{item.title}</div>
-                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                      {item.layer && (
-                        <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
-                          {item.layer.replace("_", " ")}
-                        </Badge>
-                      )}
-                      {item.departmentName && (
-                        <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
-                          {item.departmentName}
-                        </Badge>
-                      )}
-                      {item.category && (
-                        <Badge variant="secondary" className="px-1.5 py-0 text-[10px] capitalize">
-                          {item.category}
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                  {searchQuery.length > 0 && item.score > 0 && (
-                    <span className="text-xs text-muted-foreground">
-                      {Math.round(item.score * 100)}%
-                    </span>
-                  )}
+            <CommandGroup heading="Projects">
+              {projects.slice(0, 10).map((project) => (
+                <CommandItem key={project.id} onSelect={() => go(projectUrl(project))}>
+                  <Hexagon className="mr-2 h-4 w-4" />
+                  {project.name}
                 </CommandItem>
               ))}
             </CommandGroup>

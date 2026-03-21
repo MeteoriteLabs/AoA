@@ -1,18 +1,31 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderWithProviders, mockCompanyContext, mockDialogContext } from "./test-utils";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { CommandPalette } from "../components/CommandPalette";
 
-const mockSearch = vi.fn();
-const mockSemanticSearch = vi.fn();
+const navigate = vi.fn();
+
+vi.mock("@/lib/router", async () => {
+  const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
+  return {
+    ...actual,
+    useNavigate: () => navigate,
+  };
+});
 
 vi.mock("../context/CompanyContext", () => ({
-  useCompany: () => mockCompanyContext,
+  useCompany: () => ({ selectedCompanyId: "company-1" }),
 }));
 
 vi.mock("../context/DialogContext", () => ({
-  useDialog: () => mockDialogContext,
+  useDialog: () => ({
+    openNewIssue: vi.fn(),
+    openNewAgent: vi.fn(),
+    openNewGoal: vi.fn(),
+    openDebrief: vi.fn(),
+  }),
 }));
 
 vi.mock("../context/SidebarContext", () => ({
@@ -22,117 +35,169 @@ vi.mock("../context/SidebarContext", () => ({
   }),
 }));
 
-vi.mock("../api/search", () => ({
-  searchApi: {
-    search: (...args: any[]) => mockSearch(...args),
+vi.mock("../api/issues", () => ({
+  issuesApi: {
+    list: vi.fn().mockResolvedValue([]),
   },
 }));
 
-vi.mock("../api/memory", () => ({
-  memoryApi: {
-    searchSemantic: (...args: any[]) => mockSemanticSearch(...args),
+vi.mock("../api/agents", () => ({
+  agentsApi: {
+    list: vi.fn().mockResolvedValue([]),
   },
 }));
+
+vi.mock("../api/projects", () => ({
+  projectsApi: {
+    list: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+const globalSearchMock = vi.fn().mockResolvedValue({
+  query: "search",
+  tookMs: 12,
+  totalCount: 3,
+  groups: [
+    {
+      type: "memory",
+      label: "Memory",
+      count: 1,
+      items: [
+        {
+          id: "memory-1",
+          type: "memory",
+          title: "Shared playbook",
+          subtitle: "Reusable process guidance",
+          href: "/memory?item=memory-1",
+          score: 0.9,
+          category: "reference",
+          layer: "domain",
+          departmentName: "Engineering",
+        },
+      ],
+    },
+    {
+      type: "artifact",
+      label: "Artifacts",
+      count: 1,
+      items: [
+        {
+          id: "artifact-1",
+          type: "artifact",
+          title: "API Spec",
+          subtitle: "Current spec version",
+          href: "/issues/TASK-1",
+          score: 0.8,
+          artifactType: "document",
+          currentVersionNumber: 4,
+        },
+      ],
+    },
+    {
+      type: "task",
+      label: "Tasks",
+      count: 1,
+      items: [
+        {
+          id: "task-1",
+          type: "task",
+          title: "Search hardening",
+          subtitle: "Improve cmd+k latency",
+          href: "/issues/TASK-1",
+          score: 0.7,
+          identifier: "TASK-1",
+          status: "todo",
+        },
+      ],
+    },
+  ],
+});
+
+vi.mock("../api/search", () => ({
+  searchApi: {
+    global: (...args: unknown[]) => globalSearchMock(...args),
+  },
+}));
+
+vi.mock("../components/Identity", () => ({
+  Identity: ({ name }: { name: string }) => <span>{name}</span>,
+}));
+
+vi.mock("@/components/ui/command", () => ({
+  CommandDialog: ({ open, onOpenChange, children }: any) =>
+    open ? <div data-testid="command-dialog" data-open={open} onClick={() => onOpenChange(open)}>{children}</div> : null,
+  CommandInput: ({ value, onValueChange, placeholder }: any) => (
+    <input
+      aria-label={placeholder}
+      value={value}
+      onChange={(event) => onValueChange(event.target.value)}
+    />
+  ),
+  CommandList: ({ children }: any) => <div>{children}</div>,
+  CommandEmpty: ({ children }: any) => <div>{children}</div>,
+  CommandGroup: ({ heading, children }: any) => (
+    <section>
+      <h2>{heading}</h2>
+      {children}
+    </section>
+  ),
+  CommandItem: ({ onSelect, children }: any) => (
+    <button type="button" onClick={() => onSelect?.("")}>
+      {children}
+    </button>
+  ),
+  CommandSeparator: () => <hr />,
+}));
+
+function renderPalette() {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+      },
+    },
+  });
+
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <CommandPalette />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
 
 describe("CommandPalette", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: vi.fn(),
-    });
-    mockCompanyContext.selectedCompanyId = "comp-1";
-    mockSearch.mockImplementation((_companyId: string, query: string) =>
-      Promise.resolve(
-        query
-          ? {
-              tasks: [
-                {
-                  id: "task-1",
-                  entityType: "tasks",
-                  title: "Fix API search",
-                  subtitle: "Implement cmd+k full-text search",
-                  score: 0.9,
-                  identifier: "AOA-12",
-                  status: "todo",
-                  role: null,
-                  layer: null,
-                  category: null,
-                  departmentId: null,
-                  departmentName: null,
-                  updatedAt: new Date().toISOString(),
-                },
-              ],
-              goals: [],
-              agents: [],
-              memory: [
-                {
-                  id: "mem-1",
-                  entityType: "memory",
-                  title: "API conventions",
-                  subtitle: "Use stable route contracts",
-                  score: 0.5,
-                  identifier: null,
-                  status: "approved",
-                  role: null,
-                  layer: "domain",
-                  category: "reference",
-                  departmentId: "dept-1",
-                  departmentName: "Engineering",
-                  updatedAt: new Date().toISOString(),
-                },
-              ],
-            }
-          : {
-              tasks: [],
-              goals: [],
-              agents: [],
-              memory: [],
-            },
-      ),
-    );
-    mockSemanticSearch.mockResolvedValue([
-      { id: "mem-1", similarity: 0.93 },
-    ]);
   });
 
-  it("renders memory metadata and hides empty result groups", async () => {
+  it("renders grouped global search results with memory and artifact badges", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<CommandPalette />);
+    renderPalette();
 
-    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    await user.keyboard("{Control>}k{/Control}");
+    await user.type(screen.getByLabelText(/search tasks, goals, agents/i), "search");
 
-    const input = await screen.findByPlaceholderText("Search tasks, goals, agents, memory...");
-    await user.type(input, "api");
-
-    expect(await screen.findByText("Tasks")).toBeInTheDocument();
-    expect(await screen.findByText("Memory")).toBeInTheDocument();
-    expect(await screen.findByText("Fix API search")).toBeInTheDocument();
-    expect(await screen.findByText("API conventions")).toBeInTheDocument();
+    expect(await screen.findByText("Memory (1)")).toBeInTheDocument();
+    expect(screen.getByText("Artifacts (1)")).toBeInTheDocument();
+    expect(screen.getByText("Tasks (1)")).toBeInTheDocument();
+    expect(screen.getByText("Shared playbook")).toBeInTheDocument();
     expect(screen.getByText("domain")).toBeInTheDocument();
     expect(screen.getByText("Engineering")).toBeInTheDocument();
     expect(screen.getByText("reference")).toBeInTheDocument();
-    expect(screen.getByText("93%")).toBeInTheDocument();
+    expect(screen.getByText("document")).toBeInTheDocument();
+    expect(screen.getByText("v4")).toBeInTheDocument();
   });
 
-  it("shows empty search messaging when grouped results are empty", async () => {
+  it("navigates to the selected grouped result", async () => {
     const user = userEvent.setup();
-    mockSearch.mockResolvedValue({
-      tasks: [],
-      goals: [],
-      agents: [],
-      memory: [],
-    });
-    mockSemanticSearch.mockResolvedValue([]);
+    renderPalette();
 
-    renderWithProviders(<CommandPalette />);
+    await user.keyboard("{Control>}k{/Control}");
+    await user.type(screen.getByLabelText(/search tasks, goals, agents/i), "search");
+    await user.click(await screen.findByText("API Spec"));
 
-    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
-    const input = await screen.findByPlaceholderText("Search tasks, goals, agents, memory...");
-    await user.type(input, "zzz");
-
-    await waitFor(() => {
-      expect(screen.getByText("No search results found.")).toBeInTheDocument();
-    });
+    expect(navigate).toHaveBeenCalledWith("/issues/TASK-1");
   });
 });

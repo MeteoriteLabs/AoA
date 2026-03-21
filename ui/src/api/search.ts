@@ -1,19 +1,18 @@
-import type {
-  SearchEntityType,
-  SearchResultsGrouped,
-} from "@paperclipai/shared";
+import type { GlobalSearchResponse } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const searchApi = {
-  search: (
+  global: (
     companyId: string,
-    q: string,
-    types?: SearchEntityType[],
+    query: string,
+    opts?: {
+      includeArchived?: boolean;
+      limitPerType?: number;
+    },
   ) => {
-    const params = new URLSearchParams();
-    if (q) params.set("q", q);
-    if (types && types.length > 0) params.set("types", types.join(","));
-    const qs = params.toString();
-    return api.get<SearchResultsGrouped>(`/companies/${companyId}/search${qs ? `?${qs}` : ""}`);
+    const params = new URLSearchParams({ q: query });
+    if (opts?.includeArchived) params.set("includeArchived", "true");
+    if (opts?.limitPerType) params.set("limitPerType", String(opts.limitPerType));
+    return api.get<GlobalSearchResponse>(`/companies/${companyId}/search?${params.toString()}`);
   },
 };

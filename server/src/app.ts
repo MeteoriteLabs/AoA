@@ -132,6 +132,7 @@ export async function createApp(
   api.use(memoryLifecycleRoutes(db));
   api.use(suggestionRoutes(db));
   api.use(contextPackagingRoutes(db));
+  api.use(searchRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
   api.use(costRoutes(db));

@@ -1,199 +1,296 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 vi.mock("drizzle-orm", () => ({
-  and: vi.fn((...args: any[]) => args),
-  desc: vi.fn((value: any) => ({ desc: value })),
-  eq: vi.fn((left: any, right: any) => ({ eq: [left, right] })),
+  and: vi.fn((...args: unknown[]) => args),
+  eq: vi.fn((left: unknown, right: unknown) => ({ left, right })),
   sql: Object.assign(
-    vi.fn((strings: any, ...values: any[]) => ({
-      sql: strings,
-      values,
-      as: vi.fn().mockImplementation((alias: string) => ({ alias })),
-    })),
-    { raw: vi.fn((value: any) => value) },
+    vi.fn((strings: unknown, ...values: unknown[]) => ({ strings, values })),
+    {
+      join: vi.fn((values: unknown[]) => values),
+    },
   ),
 }));
 
 vi.mock("@paperclipai/db", () => ({
-  issues: {
-    __table: "issues",
-    id: "issues.id",
-    companyId: "issues.company_id",
-    title: "issues.title",
-    description: "issues.description",
-    identifier: "issues.identifier",
-    status: "issues.status",
-    updatedAt: "issues.updated_at",
-  },
-  goals: {
-    __table: "goals",
-    id: "goals.id",
-    companyId: "goals.company_id",
-    title: "goals.title",
-    description: "goals.description",
-    status: "goals.status",
-    updatedAt: "goals.updated_at",
-  },
-  agents: {
-    __table: "agents",
-    id: "agents.id",
-    companyId: "agents.company_id",
-    name: "agents.name",
-    role: "agents.role",
-    status: "agents.status",
-    updatedAt: "agents.updated_at",
-  },
-  memoryItems: {
-    __table: "memory_items",
-    id: "memory.id",
-    companyId: "memory.company_id",
-    title: "memory.title",
-    content: "memory.content",
-    status: "memory.status",
-    layer: "memory.layer",
-    category: "memory.category",
-    departmentId: "memory.department_id",
-    accessedAt: "memory.accessed_at",
-    updatedAt: "memory.updated_at",
-  },
-  projects: {
-    __table: "projects",
-    id: "projects.id",
-    name: "projects.name",
+  userRoles: {
+    role: "role",
+    projectId: "project_id",
+    companyId: "company_id",
+    userId: "user_id",
   },
 }));
 
-import {
-  groupSearchResults,
-  sanitizeSearchQuery,
-  searchService,
-} from "../services/search.js";
+import { searchService } from "../services/search.js";
 
-function makeMockDb(rowsByTable: Record<string, any[]>) {
-  const state = { table: "" };
-  const chain = {
-    select: vi.fn().mockReturnThis(),
-    from: vi.fn((table: { __table?: string }) => {
-      state.table = table.__table ?? "";
-      return chain;
+function makeDb(userRoleRows: Array<{ role: string; projectId: string | null }>, executeRows: unknown[]) {
+  let executeIndex = 0;
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => Promise.resolve(userRoleRows),
+      }),
     }),
-    leftJoin: vi.fn().mockReturnThis(),
-    where: vi.fn().mockReturnThis(),
-    orderBy: vi.fn().mockReturnThis(),
-    limit: vi.fn((value: number) => {
-      void value;
-      return Promise.resolve(rowsByTable[state.table] ?? []);
-    }),
-  };
-  return chain as any;
+    execute: async () => ({ rows: executeRows[executeIndex++] ?? [] }),
+  } as any;
 }
 
-describe("search service", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("sanitizes special characters to avoid tsquery syntax issues", () => {
-    expect(sanitizeSearchQuery(`"billing:(api) & growth!!!"`)).toBe("billing api growth");
-  });
-
-  it("returns recent defaults when the query is empty", async () => {
-    const db = makeMockDb({
-      issues: [{ id: "issue-1", title: "Recent task", subtitle: null, identifier: "AOA-1", status: "todo", updatedAt: new Date(), score: 1 }],
-      goals: [{ id: "goal-1", title: "Recent goal", subtitle: null, status: "active", updatedAt: new Date(), score: 1 }],
-      agents: [{ id: "agent-1", title: "Recent agent", role: "engineer", status: "idle", updatedAt: new Date(), score: 1 }],
-      memory_items: [{ id: "mem-1", title: "Recent memory", subtitle: "Notes", status: "approved", layer: "domain", category: "reference", departmentId: "dept-1", departmentName: "Engineering", updatedAt: new Date(), score: 1 }],
-    });
-    const svc = searchService(db);
-
-    const results = await svc.search("company-1", "");
-
-    expect(results.map((result) => result.entityType)).toEqual([
-      "tasks",
-      "goals",
-      "agents",
-      "memory",
-    ]);
-    expect(db.limit).toHaveBeenCalledWith(5);
-  });
-
-  it("returns only the requested entity types", async () => {
-    const db = makeMockDb({
-      memory_items: [{ id: "mem-1", title: "Memory", subtitle: "Content", status: "approved", layer: "identity", category: "context", departmentId: null, departmentName: null, updatedAt: new Date(), score: 0.8 }],
-    });
-    const svc = searchService(db);
-
-    const results = await svc.search("company-1", "memory", ["memory"]);
-
-    expect(results).toHaveLength(1);
-    expect(results[0]?.entityType).toBe("memory");
-  });
-
-  it("includes memory metadata for palette badges", async () => {
-    const db = makeMockDb({
-      memory_items: [{
-        id: "mem-1",
-        title: "API standards",
-        subtitle: "Use JSON responses consistently",
-        status: "approved",
-        layer: "domain",
-        category: "reference",
-        departmentId: "dept-1",
-        departmentName: "Engineering",
-        updatedAt: new Date(),
-        score: 0.91,
-      }],
-    });
-    const svc = searchService(db);
-
-    const [result] = await svc.search("company-1", "api", ["memory"]);
-
-    expect(result).toMatchObject({
-      entityType: "memory",
-      layer: "domain",
-      category: "reference",
-      departmentId: "dept-1",
-      departmentName: "Engineering",
-    });
-  });
-
-  it("groups flat search results by entity type", () => {
-    const grouped = groupSearchResults([
+function executeFixtures() {
+  return [
+    [
       {
         id: "task-1",
-        entityType: "tasks",
-        title: "Task",
-        subtitle: null,
-        score: 0.8,
-        identifier: "AOA-1",
+        identifier: "TASK-1",
+        title: "Searchable task",
+        subtitle: "Task description",
         status: "todo",
-        role: null,
-        layer: null,
-        category: null,
-        departmentId: null,
-        departmentName: null,
-        updatedAt: new Date(),
+        score: 0.9,
+        projectId: "dept-1",
+        projectName: "Engineering",
+        assigneeUserId: "user-1",
       },
       {
-        id: "mem-1",
-        entityType: "memory",
-        title: "Memory",
-        subtitle: null,
+        id: "task-2",
+        identifier: "TASK-2",
+        title: "Unscoped task",
+        subtitle: "Public task",
+        status: "todo",
         score: 0.7,
-        identifier: null,
-        status: "approved",
-        role: null,
-        layer: "domain",
-        category: "reference",
-        departmentId: null,
-        departmentName: null,
-        updatedAt: new Date(),
+        projectId: null,
+        projectName: null,
+        assigneeUserId: null,
       },
-    ]);
+    ],
+    [
+      {
+        id: "goal-1",
+        title: "Search goal",
+        subtitle: "Goal description",
+        status: "active",
+        score: 0.8,
+        projectIds: ["dept-1"],
+        projectNames: ["Engineering"],
+      },
+    ],
+    [
+      {
+        id: "agent-1",
+        name: "Atlas",
+        title: "Staff Engineer",
+        role: "engineer",
+        status: "active",
+        score: 0.75,
+      },
+    ],
+    [
+      {
+        id: "brief-1",
+        title: "Search brief",
+        subtitle: "Brief evidence",
+        status: "ready",
+        score: 0.72,
+        departmentId: "dept-1",
+        projectId: null,
+        departmentName: "Engineering",
+      },
+      {
+        id: "brief-2",
+        title: "Public brief",
+        subtitle: "Public brief evidence",
+        status: "ready",
+        score: 0.55,
+        departmentId: null,
+        projectId: null,
+        departmentName: null,
+      },
+    ],
+    [
+      {
+        id: "memory-1",
+        title: "Shared memory",
+        subtitle: "Shared memory content",
+        status: "approved",
+        score: 0.85,
+        departmentId: "dept-2",
+        projectId: null,
+        departmentName: "Sales",
+        category: "reference",
+        layer: "domain",
+        visibility: "shared",
+        taskAssigneeUserId: null,
+      },
+      {
+        id: "memory-2",
+        title: "Scoped memory",
+        subtitle: "Scoped memory content",
+        status: "approved",
+        score: 0.65,
+        departmentId: "dept-1",
+        projectId: null,
+        departmentName: "Engineering",
+        category: "context",
+        layer: "domain",
+        visibility: "scoped",
+        taskAssigneeUserId: null,
+      },
+      {
+        id: "memory-archived",
+        title: "Archived memory",
+        subtitle: "Should stay hidden",
+        status: "archived",
+        score: 0.6,
+        departmentId: null,
+        projectId: null,
+        departmentName: null,
+        category: "reference",
+        layer: "domain",
+        visibility: "shared",
+        taskAssigneeUserId: null,
+      },
+    ],
+    [
+      {
+        id: "artifact-1",
+        title: "Spec artifact",
+        subtitle: "Artifact content",
+        status: "active",
+        score: 0.78,
+        artifactType: "document",
+        currentVersionNumber: 3,
+        linkedIssueId: "task-1",
+        linkedIssueIdentifier: "TASK-1",
+        linkedIssueProjectId: "dept-1",
+        linkedIssueAssigneeUserId: "user-1",
+      },
+      {
+        id: "artifact-archived",
+        title: "Archived artifact",
+        subtitle: "Old artifact",
+        status: "archived",
+        score: 0.4,
+        artifactType: "document",
+        currentVersionNumber: 1,
+        linkedIssueId: null,
+        linkedIssueIdentifier: null,
+        linkedIssueProjectId: null,
+        linkedIssueAssigneeUserId: null,
+      },
+    ],
+    [
+      {
+        id: "suggestion-1",
+        title: "Pending suggestion",
+        subtitle: "Evidence",
+        status: "pending",
+        score: 0.73,
+        category: "memory_gap",
+        relatedMemoryItemId: "memory-1",
+        relatedMemoryDepartmentId: "dept-2",
+        relatedMemoryProjectId: null,
+        relatedMemoryVisibility: "shared",
+        relatedMemoryTaskAssigneeUserId: null,
+      },
+      {
+        id: "suggestion-2",
+        title: "Dismissed suggestion",
+        subtitle: "Ignored",
+        status: "dismissed",
+        score: 0.2,
+        category: "goal_gap",
+        relatedMemoryItemId: null,
+        relatedMemoryDepartmentId: null,
+        relatedMemoryProjectId: null,
+        relatedMemoryVisibility: null,
+        relatedMemoryTaskAssigneeUserId: null,
+      },
+    ],
+  ];
+}
 
-    expect(grouped.tasks).toHaveLength(1);
-    expect(grouped.memory).toHaveLength(1);
-    expect(grouped.goals).toHaveLength(0);
-    expect(grouped.agents).toHaveLength(0);
+describe("searchService", () => {
+  it("returns grouped results across entity types", async () => {
+    const svc = searchService(makeDb([], executeFixtures()));
+
+    const result = await svc.search("company-1", {
+      query: "search",
+      actor: { type: "board", source: "local_implicit", userId: "founder-1" },
+    });
+
+    expect(result.groups.map((group) => group.type)).toEqual([
+      "task",
+      "goal",
+      "agent",
+      "brief",
+      "memory",
+      "artifact",
+      "suggestion",
+    ]);
+    expect(result.totalCount).toBeGreaterThanOrEqual(7);
+  });
+
+  it("filters team member results to assigned tasks and public entities", async () => {
+    const svc = searchService(
+      makeDb([{ role: "team_member", projectId: "dept-1" }], executeFixtures()),
+    );
+
+    const result = await svc.search("company-1", {
+      query: "search",
+      actor: { type: "board", source: "session", userId: "user-1" },
+    });
+
+    const taskGroup = result.groups.find((group) => group.type === "task");
+    const memoryGroup = result.groups.find((group) => group.type === "memory");
+    const briefGroup = result.groups.find((group) => group.type === "brief");
+
+    expect(taskGroup?.items.map((item) => item.id)).toEqual(["task-1", "task-2"]);
+    expect(memoryGroup?.items.map((item) => item.id)).toEqual(["memory-1"]);
+    expect(briefGroup?.items.map((item) => item.id)).toEqual(["brief-2"]);
+  });
+
+  it("shows department-scoped results to a team lead", async () => {
+    const svc = searchService(
+      makeDb([{ role: "team_lead", projectId: "dept-1" }], executeFixtures()),
+    );
+
+    const result = await svc.search("company-1", {
+      query: "search",
+      actor: { type: "board", source: "session", userId: "lead-1" },
+    });
+
+    const briefGroup = result.groups.find((group) => group.type === "brief");
+    const memoryGroup = result.groups.find((group) => group.type === "memory");
+
+    expect(briefGroup?.items.map((item) => item.id)).toEqual(["brief-1", "brief-2"]);
+    expect(memoryGroup?.items.map((item) => item.id)).toEqual(["memory-1", "memory-2"]);
+  });
+
+  it("keeps shared memory visible to all roles and excludes archived by default", async () => {
+    const svc = searchService(
+      makeDb([{ role: "team_member", projectId: "dept-1" }], executeFixtures()),
+    );
+
+    const result = await svc.search("company-1", {
+      query: "search",
+      actor: { type: "board", source: "session", userId: "user-1" },
+    });
+
+    const memoryIds = result.groups.find((group) => group.type === "memory")?.items.map((item) => item.id) ?? [];
+    const artifactIds = result.groups.find((group) => group.type === "artifact")?.items.map((item) => item.id) ?? [];
+    const suggestionIds = result.groups.find((group) => group.type === "suggestion")?.items.map((item) => item.id) ?? [];
+
+    expect(memoryIds).toContain("memory-1");
+    expect(memoryIds).not.toContain("memory-archived");
+    expect(artifactIds).not.toContain("artifact-archived");
+    expect(suggestionIds).toEqual(["suggestion-1"]);
+  });
+
+  it("records a fast response time for the aggregated result", async () => {
+    const svc = searchService(makeDb([], executeFixtures()));
+
+    const result = await svc.search("company-1", {
+      query: "search",
+      actor: { type: "board", source: "local_implicit", userId: "founder-1" },
+    });
+
+    expect(result.tookMs).toBeLessThan(200);
   });
 });

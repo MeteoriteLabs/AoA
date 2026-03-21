@@ -23,7 +23,6 @@ export type {
 } from "./issue.js";
 export type { Goal, GoalProjectRef } from "./goal.js";
 export type { MemoryItem } from "./memory.js";
-export type { SearchResult, SearchResultsGrouped } from "./search.js";
 export type { Debrief } from "./debrief.js";
 export type { Brief, BriefItem } from "./brief.js";
 export type { Approval, ApprovalComment } from "./approval.js";
@@ -66,6 +65,12 @@ export type { Suggestion } from "./suggestion.js";
 export type { MemoryFeedbackPattern } from "./memory-feedback.js";
 export type { AgentTrustScore } from "./trust-score.js";
 export type { UserRoleAssignment } from "./user-role.js";
+export type {
+  GlobalSearchEntityType,
+  GlobalSearchResult,
+  GlobalSearchGroup,
+  GlobalSearchResponse,
+} from "./search.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilitySecretRequirement,
