@@ -43,6 +43,8 @@ export type {
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
+  DetectedOutput,
+  DetectedOutputForUI,
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardSummary } from "./dashboard.js";
@@ -57,7 +59,7 @@ export type {
   InstanceUserRoleGrant,
 } from "./access.js";
 export type { TaskDependency } from "./task-dependency.js";
-export type { Artifact, ArtifactVersion } from "./artifact.js";
+export type { Artifact, ArtifactVersion, ArtifactWithVersions } from "./artifact.js";
 export type { MemoryItemVersion } from "./memory-version.js";
 export type { Suggestion } from "./suggestion.js";
 export type { MemoryFeedbackPattern } from "./memory-feedback.js";

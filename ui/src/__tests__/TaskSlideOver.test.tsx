@@ -85,8 +85,18 @@ vi.mock("@tanstack/react-query", async () => {
       if (key.includes("activeRun")) {
         return { data: null, isLoading: false, error: null };
       }
+      // Artifacts — return null (no linked artifact)
+      if (key.includes("artifacts")) {
+        return { data: null, isLoading: false, error: null };
+      }
+      // Detected outputs — return empty array
+      if (key.includes("detected-outputs")) {
+        return { data: [], isLoading: false, error: null };
+      }
       return { data: undefined, isLoading: false, error: null };
     }),
+    useQueries: ({ queries }: any) =>
+      (queries ?? []).map(() => ({ data: null, isLoading: false, error: null })),
     useMutation: () => ({
       mutate: vi.fn(),
       mutateAsync: vi.fn().mockResolvedValue({}),
@@ -118,6 +128,14 @@ vi.mock("../lib/queryKeys", () => ({
     agents: { list: (id: string) => ["agents", "list", id] },
     projects: { list: (id: string) => ["projects", "list", id] },
     goals: { list: (id: string) => ["goals", "list", id] },
+    artifacts: {
+      byIssue: (id: string) => ["artifacts", "issue", id],
+      detail: (id: string) => ["artifacts", "detail", id],
+    },
+    detectedOutputs: {
+      byIssue: (id: string) => ["detected-outputs", "issue", id],
+      byRun: (id: string) => ["detected-outputs", "run", id],
+    },
     activity: (id: string) => ["activity", id],
     auth: { session: "auth.session" },
   },
@@ -153,6 +171,14 @@ vi.mock("../api/auth", () => ({
 
 vi.mock("../api/projects", () => ({
   projectsApi: { list: vi.fn().mockResolvedValue([]) },
+}));
+
+vi.mock("../api/artifacts", () => ({
+  artifactsApi: { getByIssueId: vi.fn().mockResolvedValue(null), get: vi.fn(), addVersion: vi.fn() },
+}));
+
+vi.mock("../api/output-detection", () => ({
+  outputDetectionApi: { listForIssue: vi.fn().mockResolvedValue([]), confirm: vi.fn(), dismiss: vi.fn() },
 }));
 
 vi.mock("../lib/utils", () => ({
@@ -287,5 +313,11 @@ describe("TaskSlideOver", () => {
   it("renders properties section", () => {
     renderSlideOver({ issueId: "issue-1", open: true });
     expect(screen.getByTestId("issue-properties")).toBeInTheDocument();
+  });
+
+  it("renders Artifacts tab trigger", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+    expect(screen.getByTestId("tab-artifacts")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-artifacts")).toHaveTextContent("Artifacts");
   });
 });

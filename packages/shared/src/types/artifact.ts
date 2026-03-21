@@ -25,3 +25,7 @@ export interface ArtifactVersion {
   fileUrl: string | null;
   createdAt: Date;
 }
+
+export interface ArtifactWithVersions extends Artifact {
+  versions: ArtifactVersion[];
+}

@@ -12,3 +12,15 @@ export const createAssetImageMetadataSchema = z.object({
 
 export type CreateAssetImageMetadata = z.infer<typeof createAssetImageMetadataSchema>;
 
+export const createAssetFileMetadataSchema = z.object({
+  namespace: z
+    .string()
+    .trim()
+    .min(1)
+    .max(120)
+    .regex(/^[a-zA-Z0-9/_-]+$/)
+    .optional(),
+});
+
+export type CreateAssetFileMetadata = z.infer<typeof createAssetFileMetadataSchema>;
+
