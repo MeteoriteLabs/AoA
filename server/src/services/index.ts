@@ -27,4 +27,5 @@ export { memoryFeedbackService, type MemoryFeedbackFilters } from "./memory-feed
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
+export { contextPackagingService } from "./context-packaging.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
