@@ -131,14 +131,13 @@ export function memoryService(db: Db) {
           return updated;
         }
 
-        // Agent: update only metadata (not content or currentVersionId)
-        const { content: _content, ...metaOnly } = data;
-        const [updated] = await tx
-          .update(memoryItems)
-          .set({ ...metaOnly, updatedAt: new Date() })
-          .where(eq(memoryItems.id, id))
-          .returning();
-        return updated;
+        // Agent: do NOT update currentVersionId, content, or metadata (Rule #6)
+        // Return the item as-is — agents see old content until founder approves
+        return tx
+          .select()
+          .from(memoryItems)
+          .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
+          .then((rows) => rows[0] ?? null);
       });
     },
 
@@ -261,7 +260,16 @@ export function memoryService(db: Db) {
     // 6. reject
     async reject(companyId: string, id: string) {
       return db.transaction(async (tx) => {
-        // Archive any pending versions
+        // Reject the item first (scoped by companyId for tenant isolation)
+        const [updated] = await tx
+          .update(memoryItems)
+          .set({ status: "rejected", updatedAt: new Date() })
+          .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
+          .returning();
+
+        if (!updated) return null;
+
+        // Archive any pending versions (safe — item ownership verified above)
         await tx
           .update(memoryItemVersions)
           .set({ status: "archived" })
@@ -272,12 +280,7 @@ export function memoryService(db: Db) {
             ),
           );
 
-        const [updated] = await tx
-          .update(memoryItems)
-          .set({ status: "rejected", updatedAt: new Date() })
-          .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
-          .returning();
-        return updated ?? null;
+        return updated;
       });
     },
 
@@ -420,7 +423,7 @@ export function memoryService(db: Db) {
     },
 
     // 11. discardDraft
-    async discardDraft(companyId: string, itemId: string) {
+    async discardDraft(companyId: string, itemId: string, _founderId?: string) {
       return db.transaction(async (tx) => {
         // Verify item belongs to company
         const item = await tx
@@ -588,7 +591,7 @@ export function memoryService(db: Db) {
     },
 
     // 15. restore
-    async restore(companyId: string, id: string) {
+    async restore(companyId: string, id: string, _founderId?: string) {
       return db.transaction(async (tx) => {
         // Verify item is archived and belongs to company
         const item = await tx
