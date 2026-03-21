@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
@@ -7,6 +7,7 @@ import { useToast } from "../context/ToastContext";
 import { debriefsApi } from "../api/debriefs";
 import { briefsApi } from "../api/briefs";
 import { projectsApi } from "../api/projects";
+import { transcriptionApi } from "../api/transcription";
 import { queryKeys } from "../lib/queryKeys";
 import {
   Dialog,
@@ -19,9 +20,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Loader2 } from "lucide-react";
+import { Loader2, Mic } from "lucide-react";
+import { VoiceRecorder } from "./VoiceRecorder";
 
-type TabValue = "paste" | "write";
+type TabValue = "paste" | "write" | "voice";
 
 export function DebriefModal() {
   const { debriefOpen, closeDebrief } = useDialog();
@@ -36,6 +38,12 @@ export function DebriefModal() {
   const [departmentId, setDepartmentId] = useState("");
   const [isPolling, setIsPolling] = useState(false);
   const [createdDebriefId, setCreatedDebriefId] = useState<string | null>(null);
+
+  // Voice-specific state
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcription, setTranscription] = useState<string | null>(null);
+  const [transcriptionEdited, setTranscriptionEdited] = useState("");
 
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
@@ -91,20 +99,65 @@ export function DebriefModal() {
     setDepartmentId("");
     setIsPolling(false);
     setCreatedDebriefId(null);
+    setAudioBlob(null);
+    setIsTranscribing(false);
+    setTranscription(null);
+    setTranscriptionEdited("");
     closeDebrief();
   }
 
   function handleSubmit() {
-    if (!content.trim() || !selectedCompanyId) return;
-    createMutation.mutate({
-      inputType: tab,
-      rawContent: content.trim(),
-      ...(title.trim() ? { title: title.trim() } : {}),
-      ...(departmentId ? { departmentId } : {}),
-    });
+    if (!selectedCompanyId) return;
+
+    if (tab === "voice") {
+      // Submit the transcription text
+      const voiceContent = transcriptionEdited.trim() || transcription?.trim();
+      if (!voiceContent) return;
+      createMutation.mutate({
+        inputType: "voice",
+        rawContent: voiceContent,
+        ...(title.trim() ? { title: title.trim() } : {}),
+        ...(departmentId ? { departmentId } : {}),
+        sourceInfo: { transcriptionModel: "whisper-1" },
+      });
+    } else {
+      if (!content.trim()) return;
+      createMutation.mutate({
+        inputType: tab,
+        rawContent: content.trim(),
+        ...(title.trim() ? { title: title.trim() } : {}),
+        ...(departmentId ? { departmentId } : {}),
+      });
+    }
+  }
+
+  async function handleRecordingComplete(blob: Blob) {
+    setAudioBlob(blob);
+
+    if (!selectedCompanyId) return;
+
+    setIsTranscribing(true);
+    try {
+      const result = await transcriptionApi.transcribe(selectedCompanyId, blob);
+      setTranscription(result.text);
+      setTranscriptionEdited(result.text);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Transcription failed";
+      pushToast({ title: message, tone: "warn" });
+      setTranscription(null);
+    } finally {
+      setIsTranscribing(false);
+    }
   }
 
   const isSubmitting = createMutation.isPending || isPolling;
+
+  const voiceContent = transcriptionEdited.trim() || transcription?.trim();
+  const canSubmit =
+    tab === "voice"
+      ? !!voiceContent && !isTranscribing
+      : !!content.trim();
 
   return (
     <Dialog open={debriefOpen} onOpenChange={(open) => { if (!open) resetAndClose(); }}>
@@ -130,6 +183,10 @@ export function DebriefModal() {
               <TabsList>
                 <TabsTrigger value="paste">Paste / Import</TabsTrigger>
                 <TabsTrigger value="write">Write</TabsTrigger>
+                <TabsTrigger value="voice" className="gap-1.5">
+                  <Mic className="h-3.5 w-3.5" />
+                  Voice
+                </TabsTrigger>
               </TabsList>
               <TabsContent value="paste" className="mt-3">
                 <Textarea
@@ -146,6 +203,36 @@ export function DebriefModal() {
                   placeholder="Write your observations, decisions, ideas..."
                   className="min-h-[200px] resize-y"
                 />
+              </TabsContent>
+              <TabsContent value="voice" className="mt-3">
+                <div className="flex flex-col gap-3">
+                  <VoiceRecorder
+                    onRecordingComplete={handleRecordingComplete}
+                    disabled={isTranscribing}
+                  />
+
+                  {isTranscribing && (
+                    <div className="flex items-center gap-2 rounded-md bg-muted/50 p-4">
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                      <span className="text-sm text-muted-foreground">
+                        Transcribing audio...
+                      </span>
+                    </div>
+                  )}
+
+                  {transcription !== null && !isTranscribing && (
+                    <div className="flex flex-col gap-1.5">
+                      <Label className="text-xs text-muted-foreground">
+                        Transcription (edit if needed)
+                      </Label>
+                      <Textarea
+                        value={transcriptionEdited}
+                        onChange={(e) => setTranscriptionEdited(e.target.value)}
+                        className="min-h-[120px] resize-y"
+                      />
+                    </div>
+                  )}
+                </div>
               </TabsContent>
             </Tabs>
 
@@ -186,7 +273,7 @@ export function DebriefModal() {
               <Button
                 type="button"
                 onClick={handleSubmit}
-                disabled={!content.trim() || !selectedCompanyId}
+                disabled={!canSubmit || !selectedCompanyId}
               >
                 Process Debrief
               </Button>
