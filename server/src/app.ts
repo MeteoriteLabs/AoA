@@ -33,6 +33,7 @@ import { outputDetectionRoutes } from "./routes/output-detection.js";
 import { trustScoreRoutes } from "./routes/trust-scores.js";
 import { transcriptionRoutes } from "./routes/transcription.js";
 import { memoryFeedbackRoutes } from "./routes/memory-feedback.js";
+import { memoryLifecycleRoutes } from "./routes/memory-lifecycle.js";
 import { contextPackagingRoutes } from "./routes/context-packaging.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
@@ -125,6 +126,7 @@ export async function createApp(
   api.use(trustScoreRoutes(db));
   api.use(transcriptionRoutes(db));
   api.use(memoryFeedbackRoutes(db));
+  api.use(memoryLifecycleRoutes(db));
   api.use(contextPackagingRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));

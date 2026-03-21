@@ -2,13 +2,14 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { goalService, logActivity } from "../services/index.js";
+import { goalService, memoryLifecycleService, logActivity } from "../services/index.js";
 import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function goalRoutes(db: Db) {
   const router = Router();
   const svc = goalService(db);
+  const lifecycle = memoryLifecycleService(db);
 
   router.get("/companies/:companyId/goals", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -89,6 +90,11 @@ export function goalRoutes(db: Db) {
       entityId: goal.id,
       details: req.body,
     });
+
+    // Auto-archive active_context memory when goal reaches terminal state
+    if (req.body.status === "achieved" || req.body.status === "cancelled") {
+      await lifecycle.onGoalCompleted(goal.companyId, goal.id);
+    }
 
     res.json(goal);
   });
