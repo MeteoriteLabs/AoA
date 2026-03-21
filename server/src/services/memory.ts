@@ -36,7 +36,8 @@ export function memoryService(db: Db) {
     ) {
       const run = async (txn: DbTx | Db) => {
         const versionStatus = isFounder ? "approved" : "pending";
-        const itemStatus = data.status ?? (isFounder ? "approved" : "pending");
+        // Rule #6: non-founder actors cannot override status to bypass approval
+        const itemStatus = isFounder ? (data.status ?? "approved") : "pending";
 
         // Insert item first (no currentVersionId yet)
         const [item] = await txn
@@ -696,23 +697,21 @@ export function memoryService(db: Db) {
 
       if (itemsWithPendingVersions.length === 0) return pendingItems;
 
-      const pendingVersionItemIds = new Set(itemsWithPendingVersions.map((r) => r.id));
       const pendingItemIds = new Set(pendingItems.map((r) => r.id));
 
-      // Fetch items that have pending versions but aren't already in pendingItems
-      const additionalIds = [...pendingVersionItemIds].filter((id) => !pendingItemIds.has(id));
-
-      if (additionalIds.length === 0) return pendingItems;
-
-      const additionalItems = await db
-        .select()
-        .from(memoryItems)
-        .where(
-          and(
-            eq(memoryItems.companyId, companyId),
-            sql`${memoryItems.id} = ANY(${sql.raw(`ARRAY[${additionalIds.map((id) => `'${id}'`).join(",")}]::uuid[]`)})`,
-          ),
-        );
+      // Fetch each additional item individually (avoids complex IN clause)
+      const additionalItems: (typeof memoryItems.$inferSelect)[] = [];
+      for (const row of itemsWithPendingVersions) {
+        if (!pendingItemIds.has(row.id)) {
+          const item = await db
+            .select()
+            .from(memoryItems)
+            .where(and(eq(memoryItems.id, row.id), eq(memoryItems.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          if (item) additionalItems.push(item);
+          pendingItemIds.add(row.id); // deduplicate
+        }
+      }
 
       return [...pendingItems, ...additionalItems];
     },
