@@ -84,6 +84,10 @@ export {
   updateMemoryItemSchema,
   type CreateMemoryItem,
   type UpdateMemoryItem,
+  saveDraftSchema,
+  createVersionSchema,
+  type SaveDraft,
+  type CreateVersion,
 } from "./memory.js";
 
 export {

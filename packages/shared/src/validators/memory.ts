@@ -35,3 +35,16 @@ export const updateMemoryItemSchema = createMemoryItemSchema
   .partial();
 
 export type UpdateMemoryItem = z.infer<typeof updateMemoryItemSchema>;
+
+export const saveDraftSchema = z.object({
+  content: z.string().min(1),
+});
+
+export type SaveDraft = z.infer<typeof saveDraftSchema>;
+
+export const createVersionSchema = z.object({
+  content: z.string().min(1),
+  sourceContext: z.string().optional(),
+});
+
+export type CreateVersion = z.infer<typeof createVersionSchema>;
