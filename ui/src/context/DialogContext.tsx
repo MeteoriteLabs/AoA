@@ -1,10 +1,14 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
+import type { Issue } from "@paperclipai/shared";
 
 interface NewIssueDefaults {
+  title?: string;
+  description?: string;
   status?: string;
   priority?: string;
   projectId?: string;
   assigneeAgentId?: string;
+  onCreated?: (issue: Issue) => void;
 }
 
 interface NewGoalDefaults {

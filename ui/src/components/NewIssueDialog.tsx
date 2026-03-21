@@ -263,6 +263,7 @@ export function NewIssueDialog() {
     mutationFn: ({ companyId, ...data }: { companyId: string } & Record<string, unknown>) =>
       issuesApi.create(companyId, data),
     onSuccess: (issue) => {
+      newIssueDefaults.onCreated?.(issue);
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(effectiveCompanyId!) });
       if (draftTimer.current) clearTimeout(draftTimer.current);
       clearDraft();
@@ -331,8 +332,11 @@ export function NewIssueDialog() {
     if (!newIssueOpen) return;
     setDialogCompanyId(selectedCompanyId);
 
+    const hasPrefilledContent = Boolean(
+      newIssueDefaults.title?.trim() || newIssueDefaults.description?.trim(),
+    );
     const draft = loadDraft();
-    if (draft && draft.title.trim()) {
+    if (draft && draft.title.trim() && !hasPrefilledContent) {
       setTitle(draft.title);
       setDescription(draft.description);
       setStatus(draft.status || "todo");
@@ -344,6 +348,8 @@ export function NewIssueDialog() {
       setAssigneeChrome(draft.assigneeChrome ?? false);
       setAssigneeUseProjectWorkspace(draft.assigneeUseProjectWorkspace ?? true);
     } else {
+      setTitle(newIssueDefaults.title ?? "");
+      setDescription(newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(newIssueDefaults.projectId ?? "");
