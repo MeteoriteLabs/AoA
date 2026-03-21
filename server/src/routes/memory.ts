@@ -9,6 +9,42 @@ export function memoryRoutes(db: Db) {
   const router = Router();
   const svc = memoryService(db);
 
+  // Semantic search — must be before /:id route
+  router.get("/companies/:companyId/memory/search", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const q = req.query.q as string | undefined;
+    if (!q || !q.trim()) {
+      res.status(400).json({ error: "Query parameter 'q' is required" });
+      return;
+    }
+    const filters = {
+      layer: req.query.layer as string | undefined,
+      departmentId: req.query.departmentId as string | undefined,
+      limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+    };
+    const results = await svc.searchSemantic(companyId, q.trim(), filters);
+    res.json(results);
+  });
+
+  // Find similar items — must be before /:id route
+  router.get("/companies/:companyId/memory/find-similar", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const content = req.query.content as string | undefined;
+    if (!content || !content.trim()) {
+      res.status(400).json({ error: "Query parameter 'content' is required" });
+      return;
+    }
+    const scope = {
+      companyId,
+      departmentId: req.query.departmentId as string | undefined,
+      layer: req.query.layer as string | undefined,
+    };
+    const results = await svc.findSimilarItems(content.trim(), scope);
+    res.json(results);
+  });
+
   router.get("/companies/:companyId/memory", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

@@ -502,14 +502,23 @@ export function heartbeatService(db: Db) {
       .where(eq(companies.id, companyId))
       .then((rows) => rows[0] ?? null);
 
-    // Determine issue's department/project for scoped memory lookup
+    // Determine issue's department/project and get title+description for semantic ranking
     let issueProjectId: string | null = null;
+    let issueText: string | null = null;
     if (issueId) {
-      issueProjectId = await db
-        .select({ projectId: issues.projectId })
+      const issueRow = await db
+        .select({
+          projectId: issues.projectId,
+          title: issues.title,
+          description: issues.description,
+        })
         .from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
-        .then((rows) => rows[0]?.projectId ?? null);
+        .then((rows) => rows[0] ?? null);
+      if (issueRow) {
+        issueProjectId = issueRow.projectId;
+        issueText = [issueRow.title, issueRow.description].filter(Boolean).join("\n");
+      }
     }
 
     // Query approved memory items:
@@ -530,6 +539,70 @@ export function heartbeatService(db: Db) {
         )
       : eq(memoryItems.category, "preference");
 
+    // Try semantic ranking when task has text and we can generate embeddings
+    if (issueText) {
+      try {
+        const { resolveApiKey: resolveKey } = await import("../adapters/api-common.js");
+        const { generateEmbedding: genEmbed } = await import("./embeddings.js");
+        const apiKey = await resolveKey(companyId, "openai");
+        const queryEmbedding = await genEmbed(issueText, apiKey);
+        const vectorStr = `[${queryEmbedding.join(",")}]`;
+
+        // Check if any items in scope have embeddings
+        const embeddedCount = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(memoryItems)
+          .where(
+            and(
+              ...conditions,
+              scopeConditions,
+              sql`${memoryItems.embedding} IS NOT NULL`,
+            ),
+          )
+          .then((rows) => Number(rows[0]?.count ?? 0));
+
+        if (embeddedCount > 0) {
+          // Fetch items ranked by semantic similarity to the task
+          const items = await db
+            .select({
+              title: memoryItems.title,
+              content: memoryItems.content,
+              category: memoryItems.category,
+              tags: memoryItems.tags,
+            })
+            .from(memoryItems)
+            .where(
+              and(
+                ...conditions,
+                scopeConditions,
+                sql`${memoryItems.embedding} IS NOT NULL`,
+              ),
+            )
+            .orderBy(
+              // preferences first (0), then others (1)
+              sql`CASE WHEN ${memoryItems.category} = 'preference' THEN 0 ELSE 1 END`,
+              sql`${memoryItems.embedding} <=> ${vectorStr}::vector`,
+            )
+            .limit(10);
+
+          return {
+            company: company
+              ? { name: company.name, description: company.description }
+              : null,
+            memory: items.map((item) => ({
+              title: item.title,
+              content: item.content,
+              category: item.category,
+              tags: item.tags ?? [],
+            })),
+          };
+        }
+      } catch {
+        // Fall through to priority + recency ranking
+      }
+    }
+
+    // Fallback: rank by priority + recency (original behavior)
     const items = await db
       .select({
         title: memoryItems.title,
