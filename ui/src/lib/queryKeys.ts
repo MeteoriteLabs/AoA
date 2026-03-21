@@ -46,6 +46,10 @@ export const queryKeys = {
       ["goals", companyId, "project", projectId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
   },
+  search: {
+    global: (companyId: string, q: string, types?: readonly string[]) =>
+      ["search", companyId, q, types?.join(",") ?? "__all__"] as const,
+  },
   approvals: {
     list: (companyId: string, status?: string) =>
       ["approvals", companyId, status] as const,
@@ -81,6 +85,7 @@ export const queryKeys = {
     list: (companyId: string) => ["memory", companyId] as const,
     detail: (companyId: string, id: string) => ["memory", companyId, id] as const,
     versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"] as const,
+    semanticSearch: (companyId: string, q: string) => ["memory", companyId, "semantic-search", q] as const,
   },
   debriefs: {
     list: (companyId: string) => ["debriefs", companyId] as const,

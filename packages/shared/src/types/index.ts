@@ -23,6 +23,7 @@ export type {
 } from "./issue.js";
 export type { Goal, GoalProjectRef } from "./goal.js";
 export type { MemoryItem } from "./memory.js";
+export type { SearchResult, SearchResultsGrouped } from "./search.js";
 export type { Debrief } from "./debrief.js";
 export type { Brief, BriefItem } from "./brief.js";
 export type { Approval, ApprovalComment } from "./approval.js";

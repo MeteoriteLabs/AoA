@@ -406,3 +406,11 @@ export const MEMORY_ITEM_VERSION_STATUSES = [
   "archived",
 ] as const;
 export type MemoryItemVersionStatus = (typeof MEMORY_ITEM_VERSION_STATUSES)[number];
+
+export const SEARCH_ENTITY_TYPES = [
+  "tasks",
+  "goals",
+  "agents",
+  "memory",
+] as const;
+export type SearchEntityType = (typeof SEARCH_ENTITY_TYPES)[number];

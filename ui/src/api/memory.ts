@@ -51,4 +51,22 @@ export const memoryApi = {
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/restore`, {}),
   touchAccessedAt: (companyId: string, id: string) =>
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/touch`, {}),
+  searchSemantic: (
+    companyId: string,
+    q: string,
+    filters?: {
+      layer?: string;
+      departmentId?: string;
+      limit?: number;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    params.set("q", q);
+    if (filters?.layer) params.set("layer", filters.layer);
+    if (filters?.departmentId) params.set("departmentId", filters.departmentId);
+    if (filters?.limit !== undefined) params.set("limit", String(filters.limit));
+    return api.get<Array<MemoryItem & { similarity: number | null }>>(
+      `/companies/${companyId}/memory/search?${params.toString()}`,
+    );
+  },
 };

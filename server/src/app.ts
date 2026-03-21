@@ -25,6 +25,7 @@ import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { memoryRoutes } from "./routes/memory.js";
+import { searchRoutes } from "./routes/search.js";
 import { debriefRoutes } from "./routes/debriefs.js";
 import { briefRoutes } from "./routes/briefs.js";
 import { dependencyRoutes } from "./routes/dependencies.js";
@@ -119,6 +120,7 @@ export async function createApp(
   api.use(dependencyRoutes(db));
   api.use(goalRoutes(db));
   api.use(memoryRoutes(db));
+  api.use(searchRoutes(db));
   api.use(debriefRoutes(db));
   api.use(briefRoutes(db));
   api.use(artifactRoutes(db));
