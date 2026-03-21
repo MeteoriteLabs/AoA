@@ -1,4 +1,4 @@
-import type { MemoryItem } from "@paperclipai/shared";
+import type { MemoryItem, MemoryItemVersion } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const memoryApi = {
@@ -10,6 +10,7 @@ export const memoryApi = {
       source?: string;
       departmentId?: string;
       projectId?: string;
+      layer?: string;
       tags?: string[];
       search?: string;
     },
@@ -20,6 +21,7 @@ export const memoryApi = {
     if (filters?.source) params.set("source", filters.source);
     if (filters?.departmentId) params.set("departmentId", filters.departmentId);
     if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.layer) params.set("layer", filters.layer);
     if (filters?.tags && filters.tags.length > 0) params.set("tags", filters.tags.join(","));
     if (filters?.search) params.set("search", filters.search);
     const qs = params.toString();
@@ -37,4 +39,16 @@ export const memoryApi = {
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/approve`, {}),
   reject: (companyId: string, id: string) =>
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/reject`, {}),
+
+  // Version management
+  getVersions: (companyId: string, id: string) =>
+    api.get<MemoryItemVersion[]>(`/companies/${companyId}/memory/${id}/versions`),
+  saveDraft: (companyId: string, id: string, content: string) =>
+    api.post<MemoryItemVersion>(`/companies/${companyId}/memory/${id}/draft`, { content }),
+  publishDraft: (companyId: string, id: string) =>
+    api.post<MemoryItemVersion>(`/companies/${companyId}/memory/${id}/publish`, {}),
+  restore: (companyId: string, id: string) =>
+    api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/restore`, {}),
+  touchAccessedAt: (companyId: string, id: string) =>
+    api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/touch`, {}),
 };
