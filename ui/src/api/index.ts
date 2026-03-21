@@ -7,6 +7,8 @@ export { agentsApi } from "./agents";
 export { projectsApi } from "./projects";
 export { issuesApi } from "./issues";
 export { goalsApi } from "./goals";
+export { memoryApi } from "./memory";
+export { searchApi } from "./search";
 export { approvalsApi } from "./approvals";
 export { costsApi } from "./costs";
 export { activityApi } from "./activity";

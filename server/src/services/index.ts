@@ -15,6 +15,7 @@ export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { accessService } from "./access.js";
 export { memoryService, type MemoryFilters, type SemanticSearchFilters, type FindSimilarScope } from "./memory.js";
+export { searchService, sanitizeSearchQuery, groupSearchResults } from "./search.js";
 export { generateEmbedding, generateEmbeddingsBatch, processEmbeddingQueue, invalidateEmbedding } from "./embeddings.js";
 export { debriefService, type DebriefFilters } from "./debriefs.js";
 export { briefService, type BriefFilters } from "./briefs.js";

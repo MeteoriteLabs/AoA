@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "@/lib/router";
 import {
   Brain,
   Plus,
@@ -146,6 +147,7 @@ export function Memory() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs, setSubtitle, setEntityColor } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
 
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
@@ -162,6 +164,11 @@ export function Memory() {
     setEntityColor("var(--entity-memory)");
     return () => { setSubtitle(null); setEntityColor(null); };
   }, [setBreadcrumbs, setSubtitle, setEntityColor]);
+
+  useEffect(() => {
+    const selectedFromUrl = searchParams.get("selected");
+    setSelectedItemId(selectedFromUrl);
+  }, [searchParams]);
 
   const filters = useMemo(() => {
     const f: Record<string, string> = {};
