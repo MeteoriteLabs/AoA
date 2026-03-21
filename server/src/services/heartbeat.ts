@@ -12,8 +12,6 @@ import {
   costEvents,
   issues,
   projectWorkspaces,
-  memoryItems,
-  companies,
   taskDependencies,
   issueAttachments,
   assets,
@@ -31,6 +29,7 @@ import { setSecretResolver } from "../adapters/api-common.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { outputDetectionService } from "./output-detection.js";
+import { memoryContextService } from "./memory-context.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -489,73 +488,9 @@ export function heartbeatService(db: Db) {
     return runtimeForRun?.sessionId ?? null;
   }
 
-  async function fetchMemoryContext(companyId: string, issueId: string | null) {
-    // Fetch company info (name/description — vision/mission added in V2)
-    const company = await db
-      .select({
-        name: companies.name,
-        description: companies.description,
-      })
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((rows) => rows[0] ?? null);
-
-    // Determine issue's department/project for scoped memory lookup
-    let issueProjectId: string | null = null;
-    if (issueId) {
-      issueProjectId = await db
-        .select({ projectId: issues.projectId })
-        .from(issues)
-        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
-        .then((rows) => rows[0]?.projectId ?? null);
-    }
-
-    // Query approved memory items:
-    // - company-wide preferences (category='preference')
-    // - department-scoped items matching the task's project/department
-    // Priority: preferences first, then department-specific, then recent
-    // Cap at 10 items
-    const conditions = [
-      eq(memoryItems.companyId, companyId),
-      eq(memoryItems.status, "approved"),
-    ];
-
-    const scopeConditions = issueProjectId
-      ? or(
-          eq(memoryItems.category, "preference"),
-          eq(memoryItems.departmentId, issueProjectId),
-          eq(memoryItems.projectId, issueProjectId),
-        )
-      : eq(memoryItems.category, "preference");
-
-    const items = await db
-      .select({
-        title: memoryItems.title,
-        content: memoryItems.content,
-        category: memoryItems.category,
-        tags: memoryItems.tags,
-      })
-      .from(memoryItems)
-      .where(and(...conditions, scopeConditions))
-      .orderBy(
-        // preferences first (0), then others (1)
-        sql`CASE WHEN ${memoryItems.category} = 'preference' THEN 0 ELSE 1 END`,
-        desc(memoryItems.updatedAt),
-      )
-      .limit(10);
-
-    return {
-      company: company
-        ? { name: company.name, description: company.description }
-        : null,
-      memory: items.map((item) => ({
-        title: item.title,
-        content: item.content,
-        category: item.category,
-        tags: item.tags ?? [],
-      })),
-    };
-  }
+  // ── Layered Memory Context Assembly (S9) ─────────────────────────────
+  const memoryCtx = memoryContextService(db);
+  const fetchMemoryContext = memoryCtx.fetchMemoryContext;
 
   /**
    * Fetch completed dependency tasks and their attachments for agent context.
@@ -1362,14 +1297,23 @@ export function heartbeatService(db: Db) {
       context.projectId = resolvedWorkspace.projectId;
     }
 
-    // Enrich context with memory items and company info for the agent
+    // Enrich context with layered memory items and company info for the agent
     try {
-      const memoryContext = await fetchMemoryContext(agent.companyId, issueId);
+      const runtimeConfig = parseObject(agent.runtimeConfig);
+      const agentContextMode = (
+        runtimeConfig.contextMode === "minimal" || runtimeConfig.contextMode === "full"
+          ? runtimeConfig.contextMode
+          : "standard"
+      ) as "minimal" | "standard" | "full";
+      const memoryContext = await fetchMemoryContext(agent.companyId, issueId, "task_context", agentContextMode);
       if (memoryContext.company) {
         context.company = memoryContext.company;
       }
       if (memoryContext.memory.length > 0) {
         context.memory = memoryContext.memory;
+      }
+      if (memoryContext.layeredContext) {
+        context.layeredMemory = memoryContext.layeredContext;
       }
     } catch (err) {
       logger.warn(
