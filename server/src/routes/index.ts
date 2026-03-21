@@ -17,3 +17,4 @@ export { debriefRoutes } from "./debriefs.js";
 export { briefRoutes } from "./briefs.js";
 export { artifactRoutes } from "./artifacts.js";
 export { outputDetectionRoutes } from "./output-detection.js";
+export { memoryFeedbackRoutes } from "./memory-feedback.js";

@@ -82,6 +82,14 @@ export function briefService(db: Db) {
       return { ...brief, items };
     },
 
+    getItemById: async (briefId: string, itemId: string) => {
+      return db
+        .select()
+        .from(briefItems)
+        .where(and(eq(briefItems.id, itemId), eq(briefItems.briefId, briefId)))
+        .then((rows) => rows[0] ?? null);
+    },
+
     updateItemStatus: async (
       companyId: string,
       briefId: string,
