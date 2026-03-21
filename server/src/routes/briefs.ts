@@ -44,6 +44,9 @@ export function briefRoutes(db: Db) {
       const { status, title, description, ...rest } = req.body;
       const edits = title || description !== undefined ? { title, description } : undefined;
 
+      // Capture original values before update for memory feedback pattern tracking
+      const originalItem = edits ? await svc.getItemById(briefId, itemId) : null;
+
       // If the full updateBriefItemSchema body is used, apply all fields
       const item = await svc.updateItemStatus(
         companyId,
@@ -68,7 +71,14 @@ export function briefRoutes(db: Db) {
         action: "brief_item.updated",
         entityType: "brief_item",
         entityId: itemId,
-        details: { briefId, status, title, description },
+        details: {
+          briefId,
+          status,
+          title,
+          description,
+          originalTitle: originalItem?.title,
+          originalDescription: originalItem?.description,
+        },
       });
 
       res.json(item);

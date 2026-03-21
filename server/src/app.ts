@@ -31,6 +31,7 @@ import { dependencyRoutes } from "./routes/dependencies.js";
 import { artifactRoutes } from "./routes/artifacts.js";
 import { outputDetectionRoutes } from "./routes/output-detection.js";
 import { transcriptionRoutes } from "./routes/transcription.js";
+import { memoryFeedbackRoutes } from "./routes/memory-feedback.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -120,6 +121,7 @@ export async function createApp(
   api.use(artifactRoutes(db));
   api.use(outputDetectionRoutes(db));
   api.use(transcriptionRoutes(db));
+  api.use(memoryFeedbackRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
   api.use(costRoutes(db));
