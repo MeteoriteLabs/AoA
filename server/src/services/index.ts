@@ -22,6 +22,7 @@ export { companyPortabilityService } from "./company-portability.js";
 export { artifactService } from "./artifacts.js";
 export { outputDetectionService } from "./output-detection.js";
 export { trustScoreService } from "./trust-scores.js";
+export { memoryFeedbackService, type MemoryFeedbackFilters } from "./memory-feedback.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
