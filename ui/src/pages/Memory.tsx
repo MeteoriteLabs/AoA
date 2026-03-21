@@ -32,6 +32,9 @@ import {
   type MemoryItemVisibility,
   type MemoryItem,
   type MemoryItemVersion,
+  type PendingMemoryArchiveReview,
+  type PendingMemoryQueue,
+  type PendingMemoryVersionReview,
   type Project,
   type Goal,
   type Issue,
@@ -192,6 +195,12 @@ export function Memory() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: pendingQueue } = useQuery({
+    queryKey: queryKeys.memory.pending(selectedCompanyId!),
+    queryFn: () => memoryApi.listPending(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
@@ -216,12 +225,36 @@ export function Memory() {
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => memoryApi.approve(selectedCompanyId!, id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(selectedCompanyId!) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(selectedCompanyId!) });
+    },
   });
 
   const rejectMutation = useMutation({
     mutationFn: (id: string) => memoryApi.reject(selectedCompanyId!, id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(selectedCompanyId!) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(selectedCompanyId!) });
+    },
+  });
+
+  const approveVersionMutation = useMutation({
+    mutationFn: ({ itemId, versionId }: { itemId: string; versionId: string }) =>
+      memoryApi.approveVersion(selectedCompanyId!, itemId, versionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(selectedCompanyId!) });
+    },
+  });
+
+  const rejectVersionMutation = useMutation({
+    mutationFn: ({ itemId, versionId }: { itemId: string; versionId: string }) =>
+      memoryApi.rejectVersion(selectedCompanyId!, itemId, versionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(selectedCompanyId!) });
+    },
   });
 
   if (!selectedCompanyId) {
@@ -237,14 +270,7 @@ export function Memory() {
   );
 
   const pendingCount = (items ?? []).filter((i) => i.status === "pending").length;
-  const agentPendingCount = (items ?? []).filter(
-    (i) => i.status === "pending" && i.source === "agent",
-  ).length;
-
-  // Items for the suggestions tab
-  const agentPendingItems = sorted.filter(
-    (i) => i.status === "pending" && i.source === "agent",
-  );
+  const agentPendingCount = pendingQueue?.totalCount ?? 0;
 
   // Items for the "all" tab (excluding agent pending if on suggestions tab)
   const allItems = activeTab === "suggestions" ? [] : sorted;
@@ -412,11 +438,13 @@ export function Memory() {
 
         <TabsContent value="suggestions" className="mt-4">
           <SuggestionQueue
-            items={agentPendingItems}
+            queue={pendingQueue}
             departments={departments}
             companyId={selectedCompanyId}
             onApprove={(id) => approveMutation.mutate(id)}
             onReject={(id) => rejectMutation.mutate(id)}
+            onApproveVersion={(itemId, versionId) => approveVersionMutation.mutate({ itemId, versionId })}
+            onRejectVersion={(itemId, versionId) => rejectVersionMutation.mutate({ itemId, versionId })}
           />
         </TabsContent>
       </Tabs>
@@ -865,7 +893,7 @@ function MemoryDetailPanel({
   const stale = isStale(item);
   const hasDraft = versions?.some((v) => v.status === "draft");
   const hasPendingAgentVersion = versions?.some(
-    (v) => v.status === "draft" && v.createdBy !== "founder",
+    (v) => v.status === "pending" && v.createdBy !== "founder",
   );
 
   return (
@@ -1099,7 +1127,11 @@ function VersionCard({
       ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
       : version.status === "draft"
         ? "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
-        : "bg-gray-100 text-gray-800 dark:bg-gray-900/40 dark:text-gray-300";
+        : version.status === "pending"
+          ? "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+          : version.status === "rejected"
+            ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300"
+            : "bg-gray-100 text-gray-800 dark:bg-gray-900/40 dark:text-gray-300";
 
   return (
     <div
@@ -1192,22 +1224,30 @@ function SimpleDiff({ oldText, newText }: { oldText: string; newText: string }) 
 // ── Suggestion Queue ───────────────────────────────────────────────────
 
 function SuggestionQueue({
-  items,
+  queue,
   departments,
   companyId,
   onApprove,
   onReject,
+  onApproveVersion,
+  onRejectVersion,
 }: {
-  items: MemoryItem[];
+  queue: PendingMemoryQueue | undefined;
   departments: Project[];
   companyId: string;
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
+  onApproveVersion: (itemId: string, versionId: string) => void;
+  onRejectVersion: (itemId: string, versionId: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
   const [editTitle, setEditTitle] = useState("");
+  const items = queue?.items ?? [];
+  const versions = queue?.versions ?? [];
+  const archives = queue?.archives ?? [];
+  const totalCount = queue?.totalCount ?? 0;
 
   const updateAndApproveMutation = useMutation({
     mutationFn: async ({ id, title, content }: { id: string; title: string; content: string }) => {
@@ -1216,11 +1256,12 @@ function SuggestionQueue({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(companyId) });
       setEditingId(null);
     },
   });
 
-  if (items.length === 0) {
+  if (totalCount === 0) {
     return (
       <EmptyState
         icon={Brain}
@@ -1234,7 +1275,7 @@ function SuggestionQueue({
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
-        {items.length} pending {items.length === 1 ? "suggestion" : "suggestions"} from agents
+        {totalCount} pending {totalCount === 1 ? "suggestion" : "suggestions"} from agents
       </p>
       {items.map((item) => {
         const dept = item.departmentId
@@ -1365,6 +1406,112 @@ function SuggestionQueue({
           </div>
         );
       })}
+      {versions.map((entry) => {
+        const dept = null;
+        return (
+          <div key={entry.version.id} className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10">
+            <div className="p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium">{entry.itemTitle}</span>
+                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300">
+                    update suggestion
+                  </Badge>
+                  {entry.itemLayer && (
+                    <Badge
+                      variant="secondary"
+                      className={cn("text-[10px] px-1.5 py-0", LAYER_COLORS[entry.itemLayer as MemoryItemLayer])}
+                    >
+                      {LAYER_LABELS[entry.itemLayer as MemoryItemLayer]}
+                    </Badge>
+                  )}
+                </div>
+                <span className="text-xs text-muted-foreground capitalize">
+                  by {entry.version.createdBy}
+                </span>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Proposed version v{entry.version.versionNumber} against current memory content.
+              </div>
+              <SimpleDiff oldText={entry.currentContent} newText={entry.version.content} />
+              <div className="flex items-center gap-2 justify-end pt-1 border-t border-blue-100 dark:border-blue-900">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/30 h-7 text-xs"
+                  onClick={() => onRejectVersion(entry.itemId, entry.version.id)}
+                >
+                  <X className="h-3.5 w-3.5 mr-1" />
+                  Reject
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => onApproveVersion(entry.itemId, entry.version.id)}
+                >
+                  <Check className="h-3.5 w-3.5 mr-1" />
+                  Approve
+                </Button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      {archives.map((entry) => (
+        <ArchiveSuggestionCard
+          key={entry.suggestion.id}
+          entry={entry}
+          departments={departments}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ArchiveSuggestionCard({
+  entry,
+  departments,
+}: {
+  entry: PendingMemoryArchiveReview;
+  departments: Project[];
+}) {
+  const dept = entry.item.departmentId
+    ? departments.find((d) => d.id === entry.item.departmentId)
+    : null;
+  const reason = typeof entry.suggestion.actionPayload?.reason === "string"
+    ? entry.suggestion.actionPayload.reason
+    : null;
+
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-800 bg-muted/20">
+      <div className="p-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium">{entry.item.title}</span>
+            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+              archive suggestion
+            </Badge>
+          </div>
+          <span className="text-xs text-muted-foreground">{formatDate(entry.suggestion.createdAt)}</span>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {entry.suggestion.title}
+        </div>
+        {reason && (
+          <div className="text-xs text-muted-foreground p-2 rounded bg-background/70 border border-border">
+            <span className="font-medium">Reason:</span> {reason}
+          </div>
+        )}
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="capitalize">{entry.item.category}</span>
+          {dept && (
+            <>
+              <span>&middot;</span>
+              <span>{dept.name}</span>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

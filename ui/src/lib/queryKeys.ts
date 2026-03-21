@@ -79,6 +79,7 @@ export const queryKeys = {
   org: (companyId: string) => ["org", companyId] as const,
   memory: {
     list: (companyId: string) => ["memory", companyId] as const,
+    pending: (companyId: string) => ["memory", companyId, "pending"] as const,
     detail: (companyId: string, id: string) => ["memory", companyId, id] as const,
     versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"] as const,
     semanticSearch: (companyId: string, q: string) => ["memory", companyId, "semantic-search", q] as const,
