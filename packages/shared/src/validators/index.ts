@@ -145,6 +145,15 @@ export {
 } from "./asset.js";
 
 export {
+  createArtifactSchema,
+  updateArtifactSchema,
+  createArtifactVersionSchema,
+  type CreateArtifact,
+  type UpdateArtifact,
+  type CreateArtifactVersion,
+} from "./artifact.js";
+
+export {
   createCompanyInviteSchema,
   acceptInviteSchema,
   listJoinRequestsQuerySchema,

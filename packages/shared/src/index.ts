@@ -291,6 +291,12 @@ export {
   type CompanyPortabilityExport,
   type CompanyPortabilityPreview,
   type CompanyPortabilityImport,
+  createArtifactSchema,
+  updateArtifactSchema,
+  createArtifactVersionSchema,
+  type CreateArtifact,
+  type UpdateArtifact,
+  type CreateArtifactVersion,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
