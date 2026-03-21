@@ -30,12 +30,14 @@ export const artifactsApi = {
   get: (id: string) =>
     api.get<ArtifactWithVersions>(`/artifacts/${id}`),
 
-  addVersion: (artifactId: string, data: CreateArtifactVersionPayload) =>
+  addVersion: (artifactId: string, data: CreateArtifactVersion) =>
     api.post<ArtifactVersion>(`/artifacts/${artifactId}/versions`, data),
 };
 ```
 
 No `list` or `create` — artifacts are accessed through tasks. Creation happens via brief pipeline or future flows.
+
+**Note:** `getByIssueId` returns `null` (not 404) when no artifact is linked. The backend `res.json(artifact)` sends a JSON `null` body. The query hook must handle `data === null` as the empty state, not as an error.
 
 ### Query Keys — `ui/src/lib/queryKeys.ts`
 
@@ -69,6 +71,10 @@ Icon: `FileBox` from lucide-react.
 4. **Version history list**: Newest first, each row shows version number, source badge, changelog excerpt, relative timestamp. Capped at 5 with "Show all" toggle.
 5. **Input Artifacts subsection** (conditional): Only rendered if upstream dependency tasks have linked artifacts. Shows artifact name, version, and links to the dependency task.
 
+### Tab Value
+
+Use `value="artifacts"` for the new tab trigger/content, consistent with existing tab values (`comments`, `subissues`, `activity`).
+
 ### Add Version Form
 
 Inline expansion below the button:
@@ -78,7 +84,9 @@ Inline expansion below the button:
   - File: standard file input
   - Text: textarea for pasting content (code, specs, markdown)
 - **Changelog**: optional single-line text input
-- Submit calls `POST /artifacts/:id/versions` with `{ source, content?, fileUrl?, changelog? }`
+- **parentVersionId**: auto-populated from `artifact.currentVersionId` (the latest version). Not exposed in UI — every new version branches from current. Sent in payload.
+- **sourceDetail**: omitted from UI for founder uploads. Sent as `null`.
+- Submit calls `POST /artifacts/:id/versions` using the existing `CreateArtifactVersion` type from `@paperclipai/shared`
 - On success: invalidate `artifacts.byIssue` query, collapse form
 - On error: show inline error message
 
@@ -86,13 +94,15 @@ Note: File upload stores the file URL. For V2 MVP, files are referenced by URL (
 
 ### Input Artifacts (Decision #71)
 
-Uses the existing `upstreamDeps` data already fetched by TaskSlideOver. For each upstream dependency task, query `GET /issues/:depId/artifacts`. If the dependency has an artifact, display it as a read-only row:
+Uses the existing `upstreamDeps` data already fetched by TaskSlideOver. For each upstream dependency task, query `GET /issues/:depId/artifacts` using React Query's `useQueries` hook (dynamic parallel queries). All dependency artifact queries fire in parallel, only when the Artifacts tab is active. Results are deduplicated by artifact ID (two deps could reference the same artifact).
+
+If the dependency has an artifact, display it as a read-only row:
 
 ```
 [TaskIdentifier] → ArtifactName  v{N}
 ```
 
-Clicking the task identifier navigates to that task's slide-over. These queries are lightweight (one per dep with artifact) and only fire when the Artifacts tab is active.
+Clicking the task identifier navigates to that task's slide-over.
 
 ### Source Badges
 
@@ -108,31 +118,29 @@ Color-coded badges matching the `ARTIFACT_VERSION_SOURCES` constant:
 | File | Change |
 |------|--------|
 | `ui/src/api/artifacts.ts` | **New** — API client (3 methods) |
+| `ui/src/api/index.ts` | Add `artifactsApi` re-export |
 | `ui/src/lib/queryKeys.ts` | Add `artifacts` key group |
+| `packages/shared/src/types/artifact.ts` | Add `ArtifactWithVersions` composite type |
 | `ui/src/components/TaskSlideOver.tsx` | Add Artifacts tab + tab content |
 
 No new component files. Tab content is inline in TaskSlideOver following the pattern of other tabs.
 
 ## Types Needed
 
-```ts
-// Composite type returned by getById / getByIssueId
-interface ArtifactWithVersions extends Artifact {
-  versions: ArtifactVersion[];
-}
+**New type** — add to `packages/shared/src/types/artifact.ts` and re-export from barrel:
 
-// Payload for addVersion
-interface CreateArtifactVersionPayload {
-  source: ArtifactVersionSource;
-  sourceDetail?: string | null;
-  changelog?: string | null;
-  parentVersionId?: string | null;
-  content?: string | null;
-  fileUrl?: string | null;
+```ts
+// Composite type returned by getById / getByIssueId service methods
+export interface ArtifactWithVersions extends Artifact {
+  versions: ArtifactVersion[];
 }
 ```
 
-These go in `packages/shared/src/types/artifact.ts`.
+**Existing type** — reuse `CreateArtifactVersion` from `@paperclipai/shared` validators (already exported). Do NOT create a duplicate payload type.
+
+### Version List
+
+All versions are returned in the `ArtifactWithVersions.versions` array (fetched in one query by the service). The "Show all" toggle at 5 items is purely client-side slicing — no pagination needed.
 
 ## Decisions Referenced
 
