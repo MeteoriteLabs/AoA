@@ -47,6 +47,10 @@ export {
   MEMORY_FEEDBACK_PATTERN_TYPES,
   MEMORY_FEEDBACK_PATTERN_STATUSES,
   MEMORY_ITEM_VERSION_STATUSES,
+  DETECTED_OUTPUT_STATUSES,
+  DETECTED_OUTPUT_SOURCES,
+  type DetectedOutputStatus,
+  type DetectedOutputSource,
   type MemoryItemCategory,
   type MemoryItemSource,
   type MemoryItemStatus,
@@ -135,6 +139,8 @@ export type {
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
+  DetectedOutput,
+  DetectedOutputForUI,
   LiveEvent,
   DashboardSummary,
   HomeSummary,
@@ -298,6 +304,10 @@ export {
   type CreateArtifact,
   type UpdateArtifact,
   type CreateArtifactVersion,
+  confirmDetectedOutputSchema,
+  type ConfirmDetectedOutput,
+  createAssetFileMetadataSchema,
+  type CreateAssetFileMetadata,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

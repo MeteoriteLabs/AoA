@@ -30,6 +30,7 @@ import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } fr
 import { setSecretResolver } from "../adapters/api-common.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { outputDetectionService } from "./output-detection.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -413,6 +414,7 @@ function resolveNextSessionState(input: {
 export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
+  const outputDetector = outputDetectionService(db);
 
   // Register the secret resolver so API adapters can resolve API keys
   setSecretResolver((companyId, name) => secretsSvc.resolveByName(companyId, name));
@@ -1656,6 +1658,39 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // ── V2: Agent output capture (Decision #67) ─────────────────────
+      // Runs AFTER the run is finalized — detection failures are non-fatal.
+      if (outcome === "succeeded" && resolvedWorkspace.cwd) {
+        try {
+          const detected = await outputDetector.detectAndCapture({
+            runId: run.id,
+            companyId: agent.companyId,
+            agentId: agent.id,
+            cwd: resolvedWorkspace.cwd,
+            startedAt: run.startedAt ?? run.createdAt,
+            adapterType: agent.adapterType,
+            adapterHints: adapterResult.outputFiles,
+            issueId: readNonEmptyString(context.issueId),
+          });
+          if (detected.length > 0) {
+            await db
+              .update(heartbeatRuns)
+              .set({
+                detectedOutputs: detected as unknown as Array<Record<string, unknown>>,
+                updatedAt: new Date(),
+              })
+              .where(eq(heartbeatRuns.id, run.id));
+            publishLiveEvent({
+              companyId: agent.companyId,
+              type: "heartbeat.run.outputs_detected",
+              payload: { runId: run.id, agentId: agent.id, count: detected.length },
+            });
+          }
+        } catch (detectErr) {
+          logger.warn({ err: detectErr, runId: run.id }, "output detection failed (non-fatal)");
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown adapter failure";
       logger.error({ err, runId }, "heartbeat execution failed");

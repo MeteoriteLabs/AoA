@@ -141,7 +141,9 @@ export {
 
 export {
   createAssetImageMetadataSchema,
+  createAssetFileMetadataSchema,
   type CreateAssetImageMetadata,
+  type CreateAssetFileMetadata,
 } from "./asset.js";
 
 export {
@@ -152,6 +154,11 @@ export {
   type UpdateArtifact,
   type CreateArtifactVersion,
 } from "./artifact.js";
+
+export {
+  confirmDetectedOutputSchema,
+  type ConfirmDetectedOutput,
+} from "./output-detection.js";
 
 export {
   createCompanyInviteSchema,

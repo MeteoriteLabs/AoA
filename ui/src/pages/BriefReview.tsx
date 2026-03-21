@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { useParams, Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
@@ -7,6 +7,7 @@ import { useToast } from "../context/ToastContext";
 import { briefsApi, type BriefWithItems, type BriefItem } from "../api/briefs";
 import { debriefsApi } from "../api/debriefs";
 import { projectsApi } from "../api/projects";
+import { outputDetectionApi, type DetectedOutputForUI } from "../api/output-detection";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +25,7 @@ import {
   XCircle,
   Loader2,
   ExternalLink,
+  FileCode,
   Link as LinkIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -358,6 +360,45 @@ export function BriefReview() {
     enabled: !!selectedCompanyId,
   });
 
+  // Detected files from agent runs (V2 output capture).
+  // Only available when the debrief originates from a task run (sourceInfo.issueId is set).
+  // Standalone debriefs without a source task won't show detected outputs.
+  const sourceIssueId = useMemo(
+    () => (debrief?.sourceInfo as Record<string, unknown> | null)?.issueId as string | undefined,
+    [debrief],
+  );
+
+  const { data: detectedOutputs } = useQuery({
+    queryKey: queryKeys.detectedOutputs.byIssue(sourceIssueId!),
+    queryFn: () => outputDetectionApi.listForIssue(sourceIssueId!),
+    enabled: !!sourceIssueId,
+  });
+
+  const pendingOutputs = useMemo(
+    () => (detectedOutputs ?? []).filter((o) => o.status === "pending"),
+    [detectedOutputs],
+  );
+
+  const confirmOutput = useMutation({
+    mutationFn: (data: {
+      runId: string;
+      index: number;
+      payload: { title?: string; type?: string; changelog?: string | null };
+    }) => outputDetectionApi.confirm(data.runId, data.index, data.payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.detectedOutputs.byIssue(sourceIssueId!) });
+      pushToast({ title: "Output confirmed as artifact" });
+    },
+  });
+
+  const dismissOutput = useMutation({
+    mutationFn: (data: { runId: string; index: number }) =>
+      outputDetectionApi.dismiss(data.runId, data.index),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.detectedOutputs.byIssue(sourceIssueId!) });
+    },
+  });
+
   const departments = useMemo(
     () => projects?.filter((p) => p.type === "department").map((d) => ({ id: d.id, name: d.name })) ?? [],
     [projects],
@@ -682,6 +723,75 @@ export function BriefReview() {
           </div>
         );
       })}
+
+      {/* V2: Detected Files from agent runs */}
+      {pendingOutputs.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+            <FileCode className="h-4 w-4" />
+            Detected Files ({pendingOutputs.length})
+          </h2>
+          <div className="space-y-2">
+            {pendingOutputs.map((output) => (
+              <div
+                key={`${output.runId}-${output.path}`}
+                className="rounded-lg border border-border p-3 space-y-2"
+              >
+                <div className="flex items-center gap-2 text-sm">
+                  <FileCode className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="font-medium truncate">{output.filename}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {output.byteSize < 1024
+                      ? `${output.byteSize} B`
+                      : output.byteSize < 1024 * 1024
+                        ? `${(output.byteSize / 1024).toFixed(1)} KB`
+                        : `${(output.byteSize / (1024 * 1024)).toFixed(1)} MB`}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground font-mono ml-auto">
+                    {output.path}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={confirmOutput.isPending}
+                    onClick={() => {
+                      confirmOutput.mutate({
+                        runId: output.runId,
+                        index: output.outputIndex,
+                        payload: {
+                          title: output.filename,
+                          type: output.artifactType ?? "other",
+                          changelog: `Agent output: ${output.filename}`,
+                        },
+                      });
+                    }}
+                  >
+                    <Check className="h-3.5 w-3.5 mr-1" />
+                    Create Artifact
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground"
+                    disabled={dismissOutput.isPending}
+                    onClick={() => {
+                      dismissOutput.mutate({
+                        runId: output.runId,
+                        index: output.outputIndex,
+                      });
+                    }}
+                  >
+                    <XCircle className="h-3.5 w-3.5 mr-1" />
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Process Brief button */}
       {!isProcessed && hasActionedItems && (

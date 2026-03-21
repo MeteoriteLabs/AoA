@@ -89,6 +89,10 @@ vi.mock("@tanstack/react-query", async () => {
       if (key.includes("artifacts")) {
         return { data: null, isLoading: false, error: null };
       }
+      // Detected outputs — return empty array
+      if (key.includes("detected-outputs")) {
+        return { data: [], isLoading: false, error: null };
+      }
       return { data: undefined, isLoading: false, error: null };
     }),
     useQueries: ({ queries }: any) =>
@@ -127,6 +131,10 @@ vi.mock("../lib/queryKeys", () => ({
     artifacts: {
       byIssue: (id: string) => ["artifacts", "issue", id],
       detail: (id: string) => ["artifacts", "detail", id],
+    },
+    detectedOutputs: {
+      byIssue: (id: string) => ["detected-outputs", "issue", id],
+      byRun: (id: string) => ["detected-outputs", "run", id],
     },
     activity: (id: string) => ["activity", id],
     auth: { session: "auth.session" },
@@ -167,6 +175,10 @@ vi.mock("../api/projects", () => ({
 
 vi.mock("../api/artifacts", () => ({
   artifactsApi: { getByIssueId: vi.fn().mockResolvedValue(null), get: vi.fn(), addVersion: vi.fn() },
+}));
+
+vi.mock("../api/output-detection", () => ({
+  outputDetectionApi: { listForIssue: vi.fn().mockResolvedValue([]), confirm: vi.fn(), dismiss: vi.fn() },
 }));
 
 vi.mock("../lib/utils", () => ({

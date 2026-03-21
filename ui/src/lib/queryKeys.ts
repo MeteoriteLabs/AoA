@@ -93,4 +93,8 @@ export const queryKeys = {
     byIssue: (issueId: string) => ["artifacts", "issue", issueId] as const,
     detail: (id: string) => ["artifacts", "detail", id] as const,
   },
+  detectedOutputs: {
+    byIssue: (issueId: string) => ["detected-outputs", "issue", issueId] as const,
+    byRun: (runId: string) => ["detected-outputs", "run", runId] as const,
+  },
 };

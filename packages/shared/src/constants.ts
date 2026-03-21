@@ -204,6 +204,7 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.status",
   "heartbeat.run.event",
   "heartbeat.run.log",
+  "heartbeat.run.outputs_detected",
   "agent.status",
   "activity.logged",
 ] as const;
@@ -388,6 +389,14 @@ export const MEMORY_FEEDBACK_PATTERN_STATUSES = [
   "dismissed",
 ] as const;
 export type MemoryFeedbackPatternStatus = (typeof MEMORY_FEEDBACK_PATTERN_STATUSES)[number];
+
+// ── V2: Detected Output Statuses ────────────────────────────────────────
+
+export const DETECTED_OUTPUT_STATUSES = ["pending", "confirmed", "dismissed"] as const;
+export type DetectedOutputStatus = (typeof DETECTED_OUTPUT_STATUSES)[number];
+
+export const DETECTED_OUTPUT_SOURCES = ["diff", "hint", "both"] as const;
+export type DetectedOutputSource = (typeof DETECTED_OUTPUT_SOURCES)[number];
 
 // ── V2: Memory Item Versions ────────────────────────────────────────────
 

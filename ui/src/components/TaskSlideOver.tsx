@@ -3,6 +3,7 @@ import { Link, useNavigate } from "@/lib/router";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { artifactsApi } from "../api/artifacts";
+import { outputDetectionApi, type DetectedOutputForUI } from "../api/output-detection";
 import { dependenciesApi } from "../api/dependencies";
 import { activityApi } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -41,11 +42,14 @@ import {
   MessageSquare,
   MoreHorizontal,
   FileBox,
+  FileCode,
   Paperclip,
   Plus,
   Search,
   Trash2,
   X,
+  Check,
+  XCircle,
 } from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import type { ActivityEvent } from "@paperclipai/shared";
@@ -271,6 +275,18 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     queryFn: () => artifactsApi.getByIssueId(issueId!),
     enabled: !!issueId && open,
   });
+
+  // Detected outputs from agent runs (V2 output capture)
+  const { data: detectedOutputs } = useQuery({
+    queryKey: queryKeys.detectedOutputs.byIssue(issueId!),
+    queryFn: () => outputDetectionApi.listForIssue(issueId!),
+    enabled: !!issueId && open,
+  });
+
+  const pendingOutputs = useMemo(
+    () => (detectedOutputs ?? []).filter((o) => o.status === "pending"),
+    [detectedOutputs],
+  );
 
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
 
@@ -566,6 +582,28 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.artifacts.byIssue(issueId!) });
       setShowAddVersion(false);
+    },
+  });
+
+  // Detected output confirm/dismiss mutations (V2)
+  const confirmOutput = useMutation({
+    mutationFn: (data: {
+      runId: string;
+      index: number;
+      payload: { artifactId?: string; title?: string; type?: string; changelog?: string | null };
+    }) => outputDetectionApi.confirm(data.runId, data.index, data.payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.detectedOutputs.byIssue(issueId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.artifacts.byIssue(issueId!) });
+      pushToast({ title: "Output confirmed as artifact" });
+    },
+  });
+
+  const dismissOutput = useMutation({
+    mutationFn: (data: { runId: string; index: number }) =>
+      outputDetectionApi.dismiss(data.runId, data.index),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.detectedOutputs.byIssue(issueId!) });
     },
   });
 
@@ -1081,11 +1119,102 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                   </TabsContent>
 
                   <TabsContent value="artifacts">
-                    {!artifact ? (
+                    {/* V2: Detected Outputs from agent runs */}
+                    {pendingOutputs.length > 0 && (
+                      <div className="mb-4 space-y-2">
+                        <h4 className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                          <FileCode className="h-3.5 w-3.5" />
+                          Detected Outputs
+                          <span className="inline-flex items-center rounded-full bg-amber-100 dark:bg-amber-900/30 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-400">
+                            {pendingOutputs.length}
+                          </span>
+                        </h4>
+                        <div className="border border-border rounded-lg divide-y divide-border">
+                          {pendingOutputs.map((output) => {
+                            return (
+                              <div key={`${output.runId}-${output.path}`} className="px-3 py-2 space-y-1.5">
+                                <div className="flex items-center gap-2 text-xs">
+                                  <FileCode className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                  <span className="font-medium truncate">{output.filename}</span>
+                                  <span className="text-muted-foreground shrink-0">
+                                    {output.byteSize < 1024
+                                      ? `${output.byteSize} B`
+                                      : output.byteSize < 1024 * 1024
+                                        ? `${(output.byteSize / 1024).toFixed(1)} KB`
+                                        : `${(output.byteSize / (1024 * 1024)).toFixed(1)} MB`}
+                                  </span>
+                                  <span
+                                    className={cn(
+                                      "inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px]",
+                                      output.source === "hint" || output.source === "both"
+                                        ? "border-blue-200 text-blue-600 dark:border-blue-800 dark:text-blue-400"
+                                        : "border-border text-muted-foreground",
+                                    )}
+                                  >
+                                    {output.source}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                                  <span className="font-mono">{output.runId.slice(0, 8)}</span>
+                                  {output.runFinishedAt && (
+                                    <span>{relativeTime(output.runFinishedAt)}</span>
+                                  )}
+                                  <span className="truncate text-muted-foreground/70">{output.path}</span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-6 text-xs px-2"
+                                    disabled={confirmOutput.isPending}
+                                    onClick={() => {
+                                      confirmOutput.mutate({
+                                        runId: output.runId,
+                                        index: output.outputIndex,
+                                        payload: artifact
+                                          ? {
+                                              artifactId: artifact.id,
+                                              changelog: `Agent output: ${output.filename}`,
+                                            }
+                                          : {
+                                              title: output.filename,
+                                              type: output.artifactType ?? "other",
+                                              changelog: `Agent output: ${output.filename}`,
+                                            },
+                                      });
+                                    }}
+                                  >
+                                    <Check className="h-3 w-3 mr-1" />
+                                    {artifact ? "Add Version" : "Create Artifact"}
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-6 text-xs px-2 text-muted-foreground"
+                                    disabled={dismissOutput.isPending}
+                                    onClick={() => {
+                                      dismissOutput.mutate({
+                                        runId: output.runId,
+                                        index: output.outputIndex,
+                                      });
+                                    }}
+                                  >
+                                    <XCircle className="h-3 w-3 mr-1" />
+                                    Dismiss
+                                  </Button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {!artifact && pendingOutputs.length === 0 ? (
                       <p className="text-sm text-muted-foreground py-4 text-center">
                         No artifact linked to this task.
                       </p>
-                    ) : (
+                    ) : artifact ? (
                       <div className="space-y-4">
                         {/* Artifact header */}
                         <div className="space-y-1">
@@ -1266,7 +1395,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                           </div>
                         )}
                       </div>
-                    )}
+                    ) : null}
                   </TabsContent>
                 </Tabs>
 
