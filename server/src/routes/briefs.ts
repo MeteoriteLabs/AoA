@@ -4,6 +4,7 @@ import { updateBriefItemSchema, approveBriefSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { briefService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertRole } from "../middleware/rbac.js";
 
 export function briefRoutes(db: Db) {
   const router = Router();
@@ -85,11 +86,12 @@ export function briefRoutes(db: Db) {
     },
   );
 
-  // POST /companies/:companyId/briefs/:id/approve — approve brief
+  // POST /companies/:companyId/briefs/:id/approve — approve brief (founder only)
   router.post("/companies/:companyId/briefs/:id/approve", validate(approveBriefSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const briefId = req.params.id as string;
     assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
     const actor = getActorInfo(req);
 
     const { dependencies } = req.body;

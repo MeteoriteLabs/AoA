@@ -29,6 +29,7 @@ import {
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertRole } from "../middleware/rbac.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
@@ -103,7 +104,10 @@ export function agentRoutes(db: Db) {
 
   async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
-    if (req.actor.type === "board") return;
+    if (req.actor.type === "board") {
+      await assertRole(db, req, targetAgent.companyId, "founder");
+      return;
+    }
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
     const actorAgent = await svc.getById(req.actor.agentId);
@@ -739,6 +743,7 @@ export function agentRoutes(db: Db) {
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
 
     if (req.actor.type === "agent") {
       assertBoard(req);
@@ -1056,6 +1061,12 @@ export function agentRoutes(db: Db) {
   router.delete("/agents/:id", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertRole(db, req, existing.companyId, "founder");
     const agent = await svc.remove(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
