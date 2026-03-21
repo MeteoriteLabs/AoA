@@ -25,4 +25,6 @@ export { memoryFeedbackService, type MemoryFeedbackFilters } from "./memory-feed
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
+export { permissionService } from "./permissions.js";
+export type { EntityType, PermissionAction } from "./permissions.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
