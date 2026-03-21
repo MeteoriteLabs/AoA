@@ -88,6 +88,9 @@ export const queryKeys = {
     global: (companyId: string, query: string, includeArchived = false) =>
       ["search", companyId, query, includeArchived ? "archived" : "default"] as const,
   },
+  suggestions: {
+    pending: (companyId: string) => ["suggestions", companyId, "pending"] as const,
+  },
   debriefs: {
     list: (companyId: string) => ["debriefs", companyId] as const,
     detail: (companyId: string, id: string) => ["debriefs", companyId, id] as const,
