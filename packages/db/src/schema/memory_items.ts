@@ -1,5 +1,6 @@
 import {
   type AnyPgColumn,
+  customType,
   pgTable,
   uuid,
   text,
@@ -14,6 +15,23 @@ import { goals } from "./goals.js";
 import { issues } from "./issues.js";
 import { artifacts } from "./artifacts.js";
 import { memoryItemVersions } from "./memory_item_versions.js";
+
+/**
+ * Custom Drizzle type for pgvector's `vector(N)` column.
+ * Stores/retrieves a number[] and maps to the SQL `vector` type.
+ */
+const vector = customType<{ data: number[]; driverData: string }>({
+  dataType() {
+    return "vector(1536)";
+  },
+  toDriver(value: number[]): string {
+    return `[${value.join(",")}]`;
+  },
+  fromDriver(value: string): number[] {
+    // pgvector returns "[0.1,0.2,...]" string
+    return JSON.parse(value);
+  },
+});
 
 export const memoryItems = pgTable(
   "memory_items",
@@ -40,6 +58,8 @@ export const memoryItems = pgTable(
     sourceContext: text("source_context"),
     accessedAt: timestamp("accessed_at", { withTimezone: true }),
     currentVersionId: uuid("current_version_id").references((): AnyPgColumn => memoryItemVersions.id, { onDelete: "set null" }),
+    // V2: Semantic retrieval — pgvector embedding (1536-dim, OpenAI text-embedding-3-small)
+    embedding: vector("embedding"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

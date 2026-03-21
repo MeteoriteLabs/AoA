@@ -15,6 +15,7 @@ import {
   issueApprovalService,
   logActivity,
   secretService,
+  trustScoreService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
@@ -32,6 +33,7 @@ export function approvalRoutes(db: Db) {
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
+  const trustScoreSvc = trustScoreService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   router.get("/companies/:companyId/approvals", async (req, res) => {
@@ -140,6 +142,13 @@ export function approvalRoutes(db: Db) {
       },
     });
 
+    // Update trust score when task-related approval is approved (agent work accepted without changes)
+    if (approval.requestedByAgentId && linkedIssueIds.length > 0) {
+      void trustScoreSvc.updateOnReview(approval.requestedByAgentId, true).catch((err) => {
+        logger.warn({ err, agentId: approval.requestedByAgentId }, "failed to update trust score on approve");
+      });
+    }
+
     if (approval.requestedByAgentId) {
       try {
         const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
@@ -221,6 +230,16 @@ export function approvalRoutes(db: Db) {
       details: { type: approval.type },
     });
 
+    // Update trust score when task-related approval is rejected (agent work not accepted)
+    if (approval.requestedByAgentId) {
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      if (linkedIssues.length > 0) {
+        void trustScoreSvc.updateOnReview(approval.requestedByAgentId, false).catch((err) => {
+          logger.warn({ err, agentId: approval.requestedByAgentId }, "failed to update trust score on reject");
+        });
+      }
+    }
+
     res.json(redactApprovalPayload(approval));
   });
 
@@ -245,6 +264,16 @@ export function approvalRoutes(db: Db) {
         entityId: approval.id,
         details: { type: approval.type },
       });
+
+      // Update trust score when revision requested (agent work not accepted as-is)
+      if (approval.requestedByAgentId) {
+        const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+        if (linkedIssues.length > 0) {
+          void trustScoreSvc.updateOnReview(approval.requestedByAgentId, false).catch((err) => {
+            logger.warn({ err, agentId: approval.requestedByAgentId }, "failed to update trust score on revision request");
+          });
+        }
+      }
 
       res.json(redactApprovalPayload(approval));
     },
