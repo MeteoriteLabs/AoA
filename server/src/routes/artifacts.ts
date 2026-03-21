@@ -134,6 +134,7 @@ export function artifactRoutes(db: Db) {
   );
 
   // MCP inbound: push artifact version from external tool (Decision #69, #70)
+  // TODO(V2-RBAC): Check role permissions; enter pending state if non-founder pushes version
   router.post(
     "/mcp/artifacts/:id/versions",
     validate(mcpArtifactVersionSchema),

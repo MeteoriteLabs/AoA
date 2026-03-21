@@ -1310,7 +1310,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                               addVersion.mutate({
                                 artifactId: artifact.id,
                                 payload: {
-                                  source: (fd.get("source") as string) as CreateArtifactVersion["source"] || "founder",
+                                  source: "founder",
                                   changelog: (fd.get("changelog") as string) || null,
                                   parentVersionId: artifact.currentVersionId,
                                   content: versionMode === "text" ? (fd.get("content") as string) || null : null,
@@ -1320,15 +1320,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                             }}
                           >
                             <div className="flex items-center gap-2">
-                              <select
-                                name="source"
-                                defaultValue="founder"
-                                className="rounded-md border border-input bg-background px-2 py-1 text-xs"
-                              >
-                                <option value="founder">Founder</option>
-                                <option value="external">External</option>
-                                <option value="teammate">Teammate</option>
-                              </select>
                               <div className="flex rounded-md border border-input text-xs overflow-hidden">
                                 <button
                                   type="button"
