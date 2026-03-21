@@ -35,3 +35,18 @@ export const updateMemoryItemSchema = createMemoryItemSchema
   .partial();
 
 export type UpdateMemoryItem = z.infer<typeof updateMemoryItemSchema>;
+
+export const suggestMemoryUpdateSchema = z.object({
+  content: z.string().min(1),
+  sourceContext: z.string().min(1),
+  agentId: z.string().min(1),
+});
+
+export type SuggestMemoryUpdate = z.infer<typeof suggestMemoryUpdateSchema>;
+
+export const suggestMemoryArchiveSchema = z.object({
+  sourceContext: z.string().min(1),
+  agentId: z.string().min(1),
+});
+
+export type SuggestMemoryArchive = z.infer<typeof suggestMemoryArchiveSchema>;

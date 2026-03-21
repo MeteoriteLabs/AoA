@@ -1,4 +1,4 @@
-import type { MemoryItem, MemoryItemVersion } from "@paperclipai/shared";
+import type { MemoryItem, MemoryItemVersion, PendingMemoryQueue, Suggestion } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const memoryApi = {
@@ -29,6 +29,8 @@ export const memoryApi = {
   },
   get: (companyId: string, id: string) =>
     api.get<MemoryItem>(`/companies/${companyId}/memory/${id}`),
+  listPending: (companyId: string) =>
+    api.get<PendingMemoryQueue>(`/companies/${companyId}/memory-pending`),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<MemoryItem>(`/companies/${companyId}/memory`, data),
   update: (companyId: string, id: string, data: Record<string, unknown>) =>
@@ -43,10 +45,25 @@ export const memoryApi = {
   // Version management
   getVersions: (companyId: string, id: string) =>
     api.get<MemoryItemVersion[]>(`/companies/${companyId}/memory/${id}/versions`),
+  suggestUpdate: (companyId: string, id: string, content: string, sourceContext: string, agentId: string) =>
+    api.post<MemoryItemVersion>(`/companies/${companyId}/memory/${id}/suggest-update`, {
+      content,
+      sourceContext,
+      agentId,
+    }),
+  suggestArchive: (companyId: string, id: string, sourceContext: string, agentId: string) =>
+    api.post<Suggestion>(`/companies/${companyId}/memory/${id}/suggest-archive`, {
+      sourceContext,
+      agentId,
+    }),
   saveDraft: (companyId: string, id: string, content: string) =>
     api.post<MemoryItemVersion>(`/companies/${companyId}/memory/${id}/draft`, { content }),
   publishDraft: (companyId: string, id: string) =>
     api.post<MemoryItemVersion>(`/companies/${companyId}/memory/${id}/publish`, {}),
+  approveVersion: (companyId: string, id: string, versionId: string) =>
+    api.post<MemoryItemVersion>(`/companies/${companyId}/memory/${id}/versions/${versionId}/approve`, {}),
+  rejectVersion: (companyId: string, id: string, versionId: string) =>
+    api.post<MemoryItemVersion>(`/companies/${companyId}/memory/${id}/versions/${versionId}/reject`, {}),
   restore: (companyId: string, id: string) =>
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/restore`, {}),
   touchAccessedAt: (companyId: string, id: string) =>

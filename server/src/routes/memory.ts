@@ -1,6 +1,11 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { createMemoryItemSchema, updateMemoryItemSchema } from "@paperclipai/shared";
+import {
+  createMemoryItemSchema,
+  suggestMemoryArchiveSchema,
+  suggestMemoryUpdateSchema,
+  updateMemoryItemSchema,
+} from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { memoryService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -59,6 +64,13 @@ export function memoryRoutes(db: Db) {
       search: req.query.search as string | undefined,
     };
     const result = await svc.list(companyId, filters);
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/memory-pending", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.listPending(companyId);
     res.json(result);
   });
 
@@ -209,6 +221,74 @@ export function memoryRoutes(db: Db) {
     res.json(item);
   });
 
+  router.post(
+    "/companies/:companyId/memory/:id/suggest-update",
+    validate(suggestMemoryUpdateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const id = req.params.id as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+      const version = await svc.suggestUpdate(
+        companyId,
+        id,
+        req.body.content,
+        req.body.sourceContext,
+        req.body.agentId,
+      );
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "memory.update_suggested",
+        entityType: "memory_item",
+        entityId: id,
+        details: {
+          versionId: version.id,
+          versionNumber: version.versionNumber,
+          agentId: req.body.agentId,
+          sourceContext: req.body.sourceContext,
+        },
+      });
+      res.status(201).json(version);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/memory/:id/suggest-archive",
+    validate(suggestMemoryArchiveSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const id = req.params.id as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+      const suggestion = await svc.suggestArchive(
+        companyId,
+        id,
+        req.body.sourceContext,
+        req.body.agentId,
+      );
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "memory.archive_suggested",
+        entityType: "memory_item",
+        entityId: id,
+        details: {
+          suggestionId: suggestion.id,
+          agentId: req.body.agentId,
+          sourceContext: req.body.sourceContext,
+        },
+      });
+      res.status(201).json(suggestion);
+    },
+  );
+
   // ── Version management ──────────────────────────────────────────────
 
   router.get("/companies/:companyId/memory/:id/versions", async (req, res) => {
@@ -273,6 +353,54 @@ export function memoryRoutes(db: Db) {
       entityType: "memory_item",
       entityId: id,
       details: { versionNumber: version.versionNumber },
+    });
+    res.json(version);
+  });
+
+  router.post("/companies/:companyId/memory/:id/versions/:versionId/approve", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    const versionId = req.params.versionId as string;
+    assertCompanyAccess(req, companyId);
+    const actor = getActorInfo(req);
+    const version = await svc.approveSuggestedVersion(companyId, id, versionId);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "memory.version_approved",
+      entityType: "memory_item",
+      entityId: id,
+      details: {
+        versionId: version.id,
+        versionNumber: version.versionNumber,
+      },
+    });
+    res.json(version);
+  });
+
+  router.post("/companies/:companyId/memory/:id/versions/:versionId/reject", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    const versionId = req.params.versionId as string;
+    assertCompanyAccess(req, companyId);
+    const actor = getActorInfo(req);
+    const version = await svc.rejectSuggestedVersion(companyId, id, versionId);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "memory.version_rejected",
+      entityType: "memory_item",
+      entityId: id,
+      details: {
+        versionId: version.id,
+        versionNumber: version.versionNumber,
+      },
     });
     res.json(version);
   });

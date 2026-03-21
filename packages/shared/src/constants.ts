@@ -402,7 +402,9 @@ export type DetectedOutputSource = (typeof DETECTED_OUTPUT_SOURCES)[number];
 
 export const MEMORY_ITEM_VERSION_STATUSES = [
   "draft",
+  "pending",
   "approved",
   "archived",
+  "rejected",
 ] as const;
 export type MemoryItemVersionStatus = (typeof MEMORY_ITEM_VERSION_STATUSES)[number];

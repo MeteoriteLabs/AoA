@@ -114,8 +114,8 @@ function buildActionGroups(data: HomeSummary): ActionGroup[] {
   if (data.pendingMemoryItems > 0) {
     suggestionItems.push({
       key: "memory-pending",
-      label: `${data.pendingMemoryItems} pending memory item${data.pendingMemoryItems === 1 ? "" : "s"}`,
-      to: "/memory?status=pending",
+      label: `${data.pendingMemoryItems} pending memory suggestion${data.pendingMemoryItems === 1 ? "" : "s"}`,
+      to: "/memory",
     });
   }
   if (data.nudges) {

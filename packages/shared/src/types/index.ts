@@ -61,6 +61,8 @@ export type {
 export type { TaskDependency } from "./task-dependency.js";
 export type { Artifact, ArtifactVersion, ArtifactWithVersions } from "./artifact.js";
 export type { MemoryItemVersion } from "./memory-version.js";
+export type { PendingMemoryVersionReview } from "./memory-version.js";
+export type { PendingMemoryArchiveReview, PendingMemoryQueue } from "./memory-pending.js";
 export type { Suggestion } from "./suggestion.js";
 export type { MemoryFeedbackPattern } from "./memory-feedback.js";
 export type { AgentTrustScore } from "./trust-score.js";
