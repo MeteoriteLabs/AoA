@@ -82,6 +82,11 @@ export const queryKeys = {
     pending: (companyId: string) => ["memory", companyId, "pending"] as const,
     detail: (companyId: string, id: string) => ["memory", companyId, id] as const,
     versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"] as const,
+    semanticSearch: (companyId: string, q: string) => ["memory", companyId, "semantic-search", q] as const,
+  },
+  search: {
+    global: (companyId: string, query: string, includeArchived = false) =>
+      ["search", companyId, query, includeArchived ? "archived" : "default"] as const,
   },
   debriefs: {
     list: (companyId: string) => ["debriefs", companyId] as const,

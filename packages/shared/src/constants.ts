@@ -290,11 +290,25 @@ export const BRIEF_STATUSES = [
 ] as const;
 export type BriefStatus = (typeof BRIEF_STATUSES)[number];
 
-export const BRIEF_ITEM_TYPES = ["decision", "task", "insight", "context"] as const;
+export const BRIEF_ITEM_TYPES = [
+  "decision",
+  "task",
+  "insight",
+  "context",
+  "reference",
+  "preference",
+] as const;
 export type BriefItemType = (typeof BRIEF_ITEM_TYPES)[number];
 
 export const BRIEF_ITEM_STATUSES = ["pending", "approved", "rejected", "edited"] as const;
 export type BriefItemStatus = (typeof BRIEF_ITEM_STATUSES)[number];
+
+export const BRIEF_DEDUP_ACTIONS = [
+  "update_existing",
+  "create_separate",
+  "replace",
+] as const;
+export type BriefDedupAction = (typeof BRIEF_DEDUP_ACTIONS)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
@@ -408,3 +422,11 @@ export const MEMORY_ITEM_VERSION_STATUSES = [
   "rejected",
 ] as const;
 export type MemoryItemVersionStatus = (typeof MEMORY_ITEM_VERSION_STATUSES)[number];
+
+export const SEARCH_ENTITY_TYPES = [
+  "tasks",
+  "goals",
+  "agents",
+  "memory",
+] as const;
+export type SearchEntityType = (typeof SEARCH_ENTITY_TYPES)[number];

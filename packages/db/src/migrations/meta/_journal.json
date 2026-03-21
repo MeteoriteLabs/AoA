@@ -260,6 +260,13 @@
       "when": 1774095104150,
       "tag": "0036_calm_big_bertha",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1774131200000,
+      "tag": "0037_brief_pipeline_updates",
+      "breakpoints": true
     }
   ]
 }

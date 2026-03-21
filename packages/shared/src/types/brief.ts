@@ -1,4 +1,10 @@
-import type { BriefStatus, BriefItemType, BriefItemStatus } from "../constants.js";
+import type {
+  BriefStatus,
+  BriefItemType,
+  BriefItemStatus,
+  MemoryItemLayer,
+  BriefDedupAction,
+} from "../constants.js";
 
 export interface Brief {
   id: string;
@@ -7,6 +13,7 @@ export interface Brief {
   status: BriefStatus;
   departmentId: string | null;
   projectId: string | null;
+  goalId: string | null;
   reviewedAt: Date | null;
   reviewedBy: string | null;
   createdAt: Date;
@@ -23,6 +30,11 @@ export interface BriefItem {
   suggestedPriority: string | null;
   suggestedDepartmentId: string | null;
   suggestedProjectId: string | null;
+  suggestedLayer: MemoryItemLayer | null;
+  layer: MemoryItemLayer | null;
+  dedupAction: BriefDedupAction | null;
+  selectedMemoryId: string | null;
+  mergedContent: string | null;
   status: BriefItemStatus;
   resultTaskId: string | null;
   resultMemoryId: string | null;

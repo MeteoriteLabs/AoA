@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "@/lib/router";
 import {
   Brain,
   Plus,
@@ -149,15 +150,18 @@ export function Memory() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs, setSubtitle, setEntityColor } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
 
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(searchParams.get("q") ?? "");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [departmentFilter, setDepartmentFilter] = useState<string>("all");
   const [layerFilter, setLayerFilter] = useState<string>("all");
   const [viewMode, setViewMode] = useState<"layer" | "flat">("layer");
-  const [activeTab, setActiveTab] = useState<string>("all");
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<string>(searchParams.get("tab") ?? "all");
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(
+    searchParams.get("item") ?? searchParams.get("selected"),
+  );
   const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
@@ -165,6 +169,15 @@ export function Memory() {
     setEntityColor("var(--entity-memory)");
     return () => { setSubtitle(null); setEntityColor(null); };
   }, [setBreadcrumbs, setSubtitle, setEntityColor]);
+
+  useEffect(() => {
+    setActiveTab(searchParams.get("tab") ?? "all");
+    setSelectedItemId(searchParams.get("item") ?? searchParams.get("selected"));
+    const searchParam = searchParams.get("q");
+    if (searchParam !== null) {
+      setSearch(searchParam);
+    }
+  }, [searchParams]);
 
   const filters = useMemo(() => {
     const f: Record<string, string> = {};

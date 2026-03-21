@@ -440,4 +440,36 @@ describe("Memory Page", () => {
       expect(screen.getByText("Select a company to view memory.")).toBeInTheDocument();
     });
   });
+
+  describe("URL Selection", () => {
+    it("opens the selected memory item from the query string", async () => {
+      mockQueryFn = (opts: any) => {
+        if (
+          opts.queryKey?.[0] === "memory" &&
+          opts.queryKey?.length === 3 &&
+          opts.queryKey?.[2] === "mem-domain"
+        ) {
+          return { data: domainItem, isLoading: false };
+        }
+        if (
+          opts.queryKey?.[0] === "memory" &&
+          opts.queryKey?.[3] === "versions"
+        ) {
+          return { data: [], isLoading: false };
+        }
+        if (opts.queryKey?.[0] === "memory") {
+          return { data: allItems, isLoading: false };
+        }
+        return { data: [], isLoading: false };
+      };
+
+      renderWithProviders(<Memory />, {
+        initialEntries: ["/memory?selected=mem-domain"],
+      });
+
+      await waitFor(() => {
+        expect(screen.getAllByText("API Standards").length).toBeGreaterThan(1);
+      });
+    });
+  });
 });

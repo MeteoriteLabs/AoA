@@ -10,6 +10,7 @@ import { validate } from "../middleware/validate.js";
 import { forbidden } from "../errors.js";
 import { memoryService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertMemoryAccess, assertMemoryApproval } from "../middleware/rbac.js";
 
 function resolveAgentRequestId(
   req: Parameters<typeof getActorInfo>[0],
@@ -73,6 +74,7 @@ export function memoryRoutes(db: Db) {
   router.get("/companies/:companyId/memory", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "read");
     const filters = {
       category: req.query.category as string | undefined,
       status: req.query.status as string | undefined,
@@ -90,6 +92,7 @@ export function memoryRoutes(db: Db) {
   router.get("/companies/:companyId/memory-pending", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "read");
     const result = await svc.listPending(companyId);
     res.json(result);
   });
@@ -98,6 +101,7 @@ export function memoryRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "read");
     const item = await svc.getById(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -109,6 +113,10 @@ export function memoryRoutes(db: Db) {
   router.post("/companies/:companyId/memory", validate(createMemoryItemSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertMemoryAccess(db, req, companyId, "create", {
+      layer: req.body.layer,
+      departmentId: req.body.departmentId,
+    });
     const actor = getActorInfo(req);
     const source = req.actor.type === "agent" ? "agent" : req.body.source;
     const item = await svc.create(companyId, {
@@ -139,6 +147,11 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
+    await assertMemoryAccess(db, req, companyId, "update", {
+      layer: existing.layer,
+      departmentId: existing.departmentId,
+      visibility: existing.visibility,
+    });
     const item = await svc.update(companyId, id, req.body);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -168,6 +181,11 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
+    await assertMemoryAccess(db, req, companyId, "delete", {
+      layer: existing.layer,
+      departmentId: existing.departmentId,
+      visibility: existing.visibility,
+    });
     const item = await svc.remove(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -197,6 +215,10 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
+    await assertMemoryApproval(db, req, companyId, {
+      layer: existing.layer,
+      departmentId: existing.departmentId,
+    });
     const item = await svc.approve(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -226,6 +248,10 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
+    await assertMemoryApproval(db, req, companyId, {
+      layer: existing.layer,
+      departmentId: existing.departmentId,
+    });
     const item = await svc.reject(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -253,6 +279,16 @@ export function memoryRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
       assertCompanyAccess(req, companyId);
+      const existing = await svc.getById(companyId, id);
+      if (!existing) {
+        res.status(404).json({ error: "Memory item not found" });
+        return;
+      }
+      await assertMemoryAccess(db, req, companyId, "create", {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+        visibility: existing.visibility,
+      });
       const actor = getActorInfo(req);
       const agentId = resolveAgentRequestId(req, req.body.agentId);
       if (!agentId) {
@@ -292,6 +328,16 @@ export function memoryRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
       assertCompanyAccess(req, companyId);
+      const existing = await svc.getById(companyId, id);
+      if (!existing) {
+        res.status(404).json({ error: "Memory item not found" });
+        return;
+      }
+      await assertMemoryAccess(db, req, companyId, "create", {
+        layer: existing.layer,
+        departmentId: existing.departmentId,
+        visibility: existing.visibility,
+      });
       const actor = getActorInfo(req);
       const agentId = resolveAgentRequestId(req, req.body.agentId);
       if (!agentId) {
@@ -395,6 +441,15 @@ export function memoryRoutes(db: Db) {
     const id = req.params.id as string;
     const versionId = req.params.versionId as string;
     assertCompanyAccess(req, companyId);
+    const existing = await svc.getById(companyId, id);
+    if (!existing) {
+      res.status(404).json({ error: "Memory item not found" });
+      return;
+    }
+    await assertMemoryApproval(db, req, companyId, {
+      layer: existing.layer,
+      departmentId: existing.departmentId,
+    });
     const actor = getActorInfo(req);
     const version = await svc.approveSuggestedVersion(companyId, id, versionId);
     await logActivity(db, {
@@ -419,6 +474,15 @@ export function memoryRoutes(db: Db) {
     const id = req.params.id as string;
     const versionId = req.params.versionId as string;
     assertCompanyAccess(req, companyId);
+    const existing = await svc.getById(companyId, id);
+    if (!existing) {
+      res.status(404).json({ error: "Memory item not found" });
+      return;
+    }
+    await assertMemoryApproval(db, req, companyId, {
+      layer: existing.layer,
+      departmentId: existing.departmentId,
+    });
     const actor = getActorInfo(req);
     const version = await svc.rejectSuggestedVersion(companyId, id, versionId);
     await logActivity(db, {
