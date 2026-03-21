@@ -269,7 +269,7 @@ export type MemoryItemLayer = (typeof MEMORY_ITEM_LAYERS)[number];
 export const MEMORY_ITEM_VISIBILITY = ["scoped", "shared"] as const;
 export type MemoryItemVisibility = (typeof MEMORY_ITEM_VISIBILITY)[number];
 
-export const DEBRIEF_INPUT_TYPES = ["paste", "write", "mcp"] as const;
+export const DEBRIEF_INPUT_TYPES = ["paste", "write", "mcp", "voice"] as const;
 export type DebriefInputType = (typeof DEBRIEF_INPUT_TYPES)[number];
 
 export const DEBRIEF_STATUSES = [
