@@ -1,6 +1,6 @@
 import { and, eq, ilike, or, sql, desc } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { memoryItems } from "@paperclipai/db";
+import { memoryItems, memoryItemVersions } from "@paperclipai/db";
 import { generateEmbedding } from "./embeddings.js";
 import { resolveApiKey } from "../adapters/api-common.js";
 import { logger } from "../middleware/logger.js";
@@ -13,6 +13,7 @@ export interface MemoryFilters {
   source?: string;
   departmentId?: string;
   projectId?: string;
+  layer?: string;
   tags?: string[];
   search?: string;
 }
@@ -48,6 +49,9 @@ export function memoryService(db: Db) {
       }
       if (filters.projectId) {
         conditions.push(eq(memoryItems.projectId, filters.projectId));
+      }
+      if (filters.layer) {
+        conditions.push(eq(memoryItems.layer, filters.layer));
       }
       if (filters.search) {
         conditions.push(
@@ -365,5 +369,158 @@ export function memoryService(db: Db) {
         .filter((item) => item.similarity > 0.6)
         .sort((a, b) => b.similarity - a.similarity);
     },
+
+    // ── Version management ──────────────────────────────────────────────
+
+    getVersionHistory: (memoryItemId: string) =>
+      db
+        .select()
+        .from(memoryItemVersions)
+        .where(eq(memoryItemVersions.memoryItemId, memoryItemId))
+        .orderBy(desc(memoryItemVersions.versionNumber)),
+
+    saveDraft: async (companyId: string, memoryItemId: string, content: string, createdBy: string) => {
+      const item = await db
+        .select()
+        .from(memoryItems)
+        .where(and(eq(memoryItems.id, memoryItemId), eq(memoryItems.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!item) return null;
+
+      // Find the latest version number
+      const latest = await db
+        .select({ versionNumber: memoryItemVersions.versionNumber })
+        .from(memoryItemVersions)
+        .where(eq(memoryItemVersions.memoryItemId, memoryItemId))
+        .orderBy(desc(memoryItemVersions.versionNumber))
+        .limit(1)
+        .then((rows) => rows[0]?.versionNumber ?? 0);
+
+      // Check for existing draft by this user
+      const existingDraft = await db
+        .select()
+        .from(memoryItemVersions)
+        .where(
+          and(
+            eq(memoryItemVersions.memoryItemId, memoryItemId),
+            eq(memoryItemVersions.status, "draft"),
+            eq(memoryItemVersions.createdBy, createdBy),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+
+      if (existingDraft) {
+        // Update existing draft
+        return db
+          .update(memoryItemVersions)
+          .set({ content })
+          .where(eq(memoryItemVersions.id, existingDraft.id))
+          .returning()
+          .then((rows) => rows[0]);
+      }
+
+      // Create new draft version
+      return db
+        .insert(memoryItemVersions)
+        .values({
+          memoryItemId,
+          versionNumber: latest + 1,
+          content,
+          status: "draft",
+          createdBy,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+    },
+
+    publishDraft: async (companyId: string, memoryItemId: string, createdBy: string) => {
+      const item = await db
+        .select()
+        .from(memoryItems)
+        .where(and(eq(memoryItems.id, memoryItemId), eq(memoryItems.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!item) return null;
+
+      // Find the draft version by this user
+      const draft = await db
+        .select()
+        .from(memoryItemVersions)
+        .where(
+          and(
+            eq(memoryItemVersions.memoryItemId, memoryItemId),
+            eq(memoryItemVersions.status, "draft"),
+            eq(memoryItemVersions.createdBy, createdBy),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (!draft) return null;
+
+      // Wrap all mutations in a transaction for consistency
+      return db.transaction(async (tx) => {
+        // Archive the current approved version if any
+        if (item.currentVersionId) {
+          await tx
+            .update(memoryItemVersions)
+            .set({ status: "archived" })
+            .where(eq(memoryItemVersions.id, item.currentVersionId));
+        }
+
+        // Publish the draft
+        const published = await tx
+          .update(memoryItemVersions)
+          .set({ status: "approved" })
+          .where(eq(memoryItemVersions.id, draft.id))
+          .returning()
+          .then((rows) => rows[0]);
+
+        // Update the memory item content and currentVersionId
+        await tx
+          .update(memoryItems)
+          .set({
+            content: draft.content,
+            currentVersionId: draft.id,
+            updatedAt: new Date(),
+          })
+          .where(eq(memoryItems.id, memoryItemId));
+
+        return published;
+      });
+    },
+
+    restore: async (companyId: string, id: string) => {
+      const item = await db
+        .select()
+        .from(memoryItems)
+        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!item || item.status !== "archived") return null;
+
+      return db
+        .update(memoryItems)
+        .set({ status: "approved", updatedAt: new Date() })
+        .where(eq(memoryItems.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    },
+
+    listPending: (companyId: string) =>
+      db
+        .select()
+        .from(memoryItems)
+        .where(
+          and(
+            eq(memoryItems.companyId, companyId),
+            eq(memoryItems.status, "pending"),
+            eq(memoryItems.source, "agent"),
+          ),
+        ),
+
+    touchAccessedAt: (companyId: string, id: string) =>
+      db
+        .update(memoryItems)
+        .set({ accessedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
+        .returning()
+        .then((rows) => rows[0] ?? null),
   };
 }

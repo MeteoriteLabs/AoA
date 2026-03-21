@@ -16,6 +16,7 @@ import {
   companies,
   taskDependencies,
   issueAttachments,
+  issueComments,
   assets,
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
@@ -31,6 +32,7 @@ import { setSecretResolver } from "../adapters/api-common.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { outputDetectionService } from "./output-detection.js";
+import { formatRunSummary } from "./run-summary.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -1173,6 +1175,54 @@ export function heartbeatService(db: Db) {
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  // ── V2: Run summary comments (Decision #88) ─────────────────────
+  async function createRunSummaryComment(input: {
+    agent: typeof agents.$inferSelect;
+    run: typeof heartbeatRuns.$inferSelect;
+    outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+    adapterResult: AdapterExecutionResult;
+    issueId: string | null;
+    detectedFiles: Array<{ path: string; type?: string }>;
+  }) {
+    const { agent, run, outcome, adapterResult, issueId, detectedFiles } = input;
+    if (!issueId) return;
+
+    // Check opt-out
+    const runtimeConfig = parseObject(agent.runtimeConfig);
+    if (runtimeConfig.autoRunSummary === false) return;
+
+    const startedAt = run.startedAt ?? run.createdAt;
+    const finishedAt = run.finishedAt ?? new Date();
+    const durationMs = finishedAt.getTime() - startedAt.getTime();
+
+    const body = formatRunSummary({
+      agentName: agent.name,
+      outcome,
+      durationMs,
+      inputTokens: adapterResult.usage?.inputTokens ?? null,
+      outputTokens: adapterResult.usage?.outputTokens ?? null,
+      costUsd: adapterResult.costUsd ?? null,
+      errorMessage: adapterResult.errorMessage ?? null,
+      detectedFiles,
+    });
+
+    try {
+      await db.insert(issueComments).values({
+        companyId: agent.companyId,
+        issueId,
+        authorAgentId: null,
+        authorUserId: null,
+        body,
+      });
+      await db
+        .update(issues)
+        .set({ updatedAt: new Date() })
+        .where(eq(issues.id, issueId));
+    } catch (err) {
+      logger.warn({ err, runId: run.id, issueId }, "run summary comment creation failed (non-fatal)");
+    }
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
@@ -1734,6 +1784,7 @@ export function heartbeatService(db: Db) {
 
       // ── V2: Agent output capture (Decision #67) ─────────────────────
       // Runs AFTER the run is finalized — detection failures are non-fatal.
+      let detectedFiles: Array<{ path: string; type?: string }> = [];
       if (outcome === "succeeded" && resolvedWorkspace.cwd) {
         try {
           const detected = await outputDetector.detectAndCapture({
@@ -1747,6 +1798,10 @@ export function heartbeatService(db: Db) {
             issueId: readNonEmptyString(context.issueId),
           });
           if (detected.length > 0) {
+            detectedFiles = detected.map((d) => ({
+              path: d.path,
+              type: d.artifactType ?? undefined,
+            }));
             await db
               .update(heartbeatRuns)
               .set({
@@ -1763,6 +1818,18 @@ export function heartbeatService(db: Db) {
         } catch (detectErr) {
           logger.warn({ err: detectErr, runId: run.id }, "output detection failed (non-fatal)");
         }
+      }
+
+      // ── V2: Run summary comments (Decision #88) ─────────────────────
+      if (finalizedRun) {
+        await createRunSummaryComment({
+          agent,
+          run: finalizedRun,
+          outcome,
+          adapterResult,
+          issueId: readNonEmptyString(context.issueId),
+          detectedFiles,
+        });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown adapter failure";
@@ -1825,6 +1892,23 @@ export function heartbeatService(db: Db) {
       }
 
       await finalizeAgentStatus(agent.id, "failed");
+
+      // ── V2: Run summary comments for crash path (Decision #88) ──────
+      if (failedRun) {
+        await createRunSummaryComment({
+          agent,
+          run: failedRun,
+          outcome: "failed",
+          adapterResult: {
+            exitCode: null,
+            signal: null,
+            timedOut: false,
+            errorMessage: message,
+          },
+          issueId: readNonEmptyString(context.issueId),
+          detectedFiles: [],
+        });
+      }
     } finally {
       await startNextQueuedRunForAgent(agent.id);
     }
