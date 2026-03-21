@@ -36,7 +36,8 @@ import {
   agentService,
   deduplicateAgentName,
   logActivity,
-  notifyHireApproved
+  notifyHireApproved,
+  teamService,
 } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
 import {
@@ -1508,6 +1509,7 @@ export function accessRoutes(
 ) {
   const router = Router();
   const access = accessService(db);
+  const team = teamService(db);
   const agents = agentService(db);
 
   async function assertInstanceAdmin(req: Request) {
@@ -2318,6 +2320,12 @@ export function accessRoutes(
           "user",
           existing.requestingUserId,
           grants,
+          req.actor.userId ?? null
+        );
+        await team.applyInviteRole(
+          companyId,
+          existing.requestingUserId,
+          invite.defaultsPayload as Record<string, unknown> | null,
           req.actor.userId ?? null
         );
       } else {

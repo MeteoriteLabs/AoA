@@ -23,7 +23,7 @@ import { Inbox } from "./pages/Inbox";
 import { SettingsPage } from "./pages/SettingsPage";
 import { VisionMission } from "./pages/VisionMission";
 import { DesignGuide } from "./pages/DesignGuide";
-import { OrgChart } from "./pages/OrgChart";
+import { Team } from "./pages/Team";
 import { Briefs } from "./pages/Briefs";
 import { ActiveAgents } from "./pages/ActiveAgents";
 import { BriefReview } from "./pages/BriefReview";
@@ -101,7 +101,7 @@ function boardRoutes() {
       <Route path="vision" element={<VisionMission />} />
       <Route path="settings" element={<SettingsPage />} />
       <Route path="company/settings" element={<Navigate to="../settings" replace />} />
-      <Route path="org" element={<OrgChart />} />
+      <Route path="org" element={<Team />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />

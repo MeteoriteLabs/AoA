@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildJoinDefaultsPayloadForAccept } from "../routes/access.js";
+import { buildJoinDefaultsPayloadForAccept } from "../routes/access-helpers.js";
 
 describe("buildJoinDefaultsPayloadForAccept", () => {
   it("maps OpenClaw compatibility fields into agent defaults", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasAgentShortnameCollision, deduplicateAgentName } from "../services/agents.ts";
+import { hasAgentShortnameCollision, deduplicateAgentName } from "../services/agent-shortnames.ts";
 
 describe("hasAgentShortnameCollision", () => {
   it("detects collisions by normalized shortname", () => {

@@ -14,6 +14,7 @@ import {
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
+import { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 
 function hashToken(token: string) {
@@ -49,12 +50,6 @@ interface RevisionMetadata {
 
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
-}
-
-interface AgentShortnameRow {
-  id: string;
-  name: string;
-  status: string;
 }
 
 interface AgentShortnameCollisionOptions {
@@ -150,36 +145,7 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   };
 }
 
-export function hasAgentShortnameCollision(
-  candidateName: string,
-  existingAgents: AgentShortnameRow[],
-  options?: AgentShortnameCollisionOptions,
-): boolean {
-  const candidateShortname = normalizeAgentUrlKey(candidateName);
-  if (!candidateShortname) return false;
-
-  return existingAgents.some((agent) => {
-    if (agent.status === "terminated") return false;
-    if (options?.excludeAgentId && agent.id === options.excludeAgentId) return false;
-    return normalizeAgentUrlKey(agent.name) === candidateShortname;
-  });
-}
-
-export function deduplicateAgentName(
-  candidateName: string,
-  existingAgents: AgentShortnameRow[],
-): string {
-  if (!hasAgentShortnameCollision(candidateName, existingAgents)) {
-    return candidateName;
-  }
-  for (let i = 2; i <= 100; i++) {
-    const suffixed = `${candidateName} ${i}`;
-    if (!hasAgentShortnameCollision(suffixed, existingAgents)) {
-      return suffixed;
-    }
-  }
-  return `${candidateName} ${Date.now()}`;
-}
+export { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
 
 export function agentService(db: Db) {
   function withUrlKey<T extends { id: string; name: string }>(row: T) {

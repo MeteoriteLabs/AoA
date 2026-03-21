@@ -66,6 +66,13 @@ export type { MemoryFeedbackPattern } from "./memory-feedback.js";
 export type { AgentTrustScore } from "./trust-score.js";
 export type { UserRoleAssignment } from "./user-role.js";
 export type {
+  TeamPermissionSummary,
+  TeamCurrentUserSummary,
+  TeamMemberSummary,
+  TeamInviteSummary,
+  TeamSummary,
+} from "./team.js";
+export type {
   CompanyPortabilityInclude,
   CompanyPortabilitySecretRequirement,
   CompanyPortabilityCompanyManifestEntry,

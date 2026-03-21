@@ -35,6 +35,7 @@ import { transcriptionRoutes } from "./routes/transcription.js";
 import { memoryFeedbackRoutes } from "./routes/memory-feedback.js";
 import { memoryLifecycleRoutes } from "./routes/memory-lifecycle.js";
 import { contextPackagingRoutes } from "./routes/context-packaging.js";
+import { teamRoutes } from "./routes/team.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -128,6 +129,7 @@ export async function createApp(
   api.use(memoryFeedbackRoutes(db));
   api.use(memoryLifecycleRoutes(db));
   api.use(contextPackagingRoutes(db));
+  api.use(teamRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
   api.use(costRoutes(db));

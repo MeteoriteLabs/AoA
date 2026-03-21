@@ -63,6 +63,17 @@ vi.mock("../context/ToastContext", () => ({
   useToast: () => ({ pushToast: vi.fn() }),
 }));
 
+vi.mock("../hooks/useTeamAccess", () => ({
+  useTeamAccess: () => ({
+    permissions: {
+      canAssignTasks: true,
+      canInviteUsers: true,
+      canManageRoles: true,
+      canEditIdentityMemory: true,
+    },
+  }),
+}));
+
 vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
   return {
