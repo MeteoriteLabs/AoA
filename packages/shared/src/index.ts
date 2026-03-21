@@ -119,6 +119,7 @@ export type {
   MemoryItem,
   Artifact,
   ArtifactVersion,
+  ArtifactWithVersions,
   MemoryItemVersion,
   Suggestion,
   MemoryFeedbackPattern,

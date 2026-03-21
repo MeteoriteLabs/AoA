@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import { artifactsApi } from "../api/artifacts";
 import { dependenciesApi } from "../api/dependencies";
 import { activityApi } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -39,6 +40,7 @@ import {
   ListTree,
   MessageSquare,
   MoreHorizontal,
+  FileBox,
   Paperclip,
   Plus,
   Search,
@@ -47,7 +49,7 @@ import {
 } from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import type { ActivityEvent } from "@paperclipai/shared";
-import type { Agent, IssueAttachment } from "@paperclipai/shared";
+import type { Agent, IssueAttachment, ArtifactWithVersions, CreateArtifactVersion } from "@paperclipai/shared";
 
 /* ── Helpers (shared with IssueDetail) ── */
 
@@ -152,6 +154,29 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
   return <Identity name={id || "Unknown"} size="sm" />;
 }
 
+/* ── Artifact helpers ── */
+
+const SOURCE_BADGE_COLORS: Record<string, string> = {
+  agent: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
+  founder: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+  mcp: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
+  teammate: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+  external: "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-400",
+};
+
+function SourceBadge({ source }: { source: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+        SOURCE_BADGE_COLORS[source] ?? SOURCE_BADGE_COLORS.external,
+      )}
+    >
+      {source}
+    </span>
+  );
+}
+
 /* ── Props ── */
 
 interface TaskSlideOverProps {
@@ -176,6 +201,9 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
   const [depPickerOpen, setDepPickerOpen] = useState(false);
   const [depSearch, setDepSearch] = useState("");
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [showAddVersion, setShowAddVersion] = useState(false);
+  const [versionMode, setVersionMode] = useState<"text" | "file">("text");
+  const [showAllVersions, setShowAllVersions] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   /* ── Data fetching ── */
@@ -235,6 +263,13 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     queryKey: queryKeys.issues.dependencies(issueId!),
     queryFn: () => dependenciesApi.list(selectedCompanyId!, issueId!),
     enabled: !!issueId && !!selectedCompanyId && open,
+  });
+
+  // Artifact linked to this task
+  const { data: artifact } = useQuery({
+    queryKey: queryKeys.artifacts.byIssue(issueId!),
+    queryFn: () => artifactsApi.getByIssueId(issueId!),
+    enabled: !!issueId && open,
   });
 
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
@@ -525,6 +560,15 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     },
   });
 
+  const addVersion = useMutation({
+    mutationFn: (data: { artifactId: string; payload: CreateArtifactVersion }) =>
+      artifactsApi.addVersion(data.artifactId, data.payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.artifacts.byIssue(issueId!) });
+      setShowAddVersion(false);
+    },
+  });
+
   /* ── Derived data ── */
 
   const upstreamDeps = deps?.upstream ?? [];
@@ -549,6 +593,29 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
       .slice(0, 20);
   }, [allIssues, issue, upstreamDeps, downstreamDeps, depSearch]);
 
+  // Input artifacts from upstream dependency tasks (Decision #71)
+  const depArtifactQueries = useQueries({
+    queries: upstreamDeps.map((dep) => ({
+      queryKey: queryKeys.artifacts.byIssue(dep.dependencyIssueId!),
+      queryFn: () => artifactsApi.getByIssueId(dep.dependencyIssueId!),
+      enabled: !!dep.dependencyIssueId && detailTab === "artifacts",
+    })),
+  });
+
+  // Deduplicate input artifacts by artifact ID
+  const inputArtifacts = useMemo(() => {
+    const seen = new Set<string>();
+    const results: Array<{ dep: (typeof upstreamDeps)[number]; artifact: ArtifactWithVersions }> = [];
+    depArtifactQueries.forEach((q, i) => {
+      const a = q.data;
+      if (a && !seen.has(a.id)) {
+        seen.add(a.id);
+        results.push({ dep: upstreamDeps[i], artifact: a });
+      }
+    });
+    return results;
+  }, [depArtifactQueries, upstreamDeps]);
+
   /* ── Side effects ── */
 
   // Reset tab when issue changes
@@ -556,6 +623,8 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     if (issueId) {
       setDetailTab("comments");
       setSecondaryOpen({ approvals: false, cost: false });
+      setShowAddVersion(false);
+      setShowAllVersions(false);
     }
   }, [issueId]);
 
@@ -929,6 +998,10 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                       <ActivityIcon className="h-3.5 w-3.5" />
                       Activity
                     </TabsTrigger>
+                    <TabsTrigger value="artifacts" className="gap-1.5">
+                      <FileBox className="h-3.5 w-3.5" />
+                      Artifacts
+                    </TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="comments">
@@ -1003,6 +1076,195 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                             <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
                           </div>
                         ))}
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="artifacts">
+                    {!artifact ? (
+                      <p className="text-sm text-muted-foreground py-4 text-center">
+                        No artifact linked to this task.
+                      </p>
+                    ) : (
+                      <div className="space-y-4">
+                        {/* Artifact header */}
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-sm">{artifact.title}</span>
+                            {artifact.versions.length > 0 && (
+                              <span className="text-xs font-mono text-muted-foreground">
+                                v{artifact.versions[0].versionNumber}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
+                              {artifact.type}
+                            </span>
+                            <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
+                              {artifact.status}
+                            </span>
+                            {artifact.versions.length > 0 && (
+                              <SourceBadge source={artifact.versions[0].source} />
+                            )}
+                          </div>
+                          {artifact.versions[0]?.changelog && (
+                            <p className="text-xs text-muted-foreground italic">
+                              &ldquo;{artifact.versions[0].changelog}&rdquo;
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Add Version */}
+                        {!showAddVersion ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setShowAddVersion(true)}
+                          >
+                            <Plus className="h-3.5 w-3.5 mr-1.5" />
+                            Add Version
+                          </Button>
+                        ) : (
+                          <form
+                            className="space-y-3 rounded-lg border border-border p-3"
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              const form = e.currentTarget;
+                              const fd = new FormData(form);
+                              addVersion.mutate({
+                                artifactId: artifact.id,
+                                payload: {
+                                  source: (fd.get("source") as string) as CreateArtifactVersion["source"] || "founder",
+                                  changelog: (fd.get("changelog") as string) || null,
+                                  parentVersionId: artifact.currentVersionId,
+                                  content: versionMode === "text" ? (fd.get("content") as string) || null : null,
+                                  fileUrl: versionMode === "file" ? (fd.get("fileUrl") as string) || null : null,
+                                },
+                              });
+                            }}
+                          >
+                            <div className="flex items-center gap-2">
+                              <select
+                                name="source"
+                                defaultValue="founder"
+                                className="rounded-md border border-input bg-background px-2 py-1 text-xs"
+                              >
+                                <option value="founder">Founder</option>
+                                <option value="external">External</option>
+                                <option value="teammate">Teammate</option>
+                              </select>
+                              <div className="flex rounded-md border border-input text-xs overflow-hidden">
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    "px-2 py-1 transition-colors",
+                                    versionMode === "text" ? "bg-accent text-accent-foreground" : "bg-background",
+                                  )}
+                                  onClick={() => setVersionMode("text")}
+                                >
+                                  Text
+                                </button>
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    "px-2 py-1 transition-colors",
+                                    versionMode === "file" ? "bg-accent text-accent-foreground" : "bg-background",
+                                  )}
+                                  onClick={() => setVersionMode("file")}
+                                >
+                                  File
+                                </button>
+                              </div>
+                            </div>
+                            {versionMode === "text" ? (
+                              <textarea
+                                name="content"
+                                rows={4}
+                                placeholder="Paste content..."
+                                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                              />
+                            ) : (
+                              <Input name="fileUrl" placeholder="File URL..." />
+                            )}
+                            <Input name="changelog" placeholder="Changelog (optional)" />
+                            <div className="flex items-center gap-2">
+                              <Button type="submit" size="sm" disabled={addVersion.isPending}>
+                                {addVersion.isPending ? "Saving..." : "Save Version"}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setShowAddVersion(false)}
+                              >
+                                Cancel
+                              </Button>
+                              {addVersion.isError && (
+                                <span className="text-xs text-destructive">Failed to save version.</span>
+                              )}
+                            </div>
+                          </form>
+                        )}
+
+                        {/* Version History */}
+                        {artifact.versions.length > 0 && (
+                          <div className="space-y-1">
+                            <h4 className="text-xs font-medium text-muted-foreground">Version History</h4>
+                            <div className="border border-border rounded-lg divide-y divide-border">
+                              {(showAllVersions ? artifact.versions : artifact.versions.slice(0, 5)).map((v) => (
+                                <div key={v.id} className="flex items-center justify-between px-3 py-2 text-xs">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span className="font-mono font-medium shrink-0">v{v.versionNumber}</span>
+                                    <SourceBadge source={v.source} />
+                                    {v.changelog && (
+                                      <span className="text-muted-foreground truncate">{v.changelog}</span>
+                                    )}
+                                  </div>
+                                  <span className="text-muted-foreground shrink-0 ml-2">
+                                    {relativeTime(v.createdAt)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                            {artifact.versions.length > 5 && !showAllVersions && (
+                              <button
+                                type="button"
+                                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                                onClick={() => setShowAllVersions(true)}
+                              >
+                                Show all {artifact.versions.length} versions
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Input Artifacts (Decision #71) */}
+                        {inputArtifacts.length > 0 && (
+                          <div className="space-y-1">
+                            <h4 className="text-xs font-medium text-muted-foreground">Input Artifacts</h4>
+                            <div className="border border-border rounded-lg divide-y divide-border">
+                              {inputArtifacts.map(({ dep, artifact: depArtifact }) => (
+                                <Link
+                                  key={depArtifact.id}
+                                  to={`/issues/${dep.identifier ?? dep.dependencyIssueId}`}
+                                  className="flex items-center gap-2 px-3 py-2 text-xs hover:bg-accent/20 transition-colors"
+                                >
+                                  <span className="font-mono text-muted-foreground shrink-0">
+                                    {dep.identifier ?? dep.dependencyIssueId?.slice(0, 8)}
+                                  </span>
+                                  <span className="text-muted-foreground">&rarr;</span>
+                                  <span className="truncate font-medium">{depArtifact.title}</span>
+                                  {depArtifact.versions.length > 0 && (
+                                    <span className="font-mono text-muted-foreground shrink-0">
+                                      v{depArtifact.versions[0].versionNumber}
+                                    </span>
+                                  )}
+                                </Link>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </TabsContent>

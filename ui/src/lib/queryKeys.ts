@@ -89,4 +89,8 @@ export const queryKeys = {
     list: (companyId: string) => ["briefs", companyId] as const,
     detail: (companyId: string, id: string) => ["briefs", companyId, id] as const,
   },
+  artifacts: {
+    byIssue: (issueId: string) => ["artifacts", "issue", issueId] as const,
+    detail: (id: string) => ["artifacts", "detail", id] as const,
+  },
 };
