@@ -7,8 +7,28 @@ import {
   updateMemoryItemSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
+import { forbidden } from "../errors.js";
 import { memoryService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+
+function resolveAgentRequestId(
+  req: Parameters<typeof getActorInfo>[0],
+  requestedAgentId?: string,
+) {
+  if (req.actor.type !== "agent") {
+    return requestedAgentId ?? null;
+  }
+
+  const authenticatedAgentId = req.actor.agentId ?? null;
+  if (!authenticatedAgentId) {
+    throw forbidden("Authenticated agent is missing an agentId");
+  }
+  if (requestedAgentId && requestedAgentId !== authenticatedAgentId) {
+    throw forbidden("Agents may only submit suggestions for themselves");
+  }
+
+  return authenticatedAgentId;
+}
 
 export function memoryRoutes(db: Db) {
   const router = Router();
@@ -90,7 +110,12 @@ export function memoryRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const actor = getActorInfo(req);
-    const item = await svc.create(companyId, { ...req.body, createdBy: actor.actorId });
+    const source = req.actor.type === "agent" ? "agent" : req.body.source;
+    const item = await svc.create(companyId, {
+      ...req.body,
+      source,
+      createdBy: actor.actorId,
+    });
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -229,12 +254,16 @@ export function memoryRoutes(db: Db) {
       const id = req.params.id as string;
       assertCompanyAccess(req, companyId);
       const actor = getActorInfo(req);
+      const agentId = resolveAgentRequestId(req, req.body.agentId);
+      if (!agentId) {
+        throw forbidden("agentId is required");
+      }
       const version = await svc.suggestUpdate(
         companyId,
         id,
         req.body.content,
         req.body.sourceContext,
-        req.body.agentId,
+        agentId,
       );
       await logActivity(db, {
         companyId,
@@ -248,7 +277,7 @@ export function memoryRoutes(db: Db) {
         details: {
           versionId: version.id,
           versionNumber: version.versionNumber,
-          agentId: req.body.agentId,
+          agentId,
           sourceContext: req.body.sourceContext,
         },
       });
@@ -264,11 +293,15 @@ export function memoryRoutes(db: Db) {
       const id = req.params.id as string;
       assertCompanyAccess(req, companyId);
       const actor = getActorInfo(req);
+      const agentId = resolveAgentRequestId(req, req.body.agentId);
+      if (!agentId) {
+        throw forbidden("agentId is required");
+      }
       const suggestion = await svc.suggestArchive(
         companyId,
         id,
         req.body.sourceContext,
-        req.body.agentId,
+        agentId,
       );
       await logActivity(db, {
         companyId,
@@ -281,7 +314,7 @@ export function memoryRoutes(db: Db) {
         entityId: id,
         details: {
           suggestionId: suggestion.id,
-          agentId: req.body.agentId,
+          agentId,
           sourceContext: req.body.sourceContext,
         },
       });
