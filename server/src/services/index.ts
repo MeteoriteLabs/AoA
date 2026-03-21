@@ -28,5 +28,7 @@ export { memoryLifecycleService } from "./memory-lifecycle.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
+export { permissionService } from "./permissions.js";
+export type { EntityType, PermissionAction } from "./permissions.js";
 export { contextPackagingService } from "./context-packaging.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";

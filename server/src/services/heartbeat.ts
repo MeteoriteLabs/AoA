@@ -605,6 +605,7 @@ export function heartbeatService(db: Db) {
     // Fallback: rank by priority + recency (original behavior)
     const items = await db
       .select({
+        id: memoryItems.id,
         title: memoryItems.title,
         content: memoryItems.content,
         category: memoryItems.category,
@@ -618,6 +619,18 @@ export function heartbeatService(db: Db) {
         desc(memoryItems.updatedAt),
       )
       .limit(10);
+
+    // Batch update accessedAt for all served items (after assembly, not per-item)
+    const servedIds = items.map((item) => item.id);
+    if (servedIds.length > 0) {
+      db.update(memoryItems)
+        .set({ accessedAt: new Date() })
+        .where(inArray(memoryItems.id, servedIds))
+        .execute()
+        .catch((err) => {
+          logger.warn({ err, servedIds }, "Failed to update accessedAt for served memory items");
+        });
+    }
 
     return {
       company: company
