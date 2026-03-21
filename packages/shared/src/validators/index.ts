@@ -158,6 +158,13 @@ export {
 } from "./artifact.js";
 
 export {
+  createMcpApiKeySchema,
+  updateMcpSettingsSchema,
+  type CreateMcpApiKey,
+  type UpdateMcpSettings,
+} from "./mcp.js";
+
+export {
   confirmDetectedOutputSchema,
   type ConfirmDetectedOutput,
 } from "./output-detection.js";

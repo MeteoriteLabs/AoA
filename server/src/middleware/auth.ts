@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, companyMemberships, instanceUserRoles, mcpApiKeys } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -86,6 +86,32 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .from(agentApiKeys)
       .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
       .then((rows) => rows[0] ?? null);
+
+    const mcpKey = key
+      ? null
+      : await db
+          .select()
+          .from(mcpApiKeys)
+          .where(and(eq(mcpApiKeys.keyHash, tokenHash), isNull(mcpApiKeys.revokedAt)))
+          .then((rows) => rows[0] ?? null);
+
+    if (mcpKey) {
+      await db
+        .update(mcpApiKeys)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(mcpApiKeys.id, mcpKey.id));
+
+      req.actor = {
+        type: "mcp",
+        userId: mcpKey.userId,
+        companyId: mcpKey.companyId,
+        keyId: mcpKey.id,
+        runId: runIdHeader || undefined,
+        source: "mcp_key",
+      };
+      next();
+      return;
+    }
 
     if (!key) {
       const claims = verifyLocalAgentJwt(token);

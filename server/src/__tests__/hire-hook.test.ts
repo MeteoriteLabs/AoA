@@ -1,5 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
+
+vi.mock("@paperclipai/db", () => {
+  const makeTable = () =>
+    new Proxy({}, { get: (_target, prop) => (prop === "$inferSelect" || prop === "$inferInsert" ? {} : Symbol(String(prop))) });
+  return { agents: makeTable() };
+});
+
+vi.mock("drizzle-orm", () => ({
+  and: (..._args: unknown[]) => "and",
+  eq: (..._args: unknown[]) => "eq",
+}));
+
 import { notifyHireApproved } from "../services/hire-hook.js";
 
 // Mock the registry so we control whether the adapter has onHireApproved and what it does.

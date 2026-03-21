@@ -690,7 +690,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     if (
       shouldWakeAssigneeOnCheckout({
-        actorType: req.actor.type,
+        actorType: req.actor.type === "mcp" ? "board" : req.actor.type,
         actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
         checkoutAgentId: req.body.agentId,
         checkoutRunId,

@@ -1,4 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@paperclipai/db", () => {
+  const makeTable = () =>
+    new Proxy({}, { get: (_target, prop) => (prop === "$inferSelect" || prop === "$inferInsert" ? {} : Symbol(String(prop))) });
+  return { agentApiKeys: makeTable(), authUsers: makeTable(), invites: makeTable(), joinRequests: makeTable() };
+});
+
+vi.mock("drizzle-orm", () => ({
+  and: (..._args: unknown[]) => "and",
+  desc: (..._args: unknown[]) => "desc",
+  eq: (..._args: unknown[]) => "eq",
+  isNull: (..._args: unknown[]) => "isNull",
+}));
+
+vi.mock("../services/index.js", () => ({
+  accessService: () => ({}),
+  agentService: () => ({}),
+  deduplicateAgentName: vi.fn(),
+  logActivity: vi.fn(),
+  notifyHireApproved: vi.fn(),
+}));
+
 import { resolveJoinRequestAgentManagerId } from "../routes/access.js";
 
 describe("resolveJoinRequestAgentManagerId", () => {

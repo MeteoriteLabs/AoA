@@ -65,6 +65,7 @@ export type { Suggestion } from "./suggestion.js";
 export type { MemoryFeedbackPattern } from "./memory-feedback.js";
 export type { AgentTrustScore } from "./trust-score.js";
 export type { UserRoleAssignment } from "./user-role.js";
+export type { McpApiKey, McpApiKeyCreated, McpClientConnection, McpStatus } from "./mcp.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilitySecretRequirement,
