@@ -1,39 +1,289 @@
-import { and, eq, or, isNull, lte } from "drizzle-orm";
+import { and, eq, lt, isNotNull, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { memoryItems } from "@paperclipai/db";
+import { memoryItems, issues, taskDependencies, suggestions } from "@paperclipai/db";
+import { logActivity } from "./activity-log.js";
 
-const STALE_DAYS = 90;
+const TERMINAL_STATUSES = ["done", "cancelled"];
+const WORKING_MEMORY_TTL_DAYS = 7;
+const STALENESS_THRESHOLD_DAYS = 90;
+const MAX_CHAIN_DEPTH = 50;
+
+/**
+ * Check if a task's entire dependency chain is in a terminal state
+ * and all have been terminal for at least `minDays` days.
+ */
+async function isFullChainTerminal(
+  db: Db,
+  companyId: string,
+  taskId: string,
+  minDays: number,
+): Promise<boolean> {
+  const cutoff = new Date(Date.now() - minDays * 24 * 60 * 60 * 1000);
+
+  // First check the linked task itself
+  const [task] = await db
+    .select({ status: issues.status, completedAt: issues.completedAt, cancelledAt: issues.cancelledAt })
+    .from(issues)
+    .where(eq(issues.id, taskId));
+
+  if (!task) return true; // Task deleted — treat as terminal
+  if (!TERMINAL_STATUSES.includes(task.status)) return false;
+
+  const terminalDate = task.completedAt ?? task.cancelledAt;
+  if (!terminalDate || terminalDate > cutoff) return false;
+
+  // BFS through the full dependency chain (both directions)
+  const visited = new Set<string>([taskId]);
+  let currentIds = [taskId];
+
+  for (let depth = 0; depth < MAX_CHAIN_DEPTH && currentIds.length > 0; depth++) {
+    // Get all connected tasks (both upstream and downstream dependencies)
+    const connected = await db
+      .select({
+        depId: taskDependencies.dependencyIssueId,
+        depntId: taskDependencies.dependentIssueId,
+      })
+      .from(taskDependencies)
+      .where(
+        and(
+          eq(taskDependencies.companyId, companyId),
+          sql`(${taskDependencies.dependentIssueId} = ANY(${currentIds}) OR ${taskDependencies.dependencyIssueId} = ANY(${currentIds}))`,
+        ),
+      );
+
+    const nextIds: string[] = [];
+    for (const row of connected) {
+      if (!visited.has(row.depId)) {
+        visited.add(row.depId);
+        nextIds.push(row.depId);
+      }
+      if (!visited.has(row.depntId)) {
+        visited.add(row.depntId);
+        nextIds.push(row.depntId);
+      }
+    }
+
+    if (nextIds.length === 0) break;
+
+    // Check all newly discovered tasks
+    const chainTasks = await db
+      .select({ id: issues.id, status: issues.status, completedAt: issues.completedAt, cancelledAt: issues.cancelledAt })
+      .from(issues)
+      .where(inArray(issues.id, nextIds));
+
+    for (const ct of chainTasks) {
+      if (!TERMINAL_STATUSES.includes(ct.status)) return false;
+      const ctDate = ct.completedAt ?? ct.cancelledAt;
+      if (!ctDate || ctDate > cutoff) return false;
+    }
+
+    currentIds = nextIds;
+  }
+
+  return true;
+}
 
 export function memoryLifecycleService(db: Db) {
   return {
     /**
-     * Flag approved memory items as stale when their accessedAt (or createdAt
-     * if never accessed) is older than 90 days.  Items already flagged or in
-     * non-approved status are skipped.
-     *
-     * Returns the list of flagged item IDs.
+     * Archive active_context memory items when a goal reaches terminal state (achieved/cancelled).
      */
-    flagStaleItems: async (companyId: string) => {
-      const cutoff = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000);
+    onGoalCompleted: async (companyId: string, goalId: string): Promise<number> => {
+      const itemsToArchive = await db
+        .select()
+        .from(memoryItems)
+        .where(
+          and(
+            eq(memoryItems.companyId, companyId),
+            eq(memoryItems.layer, "active_context"),
+            eq(memoryItems.goalId, goalId),
+            eq(memoryItems.status, "approved"),
+          ),
+        );
 
-      const flagged = await db
+      if (itemsToArchive.length === 0) return 0;
+
+      const ids = itemsToArchive.map((i) => i.id);
+      await db
         .update(memoryItems)
-        .set({ status: "stale", updatedAt: new Date() })
+        .set({ status: "archived", updatedAt: new Date() })
+        .where(inArray(memoryItems.id, ids));
+
+      // Log activity for each archived item
+      for (const item of itemsToArchive) {
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "system",
+          action: "memory.auto_archived",
+          entityType: "memory_item",
+          entityId: item.id,
+          details: { title: item.title, layer: "active_context", reason: "goal_completed", goalId },
+        });
+      }
+
+      return itemsToArchive.length;
+    },
+
+    /**
+     * Archive working memory items whose entire task dependency chain
+     * has been in a terminal state for 7+ days.
+     */
+    archiveExpiredWorkingMemory: async (companyId: string): Promise<number> => {
+      const workingItems = await db
+        .select()
+        .from(memoryItems)
+        .where(
+          and(
+            eq(memoryItems.companyId, companyId),
+            eq(memoryItems.layer, "working"),
+            eq(memoryItems.status, "approved"),
+            isNotNull(memoryItems.taskId),
+          ),
+        );
+
+      let archivedCount = 0;
+      for (const item of workingItems) {
+        const shouldArchive = await isFullChainTerminal(
+          db,
+          companyId,
+          item.taskId!,
+          WORKING_MEMORY_TTL_DAYS,
+        );
+
+        if (shouldArchive) {
+          await db
+            .update(memoryItems)
+            .set({ status: "archived", updatedAt: new Date() })
+            .where(eq(memoryItems.id, item.id));
+
+          await logActivity(db, {
+            companyId,
+            actorType: "system",
+            actorId: "system",
+            action: "memory.auto_archived",
+            entityType: "memory_item",
+            entityId: item.id,
+            details: {
+              title: item.title,
+              layer: "working",
+              reason: "working_memory_ttl",
+              taskId: item.taskId,
+            },
+          });
+          archivedCount++;
+        }
+      }
+
+      return archivedCount;
+    },
+
+    /**
+     * Archive items with an expiresAt timestamp that has passed.
+     */
+    archiveExpiredItems: async (companyId: string): Promise<number> => {
+      const now = new Date();
+      const expiredItems = await db
+        .select()
+        .from(memoryItems)
         .where(
           and(
             eq(memoryItems.companyId, companyId),
             eq(memoryItems.status, "approved"),
-            or(
-              // Never accessed and created before cutoff
-              and(isNull(memoryItems.accessedAt), lte(memoryItems.createdAt, cutoff)),
-              // Accessed but last access before cutoff
-              lte(memoryItems.accessedAt, cutoff),
-            ),
+            isNotNull(memoryItems.expiresAt),
+            lt(memoryItems.expiresAt, now),
           ),
-        )
-        .returning({ id: memoryItems.id });
+        );
 
-      return flagged.map((r) => r.id);
+      if (expiredItems.length === 0) return 0;
+
+      const ids = expiredItems.map((i) => i.id);
+      await db
+        .update(memoryItems)
+        .set({ status: "archived", updatedAt: new Date() })
+        .where(inArray(memoryItems.id, ids));
+
+      for (const item of expiredItems) {
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "system",
+          action: "memory.auto_archived",
+          entityType: "memory_item",
+          entityId: item.id,
+          details: {
+            title: item.title,
+            layer: item.layer,
+            reason: "expired",
+            expiresAt: item.expiresAt?.toISOString(),
+          },
+        });
+      }
+
+      return expiredItems.length;
+    },
+
+    /**
+     * Flag identity/domain items not accessed in 90+ days by creating suggestions.
+     * Does NOT auto-archive — founder decides.
+     */
+    flagStaleItems: async (companyId: string): Promise<number> => {
+      const cutoff = new Date(Date.now() - STALENESS_THRESHOLD_DAYS * 24 * 60 * 60 * 1000);
+
+      const staleItems = await db
+        .select()
+        .from(memoryItems)
+        .where(
+          and(
+            eq(memoryItems.companyId, companyId),
+            eq(memoryItems.status, "approved"),
+            inArray(memoryItems.layer, ["identity", "domain"]),
+            lt(memoryItems.accessedAt, cutoff),
+          ),
+        );
+
+      // Filter out items that already have pending staleness suggestions
+      const existingSuggestions = staleItems.length > 0
+        ? await db
+            .select({ relatedMemoryItemId: suggestions.relatedMemoryItemId })
+            .from(suggestions)
+            .where(
+              and(
+                eq(suggestions.companyId, companyId),
+                eq(suggestions.category, "pattern_detected"),
+                eq(suggestions.actionType, "flag_stale_memory"),
+                eq(suggestions.status, "pending"),
+                inArray(
+                  suggestions.relatedMemoryItemId,
+                  staleItems.map((i) => i.id),
+                ),
+              ),
+            )
+        : [];
+
+      const alreadyFlaggedIds = new Set(existingSuggestions.map((s) => s.relatedMemoryItemId));
+      const itemsToFlag = staleItems.filter((i) => !alreadyFlaggedIds.has(i.id));
+
+      if (itemsToFlag.length === 0) return 0;
+
+      for (const item of itemsToFlag) {
+        const daysSinceAccess = Math.floor(
+          (Date.now() - (item.accessedAt?.getTime() ?? 0)) / (24 * 60 * 60 * 1000),
+        );
+
+        await db.insert(suggestions).values({
+          companyId,
+          category: "pattern_detected",
+          actionType: "flag_stale_memory",
+          title: `Memory item "${item.title}" hasn't been used in ${daysSinceAccess} days. Still relevant?`,
+          evidence: `Last accessed: ${item.accessedAt?.toISOString() ?? "never"}. Layer: ${item.layer}.`,
+          status: "pending",
+          relatedMemoryItemId: item.id,
+          actionPayload: { memoryItemId: item.id, layer: item.layer, daysSinceAccess },
+        });
+      }
+
+      return itemsToFlag.length;
     },
   };
 }

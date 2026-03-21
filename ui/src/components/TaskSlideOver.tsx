@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import { contextPackagingApi } from "../api/context-packaging";
 import { artifactsApi } from "../api/artifacts";
 import { outputDetectionApi, type DetectedOutputForUI } from "../api/output-detection";
 import { dependenciesApi } from "../api/dependencies";
@@ -51,6 +52,9 @@ import {
   X,
   Check,
   XCircle,
+  ExternalLink,
+  Copy,
+  Sparkles,
 } from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import type { ActivityEvent } from "@paperclipai/shared";
@@ -209,6 +213,8 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
   const [showAddVersion, setShowAddVersion] = useState(false);
   const [versionMode, setVersionMode] = useState<"text" | "file">("text");
   const [showAllVersions, setShowAllVersions] = useState(false);
+  const [llmMenuOpen, setLlmMenuOpen] = useState(false);
+  const [contextLoading, setContextLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   /* ── Data fetching ── */
@@ -448,6 +454,32 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
       hasTokens,
     };
   }, [linkedRuns]);
+
+  /* ── Context packaging ── */
+
+  const fetchAndCopyContext = async (openUrl?: string) => {
+    if (!selectedCompanyId || !issueId) return;
+    setContextLoading(true);
+    try {
+      const result = await contextPackagingApi.getContextPackage(selectedCompanyId, issueId);
+      await navigator.clipboard.writeText(result.markdown);
+      const tokenWarning = result.tokenEstimate > 8000
+        ? ` (warning: ~${result.tokenEstimate.toLocaleString()} tokens)`
+        : "";
+      pushToast({
+        title: "Context copied to clipboard" + tokenWarning,
+        tone: "success",
+      });
+      if (openUrl) {
+        window.open(openUrl, "_blank", "noopener");
+      }
+    } catch {
+      pushToast({ title: "Failed to copy context", tone: "error" });
+    } finally {
+      setContextLoading(false);
+      setLlmMenuOpen(false);
+    }
+  };
 
   /* ── Mutations ── */
 
@@ -725,28 +757,69 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
           </div>
           <div className="flex items-center gap-1 shrink-0">
             {issue && (
-              <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-                <PopoverTrigger asChild>
-                  <Button variant="ghost" size="icon-xs" className="shrink-0">
-                    <MoreHorizontal className="h-4 w-4" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-44 p-1" align="end">
-                  <button
-                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                    onClick={() => {
-                      updateIssue.mutate(
-                        { hiddenAt: new Date().toISOString() },
-                        { onSuccess: () => onClose() },
-                      );
-                      setMoreOpen(false);
-                    }}
-                  >
-                    <EyeOff className="h-3 w-3" />
-                    Hide this Task
-                  </button>
-                </PopoverContent>
-              </Popover>
+              <>
+                <Popover open={llmMenuOpen} onOpenChange={setLlmMenuOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      className="shrink-0"
+                      title="Open in LLM"
+                      disabled={contextLoading}
+                    >
+                      <Sparkles className="h-4 w-4" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-52 p-1" align="end">
+                    <button
+                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                      onClick={() => fetchAndCopyContext()}
+                      disabled={contextLoading}
+                    >
+                      <Copy className="h-3 w-3" />
+                      Copy context to clipboard
+                    </button>
+                    <button
+                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                      onClick={() => fetchAndCopyContext("https://claude.ai/new")}
+                      disabled={contextLoading}
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                      Open in Claude
+                    </button>
+                    <button
+                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                      onClick={() => fetchAndCopyContext("https://chatgpt.com")}
+                      disabled={contextLoading}
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                      Open in ChatGPT
+                    </button>
+                  </PopoverContent>
+                </Popover>
+                <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+                  <PopoverTrigger asChild>
+                    <Button variant="ghost" size="icon-xs" className="shrink-0">
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-44 p-1" align="end">
+                    <button
+                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                      onClick={() => {
+                        updateIssue.mutate(
+                          { hiddenAt: new Date().toISOString() },
+                          { onSuccess: () => onClose() },
+                        );
+                        setMoreOpen(false);
+                      }}
+                    >
+                      <EyeOff className="h-3 w-3" />
+                      Hide this Task
+                    </button>
+                  </PopoverContent>
+                </Popover>
+              </>
             )}
             <Button variant="ghost" size="icon-xs" onClick={onClose} className="shrink-0">
               <X className="h-4 w-4" />

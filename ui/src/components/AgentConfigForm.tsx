@@ -241,7 +241,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     if (Object.keys(overlay.heartbeat).length > 0) {
       const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
       const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
-      patch.runtimeConfig = { ...existingRc, heartbeat: { ...existingHb, ...overlay.heartbeat } };
+      // Separate runtimeConfig-level fields from heartbeat-level fields
+      const hb = overlay.heartbeat as Record<string, unknown>;
+      const { autoRunSummary: ars, ...heartbeatFields } = hb;
+      const mergedRc: Record<string, unknown> = { ...existingRc, heartbeat: { ...existingHb, ...heartbeatFields } };
+      if (ars !== undefined) mergedRc.autoRunSummary = ars;
+      patch.runtimeConfig = mergedRc;
     }
     if (Object.keys(overlay.runtime).length > 0) {
       Object.assign(patch, overlay.runtime);
@@ -854,6 +859,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className={inputClass}
                 />
               </Field>
+              <ToggleField
+                label="Auto run summaries"
+                hint={help.autoRunSummary}
+                checked={eff(
+                  "heartbeat",
+                  "autoRunSummary",
+                  runtimeConfig.autoRunSummary !== false,
+                )}
+                onChange={(v) => mark("heartbeat", "autoRunSummary", v)}
+              />
             </div>
           </CollapsibleSection>
           </div>

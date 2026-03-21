@@ -181,6 +181,12 @@ vi.mock("../api/output-detection", () => ({
   outputDetectionApi: { listForIssue: vi.fn().mockResolvedValue([]), confirm: vi.fn(), dismiss: vi.fn() },
 }));
 
+vi.mock("../api/context-packaging", () => ({
+  contextPackagingApi: {
+    getContextPackage: vi.fn().mockResolvedValue({ markdown: "# Test context", tokenEstimate: 100 }),
+  },
+}));
+
 vi.mock("../lib/utils", () => ({
   relativeTime: () => "2m ago",
   cn: (...args: any[]) => args.filter(Boolean).join(" "),
@@ -319,5 +325,13 @@ describe("TaskSlideOver", () => {
     renderSlideOver({ issueId: "issue-1", open: true });
     expect(screen.getByTestId("tab-artifacts")).toBeInTheDocument();
     expect(screen.getByTestId("tab-artifacts")).toHaveTextContent("Artifacts");
+  });
+
+  it("renders Open in LLM button options", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+    // The LLM menu popover content renders inline in our mock
+    expect(screen.getByText("Copy context to clipboard")).toBeInTheDocument();
+    expect(screen.getByText("Open in Claude")).toBeInTheDocument();
+    expect(screen.getByText("Open in ChatGPT")).toBeInTheDocument();
   });
 });
