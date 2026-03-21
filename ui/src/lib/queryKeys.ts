@@ -53,6 +53,10 @@ export const queryKeys = {
     comments: (approvalId: string) => ["approvals", "comments", approvalId] as const,
     issues: (approvalId: string) => ["approvals", "issues", approvalId] as const,
   },
+  trustScores: {
+    list: (companyId: string) => ["trust-scores", companyId] as const,
+    detail: (companyId: string, agentId: string) => ["trust-scores", companyId, agentId] as const,
+  },
   access: {
     joinRequests: (companyId: string, status: string = "pending_approval") =>
       ["access", "join-requests", companyId, status] as const,
