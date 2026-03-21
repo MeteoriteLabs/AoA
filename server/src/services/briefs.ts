@@ -190,8 +190,7 @@ export function briefService(db: Db) {
               status: "approved",
               departmentId,
               projectId,
-              createdBy: reviewedBy,
-            }, tx);
+            }, reviewedBy, true, tx);
 
             if (memoryItem) {
               createdMemoryIds.push(memoryItem.id);

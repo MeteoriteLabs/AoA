@@ -41,7 +41,8 @@ export function memoryRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const actor = getActorInfo(req);
-    const item = await svc.create(companyId, { ...req.body, createdBy: actor.actorId });
+    const isFounder = actor.actorType === "user";
+    const item = await svc.create(companyId, req.body, actor.actorId, isFounder);
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -65,12 +66,13 @@ export function memoryRoutes(db: Db) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
-    const item = await svc.update(companyId, id, req.body);
+    const actor = getActorInfo(req);
+    const isFounder = actor.actorType === "user";
+    const item = await svc.update(companyId, id, req.body, actor.actorId, isFounder);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
       return;
     }
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
