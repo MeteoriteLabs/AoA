@@ -150,9 +150,11 @@ export {
   createArtifactSchema,
   updateArtifactSchema,
   createArtifactVersionSchema,
+  mcpArtifactVersionSchema,
   type CreateArtifact,
   type UpdateArtifact,
   type CreateArtifactVersion,
+  type McpArtifactVersion,
 } from "./artifact.js";
 
 export {

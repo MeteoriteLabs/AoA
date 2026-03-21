@@ -43,6 +43,7 @@ import {
   MoreHorizontal,
   FileBox,
   FileCode,
+  GitPullRequestArrow,
   Paperclip,
   Plus,
   Search,
@@ -1020,6 +1021,51 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                 </div>
 
                 <Separator />
+
+                {/* V2: Review action bar — visible when task is in_review (Decisions #69, #70) */}
+                {issue?.status === "in_review" && (
+                  <div className="rounded-lg border border-amber-200 dark:border-amber-800/50 bg-amber-50/50 dark:bg-amber-900/10 p-3 space-y-2">
+                    <div className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
+                      <GitPullRequestArrow className="h-4 w-4" />
+                      Task In Review
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Review the agent&apos;s output. You can approve, request changes, or add a refined version.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        className="bg-green-600 hover:bg-green-700 text-white"
+                        onClick={() => updateIssue.mutate({ status: "done" })}
+                        disabled={updateIssue.isPending}
+                      >
+                        <Check className="h-3.5 w-3.5 mr-1" />
+                        Approve
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => updateIssue.mutate({ status: "in_progress" })}
+                        disabled={updateIssue.isPending}
+                      >
+                        Request Changes
+                      </Button>
+                      {artifact && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setDetailTab("artifacts");
+                            setShowAddVersion(true);
+                          }}
+                        >
+                          <Plus className="h-3.5 w-3.5 mr-1" />
+                          Add Version
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* Tabs: Comments, Sub-tasks, Activity */}
                 <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">

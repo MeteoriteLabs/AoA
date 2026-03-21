@@ -34,3 +34,14 @@ export const createArtifactVersionSchema = z.object({
 });
 
 export type CreateArtifactVersion = z.infer<typeof createArtifactVersionSchema>;
+
+/** MCP-specific artifact version push — source is always "mcp", sourceDetail required */
+export const mcpArtifactVersionSchema = z.object({
+  sourceDetail: z.string().min(1, "MCP client identity is required"),
+  changelog: z.string().optional().nullable(),
+  parentVersionId: z.string().uuid().optional().nullable(),
+  content: z.string().optional().nullable(),
+  fileUrl: z.string().optional().nullable(),
+});
+
+export type McpArtifactVersion = z.infer<typeof mcpArtifactVersionSchema>;
