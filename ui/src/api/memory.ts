@@ -1,6 +1,10 @@
 import type { MemoryItem, MemoryItemVersion } from "@paperclipai/shared";
 import { api } from "./client";
 
+export type SimilarMemoryItem = MemoryItem & {
+  similarity?: number | null;
+};
+
 export const memoryApi = {
   list: (
     companyId: string,
@@ -29,6 +33,18 @@ export const memoryApi = {
   },
   get: (companyId: string, id: string) =>
     api.get<MemoryItem>(`/companies/${companyId}/memory/${id}`),
+  findSimilarItems: (
+    companyId: string,
+    content: string,
+    filters?: { departmentId?: string; layer?: string },
+  ) => {
+    const params = new URLSearchParams({ content });
+    if (filters?.departmentId) params.set("departmentId", filters.departmentId);
+    if (filters?.layer) params.set("layer", filters.layer);
+    return api.get<SimilarMemoryItem[]>(
+      `/companies/${companyId}/memory/find-similar?${params.toString()}`,
+    );
+  },
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<MemoryItem>(`/companies/${companyId}/memory`, data),
   update: (companyId: string, id: string, data: Record<string, unknown>) =>

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { updateBriefItemSchema, approveBriefSchema } from "@paperclipai/shared";
+import { updateBriefSchema, updateBriefItemSchema, approveBriefSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { briefService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -10,7 +10,6 @@ export function briefRoutes(db: Db) {
   const router = Router();
   const svc = briefService(db);
 
-  // GET /companies/:companyId/briefs — list briefs
   router.get("/companies/:companyId/briefs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -19,7 +18,6 @@ export function briefRoutes(db: Db) {
     res.json(result);
   });
 
-  // GET /companies/:companyId/briefs/:id — get brief with items
   router.get("/companies/:companyId/briefs/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
@@ -32,7 +30,37 @@ export function briefRoutes(db: Db) {
     res.json(brief);
   });
 
-  // PATCH /companies/:companyId/briefs/:briefId/items/:itemId — update item
+  router.patch(
+    "/companies/:companyId/briefs/:id",
+    validate(updateBriefSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const id = req.params.id as string;
+      assertCompanyAccess(req, companyId);
+
+      const brief = await svc.updateBrief(companyId, id, req.body);
+      if (!brief) {
+        res.status(404).json({ error: "Brief not found" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "brief.updated",
+        entityType: "brief",
+        entityId: id,
+        details: req.body,
+      });
+
+      res.json(brief);
+    },
+  );
+
   router.patch(
     "/companies/:companyId/briefs/:briefId/items/:itemId",
     validate(updateBriefItemSchema),
@@ -42,20 +70,8 @@ export function briefRoutes(db: Db) {
       const itemId = req.params.itemId as string;
       assertCompanyAccess(req, companyId);
 
-      const { status, title, description, ...rest } = req.body;
-      const edits = title || description !== undefined ? { title, description } : undefined;
-
-      // Capture original values before update for memory feedback pattern tracking
-      const originalItem = edits ? await svc.getItemById(briefId, itemId) : null;
-
-      // If the full updateBriefItemSchema body is used, apply all fields
-      const item = await svc.updateItemStatus(
-        companyId,
-        briefId,
-        itemId,
-        status ?? req.body.status,
-        edits,
-      );
+      const originalItem = await svc.getItemById(briefId, itemId);
+      const item = await svc.updateItemStatus(companyId, briefId, itemId, req.body);
 
       if (!item) {
         res.status(404).json({ error: "Brief or item not found" });
@@ -74,9 +90,7 @@ export function briefRoutes(db: Db) {
         entityId: itemId,
         details: {
           briefId,
-          status,
-          title,
-          description,
+          ...req.body,
           originalTitle: originalItem?.title,
           originalDescription: originalItem?.description,
         },

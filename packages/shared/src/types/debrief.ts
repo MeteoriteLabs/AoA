@@ -9,6 +9,7 @@ export interface Debrief {
   artifactUrl: string | null;
   departmentId: string | null;
   projectId: string | null;
+  goalId: string | null;
   sourceInfo: Record<string, unknown> | null;
   status: DebriefStatus;
   createdBy: string;

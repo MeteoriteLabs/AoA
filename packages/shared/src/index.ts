@@ -49,6 +49,10 @@ export {
   MEMORY_ITEM_VERSION_STATUSES,
   DETECTED_OUTPUT_STATUSES,
   DETECTED_OUTPUT_SOURCES,
+  BRIEF_ITEM_TYPES,
+  BRIEF_ITEM_STATUSES,
+  BRIEF_STATUSES,
+  BRIEF_DEDUP_ACTIONS,
   type DetectedOutputStatus,
   type DetectedOutputSource,
   type MemoryItemCategory,
@@ -98,6 +102,10 @@ export {
   type JoinRequestType,
   type JoinRequestStatus,
   type PermissionKey,
+  type BriefItemType,
+  type BriefItemStatus,
+  type BriefStatus,
+  type BriefDedupAction,
 } from "./constants.js";
 
 export type {
