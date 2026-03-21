@@ -20,7 +20,7 @@ export function trustScoreRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const agentId = req.params.agentId as string;
     assertCompanyAccess(req, companyId);
-    const score = await svc.getScore(agentId);
+    const score = await svc.getScore(companyId, agentId);
     if (!score) {
       res.json(null);
       return;

@@ -1,6 +1,6 @@
-import { and, eq, desc } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentTrustScores, issues, agents } from "@paperclipai/db";
+import { agentTrustScores, agents } from "@paperclipai/db";
 
 const RECENT_WINDOW = 20;
 
@@ -57,49 +57,19 @@ function computeScore(
 export function trustScoreService(db: Db) {
   return {
     /**
-     * Calculate the trust score for an agent from actual task data.
-     * Queries completed tasks assigned to the agent and computes metrics.
+     * Get the trust score for an agent from stored counters.
+     * Returns null if agent has no reviewed tasks.
      */
     calculateScore: async (agentId: string): Promise<TrustScoreResult | null> => {
-      // Get agent to find companyId
-      const agent = await db
-        .select({ id: agents.id, companyId: agents.companyId })
-        .from(agents)
-        .where(eq(agents.id, agentId))
-        .then((rows) => rows[0] ?? null);
-
-      if (!agent) return null;
-
-      // Query all completed tasks (status = "done") assigned to this agent, ordered by completedAt desc
-      const completedTasks = await db
-        .select({
-          id: issues.id,
-          status: issues.status,
-        })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.assigneeAgentId, agentId),
-            eq(issues.companyId, agent.companyId),
-            eq(issues.status, "done"),
-          ),
-        )
-        .orderBy(desc(issues.completedAt));
-
-      if (completedTasks.length === 0) return null;
-
-      // For now, we rely on the stored counters since we can't determine
-      // "approved without changes" from the issues table alone.
-      // The counters are maintained by updateOnReview.
-      const existing = await db
+      const row = await db
         .select()
         .from(agentTrustScores)
         .where(eq(agentTrustScores.agentId, agentId))
         .then((rows) => rows[0] ?? null);
 
-      if (!existing) return null;
+      if (!row || row.totalCompleted === 0) return null;
 
-      return existing;
+      return row;
     },
 
     /**
@@ -206,13 +176,19 @@ export function trustScoreService(db: Db) {
 
     /**
      * Get the current trust score for an agent.
+     * Filters by companyId to prevent cross-company data access.
      * Returns null if agent has no completed tasks.
      */
-    getScore: async (agentId: string): Promise<TrustScoreResult | null> => {
+    getScore: async (companyId: string, agentId: string): Promise<TrustScoreResult | null> => {
       const row = await db
         .select()
         .from(agentTrustScores)
-        .where(eq(agentTrustScores.agentId, agentId))
+        .where(
+          and(
+            eq(agentTrustScores.agentId, agentId),
+            eq(agentTrustScores.companyId, companyId),
+          ),
+        )
         .then((rows) => rows[0] ?? null);
 
       if (!row || row.totalCompleted === 0) return null;
