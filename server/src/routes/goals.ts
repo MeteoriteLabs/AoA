@@ -5,6 +5,7 @@ import { validate } from "../middleware/validate.js";
 import { goalService, memoryLifecycleService, logActivity } from "../services/index.js";
 import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertRole } from "../middleware/rbac.js";
 
 export function goalRoutes(db: Db) {
   const router = Router();
@@ -33,6 +34,7 @@ export function goalRoutes(db: Db) {
   router.post("/companies/:companyId/goals", validate(createGoalSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder", "team_lead");
 
     const { projectIds } = req.body;
     if (!projectIds || !Array.isArray(projectIds) || projectIds.length === 0) {
@@ -64,6 +66,7 @@ export function goalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    await assertRole(db, req, existing.companyId, "founder", "team_lead");
     let goal;
     try {
       goal = await svc.update(id, req.body);
@@ -107,6 +110,7 @@ export function goalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    await assertRole(db, req, existing.companyId, "founder", "team_lead");
     const goal = await svc.remove(id);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });

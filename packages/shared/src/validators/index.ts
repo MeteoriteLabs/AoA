@@ -82,8 +82,12 @@ export {
 export {
   createMemoryItemSchema,
   updateMemoryItemSchema,
+  suggestMemoryUpdateSchema,
+  suggestMemoryArchiveSchema,
   type CreateMemoryItem,
   type UpdateMemoryItem,
+  type SuggestMemoryUpdate,
+  type SuggestMemoryArchive,
 } from "./memory.js";
 
 export {

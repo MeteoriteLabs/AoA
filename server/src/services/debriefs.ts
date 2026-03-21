@@ -58,7 +58,7 @@ export function debriefService(db: Db) {
     update: (
       companyId: string,
       id: string,
-      data: Partial<Pick<typeof debriefs.$inferInsert, "title" | "status" | "departmentId" | "projectId">>,
+      data: Partial<Pick<typeof debriefs.$inferInsert, "title" | "status" | "departmentId" | "projectId" | "goalId">>,
     ) =>
       db
         .update(debriefs)
