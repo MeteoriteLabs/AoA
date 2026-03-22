@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 
+// ---------------------------------------------------------------------------
+// Mock @paperclipai/db — Proxy-based tables (project standard pattern)
+// ---------------------------------------------------------------------------
 vi.mock("@paperclipai/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
@@ -8,7 +11,7 @@ vi.mock("@paperclipai/db", () => {
         if (prop === "_") return { name };
         if (prop === "$inferSelect" || prop === "$inferInsert") return {};
         if (typeof prop === "string") {
-          if (!cols[prop]) cols[prop] = Symbol(prop);
+          if (!cols[prop]) cols[prop] = Symbol(`${name}.${prop}`);
           return cols[prop];
         }
         return undefined;
@@ -22,197 +25,455 @@ vi.mock("@paperclipai/db", () => {
   };
 });
 
+// ---------------------------------------------------------------------------
+// Mock drizzle-orm operators
+// ---------------------------------------------------------------------------
 vi.mock("drizzle-orm", () => ({
-  and: (..._args: unknown[]) => "and",
-  eq: (..._args: unknown[]) => "eq",
+  and: vi.fn((...args: unknown[]) => args),
+  eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
+  ne: vi.fn((a: unknown, b: unknown) => ({ ne: [a, b] })),
+  or: vi.fn((...args: unknown[]) => args),
+  desc: vi.fn((a: unknown) => ({ desc: a })),
+  inArray: vi.fn((a: unknown, b: unknown) => ({ inArray: [a, b] })),
+  isNull: vi.fn((a: unknown) => ({ isNull: a })),
+  sql: Object.assign(
+    vi.fn((strings: unknown, ...values: unknown[]) => ({
+      sql: strings,
+      values,
+    })),
+    { raw: vi.fn((s: unknown) => s) },
+  ),
 }));
 
+// ---------------------------------------------------------------------------
+// Sequence-based mock DB
+// ---------------------------------------------------------------------------
 type MockRow = Record<string, unknown>;
 
-function createSequenceDb(config: {
-  selects?: MockRow[][];
-  updates?: MockRow[][];
-} = {}) {
+function createSequenceDb(
+  config: {
+    selects?: MockRow[][];
+    updates?: MockRow[][];
+    inserts?: MockRow[][];
+  } = {},
+) {
   let selectIdx = 0;
   let updateIdx = 0;
+
   const selects = config.selects ?? [];
   const updates = config.updates ?? [];
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
-    for (const m of ["from", "where", "set", "values", "returning", "innerJoin", "leftJoin", "orderBy", "limit"]) {
+    for (const m of [
+      "from",
+      "where",
+      "set",
+      "values",
+      "returning",
+      "innerJoin",
+      "leftJoin",
+      "orderBy",
+      "limit",
+      "delete",
+    ]) {
       chain[m] = (..._args: unknown[]) => chain;
     }
-    chain.then = (resolve: (v: MockRow[]) => unknown) => Promise.resolve(resolve(getResult()));
+    chain.then = (resolve: (v: MockRow[]) => unknown) =>
+      Promise.resolve(resolve(getResult()));
     return chain;
   }
 
   return {
-    select: (..._args: unknown[]) => makeChain(() => selects[selectIdx++] ?? []),
-    update: (..._args: unknown[]) => makeChain(() => updates[updateIdx++] ?? []),
+    select: (..._args: unknown[]) =>
+      makeChain(() => selects[selectIdx++] ?? []),
+    update: (..._args: unknown[]) =>
+      makeChain(() => updates[updateIdx++] ?? []),
     insert: (..._args: unknown[]) => makeChain(() => []),
     delete: (..._args: unknown[]) => makeChain(() => []),
   };
 }
 
-import { orgHierarchyService } from "../services/org-hierarchy.ts";
+// ---------------------------------------------------------------------------
+// Import service under test (after mocks are registered)
+// ---------------------------------------------------------------------------
+import { orgHierarchyService } from "../services/org-hierarchy.js";
 
+// ---------------------------------------------------------------------------
+// assertNoCycle
+// ---------------------------------------------------------------------------
 describe("orgHierarchyService", () => {
   describe("assertNoCycle", () => {
     it("allows null parent (root node)", async () => {
       const db = createSequenceDb();
       const svc = orgHierarchyService(db as any);
-
-      // Should not throw
-      await svc.assertNoCycle("company-1", "agent-1", "agent", null, null);
+      // Should resolve without throwing — no DB calls needed
+      await expect(
+        svc.assertNoCycle("co-1", "a1", "agent", null, null),
+      ).resolves.toBeUndefined();
     });
 
-    it("rejects self-reference", async () => {
+    it("rejects self-reference (same id + same type)", async () => {
       const db = createSequenceDb();
       const svc = orgHierarchyService(db as any);
-
       await expect(
-        svc.assertNoCycle("company-1", "agent-1", "agent", "agent-1", "agent"),
+        svc.assertNoCycle("co-1", "a1", "agent", "a1", "agent"),
       ).rejects.toThrow("Cannot set an entity as its own parent");
     });
 
-    it("detects agent→agent cycle (A→B→A)", async () => {
-      // Agent B's parent is agent A (parentType='agent', parentId='agent-1')
-      const db = createSequenceDb({
-        selects: [
-          [{ parentType: "agent", parentId: "agent-1" }], // query for agent B's parent → points to A
-        ],
-      });
+    it("rejects self-reference for user type", async () => {
+      const db = createSequenceDb();
       const svc = orgHierarchyService(db as any);
-
-      // Setting A's parent to B would create A→B→A cycle
       await expect(
-        svc.assertNoCycle("company-1", "agent-1", "agent", "agent-2", "agent"),
-      ).rejects.toThrow("circular chain");
+        svc.assertNoCycle("co-1", "u1", "user", "u1", "user"),
+      ).rejects.toThrow("Cannot set an entity as its own parent");
     });
 
-    it("allows valid chain with no cycle", async () => {
-      // Agent B's parent is Agent C (no cycle when setting A's parent to B)
+    it("allows same id but different type (not a self-reference)", async () => {
+      const db = createSequenceDb({
+        // Walk from agent "x1" → no parent (root)
+        selects: [[{ parentType: null, parentId: null }]],
+      });
+      const svc = orgHierarchyService(db as any);
+      // entity is user "x1", parent is agent "x1" — different types, allowed
+      await expect(
+        svc.assertNoCycle("co-1", "x1", "user", "x1", "agent"),
+      ).resolves.toBeUndefined();
+    });
+
+    it("detects agent→agent cycle", async () => {
+      // Chain: a2 → a3 → a1 (cycle back to entity)
       const db = createSequenceDb({
         selects: [
-          [{ parentType: "agent", parentId: "agent-3" }], // B's parent → C
-          [{ parentType: null, parentId: null }],          // C's parent → null (root)
+          // lookup a2: parent is a3 (agent)
+          [{ parentType: "agent", parentId: "a3" }],
+          // lookup a3: parent is a1 (agent) — CYCLE
+          [{ parentType: "agent", parentId: "a1" }],
         ],
       });
       const svc = orgHierarchyService(db as any);
-
-      await svc.assertNoCycle("company-1", "agent-1", "agent", "agent-2", "agent");
+      await expect(
+        svc.assertNoCycle("co-1", "a1", "agent", "a2", "agent"),
+      ).rejects.toThrow("circular reporting chain");
     });
 
-    it("stops at depth limit (50 steps) without throwing", async () => {
-      // Create a chain of 60 agents, none cycling back
+    it("detects mixed agent→user→agent cycle", async () => {
+      // entity = agent a1, newParent = user u1
+      // Chain: u1 → agent a2 → agent a1 (cycle)
+      const db = createSequenceDb({
+        selects: [
+          // lookup user u1 in company_memberships: parent is agent a2
+          [{ parentType: "agent", parentId: "a2" }],
+          // lookup agent a2: parent is agent a1 — CYCLE
+          [{ parentType: "agent", parentId: "a1" }],
+        ],
+      });
+      const svc = orgHierarchyService(db as any);
+      await expect(
+        svc.assertNoCycle("co-1", "a1", "agent", "u1", "user"),
+      ).rejects.toThrow("circular reporting chain");
+    });
+
+    it("respects 50-step depth limit without throwing", async () => {
+      // Build a chain of 60 agents, none of which is the entity.
+      // The loop should stop at depth 50, NOT throw.
       const selects: MockRow[][] = [];
       for (let i = 0; i < 60; i++) {
-        selects.push([{ parentType: "agent", parentId: `agent-${i + 100}` }]);
+        selects.push([{ parentType: "agent", parentId: `deep-${i + 1}` }]);
       }
       const db = createSequenceDb({ selects });
       const svc = orgHierarchyService(db as any);
-
-      // Should not throw — just stops after 50 steps
-      await svc.assertNoCycle("company-1", "agent-0", "agent", "agent-99", "agent");
+      await expect(
+        svc.assertNoCycle("co-1", "target", "agent", "deep-0", "agent"),
+      ).resolves.toBeUndefined();
     });
 
-    it("handles mixed agent→user chain without false positive", async () => {
-      // Agent B parent is User X, User X parent is null
+    it("walks chain without false positives", async () => {
+      // Chain: a2 → a3 → root (null parent). No cycle.
       const db = createSequenceDb({
         selects: [
-          [{ parentType: "user", parentId: "user-x" }],  // agent B → user X
-          [{ parentType: null, parentId: null }],          // user X → root
+          [{ parentType: "agent", parentId: "a3" }],
+          [{ parentType: null, parentId: null }],
         ],
       });
       const svc = orgHierarchyService(db as any);
+      await expect(
+        svc.assertNoCycle("co-1", "a1", "agent", "a2", "agent"),
+      ).resolves.toBeUndefined();
+    });
 
-      await svc.assertNoCycle("company-1", "agent-1", "agent", "agent-2", "agent");
+    it("stops at root when agent has no parent", async () => {
+      const db = createSequenceDb({
+        selects: [
+          // agent a2 has no parent — root
+          [{ parentType: null, parentId: null }],
+        ],
+      });
+      const svc = orgHierarchyService(db as any);
+      await expect(
+        svc.assertNoCycle("co-1", "a1", "agent", "a2", "agent"),
+      ).resolves.toBeUndefined();
+    });
+
+    it("stops at root when user has no parent", async () => {
+      const db = createSequenceDb({
+        selects: [
+          // user u2 has no parent — root
+          [{ parentType: null, parentId: null }],
+        ],
+      });
+      const svc = orgHierarchyService(db as any);
+      await expect(
+        svc.assertNoCycle("co-1", "a1", "agent", "u2", "user"),
+      ).resolves.toBeUndefined();
+    });
+
+    it("stops when agent row not found", async () => {
+      const db = createSequenceDb({
+        selects: [
+          // No row returned for agent lookup
+          [],
+        ],
+      });
+      const svc = orgHierarchyService(db as any);
+      await expect(
+        svc.assertNoCycle("co-1", "a1", "agent", "a2", "agent"),
+      ).resolves.toBeUndefined();
+    });
+
+    it("includes depth in cycle error message", async () => {
+      // Direct cycle at depth 1: a2 → a1
+      const db = createSequenceDb({
+        selects: [[{ parentType: "agent", parentId: "a1" }]],
+      });
+      const svc = orgHierarchyService(db as any);
+      await expect(
+        svc.assertNoCycle("co-1", "a1", "agent", "a2", "agent"),
+      ).rejects.toThrow("(depth 1)");
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // ensureParent
+  // ---------------------------------------------------------------------------
   describe("ensureParent", () => {
-    it("accepts valid agent parent in same company", async () => {
+    it("accepts valid agent in same company", async () => {
       const db = createSequenceDb({
-        selects: [[{ id: "agent-parent", status: "idle" }]],
+        selects: [[{ id: "a1", status: "active" }]],
       });
       const svc = orgHierarchyService(db as any);
-
-      await svc.ensureParent("company-1", "agent", "agent-parent");
+      await expect(
+        svc.ensureParent("co-1", "agent", "a1"),
+      ).resolves.toBeUndefined();
     });
 
-    it("rejects missing agent parent", async () => {
+    it("accepts idle agent in same company", async () => {
+      const db = createSequenceDb({
+        selects: [[{ id: "a1", status: "idle" }]],
+      });
+      const svc = orgHierarchyService(db as any);
+      await expect(
+        svc.ensureParent("co-1", "agent", "a1"),
+      ).resolves.toBeUndefined();
+    });
+
+    it("rejects agent not found (different company or nonexistent)", async () => {
       const db = createSequenceDb({
         selects: [[]],
       });
       const svc = orgHierarchyService(db as any);
-
       await expect(
-        svc.ensureParent("company-1", "agent", "agent-nonexistent"),
-      ).rejects.toThrow("Parent agent not found");
+        svc.ensureParent("co-1", "agent", "a-nonexistent"),
+      ).rejects.toThrow("Parent agent not found in this company");
     });
 
-    it("rejects terminated agent parent", async () => {
+    it("rejects terminated agent", async () => {
       const db = createSequenceDb({
-        selects: [[{ id: "agent-parent", status: "terminated" }]],
+        selects: [[{ id: "a1", status: "terminated" }]],
       });
       const svc = orgHierarchyService(db as any);
-
       await expect(
-        svc.ensureParent("company-1", "agent", "agent-parent"),
+        svc.ensureParent("co-1", "agent", "a1"),
       ).rejects.toThrow("Cannot report to a terminated agent");
     });
 
-    it("accepts valid user parent with active membership", async () => {
+    it("accepts active user with membership", async () => {
       const db = createSequenceDb({
-        selects: [[{ principalId: "user-1" }]],
+        selects: [[{ principalId: "u1" }]],
       });
       const svc = orgHierarchyService(db as any);
-
-      await svc.ensureParent("company-1", "user", "user-1");
+      await expect(
+        svc.ensureParent("co-1", "user", "u1"),
+      ).resolves.toBeUndefined();
     });
 
-    it("rejects user parent without active membership", async () => {
+    it("rejects inactive user (no active membership)", async () => {
       const db = createSequenceDb({
         selects: [[]],
       });
       const svc = orgHierarchyService(db as any);
-
       await expect(
-        svc.ensureParent("company-1", "user", "user-nonexistent"),
-      ).rejects.toThrow("Parent user not found");
+        svc.ensureParent("co-1", "user", "u-inactive"),
+      ).rejects.toThrow(
+        "Parent user not found or not active in this company",
+      );
+    });
+
+    it("throws 404 for missing agent", async () => {
+      const db = createSequenceDb({ selects: [[]] });
+      const svc = orgHierarchyService(db as any);
+      try {
+        await svc.ensureParent("co-1", "agent", "a-missing");
+        expect.unreachable("should have thrown");
+      } catch (e: any) {
+        expect(e.status).toBe(404);
+      }
+    });
+
+    it("throws 422 for terminated agent", async () => {
+      const db = createSequenceDb({
+        selects: [[{ id: "a1", status: "terminated" }]],
+      });
+      const svc = orgHierarchyService(db as any);
+      try {
+        await svc.ensureParent("co-1", "agent", "a1");
+        expect.unreachable("should have thrown");
+      } catch (e: any) {
+        expect(e.status).toBe(422);
+      }
+    });
+
+    it("throws 422 for inactive user", async () => {
+      const db = createSequenceDb({ selects: [[]] });
+      const svc = orgHierarchyService(db as any);
+      try {
+        await svc.ensureParent("co-1", "user", "u-gone");
+        expect.unreachable("should have thrown");
+      } catch (e: any) {
+        expect(e.status).toBe(422);
+      }
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // orphanChildren
+  // ---------------------------------------------------------------------------
   describe("orphanChildren", () => {
-    it("calls update on agents and companyMemberships tables", async () => {
-      const updateCalls: string[] = [];
-      const db = createSequenceDb({
-        updates: [[], []], // two update calls (agents + company_memberships)
-      });
+    let updateCalls: { table: string; setArg: unknown; whereArg: unknown }[];
 
-      // Track update calls
-      const origUpdate = db.update;
-      db.update = (...args: unknown[]) => {
-        updateCalls.push("update");
-        return origUpdate(...args);
+    function createTrackingDb() {
+      updateCalls = [];
+
+      function makeUpdateChain(tableName: string) {
+        let setArg: unknown;
+        const chain: Record<string, unknown> = {};
+
+        chain.set = (...args: unknown[]) => {
+          setArg = args[0];
+          return chain;
+        };
+        chain.where = (...args: unknown[]) => {
+          updateCalls.push({ table: tableName, setArg, whereArg: args[0] });
+          return chain;
+        };
+        // Remaining chain methods
+        for (const m of ["from", "values", "returning", "limit"]) {
+          chain[m] = (..._args: unknown[]) => chain;
+        }
+        chain.then = (resolve: (v: MockRow[]) => unknown) =>
+          Promise.resolve(resolve([]));
+        return chain;
+      }
+
+      // Track which table each update targets
+      let updateCallCount = 0;
+      const tableOrder = ["agents", "company_memberships"];
+
+      return {
+        select: (..._args: unknown[]) => {
+          const chain: Record<string, unknown> = {};
+          for (const m of [
+            "from",
+            "where",
+            "set",
+            "values",
+            "returning",
+            "limit",
+          ]) {
+            chain[m] = (...__args: unknown[]) => chain;
+          }
+          chain.then = (resolve: (v: MockRow[]) => unknown) =>
+            Promise.resolve(resolve([]));
+          return chain;
+        },
+        update: (..._args: unknown[]) => {
+          const tableName = tableOrder[updateCallCount++] ?? "unknown";
+          return makeUpdateChain(tableName);
+        },
+        insert: (..._args: unknown[]) => {
+          const chain: Record<string, unknown> = {};
+          for (const m of ["from", "where", "set", "values", "returning"]) {
+            chain[m] = (...__args: unknown[]) => chain;
+          }
+          chain.then = (resolve: (v: MockRow[]) => unknown) =>
+            Promise.resolve(resolve([]));
+          return chain;
+        },
       };
+    }
 
+    it("nullifies agent children (parentType, parentId, reportsTo)", async () => {
+      const db = createTrackingDb();
       const svc = orgHierarchyService(db as any);
-      await svc.orphanChildren("agent-1", "agent");
+      await svc.orphanChildren("a1", "agent");
 
-      expect(updateCalls).toHaveLength(2);
+      expect(updateCalls.length).toBe(2);
+      // First update targets agents table
+      expect(updateCalls[0].table).toBe("agents");
+      expect(updateCalls[0].setArg).toEqual(
+        expect.objectContaining({
+          reportsTo: null,
+          parentType: null,
+          parentId: null,
+        }),
+      );
     });
 
-    it("accepts custom txOrDb parameter", async () => {
-      const tx = createSequenceDb({
-        updates: [[], []],
-      });
-      const db = createSequenceDb();
+    it("nullifies user children (company_memberships)", async () => {
+      const db = createTrackingDb();
       const svc = orgHierarchyService(db as any);
+      await svc.orphanChildren("u1", "user");
 
-      // Should use tx, not db
-      await svc.orphanChildren("agent-1", "agent", tx as any);
+      expect(updateCalls.length).toBe(2);
+      // Second update targets company_memberships
+      expect(updateCalls[1].table).toBe("company_memberships");
+      expect(updateCalls[1].setArg).toEqual(
+        expect.objectContaining({
+          parentType: null,
+          parentId: null,
+        }),
+      );
+    });
+
+    it("clears reportsTo on agent children (migration compat)", async () => {
+      const db = createTrackingDb();
+      const svc = orgHierarchyService(db as any);
+      await svc.orphanChildren("u1", "user");
+
+      // Agent update should include reportsTo: null for D7 compat
+      expect(updateCalls[0].table).toBe("agents");
+      expect(updateCalls[0].setArg).toHaveProperty("reportsTo", null);
+    });
+
+    it("accepts a transaction object instead of default db", async () => {
+      const tx = createTrackingDb();
+      // Create service with a different db, but pass tx
+      const mainDb = createSequenceDb();
+      const svc = orgHierarchyService(mainDb as any);
+      await svc.orphanChildren("a1", "agent", tx as any);
+
+      // Should have used tx, not mainDb
+      expect(updateCalls.length).toBe(2);
     });
   });
 });
