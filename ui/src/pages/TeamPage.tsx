@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo } from "react";
-import { useSearchParams } from "@/lib/router";
+import { useCallback, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Agent } from "@paperclipai/shared";
+import { Users } from "lucide-react";
 import { agentsApi } from "../api/agents";
-import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useTeamAccess } from "../hooks/useTeamAccess";
@@ -12,17 +11,23 @@ import { OrgTreeTab } from "../components/team/OrgTreeTab";
 import { AgentsTab } from "../components/team/AgentsTab";
 import { HumansTab } from "../components/team/HumansTab";
 import { EmptyState } from "../components/EmptyState";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { PageSkeleton } from "../components/PageSkeleton";
+import { PageTabBar } from "../components/PageTabBar";
+import { Tabs } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { Users, Network, Bot } from "lucide-react";
 
-type TabValue = "org" | "agents" | "humans";
+const VALID_TABS = ["org", "agents", "humans"] as const;
+type TeamTab = (typeof VALID_TABS)[number];
 
-const VALID_TABS: TabValue[] = ["org", "agents", "humans"];
-
-function isValidTab(value: string | null): value is TabValue {
-  return value !== null && VALID_TABS.includes(value as TabValue);
+function isValidTab(value: string | null): value is TeamTab {
+  return VALID_TABS.includes(value as TeamTab);
 }
+
+const TAB_ITEMS = [
+  { value: "org", label: "Org Tree" },
+  { value: "agents", label: "Agents" },
+  { value: "humans", label: "Humans" },
+];
 
 export function TeamPage() {
   const { selectedCompanyId } = useCompany();
@@ -30,64 +35,48 @@ export function TeamPage() {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const activeTab: TabValue = isValidTab(searchParams.get("tab"))
-    ? (searchParams.get("tab") as TabValue)
-    : "org";
+  const rawTab = searchParams.get("tab");
+  const activeTab: TeamTab = isValidTab(rawTab) ? rawTab : "org";
   const highlightId = searchParams.get("highlight");
 
-  const { summary, permissions, isLoading: isTeamLoading } = useTeamAccess(selectedCompanyId);
+  const { summary: teamSummary, permissions, role, isLoading: isTeamLoading } = useTeamAccess(selectedCompanyId);
 
-  // Fetch org tree
-  const { data: orgTree, isLoading: isOrgLoading } = useQuery({
-    queryKey: selectedCompanyId ? queryKeys.org(selectedCompanyId) : ["org", "none"],
+  // Org tree (shared: OrgTreeTab + AgentsTab)
+  const orgTreeQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.org.tree(selectedCompanyId)
+      : ["org", "none", "tree"],
     queryFn: () => agentsApi.org(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
 
-  // Fetch agents list
-  const { data: agentsList, isLoading: isAgentsLoading } = useQuery({
-    queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none"],
+  // Agents list
+  const agentsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.agents.list(selectedCompanyId)
+      : ["agents", "none"],
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
-
-  // Fetch projects (for departments)
-  const { data: projects } = useQuery({
-    queryKey: selectedCompanyId ? queryKeys.projects.list(selectedCompanyId) : ["projects", "none"],
-    queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
-  });
-
-  const departments = useMemo(
-    () => (projects ?? []).filter((p) => p.type === "department"),
-    [projects],
-  );
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Team" }]);
   }, [setBreadcrumbs]);
 
-  // Invalidate all team-related queries after any mutation
-  const invalidateAll = useCallback(() => {
-    if (!selectedCompanyId) return;
-    queryClient.invalidateQueries({ queryKey: queryKeys.org(selectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.team.summary(selectedCompanyId) });
-  }, [queryClient, selectedCompanyId]);
-
-  // Tab change handler (preserves highlight only when setting tab from click-through)
+  // Tab change — clears highlight when manually switching
   const handleTabChange = useCallback(
     (value: string) => {
-      const next = new URLSearchParams(searchParams);
-      next.set("tab", value);
-      // Clear highlight when manually switching tabs
-      next.delete("highlight");
-      setSearchParams(next, { replace: true });
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("tab", value);
+        next.delete("highlight");
+        return next;
+      });
     },
-    [searchParams, setSearchParams],
+    [setSearchParams],
   );
 
-  // OrgTree node click -> switch tab + highlight
+  // OrgTree node click → switch to corresponding tab + highlight
   const handleNodeClick = useCallback(
     (id: string, nodeType: "agent" | "user") => {
       const next = new URLSearchParams();
@@ -98,16 +87,22 @@ export function TeamPage() {
     [setSearchParams],
   );
 
-  // Clear highlight param after animation completes
-  const handleHighlightClear = useCallback(() => {
-    const next = new URLSearchParams(searchParams);
-    next.delete("highlight");
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
+  // Cache invalidation — all three data sets
+  const invalidateAll = useCallback(() => {
+    if (!selectedCompanyId) return;
+    queryClient.invalidateQueries({ queryKey: queryKeys.org.tree(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.team.summary(selectedCompanyId) });
+  }, [queryClient, selectedCompanyId]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Users} message="Select a company to view team." />;
   }
+
+  const isLoading =
+    (activeTab === "org" && orgTreeQuery.isLoading) ||
+    (activeTab === "agents" && agentsQuery.isLoading) ||
+    (activeTab === "humans" && isTeamLoading);
 
   return (
     <TooltipProvider>
@@ -124,51 +119,37 @@ export function TeamPage() {
 
         {/* Tabbed content */}
         <Tabs value={activeTab} onValueChange={handleTabChange}>
-          <TabsList variant="line">
-            <TabsTrigger value="org">
-              <Network className="h-4 w-4" />
-              Org Tree
-            </TabsTrigger>
-            <TabsTrigger value="agents">
-              <Bot className="h-4 w-4" />
-              Agents
-            </TabsTrigger>
-            <TabsTrigger value="humans">
-              <Users className="h-4 w-4" />
-              Humans
-            </TabsTrigger>
-          </TabsList>
+          <PageTabBar
+            items={TAB_ITEMS}
+            value={activeTab}
+            onValueChange={handleTabChange}
+          />
 
-          <TabsContent value="org">
+          {isLoading && <PageSkeleton variant={activeTab === "org" ? "org-chart" : "list"} />}
+
+          {!isLoading && activeTab === "org" && (
             <OrgTreeTab
-              orgTree={orgTree ?? []}
-              agents={agentsList ?? []}
-              isLoading={isOrgLoading || isAgentsLoading}
+              orgTree={orgTreeQuery.data ?? []}
               onNodeClick={handleNodeClick}
             />
-          </TabsContent>
+          )}
 
-          <TabsContent value="agents">
+          {!isLoading && activeTab === "agents" && (
             <AgentsTab
-              agents={agentsList ?? []}
-              isLoading={isAgentsLoading}
-              highlightId={activeTab === "agents" ? highlightId : null}
-              onHighlightClear={handleHighlightClear}
+              agents={agentsQuery.data ?? []}
+              orgTree={orgTreeQuery.data ?? []}
+              highlightId={highlightId}
+              permissions={{ isFounder: role === "founder" }}
             />
-          </TabsContent>
+          )}
 
-          <TabsContent value="humans">
+          {!isLoading && activeTab === "humans" && teamSummary && (
             <HumansTab
-              summary={summary}
-              companyId={selectedCompanyId}
-              departments={departments}
-              isLoading={isTeamLoading}
-              highlightId={activeTab === "humans" ? highlightId : null}
-              onHighlightClear={handleHighlightClear}
-              onMutationSuccess={invalidateAll}
+              teamSummary={teamSummary}
+              highlightId={highlightId}
               permissions={permissions}
             />
-          </TabsContent>
+          )}
         </Tabs>
       </div>
     </TooltipProvider>

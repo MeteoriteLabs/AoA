@@ -24,6 +24,8 @@ export interface TeamMemberSummary {
   departmentName: string | null;
   permissions: PermissionKey[];
   isCurrentUser: boolean;
+  parentType: "user" | null;
+  parentId: string | null;
 }
 
 export interface TeamInviteSummary {
@@ -40,4 +42,28 @@ export interface TeamSummary {
   currentUser: TeamCurrentUserSummary;
   members: TeamMemberSummary[];
   pendingInvites: TeamInviteSummary[];
+}
+
+/** A node in the unified org tree that can represent either an agent or a human. */
+export interface UnifiedOrgNode {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+  nodeType: "agent" | "user";
+
+  // Agent-specific (undefined for users)
+  adapterType?: string;
+  trustScore?: number;
+  icon?: string;
+  pendingApproval?: boolean;
+
+  // User-specific (undefined for agents)
+  email?: string;
+  userRole?: "founder" | "team_lead" | "team_member";
+  departmentName?: string;
+  avatarUrl?: string;
+
+  // Hierarchy
+  children: UnifiedOrgNode[];
 }
