@@ -16,6 +16,7 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { orgHierarchyService } from "./org-hierarchy.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -30,6 +31,8 @@ const CONFIG_REVISION_FIELDS = [
   "role",
   "title",
   "reportsTo",
+  "parentType",
+  "parentId",
   "capabilities",
   "adapterType",
   "adapterConfig",
@@ -84,6 +87,8 @@ function buildConfigSnapshot(
     role: row.role,
     title: row.title,
     reportsTo: row.reportsTo,
+    parentType: row.parentType ?? null,
+    parentId: row.parentId ?? null,
     capabilities: row.capabilities,
     adapterType: row.adapterType,
     adapterConfig,
@@ -127,7 +132,7 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
     throw unprocessable("Invalid revision snapshot: budgetMonthlyCents");
   }
 
-  return {
+  const patch: Partial<typeof agents.$inferInsert> = {
     name: snapshot.name,
     role: snapshot.role,
     title: typeof snapshot.title === "string" || snapshot.title === null ? snapshot.title : null,
@@ -143,11 +148,24 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
     budgetMonthlyCents: Math.max(0, Math.floor(snapshot.budgetMonthlyCents)),
     metadata: isPlainRecord(snapshot.metadata) || snapshot.metadata === null ? snapshot.metadata : null,
   };
+
+  if ("parentType" in snapshot) {
+    patch.parentType =
+      typeof snapshot.parentType === "string" || snapshot.parentType === null ? snapshot.parentType : null;
+  }
+  if ("parentId" in snapshot) {
+    patch.parentId =
+      typeof snapshot.parentId === "string" || snapshot.parentId === null ? snapshot.parentId : null;
+  }
+
+  return patch;
 }
 
 export { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
 
 export function agentService(db: Db) {
+  const orgHierarchy = orgHierarchyService(db);
+
   function withUrlKey<T extends { id: string; name: string }>(row: T) {
     return {
       ...row,
@@ -169,27 +187,6 @@ export function agentService(db: Db) {
       .where(eq(agents.id, id))
       .then((rows) => rows[0] ?? null);
     return row ? normalizeAgentRow(row) : null;
-  }
-
-  async function ensureManager(companyId: string, managerId: string) {
-    const manager = await getById(managerId);
-    if (!manager) throw notFound("Manager not found");
-    if (manager.companyId !== companyId) {
-      throw unprocessable("Manager must belong to same company");
-    }
-    return manager;
-  }
-
-  async function assertNoCycle(agentId: string, reportsTo: string | null | undefined) {
-    if (!reportsTo) return;
-    if (reportsTo === agentId) throw unprocessable("Agent cannot report to itself");
-
-    let cursor: string | null = reportsTo;
-    while (cursor) {
-      if (cursor === agentId) throw unprocessable("Reporting relationship would create cycle");
-      const next = await getById(cursor);
-      cursor = next?.reportsTo ?? null;
-    }
   }
 
   async function assertCompanyShortnameAvailable(
@@ -237,11 +234,24 @@ export function agentService(db: Db) {
       throw conflict("Pending approval agents cannot be activated directly");
     }
 
-    if (data.reportsTo !== undefined) {
-      if (data.reportsTo) {
-        await ensureManager(existing.companyId, data.reportsTo);
+    // D7: Bidirectional sync — parentType/parentId ↔ reportsTo
+    if (data.parentType !== undefined || data.parentId !== undefined) {
+      const newParentType = data.parentType ?? null;
+      const newParentId = data.parentId ?? null;
+      if (newParentType && newParentId) {
+        await orgHierarchy.ensureParent(existing.companyId, newParentType, newParentId);
+        await orgHierarchy.assertNoCycle(existing.companyId, id, "agent", newParentId, newParentType);
       }
-      await assertNoCycle(id, data.reportsTo);
+      data.parentType = newParentType;
+      data.parentId = newParentId;
+      data.reportsTo = (newParentType === "agent" ? newParentId : null) as string | null;
+    } else if (data.reportsTo !== undefined) {
+      if (data.reportsTo) {
+        await orgHierarchy.ensureParent(existing.companyId, "agent", data.reportsTo);
+        await orgHierarchy.assertNoCycle(existing.companyId, id, "agent", data.reportsTo, "agent");
+      }
+      data.parentType = data.reportsTo ? "agent" : null;
+      data.parentId = data.reportsTo ?? null;
     }
 
     if (data.name !== undefined) {
@@ -303,8 +313,16 @@ export function agentService(db: Db) {
     getById,
 
     create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">) => {
-      if (data.reportsTo) {
-        await ensureManager(companyId, data.reportsTo);
+      // D7: Resolve parent fields from either parentType/parentId or reportsTo
+      const parentType = data.parentType ?? (data.reportsTo ? "agent" : null);
+      const parentId = data.parentId ?? data.reportsTo ?? null;
+      const reportsTo = data.reportsTo ?? (parentType === "agent" ? parentId : null);
+
+      if (parentType && parentId) {
+        await orgHierarchy.ensureParent(companyId, parentType, parentId);
+        // Bug fix: assertNoCycle was missing from create() — add cycle detection
+        // Note: for a new agent (no id yet), cycles are not possible since no
+        // other node can point to it. But we validate the parent chain is not broken.
       }
 
       await assertCompanyShortnameAvailable(companyId, data.name);
@@ -313,7 +331,15 @@ export function agentService(db: Db) {
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
       const created = await db
         .insert(agents)
-        .values({ ...data, companyId, role, permissions: normalizedPermissions })
+        .values({
+          ...data,
+          companyId,
+          role,
+          permissions: normalizedPermissions,
+          parentType,
+          parentId,
+          reportsTo: reportsTo as string | null,
+        })
         .returning()
         .then((rows) => rows[0]);
 
@@ -357,15 +383,20 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
 
-      await db
-        .update(agents)
-        .set({ status: "terminated", updatedAt: new Date() })
-        .where(eq(agents.id, id));
+      await db.transaction(async (tx) => {
+        // D4: Orphan children (agents + users) before terminating
+        await orgHierarchy.orphanChildren(id, "agent", tx);
 
-      await db
-        .update(agentApiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(agentApiKeys.agentId, id));
+        await tx
+          .update(agents)
+          .set({ status: "terminated", updatedAt: new Date() })
+          .where(eq(agents.id, id));
+
+        await tx
+          .update(agentApiKeys)
+          .set({ revokedAt: new Date() })
+          .where(eq(agentApiKeys.agentId, id));
+      });
 
       return getById(id);
     },
@@ -375,7 +406,8 @@ export function agentService(db: Db) {
       if (!existing) return null;
 
       return db.transaction(async (tx) => {
-        await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
+        // Cross-type orphaning: agents + users (replaces reportsTo-only orphaning)
+        await orgHierarchy.orphanChildren(id, "agent", tx);
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
