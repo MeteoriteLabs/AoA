@@ -299,6 +299,8 @@ export function agentRoutes(db: Db) {
       title: agent.title,
       status: agent.status,
       reportsTo: agent.reportsTo,
+      parentType: agent.parentType ?? null,
+      parentId: agent.parentId ?? null,
       adapterType: agent.adapterType,
       adapterConfig: redactEventPayload(agent.adapterConfig),
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
@@ -337,30 +339,6 @@ export function agentRoutes(db: Db) {
       beforeConfig: redactRevisionSnapshot(revision.beforeConfig),
       afterConfig: redactRevisionSnapshot(revision.afterConfig),
     };
-  }
-
-  function toLeanOrgNode(node: Record<string, unknown>): Record<string, unknown> {
-    const children = Array.isArray(node.children)
-      ? (node.children as Array<Record<string, unknown>>).map((child) => toLeanOrgNode(child))
-      : [];
-    const lean: Record<string, unknown> = {
-      id: String(node.id),
-      name: String(node.name),
-      role: String(node.role),
-      status: String(node.status),
-      nodeType: node.nodeType ?? "agent",
-      children,
-    };
-    // Include agent-specific fields
-    if (node.adapterType !== undefined) lean.adapterType = node.adapterType;
-    if (node.icon !== undefined) lean.icon = node.icon;
-    if (node.trustScore !== undefined) lean.trustScore = node.trustScore;
-    // Include user-specific fields
-    if (node.email !== undefined) lean.email = node.email;
-    if (node.userRole !== undefined) lean.userRole = node.userRole;
-    if (node.departmentName !== undefined) lean.departmentName = node.departmentName;
-    if (node.avatarUrl !== undefined) lean.avatarUrl = node.avatarUrl;
-    return lean;
   }
 
   router.param("id", async (req, _res, next, rawId) => {
@@ -432,8 +410,7 @@ export function agentRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const tree = await svc.orgForCompany(companyId);
-    const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
-    res.json(leanTree);
+    res.json(tree);
   });
 
   router.get("/companies/:companyId/agent-configurations", async (req, res) => {

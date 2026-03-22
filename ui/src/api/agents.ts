@@ -37,7 +37,7 @@ export interface OrgNode {
   name: string;
   role: string;
   status: string;
-  reports: OrgNode[];
+  children: OrgNode[];
 }
 
 export interface AgentHireResponse {
