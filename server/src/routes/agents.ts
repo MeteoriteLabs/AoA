@@ -1469,5 +1469,13 @@ export function agentRoutes(db: Db) {
     });
   });
 
+  // Temporary admin endpoint — backfill parentType/parentId from reportsTo (T3).
+  // Remove after confirming all data migrated.
+  router.post("/agents/admin/backfill-parent-fields", async (req, res) => {
+    assertBoard(req);
+    const count = await svc.backfillParentFields();
+    res.json({ ok: true, backfilledCount: count });
+  });
+
   return router;
 }
