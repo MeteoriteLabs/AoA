@@ -59,7 +59,7 @@ interface AgentsTabProps {
   trustScores?: Map<string, AgentTrustScore>;
 }
 
-export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScores }: AgentsTabProps) {
+export function AgentsTab({ agents, highlightId, permissions, trustScores }: AgentsTabProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { pushToast } = useToast();
