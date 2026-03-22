@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, isNotNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -290,7 +290,32 @@ export function agentService(db: Db) {
     return normalizedUpdated;
   }
 
+  async function backfillParentFields(): Promise<number> {
+    const rows = await db
+      .select({ id: agents.id, reportsTo: agents.reportsTo })
+      .from(agents)
+      .where(and(isNotNull(agents.reportsTo), isNull(agents.parentType)));
+
+    if (rows.length === 0) return 0;
+
+    let count = 0;
+    for (const row of rows) {
+      await db
+        .update(agents)
+        .set({
+          parentType: "agent",
+          parentId: row.reportsTo,
+          updatedAt: new Date(),
+        })
+        .where(eq(agents.id, row.id));
+      count++;
+    }
+    return count;
+  }
+
   return {
+    backfillParentFields,
+
     list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
       const conditions = [eq(agents.companyId, companyId)];
       if (!options?.includeTerminated) {
