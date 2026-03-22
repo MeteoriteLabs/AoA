@@ -51,14 +51,18 @@ try {
   console.log(`Creating initial versions for ${itemsWithoutVersion.length} memory items`);
 
   for (const item of itemsWithoutVersion) {
-    // Map item status to version status (versions only support draft/approved/archived)
+    // Map item status to version status
     let versionStatus: string;
     if (item.status === "approved") {
       versionStatus = "approved";
     } else if (item.status === "archived") {
       versionStatus = "archived";
+    } else if (item.status === "pending") {
+      versionStatus = "pending";
+    } else if (item.status === "rejected") {
+      versionStatus = "rejected";
     } else {
-      // pending, rejected, draft → keep as draft for version
+      // draft → keep as draft for version
       versionStatus = "draft";
     }
 

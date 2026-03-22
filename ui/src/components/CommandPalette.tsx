@@ -1,12 +1,14 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useDeferredValue, useMemo } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
+import type { GlobalSearchEntityType, GlobalSearchResult } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { searchApi } from "../api/search";
 import { queryKeys } from "../lib/queryKeys";
 import {
   CommandDialog,
@@ -29,9 +31,82 @@ import {
   Plus,
   FileText,
   ArrowLeftRight,
+  Brain,
+  Lightbulb,
+  FolderSearch,
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
+import { Badge } from "@/components/ui/badge";
+
+const TYPE_ICONS: Record<GlobalSearchEntityType, typeof CircleDot> = {
+  task: CircleDot,
+  goal: Target,
+  agent: Bot,
+  brief: FileText,
+  memory: Brain,
+  artifact: FolderSearch,
+  suggestion: Lightbulb,
+};
+
+function SearchResultBadges({ result }: { result: GlobalSearchResult }) {
+  if (result.type === "memory") {
+    return (
+      <>
+        {result.layer && (
+          <Badge variant="outline" className="hidden sm:inline-flex">
+            {result.layer.replace("_", " ")}
+          </Badge>
+        )}
+        {result.departmentName && (
+          <Badge variant="outline" className="hidden md:inline-flex">
+            {result.departmentName}
+          </Badge>
+        )}
+        {result.category && (
+          <Badge variant="outline" className="hidden md:inline-flex capitalize">
+            {result.category}
+          </Badge>
+        )}
+      </>
+    );
+  }
+
+  if (result.type === "artifact") {
+    return (
+      <>
+        {result.artifactType && (
+          <Badge variant="outline" className="hidden sm:inline-flex capitalize">
+            {result.artifactType}
+          </Badge>
+        )}
+        {typeof result.currentVersionNumber === "number" && (
+          <Badge variant="outline" className="hidden md:inline-flex">
+            v{result.currentVersionNumber}
+          </Badge>
+        )}
+      </>
+    );
+  }
+
+  if (result.type === "suggestion" && result.suggestionCategory) {
+    return (
+      <Badge variant="outline" className="hidden md:inline-flex capitalize">
+        {result.suggestionCategory.replace("_", " ")}
+      </Badge>
+    );
+  }
+
+  if (result.status) {
+    return (
+      <Badge variant="outline" className="hidden md:inline-flex capitalize">
+        {result.status.replace("_", " ")}
+      </Badge>
+    );
+  }
+
+  return null;
+}
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
@@ -40,7 +115,8 @@ export function CommandPalette() {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue, openNewAgent, openNewGoal, openDebrief } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
-  const searchQuery = query.trim();
+  const deferredQuery = useDeferredValue(query);
+  const searchQuery = deferredQuery.trim();
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -70,6 +146,12 @@ export function CommandPalette() {
     enabled: !!selectedCompanyId && open && searchQuery.length > 0,
   });
 
+  const { data: globalSearch } = useQuery({
+    queryKey: queryKeys.search.global(selectedCompanyId!, searchQuery),
+    queryFn: () => searchApi.global(selectedCompanyId!, searchQuery, { limitPerType: 8 }),
+    enabled: !!selectedCompanyId && open && searchQuery.length > 0,
+  });
+
   const { data: agents = [] } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
@@ -96,14 +178,18 @@ export function CommandPalette() {
     () => (searchQuery.length > 0 ? searchedIssues : issues),
     [issues, searchedIssues, searchQuery],
   );
+  const groupedSearchResults = globalSearch?.groups ?? [];
 
   return (
-    <CommandDialog open={open} onOpenChange={(v) => {
-        setOpen(v);
-        if (v && isMobile) setSidebarOpen(false);
-      }}>
+    <CommandDialog
+      open={open}
+      onOpenChange={(value) => {
+        setOpen(value);
+        if (value && isMobile) setSidebarOpen(false);
+      }}
+    >
       <CommandInput
-        placeholder="Search tasks, agents, projects..."
+        placeholder="Search tasks, goals, agents, briefs, memory, artifacts..."
         value={query}
         onValueChange={setQuery}
       />
@@ -152,10 +238,12 @@ export function CommandPalette() {
             <Plus className="mr-2 h-4 w-4" />
             New Project
           </CommandItem>
-          <CommandItem onSelect={() => {
-            setOpen(false);
-            navigate("/");
-          }}>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              navigate("/");
+            }}
+          >
             <ArrowLeftRight className="mr-2 h-4 w-4" />
             Switch Company
           </CommandItem>
@@ -194,18 +282,52 @@ export function CommandPalette() {
           </CommandItem>
         </CommandGroup>
 
-        {visibleIssues.length > 0 && (
+        {searchQuery.length > 0 && groupedSearchResults.length > 0 && (
+          <>
+            <CommandSeparator />
+            {groupedSearchResults.map((group) => (
+              <CommandGroup key={group.type} heading={`${group.label} (${group.count})`}>
+                {group.items.map((result) => {
+                  const Icon = TYPE_ICONS[result.type];
+                  return (
+                    <CommandItem
+                      key={`${result.type}-${result.id}`}
+                      value={`${group.label} ${result.identifier ?? ""} ${result.title} ${result.subtitle ?? ""}`}
+                      onSelect={() => go(result.href)}
+                    >
+                      <Icon className="mr-2 h-4 w-4" />
+                      {result.type === "task" && result.identifier ? (
+                        <span className="text-muted-foreground mr-2 font-mono text-xs">
+                          {result.identifier}
+                        </span>
+                      ) : null}
+                      <div className="flex min-w-0 flex-1 flex-col">
+                        <span className="truncate">{result.title}</span>
+                        {result.subtitle ? (
+                          <span className="text-muted-foreground truncate text-xs">
+                            {result.subtitle}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="ml-2 flex items-center gap-1">
+                        <SearchResultBadges result={result} />
+                      </div>
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+            ))}
+          </>
+        )}
+
+        {searchQuery.length === 0 && visibleIssues.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Tasks">
               {visibleIssues.slice(0, 10).map((issue) => (
                 <CommandItem
                   key={issue.id}
-                  value={
-                    searchQuery.length > 0
-                      ? `${searchQuery} ${issue.identifier ?? ""} ${issue.title}`
-                      : undefined
-                  }
+                  value={issue.identifier ? `${issue.identifier} ${issue.title}` : issue.title}
                   onSelect={() => go(`/issues/${issue.identifier ?? issue.id}`)}
                 >
                   <CircleDot className="mr-2 h-4 w-4" />
@@ -215,7 +337,9 @@ export function CommandPalette() {
                   <span className="flex-1 truncate">{issue.title}</span>
                   {issue.assigneeAgentId && (() => {
                     const name = agentName(issue.assigneeAgentId);
-                    return name ? <Identity name={name} size="sm" className="ml-2 hidden sm:inline-flex" /> : null;
+                    return name ? (
+                      <Identity name={name} size="sm" className="ml-2 hidden sm:inline-flex" />
+                    ) : null;
                   })()}
                 </CommandItem>
               ))}
@@ -223,7 +347,7 @@ export function CommandPalette() {
           </>
         )}
 
-        {agents.length > 0 && (
+        {searchQuery.length === 0 && agents.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Agents">
@@ -238,7 +362,7 @@ export function CommandPalette() {
           </>
         )}
 
-        {projects.length > 0 && (
+        {searchQuery.length === 0 && projects.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Projects">

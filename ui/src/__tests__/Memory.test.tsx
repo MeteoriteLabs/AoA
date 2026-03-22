@@ -94,6 +94,12 @@ const agentPendingItem = makeMemoryItem({
 });
 
 const allItems = [identityItem, domainItem, activeContextItem, workingItem, staleItem, agentPendingItem];
+const pendingQueue = {
+  items: [agentPendingItem],
+  versions: [],
+  archives: [],
+  totalCount: 1,
+};
 
 // --- Mocks ---
 
@@ -130,6 +136,9 @@ vi.mock("@tanstack/react-query", async () => {
       }
       // Default: memory list
       if (opts.queryKey?.[0] === "memory") {
+        if (opts.queryKey?.[2] === "pending") {
+          return { data: pendingQueue, isLoading: false };
+        }
         return { data: allItems, isLoading: false };
       }
       if (opts.queryKey?.[0] === "projects") {
@@ -159,14 +168,19 @@ vi.mock("../api/memory", () => ({
   memoryApi: {
     list: vi.fn().mockResolvedValue([]),
     get: vi.fn().mockResolvedValue(null),
+    listPending: vi.fn().mockResolvedValue({ items: [], versions: [], archives: [], totalCount: 0 }),
     create: vi.fn().mockResolvedValue({}),
     update: vi.fn().mockResolvedValue({}),
     remove: vi.fn().mockResolvedValue({}),
     approve: vi.fn().mockResolvedValue({}),
     reject: vi.fn().mockResolvedValue({}),
     getVersions: vi.fn().mockResolvedValue([]),
+    suggestUpdate: vi.fn().mockResolvedValue({}),
+    suggestArchive: vi.fn().mockResolvedValue({}),
     saveDraft: vi.fn().mockResolvedValue({}),
     publishDraft: vi.fn().mockResolvedValue({}),
+    approveVersion: vi.fn().mockResolvedValue({}),
+    rejectVersion: vi.fn().mockResolvedValue({}),
     restore: vi.fn().mockResolvedValue({}),
     touchAccessedAt: vi.fn().mockResolvedValue({}),
   },
@@ -188,6 +202,7 @@ vi.mock("../lib/queryKeys", () => ({
   queryKeys: {
     memory: {
       list: (companyId: string) => ["memory", companyId],
+      pending: (companyId: string) => ["memory", companyId, "pending"],
       detail: (companyId: string, id: string) => ["memory", companyId, id],
       versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"],
     },
@@ -359,7 +374,9 @@ describe("Memory Page", () => {
     it("shows empty state when no suggestions exist", async () => {
       mockQueryFn = (opts: any) => {
         if (opts.queryKey?.[0] === "memory") {
-          // No agent pending items
+          if (opts.queryKey?.[2] === "pending") {
+            return { data: { items: [], versions: [], archives: [], totalCount: 0 }, isLoading: false };
+          }
           return { data: [domainItem], isLoading: false };
         }
         return { data: [], isLoading: false };
@@ -432,6 +449,38 @@ describe("Memory Page", () => {
       renderWithProviders(<Memory />);
 
       expect(screen.getByText("Select a company to view memory.")).toBeInTheDocument();
+    });
+  });
+
+  describe("URL Selection", () => {
+    it("opens the selected memory item from the query string", async () => {
+      mockQueryFn = (opts: any) => {
+        if (
+          opts.queryKey?.[0] === "memory" &&
+          opts.queryKey?.length === 3 &&
+          opts.queryKey?.[2] === "mem-domain"
+        ) {
+          return { data: domainItem, isLoading: false };
+        }
+        if (
+          opts.queryKey?.[0] === "memory" &&
+          opts.queryKey?.[3] === "versions"
+        ) {
+          return { data: [], isLoading: false };
+        }
+        if (opts.queryKey?.[0] === "memory") {
+          return { data: allItems, isLoading: false };
+        }
+        return { data: [], isLoading: false };
+      };
+
+      renderWithProviders(<Memory />, {
+        initialEntries: ["/memory?selected=mem-domain"],
+      });
+
+      await waitFor(() => {
+        expect(screen.getAllByText("API Standards").length).toBeGreaterThan(1);
+      });
     });
   });
 });

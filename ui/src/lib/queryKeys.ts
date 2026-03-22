@@ -53,6 +53,10 @@ export const queryKeys = {
     comments: (approvalId: string) => ["approvals", "comments", approvalId] as const,
     issues: (approvalId: string) => ["approvals", "issues", approvalId] as const,
   },
+  trustScores: {
+    list: (companyId: string) => ["trust-scores", companyId] as const,
+    detail: (companyId: string, agentId: string) => ["trust-scores", companyId, agentId] as const,
+  },
   access: {
     joinRequests: (companyId: string, status: string = "pending_approval") =>
       ["access", "join-requests", companyId, status] as const,
@@ -82,8 +86,17 @@ export const queryKeys = {
   org: (companyId: string) => ["org", companyId] as const,
   memory: {
     list: (companyId: string) => ["memory", companyId] as const,
+    pending: (companyId: string) => ["memory", companyId, "pending"] as const,
     detail: (companyId: string, id: string) => ["memory", companyId, id] as const,
     versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"] as const,
+    semanticSearch: (companyId: string, q: string) => ["memory", companyId, "semantic-search", q] as const,
+  },
+  search: {
+    global: (companyId: string, query: string, includeArchived = false) =>
+      ["search", companyId, query, includeArchived ? "archived" : "default"] as const,
+  },
+  suggestions: {
+    pending: (companyId: string) => ["suggestions", companyId, "pending"] as const,
   },
   debriefs: {
     list: (companyId: string) => ["debriefs", companyId] as const,

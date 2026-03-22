@@ -21,15 +21,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Play, Pause, MoreHorizontal, Settings, History } from "lucide-react";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, AgentTrustScore } from "@paperclipai/shared";
+import { TrustScoreBadge } from "./TrustScoreBadge";
 
 interface AgentCardProps {
   agent: Agent;
   liveRun?: { runId: string; liveCount: number } | null;
   currentTaskTitle?: string | null;
+  trustScore?: AgentTrustScore | null;
 }
 
-export function AgentCard({ agent, liveRun, currentTaskTitle }: AgentCardProps) {
+export function AgentCard({ agent, liveRun, currentTaskTitle, trustScore }: AgentCardProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -159,7 +161,7 @@ export function AgentCard({ agent, liveRun, currentTaskTitle }: AgentCardProps) 
         <span>
           {agent.lastHeartbeatAt ? `Last active ${relativeTime(agent.lastHeartbeatAt)}` : "No activity yet"}
         </span>
-        {/* Trust score placeholder (V2) */}
+        <TrustScoreBadge score={trustScore} />
       </div>
     </div>
   );
