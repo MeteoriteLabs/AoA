@@ -34,19 +34,19 @@ function makeAgentNode(overrides: Partial<UnifiedOrgNode> = {}): UnifiedOrgNode 
     role: "engineer",
     status: "active",
     adapterType: "claude_api",
-    icon: null,
     pendingApproval: false,
     children: [],
     ...overrides,
   };
 }
 
-function makeHumanNode(overrides: Partial<UnifiedOrgNode> = {}): UnifiedOrgNode {
+function makeUserNode(overrides: Partial<UnifiedOrgNode> = {}): UnifiedOrgNode {
   return {
-    id: "human-1",
+    id: "user-1",
     name: "Jane Doe",
-    nodeType: "human",
-    avatarUrl: null,
+    nodeType: "user",
+    role: "founder",
+    status: "active",
     userRole: "founder",
     departmentName: "Engineering",
     children: [],
@@ -70,7 +70,7 @@ describe("OrgTreeTab", () => {
   it("renders agent node with blue border", () => {
     const onClick = vi.fn();
     const tree = [makeAgentNode()];
-    const { container } = renderWithProviders(
+    renderWithProviders(
       <OrgTreeTab orgTree={tree} onNodeClick={onClick} />,
     );
 
@@ -80,28 +80,28 @@ describe("OrgTreeTab", () => {
     expect(card.className).toContain("border-l-blue-400");
   });
 
-  it("renders human node with green border", () => {
+  it("renders user node with green border", () => {
     const onClick = vi.fn();
-    const tree = [makeHumanNode()];
-    const { container } = renderWithProviders(
+    const tree = [makeUserNode()];
+    renderWithProviders(
       <OrgTreeTab orgTree={tree} onNodeClick={onClick} />,
     );
 
-    const card = screen.getByTestId("org-node-human-1");
+    const card = screen.getByTestId("org-node-user-1");
     expect(card).toBeInTheDocument();
-    expect(card.getAttribute("data-node-type")).toBe("human");
+    expect(card.getAttribute("data-node-type")).toBe("user");
     expect(card.className).toContain("border-l-green-400");
   });
 
-  it("renders mixed agent and human nodes", () => {
+  it("renders mixed agent and user nodes", () => {
     const onClick = vi.fn();
     const tree = [
-      makeHumanNode({
+      makeUserNode({
         id: "founder-1",
         name: "Alice",
         children: [
           makeAgentNode({ id: "bot-1", name: "Bot Alpha" }),
-          makeHumanNode({ id: "lead-1", name: "Bob", userRole: "team_lead" }),
+          makeUserNode({ id: "lead-1", name: "Bob", userRole: "team_lead" }),
         ],
       }),
     ];
@@ -127,15 +127,15 @@ describe("OrgTreeTab", () => {
     expect(onClick).toHaveBeenCalledWith("a1", "agent");
   });
 
-  it("calls onNodeClick with correct id and nodeType for human", async () => {
+  it("calls onNodeClick with correct id and nodeType for user", async () => {
     const user = userEvent.setup();
     const onClick = vi.fn();
-    const tree = [makeHumanNode({ id: "h1", name: "Jane Smith" })];
+    const tree = [makeUserNode({ id: "h1", name: "Jane Smith" })];
 
     renderWithProviders(<OrgTreeTab orgTree={tree} onNodeClick={onClick} />);
 
     await user.click(screen.getByText("Jane Smith"));
-    expect(onClick).toHaveBeenCalledWith("h1", "human");
+    expect(onClick).toHaveBeenCalledWith("h1", "user");
   });
 
   it("dims pending_approval agents with opacity-50", () => {
@@ -167,18 +167,18 @@ describe("OrgTreeTab", () => {
     expect(card.className).not.toContain("opacity-50");
   });
 
-  it("renders human initials when no avatar", () => {
+  it("renders user initials when no avatar", () => {
     const onClick = vi.fn();
-    const tree = [makeHumanNode({ name: "Jane Doe", avatarUrl: null })];
+    const tree = [makeUserNode({ name: "Jane Doe" })];
 
     renderWithProviders(<OrgTreeTab orgTree={tree} onNodeClick={onClick} />);
 
     expect(screen.getByText("JD")).toBeInTheDocument();
   });
 
-  it("renders human avatar when provided", () => {
+  it("renders user avatar when provided", () => {
     const onClick = vi.fn();
-    const tree = [makeHumanNode({ avatarUrl: "https://example.com/avatar.png" })];
+    const tree = [makeUserNode({ avatarUrl: "https://example.com/avatar.png" })];
 
     renderWithProviders(<OrgTreeTab orgTree={tree} onNodeClick={onClick} />);
 
@@ -196,18 +196,18 @@ describe("OrgTreeTab", () => {
     expect(screen.getByText("Claude (API)")).toBeInTheDocument();
   });
 
-  it("renders role badge for humans", () => {
+  it("renders role badge for users", () => {
     const onClick = vi.fn();
-    const tree = [makeHumanNode({ userRole: "team_lead" })];
+    const tree = [makeUserNode({ userRole: "team_lead" })];
 
     renderWithProviders(<OrgTreeTab orgTree={tree} onNodeClick={onClick} />);
 
     expect(screen.getByText("Team Lead")).toBeInTheDocument();
   });
 
-  it("renders department name for humans", () => {
+  it("renders department name for users", () => {
     const onClick = vi.fn();
-    const tree = [makeHumanNode({ departmentName: "Design" })];
+    const tree = [makeUserNode({ departmentName: "Design" })];
 
     renderWithProviders(<OrgTreeTab orgTree={tree} onNodeClick={onClick} />);
 
@@ -218,7 +218,7 @@ describe("OrgTreeTab", () => {
     const onClick = vi.fn();
     const tree = [
       makeAgentNode({ id: "root-1", name: "Bot A" }),
-      makeHumanNode({ id: "root-2", name: "Human B" }),
+      makeUserNode({ id: "root-2", name: "Human B" }),
     ];
 
     renderWithProviders(<OrgTreeTab orgTree={tree} onNodeClick={onClick} />);

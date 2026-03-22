@@ -1380,6 +1380,8 @@ type JoinRequestManagerCandidate = {
   id: string;
   role: string;
   reportsTo: string | null;
+  parentType?: string | null;
+  parentId?: string | null;
 };
 
 export function resolveJoinRequestAgentManagerId(
@@ -1390,7 +1392,7 @@ export function resolveJoinRequestAgentManagerId(
   );
   if (ceoCandidates.length === 0) return null;
   const rootCeo = ceoCandidates.find(
-    (candidate) => candidate.reportsTo === null
+    (candidate) => !candidate.parentId && candidate.reportsTo === null
   );
   return (rootCeo ?? ceoCandidates[0] ?? null)?.id ?? null;
 }
@@ -2352,6 +2354,8 @@ export function accessRoutes(
           title: null,
           status: "idle",
           reportsTo: managerId,
+          parentType: managerId ? "agent" : null,
+          parentId: managerId,
           capabilities: existing.capabilities ?? null,
           adapterType: existing.adapterType ?? "process",
           adapterConfig:

@@ -46,17 +46,22 @@ export interface TeamSummary {
 export interface UnifiedOrgNode {
   id: string;
   name: string;
-  nodeType: "agent" | "human";
-  // Agent fields
-  role?: string;
-  status?: string;
+  role: string;
+  status: string;
+  nodeType: "agent" | "user";
+
+  // Agent-specific (undefined for users)
   adapterType?: string;
-  icon?: string | null;
+  trustScore?: number;
+  icon?: string;
   pendingApproval?: boolean;
-  // Human fields
-  avatarUrl?: string | null;
-  userRole?: UserRole;
-  departmentName?: string | null;
-  // Tree structure
+
+  // User-specific (undefined for agents)
+  email?: string;
+  userRole?: "founder" | "team_lead" | "team_member";
+  departmentName?: string;
+  avatarUrl?: string;
+
+  // Hierarchy
   children: UnifiedOrgNode[];
 }

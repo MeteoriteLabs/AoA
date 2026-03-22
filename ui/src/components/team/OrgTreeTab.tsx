@@ -16,18 +16,18 @@ const PADDING = 60;
 
 interface LayoutNode {
   id: string;
-  nodeType: "agent" | "human";
+  nodeType: "agent" | "user";
   name: string;
+  role: string;
+  status: string;
   // Agent fields
-  role?: string;
-  status?: string;
   adapterType?: string;
-  icon?: string | null;
+  icon?: string;
   pendingApproval?: boolean;
-  // Human fields
-  avatarUrl?: string | null;
+  // User fields
+  avatarUrl?: string;
   userRole?: string;
-  departmentName?: string | null;
+  departmentName?: string;
   // Position
   x: number;
   y: number;
@@ -134,7 +134,7 @@ const ROLE_LABELS: Record<string, string> = {
 
 export interface OrgTreeTabProps {
   orgTree: UnifiedOrgNode[];
-  onNodeClick: (id: string, nodeType: "agent" | "human") => void;
+  onNodeClick: (id: string, nodeType: "agent" | "user") => void;
 }
 
 export function OrgTreeTab({ orgTree, onNodeClick }: OrgTreeTabProps) {
@@ -359,9 +359,9 @@ function AgentNodeCard({
   onClick,
 }: {
   node: LayoutNode;
-  onClick: (id: string, nodeType: "agent" | "human") => void;
+  onClick: (id: string, nodeType: "agent" | "user") => void;
 }) {
-  const dotColor = statusDotColor[node.status ?? ""] ?? defaultDotColor;
+  const dotColor = statusDotColor[node.status] ?? defaultDotColor;
 
   return (
     <div
@@ -398,7 +398,7 @@ function AgentNodeCard({
             {node.name}
           </span>
           <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
-            {roleLabels[node.role ?? ""] ?? node.role ?? "Agent"}
+            {roleLabels[node.role] ?? node.role}
           </span>
           {node.adapterType && (
             <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
@@ -433,13 +433,13 @@ function HumanNodeCard({
   onClick,
 }: {
   node: LayoutNode;
-  onClick: (id: string, nodeType: "agent" | "human") => void;
+  onClick: (id: string, nodeType: "agent" | "user") => void;
 }) {
   return (
     <div
       data-org-card
       data-testid={`org-node-${node.id}`}
-      data-node-type="human"
+      data-node-type="user"
       className="absolute bg-card border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none border-l-[3px] border-l-green-400"
       style={{
         left: node.x,
@@ -450,7 +450,7 @@ function HumanNodeCard({
         borderRightColor: "var(--border)",
         borderBottomColor: "var(--border)",
       }}
-      onClick={() => onClick(node.id, "human")}
+      onClick={() => onClick(node.id, "user")}
     >
       <div className="flex items-center px-4 py-3 gap-3">
         <div className="shrink-0">

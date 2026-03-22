@@ -12,6 +12,8 @@ type JoinRequestManagerCandidate = {
   id: string;
   role: string;
   reportsTo: string | null;
+  parentType?: string | null;
+  parentId?: string | null;
 };
 
 const COMPANY_INVITE_TTL_MS = 10 * 60 * 1000;
@@ -321,7 +323,9 @@ export function resolveJoinRequestAgentManagerId(
 ): string | null {
   const ceoCandidates = candidates.filter((candidate) => candidate.role === "ceo");
   if (ceoCandidates.length === 0) return null;
-  const rootCeo = ceoCandidates.find((candidate) => candidate.reportsTo === null);
+  const rootCeo = ceoCandidates.find(
+    (candidate) => !candidate.parentId && candidate.reportsTo === null,
+  );
   return (rootCeo ?? ceoCandidates[0] ?? null)?.id ?? null;
 }
 
