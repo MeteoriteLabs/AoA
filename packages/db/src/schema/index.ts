@@ -43,3 +43,5 @@ export { memoryFeedbackPatterns } from "./memory_feedback_patterns.js";
 export { suggestions } from "./suggestions.js";
 export { agentTrustScores } from "./agent_trust_scores.js";
 export { userRoles } from "./user_roles.js";
+export { mcpApiKeys } from "./mcp_api_keys.js";
+export { mcpClientConnections } from "./mcp_client_connections.js";

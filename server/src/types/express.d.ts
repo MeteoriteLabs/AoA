@@ -1,5 +1,5 @@
 interface Actor {
-  type: "none" | "board" | "agent";
+  type: "none" | "board" | "agent" | "mcp";
   source: string;
   userId?: string;
   companyId?: string;

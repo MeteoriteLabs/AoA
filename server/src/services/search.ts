@@ -11,7 +11,7 @@ import type {
 import { deriveAgentUrlKey } from "@paperclipai/shared";
 
 type Actor = {
-  type: "none" | "board" | "agent";
+  type: "none" | "board" | "agent" | "mcp";
   source: string;
   userId?: string;
 };
@@ -144,7 +144,7 @@ async function resolveScope(db: Db, companyId: string, actor: Actor): Promise<Se
   if (actor.type === "agent") {
     return { role: "founder", userId: null, scopedProjectIds: new Set() };
   }
-  if (actor.type !== "board" || actor.source === "local_implicit" || !actor.userId) {
+  if ((actor.type !== "board" && actor.type !== "mcp") || actor.source === "local_implicit" || !actor.userId) {
     return { role: "founder", userId: actor.userId ?? null, scopedProjectIds: new Set() };
   }
 

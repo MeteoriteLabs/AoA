@@ -17,6 +17,7 @@ function makeCompany(overrides: Partial<Company>): Company {
     mission: null,
     values: null,
     brandColor: null,
+    mcpEnabled: false,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

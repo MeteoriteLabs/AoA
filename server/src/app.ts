@@ -37,6 +37,7 @@ import { memoryFeedbackRoutes } from "./routes/memory-feedback.js";
 import { memoryLifecycleRoutes } from "./routes/memory-lifecycle.js";
 import { suggestionRoutes } from "./routes/suggestions.js";
 import { contextPackagingRoutes } from "./routes/context-packaging.js";
+import { mcpServerRoutes } from "./mcp/server.js";
 import { teamRoutes } from "./routes/team.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
@@ -134,7 +135,7 @@ export async function createApp(
   api.use(teamRoutes(db));
   api.use(suggestionRoutes(db));
   api.use(contextPackagingRoutes(db));
-  api.use(searchRoutes(db));
+  api.use(mcpServerRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
   api.use(costRoutes(db));

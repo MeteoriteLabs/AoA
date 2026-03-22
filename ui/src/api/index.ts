@@ -16,3 +16,4 @@ export { dashboardApi } from "./dashboard";
 export { heartbeatsApi } from "./heartbeats";
 export { sidebarBadgesApi } from "./sidebarBadges";
 export { artifactsApi } from "./artifacts";
+export { mcpApi } from "./mcp";
