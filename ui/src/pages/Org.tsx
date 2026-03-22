@@ -39,7 +39,7 @@ function OrgTreeNode({
   hrefFn: (id: string) => string;
 }) {
   const [expanded, setExpanded] = useState(true);
-  const hasChildren = node.reports.length > 0;
+  const hasChildren = node.children.length > 0;
 
   return (
     <div>
@@ -83,7 +83,7 @@ function OrgTreeNode({
         <StatusBadge status={node.status} />
       </Link>
       {hasChildren && expanded && (
-        <OrgTree nodes={node.reports} depth={depth + 1} hrefFn={hrefFn} />
+        <OrgTree nodes={node.children} depth={depth + 1} hrefFn={hrefFn} />
       )}
     </div>
   );

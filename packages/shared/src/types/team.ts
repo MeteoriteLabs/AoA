@@ -47,7 +47,19 @@ export interface UnifiedOrgNode {
   name: string;
   role: string;
   status: string;
-  parentType: "agent" | "department" | "company" | null;
-  parentId: string | null;
-  reports: UnifiedOrgNode[];
+  nodeType: "agent" | "user";
+
+  // Agent-specific (undefined for users)
+  adapterType?: string;
+  trustScore?: number;
+  icon?: string;
+
+  // User-specific (undefined for agents)
+  email?: string;
+  userRole?: "founder" | "team_lead" | "team_member";
+  departmentName?: string;
+  avatarUrl?: string;
+
+  // Hierarchy
+  children: UnifiedOrgNode[];
 }
