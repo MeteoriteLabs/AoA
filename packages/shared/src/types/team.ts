@@ -41,3 +41,22 @@ export interface TeamSummary {
   members: TeamMemberSummary[];
   pendingInvites: TeamInviteSummary[];
 }
+
+/** A node in the unified org tree that can represent either an agent or a human. */
+export interface UnifiedOrgNode {
+  id: string;
+  name: string;
+  nodeType: "agent" | "human";
+  // Agent fields
+  role?: string;
+  status?: string;
+  adapterType?: string;
+  icon?: string | null;
+  pendingApproval?: boolean;
+  // Human fields
+  avatarUrl?: string | null;
+  userRole?: UserRole;
+  departmentName?: string | null;
+  // Tree structure
+  children: UnifiedOrgNode[];
+}
