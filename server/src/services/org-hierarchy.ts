@@ -1,63 +1,48 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companyMemberships } from "@paperclipai/db";
-import { conflict, notFound } from "../errors.js";
+import { notFound, unprocessable } from "../errors.js";
 
+/**
+ * Maximum depth for chain walking in cycle detection.
+ * Prevents infinite loops on corrupted data.
+ */
 const MAX_CHAIN_DEPTH = 50;
 
-type ParentType = "agent" | "user";
 type EntityType = "agent" | "user";
 
+/**
+ * Shared org-hierarchy helpers used by both agentService and teamService.
+ */
 export function orgHierarchyService(db: Db) {
-  async function ensureParent(
-    companyId: string,
-    parentType: ParentType,
-    parentId: string,
-  ): Promise<void> {
-    if (parentType === "agent") {
-      const rows = await db
-        .select({ id: agents.id, status: agents.status })
-        .from(agents)
-        .where(and(eq(agents.id, parentId), eq(agents.companyId, companyId)))
-        .limit(1);
-      if (!rows[0]) throw notFound("Parent agent not found in this company");
-      if (rows[0].status === "terminated") throw conflict("Cannot report to a terminated agent");
-    } else {
-      const rows = await db
-        .select({ principalId: companyMemberships.principalId })
-        .from(companyMemberships)
-        .where(
-          and(
-            eq(companyMemberships.companyId, companyId),
-            eq(companyMemberships.principalType, "user"),
-            eq(companyMemberships.principalId, parentId),
-            eq(companyMemberships.status, "active"),
-          ),
-        )
-        .limit(1);
-      if (!rows[0]) throw notFound("Parent user not found or not active in this company");
-    }
-  }
-
+  /**
+   * Walk the mixed agent/user parent chain starting from newParentId
+   * and throw if we encounter entityId (which would create a cycle).
+   *
+   * - null parent → root node, no cycle possible
+   * - self-reference → immediate rejection
+   * - depth ≥ 50 → stop walking (no throw, prevents infinite loop on corrupt data)
+   */
   async function assertNoCycle(
     companyId: string,
     entityId: string,
     entityType: EntityType,
     newParentId: string | null,
-    newParentType: ParentType | null,
+    newParentType: EntityType | null,
   ): Promise<void> {
     if (!newParentId || !newParentType) return;
+
     if (entityId === newParentId && entityType === newParentType) {
-      throw conflict("Cannot set an entity as its own parent");
+      throw unprocessable("Cannot set an entity as its own parent");
     }
 
     let currentId: string | null = newParentId;
-    let currentType: string | null = newParentType;
+    let currentType: EntityType | null = newParentType;
     let depth = 0;
 
     while (currentId && currentType && depth < MAX_CHAIN_DEPTH) {
       if (currentId === entityId && currentType === entityType) {
-        throw conflict(
+        throw unprocessable(
           `Cannot set parent: would create a circular reporting chain (depth ${depth})`,
         );
       }
@@ -68,9 +53,10 @@ export function orgHierarchyService(db: Db) {
           .from(agents)
           .where(eq(agents.id, currentId))
           .limit(1);
-        if (!rows[0] || !rows[0].parentId) break;
-        currentId = rows[0].parentId;
-        currentType = rows[0].parentType;
+        const row = rows[0];
+        if (!row || !row.parentId) break;
+        currentType = row.parentType as EntityType | null;
+        currentId = row.parentId as string | null;
       } else {
         const rows = await db
           .select({
@@ -86,29 +72,81 @@ export function orgHierarchyService(db: Db) {
             ),
           )
           .limit(1);
-        if (!rows[0] || !rows[0].parentId) break;
-        currentId = rows[0].parentId;
-        currentType = rows[0].parentType;
+        const row = rows[0];
+        if (!row || !row.parentId) break;
+        currentType = row.parentType as EntityType | null;
+        currentId = row.parentId as string | null;
       }
+
       depth++;
     }
   }
 
+  /**
+   * Validate that parentId refers to a valid, active entity in the same company.
+   *
+   * - agent parent: must exist in same company, not terminated
+   * - user parent:  must have an active company_memberships row
+   */
+  async function ensureParent(
+    companyId: string,
+    parentType: EntityType,
+    parentId: string,
+  ): Promise<void> {
+    if (parentType === "agent") {
+      const rows = await db
+        .select({ id: agents.id, status: agents.status })
+        .from(agents)
+        .where(and(eq(agents.id, parentId), eq(agents.companyId, companyId)))
+        .limit(1);
+      if (!rows[0]) throw notFound("Parent agent not found in this company");
+      if (rows[0].status === "terminated") {
+        throw unprocessable("Cannot report to a terminated agent");
+      }
+    } else {
+      const rows = await db
+        .select({ principalId: companyMemberships.principalId })
+        .from(companyMemberships)
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, parentId),
+            eq(companyMemberships.status, "active"),
+          ),
+        )
+        .limit(1);
+      if (!rows[0]) {
+        throw unprocessable(
+          "Parent user not found or not active in this company",
+        );
+      }
+    }
+  }
+
+  /**
+   * Nullify parent fields on all children of the given entity.
+   * Used when terminating/removing an agent or removing a user from a company.
+   *
+   * - Clears parentType, parentId on child agents
+   * - Clears reportsTo on child agents (migration compat, D7)
+   * - Clears parentType, parentId on child users (via company_memberships)
+   */
   async function orphanChildren(
     entityId: string,
     entityType: EntityType,
     txOrDb: Db = db,
   ): Promise<void> {
-    // Orphan child agents pointing to this entity
+    // Orphan child agents
     await txOrDb
       .update(agents)
       .set({ parentType: null, parentId: null, reportsTo: null })
       .where(and(eq(agents.parentType, entityType), eq(agents.parentId, entityId)));
 
-    // Orphan child users pointing to this entity
+    // Orphan child users (company_memberships)
     await txOrDb
       .update(companyMemberships)
-      .set({ parentType: null, parentId: null, updatedAt: new Date() })
+      .set({ parentType: null, parentId: null })
       .where(
         and(
           eq(companyMemberships.parentType, entityType),
@@ -117,9 +155,5 @@ export function orgHierarchyService(db: Db) {
       );
   }
 
-  return {
-    ensureParent,
-    assertNoCycle,
-    orphanChildren,
-  };
+  return { assertNoCycle, ensureParent, orphanChildren };
 }

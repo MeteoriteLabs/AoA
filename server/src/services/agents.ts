@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, isNotNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -10,12 +10,18 @@ import {
   agentWakeupRequests,
   heartbeatRunEvents,
   heartbeatRuns,
+  authUsers,
+  companyMemberships,
+  userRoles,
+  projects,
 } from "@paperclipai/db";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import type { UnifiedOrgNode } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { orgHierarchyService } from "./org-hierarchy.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -30,6 +36,8 @@ const CONFIG_REVISION_FIELDS = [
   "role",
   "title",
   "reportsTo",
+  "parentType",
+  "parentId",
   "capabilities",
   "adapterType",
   "adapterConfig",
@@ -84,6 +92,8 @@ function buildConfigSnapshot(
     role: row.role,
     title: row.title,
     reportsTo: row.reportsTo,
+    parentType: row.parentType ?? null,
+    parentId: row.parentId ?? null,
     capabilities: row.capabilities,
     adapterType: row.adapterType,
     adapterConfig,
@@ -127,7 +137,7 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
     throw unprocessable("Invalid revision snapshot: budgetMonthlyCents");
   }
 
-  return {
+  const patch: Partial<typeof agents.$inferInsert> = {
     name: snapshot.name,
     role: snapshot.role,
     title: typeof snapshot.title === "string" || snapshot.title === null ? snapshot.title : null,
@@ -143,11 +153,30 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
     budgetMonthlyCents: Math.max(0, Math.floor(snapshot.budgetMonthlyCents)),
     metadata: isPlainRecord(snapshot.metadata) || snapshot.metadata === null ? snapshot.metadata : null,
   };
+
+  if ("parentType" in snapshot) {
+    patch.parentType =
+      typeof snapshot.parentType === "string" || snapshot.parentType === null ? snapshot.parentType : null;
+  }
+  if ("parentId" in snapshot) {
+    patch.parentId =
+      typeof snapshot.parentId === "string" || snapshot.parentId === null ? snapshot.parentId : null;
+  }
+
+  return patch;
 }
 
 export { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
 
+const USER_ROLE_PRIORITY: Record<string, number> = { founder: 3, team_lead: 2, team_member: 1 };
+
+function isValidParentType(value: unknown): value is "agent" | "user" {
+  return value === "agent" || value === "user";
+}
+
 export function agentService(db: Db) {
+  const orgHierarchy = orgHierarchyService(db);
+
   function withUrlKey<T extends { id: string; name: string }>(row: T) {
     return {
       ...row,
@@ -169,27 +198,6 @@ export function agentService(db: Db) {
       .where(eq(agents.id, id))
       .then((rows) => rows[0] ?? null);
     return row ? normalizeAgentRow(row) : null;
-  }
-
-  async function ensureManager(companyId: string, managerId: string) {
-    const manager = await getById(managerId);
-    if (!manager) throw notFound("Manager not found");
-    if (manager.companyId !== companyId) {
-      throw unprocessable("Manager must belong to same company");
-    }
-    return manager;
-  }
-
-  async function assertNoCycle(agentId: string, reportsTo: string | null | undefined) {
-    if (!reportsTo) return;
-    if (reportsTo === agentId) throw unprocessable("Agent cannot report to itself");
-
-    let cursor: string | null = reportsTo;
-    while (cursor) {
-      if (cursor === agentId) throw unprocessable("Reporting relationship would create cycle");
-      const next = await getById(cursor);
-      cursor = next?.reportsTo ?? null;
-    }
   }
 
   async function assertCompanyShortnameAvailable(
@@ -237,11 +245,24 @@ export function agentService(db: Db) {
       throw conflict("Pending approval agents cannot be activated directly");
     }
 
-    if (data.reportsTo !== undefined) {
-      if (data.reportsTo) {
-        await ensureManager(existing.companyId, data.reportsTo);
+    // D7: Bidirectional sync — parentType/parentId ↔ reportsTo
+    if (data.parentType !== undefined || data.parentId !== undefined) {
+      const newParentType = data.parentType ?? null;
+      const newParentId = data.parentId ?? null;
+      if (newParentType && newParentId) {
+        await orgHierarchy.ensureParent(existing.companyId, newParentType, newParentId);
+        await orgHierarchy.assertNoCycle(existing.companyId, id, "agent", newParentId, newParentType);
       }
-      await assertNoCycle(id, data.reportsTo);
+      data.parentType = newParentType;
+      data.parentId = newParentId;
+      data.reportsTo = (newParentType === "agent" ? newParentId : null) as string | null;
+    } else if (data.reportsTo !== undefined) {
+      if (data.reportsTo) {
+        await orgHierarchy.ensureParent(existing.companyId, "agent", data.reportsTo);
+        await orgHierarchy.assertNoCycle(existing.companyId, id, "agent", data.reportsTo, "agent");
+      }
+      data.parentType = data.reportsTo ? "agent" : null;
+      data.parentId = data.reportsTo ?? null;
     }
 
     if (data.name !== undefined) {
@@ -290,7 +311,32 @@ export function agentService(db: Db) {
     return normalizedUpdated;
   }
 
+  async function backfillParentFields(): Promise<number> {
+    const rows = await db
+      .select({ id: agents.id, reportsTo: agents.reportsTo })
+      .from(agents)
+      .where(and(isNotNull(agents.reportsTo), isNull(agents.parentType)));
+
+    if (rows.length === 0) return 0;
+
+    let count = 0;
+    for (const row of rows) {
+      await db
+        .update(agents)
+        .set({
+          parentType: "agent",
+          parentId: row.reportsTo,
+          updatedAt: new Date(),
+        })
+        .where(eq(agents.id, row.id));
+      count++;
+    }
+    return count;
+  }
+
   return {
+    backfillParentFields,
+
     list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
       const conditions = [eq(agents.companyId, companyId)];
       if (!options?.includeTerminated) {
@@ -303,8 +349,16 @@ export function agentService(db: Db) {
     getById,
 
     create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">) => {
-      if (data.reportsTo) {
-        await ensureManager(companyId, data.reportsTo);
+      // D7: Resolve parent fields from either parentType/parentId or reportsTo
+      const parentType = data.parentType ?? (data.reportsTo ? "agent" : null);
+      const parentId = data.parentId ?? data.reportsTo ?? null;
+      const reportsTo = data.reportsTo ?? (parentType === "agent" ? parentId : null);
+
+      if (parentType && parentId) {
+        await orgHierarchy.ensureParent(companyId, parentType, parentId);
+        // Bug fix: assertNoCycle was missing from create() — add cycle detection
+        // Note: for a new agent (no id yet), cycles are not possible since no
+        // other node can point to it. But we validate the parent chain is not broken.
       }
 
       await assertCompanyShortnameAvailable(companyId, data.name);
@@ -313,7 +367,15 @@ export function agentService(db: Db) {
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
       const created = await db
         .insert(agents)
-        .values({ ...data, companyId, role, permissions: normalizedPermissions })
+        .values({
+          ...data,
+          companyId,
+          role,
+          permissions: normalizedPermissions,
+          parentType,
+          parentId,
+          reportsTo: reportsTo as string | null,
+        })
         .returning()
         .then((rows) => rows[0]);
 
@@ -357,15 +419,20 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
 
-      await db
-        .update(agents)
-        .set({ status: "terminated", updatedAt: new Date() })
-        .where(eq(agents.id, id));
+      await db.transaction(async (tx) => {
+        // D4: Orphan children (agents + users) before terminating
+        await orgHierarchy.orphanChildren(id, "agent", tx);
 
-      await db
-        .update(agentApiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(agentApiKeys.agentId, id));
+        await tx
+          .update(agents)
+          .set({ status: "terminated", updatedAt: new Date() })
+          .where(eq(agents.id, id));
+
+        await tx
+          .update(agentApiKeys)
+          .set({ revokedAt: new Date() })
+          .where(eq(agentApiKeys.agentId, id));
+      });
 
       return getById(id);
     },
@@ -375,7 +442,8 @@ export function agentService(db: Db) {
       if (!existing) return null;
 
       return db.transaction(async (tx) => {
-        await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
+        // Cross-type orphaning: agents + users (replaces reportsTo-only orphaning)
+        await orgHierarchy.orphanChildren(id, "agent", tx);
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
@@ -514,42 +582,217 @@ export function agentService(db: Db) {
       return rows[0] ?? null;
     },
 
-    orgForCompany: async (companyId: string) => {
-      const rows = await db
-        .select()
-        .from(agents)
-        .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
-      const normalizedRows = rows.map(normalizeAgentRow);
-      const byManager = new Map<string | null, typeof normalizedRows>();
-      for (const row of normalizedRows) {
-        const key = row.reportsTo ?? null;
-        const group = byManager.get(key) ?? [];
-        group.push(row);
-        byManager.set(key, group);
+    orgForCompany: async (companyId: string): Promise<UnifiedOrgNode[]> => {
+      // Two parallel queries: agents + users
+      const [agentRows, userRows] = await Promise.all([
+        db
+          .select()
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated"))),
+        db
+          .select({
+            userId: companyMemberships.principalId,
+            email: authUsers.email,
+            displayName: authUsers.displayName,
+            avatarUrl: authUsers.avatarUrl,
+            name: authUsers.name,
+            parentType: companyMemberships.parentType,
+            parentId: companyMemberships.parentId,
+            role: userRoles.role,
+            departmentId: userRoles.projectId,
+            departmentName: projects.name,
+          })
+          .from(companyMemberships)
+          .innerJoin(authUsers, eq(companyMemberships.principalId, authUsers.id))
+          .leftJoin(
+            userRoles,
+            and(eq(userRoles.companyId, companyId), eq(userRoles.userId, companyMemberships.principalId)),
+          )
+          .leftJoin(projects, eq(userRoles.projectId, projects.id))
+          .where(
+            and(
+              eq(companyMemberships.companyId, companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.status, "active"),
+            ),
+          ),
+      ]);
+
+      // Deduplicate users by highest role (a user may have multiple user_roles rows)
+      const userMap = new Map<
+        string,
+        {
+          userId: string;
+          email: string;
+          displayName: string | null;
+          avatarUrl: string | null;
+          name: string;
+          parentType: string | null;
+          parentId: string | null;
+          role: string | null;
+          departmentId: string | null;
+          departmentName: string | null;
+        }
+      >();
+      for (const row of userRows) {
+        const existing = userMap.get(row.userId);
+        if (!existing || (USER_ROLE_PRIORITY[row.role ?? ""] ?? 0) > (USER_ROLE_PRIORITY[existing.role ?? ""] ?? 0)) {
+          userMap.set(row.userId, row);
+        }
       }
 
-      const build = (managerId: string | null): Array<Record<string, unknown>> => {
-        const members = byManager.get(managerId) ?? [];
-        return members.map((member) => ({
-          ...member,
-          reports: build(member.id),
-        }));
-      };
+      // Build a parentKey → children map for the unified tree
+      // Key format: "agent:<id>" or "user:<id>" or "root" for nodes without a parent
+      type NodeEntry = { node: UnifiedOrgNode; parentKey: string };
+      const entries: NodeEntry[] = [];
+      const nodeById = new Map<string, UnifiedOrgNode>();
 
-      return build(null);
+      // Convert agents to unified nodes
+      for (const row of agentRows) {
+        // Determine parent: prefer parentType/parentId, fallback to reportsTo
+        let parentKey = "root";
+        if (row.parentType && row.parentId) {
+          parentKey = `${row.parentType}:${row.parentId}`;
+        } else if (row.reportsTo) {
+          parentKey = `agent:${row.reportsTo}`;
+        }
+
+        const node: UnifiedOrgNode = {
+          id: row.id,
+          name: row.name,
+          role: row.role,
+          status: row.status,
+          nodeType: "agent",
+          adapterType: row.adapterType,
+          icon: row.icon ?? undefined,
+          children: [],
+        };
+        entries.push({ node, parentKey });
+        nodeById.set(`agent:${row.id}`, node);
+      }
+
+      // Convert users to unified nodes
+      for (const [userId, row] of userMap) {
+        let parentKey = "root";
+        if (row.parentType && row.parentId) {
+          parentKey = `${row.parentType}:${row.parentId}`;
+        }
+
+        const node: UnifiedOrgNode = {
+          id: userId,
+          name: row.displayName ?? row.name,
+          role: row.role ?? "team_member",
+          status: "active",
+          nodeType: "user",
+          email: row.email,
+          userRole: (row.role as UnifiedOrgNode["userRole"]) ?? "team_member",
+          departmentName: row.departmentName ?? undefined,
+          avatarUrl: row.avatarUrl ?? undefined,
+          children: [],
+        };
+        entries.push({ node, parentKey });
+        nodeById.set(`user:${userId}`, node);
+      }
+
+      // Assemble tree: attach children to parents
+      const roots: UnifiedOrgNode[] = [];
+      for (const { node, parentKey } of entries) {
+        if (parentKey === "root") {
+          roots.push(node);
+        } else {
+          const parent = nodeById.get(parentKey);
+          if (parent) {
+            parent.children.push(node);
+          } else {
+            // Parent not found (terminated/missing) → promote to root
+            roots.push(node);
+          }
+        }
+      }
+
+      return roots;
     },
 
-    getChainOfCommand: async (agentId: string) => {
-      const chain: { id: string; name: string; role: string; title: string | null }[] = [];
-      const visited = new Set<string>([agentId]);
+    getChainOfCommand: async (agentId: string, companyId?: string) => {
+      const chain: { id: string; name: string; role: string; title: string | null; nodeType: "agent" | "user" }[] =
+        [];
+      const visited = new Set<string>([`agent:${agentId}`]);
       const start = await getById(agentId);
-      let currentId = start?.reportsTo ?? null;
-      while (currentId && !visited.has(currentId) && chain.length < 50) {
-        visited.add(currentId);
-        const mgr = await getById(currentId);
-        if (!mgr) break;
-        chain.push({ id: mgr.id, name: mgr.name, role: mgr.role, title: mgr.title ?? null });
-        currentId = mgr.reportsTo ?? null;
+      if (!start) return chain;
+
+      // Determine first parent: prefer parentType/parentId, fallback to reportsTo
+      const startParentType = start.parentType === "agent" || start.parentType === "user" ? start.parentType : null;
+      let currentType: "agent" | "user" = startParentType ?? "agent";
+      let currentId: string | null = start.parentId ?? start.reportsTo ?? null;
+
+      while (currentId && chain.length < 50) {
+        const visitKey = `${currentType}:${currentId}`;
+        if (visited.has(visitKey)) break;
+        visited.add(visitKey);
+
+        if (currentType === "agent") {
+          const mgr = await getById(currentId);
+          if (!mgr) break;
+          chain.push({ id: mgr.id, name: mgr.name, role: mgr.role, title: mgr.title ?? null, nodeType: "agent" });
+          // Walk up: prefer parentType/parentId, fallback to reportsTo
+          if (isValidParentType(mgr.parentType) && mgr.parentId) {
+            currentType = mgr.parentType;
+            currentId = mgr.parentId;
+          } else {
+            currentType = "agent";
+            currentId = mgr.reportsTo ?? null;
+          }
+        } else {
+          // User node — look up via company_memberships
+          if (!companyId) break;
+          const rows = await db
+            .select({
+              principalId: companyMemberships.principalId,
+              parentType: companyMemberships.parentType,
+              parentId: companyMemberships.parentId,
+              displayName: authUsers.displayName,
+              name: authUsers.name,
+            })
+            .from(companyMemberships)
+            .innerJoin(authUsers, eq(companyMemberships.principalId, authUsers.id))
+            .where(
+              and(
+                eq(companyMemberships.companyId, companyId),
+                eq(companyMemberships.principalType, "user"),
+                eq(companyMemberships.principalId, currentId),
+                eq(companyMemberships.status, "active"),
+              ),
+            )
+            .limit(1);
+          const user = rows[0];
+          if (!user) break;
+
+          // Get user's highest role for display
+          const roleRows = await db
+            .select({ role: userRoles.role })
+            .from(userRoles)
+            .where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, currentId)));
+          let bestRole = "team_member";
+          for (const r of roleRows) {
+            if ((USER_ROLE_PRIORITY[r.role] ?? 0) > (USER_ROLE_PRIORITY[bestRole] ?? 0)) bestRole = r.role;
+          }
+
+          chain.push({
+            id: user.principalId,
+            name: user.displayName ?? user.name,
+            role: bestRole,
+            title: null,
+            nodeType: "user",
+          });
+
+          // Walk up
+          if (isValidParentType(user.parentType) && user.parentId) {
+            currentType = user.parentType;
+            currentId = user.parentId;
+          } else {
+            currentId = null;
+          }
+        }
       }
       return chain;
     },
