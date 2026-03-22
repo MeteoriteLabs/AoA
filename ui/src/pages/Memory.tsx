@@ -80,6 +80,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { useTeamAccess } from "../hooks/useTeamAccess";
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -150,6 +151,7 @@ export function Memory() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs, setSubtitle, setEntityColor } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const { permissions } = useTeamAccess(selectedCompanyId);
   const [searchParams] = useSearchParams();
 
   const [search, setSearch] = useState(searchParams.get("q") ?? "");
@@ -311,10 +313,26 @@ export function Memory() {
           </Button>
         </div>
 
-        <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
-          <Plus className="h-3.5 w-3.5 mr-1.5" />
-          Add to Memory
-        </Button>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setCreateOpen(true)}
+                  disabled={!permissions.canEditIdentityMemory}
+                >
+                  <Plus className="h-3.5 w-3.5 mr-1.5" />
+                  Add to Memory
+                </Button>
+              </span>
+            </TooltipTrigger>
+            {!permissions.canEditIdentityMemory && (
+              <TooltipContent>You don't have permission to edit identity memory</TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
       </div>
 
       {/* Tabs: All / Agent Suggestions */}
@@ -423,6 +441,7 @@ export function Memory() {
               onSelectItem={setSelectedItemId}
               onApprove={(id) => approveMutation.mutate(id)}
               onReject={(id) => rejectMutation.mutate(id)}
+              canEditIdentityMemory={permissions.canEditIdentityMemory}
             />
           ) : (
             <FlatView
@@ -432,6 +451,7 @@ export function Memory() {
               onSelectItem={setSelectedItemId}
               onApprove={(id) => approveMutation.mutate(id)}
               onReject={(id) => rejectMutation.mutate(id)}
+              canEditIdentityMemory={permissions.canEditIdentityMemory}
             />
           )}
         </TabsContent>
@@ -445,6 +465,7 @@ export function Memory() {
             onReject={(id) => rejectMutation.mutate(id)}
             onApproveVersion={(itemId, versionId) => approveVersionMutation.mutate({ itemId, versionId })}
             onRejectVersion={(itemId, versionId) => rejectVersionMutation.mutate({ itemId, versionId })}
+            canEditIdentityMemory={permissions.canEditIdentityMemory}
           />
         </TabsContent>
       </Tabs>
@@ -456,6 +477,7 @@ export function Memory() {
           itemId={selectedItemId}
           departments={departments}
           onClose={() => setSelectedItemId(null)}
+          canEditIdentityMemory={permissions.canEditIdentityMemory}
         />
       )}
 
@@ -465,6 +487,7 @@ export function Memory() {
         onOpenChange={setCreateOpen}
         companyId={selectedCompanyId}
         departments={departments}
+        canCreate={permissions.canEditIdentityMemory}
       />
     </div>
   );
@@ -479,6 +502,7 @@ function LayerView({
   onSelectItem,
   onApprove,
   onReject,
+  canEditIdentityMemory,
 }: {
   items: MemoryItem[];
   departments: Project[];
@@ -486,6 +510,7 @@ function LayerView({
   onSelectItem: (id: string | null) => void;
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
+  canEditIdentityMemory: boolean;
 }) {
   const grouped = useMemo(() => {
     const map: Record<string, MemoryItem[]> = {
@@ -518,6 +543,7 @@ function LayerView({
           onSelectItem={onSelectItem}
           onApprove={onApprove}
           onReject={onReject}
+          canEditIdentityMemory={canEditIdentityMemory}
         />
       ))}
       {grouped.unassigned.length > 0 && (
@@ -540,6 +566,7 @@ function LayerView({
                 onSelect={() => onSelectItem(selectedItemId === item.id ? null : item.id)}
                 onApprove={() => onApprove(item.id)}
                 onReject={() => onReject(item.id)}
+                canEditIdentityMemory={canEditIdentityMemory}
               />
             ))}
           </div>
@@ -557,6 +584,7 @@ function LayerSection({
   onSelectItem,
   onApprove,
   onReject,
+  canEditIdentityMemory,
 }: {
   layer: MemoryItemLayer;
   items: MemoryItem[];
@@ -565,6 +593,7 @@ function LayerSection({
   onSelectItem: (id: string | null) => void;
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
+  canEditIdentityMemory: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const totalTokens = useMemo(
@@ -626,6 +655,7 @@ function LayerSection({
                   onSelect={() => onSelectItem(selectedItemId === item.id ? null : item.id)}
                   onApprove={() => onApprove(item.id)}
                   onReject={() => onReject(item.id)}
+                  canEditIdentityMemory={canEditIdentityMemory}
                 />
               ))}
             </div>
@@ -645,6 +675,7 @@ function FlatView({
   onSelectItem,
   onApprove,
   onReject,
+  canEditIdentityMemory,
 }: {
   items: MemoryItem[];
   departments: Project[];
@@ -652,6 +683,7 @@ function FlatView({
   onSelectItem: (id: string | null) => void;
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
+  canEditIdentityMemory: boolean;
 }) {
   return (
     <div className="space-y-2">
@@ -664,6 +696,7 @@ function FlatView({
           onSelect={() => onSelectItem(selectedItemId === item.id ? null : item.id)}
           onApprove={() => onApprove(item.id)}
           onReject={() => onReject(item.id)}
+          canEditIdentityMemory={canEditIdentityMemory}
           showLayer
         />
       ))}
@@ -680,6 +713,7 @@ function MemoryCard({
   onSelect,
   onApprove,
   onReject,
+  canEditIdentityMemory,
   showLayer,
 }: {
   item: MemoryItem;
@@ -688,13 +722,12 @@ function MemoryCard({
   onSelect: () => void;
   onApprove: () => void;
   onReject: () => void;
+  canEditIdentityMemory: boolean;
   showLayer?: boolean;
 }) {
-  const dept = item.departmentId
-    ? departments.find((d) => d.id === item.departmentId)
-    : null;
-
+  const dept = item.departmentId ? departments.find((d) => d.id === item.departmentId) : null;
   const stale = isStale(item);
+  const identityLocked = item.layer === "identity" && !canEditIdentityMemory;
 
   return (
     <div
@@ -792,7 +825,7 @@ function MemoryCard({
           )}
         </div>
 
-        {item.status === "pending" && (
+        {item.status === "pending" && !identityLocked && (
           <div
             className="flex items-center gap-1 shrink-0"
             onClick={(e) => e.stopPropagation()}
@@ -829,11 +862,13 @@ function MemoryDetailPanel({
   itemId,
   departments,
   onClose,
+  canEditIdentityMemory,
 }: {
   companyId: string;
   itemId: string;
   departments: Project[];
   onClose: () => void;
+  canEditIdentityMemory: boolean;
 }) {
   const queryClient = useQueryClient();
   const [activeDetailTab, setActiveDetailTab] = useState<string>("content");
@@ -895,6 +930,7 @@ function MemoryDetailPanel({
   const hasPendingAgentVersion = versions?.some(
     (v) => v.status === "pending" && v.createdBy !== "founder",
   );
+  const identityLocked = item.layer === "identity" && !canEditIdentityMemory;
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -1059,17 +1095,19 @@ function MemoryDetailPanel({
                   {item.content}
                 </p>
                 <div className="flex items-center gap-2 justify-end">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setDraftContent(item.content);
-                      setIsEditing(true);
-                    }}
-                  >
-                    <Pencil className="h-3.5 w-3.5 mr-1" />
-                    Edit
-                  </Button>
+                  {!identityLocked && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setDraftContent(item.content);
+                        setIsEditing(true);
+                      }}
+                    >
+                      <Pencil className="h-3.5 w-3.5 mr-1" />
+                      Edit
+                    </Button>
+                  )}
                   {hasDraft && (
                     <Button
                       size="sm"
@@ -1231,6 +1269,7 @@ function SuggestionQueue({
   onReject,
   onApproveVersion,
   onRejectVersion,
+  canEditIdentityMemory,
 }: {
   queue: PendingMemoryQueue | undefined;
   departments: Project[];
@@ -1239,6 +1278,7 @@ function SuggestionQueue({
   onReject: (id: string) => void;
   onApproveVersion: (itemId: string, versionId: string) => void;
   onRejectVersion: (itemId: string, versionId: string) => void;
+  canEditIdentityMemory: boolean;
 }) {
   const queryClient = useQueryClient();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1283,6 +1323,7 @@ function SuggestionQueue({
           : null;
 
         const isEditingThis = editingId === item.id;
+        const identityLocked = item.layer === "identity" && !canEditIdentityMemory;
 
         return (
           <div key={item.id} className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-900/10">
@@ -1368,7 +1409,7 @@ function SuggestionQueue({
               )}
 
               {/* Actions */}
-              {!isEditingThis && (
+              {!isEditingThis && !identityLocked && (
                 <div className="flex items-center gap-2 justify-end pt-1 border-t border-amber-100 dark:border-amber-900">
                   <Button
                     size="sm"
@@ -1407,6 +1448,7 @@ function SuggestionQueue({
         );
       })}
       {versions.map((entry) => {
+        const identityLocked = entry.itemLayer === "identity" && !canEditIdentityMemory;
         const dept = null;
         return (
           <div key={entry.version.id} className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10">
@@ -1434,25 +1476,27 @@ function SuggestionQueue({
                 Proposed version v{entry.version.versionNumber} against current memory content.
               </div>
               <SimpleDiff oldText={entry.currentContent} newText={entry.version.content} />
-              <div className="flex items-center gap-2 justify-end pt-1 border-t border-blue-100 dark:border-blue-900">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/30 h-7 text-xs"
-                  onClick={() => onRejectVersion(entry.itemId, entry.version.id)}
-                >
-                  <X className="h-3.5 w-3.5 mr-1" />
-                  Reject
-                </Button>
-                <Button
-                  size="sm"
-                  className="h-7 text-xs"
-                  onClick={() => onApproveVersion(entry.itemId, entry.version.id)}
-                >
-                  <Check className="h-3.5 w-3.5 mr-1" />
-                  Approve
-                </Button>
-              </div>
+              {!identityLocked && (
+                <div className="flex items-center gap-2 justify-end pt-1 border-t border-blue-100 dark:border-blue-900">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/30 h-7 text-xs"
+                    onClick={() => onRejectVersion(entry.itemId, entry.version.id)}
+                  >
+                    <X className="h-3.5 w-3.5 mr-1" />
+                    Reject
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => onApproveVersion(entry.itemId, entry.version.id)}
+                  >
+                    <Check className="h-3.5 w-3.5 mr-1" />
+                    Approve
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         );
@@ -1523,11 +1567,13 @@ function CreateMemoryDialog({
   onOpenChange,
   companyId,
   departments,
+  canCreate,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   companyId: string;
   departments: Project[];
+  canCreate: boolean;
 }) {
   const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
@@ -1580,7 +1626,7 @@ function CreateMemoryDialog({
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!title.trim() || !content.trim()) return;
+    if (!canCreate || !title.trim() || !content.trim()) return;
 
     const tags = tagsInput
       .split(",")
@@ -1806,7 +1852,7 @@ function CreateMemoryDialog({
             </Button>
             <Button
               type="submit"
-              disabled={!title.trim() || !content.trim() || createMutation.isPending}
+              disabled={!canCreate || !title.trim() || !content.trim() || createMutation.isPending}
             >
               {createMutation.isPending ? "Saving..." : "Save"}
             </Button>

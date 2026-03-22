@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveJoinRequestAgentManagerId } from "../routes/access.js";
+import { resolveJoinRequestAgentManagerId } from "../routes/access-helpers.js";
 
 describe("resolveJoinRequestAgentManagerId", () => {
   it("returns null when no CEO exists in the company agent list", () => {

@@ -3,7 +3,7 @@ import {
   buildJoinDefaultsPayloadForAccept,
   canReplayOpenClawInviteAccept,
   mergeJoinDefaultsPayloadForReplay,
-} from "../routes/access.js";
+} from "../routes/access-helpers.js";
 
 describe("canReplayOpenClawInviteAccept", () => {
   it("allows replay only for openclaw agent joins in pending or approved state", () => {

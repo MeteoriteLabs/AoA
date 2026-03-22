@@ -111,6 +111,17 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => mockBreadcrumbContext,
 }));
 
+vi.mock("../hooks/useTeamAccess", () => ({
+  useTeamAccess: () => ({
+    permissions: {
+      canAssignTasks: true,
+      canInviteUsers: true,
+      canManageRoles: true,
+      canEditIdentityMemory: true,
+    },
+  }),
+}));
+
 let mockQueryFn: (opts: { queryKey: unknown[] }) => unknown;
 
 vi.mock("@tanstack/react-query", async () => {
