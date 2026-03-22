@@ -48,30 +48,33 @@ Goals, Agents, Company, Settings, Activity, Inbox — unchanged.
 - **Department deletion:** Blocked if tasks or goals exist. Must reassign first. Memory items become unscoped.
 - **Extraction failure:** Debrief marked `processing_failed`, founder notified. Can retry or manually create.
 
-## V2 Architecture
+## V2 Architecture (Implemented)
 
-V2 adds four pillars: **Intelligence**, **Team**, **Artifacts**, **Integration**.
+V2 adds four pillars: **Intelligence**, **Team**, **Artifacts**, **Integration**. All features below are implemented and tested.
 
-- **Layered Memory (4 layers):**
+- **Layered Memory (4 layers):** [IMPLEMENTED — S8-S10, S23-S24]
   - `identity` — permanent, always included (vision, mission, company values). Sources: companies table fields + memory items with layer='identity'.
   - `domain` — department-scoped, semi-permanent (how we do X).
   - `active_context` — goal/project-scoped, temporary with `expiresAt`. Team leads can approve for their departments.
   - `working` — task-chain-scoped, ephemeral. Auto-archives (not deletes) after 7 days.
-- **Semantic retrieval:** pgvector extension, 1536-dimension embeddings (OpenAI text-embedding-3-small), cosine similarity. IVFFlat/HNSW indexes. <100ms for 10K items.
-- **Artifacts:** Versioned deliverables (documents, presentations, code). `artifacts` table + `artifact_versions` table. Versions are immutable. Source-agnostic (agent, founder, MCP, teammate, external). Founder picks winner for branching — no auto-merge.
-- **Agent output capture:** 3-step pipeline — workspace diff → adapter hinting → founder confirmation during review. Files copied from workspace to storage, never moved. (Decision #67)
-- **Artifact-as-input:** Downstream tasks auto-receive artifacts from dependency tasks as context. Enables spec→design→code→test pipelines. (Decision #71)
-- **Refinement loop:** Review state supports adding artifact versions (not just approve/reject). Founder can refine on external LLMs and push back via MCP, upload, or paste. (Decisions #69, #70)
-- **Suggestion engine:** 8 categories (goal_gap, pipeline_bottleneck, memory_gap, pattern_detected, budget_optimization, recurring_work, risk_flag, workload_balance) + agent proposals. Runs on Home load + every 4 hours.
-- **Feedback loops:** `memory_feedback_patterns` table detects recurring founder edits on agent work. Suggests memory items after ≥3 occurrences.
-- **Agent trust score:** `(approvedWithoutChanges / totalTasksCompleted) × 100`, last 20 tasks weighted 2x. Displayed on agent cards.
-- **RBAC:** Three roles: `founder`, `team_lead`, `team_member`. Department-scoped. Additive from restrictive defaults.
+  - Memory versioning: draft/approved/archived lifecycle with version history. `memory_item_versions` table.
+  - Memory lifecycle: auto-archive on goal completion, TTL-based working memory archival (7-day BFS chain check, max depth 50), expiresAt archival, 90-day staleness flagging via suggestions.
+  - Restore: archived items can be unarchived. `touchAccessedAt` tracks usage for staleness detection.
+- **Semantic retrieval:** [IMPLEMENTED — S11-S12] pgvector extension, 1536-dimension embeddings (OpenAI text-embedding-3-small), cosine similarity. IVFFlat/HNSW indexes. <100ms for 10K items. Fallback to ilike text search when no API key. Similarity threshold: 0.85 (cosine), 0.6 (word overlap). Background `processEmbeddingQueue` worker with batch processing (10 items/run) and exponential backoff retry (3 attempts).
+- **Artifacts:** [IMPLEMENTED — S4-S7] Versioned deliverables (documents, presentations, code). `artifacts` table + `artifact_versions` table. Versions are immutable. Source-agnostic (agent, founder, MCP, teammate, external). Founder picks winner for branching — no auto-merge. Version numbering is atomic via transactions.
+- **Agent output capture:** [IMPLEMENTED] 3-step pipeline — workspace diff → adapter hinting → founder confirmation during review. Files copied from workspace to storage, never moved. (Decision #67)
+- **Artifact-as-input:** [IMPLEMENTED — S20] Downstream tasks auto-receive artifacts from dependency tasks as context. Enables spec→design→code→test pipelines. Context packaging includes artifacts from current task + dependency tasks, with content truncated at 2000 chars. (Decision #71)
+- **Refinement loop:** [IMPLEMENTED] Review state supports adding artifact versions (not just approve/reject). Founder can refine on external LLMs and push back via MCP, upload, or paste. (Decisions #69, #70)
+- **Suggestion engine:** [IMPLEMENTED — S16-S17] 8 categories (goal_gap, pipeline_bottleneck, memory_gap, pattern_detected, budget_optimization, recurring_work, risk_flag, workload_balance) + agent proposals. Runs on Home load + every 4 hours. Suggestions deduped by actionPayload.patternId.
+- **Feedback loops:** [IMPLEMENTED — S13] `memory_feedback_patterns` table detects recurring founder edits on agent work. 4 detector types: tone_correction, format_change, content_addition, terminology_change. Suggests memory items after ≥3 occurrences. Grouped by agent.
+- **Agent trust score:** [IMPLEMENTED — S18-S19] `(approvedWithoutChanges / totalTasksCompleted) × 100`, last 20 tasks weighted 2x. Sliding window approximation for the recent window. Auto-creates trust score row on first review. Displayed on agent cards.
+- **RBAC:** [IMPLEMENTED — S25-S27] Three roles: `founder`, `team_lead`, `team_member`. Department-scoped. Additive from restrictive defaults. Team leads can approve active_context for their departments.
 - **MCP bidirectional:** V1 inbound (external → Debrief, per Decision #14). V2 adds outbound: AoA as MCP server exposing read-only resources (tasks, goals, memory, artifacts) + limited write tools (debrief push, suggest-memory, update-task-status, attach-artifact-version).
-- **Global search:** PostgreSQL full-text search (tsvector/tsquery), cmd+K, RBAC-scoped, results grouped by entity type.
-- **Voice debrief:** Browser recording → Whisper API transcription → enters Debrief pipeline. Third input mode alongside paste and write.
-- **Context packaging:** "Open in [LLM]" button assembles full 10-section context (identity + domain memory + goal + task + artifacts + dependencies).
-- **Per-agent context mode:** Three levels (minimal/standard/full) control how much context each agent receives. Stored in `runtimeConfig.contextMode`. Default: `standard`. Prevents token waste for simple adapters. (Decision #87)
-- **Run summary comments:** Auto-generated task comments after each heartbeat run showing duration, token usage, cost, outcome, and detected files. Uses existing `issue_comments` table. Opt-out via `runtimeConfig.autoRunSummary`. (Decision #88)
+- **Global search:** [IMPLEMENTED — S28] PostgreSQL full-text search (tsvector/tsquery), cmd+K, RBAC-scoped, results grouped by entity type.
+- **Voice debrief:** [IMPLEMENTED — S21] Browser recording → Whisper API transcription → enters Debrief pipeline. Third input mode alongside paste and write.
+- **Context packaging:** [IMPLEMENTED — S20] "Open in [LLM]" button assembles 8-section markdown context (company identity + department/project + goal + dependencies + task details + artifacts + agent config + preferences). Token estimate: ceil(markdown.length / 4). 8000-token warning threshold.
+- **Per-agent context mode:** [IMPLEMENTED — Decision #87] Three levels (minimal/standard/full) control how much context each agent receives. Stored in `runtimeConfig.contextMode`. Default: `standard`. Prevents token waste for simple adapters.
+- **Run summary comments:** [IMPLEMENTED — S22, Decision #88] Auto-generated task comments after each heartbeat run showing duration, token usage, cost, outcome, and detected files. Uses existing `issue_comments` table. Opt-out via `runtimeConfig.autoRunSummary`. Files truncated to 10 shown + "+N more".
 
 ## Sidebar Structure
 
@@ -138,6 +141,15 @@ V3 adds five pillars: **Autonomy**, **Workflows**, **Connectors**, **Blueprints*
 
 - `agents` — adds: autonomyLevel (0-3), autonomyConfig (per-level settings)
 - `issues` — adds: pipelineInstanceId, pipelineStepOrder
+
+## V2 Test Patterns
+
+Tests in `server/src/__tests__/` use these patterns to work around the drizzle-orm ESM cycle issue:
+
+- **Pure function tests:** Import and test directly (e.g., `formatRunSummary`, `detectToneCorrections`, `computeScore`).
+- **Service tests with mocks:** Mock `@paperclipai/db` and `drizzle-orm` with Proxy-based table stubs and no-op operators. Use sequence-based mock DBs (`createSequenceDb`) where each `select`/`update`/`insert` returns the next pre-configured result.
+- **Contract tests:** Verify API shapes, constants, and formulas without importing drizzle internals.
+- **V2 QA test suites (S29):** `v2-memory-qa.test.ts`, `v2-artifacts-qa.test.ts`, `v2-integration-qa.test.ts`, `v2-edge-cases-qa.test.ts`, `v2-performance-qa.test.ts`.
 
 ## Docs
 
