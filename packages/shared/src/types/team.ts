@@ -41,3 +41,25 @@ export interface TeamSummary {
   members: TeamMemberSummary[];
   pendingInvites: TeamInviteSummary[];
 }
+
+export interface UnifiedOrgNode {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+  nodeType: 'agent' | 'user';
+
+  // Agent-specific (null/undefined for users)
+  adapterType?: string;
+  trustScore?: number;
+  icon?: string;
+
+  // User-specific (null/undefined for agents)
+  email?: string;
+  userRole?: 'founder' | 'team_lead' | 'team_member';
+  departmentName?: string;
+  avatarUrl?: string;
+
+  // Hierarchy
+  children: UnifiedOrgNode[];
+}
