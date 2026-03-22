@@ -23,6 +23,11 @@ Replace the current `Team.tsx` page at `/org` with a three-tab management consol
 - **D1: Users can only report to other users, never to agents.** Rationale: humans don't "report to" AI agents in an org structure. Agents can report to either agents or users. This keeps the hierarchy intuitive.
 - **D2: `company_memberships` table holds human parent data, not `user_roles`.** Rationale: `user_roles` allows multiple rows per user per company (one per department). The parent relationship is per-person-per-company, which maps to `company_memberships` (unique on `companyId, principalType, principalId`).
 - **D3: `children` replaces `reports` in the API response.** This is a breaking change to the `GET /org` endpoint. The old `OrgNode` type with `reports` is replaced by `UnifiedOrgNode` with `children`. Frontend code must update accordingly.
+- **D4: `terminate()` orphans children.** Terminated agents are excluded from the org tree (`status != 'terminated'`), so any children pointing to them become invisible orphans. Both `terminate()` and `remove()` must nullify `parentType`/`parentId` on all children (agents and users).
+- **D5: `pending_approval` agents appear in the org tree** with a distinct visual treatment (dimmed card, "Pending" badge). They are part of the org structure even before activation.
+- **D6: `parentId` column uses `text` type, not `uuid`.** User IDs from `authUsers` are text strings, not UUIDs. Agent IDs are UUIDs stored as text. Both fit in a `text` column. No foreign key constraint on `parentId` — referential integrity is enforced at the application layer.
+- **D7: During migration, `reportsTo` and `parentType`/`parentId` are kept in sync.** Writes to `reportsTo` auto-populate `parentType='agent', parentId=reportsTo`. Writes to `parentType`/`parentId` auto-populate `reportsTo` (when parentType='agent') or clear it (when parentType='user' or null). Reads return both until `reportsTo` is dropped.
+- **D8: Tab state uses URL query params.** `/org?tab=agents`, `/org?tab=humans`, `/org` (default = org tree). Enables deep linking and browser back/forward.
 
 ## Data Model Changes
 
@@ -366,3 +371,233 @@ Current `Team.tsx` content moved into this tab with one addition:
 - Changes to the Agents list page (`/agents`)
 - V3 autonomy tiers, pipeline templates, blueprints
 - Department-agent auto-assignment (agents are explicitly assigned parents)
+
+---
+
+## Implementation Addendum: Resolved Gaps
+
+### A1. terminate() Orphaning Behavior
+
+**Decision (D4):** `terminate()` must orphan children, same as `remove()`.
+
+**Current state:** `terminate()` (agents.ts:356-371) only sets status to `'terminated'` and revokes API keys. It does NOT touch child agents. `remove()` (agents.ts:373-391) nullifies `reportsTo` on children before deleting.
+
+**Implementation:**
+Add to `terminate()`, before setting status:
+```typescript
+// Orphan child agents
+await tx.update(agents)
+  .set({ parentType: null, parentId: null, reportsTo: null })
+  .where(and(eq(agents.parentType, 'agent'), eq(agents.parentId, id)));
+
+// Orphan child users (company_memberships)
+await tx.update(companyMemberships)
+  .set({ parentType: null, parentId: null })
+  .where(and(eq(companyMemberships.parentType, 'agent'), eq(companyMemberships.parentId, id)));
+```
+
+### A2. orgForCompany Unified Query
+
+**Current state:** `orgForCompany()` (agents.ts:517-540) fetches all non-terminated agents in one query. `listTeam()` (team.ts:118-191) uses 5 parallel queries to assemble user data.
+
+**New query strategy for unified tree:**
+
+```typescript
+async function orgForCompany(companyId: string): Promise<UnifiedOrgNode[]> {
+  // Two parallel queries
+  const [agentRows, userRows] = await Promise.all([
+    // 1. All non-terminated agents
+    db.select().from(agents)
+      .where(and(eq(agents.companyId, companyId), ne(agents.status, 'terminated'))),
+
+    // 2. All active users with their role + department info
+    db.select({
+      userId: companyMemberships.principalId,
+      email: authUsers.email,
+      displayName: authUsers.displayName,
+      avatarUrl: authUsers.avatarUrl,
+      name: authUsers.name,
+      parentType: companyMemberships.parentType,
+      parentId: companyMemberships.parentId,
+      role: userRoles.role,
+      departmentId: userRoles.projectId,
+      departmentName: projects.name,
+    })
+    .from(companyMemberships)
+    .innerJoin(authUsers, eq(companyMemberships.principalId, authUsers.id))
+    .leftJoin(userRoles, and(
+      eq(userRoles.companyId, companyId),
+      eq(userRoles.userId, companyMemberships.principalId)
+    ))
+    .leftJoin(projects, eq(userRoles.projectId, projects.id))
+    .where(and(
+      eq(companyMemberships.companyId, companyId),
+      eq(companyMemberships.principalType, 'user'),
+      eq(companyMemberships.status, 'active')
+    ))
+  ]);
+
+  // Deduplicate users (a user may have multiple user_roles rows — pick highest role)
+  const userMap = new Map<string, UserNode>();
+  for (const row of userRows) {
+    const existing = userMap.get(row.userId);
+    if (!existing || rolePriority(row.role) > rolePriority(existing.role)) {
+      userMap.set(row.userId, row);
+    }
+  }
+
+  // Build unified tree from both sets
+  // ... (same recursive tree-building as current, but with nodeType discrimination)
+}
+```
+
+**Role priority for dedup:** `founder > team_lead > team_member` — if a user has roles in multiple departments, their highest role is used for the tree display.
+
+**New imports needed in agents.ts:** `companyMemberships`, `authUsers` (from `@paperclipai/db`), `userRoles`, `projects`.
+
+### A3. assertNoCycle Full Contract
+
+**Current state:** `assertNoCycle(agentId, reportsTo)` is a nested function inside `agentService()` (agents.ts:183-193). It only queries the `agents` table via the closure-scoped `getById()`.
+
+**New design:**
+
+```typescript
+// Move to a shared utility or keep in agentService but add company_memberships access
+async function assertNoCycle(
+  companyId: string,
+  entityId: string,
+  entityType: 'agent' | 'user',
+  newParentId: string | null,
+  newParentType: 'agent' | 'user' | null
+): Promise<void> {
+  if (!newParentId || !newParentType) return; // null parent = root, no cycle possible
+  if (entityId === newParentId && entityType === newParentType) {
+    throw new Error('Cannot set an entity as its own parent');
+  }
+
+  let currentId = newParentId;
+  let currentType = newParentType;
+  let depth = 0;
+
+  while (currentId && depth < 50) {
+    if (currentId === entityId && currentType === entityType) {
+      throw new Error(
+        `Cannot set parent: would create a circular reporting chain (depth ${depth})`
+      );
+    }
+
+    // Look up parent of current node
+    if (currentType === 'agent') {
+      const agent = await db.select({ parentType: agents.parentType, parentId: agents.parentId })
+        .from(agents).where(eq(agents.id, currentId)).limit(1);
+      if (!agent[0] || !agent[0].parentId) break;
+      currentId = agent[0].parentId;
+      currentType = agent[0].parentType as 'agent' | 'user';
+    } else {
+      const membership = await db.select({
+        parentType: companyMemberships.parentType,
+        parentId: companyMemberships.parentId
+      })
+        .from(companyMemberships)
+        .where(and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, 'user'),
+          eq(companyMemberships.principalId, currentId)
+        )).limit(1);
+      if (!membership[0] || !membership[0].parentId) break;
+      currentId = membership[0].parentId;
+      currentType = membership[0].parentType as 'user';
+    }
+    depth++;
+  }
+}
+```
+
+**Location:** Stays inside `agentService()` but gains access to `companyMemberships` via new import. The same function is also called from `teamService.updateUserRole()` — either import it or extract to a shared `orgService` utility. **Recommendation:** Extract to a small `server/src/services/org-hierarchy.ts` module that both `agentService` and `teamService` can import.
+
+### A4. ensureParent Validation Helper
+
+Replaces `ensureManager()` (agents.ts:174-181).
+
+```typescript
+async function ensureParent(
+  companyId: string,
+  parentType: 'agent' | 'user',
+  parentId: string
+): Promise<void> {
+  if (parentType === 'agent') {
+    const agent = await db.select({ id: agents.id, status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.id, parentId), eq(agents.companyId, companyId)))
+      .limit(1);
+    if (!agent[0]) throw new Error('Parent agent not found in this company');
+    if (agent[0].status === 'terminated') throw new Error('Cannot report to a terminated agent');
+  } else {
+    const membership = await db.select({ principalId: companyMemberships.principalId })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, 'user'),
+        eq(companyMemberships.principalId, parentId),
+        eq(companyMemberships.status, 'active')
+      ))
+      .limit(1);
+    if (!membership[0]) throw new Error('Parent user not found or not active in this company');
+  }
+}
+```
+
+**Location:** Same as `assertNoCycle` — in the proposed `org-hierarchy.ts` shared module.
+
+### A5. User Removal Code Path
+
+**Current state:** There is NO dedicated "remove member from company" function. User removal happens only via:
+1. `accessService.setUserCompanyAccess()` — bulk operation, deletes `company_memberships` rows for companies not in target list
+2. Company deletion — cascade deletes all memberships
+
+**Implementation plan:**
+
+1. **Create `teamService.removeMember(companyId, userId)`** — new function that:
+   - Validates caller is founder
+   - Validates target is not the last founder
+   - Orphans all children (agents + users) pointing to this user
+   - Deletes `user_roles` rows for this user in this company
+   - Deletes `company_memberships` row
+   - Deletes `principal_permission_grants` for this user in this company
+
+2. **Add route:** `DELETE /companies/:companyId/team/users/:userId` — founder-only
+
+3. **Add orphaning hook to `setUserCompanyAccess()`** — when company_memberships rows are deleted, also orphan children pointing to those users
+
+4. **UI:** Add "Remove" action to human member cards on the Humans tab (founder-only, confirmation dialog)
+
+### A6. "Reports to" Dropdown
+
+**Data source:** No new endpoint needed. The Org Tree tab already fetches the unified tree via `GET /org`. The dropdown can be populated from the same data:
+
+```typescript
+// From the UnifiedOrgNode[] tree, flatten to a list excluding self
+const options = flattenTree(orgTree)
+  .filter(node => !(node.id === currentEntityId && node.nodeType === currentEntityType))
+  .map(node => ({
+    value: `${node.nodeType}:${node.id}`,  // e.g. "agent:uuid-123" or "user:abc-def"
+    label: node.name,
+    group: node.nodeType === 'agent' ? 'Agents' : 'Team Members',
+    detail: node.nodeType === 'agent' ? node.adapterType : node.userRole,
+  }));
+```
+
+**Display format:** `"{Name}" with subtext "{Role/AdapterType}"`, grouped into "Agents" and "Team Members" sections.
+
+**Exclusions:**
+- Self (prevent self-reference)
+- Terminated agents (already excluded from org tree)
+- For humans (per D1): only show other humans, not agents
+
+### A7. getChainOfCommand Return Type Update
+
+**Current:** Returns `{ id, name, role, title }[]`
+
+**New:** Returns `{ id, name, role, title, nodeType: 'agent' | 'user' }[]`
+
+The route at agents.ts:260 that consumes this should pass through `nodeType`. Frontend already receives and displays it — minimal change.
