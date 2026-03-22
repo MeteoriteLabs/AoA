@@ -171,7 +171,7 @@ export function accessService(db: Db) {
       if (toDelete.length > 0) {
         for (const row of toDelete) {
           if (row.principalType === "user") {
-            await orgHierarchy.orphanChildren(row.principalId, "user", tx);
+            await orgHierarchy.orphanChildren(row.principalId, "user", tx as unknown as Db);
           }
         }
         await tx.delete(companyMemberships).where(inArray(companyMemberships.id, toDelete.map((row) => row.id)));

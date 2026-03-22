@@ -21,7 +21,7 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
-import { orgHierarchyService } from "./org-hierarchy.js";
+import { orgHierarchyService, type EntityType } from "./org-hierarchy.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -247,7 +247,7 @@ export function agentService(db: Db) {
 
     // D7: Bidirectional sync — parentType/parentId ↔ reportsTo
     if (data.parentType !== undefined || data.parentId !== undefined) {
-      const newParentType = data.parentType ?? null;
+      const newParentType = (data.parentType ?? null) as EntityType | null;
       const newParentId = data.parentId ?? null;
       if (newParentType && newParentId) {
         await orgHierarchy.ensureParent(existing.companyId, newParentType, newParentId);
@@ -350,7 +350,7 @@ export function agentService(db: Db) {
 
     create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">) => {
       // D7: Resolve parent fields from either parentType/parentId or reportsTo
-      const parentType = data.parentType ?? (data.reportsTo ? "agent" : null);
+      const parentType = (data.parentType ?? (data.reportsTo ? "agent" : null)) as EntityType | null;
       const parentId = data.parentId ?? data.reportsTo ?? null;
       const reportsTo = data.reportsTo ?? (parentType === "agent" ? parentId : null);
 
@@ -421,7 +421,7 @@ export function agentService(db: Db) {
 
       await db.transaction(async (tx) => {
         // D4: Orphan children (agents + users) before terminating
-        await orgHierarchy.orphanChildren(id, "agent", tx);
+        await orgHierarchy.orphanChildren(id, "agent", tx as unknown as Db);
 
         await tx
           .update(agents)
@@ -443,7 +443,7 @@ export function agentService(db: Db) {
 
       return db.transaction(async (tx) => {
         // Cross-type orphaning: agents + users (replaces reportsTo-only orphaning)
-        await orgHierarchy.orphanChildren(id, "agent", tx);
+        await orgHierarchy.orphanChildren(id, "agent", tx as unknown as Db);
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));

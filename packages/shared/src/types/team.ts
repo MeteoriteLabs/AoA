@@ -24,6 +24,8 @@ export interface TeamMemberSummary {
   departmentName: string | null;
   permissions: PermissionKey[];
   isCurrentUser: boolean;
+  parentType: "user" | null;
+  parentId: string | null;
 }
 
 export interface TeamInviteSummary {

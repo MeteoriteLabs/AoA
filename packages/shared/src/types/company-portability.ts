@@ -27,8 +27,8 @@ export interface CompanyPortabilityAgentManifestEntry {
   icon: string | null;
   capabilities: string | null;
   reportsToSlug: string | null;
-  parentType: string | null;
-  parentIdRef: string | null;
+  parentType?: string | null;
+  parentIdRef?: string | null;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
   runtimeConfig: Record<string, unknown>;

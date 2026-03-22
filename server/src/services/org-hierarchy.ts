@@ -9,7 +9,7 @@ import { notFound, unprocessable } from "../errors.js";
  */
 const MAX_CHAIN_DEPTH = 50;
 
-type EntityType = "agent" | "user";
+export type EntityType = "agent" | "user";
 
 /**
  * Shared org-hierarchy helpers used by both agentService and teamService.

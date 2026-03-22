@@ -524,18 +524,20 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
+    // manifest is guaranteed non-null: if both parse attempts fail, the catch rethrows
+    const resolvedManifest = manifest!;
     const files: Record<string, string> = {};
-    if (manifest.company?.path) {
-      files[manifest.company.path] = await fetchText(
-        resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, [parsed.basePath, manifest.company.path].filter(Boolean).join("/")),
+    if (resolvedManifest.company?.path) {
+      files[resolvedManifest.company.path] = await fetchText(
+        resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, [parsed.basePath, resolvedManifest.company.path].filter(Boolean).join("/")),
       );
     }
-    for (const agent of manifest.agents) {
+    for (const agent of resolvedManifest.agents) {
       files[agent.path] = await fetchText(
         resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, [parsed.basePath, agent.path].filter(Boolean).join("/")),
       );
     }
-    return { manifest, files, warnings };
+    return { manifest: resolvedManifest, files, warnings };
   }
 
   async function exportBundle(

@@ -122,6 +122,8 @@ export function teamService(db: Db) {
       .select({
         principalId: companyMemberships.principalId,
         status: companyMemberships.status,
+        parentType: companyMemberships.parentType,
+        parentId: companyMemberships.parentId,
       })
       .from(companyMemberships)
       .where(
@@ -230,6 +232,8 @@ export function teamService(db: Db) {
           departmentName: effectiveRole.projectId ? (departmentMap.get(effectiveRole.projectId) ?? null) : null,
           permissions: grantsByUser.get(membership.principalId) ?? [],
           isCurrentUser: membership.principalId === currentUserId,
+          parentType: (membership.parentType as "user" | null) ?? null,
+          parentId: membership.parentId ?? null,
         };
       })
       .filter((member): member is NonNullable<typeof member> => Boolean(member))
@@ -369,7 +373,7 @@ export function teamService(db: Db) {
 
     await db.transaction(async (tx) => {
       // Orphan all children pointing to this user
-      await orgHierarchy.orphanChildren(userId, "user", tx);
+      await orgHierarchy.orphanChildren(userId, "user", tx as unknown as Db);
       // Delete role assignments
       await tx.delete(userRoles).where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
       // Delete permission grants
