@@ -49,6 +49,10 @@ function buildApp(options?: {
   resolveScope?: (companyId: string, userId: string) => Promise<any>;
   issues?: any[];
   memoryItem?: Record<string, unknown> | null;
+  permissionsSvc?: {
+    canAccessEntity?: ReturnType<typeof vi.fn>;
+    canAccessMemory?: ReturnType<typeof vi.fn>;
+  };
 }) {
   const app = express();
   app.use(express.json());
@@ -77,8 +81,13 @@ function buildApp(options?: {
     id: "task-1",
     companyId: "company-1",
     projectId: "project-1",
+    assigneeUserId: "user-1",
     status: patch.status,
   }));
+  const permissionsSvc = {
+    canAccessEntity: options?.permissionsSvc?.canAccessEntity ?? vi.fn().mockResolvedValue(true),
+    canAccessMemory: options?.permissionsSvc?.canAccessMemory ?? vi.fn().mockResolvedValue(true),
+  };
 
   app.use(
     "/api",
@@ -129,6 +138,7 @@ function buildApp(options?: {
       extractionSvc: {
         extractFromDebrief,
       } as any,
+      permissionsSvc: permissionsSvc as any,
     }),
   );
 
@@ -138,6 +148,7 @@ function buildApp(options?: {
     extractFromDebrief,
     memoryCreate,
     issueUpdate,
+    permissionsSvc,
   };
 }
 
@@ -255,5 +266,77 @@ describe("mcp server routes", () => {
       id: "memory-1",
       status: "pending",
     });
+  });
+
+  it("rejects task status updates when RBAC denies write access", async () => {
+    const { app, issueUpdate } = buildApp({
+      resolveScope: async (_companyId, userId) => ({
+        kind: "scoped",
+        userId,
+        projectIds: new Set(["project-1"]),
+      }),
+      issues: [
+        {
+          id: "task-1",
+          companyId: "company-1",
+          projectId: "project-1",
+          assigneeUserId: "someone-else",
+          title: "Restricted task",
+        },
+      ],
+      permissionsSvc: {
+        canAccessEntity: vi.fn().mockResolvedValue(false),
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/mcp")
+      .send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "update-task-status",
+          arguments: {
+            taskId: "task-1",
+            status: "done",
+          },
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.message).toBe("Insufficient permissions for task update");
+    expect(issueUpdate).not.toHaveBeenCalled();
+  });
+
+  it("rejects memory suggestions targeting an out-of-scope department", async () => {
+    const { app, memoryCreate } = buildApp({
+      resolveScope: async (_companyId, userId) => ({
+        kind: "scoped",
+        userId,
+        projectIds: new Set(["project-1"]),
+      }),
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/mcp")
+      .send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "suggest-memory",
+          arguments: {
+            title: "Scoped note",
+            content: "Only for another department",
+            category: "reference",
+            departmentId: "00000000-0000-0000-0000-000000000002",
+          },
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.message).toBe("Department is outside your scope");
+    expect(memoryCreate).not.toHaveBeenCalled();
   });
 });

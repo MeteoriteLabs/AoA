@@ -21,6 +21,7 @@ import {
   logActivity,
   mcpService,
   memoryService,
+  permissionService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../routes/authz.js";
 
@@ -85,6 +86,7 @@ interface McpRouteDeps {
   extractionSvc?: ReturnType<typeof extractionService>;
   companiesSvc?: ReturnType<typeof companyService>;
   mcpSvc?: ReturnType<typeof mcpService>;
+  permissionsSvc?: ReturnType<typeof permissionService>;
   resolveScope?: (companyId: string, userId: string) => Promise<McpUserScope>;
 }
 
@@ -282,6 +284,26 @@ async function ensureProtocolAccess(
   };
 }
 
+function assertScopedProjectAccess(scope: McpUserScope, projectId: string | null | undefined, label: string) {
+  if (scope.kind === "founder") return;
+  if (!projectId) return;
+  if (!scope.projectIds.has(projectId)) {
+    throw forbidden(`${label} is outside your scope`);
+  }
+}
+
+async function assertScopedGoalAccess(
+  db: Db,
+  scope: McpUserScope,
+  goalId: string | null | undefined,
+) {
+  if (!goalId || scope.kind === "founder") return;
+  const projects = (await goalProjectMap(db, [goalId])).get(goalId) ?? [];
+  if (projects.length === 0 || !projects.some((projectId) => scope.projectIds.has(projectId))) {
+    throw forbidden("Goal is outside your scope");
+  }
+}
+
 export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   const router = Router();
   const issuesSvc = deps.issuesSvc ?? issueService(db);
@@ -292,6 +314,7 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   const extractionSvc = deps.extractionSvc ?? extractionService(db);
   const companiesSvc = deps.companiesSvc ?? companyService(db);
   const mcpSvc = deps.mcpSvc ?? mcpService(db);
+  const permissionsSvc = deps.permissionsSvc ?? permissionService(db);
 
   router.get("/companies/:companyId/mcp/status", async (req, res) => {
     assertBoard(req);
@@ -627,6 +650,8 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
 
         if (params.name === "debrief-push") {
           const parsed = mcpDebriefSchema.parse(args);
+          assertScopedProjectAccess(scope, parsed.departmentId ?? null, "Department");
+          assertScopedProjectAccess(scope, parsed.projectId ?? null, "Project");
           const actorInfo = getActorInfo(req);
           const debrief = await debriefsSvc.create(companyId, {
             title: parsed.title ?? null,
@@ -669,6 +694,40 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
             })
             .parse(args);
 
+          assertScopedProjectAccess(scope, parsed.departmentId ?? null, "Department");
+          assertScopedProjectAccess(scope, parsed.projectId ?? null, "Project");
+          await assertScopedGoalAccess(db, scope, parsed.goalId ?? null);
+
+          let linkedTask: Awaited<ReturnType<typeof issuesSvc.getById>> | null = null;
+          if (parsed.taskId) {
+            linkedTask = await issuesSvc.getById(parsed.taskId);
+            if (!linkedTask || linkedTask.companyId !== companyId) {
+              res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Task not found"));
+              return;
+            }
+            assertScopedProjectAccess(scope, linkedTask.projectId, "Task");
+          }
+
+          const memoryDepartmentId =
+            parsed.departmentId ??
+            parsed.projectId ??
+            linkedTask?.projectId ??
+            null;
+          const canCreateMemory = await permissionsSvc.canAccessMemory(
+            companyId,
+            protocolActor.userId,
+            "create",
+            {
+              layer: parsed.layer ?? null,
+              departmentId: memoryDepartmentId,
+              visibility: "scoped",
+            },
+          );
+          if (!canCreateMemory) {
+            res.status(403).json(jsonRpcError(requestBody.id ?? null, -32003, "Insufficient permissions for memory create"));
+            return;
+          }
+
           const item = await memorySvc.create(companyId, {
             ...parsed,
             source: "mcp",
@@ -703,6 +762,14 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
             res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Task not found"));
             return;
           }
+          const canUpdateTask = await permissionsSvc.canAccessEntity(companyId, protocolActor.userId, "task", "update", {
+            departmentId: issue.projectId ?? null,
+            assigneeUserId: issue.assigneeUserId ?? null,
+          });
+          if (!canUpdateTask) {
+            res.status(403).json(jsonRpcError(requestBody.id ?? null, -32003, "Insufficient permissions for task update"));
+            return;
+          }
           const updated = await issuesSvc.update(parsed.taskId, { status: parsed.status });
           await logActivity(db, {
             companyId,
@@ -733,6 +800,14 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
           const filtered = artifact ? await filterArtifactsForScope(db, scope, [artifact]) : [];
           if (filtered.length === 0) {
             res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Artifact not found"));
+            return;
+          }
+          const linkedProjectId = (await artifactProjectMap(db, [parsed.artifactId])).get(parsed.artifactId) ?? null;
+          const canUpdateArtifact = await permissionsSvc.canAccessEntity(companyId, protocolActor.userId, "artifact", "update", {
+            departmentId: linkedProjectId,
+          });
+          if (!canUpdateArtifact) {
+            res.status(403).json(jsonRpcError(requestBody.id ?? null, -32003, "Insufficient permissions for artifact update"));
             return;
           }
 
