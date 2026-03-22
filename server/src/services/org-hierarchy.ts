@@ -12,19 +12,6 @@ const MAX_CHAIN_DEPTH = 50;
 type EntityType = "agent" | "user";
 
 /**
- * Forward-references for parentType / parentId columns.
- * These columns are added by the migration task (T3) but may not yet
- * exist in the Drizzle schema definition.  The runtime table objects
- * (Proxy in tests, real pgTable at runtime) expose them dynamically.
- */
-/* eslint-disable @typescript-eslint/no-explicit-any */
-const agentParentType = (agents as any).parentType;
-const agentParentId = (agents as any).parentId;
-const cmParentType = (companyMemberships as any).parentType;
-const cmParentId = (companyMemberships as any).parentId;
-/* eslint-enable @typescript-eslint/no-explicit-any */
-
-/**
  * Shared org-hierarchy helpers used by both agentService and teamService.
  */
 export function orgHierarchyService(db: Db) {
@@ -62,7 +49,7 @@ export function orgHierarchyService(db: Db) {
 
       if (currentType === "agent") {
         const rows = await db
-          .select({ parentType: agentParentType, parentId: agentParentId })
+          .select({ parentType: agents.parentType, parentId: agents.parentId })
           .from(agents)
           .where(eq(agents.id, currentId))
           .limit(1);
@@ -72,7 +59,10 @@ export function orgHierarchyService(db: Db) {
         currentId = row.parentId as string | null;
       } else {
         const rows = await db
-          .select({ parentType: cmParentType, parentId: cmParentId })
+          .select({
+            parentType: companyMemberships.parentType,
+            parentId: companyMemberships.parentId,
+          })
           .from(companyMemberships)
           .where(
             and(
@@ -150,20 +140,19 @@ export function orgHierarchyService(db: Db) {
     // Orphan child agents
     await txOrDb
       .update(agents)
-      .set({
-        reportsTo: null,
-        // Forward-referenced columns set via spread to bypass strict typing
-        ...({ parentType: null, parentId: null } as Record<string, null>),
-      } as typeof agents.$inferInsert)
-      .where(and(eq(agentParentType, entityType), eq(agentParentId, entityId)));
+      .set({ parentType: null, parentId: null, reportsTo: null })
+      .where(and(eq(agents.parentType, entityType), eq(agents.parentId, entityId)));
 
     // Orphan child users (company_memberships)
     await txOrDb
       .update(companyMemberships)
-      .set({
-        ...({ parentType: null, parentId: null } as Record<string, null>),
-      } as typeof companyMemberships.$inferInsert)
-      .where(and(eq(cmParentType, entityType), eq(cmParentId, entityId)));
+      .set({ parentType: null, parentId: null })
+      .where(
+        and(
+          eq(companyMemberships.parentType, entityType),
+          eq(companyMemberships.parentId, entityId),
+        ),
+      );
   }
 
   return { assertNoCycle, ensureParent, orphanChildren };

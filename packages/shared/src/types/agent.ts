@@ -18,7 +18,7 @@ export interface Agent {
   icon: string | null;
   status: AgentStatus;
   reportsTo: string | null;
-  parentType: 'agent' | 'user' | null;
+  parentType: "agent" | "user" | null;
   parentId: string | null;
   capabilities: string | null;
   adapterType: AgentAdapterType;
