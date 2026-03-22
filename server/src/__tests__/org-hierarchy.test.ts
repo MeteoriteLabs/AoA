@@ -455,14 +455,22 @@ describe("orgHierarchyService", () => {
       );
     });
 
-    it("clears reportsTo on agent children (migration compat)", async () => {
-      const db = createTrackingDb();
-      const svc = orgHierarchyService(db as any);
-      await svc.orphanChildren("u1", "user");
-
-      // Agent update should include reportsTo: null for D7 compat
+    it("clears reportsTo on agent children only for agent parents", async () => {
+      // When orphaning an agent parent, reportsTo should be cleared (D7 compat)
+      const db1 = createTrackingDb();
+      const svc1 = orgHierarchyService(db1 as any);
+      await svc1.orphanChildren("a1", "agent");
       expect(updateCalls[0].table).toBe("agents");
       expect(updateCalls[0].setArg).toHaveProperty("reportsTo", null);
+
+      // When orphaning a user parent, reportsTo should NOT be cleared
+      // (reportsTo is agent-to-agent only; user parents don't affect it)
+      updateCalls.length = 0;
+      const db2 = createTrackingDb();
+      const svc2 = orgHierarchyService(db2 as any);
+      await svc2.orphanChildren("u1", "user");
+      expect(updateCalls[0].table).toBe("agents");
+      expect(updateCalls[0].setArg).not.toHaveProperty("reportsTo");
     });
 
     it("accepts a transaction object instead of default db", async () => {

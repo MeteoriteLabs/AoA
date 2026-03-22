@@ -41,6 +41,8 @@ const [engineer] = await db
     title: "Software Engineer",
     status: "idle",
     reportsTo: ceo!.id,
+    parentType: "agent",
+    parentId: ceo!.id,
     adapterType: "process",
     adapterConfig: { command: "echo", args: ["hello from engineer"] },
     budgetMonthlyCents: 10000,

@@ -129,7 +129,8 @@ export function orgHierarchyService(db: Db) {
    * Used when terminating/removing an agent or removing a user from a company.
    *
    * - Clears parentType, parentId on child agents
-   * - Clears reportsTo on child agents (migration compat, D7)
+   * - Clears reportsTo on child agents only when entityType is "agent"
+   *   (reportsTo is agent-to-agent only; user parents don't affect it)
    * - Clears parentType, parentId on child users (via company_memberships)
    */
   async function orphanChildren(
@@ -137,16 +138,19 @@ export function orgHierarchyService(db: Db) {
     entityType: EntityType,
     txOrDb: Db = db,
   ): Promise<void> {
-    // Orphan child agents
+    // Orphan child agents — only clear reportsTo for agent parents
+    const agentSetClause = entityType === "agent"
+      ? { parentType: null, parentId: null, reportsTo: null, updatedAt: new Date() }
+      : { parentType: null, parentId: null, updatedAt: new Date() };
     await txOrDb
       .update(agents)
-      .set({ parentType: null, parentId: null, reportsTo: null })
+      .set(agentSetClause)
       .where(and(eq(agents.parentType, entityType), eq(agents.parentId, entityId)));
 
     // Orphan child users (company_memberships)
     await txOrDb
       .update(companyMemberships)
-      .set({ parentType: null, parentId: null })
+      .set({ parentType: null, parentId: null, updatedAt: new Date() })
       .where(
         and(
           eq(companyMemberships.parentType, entityType),

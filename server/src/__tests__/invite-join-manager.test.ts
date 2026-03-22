@@ -21,6 +21,16 @@ describe("resolveJoinRequestAgentManagerId", () => {
     expect(managerId).toBe("ceo-root");
   });
 
+  it("selects the root CEO using parentId when available", () => {
+    const managerId = resolveJoinRequestAgentManagerId([
+      { id: "ceo-child", role: "ceo", reportsTo: "manager-1", parentType: "agent", parentId: "manager-1" },
+      { id: "manager-1", role: "cto", reportsTo: null, parentType: null, parentId: null },
+      { id: "ceo-root", role: "ceo", reportsTo: null, parentType: null, parentId: null },
+    ]);
+
+    expect(managerId).toBe("ceo-root");
+  });
+
   it("falls back to the first CEO when no root CEO is present", () => {
     const managerId = resolveJoinRequestAgentManagerId([
       { id: "ceo-1", role: "ceo", reportsTo: "mgr" },
