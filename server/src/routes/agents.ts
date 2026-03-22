@@ -339,19 +339,6 @@ export function agentRoutes(db: Db) {
     };
   }
 
-  function toLeanOrgNode(node: Record<string, unknown>): Record<string, unknown> {
-    const reports = Array.isArray(node.reports)
-      ? (node.reports as Array<Record<string, unknown>>).map((report) => toLeanOrgNode(report))
-      : [];
-    return {
-      id: String(node.id),
-      name: String(node.name),
-      role: String(node.role),
-      status: String(node.status),
-      reports,
-    };
-  }
-
   router.param("id", async (req, _res, next, rawId) => {
     try {
       req.params.id = await normalizeAgentReference(req, String(rawId));
@@ -421,8 +408,7 @@ export function agentRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const tree = await svc.orgForCompany(companyId);
-    const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
-    res.json(leanTree);
+    res.json(tree);
   });
 
   router.get("/companies/:companyId/agent-configurations", async (req, res) => {

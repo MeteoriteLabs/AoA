@@ -532,7 +532,7 @@ export function agentService(db: Db) {
         const members = byManager.get(managerId) ?? [];
         return members.map((member) => ({
           ...member,
-          reports: build(member.id),
+          children: build(member.id),
         }));
       };
 
