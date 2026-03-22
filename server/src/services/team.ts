@@ -120,6 +120,8 @@ export function teamService(db: Db) {
       .select({
         principalId: companyMemberships.principalId,
         status: companyMemberships.status,
+        parentType: companyMemberships.parentType,
+        parentId: companyMemberships.parentId,
       })
       .from(companyMemberships)
       .where(
@@ -228,6 +230,8 @@ export function teamService(db: Db) {
           departmentName: effectiveRole.projectId ? (departmentMap.get(effectiveRole.projectId) ?? null) : null,
           permissions: grantsByUser.get(membership.principalId) ?? [],
           isCurrentUser: membership.principalId === currentUserId,
+          parentType: (membership.parentType as "user" | null) ?? null,
+          parentId: membership.parentId ?? null,
         };
       })
       .filter((member): member is NonNullable<typeof member> => Boolean(member))
@@ -318,6 +322,9 @@ export function teamService(db: Db) {
       }
     }
 
+    const parentType = input.parentType !== undefined ? input.parentType : undefined;
+    const parentId = input.parentId !== undefined ? input.parentId : undefined;
+
     await db.transaction(async (tx) => {
       await tx.delete(userRoles).where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
       await tx.insert(userRoles).values({
@@ -326,12 +333,15 @@ export function teamService(db: Db) {
         role: input.role,
         projectId: input.role === "founder" ? null : (input.projectId ?? null),
       });
+      const membershipUpdate: Record<string, unknown> = {
+        membershipRole: input.role,
+        updatedAt: new Date(),
+      };
+      if (parentType !== undefined) membershipUpdate.parentType = parentType;
+      if (parentId !== undefined) membershipUpdate.parentId = parentId;
       await tx
         .update(companyMemberships)
-        .set({
-          membershipRole: input.role,
-          updatedAt: new Date(),
-        })
+        .set(membershipUpdate)
         .where(eq(companyMemberships.id, membership.id));
     });
 
@@ -356,11 +366,63 @@ export function teamService(db: Db) {
     );
   }
 
+  async function removeMember(companyId: string, userId: string, callerUserId: string) {
+    await assertFounder(companyId, callerUserId);
+
+    if (userId === callerUserId) {
+      throw conflict("You cannot remove yourself from the team");
+    }
+
+    const currentRole = await getUserRole(companyId, userId);
+    if (currentRole.role === "founder") {
+      const founders = await founderCount(companyId);
+      if (founders <= 1) {
+        throw conflict("Cannot remove the last founder");
+      }
+    }
+
+    const membership = await access.getMembership(companyId, "user", userId);
+    if (!membership || membership.status !== "active") throw notFound("Team member not found");
+
+    await db.transaction(async (tx) => {
+      // Orphan children: users reporting to this user become roots
+      await tx
+        .update(companyMemberships)
+        .set({ parentType: null, parentId: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.parentType, "user"),
+            eq(companyMemberships.parentId, userId),
+          ),
+        );
+
+      // Remove role assignments
+      await tx.delete(userRoles).where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
+
+      // Remove permission grants
+      await tx.delete(principalPermissionGrants).where(
+        and(
+          eq(principalPermissionGrants.companyId, companyId),
+          eq(principalPermissionGrants.principalType, "user"),
+          eq(principalPermissionGrants.principalId, userId),
+        ),
+      );
+
+      // Deactivate membership
+      await tx
+        .update(companyMemberships)
+        .set({ status: "removed", updatedAt: new Date() })
+        .where(eq(companyMemberships.id, membership.id));
+    });
+  }
+
   return {
     assertFounder,
     applyInviteRole,
     getUserRole,
     listTeam,
+    removeMember,
     roleGrants,
     updateUserRole,
   };

@@ -35,6 +35,8 @@ export function teamRoutes(db: Db) {
         {
           role: req.body.role,
           projectId: req.body.role === "founder" ? null : (req.body.projectId ?? null),
+          parentType: req.body.parentType,
+          parentId: req.body.parentId,
         },
         req.actor.userId,
       );
@@ -55,6 +57,29 @@ export function teamRoutes(db: Db) {
       res.json(updated);
     },
   );
+
+  router.delete("/companies/:companyId/team/users/:userId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const userId = req.params.userId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    await team.removeMember(companyId, userId, req.actor.userId);
+
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId,
+      action: "team.member_removed",
+      entityType: "user_role",
+      entityId: userId,
+      details: {},
+    });
+
+    res.json({ ok: true });
+  });
 
   router.use((err: unknown, _req: Request, _res: Response, next: NextFunction) => {
     logger.warn({ err }, "team route failed");

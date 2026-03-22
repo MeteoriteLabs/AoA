@@ -8,4 +8,6 @@ export const teamApi = {
       `/companies/${companyId}/team/users/${userId}/role`,
       input,
     ),
+  removeMember: (companyId: string, userId: string) =>
+    api.delete<{ ok: boolean }>(`/companies/${companyId}/team/users/${userId}`),
 };
