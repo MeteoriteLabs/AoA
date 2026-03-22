@@ -47,16 +47,16 @@ export interface UnifiedOrgNode {
   name: string;
   role: string;
   status: string;
-  nodeType: 'agent' | 'user';
+  nodeType: "agent" | "user";
 
-  // Agent-specific (null/undefined for users)
+  // Agent-specific (undefined for users)
   adapterType?: string;
   trustScore?: number;
   icon?: string;
 
-  // User-specific (null/undefined for agents)
+  // User-specific (undefined for agents)
   email?: string;
-  userRole?: 'founder' | 'team_lead' | 'team_member';
+  userRole?: "founder" | "team_lead" | "team_member";
   departmentName?: string;
   avatarUrl?: string;
 

@@ -10,8 +10,13 @@ import {
   agentWakeupRequests,
   heartbeatRunEvents,
   heartbeatRuns,
+  authUsers,
+  companyMemberships,
+  userRoles,
+  projects,
 } from "@paperclipai/db";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import type { UnifiedOrgNode } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
@@ -162,6 +167,12 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
 }
 
 export { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";
+
+const USER_ROLE_PRIORITY: Record<string, number> = { founder: 3, team_lead: 2, team_member: 1 };
+
+function isValidParentType(value: unknown): value is "agent" | "user" {
+  return value === "agent" || value === "user";
+}
 
 export function agentService(db: Db) {
   const orgHierarchy = orgHierarchyService(db);
@@ -571,42 +582,217 @@ export function agentService(db: Db) {
       return rows[0] ?? null;
     },
 
-    orgForCompany: async (companyId: string) => {
-      const rows = await db
-        .select()
-        .from(agents)
-        .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
-      const normalizedRows = rows.map(normalizeAgentRow);
-      const byManager = new Map<string | null, typeof normalizedRows>();
-      for (const row of normalizedRows) {
-        const key = row.reportsTo ?? null;
-        const group = byManager.get(key) ?? [];
-        group.push(row);
-        byManager.set(key, group);
+    orgForCompany: async (companyId: string): Promise<UnifiedOrgNode[]> => {
+      // Two parallel queries: agents + users
+      const [agentRows, userRows] = await Promise.all([
+        db
+          .select()
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated"))),
+        db
+          .select({
+            userId: companyMemberships.principalId,
+            email: authUsers.email,
+            displayName: authUsers.displayName,
+            avatarUrl: authUsers.avatarUrl,
+            name: authUsers.name,
+            parentType: companyMemberships.parentType,
+            parentId: companyMemberships.parentId,
+            role: userRoles.role,
+            departmentId: userRoles.projectId,
+            departmentName: projects.name,
+          })
+          .from(companyMemberships)
+          .innerJoin(authUsers, eq(companyMemberships.principalId, authUsers.id))
+          .leftJoin(
+            userRoles,
+            and(eq(userRoles.companyId, companyId), eq(userRoles.userId, companyMemberships.principalId)),
+          )
+          .leftJoin(projects, eq(userRoles.projectId, projects.id))
+          .where(
+            and(
+              eq(companyMemberships.companyId, companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.status, "active"),
+            ),
+          ),
+      ]);
+
+      // Deduplicate users by highest role (a user may have multiple user_roles rows)
+      const userMap = new Map<
+        string,
+        {
+          userId: string;
+          email: string;
+          displayName: string | null;
+          avatarUrl: string | null;
+          name: string;
+          parentType: string | null;
+          parentId: string | null;
+          role: string | null;
+          departmentId: string | null;
+          departmentName: string | null;
+        }
+      >();
+      for (const row of userRows) {
+        const existing = userMap.get(row.userId);
+        if (!existing || (USER_ROLE_PRIORITY[row.role ?? ""] ?? 0) > (USER_ROLE_PRIORITY[existing.role ?? ""] ?? 0)) {
+          userMap.set(row.userId, row);
+        }
       }
 
-      const build = (managerId: string | null): Array<Record<string, unknown>> => {
-        const members = byManager.get(managerId) ?? [];
-        return members.map((member) => ({
-          ...member,
-          reports: build(member.id),
-        }));
-      };
+      // Build a parentKey → children map for the unified tree
+      // Key format: "agent:<id>" or "user:<id>" or "root" for nodes without a parent
+      type NodeEntry = { node: UnifiedOrgNode; parentKey: string };
+      const entries: NodeEntry[] = [];
+      const nodeById = new Map<string, UnifiedOrgNode>();
 
-      return build(null);
+      // Convert agents to unified nodes
+      for (const row of agentRows) {
+        // Determine parent: prefer parentType/parentId, fallback to reportsTo
+        let parentKey = "root";
+        if (row.parentType && row.parentId) {
+          parentKey = `${row.parentType}:${row.parentId}`;
+        } else if (row.reportsTo) {
+          parentKey = `agent:${row.reportsTo}`;
+        }
+
+        const node: UnifiedOrgNode = {
+          id: row.id,
+          name: row.name,
+          role: row.role,
+          status: row.status,
+          nodeType: "agent",
+          adapterType: row.adapterType,
+          icon: row.icon ?? undefined,
+          children: [],
+        };
+        entries.push({ node, parentKey });
+        nodeById.set(`agent:${row.id}`, node);
+      }
+
+      // Convert users to unified nodes
+      for (const [userId, row] of userMap) {
+        let parentKey = "root";
+        if (row.parentType && row.parentId) {
+          parentKey = `${row.parentType}:${row.parentId}`;
+        }
+
+        const node: UnifiedOrgNode = {
+          id: userId,
+          name: row.displayName ?? row.name,
+          role: row.role ?? "team_member",
+          status: "active",
+          nodeType: "user",
+          email: row.email,
+          userRole: (row.role as UnifiedOrgNode["userRole"]) ?? "team_member",
+          departmentName: row.departmentName ?? undefined,
+          avatarUrl: row.avatarUrl ?? undefined,
+          children: [],
+        };
+        entries.push({ node, parentKey });
+        nodeById.set(`user:${userId}`, node);
+      }
+
+      // Assemble tree: attach children to parents
+      const roots: UnifiedOrgNode[] = [];
+      for (const { node, parentKey } of entries) {
+        if (parentKey === "root") {
+          roots.push(node);
+        } else {
+          const parent = nodeById.get(parentKey);
+          if (parent) {
+            parent.children.push(node);
+          } else {
+            // Parent not found (terminated/missing) → promote to root
+            roots.push(node);
+          }
+        }
+      }
+
+      return roots;
     },
 
-    getChainOfCommand: async (agentId: string) => {
-      const chain: { id: string; name: string; role: string; title: string | null }[] = [];
-      const visited = new Set<string>([agentId]);
+    getChainOfCommand: async (agentId: string, companyId?: string) => {
+      const chain: { id: string; name: string; role: string; title: string | null; nodeType: "agent" | "user" }[] =
+        [];
+      const visited = new Set<string>([`agent:${agentId}`]);
       const start = await getById(agentId);
-      let currentId = start?.reportsTo ?? null;
-      while (currentId && !visited.has(currentId) && chain.length < 50) {
-        visited.add(currentId);
-        const mgr = await getById(currentId);
-        if (!mgr) break;
-        chain.push({ id: mgr.id, name: mgr.name, role: mgr.role, title: mgr.title ?? null });
-        currentId = mgr.reportsTo ?? null;
+      if (!start) return chain;
+
+      // Determine first parent: prefer parentType/parentId, fallback to reportsTo
+      const startParentType = start.parentType === "agent" || start.parentType === "user" ? start.parentType : null;
+      let currentType: "agent" | "user" = startParentType ?? "agent";
+      let currentId: string | null = start.parentId ?? start.reportsTo ?? null;
+
+      while (currentId && chain.length < 50) {
+        const visitKey = `${currentType}:${currentId}`;
+        if (visited.has(visitKey)) break;
+        visited.add(visitKey);
+
+        if (currentType === "agent") {
+          const mgr = await getById(currentId);
+          if (!mgr) break;
+          chain.push({ id: mgr.id, name: mgr.name, role: mgr.role, title: mgr.title ?? null, nodeType: "agent" });
+          // Walk up: prefer parentType/parentId, fallback to reportsTo
+          if (isValidParentType(mgr.parentType) && mgr.parentId) {
+            currentType = mgr.parentType;
+            currentId = mgr.parentId;
+          } else {
+            currentType = "agent";
+            currentId = mgr.reportsTo ?? null;
+          }
+        } else {
+          // User node — look up via company_memberships
+          if (!companyId) break;
+          const rows = await db
+            .select({
+              principalId: companyMemberships.principalId,
+              parentType: companyMemberships.parentType,
+              parentId: companyMemberships.parentId,
+              displayName: authUsers.displayName,
+              name: authUsers.name,
+            })
+            .from(companyMemberships)
+            .innerJoin(authUsers, eq(companyMemberships.principalId, authUsers.id))
+            .where(
+              and(
+                eq(companyMemberships.companyId, companyId),
+                eq(companyMemberships.principalType, "user"),
+                eq(companyMemberships.principalId, currentId),
+                eq(companyMemberships.status, "active"),
+              ),
+            )
+            .limit(1);
+          const user = rows[0];
+          if (!user) break;
+
+          // Get user's highest role for display
+          const roleRows = await db
+            .select({ role: userRoles.role })
+            .from(userRoles)
+            .where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, currentId)));
+          let bestRole = "team_member";
+          for (const r of roleRows) {
+            if ((USER_ROLE_PRIORITY[r.role] ?? 0) > (USER_ROLE_PRIORITY[bestRole] ?? 0)) bestRole = r.role;
+          }
+
+          chain.push({
+            id: user.principalId,
+            name: user.displayName ?? user.name,
+            role: bestRole,
+            title: null,
+            nodeType: "user",
+          });
+
+          // Walk up
+          if (isValidParentType(user.parentType) && user.parentId) {
+            currentType = user.parentType;
+            currentId = user.parentId;
+          } else {
+            currentId = null;
+          }
+        }
       }
       return chain;
     },

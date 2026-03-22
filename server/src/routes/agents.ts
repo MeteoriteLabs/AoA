@@ -257,7 +257,7 @@ export function agentRoutes(db: Db) {
     }
     if (actorAgent.id === targetAgent.id) return;
 
-    const chainOfCommand = await svc.getChainOfCommand(targetAgent.id);
+    const chainOfCommand = await svc.getChainOfCommand(targetAgent.id, targetAgent.companyId);
     if (chainOfCommand.some((manager) => manager.id === actorAgent.id)) return;
 
     throw forbidden("Only the target agent or an ancestor manager can update instructions path");
@@ -340,16 +340,27 @@ export function agentRoutes(db: Db) {
   }
 
   function toLeanOrgNode(node: Record<string, unknown>): Record<string, unknown> {
-    const reports = Array.isArray(node.reports)
-      ? (node.reports as Array<Record<string, unknown>>).map((report) => toLeanOrgNode(report))
+    const children = Array.isArray(node.children)
+      ? (node.children as Array<Record<string, unknown>>).map((child) => toLeanOrgNode(child))
       : [];
-    return {
+    const lean: Record<string, unknown> = {
       id: String(node.id),
       name: String(node.name),
       role: String(node.role),
       status: String(node.status),
-      reports,
+      nodeType: node.nodeType ?? "agent",
+      children,
     };
+    // Include agent-specific fields
+    if (node.adapterType !== undefined) lean.adapterType = node.adapterType;
+    if (node.icon !== undefined) lean.icon = node.icon;
+    if (node.trustScore !== undefined) lean.trustScore = node.trustScore;
+    // Include user-specific fields
+    if (node.email !== undefined) lean.email = node.email;
+    if (node.userRole !== undefined) lean.userRole = node.userRole;
+    if (node.departmentName !== undefined) lean.departmentName = node.departmentName;
+    if (node.avatarUrl !== undefined) lean.avatarUrl = node.avatarUrl;
+    return lean;
   }
 
   router.param("id", async (req, _res, next, rawId) => {
@@ -442,7 +453,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    const chainOfCommand = await svc.getChainOfCommand(agent.id);
+    const chainOfCommand = await svc.getChainOfCommand(agent.id, agent.companyId);
     res.json({ ...agent, chainOfCommand });
   });
 
@@ -457,12 +468,12 @@ export function agentRoutes(db: Db) {
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
       const canRead = await actorCanReadConfigurationsForCompany(req, agent.companyId);
       if (!canRead) {
-        const chainOfCommand = await svc.getChainOfCommand(agent.id);
+        const chainOfCommand = await svc.getChainOfCommand(agent.id, agent.companyId);
         res.json({ ...redactForRestrictedAgentView(agent), chainOfCommand });
         return;
       }
     }
-    const chainOfCommand = await svc.getChainOfCommand(agent.id);
+    const chainOfCommand = await svc.getChainOfCommand(agent.id, agent.companyId);
     res.json({ ...agent, chainOfCommand });
   });
 
