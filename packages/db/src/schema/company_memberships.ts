@@ -27,6 +27,6 @@ export const companyMemberships = pgTable(
       table.status,
     ),
     companyStatusIdx: index("company_memberships_company_status_idx").on(table.companyId, table.status),
-    companyParentIdx: index("company_memberships_company_parent_idx").on(table.companyId, table.parentType, table.parentId),
+    companyParentIdx: index("cm_company_parent_idx").on(table.companyId, table.parentType, table.parentId),
   }),
 );

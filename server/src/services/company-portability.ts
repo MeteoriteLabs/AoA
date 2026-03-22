@@ -524,18 +524,20 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
+    // manifest is guaranteed non-null: if both parse attempts fail, the catch rethrows
+    const resolvedManifest = manifest!;
     const files: Record<string, string> = {};
-    if (manifest.company?.path) {
-      files[manifest.company.path] = await fetchText(
-        resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, [parsed.basePath, manifest.company.path].filter(Boolean).join("/")),
+    if (resolvedManifest.company?.path) {
+      files[resolvedManifest.company.path] = await fetchText(
+        resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, [parsed.basePath, resolvedManifest.company.path].filter(Boolean).join("/")),
       );
     }
-    for (const agent of manifest.agents) {
+    for (const agent of resolvedManifest.agents) {
       files[agent.path] = await fetchText(
         resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, [parsed.basePath, agent.path].filter(Boolean).join("/")),
       );
     }
-    return { manifest, files, warnings };
+    return { manifest: resolvedManifest, files, warnings };
   }
 
   async function exportBundle(
@@ -636,6 +638,10 @@ export function companyPortabilityService(db: Db) {
             .filter((requirement) => requirement.agentSlug === slug),
         );
         const reportsToSlug = agent.reportsTo ? (idToSlug.get(agent.reportsTo) ?? null) : null;
+        const parentType = agent.parentType ?? (agent.reportsTo ? "agent" : null);
+        const parentIdSlug = parentType === "agent" && agent.parentId
+          ? (idToSlug.get(agent.parentId) ?? null)
+          : null;
 
         files[agentPath] = buildMarkdown(
           {
@@ -647,6 +653,8 @@ export function companyPortabilityService(db: Db) {
             icon: agent.icon ?? null,
             capabilities: agent.capabilities ?? null,
             reportsTo: reportsToSlug,
+            parentType,
+            parentIdRef: parentType === "user" ? (agent.parentId ?? null) : parentIdSlug,
             runtimeConfig: portableRuntimeConfig,
             permissions: portablePermissions,
             adapterConfig: portableAdapterConfig,
@@ -664,6 +672,8 @@ export function companyPortabilityService(db: Db) {
           icon: agent.icon ?? null,
           capabilities: agent.capabilities ?? null,
           reportsToSlug,
+          parentType,
+          parentIdRef: parentType === "user" ? (agent.parentId ?? null) : parentIdSlug,
           adapterType: agent.adapterType,
           adapterConfig: portableAdapterConfig,
           runtimeConfig: portableRuntimeConfig,
@@ -912,7 +922,9 @@ export function companyPortabilityService(db: Db) {
           title: manifestAgent.title,
           icon: manifestAgent.icon,
           capabilities: manifestAgent.capabilities,
-          reportsTo: null,
+          reportsTo: null as string | null,
+          parentType: null as string | null,
+          parentId: null as string | null,
           adapterType: manifestAgent.adapterType,
           adapterConfig,
           runtimeConfig: manifestAgent.runtimeConfig,
@@ -962,12 +974,36 @@ export function companyPortabilityService(db: Db) {
       for (const manifestAgent of plan.selectedAgents) {
         const agentId = importedSlugToAgentId.get(manifestAgent.slug);
         if (!agentId) continue;
+
+        // Resolve parentType/parentId if present in manifest
+        const mParentType = manifestAgent.parentType ?? null;
+        const mParentIdRef = manifestAgent.parentIdRef ?? null;
+
+        if (mParentType === "user" && mParentIdRef) {
+          // parentIdRef is a user ID for user parents — set directly
+          try {
+            await agents.update(agentId, {
+              parentType: "user",
+              parentId: mParentIdRef,
+              reportsTo: null,
+            });
+          } catch {
+            warnings.push(`Could not assign user parent ${mParentIdRef} for imported agent ${manifestAgent.slug}.`);
+          }
+          continue;
+        }
+
+        // Agent parent: resolve via slug (same as legacy reportsTo)
         const managerSlug = manifestAgent.reportsToSlug;
         if (!managerSlug) continue;
         const managerId = importedSlugToAgentId.get(managerSlug) ?? existingSlugToAgentId.get(managerSlug) ?? null;
         if (!managerId || managerId === agentId) continue;
         try {
-          await agents.update(agentId, { reportsTo: managerId });
+          await agents.update(agentId, {
+            reportsTo: managerId,
+            parentType: "agent",
+            parentId: managerId,
+          });
         } catch {
           warnings.push(`Could not assign manager ${managerSlug} for imported agent ${manifestAgent.slug}.`);
         }

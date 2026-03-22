@@ -18,6 +18,7 @@ import type {
 import { PERMISSION_KEYS } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { accessService } from "./access.js";
+import { orgHierarchyService } from "./org-hierarchy.js";
 
 const TEAM_INVITE_KEY = "teamInvite";
 const TEAM_PERMISSION_KEYS = {
@@ -82,6 +83,7 @@ function roleGrants(role: UserRole, projectId: string | null) {
 
 export function teamService(db: Db) {
   const access = accessService(db);
+  const orgHierarchy = orgHierarchyService(db);
 
   async function isInstanceAdmin(userId: string | null | undefined) {
     if (!userId) return false;
@@ -322,8 +324,13 @@ export function teamService(db: Db) {
       }
     }
 
-    const parentType = input.parentType !== undefined ? input.parentType : undefined;
-    const parentId = input.parentId !== undefined ? input.parentId : undefined;
+    // Handle parent assignment
+    if (input.parentType !== undefined || input.parentId !== undefined) {
+      if (input.parentId && input.parentType) {
+        await orgHierarchy.ensureParent(companyId, input.parentType, input.parentId);
+        await orgHierarchy.assertNoCycle(companyId, userId, "user", input.parentId, input.parentType);
+      }
+    }
 
     await db.transaction(async (tx) => {
       await tx.delete(userRoles).where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
@@ -333,12 +340,16 @@ export function teamService(db: Db) {
         role: input.role,
         projectId: input.role === "founder" ? null : (input.projectId ?? null),
       });
+
       const membershipUpdate: Record<string, unknown> = {
         membershipRole: input.role,
         updatedAt: new Date(),
       };
-      if (parentType !== undefined) membershipUpdate.parentType = parentType;
-      if (parentId !== undefined) membershipUpdate.parentId = parentId;
+      if (input.parentType !== undefined || input.parentId !== undefined) {
+        membershipUpdate.parentType = input.parentType ?? null;
+        membershipUpdate.parentId = input.parentId ?? null;
+      }
+
       await tx
         .update(companyMemberships)
         .set(membershipUpdate)
@@ -348,6 +359,32 @@ export function teamService(db: Db) {
     await access.setPrincipalGrants(companyId, "user", userId, roleGrants(input.role, input.role === "founder" ? null : (input.projectId ?? null)), grantedByUserId);
 
     return getUserRole(companyId, userId);
+  }
+
+  async function removeMember(companyId: string, userId: string) {
+    const membership = await access.getMembership(companyId, "user", userId);
+    if (!membership || membership.status !== "active") throw notFound("Team member not found");
+
+    const currentRole = await getUserRole(companyId, userId);
+    if (currentRole.role === "founder") {
+      const founders = await founderCount(companyId);
+      if (founders <= 1) throw conflict("Cannot remove the last founder");
+    }
+
+    await db.transaction(async (tx) => {
+      // Orphan all children pointing to this user
+      await orgHierarchy.orphanChildren(userId, "user", tx as unknown as Db);
+      // Delete role assignments
+      await tx.delete(userRoles).where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
+      // Delete permission grants
+      await tx.delete(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, companyId),
+        eq(principalPermissionGrants.principalType, "user"),
+        eq(principalPermissionGrants.principalId, userId),
+      ));
+      // Delete membership
+      await tx.delete(companyMemberships).where(eq(companyMemberships.id, membership.id));
+    });
   }
 
   async function applyInviteRole(
@@ -364,57 +401,6 @@ export function teamService(db: Db) {
       { role: metadata.role as UserRole, projectId: metadata.projectId },
       grantedByUserId,
     );
-  }
-
-  async function removeMember(companyId: string, userId: string, callerUserId: string) {
-    await assertFounder(companyId, callerUserId);
-
-    if (userId === callerUserId) {
-      throw conflict("You cannot remove yourself from the team");
-    }
-
-    const currentRole = await getUserRole(companyId, userId);
-    if (currentRole.role === "founder") {
-      const founders = await founderCount(companyId);
-      if (founders <= 1) {
-        throw conflict("Cannot remove the last founder");
-      }
-    }
-
-    const membership = await access.getMembership(companyId, "user", userId);
-    if (!membership || membership.status !== "active") throw notFound("Team member not found");
-
-    await db.transaction(async (tx) => {
-      // Orphan children: users reporting to this user become roots
-      await tx
-        .update(companyMemberships)
-        .set({ parentType: null, parentId: null, updatedAt: new Date() })
-        .where(
-          and(
-            eq(companyMemberships.companyId, companyId),
-            eq(companyMemberships.parentType, "user"),
-            eq(companyMemberships.parentId, userId),
-          ),
-        );
-
-      // Remove role assignments
-      await tx.delete(userRoles).where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
-
-      // Remove permission grants
-      await tx.delete(principalPermissionGrants).where(
-        and(
-          eq(principalPermissionGrants.companyId, companyId),
-          eq(principalPermissionGrants.principalType, "user"),
-          eq(principalPermissionGrants.principalId, userId),
-        ),
-      );
-
-      // Deactivate membership
-      await tx
-        .update(companyMemberships)
-        .set({ status: "removed", updatedAt: new Date() })
-        .where(eq(companyMemberships.id, membership.id));
-    });
   }
 
   return {

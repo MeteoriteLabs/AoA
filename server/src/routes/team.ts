@@ -66,7 +66,8 @@ export function teamRoutes(db: Db) {
       res.status(403).json({ error: "Board authentication required" });
       return;
     }
-    await team.removeMember(companyId, userId, req.actor.userId);
+    await team.assertFounder(companyId, req.actor.userId);
+    await team.removeMember(companyId, userId);
 
     await logActivity(db, {
       companyId,

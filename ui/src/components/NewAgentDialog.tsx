@@ -6,6 +6,7 @@ import { useCompany } from "../context/CompanyContext";
 import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
 import { AGENT_ROLES } from "@paperclipai/shared";
+import type { Agent } from "@paperclipai/shared";
 import {
   Dialog,
   DialogContent,
@@ -29,12 +30,26 @@ import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { AgentIcon } from "./AgentIconPicker";
 
-export function NewAgentDialog() {
+interface NewAgentDialogProps {
+  /** When provided, dialog opens in edit mode with pre-populated fields */
+  agent?: Agent | null;
+  /** External open state (used for edit mode). Falls back to useDialog() context. */
+  open?: boolean;
+  /** External close handler (used for edit mode). Falls back to useDialog() context. */
+  onOpenChange?: (open: boolean) => void;
+  /** Called after successful update in edit mode */
+  onUpdated?: (agent: Agent) => void;
+}
+
+export function NewAgentDialog({ agent: editAgent, open: externalOpen, onOpenChange: externalOnOpenChange, onUpdated }: NewAgentDialogProps = {}) {
   const { newAgentOpen, closeNewAgent } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(true);
+
+  const isEditMode = !!editAgent;
+  const dialogOpen = externalOpen ?? newAgentOpen;
 
   // Identity
   const [name, setName] = useState("");
@@ -52,7 +67,7 @@ export function NewAgentDialog() {
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && newAgentOpen,
+    enabled: !!selectedCompanyId && dialogOpen,
   });
 
   const {
@@ -66,20 +81,30 @@ export function NewAgentDialog() {
         ? queryKeys.agents.adapterModels(selectedCompanyId, configValues.adapterType)
         : ["agents", "none", "adapter-models", configValues.adapterType],
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, configValues.adapterType),
-    enabled: Boolean(selectedCompanyId) && newAgentOpen,
+    enabled: Boolean(selectedCompanyId) && dialogOpen,
   });
 
-  const isFirstAgent = !agents || agents.length === 0;
+  const isFirstAgent = !isEditMode && (!agents || agents.length === 0);
   const effectiveRole = isFirstAgent ? "ceo" : role;
   const [formError, setFormError] = useState<string | null>(null);
 
+  // Pre-populate form when opening in edit mode
+  useEffect(() => {
+    if (dialogOpen && editAgent) {
+      setName(editAgent.name);
+      setTitle(editAgent.title ?? "");
+      setRole(editAgent.role);
+      setReportsTo(editAgent.reportsTo ?? "");
+    }
+  }, [dialogOpen, editAgent]);
+
   // Auto-fill for CEO
   useEffect(() => {
-    if (newAgentOpen && isFirstAgent) {
+    if (dialogOpen && !isEditMode && isFirstAgent) {
       if (!name) setName("CEO");
       if (!title) setTitle("CEO");
     }
-  }, [newAgentOpen, isFirstAgent]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dialogOpen, isFirstAgent, isEditMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -88,13 +113,36 @@ export function NewAgentDialog() {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
       reset();
-      closeNewAgent();
+      handleClose();
       navigate(agentUrl(result.agent));
     },
     onError: (error) => {
       setFormError(error instanceof Error ? error.message : "Failed to create agent");
     },
   });
+
+  const updateAgent = useMutation({
+    mutationFn: (data: Record<string, unknown>) =>
+      agentsApi.update(editAgent!.id, data, selectedCompanyId ?? undefined),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(editAgent!.id) });
+      reset();
+      handleClose();
+      onUpdated?.(result);
+    },
+    onError: (error) => {
+      setFormError(error instanceof Error ? error.message : "Failed to update agent");
+    },
+  });
+
+  function handleClose() {
+    if (externalOnOpenChange) {
+      externalOnOpenChange(false);
+    } else {
+      closeNewAgent();
+    }
+  }
 
   function reset() {
     setName("");
@@ -142,24 +190,34 @@ export function NewAgentDialog() {
         return;
       }
     }
-    createAgent.mutate({
-      name: name.trim(),
-      role: effectiveRole,
-      ...(title.trim() ? { title: title.trim() } : {}),
-      ...(reportsTo ? { reportsTo } : {}),
-      adapterType: configValues.adapterType,
-      adapterConfig: buildAdapterConfig(),
-      runtimeConfig: {
-        heartbeat: {
-          enabled: configValues.heartbeatEnabled,
-          intervalSec: configValues.intervalSec,
-          wakeOnDemand: true,
-          cooldownSec: 10,
-          maxConcurrentRuns: 1,
+
+    if (isEditMode) {
+      updateAgent.mutate({
+        name: name.trim(),
+        role: effectiveRole,
+        title: title.trim() || null,
+        reportsTo: reportsTo || null,
+      });
+    } else {
+      createAgent.mutate({
+        name: name.trim(),
+        role: effectiveRole,
+        ...(title.trim() ? { title: title.trim() } : {}),
+        ...(reportsTo ? { reportsTo } : {}),
+        adapterType: configValues.adapterType,
+        adapterConfig: buildAdapterConfig(),
+        runtimeConfig: {
+          heartbeat: {
+            enabled: configValues.heartbeatEnabled,
+            intervalSec: configValues.intervalSec,
+            wakeOnDemand: true,
+            cooldownSec: 10,
+            maxConcurrentRuns: 1,
+          },
         },
-      },
-      budgetMonthlyCents: 0,
-    });
+        budgetMonthlyCents: 0,
+      });
+    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -170,12 +228,16 @@ export function NewAgentDialog() {
   }
 
   const currentReportsTo = (agents ?? []).find((a) => a.id === reportsTo);
+  const isPending = isEditMode ? updateAgent.isPending : createAgent.isPending;
+
+  // In edit mode, filter out the agent being edited from "reports to" list
+  const reportsToAgents = (agents ?? []).filter((a) => !isEditMode || a.id !== editAgent?.id);
 
   return (
     <Dialog
-      open={newAgentOpen}
+      open={dialogOpen}
       onOpenChange={(open) => {
-        if (!open) { reset(); closeNewAgent(); }
+        if (!open) { reset(); handleClose(); }
       }}
     >
       <DialogContent
@@ -192,13 +254,13 @@ export function NewAgentDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New agent</span>
+            <span>{isEditMode ? "Edit agent" : "New agent"}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={() => setExpanded(!expanded)}>
               {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
             </Button>
-            <Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={() => { reset(); closeNewAgent(); }}>
+            <Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={() => { reset(); handleClose(); }}>
               <span className="text-lg leading-none">&times;</span>
             </Button>
           </div>
@@ -291,7 +353,7 @@ export function NewAgentDialog() {
                 >
                   No manager
                 </button>
-                {(agents ?? []).map((a) => (
+                {reportsToAgents.map((a) => (
                   <button
                     key={a.id}
                     className={cn(
@@ -309,13 +371,15 @@ export function NewAgentDialog() {
             </Popover>
           </div>
 
-          {/* Shared config form (adapter + heartbeat) */}
-          <AgentConfigForm
-            mode="create"
-            values={configValues}
-            onChange={(patch) => setConfigValues((prev) => ({ ...prev, ...patch }))}
-            adapterModels={adapterModels}
-          />
+          {/* Shared config form (adapter + heartbeat) — only in create mode */}
+          {!isEditMode && (
+            <AgentConfigForm
+              mode="create"
+              values={configValues}
+              onChange={(patch) => setConfigValues((prev) => ({ ...prev, ...patch }))}
+              adapterModels={adapterModels}
+            />
+          )}
         </div>
 
         {/* Footer */}
@@ -330,10 +394,12 @@ export function NewAgentDialog() {
         <div className="flex items-center justify-end px-4 pb-3">
           <Button
             size="sm"
-            disabled={!name.trim() || createAgent.isPending}
+            disabled={!name.trim() || isPending}
             onClick={handleSubmit}
           >
-            {createAgent.isPending ? "Creating…" : "Create agent"}
+            {isPending
+              ? (isEditMode ? "Saving\u2026" : "Creating\u2026")
+              : (isEditMode ? "Save changes" : "Create agent")}
           </Button>
         </div>
       </DialogContent>
