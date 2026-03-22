@@ -1,40 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-
-vi.mock("@paperclipai/db", () => {
-  const makeTable = () =>
-    new Proxy({}, { get: (_target, prop) => (prop === "$inferSelect" || prop === "$inferInsert" ? {} : Symbol(String(prop))) });
-  return {
-    activityLog: makeTable(),
-    agents: makeTable(),
-    assets: makeTable(),
-    companies: makeTable(),
-    companyMemberships: makeTable(),
-    goals: makeTable(),
-    heartbeatRuns: makeTable(),
-    issueAttachments: makeTable(),
-    issueComments: makeTable(),
-    issueLabels: makeTable(),
-    issueReadStates: makeTable(),
-    issues: makeTable(),
-    labels: makeTable(),
-    projectWorkspaces: makeTable(),
-    projects: makeTable(),
-    taskDependencies: makeTable(),
-  };
-});
-
-vi.mock("drizzle-orm", () => ({
-  and: (..._args: unknown[]) => "and",
-  asc: (..._args: unknown[]) => "asc",
-  desc: (..._args: unknown[]) => "desc",
-  eq: (..._args: unknown[]) => "eq",
-  inArray: (..._args: unknown[]) => "inArray",
-  isNull: (..._args: unknown[]) => "isNull",
-  or: (..._args: unknown[]) => "or",
-  sql: new Proxy(() => "sql", { get: () => () => "sql", apply: () => "sql" }),
-}));
-
-import { deriveIssueUserContext } from "../services/issues.ts";
+import { describe, expect, it } from "vitest";
+import { deriveIssueUserContext } from "../services/issue-user-context.ts";
 
 function makeIssue(overrides?: Partial<{
   createdByUserId: string | null;

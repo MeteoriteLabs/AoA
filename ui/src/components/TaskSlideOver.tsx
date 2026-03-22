@@ -15,6 +15,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import { useTeamAccess } from "../hooks/useTeamAccess";
 import { relativeTime, cn, formatTokens } from "../lib/utils";
 import { InlineEditor } from "./InlineEditor";
 import { CommentThread } from "./CommentThread";
@@ -333,6 +334,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     companyId: selectedCompanyId,
     userId: currentUserId,
   });
+  const { permissions } = useTeamAccess(selectedCompanyId);
 
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();
@@ -383,8 +385,8 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
       const label = currentUserId === "local-board" ? "Board" : "Me (Board)";
       options.push({ id: `user:${currentUserId}`, label });
     }
-    return options;
-  }, [agents, currentUserId]);
+    return permissions.canAssignTasks ? options : [];
+  }, [agents, currentUserId, permissions.canAssignTasks]);
 
   const currentAssigneeValue = useMemo(() => {
     if (issue?.assigneeAgentId) return `agent:${issue.assigneeAgentId}`;
@@ -1168,7 +1170,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                       issueStatus={issue.status}
                       agentMap={agentMap}
                       draftKey={`paperclip:issue-comment-draft:${issue.id}`}
-                      enableReassign
+                      enableReassign={permissions.canAssignTasks}
                       reassignOptions={commentReassignOptions}
                       currentAssigneeValue={currentAssigneeValue}
                       mentions={mentionOptions}

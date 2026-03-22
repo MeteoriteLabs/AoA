@@ -1,18 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
-
-vi.mock("@paperclipai/db", () => {
-  const makeTable = () =>
-    new Proxy({}, { get: (_target, prop) => (prop === "$inferSelect" || prop === "$inferInsert" ? {} : Symbol(String(prop))) });
-  return { agents: makeTable() };
-});
-
-vi.mock("drizzle-orm", () => ({
-  and: (..._args: unknown[]) => "and",
-  eq: (..._args: unknown[]) => "eq",
-}));
-
-import { notifyHireApproved } from "../services/hire-hook.js";
+import { notifyHireApprovedForAgentRecord } from "../services/hire-hook.js";
 
 // Mock the registry so we control whether the adapter has onHireApproved and what it does.
 vi.mock("../adapters/registry.js", () => ({
@@ -26,37 +14,29 @@ vi.mock("../services/activity-log.js", () => ({
 const { findServerAdapter } = await import("../adapters/registry.js");
 const { logActivity } = await import("../services/activity-log.js");
 
-function mockDbWithAgent(agent: { id: string; companyId: string; name: string; adapterType: string; adapterConfig?: Record<string, unknown> }): Db {
+function makeAgentRecord(agent: { id: string; companyId: string; name: string; adapterType: string; adapterConfig?: Record<string, unknown> }) {
   return {
-    select: () => ({
-      from: () => ({
-        where: () =>
-          Promise.resolve([
-            {
-              id: agent.id,
-              companyId: agent.companyId,
-              name: agent.name,
-              adapterType: agent.adapterType,
-              adapterConfig: agent.adapterConfig ?? {},
-            },
-          ]),
-      }),
-    }),
-  } as unknown as Db;
+    id: agent.id,
+    companyId: agent.companyId,
+    name: agent.name,
+    adapterType: agent.adapterType,
+    adapterConfig: agent.adapterConfig ?? {},
+  };
 }
 
 afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("notifyHireApproved", () => {
+describe("notifyHireApprovedForAgentRecord", () => {
   it("writes success activity when adapter hook returns ok", async () => {
     vi.mocked(findServerAdapter).mockReturnValue({
       type: "openclaw",
       onHireApproved: vi.fn().mockResolvedValue({ ok: true }),
     } as any);
 
-    const db = mockDbWithAgent({
+    const db = {} as Db;
+    const agent = makeAgentRecord({
       id: "a1",
       companyId: "c1",
       name: "OpenClaw Agent",
@@ -64,7 +44,7 @@ describe("notifyHireApproved", () => {
     });
 
     await expect(
-      notifyHireApproved(db, {
+      notifyHireApprovedForAgentRecord(db, agent, {
         companyId: "c1",
         agentId: "a1",
         source: "approval",
@@ -83,16 +63,10 @@ describe("notifyHireApproved", () => {
   });
 
   it("does nothing when agent is not found", async () => {
-    const db = {
-      select: () => ({
-        from: () => ({
-          where: () => Promise.resolve([]),
-        }),
-      }),
-    } as unknown as Db;
+    const db = {} as Db;
 
     await expect(
-      notifyHireApproved(db, {
+      notifyHireApprovedForAgentRecord(db, null, {
         companyId: "c1",
         agentId: "a1",
         source: "join_request",
@@ -106,7 +80,8 @@ describe("notifyHireApproved", () => {
   it("does nothing when adapter has no onHireApproved", async () => {
     vi.mocked(findServerAdapter).mockReturnValue({ type: "process" } as any);
 
-    const db = mockDbWithAgent({
+    const db = {} as Db;
+    const agent = makeAgentRecord({
       id: "a1",
       companyId: "c1",
       name: "Agent",
@@ -114,7 +89,7 @@ describe("notifyHireApproved", () => {
     });
 
     await expect(
-      notifyHireApproved(db, {
+      notifyHireApprovedForAgentRecord(db, agent, {
         companyId: "c1",
         agentId: "a1",
         source: "approval",
@@ -132,7 +107,8 @@ describe("notifyHireApproved", () => {
       onHireApproved: vi.fn().mockResolvedValue({ ok: false, error: "HTTP 500", detail: { status: 500 } }),
     } as any);
 
-    const db = mockDbWithAgent({
+    const db = {} as Db;
+    const agent = makeAgentRecord({
       id: "a1",
       companyId: "c1",
       name: "OpenClaw Agent",
@@ -140,7 +116,7 @@ describe("notifyHireApproved", () => {
     });
 
     await expect(
-      notifyHireApproved(db, {
+      notifyHireApprovedForAgentRecord(db, agent, {
         companyId: "c1",
         agentId: "a1",
         source: "join_request",
@@ -164,7 +140,8 @@ describe("notifyHireApproved", () => {
       onHireApproved: vi.fn().mockRejectedValue(new Error("Network error")),
     } as any);
 
-    const db = mockDbWithAgent({
+    const db = {} as Db;
+    const agent = makeAgentRecord({
       id: "a1",
       companyId: "c1",
       name: "OpenClaw Agent",
@@ -172,7 +149,7 @@ describe("notifyHireApproved", () => {
     });
 
     await expect(
-      notifyHireApproved(db, {
+      notifyHireApprovedForAgentRecord(db, agent, {
         companyId: "c1",
         agentId: "a1",
         source: "join_request",

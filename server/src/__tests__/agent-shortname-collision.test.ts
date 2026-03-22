@@ -1,29 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-
-vi.mock("@paperclipai/db", () => {
-  const makeTable = () =>
-    new Proxy({}, { get: (_target, prop) => (prop === "$inferSelect" || prop === "$inferInsert" ? {} : Symbol(String(prop))) });
-  return {
-    agents: makeTable(),
-    agentConfigRevisions: makeTable(),
-    agentApiKeys: makeTable(),
-    agentRuntimeState: makeTable(),
-    agentTaskSessions: makeTable(),
-    agentWakeupRequests: makeTable(),
-    heartbeatRunEvents: makeTable(),
-    heartbeatRuns: makeTable(),
-  };
-});
-
-vi.mock("drizzle-orm", () => ({
-  and: (..._args: unknown[]) => "and",
-  desc: (..._args: unknown[]) => "desc",
-  eq: (..._args: unknown[]) => "eq",
-  inArray: (..._args: unknown[]) => "inArray",
-  ne: (..._args: unknown[]) => "ne",
-}));
-
-import { hasAgentShortnameCollision, deduplicateAgentName } from "../services/agents.ts";
+import { describe, expect, it } from "vitest";
+import { hasAgentShortnameCollision, deduplicateAgentName } from "../services/agent-shortnames.ts";
 
 describe("hasAgentShortnameCollision", () => {
   it("detects collisions by normalized shortname", () => {

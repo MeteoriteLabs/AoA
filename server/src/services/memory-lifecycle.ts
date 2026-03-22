@@ -250,8 +250,8 @@ export function memoryLifecycleService(db: Db) {
             .where(
               and(
                 eq(suggestions.companyId, companyId),
-                eq(suggestions.category, "pattern_detected"),
-                eq(suggestions.actionType, "flag_stale_memory"),
+                eq(suggestions.category, "memory_gap"),
+                eq(suggestions.actionType, "archive_memory"),
                 eq(suggestions.status, "pending"),
                 inArray(
                   suggestions.relatedMemoryItemId,
@@ -273,13 +273,13 @@ export function memoryLifecycleService(db: Db) {
 
         await db.insert(suggestions).values({
           companyId,
-          category: "pattern_detected",
-          actionType: "flag_stale_memory",
+          category: "memory_gap",
+          actionType: "archive_memory",
           title: `Memory item "${item.title}" hasn't been used in ${daysSinceAccess} days. Still relevant?`,
           evidence: `Last accessed: ${item.accessedAt?.toISOString() ?? "never"}. Layer: ${item.layer}.`,
           status: "pending",
           relatedMemoryItemId: item.id,
-          actionPayload: { memoryItemId: item.id, layer: item.layer, daysSinceAccess },
+          actionPayload: { memoryItemId: item.id },
         });
       }
 

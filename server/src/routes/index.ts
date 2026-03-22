@@ -13,6 +13,7 @@ export { sidebarBadgeRoutes } from "./sidebar-badges.js";
 export { llmRoutes } from "./llms.js";
 export { accessRoutes } from "./access.js";
 export { memoryRoutes } from "./memory.js";
+export { searchRoutes } from "./search.js";
 export { debriefRoutes } from "./debriefs.js";
 export { briefRoutes } from "./briefs.js";
 export { artifactRoutes } from "./artifacts.js";

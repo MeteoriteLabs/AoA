@@ -1,6 +1,17 @@
 import { and, eq, gte, lte, sql, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { briefs, issues, memoryItems, activityLog, goals, companies, projects, agents } from "@paperclipai/db";
+import {
+  briefs,
+  issues,
+  memoryItems,
+  memoryItemVersions,
+  suggestions,
+  activityLog,
+  goals,
+  companies,
+  projects,
+  agents,
+} from "@paperclipai/db";
 import type { HomeSummary, GoalProgress, GoalGapNudge, RecentActivityItem, SetupStatus } from "@paperclipai/shared";
 
 const TERMINAL_STATUSES = ["done", "cancelled"];
@@ -41,11 +52,37 @@ export function homeService(db: Db) {
           .then((rows) => Number(rows[0]?.count ?? 0)),
 
         // 4. Pending memory items
-        db
-          .select({ count: sql<number>`count(*)` })
-          .from(memoryItems)
-          .where(and(eq(memoryItems.companyId, companyId), eq(memoryItems.status, "pending")))
-          .then((rows) => Number(rows[0]?.count ?? 0)),
+        Promise.all([
+          db
+            .select({ count: sql<number>`count(*)` })
+            .from(memoryItems)
+            .where(and(eq(memoryItems.companyId, companyId), eq(memoryItems.status, "pending")))
+            .then((rows) => Number(rows[0]?.count ?? 0)),
+          db
+            .select({ count: sql<number>`count(*)` })
+            .from(memoryItemVersions)
+            .innerJoin(memoryItems, eq(memoryItemVersions.memoryItemId, memoryItems.id))
+            .where(
+              and(
+                eq(memoryItems.companyId, companyId),
+                eq(memoryItems.status, "approved"),
+                eq(memoryItemVersions.status, "pending"),
+              ),
+            )
+            .then((rows) => Number(rows[0]?.count ?? 0)),
+          db
+            .select({ count: sql<number>`count(*)` })
+            .from(suggestions)
+            .where(
+              and(
+                eq(suggestions.companyId, companyId),
+                eq(suggestions.category, "agent_proposal"),
+                eq(suggestions.actionType, "archive_memory"),
+                eq(suggestions.status, "pending"),
+              ),
+            )
+            .then((rows) => Number(rows[0]?.count ?? 0)),
+        ]).then(([itemCount, versionCount, archiveCount]) => itemCount + versionCount + archiveCount),
 
         // 5. Tasks due today or overdue assigned to current user
         (() => {
