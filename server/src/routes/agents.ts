@@ -348,6 +348,8 @@ export function agentRoutes(db: Db) {
       name: String(node.name),
       role: String(node.role),
       status: String(node.status),
+      parentType: node.reportsTo ? "agent" : null,
+      parentId: (node.reportsTo as string) ?? null,
       reports,
     };
   }

@@ -41,3 +41,13 @@ export interface TeamSummary {
   members: TeamMemberSummary[];
   pendingInvites: TeamInviteSummary[];
 }
+
+export interface UnifiedOrgNode {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+  parentType: "agent" | "department" | "company" | null;
+  parentId: string | null;
+  reports: UnifiedOrgNode[];
+}
