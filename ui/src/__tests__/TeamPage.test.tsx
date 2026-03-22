@@ -20,6 +20,10 @@ vi.mock("../context/ToastContext", () => ({
   useToast: () => ({ pushToast: vi.fn() }),
 }));
 
+vi.mock("../context/DialogContext", () => ({
+  useDialog: () => ({ openNewAgent: vi.fn() }),
+}));
+
 vi.mock("../hooks/useTeamAccess", () => ({
   useTeamAccess: () => ({
     summary: null,

@@ -140,6 +140,7 @@ export function TeamPage() {
               orgTree={orgTreeQuery.data ?? []}
               highlightId={highlightId}
               permissions={{ isFounder: role === "founder" }}
+              onMutationSuccess={invalidateAll}
             />
           )}
 
@@ -148,6 +149,7 @@ export function TeamPage() {
               teamSummary={teamSummary}
               highlightId={highlightId}
               permissions={permissions}
+              onMutationSuccess={invalidateAll}
             />
           )}
         </Tabs>

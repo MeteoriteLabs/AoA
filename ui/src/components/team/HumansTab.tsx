@@ -45,6 +45,7 @@ interface HumansTabProps {
   teamSummary: TeamSummary;
   highlightId?: string | null;
   permissions: TeamPermissionSummary;
+  onMutationSuccess?: () => void;
 }
 
 function PermissionDisabledButton({
@@ -320,7 +321,7 @@ function MemberCard({
   );
 }
 
-export function HumansTab({ teamSummary, highlightId, permissions }: HumansTabProps) {
+export function HumansTab({ teamSummary, highlightId, permissions, onMutationSuccess }: HumansTabProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -347,7 +348,8 @@ export function HumansTab({ teamSummary, highlightId, permissions }: HumansTabPr
     if (selectedCompanyId) {
       await queryClient.invalidateQueries({ queryKey: queryKeys.team.summary(selectedCompanyId) });
     }
-  }, [queryClient, selectedCompanyId]);
+    onMutationSuccess?.();
+  }, [queryClient, selectedCompanyId, onMutationSuccess]);
 
   const updateRole = useMutation({
     mutationFn: ({

@@ -57,9 +57,10 @@ interface AgentsTabProps {
   highlightId?: string | null;
   permissions: AgentsTabPermissions;
   trustScores?: Map<string, AgentTrustScore>;
+  onMutationSuccess?: () => void;
 }
 
-export function AgentsTab({ agents, highlightId, permissions, trustScores }: AgentsTabProps) {
+export function AgentsTab({ agents, highlightId, permissions, trustScores, onMutationSuccess }: AgentsTabProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { pushToast } = useToast();
@@ -94,6 +95,7 @@ export function AgentsTab({ agents, highlightId, permissions, trustScores }: Age
     onSuccess: (_, { agent, action }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      onMutationSuccess?.();
       pushToast({
         title: action === "pause" ? "Agent paused" : "Agent resumed",
         body: agent.name,
@@ -114,6 +116,7 @@ export function AgentsTab({ agents, highlightId, permissions, trustScores }: Age
       agentsApi.terminate(agent.id, selectedCompanyId ?? undefined),
     onSuccess: (_, agent) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
+      onMutationSuccess?.();
       pushToast({ title: "Agent terminated", body: agent.name, tone: "success" });
       setConfirmAction(null);
     },
@@ -131,6 +134,7 @@ export function AgentsTab({ agents, highlightId, permissions, trustScores }: Age
       agentsApi.remove(agent.id, selectedCompanyId ?? undefined),
     onSuccess: (_, agent) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
+      onMutationSuccess?.();
       pushToast({ title: "Agent deleted", body: agent.name, tone: "success" });
       setConfirmAction(null);
     },
