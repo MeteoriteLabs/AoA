@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { memoryLifecycleService } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
+import { assertRole } from "../middleware/rbac.js";
 
 export function memoryLifecycleRoutes(db: Db) {
   const router = Router();
@@ -10,6 +11,7 @@ export function memoryLifecycleRoutes(db: Db) {
   router.post("/companies/:companyId/memory/lifecycle/archive-expired", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
     const count = await svc.archiveExpiredItems(companyId);
     res.json({ archived: count });
   });
@@ -17,6 +19,7 @@ export function memoryLifecycleRoutes(db: Db) {
   router.post("/companies/:companyId/memory/lifecycle/archive-working", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
     const count = await svc.archiveExpiredWorkingMemory(companyId);
     res.json({ archived: count });
   });
@@ -24,6 +27,7 @@ export function memoryLifecycleRoutes(db: Db) {
   router.post("/companies/:companyId/memory/lifecycle/flag-stale", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
     const count = await svc.flagStaleItems(companyId);
     res.json({ flagged: count });
   });

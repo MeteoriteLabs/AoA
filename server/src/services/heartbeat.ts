@@ -405,7 +405,10 @@ export function heartbeatService(db: Db) {
     return runtimeForRun?.sessionId ?? null;
   }
 
-  async function fetchMemoryContext(companyId: string, issueId: string | null) {
+  const CONTEXT_MODE_LIMITS: Record<string, number> = { minimal: 3, standard: 10, full: 25 };
+
+  async function fetchMemoryContext(companyId: string, issueId: string | null, contextMode: string = "standard") {
+    const itemLimit = CONTEXT_MODE_LIMITS[contextMode] ?? 10;
     // Fetch company info (name/description — vision/mission added in V2)
     const company = await db
       .select({
@@ -439,7 +442,7 @@ export function heartbeatService(db: Db) {
     // - company-wide preferences (category='preference')
     // - department-scoped items matching the task's project/department
     // Priority: preferences first, then department-specific, then recent
-    // Cap at 10 items
+    // Cap based on contextMode (minimal=3, standard=10, full=25)
     const conditions = [
       eq(memoryItems.companyId, companyId),
       eq(memoryItems.status, "approved"),
@@ -497,7 +500,7 @@ export function heartbeatService(db: Db) {
               sql`CASE WHEN ${memoryItems.category} = 'preference' THEN 0 ELSE 1 END`,
               sql`${memoryItems.embedding} <=> ${vectorStr}::vector`,
             )
-            .limit(10);
+            .limit(itemLimit);
 
           return {
             company: company
@@ -532,7 +535,7 @@ export function heartbeatService(db: Db) {
         sql`CASE WHEN ${memoryItems.category} = 'preference' THEN 0 ELSE 1 END`,
         desc(memoryItems.updatedAt),
       )
-      .limit(10);
+      .limit(itemLimit);
 
     // Batch update accessedAt for all served items (after assembly, not per-item)
     const servedIds = items.map((item) => item.id);
@@ -1414,7 +1417,8 @@ export function heartbeatService(db: Db) {
 
     // Enrich context with memory items and company info for the agent
     try {
-      const memoryContext = await fetchMemoryContext(agent.companyId, issueId);
+      const agentContextMode = (parseObject(agent.runtimeConfig).contextMode as string) ?? "standard";
+      const memoryContext = await fetchMemoryContext(agent.companyId, issueId, agentContextMode);
       if (memoryContext.company) {
         context.company = memoryContext.company;
       }

@@ -9,6 +9,7 @@ import {
 import { validate } from "../middleware/validate.js";
 import { artifactService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertRole } from "../middleware/rbac.js";
 
 export function artifactRoutes(db: Db) {
   const router = Router();
@@ -109,6 +110,7 @@ export function artifactRoutes(db: Db) {
         return;
       }
       assertCompanyAccess(req, existing.companyId);
+      await assertRole(db, req, existing.companyId, "founder");
 
       const version = await svc.addVersion(id, req.body);
 
@@ -134,7 +136,6 @@ export function artifactRoutes(db: Db) {
   );
 
   // MCP inbound: push artifact version from external tool (Decision #69, #70)
-  // TODO(V2-RBAC): Check role permissions; enter pending state if non-founder pushes version
   router.post(
     "/mcp/artifacts/:id/versions",
     validate(mcpArtifactVersionSchema),
@@ -146,6 +147,7 @@ export function artifactRoutes(db: Db) {
         return;
       }
       assertCompanyAccess(req, existing.companyId);
+      await assertRole(db, req, existing.companyId, "founder");
 
       const { sourceDetail, changelog, parentVersionId, content, fileUrl } = req.body;
 
