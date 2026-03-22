@@ -42,6 +42,7 @@ export interface TeamSummary {
   pendingInvites: TeamInviteSummary[];
 }
 
+/** A node in the unified org tree that can represent either an agent or a human. */
 export interface UnifiedOrgNode {
   id: string;
   name: string;
@@ -53,6 +54,7 @@ export interface UnifiedOrgNode {
   adapterType?: string;
   trustScore?: number;
   icon?: string;
+  pendingApproval?: boolean;
 
   // User-specific (undefined for agents)
   email?: string;

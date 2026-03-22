@@ -184,9 +184,9 @@ function OrgTreeNodeRow({
           <span className="text-xs text-muted-foreground ml-2">{node.role}</span>
         </div>
       </div>
-      {node.reports && node.reports.length > 0 && (
+      {node.children && node.children.length > 0 && (
         <div className="border-l border-border/50 ml-4">
-          {node.reports.map((child) => (
+          {node.children.map((child: OrgNode) => (
             <OrgTreeNodeRow
               key={child.id}
               node={child}
