@@ -342,7 +342,7 @@ export function HumansTab({ teamSummary, highlightId, permissions, onMutationSuc
   const members = teamSummary.members;
   const pendingInvites = teamSummary.pendingInvites;
   const founderCount = members.filter((m) => m.role === "founder").length;
-  const nonFounderMembers = members.filter((m) => m.role !== "founder");
+  const nonFounderMembers = members;
 
   const invalidateTeam = useCallback(async () => {
     if (selectedCompanyId) {

@@ -158,7 +158,7 @@ describe("AgentsTab", () => {
   function makeAgentList() {
     return [
       makeAgent({ id: "a1", name: "Alice", role: "ceo", status: "active", adapterType: "claude_api", reportsTo: null, budgetMonthlyCents: 5000, title: "Chief Executive" }),
-      makeAgent({ id: "a2", name: "Bob", role: "engineer", status: "paused", adapterType: "claude_local", reportsTo: "a1", budgetMonthlyCents: 0, title: null }),
+      makeAgent({ id: "a2", name: "Bob", role: "engineer", status: "paused", adapterType: "claude_local", reportsTo: "a1", parentType: "agent", parentId: "a1", budgetMonthlyCents: 0, title: null }),
     ];
   }
 

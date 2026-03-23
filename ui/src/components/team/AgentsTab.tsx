@@ -60,7 +60,7 @@ interface AgentsTabProps {
   onMutationSuccess?: () => void;
 }
 
-export function AgentsTab({ agents, highlightId, permissions, trustScores, onMutationSuccess }: AgentsTabProps) {
+export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScores, onMutationSuccess }: AgentsTabProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { pushToast } = useToast();
@@ -79,12 +79,19 @@ export function AgentsTab({ agents, highlightId, permissions, trustScores, onMut
     }
   }, [highlightId]);
 
-  // Build reportsTo name map from agents
-  const reportsToMap = useMemo(() => {
+  // Build parent name map from agents + org tree (includes users)
+  const parentNameMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const a of agents) map.set(a.id, a.name);
+    const walk = (nodes: OrgNode[]) => {
+      for (const n of nodes) {
+        if (!map.has(n.id)) map.set(n.id, n.name);
+        walk(n.children);
+      }
+    };
+    walk(orgTree);
     return map;
-  }, [agents]);
+  }, [agents, orgTree]);
 
   const pauseResume = useMutation({
     mutationFn: async ({ agent, action }: { agent: Agent; action: "pause" | "resume" }) => {
@@ -190,7 +197,7 @@ export function AgentsTab({ agents, highlightId, permissions, trustScores, onMut
           const statusColor = agentStatusDot[agent.status] ?? agentStatusDotDefault;
           const isPaused = agent.status === "paused";
           const isTerminated = agent.status === "terminated";
-          const reportsToName = agent.reportsTo ? (reportsToMap.get(agent.reportsTo) ?? null) : null;
+          const reportsToName = agent.parentId ? (parentNameMap.get(agent.parentId) ?? null) : null;
           const score = trustScores?.get(agent.id) ?? null;
 
           return (
