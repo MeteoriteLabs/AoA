@@ -3,6 +3,7 @@ import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
+import { trustScoresApi } from "../api/trust-scores";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -20,6 +21,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, LayoutGrid, SlidersHorizontal } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
+import type { AgentTrustScore } from "@paperclipai/shared";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
@@ -55,9 +57,9 @@ function filterAgents(agents: Agent[], tab: FilterTab, showTerminated: boolean):
 
 function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean): OrgNode[] {
   return nodes.reduce<OrgNode[]>((acc, node) => {
-    const filteredReports = filterOrgTree(node.reports, tab, showTerminated);
-    if (matchesFilter(node.status, tab, showTerminated) || filteredReports.length > 0) {
-      acc.push({ ...node, reports: filteredReports });
+    const filteredChildren = filterOrgTree(node.children, tab, showTerminated);
+    if (matchesFilter(node.status, tab, showTerminated) || filteredChildren.length > 0) {
+      acc.push({ ...node, children: filteredChildren });
     }
     return acc;
   }, []);
@@ -97,6 +99,12 @@ export function Agents() {
     refetchInterval: 15_000,
   });
 
+  const { data: trustScores } = useQuery({
+    queryKey: queryKeys.trustScores.list(selectedCompanyId!),
+    queryFn: () => trustScoresApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
   // Map agentId -> first live run + live run count
   const liveRunByAgent = useMemo(() => {
     const map = new Map<string, { runId: string; liveCount: number }>();
@@ -117,6 +125,12 @@ export function Agents() {
     for (const a of agents ?? []) map.set(a.id, a);
     return map;
   }, [agents]);
+
+  const trustScoreByAgent = useMemo(() => {
+    const map = new Map<string, AgentTrustScore>();
+    for (const score of trustScores ?? []) map.set(score.agentId, score);
+    return map;
+  }, [trustScores]);
 
   const { setSubtitle, setEntityColor } = useBreadcrumbs();
 
@@ -261,6 +275,7 @@ export function Agents() {
               key={agent.id}
               agent={agent}
               liveRun={liveRunByAgent.get(agent.id) ?? null}
+              trustScore={trustScoreByAgent.get(agent.id) ?? null}
             />
           ))}
         </div>
@@ -425,9 +440,9 @@ function OrgTreeNode({
           </div>
         </div>
       </Link>
-      {node.reports && node.reports.length > 0 && (
+      {node.children && node.children.length > 0 && (
         <div className="border-l border-border/50 ml-4">
-          {node.reports.map((child) => (
+          {node.children.map((child) => (
             <OrgTreeNode key={child.id} node={child} depth={depth + 1} agentMap={agentMap} liveRunByAgent={liveRunByAgent} />
           ))}
         </div>

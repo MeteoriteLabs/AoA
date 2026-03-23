@@ -2,13 +2,15 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { goalService, logActivity } from "../services/index.js";
+import { goalService, memoryLifecycleService, logActivity } from "../services/index.js";
 import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertRole } from "../middleware/rbac.js";
 
 export function goalRoutes(db: Db) {
   const router = Router();
   const svc = goalService(db);
+  const lifecycle = memoryLifecycleService(db);
 
   router.get("/companies/:companyId/goals", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -32,6 +34,7 @@ export function goalRoutes(db: Db) {
   router.post("/companies/:companyId/goals", validate(createGoalSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder", "team_lead");
 
     const { projectIds } = req.body;
     if (!projectIds || !Array.isArray(projectIds) || projectIds.length === 0) {
@@ -63,6 +66,7 @@ export function goalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    await assertRole(db, req, existing.companyId, "founder", "team_lead");
     let goal;
     try {
       goal = await svc.update(id, req.body);
@@ -90,6 +94,11 @@ export function goalRoutes(db: Db) {
       details: req.body,
     });
 
+    // Auto-archive active_context memory when goal reaches terminal state
+    if (req.body.status === "achieved" || req.body.status === "cancelled") {
+      await lifecycle.onGoalCompleted(goal.companyId, goal.id);
+    }
+
     res.json(goal);
   });
 
@@ -101,6 +110,7 @@ export function goalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    await assertRole(db, req, existing.companyId, "founder", "team_lead");
     const goal = await svc.remove(id);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });

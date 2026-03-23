@@ -1,6 +1,4 @@
-import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents } from "@paperclipai/db";
 import type { HireApprovedPayload } from "@paperclipai/adapter-utils";
 import { findServerAdapter } from "../adapters/registry.js";
 import { logger } from "../middleware/logger.js";
@@ -17,22 +15,21 @@ export interface NotifyHireApprovedInput {
   approvedAt?: Date;
 }
 
-/**
- * Invokes the adapter's onHireApproved hook when an agent is approved (join-request or hire_agent approval).
- * Failures are non-fatal: we log and write to activity, never throw.
- */
-export async function notifyHireApproved(
+type HireApprovedAgentRecord = {
+  id: string;
+  companyId: string;
+  name: string;
+  adapterType: string | null;
+  adapterConfig?: Record<string, unknown> | null;
+};
+
+export async function notifyHireApprovedForAgentRecord(
   db: Db,
+  row: HireApprovedAgentRecord | null,
   input: NotifyHireApprovedInput,
 ): Promise<void> {
   const { companyId, agentId, source, sourceId } = input;
   const approvedAt = input.approvedAt ?? new Date();
-
-  const row = await db
-    .select()
-    .from(agents)
-    .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
-    .then((rows) => rows[0] ?? null);
 
   if (!row) {
     logger.warn({ companyId, agentId, source, sourceId }, "hire hook: agent not found in company, skipping");
@@ -110,4 +107,26 @@ export async function notifyHireApproved(
       },
     });
   }
+}
+
+/**
+ * Invokes the adapter's onHireApproved hook when an agent is approved (join-request or hire_agent approval).
+ * Failures are non-fatal: we log and write to activity, never throw.
+ */
+export async function notifyHireApproved(
+  db: Db,
+  input: NotifyHireApprovedInput,
+): Promise<void> {
+  const { companyId, agentId, source, sourceId } = input;
+  const [{ and, eq }, { agents }] = await Promise.all([
+    import("drizzle-orm"),
+    import("@paperclipai/db"),
+  ]);
+
+  const row = await db
+    .select()
+    .from(agents)
+    .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  await notifyHireApprovedForAgentRecord(db, row, input);
 }

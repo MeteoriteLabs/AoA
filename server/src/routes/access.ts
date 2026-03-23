@@ -36,7 +36,8 @@ import {
   agentService,
   deduplicateAgentName,
   logActivity,
-  notifyHireApproved
+  notifyHireApproved,
+  teamService,
 } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
 import {
@@ -1379,6 +1380,8 @@ type JoinRequestManagerCandidate = {
   id: string;
   role: string;
   reportsTo: string | null;
+  parentType?: string | null;
+  parentId?: string | null;
 };
 
 export function resolveJoinRequestAgentManagerId(
@@ -1389,7 +1392,7 @@ export function resolveJoinRequestAgentManagerId(
   );
   if (ceoCandidates.length === 0) return null;
   const rootCeo = ceoCandidates.find(
-    (candidate) => candidate.reportsTo === null
+    (candidate) => !candidate.parentId && candidate.reportsTo === null
   );
   return (rootCeo ?? ceoCandidates[0] ?? null)?.id ?? null;
 }
@@ -1508,6 +1511,7 @@ export function accessRoutes(
 ) {
   const router = Router();
   const access = accessService(db);
+  const team = teamService(db);
   const agents = agentService(db);
 
   async function assertInstanceAdmin(req: Request) {
@@ -2320,6 +2324,12 @@ export function accessRoutes(
           grants,
           req.actor.userId ?? null
         );
+        await team.applyInviteRole(
+          companyId,
+          existing.requestingUserId,
+          invite.defaultsPayload as Record<string, unknown> | null,
+          req.actor.userId ?? null
+        );
       } else {
         const existingAgents = await agents.list(companyId);
         const managerId = resolveJoinRequestAgentManagerId(existingAgents);
@@ -2344,6 +2354,8 @@ export function accessRoutes(
           title: null,
           status: "idle",
           reportsTo: managerId,
+          parentType: managerId ? "agent" : null,
+          parentId: managerId,
           capabilities: existing.capabilities ?? null,
           adapterType: existing.adapterType ?? "process",
           adapterConfig:

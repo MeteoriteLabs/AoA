@@ -467,6 +467,7 @@ export function Inbox() {
     onSuccess: (_approval, id) => {
       setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.trustScores.list(selectedCompanyId!) });
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
@@ -479,6 +480,7 @@ export function Inbox() {
     onSuccess: () => {
       setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.trustScores.list(selectedCompanyId!) });
     },
     onError: (err) => {
       setActionError(err instanceof Error ? err.message : "Failed to reject");

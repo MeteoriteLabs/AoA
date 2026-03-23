@@ -53,10 +53,17 @@ export const queryKeys = {
     comments: (approvalId: string) => ["approvals", "comments", approvalId] as const,
     issues: (approvalId: string) => ["approvals", "issues", approvalId] as const,
   },
+  trustScores: {
+    list: (companyId: string) => ["trust-scores", companyId] as const,
+    detail: (companyId: string, agentId: string) => ["trust-scores", companyId, agentId] as const,
+  },
   access: {
     joinRequests: (companyId: string, status: string = "pending_approval") =>
       ["access", "join-requests", companyId, status] as const,
     invite: (token: string) => ["access", "invite", token] as const,
+  },
+  team: {
+    summary: (companyId: string) => ["team", companyId] as const,
   },
   auth: {
     session: ["auth", "session"] as const,
@@ -76,10 +83,23 @@ export const queryKeys = {
     ["heartbeats", companyId, agentId] as const,
   liveRuns: (companyId: string) => ["live-runs", companyId] as const,
   runIssues: (runId: string) => ["run-issues", runId] as const,
-  org: (companyId: string) => ["org", companyId] as const,
+  org: Object.assign(
+    (companyId: string) => ["org", companyId] as const,
+    { tree: (companyId: string) => ["org", companyId, "tree"] as const },
+  ),
   memory: {
     list: (companyId: string) => ["memory", companyId] as const,
+    pending: (companyId: string) => ["memory", companyId, "pending"] as const,
     detail: (companyId: string, id: string) => ["memory", companyId, id] as const,
+    versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"] as const,
+    semanticSearch: (companyId: string, q: string) => ["memory", companyId, "semantic-search", q] as const,
+  },
+  search: {
+    global: (companyId: string, query: string, includeArchived = false) =>
+      ["search", companyId, query, includeArchived ? "archived" : "default"] as const,
+  },
+  suggestions: {
+    pending: (companyId: string) => ["suggestions", companyId, "pending"] as const,
   },
   debriefs: {
     list: (companyId: string) => ["debriefs", companyId] as const,
@@ -88,5 +108,18 @@ export const queryKeys = {
   briefs: {
     list: (companyId: string) => ["briefs", companyId] as const,
     detail: (companyId: string, id: string) => ["briefs", companyId, id] as const,
+  },
+  artifacts: {
+    byIssue: (issueId: string) => ["artifacts", "issue", issueId] as const,
+    detail: (id: string) => ["artifacts", "detail", id] as const,
+  },
+  mcp: {
+    status: (companyId: string) => ["mcp", companyId, "status"] as const,
+    keys: (companyId: string) => ["mcp", companyId, "keys"] as const,
+    clients: (companyId: string) => ["mcp", companyId, "clients"] as const,
+  },
+  detectedOutputs: {
+    byIssue: (issueId: string) => ["detected-outputs", "issue", issueId] as const,
+    byRun: (runId: string) => ["detected-outputs", "run", runId] as const,
   },
 };

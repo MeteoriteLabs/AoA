@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveJoinRequestAgentManagerId } from "../routes/access.js";
+import { resolveJoinRequestAgentManagerId } from "../routes/access-helpers.js";
 
 describe("resolveJoinRequestAgentManagerId", () => {
   it("returns null when no CEO exists in the company agent list", () => {
@@ -16,6 +16,16 @@ describe("resolveJoinRequestAgentManagerId", () => {
       { id: "ceo-child", role: "ceo", reportsTo: "manager-1" },
       { id: "manager-1", role: "cto", reportsTo: null },
       { id: "ceo-root", role: "ceo", reportsTo: null },
+    ]);
+
+    expect(managerId).toBe("ceo-root");
+  });
+
+  it("selects the root CEO using parentId when available", () => {
+    const managerId = resolveJoinRequestAgentManagerId([
+      { id: "ceo-child", role: "ceo", reportsTo: "manager-1", parentType: "agent", parentId: "manager-1" },
+      { id: "manager-1", role: "cto", reportsTo: null, parentType: null, parentId: null },
+      { id: "ceo-root", role: "ceo", reportsTo: null, parentType: null, parentId: null },
     ]);
 
     expect(managerId).toBe("ceo-root");

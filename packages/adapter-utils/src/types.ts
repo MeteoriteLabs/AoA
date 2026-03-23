@@ -53,6 +53,12 @@ export interface AdapterExecutionResult {
   resultJson?: Record<string, unknown> | null;
   summary?: string | null;
   clearSession?: boolean;
+  /** Adapter-hinted output files (paths relative to workspace) */
+  outputFiles?: Array<{
+    path: string;
+    label?: string;
+    artifactType?: string;
+  }>;
 }
 
 export interface AdapterSessionCodec {

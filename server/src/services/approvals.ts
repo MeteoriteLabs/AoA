@@ -68,11 +68,20 @@ export function approvalService(db: Db) {
           await agentsSvc.activatePendingApproval(payloadAgentId);
           hireApprovedAgentId = payloadAgentId;
         } else {
+          const reportsTo = typeof payload.reportsTo === "string" ? payload.reportsTo : null;
+          const parentType = typeof payload.parentType === "string"
+            ? payload.parentType
+            : (reportsTo ? "agent" : null);
+          const parentId = typeof payload.parentId === "string"
+            ? payload.parentId
+            : (reportsTo ?? null);
           const created = await agentsSvc.create(updated.companyId, {
             name: String(payload.name ?? "New Agent"),
             role: String(payload.role ?? "general"),
             title: typeof payload.title === "string" ? payload.title : null,
-            reportsTo: typeof payload.reportsTo === "string" ? payload.reportsTo : null,
+            reportsTo,
+            parentType,
+            parentId,
             capabilities: typeof payload.capabilities === "string" ? payload.capabilities : null,
             adapterType: String(payload.adapterType ?? "process"),
             adapterConfig:

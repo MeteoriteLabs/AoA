@@ -25,8 +25,8 @@ vi.mock("@tanstack/react-query", async () => {
 });
 
 vi.mock("../lib/queryKeys", () => ({
-  queryKeys: {
-    companies: { all: ["companies"] },
+    queryKeys: {
+    companies: { all: ["companies"], detail: () => ["company-detail"] },
     costs: () => ["costs"],
     activity: () => ["activity"],
     agents: { list: () => ["agents"] },
@@ -34,6 +34,11 @@ vi.mock("../lib/queryKeys", () => ({
     projects: { list: () => ["projects"] },
     goals: { list: () => ["goals"] },
     sidebarBadges: () => ["badges"],
+    mcp: {
+      status: () => ["mcp-status"],
+      keys: () => ["mcp-keys"],
+      clients: () => ["mcp-clients"],
+    },
   },
 }));
 
@@ -67,6 +72,23 @@ vi.mock("../api/projects", () => ({
 
 vi.mock("../api/goals", () => ({
   goalsApi: { list: vi.fn().mockResolvedValue([]) },
+}));
+
+vi.mock("../api/mcp", () => ({
+  mcpApi: {
+    status: vi.fn().mockResolvedValue({
+      companyId: "comp-1",
+      enabled: false,
+      endpointPath: "/api/companies/comp-1/mcp",
+      keyCount: 0,
+      connectedClients: 0,
+    }),
+    updateSettings: vi.fn(),
+    listKeys: vi.fn().mockResolvedValue([]),
+    createKey: vi.fn(),
+    revokeKey: vi.fn(),
+    listClients: vi.fn().mockResolvedValue([]),
+  },
 }));
 
 vi.mock("../lib/utils", () => ({

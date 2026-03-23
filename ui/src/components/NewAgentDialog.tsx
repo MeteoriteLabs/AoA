@@ -6,6 +6,7 @@ import { useCompany } from "../context/CompanyContext";
 import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
 import { AGENT_ROLES } from "@paperclipai/shared";
+import type { UnifiedOrgNode } from "@paperclipai/shared";
 import {
   Dialog,
   DialogContent,
@@ -20,14 +21,14 @@ import {
   Minimize2,
   Maximize2,
   Shield,
-  User,
+  DollarSign,
 } from "lucide-react";
 import { cn, agentUrl } from "../lib/utils";
 import { roleLabels } from "./agent-config-primitives";
 import { AgentConfigForm, type CreateConfigValues } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
-import { AgentIcon } from "./AgentIconPicker";
+import { ReportsToSelect } from "./team/ReportsToSelect";
 
 export function NewAgentDialog() {
   const { newAgentOpen, closeNewAgent } = useDialog();
@@ -40,18 +41,24 @@ export function NewAgentDialog() {
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [role, setRole] = useState("general");
-  const [reportsTo, setReportsTo] = useState("");
+  const [parentValue, setParentValue] = useState(""); // "agent:id" | "user:id" | ""
+  const [budgetDollars, setBudgetDollars] = useState("");
 
   // Config values (managed by AgentConfigForm)
   const [configValues, setConfigValues] = useState<CreateConfigValues>(defaultCreateValues);
 
   // Popover states
   const [roleOpen, setRoleOpen] = useState(false);
-  const [reportsToOpen, setReportsToOpen] = useState(false);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && newAgentOpen,
+  });
+
+  const { data: orgTree = [] } = useQuery<UnifiedOrgNode[]>({
+    queryKey: selectedCompanyId ? queryKeys.org.tree(selectedCompanyId) : ["org", "none", "tree"],
+    queryFn: () => agentsApi.org(selectedCompanyId!),
     enabled: !!selectedCompanyId && newAgentOpen,
   });
 
@@ -87,6 +94,7 @@ export function NewAgentDialog() {
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.org.tree(selectedCompanyId!) });
       reset();
       closeNewAgent();
       navigate(agentUrl(result.agent));
@@ -100,7 +108,8 @@ export function NewAgentDialog() {
     setName("");
     setTitle("");
     setRole("general");
-    setReportsTo("");
+    setParentValue("");
+    setBudgetDollars("");
     setConfigValues(defaultCreateValues);
     setExpanded(true);
     setFormError(null);
@@ -142,10 +151,26 @@ export function NewAgentDialog() {
         return;
       }
     }
+
+    // Parse parent value
+    let parentType: string | null = null;
+    let parentId: string | null = null;
+    let reportsTo: string | null = null;
+    if (parentValue) {
+      const [pType, pId] = parentValue.split(":");
+      parentType = pType;
+      parentId = pId;
+      if (pType === "agent") reportsTo = pId;
+    }
+
+    // Parse budget
+    const budgetCents = budgetDollars ? Math.round(parseFloat(budgetDollars) * 100) : 0;
+
     createAgent.mutate({
       name: name.trim(),
       role: effectiveRole,
       ...(title.trim() ? { title: title.trim() } : {}),
+      ...(parentType ? { parentType, parentId } : {}),
       ...(reportsTo ? { reportsTo } : {}),
       adapterType: configValues.adapterType,
       adapterConfig: buildAdapterConfig(),
@@ -158,7 +183,7 @@ export function NewAgentDialog() {
           maxConcurrentRuns: 1,
         },
       },
-      budgetMonthlyCents: 0,
+      budgetMonthlyCents: budgetCents,
     });
   }
 
@@ -168,8 +193,6 @@ export function NewAgentDialog() {
       handleSubmit();
     }
   }
-
-  const currentReportsTo = (agents ?? []).find((a) => a.id === reportsTo);
 
   return (
     <Dialog
@@ -226,7 +249,7 @@ export function NewAgentDialog() {
             />
           </div>
 
-          {/* Property chips: Role + Reports To */}
+          {/* Property chips: Role + Reports To + Budget */}
           <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap">
             {/* Role */}
             <Popover open={roleOpen} onOpenChange={setRoleOpen}>
@@ -258,58 +281,37 @@ export function NewAgentDialog() {
               </PopoverContent>
             </Popover>
 
-            {/* Reports To */}
-            <Popover open={reportsToOpen} onOpenChange={setReportsToOpen}>
-              <PopoverTrigger asChild>
-                <button
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
-                    isFirstAgent && "opacity-60 cursor-not-allowed"
-                  )}
-                  disabled={isFirstAgent}
-                >
-                  {currentReportsTo ? (
-                    <>
-                      <AgentIcon icon={currentReportsTo.icon} className="h-3 w-3 text-muted-foreground" />
-                      {`Reports to ${currentReportsTo.name}`}
-                    </>
-                  ) : (
-                    <>
-                      <User className="h-3 w-3 text-muted-foreground" />
-                      {isFirstAgent ? "Reports to: N/A (CEO)" : "Reports to..."}
-                    </>
-                  )}
-                </button>
-              </PopoverTrigger>
-              <PopoverContent className="w-48 p-1" align="start">
-                <button
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    !reportsTo && "bg-accent"
-                  )}
-                  onClick={() => { setReportsTo(""); setReportsToOpen(false); }}
-                >
-                  No manager
-                </button>
-                {(agents ?? []).map((a) => (
-                  <button
-                    key={a.id}
-                    className={cn(
-                      "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 truncate",
-                      a.id === reportsTo && "bg-accent"
-                    )}
-                    onClick={() => { setReportsTo(a.id); setReportsToOpen(false); }}
-                  >
-                    <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
-                    {a.name}
-                    <span className="text-muted-foreground ml-auto">{roleLabels[a.role] ?? a.role}</span>
-                  </button>
-                ))}
-              </PopoverContent>
-            </Popover>
+            {/* Reports To — unified select (agents + humans) */}
+            <div className="inline-flex">
+              <ReportsToSelect
+                orgTree={orgTree}
+                currentEntityId="__new__"
+                currentEntityType="agent"
+                value={parentValue}
+                onChange={setParentValue}
+                disabled={isFirstAgent}
+                className="h-7 text-xs"
+              />
+            </div>
+
+            {/* Budget */}
+            <div className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1">
+              <DollarSign className="h-3 w-3 text-muted-foreground" />
+              <input
+                className="w-16 bg-transparent outline-none text-xs placeholder:text-muted-foreground/40"
+                placeholder="Budget/mo"
+                value={budgetDollars}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "" || /^\d*\.?\d{0,2}$/.test(v)) setBudgetDollars(v);
+                }}
+                type="text"
+                inputMode="decimal"
+              />
+            </div>
           </div>
 
-          {/* Shared config form (adapter + heartbeat) */}
+          {/* Config form (adapter + heartbeat) */}
           <AgentConfigForm
             mode="create"
             values={configValues}
@@ -333,7 +335,7 @@ export function NewAgentDialog() {
             disabled={!name.trim() || createAgent.isPending}
             onClick={handleSubmit}
           >
-            {createAgent.isPending ? "Creating…" : "Create agent"}
+            {createAgent.isPending ? "Creating\u2026" : "Create agent"}
           </Button>
         </div>
       </DialogContent>

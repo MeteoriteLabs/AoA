@@ -1,0 +1,420 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import type { Db } from "@paperclipai/db";
+import { assets } from "@paperclipai/db";
+import type { DetectedOutput } from "@paperclipai/shared";
+import { logger } from "../middleware/logger.js";
+import { getStorageService } from "../storage/index.js";
+import { getContentType } from "../mime-types.js";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Max files to detect per run (prevents runaway storage consumption) */
+const MAX_FILES_PER_RUN = 20;
+
+/** Max file size to capture (50 MB per V2 spec) */
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
+
+/** Timeout for git commands */
+const GIT_TIMEOUT_MS = 10_000;
+
+/** API adapter types that have no workspace */
+const API_ADAPTER_TYPES = new Set(["claude_api", "openai_api", "gemini_api"]);
+
+/** Directory patterns to exclude from detection */
+const NOISE_DIR_PATTERNS = [
+  "node_modules",
+  ".git",
+  "__pycache__",
+  ".venv",
+  "venv",
+  "dist",
+  "build",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".cache",
+  "coverage",
+  ".tox",
+  "target", // Rust/Java
+  "vendor", // Go/PHP
+];
+
+/** File extension patterns to exclude */
+const NOISE_FILE_EXTENSIONS = new Set([
+  ".log",
+  ".lock",
+  ".tmp",
+  ".swp",
+  ".swo",
+  ".pyc",
+  ".pyo",
+  ".class",
+  ".o",
+  ".obj",
+  ".dll",
+  ".so",
+  ".dylib",
+]);
+
+/** Exact filenames to exclude */
+const NOISE_FILENAMES = new Set([
+  ".DS_Store",
+  "Thumbs.db",
+  "desktop.ini",
+  ".gitkeep",
+  ".npmrc",
+]);
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface OutputDetectionInput {
+  runId: string;
+  companyId: string;
+  agentId: string;
+  cwd: string;
+  startedAt: Date;
+  adapterType: string | null;
+  adapterHints?: Array<{ path: string; label?: string; artifactType?: string }>;
+  issueId: string | null;
+}
+
+interface AdapterHint {
+  path: string;
+  label?: string;
+  artifactType?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function isNoisePath(relativePath: string): boolean {
+  const parts = relativePath.split(/[\\/]/);
+
+  // Check directory patterns
+  for (const part of parts.slice(0, -1)) {
+    if (NOISE_DIR_PATTERNS.includes(part)) return true;
+    if (part.startsWith(".") && part !== ".") return true; // hidden dirs (except ".")
+  }
+
+  // Check filename
+  const filename = parts[parts.length - 1];
+  if (!filename) return true;
+  if (NOISE_FILENAMES.has(filename)) return true;
+
+  const ext = path.extname(filename).toLowerCase();
+  if (NOISE_FILE_EXTENSIONS.has(ext)) return true;
+
+  return false;
+}
+
+/** Guard against path traversal — resolved path must stay within cwd */
+function isInsideWorkspace(cwd: string, absPath: string): boolean {
+  const resolvedCwd = path.resolve(cwd);
+  return absPath === resolvedCwd || absPath.startsWith(resolvedCwd + path.sep);
+}
+
+function execGitCommand(cwd: string, args: string[]): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      args,
+      { cwd, timeout: GIT_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
+      (err, stdout) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        const lines = stdout
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0);
+        resolve(lines);
+      },
+    );
+  });
+}
+
+async function isGitRepo(cwd: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(path.join(cwd, ".git"));
+    return stat.isDirectory() || stat.isFile(); // .git can be a file in worktrees
+  } catch {
+    return false;
+  }
+}
+
+async function detectChangedFilesGit(cwd: string): Promise<string[]> {
+  // Modified tracked files (staged + unstaged)
+  const modified = await execGitCommand(cwd, [
+    "diff",
+    "--name-only",
+    "HEAD",
+  ]).catch(() => [] as string[]);
+
+  // New untracked files
+  const untracked = await execGitCommand(cwd, [
+    "ls-files",
+    "--others",
+    "--exclude-standard",
+  ]).catch(() => [] as string[]);
+
+  // Deduplicate
+  const unique = new Set([...modified, ...untracked]);
+  return Array.from(unique);
+}
+
+async function detectChangedFilesMtime(cwd: string, startedAt: Date): Promise<string[]> {
+  const result: string[] = [];
+  const startMs = startedAt.getTime();
+
+  async function walk(dir: string, prefix: string) {
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+
+      if (entry.isDirectory()) {
+        if (!NOISE_DIR_PATTERNS.includes(entry.name) && !entry.name.startsWith(".")) {
+          await walk(path.join(dir, entry.name), relativePath);
+        }
+      } else if (entry.isFile()) {
+        try {
+          const stat = await fs.stat(path.join(dir, entry.name));
+          if (stat.mtimeMs >= startMs) {
+            result.push(relativePath);
+          }
+        } catch {
+          // Skip files we can't stat
+        }
+      }
+
+      // Cap early to avoid scanning massive directories
+      if (result.length > MAX_FILES_PER_RUN * 2) break;
+    }
+  }
+
+  await walk(cwd, "");
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
+export function outputDetectionService(db: Db) {
+  return {
+    /**
+     * Detect new/modified files in an agent's workspace after a heartbeat run,
+     * copy them to asset storage, and return detection records.
+     *
+     * This function MUST never throw — all errors are caught and logged.
+     * A failure in output detection should never break the heartbeat flow.
+     */
+    async detectAndCapture(input: OutputDetectionInput): Promise<DetectedOutput[]> {
+      try {
+        return await detectAndCaptureImpl(db, input);
+      } catch (err) {
+        logger.warn(
+          { err, runId: input.runId, cwd: input.cwd },
+          "output detection failed (non-fatal)",
+        );
+        return [];
+      }
+    },
+  };
+}
+
+async function detectAndCaptureImpl(
+  db: Db,
+  input: OutputDetectionInput,
+): Promise<DetectedOutput[]> {
+  const { runId, companyId, agentId, cwd, startedAt, adapterType, adapterHints } = input;
+
+  // Guard: API adapters have no workspace
+  const isApiAdapter = adapterType != null && API_ADAPTER_TYPES.has(adapterType);
+  if (isApiAdapter && (!adapterHints || adapterHints.length === 0)) {
+    return [];
+  }
+
+  // Guard: verify cwd exists
+  try {
+    const stat = await fs.stat(cwd);
+    if (!stat.isDirectory()) return [];
+  } catch {
+    return [];
+  }
+
+  // Detect changed files
+  let detectedPaths: string[];
+  if (!isApiAdapter) {
+    const isGit = await isGitRepo(cwd);
+    if (isGit) {
+      try {
+        detectedPaths = await detectChangedFilesGit(cwd);
+      } catch (err) {
+        logger.warn({ err, cwd }, "git detection failed, falling back to mtime");
+        detectedPaths = await detectChangedFilesMtime(cwd, startedAt);
+      }
+    } else {
+      detectedPaths = await detectChangedFilesMtime(cwd, startedAt);
+    }
+  } else {
+    detectedPaths = [];
+  }
+
+  // Build hint map
+  const hintMap = new Map<string, AdapterHint>();
+  if (adapterHints) {
+    for (const hint of adapterHints) {
+      // Normalize to forward slashes
+      const normalized = hint.path.replace(/\\/g, "/");
+      hintMap.set(normalized, hint);
+    }
+  }
+
+  // Merge detected paths with adapter hints
+  const normalizedDetected = new Set(detectedPaths.map((p) => p.replace(/\\/g, "/")));
+
+  interface MergedFile {
+    relativePath: string;
+    source: "diff" | "hint" | "both";
+    label?: string;
+    artifactType?: string;
+  }
+
+  const merged: MergedFile[] = [];
+
+  // Files detected by diff (possibly also hinted)
+  for (const relPath of normalizedDetected) {
+    if (isNoisePath(relPath)) continue;
+    const hint = hintMap.get(relPath);
+    merged.push({
+      relativePath: relPath,
+      source: hint ? "both" : "diff",
+      label: hint?.label,
+      artifactType: hint?.artifactType,
+    });
+  }
+
+  // Hint-only files (not found in diff)
+  for (const [hintPath, hint] of hintMap) {
+    if (normalizedDetected.has(hintPath)) continue; // already merged
+
+    // Check if file actually exists in workspace (with path traversal guard)
+    const absPath = path.resolve(cwd, hintPath);
+    if (!isInsideWorkspace(cwd, absPath)) {
+      logger.warn({ cwd, hintPath }, "adapter hint path traversal blocked");
+      continue;
+    }
+    try {
+      await fs.stat(absPath);
+      merged.push({
+        relativePath: hintPath,
+        source: "hint",
+        label: hint.label,
+        artifactType: hint.artifactType,
+      });
+    } catch {
+      // Hinted file doesn't exist — skip
+    }
+  }
+
+  if (merged.length === 0) return [];
+
+  // Prioritize: hint files first, then diff files, sorted by path
+  merged.sort((a, b) => {
+    const aHint = a.source === "hint" || a.source === "both" ? 0 : 1;
+    const bHint = b.source === "hint" || b.source === "both" ? 0 : 1;
+    if (aHint !== bHint) return aHint - bHint;
+    return a.relativePath.localeCompare(b.relativePath);
+  });
+
+  // Cap at MAX_FILES_PER_RUN
+  const candidates = merged.slice(0, MAX_FILES_PER_RUN);
+
+  // Copy files to asset storage
+  const storage = getStorageService();
+  const results: DetectedOutput[] = [];
+
+  for (const candidate of candidates) {
+    try {
+      const absPath = path.resolve(cwd, candidate.relativePath);
+      if (!isInsideWorkspace(cwd, absPath)) {
+        logger.warn({ runId, file: candidate.relativePath }, "path traversal blocked");
+        continue;
+      }
+      const stat = await fs.stat(absPath);
+
+      if (!stat.isFile()) continue;
+      if (stat.size > MAX_FILE_BYTES) continue;
+      if (stat.size === 0) continue;
+
+      const buffer = await fs.readFile(absPath);
+      const filename = path.basename(candidate.relativePath);
+      const contentType = getContentType(filename);
+
+      // Compute sha256
+      const sha256 = createHash("sha256").update(buffer).digest("hex");
+
+      // Store in asset storage
+      const stored = await storage.putFile({
+        companyId,
+        namespace: "agent-outputs",
+        originalFilename: filename,
+        contentType,
+        body: buffer,
+      });
+
+      // Create asset record
+      const [asset] = await db
+        .insert(assets)
+        .values({
+          companyId,
+          provider: stored.provider,
+          objectKey: stored.objectKey,
+          contentType: stored.contentType,
+          byteSize: stored.byteSize,
+          sha256: stored.sha256 ?? sha256,
+          originalFilename: stored.originalFilename,
+          createdByAgentId: agentId,
+          createdByUserId: null,
+        })
+        .returning();
+
+      results.push({
+        path: candidate.relativePath,
+        filename,
+        byteSize: stat.size,
+        contentType,
+        assetId: asset.id,
+        sha256: stored.sha256 ?? sha256,
+        source: candidate.source,
+        label: candidate.label ?? null,
+        artifactType: candidate.artifactType ?? null,
+        status: "pending",
+        confirmedArtifactId: null,
+        confirmedVersionId: null,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, runId, file: candidate.relativePath },
+        "failed to capture output file (skipping)",
+      );
+    }
+  }
+
+  return results;
+}

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
+import { AGENT_ADAPTER_TYPES, AGENT_ROLES } from "@paperclipai/shared";
 import type {
   Agent,
   AdapterEnvironmentTestResult,
@@ -22,6 +22,13 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
@@ -36,7 +43,10 @@ import {
   DraftNumberInput,
   help,
   adapterLabels,
+  roleLabels,
 } from "./agent-config-primitives";
+import { ReportsToSelect } from "./team/ReportsToSelect";
+import type { UnifiedOrgNode } from "./team/ReportsToSelect";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
@@ -171,6 +181,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId),
   });
 
+  // Org tree for ReportsToSelect (edit mode only)
+  const { data: orgTree = [] } = useQuery<UnifiedOrgNode[]>({
+    queryKey: selectedCompanyId ? queryKeys.org.tree(selectedCompanyId) : ["org", "none", "tree"],
+    queryFn: () => agentsApi.org(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId) && !isCreate,
+  });
+
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
       if (!selectedCompanyId) throw new Error("Select a company to create secrets");
@@ -241,7 +258,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     if (Object.keys(overlay.heartbeat).length > 0) {
       const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
       const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
-      patch.runtimeConfig = { ...existingRc, heartbeat: { ...existingHb, ...overlay.heartbeat } };
+      // Separate runtimeConfig-level fields from heartbeat-level fields
+      const hb = overlay.heartbeat as Record<string, unknown>;
+      const { autoRunSummary: ars, ...heartbeatFields } = hb;
+      const mergedRc: Record<string, unknown> = { ...existingRc, heartbeat: { ...existingHb, ...heartbeatFields } };
+      if (ars !== undefined) mergedRc.autoRunSummary = ars;
+      patch.runtimeConfig = mergedRc;
     }
     if (Object.keys(overlay.runtime).length > 0) {
       Object.assign(patch, overlay.runtime);
@@ -421,6 +443,58 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 className={inputClass}
                 placeholder="e.g. VP of Engineering"
               />
+            </Field>
+            <Field label="Role" hint="Agent role category">
+              <Select
+                value={eff("identity", "role", props.agent.role) as string}
+                onValueChange={(v) => mark("identity", "role", v)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {AGENT_ROLES.map((r) => (
+                    <SelectItem key={r} value={r}>
+                      {roleLabels[r] ?? r}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Reports to" hint="Direct manager (agent or team member)">
+              <ReportsToSelect
+                orgTree={orgTree}
+                currentEntityId={props.agent.id}
+                currentEntityType="agent"
+                value={
+                  eff("identity", "parentType", props.agent.parentType) && eff("identity", "parentId", props.agent.parentId)
+                    ? `${eff("identity", "parentType", props.agent.parentType)}:${eff("identity", "parentId", props.agent.parentId)}`
+                    : ""
+                }
+                onChange={(v) => {
+                  if (v) {
+                    const [pType, pId] = v.split(":");
+                    mark("identity", "parentType", pType);
+                    mark("identity", "parentId", pId);
+                    mark("identity", "reportsTo", pType === "agent" ? pId : null);
+                  } else {
+                    mark("identity", "parentType", null);
+                    mark("identity", "parentId", null);
+                    mark("identity", "reportsTo", null);
+                  }
+                }}
+              />
+            </Field>
+            <Field label="Monthly budget" hint="Maximum spend per month">
+              <DraftNumberInput
+                value={eff("identity", "budgetMonthlyCents", props.agent.budgetMonthlyCents ?? 0) as number / 100}
+                onCommit={(v) => mark("identity", "budgetMonthlyCents", Math.round((v ?? 0) * 100))}
+                immediate
+                className={inputClass}
+                placeholder="0.00"
+                min={0}
+              />
+              <span className="text-xs text-muted-foreground mt-1">Dollars per month</span>
             </Field>
             <Field label="Capabilities" hint={help.capabilities}>
               <MarkdownEditor
@@ -854,6 +928,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className={inputClass}
                 />
               </Field>
+              <ToggleField
+                label="Auto run summaries"
+                hint={help.autoRunSummary}
+                checked={eff(
+                  "heartbeat",
+                  "autoRunSummary",
+                  runtimeConfig.autoRunSummary !== false,
+                )}
+                onChange={(v) => mark("heartbeat", "autoRunSummary", v)}
+              />
             </div>
           </CollapsibleSection>
           </div>

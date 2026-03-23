@@ -1,5 +1,9 @@
-import type { MemoryItem } from "@paperclipai/shared";
+import type { MemoryItem, MemoryItemVersion, PendingMemoryQueue, Suggestion } from "@paperclipai/shared";
 import { api } from "./client";
+
+export type SimilarMemoryItem = MemoryItem & {
+  similarity?: number | null;
+};
 
 export const memoryApi = {
   list: (
@@ -10,6 +14,7 @@ export const memoryApi = {
       source?: string;
       departmentId?: string;
       projectId?: string;
+      layer?: string;
       tags?: string[];
       search?: string;
     },
@@ -20,6 +25,7 @@ export const memoryApi = {
     if (filters?.source) params.set("source", filters.source);
     if (filters?.departmentId) params.set("departmentId", filters.departmentId);
     if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.layer) params.set("layer", filters.layer);
     if (filters?.tags && filters.tags.length > 0) params.set("tags", filters.tags.join(","));
     if (filters?.search) params.set("search", filters.search);
     const qs = params.toString();
@@ -27,6 +33,20 @@ export const memoryApi = {
   },
   get: (companyId: string, id: string) =>
     api.get<MemoryItem>(`/companies/${companyId}/memory/${id}`),
+  listPending: (companyId: string) =>
+    api.get<PendingMemoryQueue>(`/companies/${companyId}/memory-pending`),
+  findSimilarItems: (
+    companyId: string,
+    content: string,
+    filters?: { departmentId?: string; layer?: string },
+  ) => {
+    const params = new URLSearchParams({ content });
+    if (filters?.departmentId) params.set("departmentId", filters.departmentId);
+    if (filters?.layer) params.set("layer", filters.layer);
+    return api.get<SimilarMemoryItem[]>(
+      `/companies/${companyId}/memory/find-similar?${params.toString()}`,
+    );
+  },
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<MemoryItem>(`/companies/${companyId}/memory`, data),
   update: (companyId: string, id: string, data: Record<string, unknown>) =>
@@ -37,4 +57,49 @@ export const memoryApi = {
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/approve`, {}),
   reject: (companyId: string, id: string) =>
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/reject`, {}),
+
+  // Version management
+  getVersions: (companyId: string, id: string) =>
+    api.get<MemoryItemVersion[]>(`/companies/${companyId}/memory/${id}/versions`),
+  suggestUpdate: (companyId: string, id: string, content: string, sourceContext: string, agentId: string) =>
+    api.post<MemoryItemVersion>(`/companies/${companyId}/memory/${id}/suggest-update`, {
+      content,
+      sourceContext,
+      agentId,
+    }),
+  suggestArchive: (companyId: string, id: string, sourceContext: string, agentId: string) =>
+    api.post<Suggestion>(`/companies/${companyId}/memory/${id}/suggest-archive`, {
+      sourceContext,
+      agentId,
+    }),
+  saveDraft: (companyId: string, id: string, content: string) =>
+    api.post<MemoryItemVersion>(`/companies/${companyId}/memory/${id}/draft`, { content }),
+  publishDraft: (companyId: string, id: string) =>
+    api.post<MemoryItemVersion>(`/companies/${companyId}/memory/${id}/publish`, {}),
+  approveVersion: (companyId: string, id: string, versionId: string) =>
+    api.post<MemoryItemVersion>(`/companies/${companyId}/memory/${id}/versions/${versionId}/approve`, {}),
+  rejectVersion: (companyId: string, id: string, versionId: string) =>
+    api.post<MemoryItemVersion>(`/companies/${companyId}/memory/${id}/versions/${versionId}/reject`, {}),
+  restore: (companyId: string, id: string) =>
+    api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/restore`, {}),
+  touchAccessedAt: (companyId: string, id: string) =>
+    api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/touch`, {}),
+  searchSemantic: (
+    companyId: string,
+    q: string,
+    filters?: {
+      layer?: string;
+      departmentId?: string;
+      limit?: number;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    params.set("q", q);
+    if (filters?.layer) params.set("layer", filters.layer);
+    if (filters?.departmentId) params.set("departmentId", filters.departmentId);
+    if (filters?.limit !== undefined) params.set("limit", String(filters.limit));
+    return api.get<Array<MemoryItem & { similarity: number | null }>>(
+      `/companies/${companyId}/memory/search?${params.toString()}`,
+    );
+  },
 };

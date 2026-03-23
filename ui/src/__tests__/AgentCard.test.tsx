@@ -3,6 +3,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders, makeAgent, mockCompanyContext } from "./test-utils";
 import { AgentCard } from "../components/AgentCard";
+import { getTrustScoreTrend } from "../lib/trust-score";
 
 // --- Mocks ---
 
@@ -82,6 +83,10 @@ vi.mock("@/components/ui/button", () => ({
   Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
 }));
 
+vi.mock("@/components/ui/badge", () => ({
+  Badge: ({ children, ...props }: any) => <span {...props}>{children}</span>,
+}));
+
 vi.mock("../lib/status-colors", () => ({
   agentStatusDot: {
     active: "bg-green-400",
@@ -156,5 +161,121 @@ describe("AgentCard", () => {
     // Click the card container (outermost div)
     await user.click(screen.getByText("Claude Agent"));
     expect(mockNavigate).toHaveBeenCalledWith("/agents/agent-1");
+  });
+
+  it("renders a green trust score badge for scores above 80%", () => {
+    const agent = makeAgent();
+
+    renderWithProviders(
+      <AgentCard
+        agent={agent as any}
+        trustScore={{
+          id: "ts-1",
+          companyId: "comp-1",
+          agentId: agent.id,
+          totalCompleted: 12,
+          approvedWithoutChanges: 11,
+          recentCompleted: 12,
+          recentApproved: 11,
+          currentScore: 91,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }}
+      />,
+    );
+
+    const badge = screen.getByTestId("trust-score-badge");
+    expect(badge).toHaveTextContent("91%");
+    expect(badge).toHaveAttribute("data-tone", "high");
+  });
+
+  it("renders a yellow trust score badge for scores between 50% and 80%", () => {
+    const agent = makeAgent();
+
+    renderWithProviders(
+      <AgentCard
+        agent={agent as any}
+        trustScore={{
+          id: "ts-1",
+          companyId: "comp-1",
+          agentId: agent.id,
+          totalCompleted: 10,
+          approvedWithoutChanges: 7,
+          recentCompleted: 10,
+          recentApproved: 7,
+          currentScore: 70,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId("trust-score-badge")).toHaveAttribute("data-tone", "moderate");
+  });
+
+  it("renders a red trust score badge for scores below 50%", () => {
+    const agent = makeAgent();
+
+    renderWithProviders(
+      <AgentCard
+        agent={agent as any}
+        trustScore={{
+          id: "ts-1",
+          companyId: "comp-1",
+          agentId: agent.id,
+          totalCompleted: 10,
+          approvedWithoutChanges: 4,
+          recentCompleted: 10,
+          recentApproved: 4,
+          currentScore: 40,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId("trust-score-badge")).toHaveAttribute("data-tone", "low");
+  });
+
+  it("shows the trust score tooltip breakdown", () => {
+    const agent = makeAgent();
+
+    renderWithProviders(
+      <AgentCard
+        agent={agent as any}
+        trustScore={{
+          id: "ts-1",
+          companyId: "comp-1",
+          agentId: agent.id,
+          totalCompleted: 8,
+          approvedWithoutChanges: 6,
+          recentCompleted: 8,
+          recentApproved: 6,
+          currentScore: 75,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Trust Score: 75% — based on 8 tasks (6 approved without changes)")).toBeInTheDocument();
+  });
+
+  it("does not render a trust score badge for agents with null score", () => {
+    const agent = makeAgent();
+
+    renderWithProviders(<AgentCard agent={agent as any} trustScore={null} />);
+
+    expect(screen.queryByTestId("trust-score-badge")).not.toBeInTheDocument();
+  });
+
+  it("marks trend as up when recent performance exceeds the overall score", () => {
+    expect(
+      getTrustScoreTrend({
+        currentScore: 65,
+        recentCompleted: 20,
+        recentApproved: 16,
+      }),
+    ).toBe("up");
   });
 });

@@ -1,10 +1,62 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+
+vi.mock("@paperclipai/db", () => {
+  const makeTable = () =>
+    new Proxy({}, { get: (_target, prop) => (prop === "$inferSelect" || prop === "$inferInsert" ? {} : Symbol(String(prop))) });
+  return {
+    agents: makeTable(),
+    agentRuntimeState: makeTable(),
+    agentTaskSessions: makeTable(),
+    agentWakeupRequests: makeTable(),
+    heartbeatRunEvents: makeTable(),
+    heartbeatRuns: makeTable(),
+    costEvents: makeTable(),
+    issues: makeTable(),
+    projectWorkspaces: makeTable(),
+    memoryItems: makeTable(),
+    companies: makeTable(),
+    taskDependencies: makeTable(),
+    issueAttachments: makeTable(),
+    issueComments: makeTable(),
+    assets: makeTable(),
+  };
+});
+
+vi.mock("drizzle-orm", () => ({
+  and: (..._args: unknown[]) => "and",
+  asc: (..._args: unknown[]) => "asc",
+  desc: (..._args: unknown[]) => "desc",
+  eq: (..._args: unknown[]) => "eq",
+  gt: (..._args: unknown[]) => "gt",
+  inArray: (..._args: unknown[]) => "inArray",
+  or: (..._args: unknown[]) => "or",
+  sql: new Proxy(() => "sql", { get: () => () => "sql", apply: () => "sql" }),
+}));
+
+vi.mock("../services/live-events.js", () => ({ publishLiveEvent: vi.fn() }));
+vi.mock("../services/run-log-store.js", () => ({ getRunLogStore: vi.fn() }));
+vi.mock("../services/activity-log.js", () => ({ logActivity: vi.fn() }));
+vi.mock("../adapters/index.js", () => ({ getServerAdapter: vi.fn(), runningProcesses: new Map() }));
+vi.mock("../agent-auth-jwt.js", () => ({ createLocalAgentJwt: vi.fn() }));
+vi.mock("../adapters/utils.js", () => ({
+  parseObject: vi.fn(),
+  asBoolean: vi.fn(),
+  asNumber: vi.fn(),
+  appendWithCap: vi.fn(),
+  MAX_EXCERPT_BYTES: 1024,
+}));
+vi.mock("../adapters/api-common.js", () => ({ setSecretResolver: vi.fn() }));
+vi.mock("../services/secrets.js", () => ({ secretService: vi.fn(() => ({})) }));
+vi.mock("../services/output-detection.js", () => ({ outputDetectionService: vi.fn(() => ({})) }));
+vi.mock("../services/run-summary.js", () => ({ formatRunSummary: vi.fn() }));
+vi.mock("../middleware/logger.js", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) } }));
+
 import {
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
-} from "../services/heartbeat.ts";
+} from "../services/heartbeat-session.ts";
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {

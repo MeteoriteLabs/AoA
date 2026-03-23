@@ -6,6 +6,7 @@ import {
   principalPermissionGrants,
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+import { orgHierarchyService } from "./org-hierarchy.js";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
@@ -14,6 +15,8 @@ type GrantInput = {
 };
 
 export function accessService(db: Db) {
+  const orgHierarchy = orgHierarchyService(db);
+
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
     const row = await db
@@ -164,9 +167,14 @@ export function accessService(db: Db) {
     const target = new Set(companyIds);
 
     await db.transaction(async (tx) => {
-      const toDelete = existing.filter((row) => !target.has(row.companyId)).map((row) => row.id);
+      const toDelete = existing.filter((row) => !target.has(row.companyId));
       if (toDelete.length > 0) {
-        await tx.delete(companyMemberships).where(inArray(companyMemberships.id, toDelete));
+        for (const row of toDelete) {
+          if (row.principalType === "user") {
+            await orgHierarchy.orphanChildren(row.principalId, "user", tx as unknown as Db);
+          }
+        }
+        await tx.delete(companyMemberships).where(inArray(companyMemberships.id, toDelete.map((row) => row.id)));
       }
 
       for (const companyId of target) {

@@ -1,3 +1,10 @@
+/**
+ * @deprecated This file is orphaned after the UI overhaul.
+ * Task detail is now handled by TaskSlideOver.tsx (slide-over panel).
+ * Routes /issues/:id render Issues.tsx with slide-over pre-opened (dual-route, see G2).
+ * markIssueRead side effect migrated to Issues.tsx (see G14).
+ * Safe to delete once confirmed no other references exist.
+ */
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";

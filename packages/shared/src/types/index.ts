@@ -43,6 +43,8 @@ export type {
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
+  DetectedOutput,
+  DetectedOutputForUI,
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardSummary } from "./dashboard.js";
@@ -57,6 +59,29 @@ export type {
   InstanceUserRoleGrant,
 } from "./access.js";
 export type { TaskDependency } from "./task-dependency.js";
+export type { Artifact, ArtifactVersion, ArtifactWithVersions } from "./artifact.js";
+export type { MemoryItemVersion } from "./memory-version.js";
+export type { PendingMemoryVersionReview } from "./memory-version.js";
+export type { PendingMemoryArchiveReview, PendingMemoryQueue } from "./memory-pending.js";
+export type { Suggestion } from "./suggestion.js";
+export type { MemoryFeedbackPattern } from "./memory-feedback.js";
+export type { AgentTrustScore } from "./trust-score.js";
+export type { UserRoleAssignment } from "./user-role.js";
+export type { McpApiKey, McpApiKeyCreated, McpClientConnection, McpStatus } from "./mcp.js";
+export type {
+  TeamPermissionSummary,
+  TeamCurrentUserSummary,
+  TeamMemberSummary,
+  TeamInviteSummary,
+  TeamSummary,
+  UnifiedOrgNode,
+} from "./team.js";
+export type {
+  GlobalSearchEntityType,
+  GlobalSearchResult,
+  GlobalSearchGroup,
+  GlobalSearchResponse,
+} from "./search.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilitySecretRequirement,

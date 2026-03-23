@@ -19,6 +19,7 @@ export const updateCompanySchema = createCompanySchema
     vision: z.string().nullable().optional(),
     mission: z.string().nullable().optional(),
     values: z.string().nullable().optional(),
+    mcpEnabled: z.boolean().optional(),
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;

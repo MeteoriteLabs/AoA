@@ -35,9 +35,9 @@ interface LayoutNode {
 
 /** Compute the width each subtree needs. */
 function subtreeWidth(node: OrgNode): number {
-  if (node.reports.length === 0) return CARD_W;
-  const childrenW = node.reports.reduce((sum, c) => sum + subtreeWidth(c), 0);
-  const gaps = (node.reports.length - 1) * GAP_X;
+  if (node.children.length === 0) return CARD_W;
+  const childrenW = node.children.reduce((sum, c) => sum + subtreeWidth(c), 0);
+  const gaps = (node.children.length - 1) * GAP_X;
   return Math.max(CARD_W, childrenW + gaps);
 }
 
@@ -46,12 +46,12 @@ function layoutTree(node: OrgNode, x: number, y: number): LayoutNode {
   const totalW = subtreeWidth(node);
   const layoutChildren: LayoutNode[] = [];
 
-  if (node.reports.length > 0) {
-    const childrenW = node.reports.reduce((sum, c) => sum + subtreeWidth(c), 0);
-    const gaps = (node.reports.length - 1) * GAP_X;
+  if (node.children.length > 0) {
+    const childrenW = node.children.reduce((sum, c) => sum + subtreeWidth(c), 0);
+    const gaps = (node.children.length - 1) * GAP_X;
     let cx = x + (totalW - childrenW - gaps) / 2;
 
-    for (const child of node.reports) {
+    for (const child of node.children) {
       const cw = subtreeWidth(child);
       layoutChildren.push(layoutTree(child, cx, y + CARD_H + GAP_Y));
       cx += cw + GAP_X;

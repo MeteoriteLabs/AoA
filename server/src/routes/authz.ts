@@ -14,6 +14,9 @@ export function assertCompanyAccess(req: Request, companyId: string) {
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
     throw forbidden("Agent key cannot access another company");
   }
+  if (req.actor.type === "mcp" && req.actor.companyId !== companyId) {
+    throw forbidden("MCP key cannot access another company");
+  }
   if (req.actor.type === "board" && req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
     const allowedCompanies = req.actor.companyIds ?? [];
     if (!allowedCompanies.includes(companyId)) {
@@ -31,6 +34,15 @@ export function getActorInfo(req: Request) {
       actorType: "agent" as const,
       actorId: req.actor.agentId ?? "unknown-agent",
       agentId: req.actor.agentId ?? null,
+      runId: req.actor.runId ?? null,
+    };
+  }
+
+  if (req.actor.type === "mcp") {
+    return {
+      actorType: "user" as const,
+      actorId: req.actor.userId ?? "mcp-user",
+      agentId: null,
       runId: req.actor.runId ?? null,
     };
   }

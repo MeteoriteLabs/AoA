@@ -1,6 +1,18 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import express from "express";
 import request from "supertest";
+
+vi.mock("@paperclipai/db", () => {
+  const makeTable = () =>
+    new Proxy({}, { get: (_target, prop) => (prop === "$inferSelect" || prop === "$inferInsert" ? {} : Symbol(String(prop))) });
+  return { instanceUserRoles: makeTable() };
+});
+
+vi.mock("drizzle-orm", () => ({
+  count: (..._args: unknown[]) => "count",
+  sql: new Proxy(() => "sql", { get: () => () => "sql", apply: () => "sql" }),
+}));
+
 import { healthRoutes } from "../routes/health.js";
 
 describe("GET /health", () => {

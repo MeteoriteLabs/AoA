@@ -82,8 +82,12 @@ export {
 export {
   createMemoryItemSchema,
   updateMemoryItemSchema,
+  suggestMemoryUpdateSchema,
+  suggestMemoryArchiveSchema,
   type CreateMemoryItem,
   type UpdateMemoryItem,
+  type SuggestMemoryUpdate,
+  type SuggestMemoryArchive,
 } from "./memory.js";
 
 export {
@@ -141,8 +145,33 @@ export {
 
 export {
   createAssetImageMetadataSchema,
+  createAssetFileMetadataSchema,
   type CreateAssetImageMetadata,
+  type CreateAssetFileMetadata,
 } from "./asset.js";
+
+export {
+  createArtifactSchema,
+  updateArtifactSchema,
+  createArtifactVersionSchema,
+  mcpArtifactVersionSchema,
+  type CreateArtifact,
+  type UpdateArtifact,
+  type CreateArtifactVersion,
+  type McpArtifactVersion,
+} from "./artifact.js";
+
+export {
+  createMcpApiKeySchema,
+  updateMcpSettingsSchema,
+  type CreateMcpApiKey,
+  type UpdateMcpSettings,
+} from "./mcp.js";
+
+export {
+  confirmDetectedOutputSchema,
+  type ConfirmDetectedOutput,
+} from "./output-detection.js";
 
 export {
   createCompanyInviteSchema,
@@ -158,3 +187,8 @@ export {
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
 } from "./access.js";
+
+export {
+  updateTeamMemberRoleSchema,
+  type UpdateTeamMemberRole,
+} from "./team.js";

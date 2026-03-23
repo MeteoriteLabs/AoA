@@ -1,7 +1,5 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { count, sql } from "drizzle-orm";
-import { instanceUserRoles } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 
 export function healthRoutes(
@@ -28,6 +26,10 @@ export function healthRoutes(
 
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
     if (opts.deploymentMode === "authenticated") {
+      const [{ count, sql }, { instanceUserRoles }] = await Promise.all([
+        import("drizzle-orm"),
+        import("@paperclipai/db"),
+      ]);
       const roleCount = await db
         .select({ count: count() })
         .from(instanceUserRoles)

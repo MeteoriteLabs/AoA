@@ -204,6 +204,7 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.status",
   "heartbeat.run.event",
   "heartbeat.run.log",
+  "heartbeat.run.outputs_detected",
   "agent.status",
   "activity.logged",
 ] as const;
@@ -249,6 +250,7 @@ export const MEMORY_ITEM_SOURCES = [
 export type MemoryItemSource = (typeof MEMORY_ITEM_SOURCES)[number];
 
 export const MEMORY_ITEM_STATUSES = [
+  "draft",
   "pending",
   "approved",
   "archived",
@@ -256,7 +258,18 @@ export const MEMORY_ITEM_STATUSES = [
 ] as const;
 export type MemoryItemStatus = (typeof MEMORY_ITEM_STATUSES)[number];
 
-export const DEBRIEF_INPUT_TYPES = ["paste", "write", "mcp"] as const;
+export const MEMORY_ITEM_LAYERS = [
+  "identity",
+  "domain",
+  "active_context",
+  "working",
+] as const;
+export type MemoryItemLayer = (typeof MEMORY_ITEM_LAYERS)[number];
+
+export const MEMORY_ITEM_VISIBILITY = ["scoped", "shared"] as const;
+export type MemoryItemVisibility = (typeof MEMORY_ITEM_VISIBILITY)[number];
+
+export const DEBRIEF_INPUT_TYPES = ["paste", "write", "mcp", "voice"] as const;
 export type DebriefInputType = (typeof DEBRIEF_INPUT_TYPES)[number];
 
 export const DEBRIEF_STATUSES = [
@@ -277,11 +290,25 @@ export const BRIEF_STATUSES = [
 ] as const;
 export type BriefStatus = (typeof BRIEF_STATUSES)[number];
 
-export const BRIEF_ITEM_TYPES = ["decision", "task", "insight", "context"] as const;
+export const BRIEF_ITEM_TYPES = [
+  "decision",
+  "task",
+  "insight",
+  "context",
+  "reference",
+  "preference",
+] as const;
 export type BriefItemType = (typeof BRIEF_ITEM_TYPES)[number];
 
 export const BRIEF_ITEM_STATUSES = ["pending", "approved", "rejected", "edited"] as const;
 export type BriefItemStatus = (typeof BRIEF_ITEM_STATUSES)[number];
+
+export const BRIEF_DEDUP_ACTIONS = [
+  "update_existing",
+  "create_separate",
+  "replace",
+] as const;
+export type BriefDedupAction = (typeof BRIEF_DEDUP_ACTIONS)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
@@ -292,3 +319,114 @@ export const PERMISSION_KEYS = [
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+// ── V2: RBAC ───────────────────────────────────────────────────────────
+
+export const USER_ROLES = ["founder", "team_lead", "team_member"] as const;
+export type UserRole = (typeof USER_ROLES)[number];
+
+// ── V2: Artifacts ──────────────────────────────────────────────────────
+
+export const ARTIFACT_TYPES = [
+  "document",
+  "presentation",
+  "code",
+  "design",
+  "report",
+  "other",
+] as const;
+export type ArtifactType = (typeof ARTIFACT_TYPES)[number];
+
+export const ARTIFACT_STATUSES = ["draft", "active", "archived"] as const;
+export type ArtifactStatus = (typeof ARTIFACT_STATUSES)[number];
+
+export const ARTIFACT_VERSION_SOURCES = [
+  "agent",
+  "founder",
+  "mcp",
+  "teammate",
+  "external",
+] as const;
+export type ArtifactVersionSource = (typeof ARTIFACT_VERSION_SOURCES)[number];
+
+// ── V2: Suggestions ────────────────────────────────────────────────────
+
+export const SUGGESTION_CATEGORIES = [
+  "goal_gap",
+  "pipeline_bottleneck",
+  "memory_gap",
+  "pattern_detected",
+  "budget_optimization",
+  "recurring_work",
+  "risk_flag",
+  "workload_balance",
+  "agent_proposal",
+] as const;
+export type SuggestionCategory = (typeof SUGGESTION_CATEGORIES)[number];
+
+export const SUGGESTION_STATUSES = [
+  "pending",
+  "accepted",
+  "dismissed",
+  "expired",
+] as const;
+export type SuggestionStatus = (typeof SUGGESTION_STATUSES)[number];
+
+export const SUGGESTION_ACTION_TYPES = [
+  "create_task",
+  "flag_risk",
+  "suggest_memory",
+  "archive_memory",
+  "merge_memory",
+  "adjust_budget",
+  "rebalance_workload",
+  "create_goal",
+] as const;
+export type SuggestionActionType = (typeof SUGGESTION_ACTION_TYPES)[number];
+
+// ── V2: Memory Feedback Patterns ────────────────────────────────────────
+
+export const MEMORY_FEEDBACK_PATTERN_TYPES = [
+  "tone_correction",
+  "format_change",
+  "content_addition",
+  "content_removal",
+  "structure_change",
+  "terminology_change",
+] as const;
+export type MemoryFeedbackPatternType = (typeof MEMORY_FEEDBACK_PATTERN_TYPES)[number];
+
+export const MEMORY_FEEDBACK_PATTERN_STATUSES = [
+  "detected",
+  "suggested",
+  "accepted",
+  "dismissed",
+] as const;
+export type MemoryFeedbackPatternStatus = (typeof MEMORY_FEEDBACK_PATTERN_STATUSES)[number];
+
+// ── V2: Detected Output Statuses ────────────────────────────────────────
+
+export const DETECTED_OUTPUT_STATUSES = ["pending", "confirmed", "dismissed"] as const;
+export type DetectedOutputStatus = (typeof DETECTED_OUTPUT_STATUSES)[number];
+
+export const DETECTED_OUTPUT_SOURCES = ["diff", "hint", "both"] as const;
+export type DetectedOutputSource = (typeof DETECTED_OUTPUT_SOURCES)[number];
+
+// ── V2: Memory Item Versions ────────────────────────────────────────────
+
+export const MEMORY_ITEM_VERSION_STATUSES = [
+  "draft",
+  "pending",
+  "approved",
+  "archived",
+  "rejected",
+] as const;
+export type MemoryItemVersionStatus = (typeof MEMORY_ITEM_VERSION_STATUSES)[number];
+
+export const SEARCH_ENTITY_TYPES = [
+  "tasks",
+  "goals",
+  "agents",
+  "memory",
+] as const;
+export type SearchEntityType = (typeof SEARCH_ENTITY_TYPES)[number];

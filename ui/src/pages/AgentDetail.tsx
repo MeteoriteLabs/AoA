@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
+import { trustScoresApi } from "../api/trust-scores";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
@@ -57,6 +58,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
+import { AgentTrustScoreCard } from "../components/AgentTrustScoreCard";
 import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@paperclipai/shared";
 import { agentRouteRef } from "../lib/utils";
 
@@ -289,6 +291,12 @@ export function AgentDetail() {
     queryKey: queryKeys.agents.list(resolvedCompanyId!),
     queryFn: () => agentsApi.list(resolvedCompanyId!),
     enabled: !!resolvedCompanyId,
+  });
+
+  const { data: trustScore } = useQuery({
+    queryKey: resolvedCompanyId && resolvedAgentId ? queryKeys.trustScores.detail(resolvedCompanyId, resolvedAgentId) : ["trust-scores", "disabled"],
+    queryFn: () => trustScoresApi.get(resolvedCompanyId!, resolvedAgentId!),
+    enabled: !!resolvedCompanyId && !!resolvedAgentId,
   });
 
   const assignedIssues = (allIssues ?? [])
@@ -655,6 +663,7 @@ export function AgentDetail() {
           directReports={directReports}
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
+          trustScore={trustScore}
         />
       )}
 
@@ -776,6 +785,7 @@ function AgentOverview({
   directReports,
   agentId,
   agentRouteId,
+  trustScore,
 }: {
   agent: Agent;
   runs: HeartbeatRun[];
@@ -785,6 +795,7 @@ function AgentOverview({
   directReports: Agent[];
   agentId: string;
   agentRouteId: string;
+  trustScore?: import("@paperclipai/shared").AgentTrustScore | null;
 }) {
   // Compute quick stats
   const now = new Date();
@@ -832,6 +843,8 @@ function AgentOverview({
           <span className="text-[11px] text-muted-foreground">this week</span>
         </div>
       </div>
+
+      <AgentTrustScoreCard score={trustScore} />
 
       {/* Latest Run */}
       <LatestRunCard runs={runs} agentId={agentRouteId} />

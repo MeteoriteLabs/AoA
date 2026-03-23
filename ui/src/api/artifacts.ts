@@ -1,0 +1,15 @@
+import type { ArtifactWithVersions, ArtifactVersion, CreateArtifactVersion } from "@paperclipai/shared";
+import { api } from "./client";
+
+export const artifactsApi = {
+  /** Get artifact linked to a task. Returns null (not 404) if none linked. */
+  getByIssueId: (issueId: string) =>
+    api.get<ArtifactWithVersions | null>(`/issues/${issueId}/artifacts`),
+
+  /** Get artifact by ID with all versions (newest first). */
+  get: (id: string) => api.get<ArtifactWithVersions>(`/artifacts/${id}`),
+
+  /** Add immutable version to artifact. */
+  addVersion: (artifactId: string, data: CreateArtifactVersion) =>
+    api.post<ArtifactVersion>(`/artifacts/${artifactId}/versions`, data),
+};

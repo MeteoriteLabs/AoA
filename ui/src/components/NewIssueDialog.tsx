@@ -10,6 +10,7 @@ import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import { useTeamAccess } from "../hooks/useTeamAccess";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import {
   Dialog,
@@ -221,6 +222,7 @@ export function NewIssueDialog() {
     companyId: effectiveCompanyId,
     userId: currentUserId,
   });
+  const { permissions } = useTeamAccess(effectiveCompanyId);
 
   const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === assigneeId)?.adapterType ?? null;
   const supportsAssigneeOverrides = Boolean(
@@ -263,6 +265,7 @@ export function NewIssueDialog() {
     mutationFn: ({ companyId, ...data }: { companyId: string } & Record<string, unknown>) =>
       issuesApi.create(companyId, data),
     onSuccess: (issue) => {
+      newIssueDefaults.onCreated?.(issue);
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(effectiveCompanyId!) });
       if (draftTimer.current) clearTimeout(draftTimer.current);
       clearDraft();
@@ -331,8 +334,11 @@ export function NewIssueDialog() {
     if (!newIssueOpen) return;
     setDialogCompanyId(selectedCompanyId);
 
+    const hasPrefilledContent = Boolean(
+      newIssueDefaults.title?.trim() || newIssueDefaults.description?.trim(),
+    );
     const draft = loadDraft();
-    if (draft && draft.title.trim()) {
+    if (draft && draft.title.trim() && !hasPrefilledContent) {
       setTitle(draft.title);
       setDescription(draft.description);
       setStatus(draft.status || "todo");
@@ -344,6 +350,8 @@ export function NewIssueDialog() {
       setAssigneeChrome(draft.assigneeChrome ?? false);
       setAssigneeUseProjectWorkspace(draft.assigneeUseProjectWorkspace ?? true);
     } else {
+      setTitle(newIssueDefaults.title ?? "");
+      setDescription(newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(newIssueDefaults.projectId ?? "");
@@ -659,40 +667,46 @@ export function NewIssueDialog() {
           <div className="overflow-x-auto overscroll-x-contain">
             <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
               <span>For</span>
-              <InlineEntitySelector
-                ref={assigneeSelectorRef}
-                value={assigneeId}
-                options={assigneeOptions}
-                placeholder="Assignee"
-                disablePortal
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees..."
-                emptyMessage="No assignees found."
-                onChange={(id) => { if (id) trackRecentAssignee(id); setAssigneeId(id); }}
-                onConfirm={() => {
-                  projectSelectorRef.current?.focus();
-                }}
-                renderTriggerValue={(option) =>
-                  option && currentAssignee ? (
-                    <>
-                      <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                      <span className="truncate">{option.label}</span>
-                    </>
-                  ) : (
-                    <span className="text-muted-foreground">Assignee</span>
-                  )
-                }
-                renderOption={(option) => {
-                  if (!option.id) return <span className="truncate">{option.label}</span>;
-                  const assignee = (agents ?? []).find((agent) => agent.id === option.id);
-                  return (
-                    <>
-                      <AgentIcon icon={assignee?.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                      <span className="truncate">{option.label}</span>
-                    </>
-                  );
-                }}
-              />
+              {permissions.canAssignTasks ? (
+                <InlineEntitySelector
+                  ref={assigneeSelectorRef}
+                  value={assigneeId}
+                  options={assigneeOptions}
+                  placeholder="Assignee"
+                  disablePortal
+                  noneLabel="No assignee"
+                  searchPlaceholder="Search assignees..."
+                  emptyMessage="No assignees found."
+                  onChange={(id) => { if (id) trackRecentAssignee(id); setAssigneeId(id); }}
+                  onConfirm={() => {
+                    projectSelectorRef.current?.focus();
+                  }}
+                  renderTriggerValue={(option) =>
+                    option && currentAssignee ? (
+                      <>
+                        <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">Assignee</span>
+                    )
+                  }
+                  renderOption={(option) => {
+                    if (!option.id) return <span className="truncate">{option.label}</span>;
+                    const assignee = (agents ?? []).find((agent) => agent.id === option.id);
+                    return (
+                      <>
+                        <AgentIcon icon={assignee?.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    );
+                  }}
+                />
+              ) : (
+                <span className="rounded-md border border-border bg-muted/40 px-2 py-1 text-muted-foreground">
+                  No assignment access
+                </span>
+              )}
               <span>in</span>
               <InlineEntitySelector
                 ref={projectSelectorRef}

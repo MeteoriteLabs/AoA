@@ -16,6 +16,7 @@ import {
   companies,
   taskDependencies,
   issueAttachments,
+  issueComments,
   assets,
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
@@ -29,7 +30,14 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { setSecretResolver } from "../adapters/api-common.js";
 import { secretService } from "./secrets.js";
+import {
+  resolveRuntimeSessionParamsForWorkspace,
+  shouldResetTaskSessionForWake,
+  type ResolvedWorkspaceForRun,
+} from "./heartbeat-session.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { outputDetectionService } from "./output-detection.js";
+import { formatRunSummary } from "./run-summary.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -81,92 +89,8 @@ interface ParsedIssueAssigneeAdapterOverrides {
   useProjectWorkspace: boolean | null;
 }
 
-export type ResolvedWorkspaceForRun = {
-  cwd: string;
-  source: "project_primary" | "task_session" | "agent_home";
-  projectId: string | null;
-  workspaceId: string | null;
-  repoUrl: string | null;
-  repoRef: string | null;
-  workspaceHints: Array<{
-    workspaceId: string;
-    cwd: string | null;
-    repoUrl: string | null;
-    repoRef: string | null;
-  }>;
-  warnings: string[];
-};
-
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
-
-export function resolveRuntimeSessionParamsForWorkspace(input: {
-  agentId: string;
-  previousSessionParams: Record<string, unknown> | null;
-  resolvedWorkspace: ResolvedWorkspaceForRun;
-}) {
-  const { agentId, previousSessionParams, resolvedWorkspace } = input;
-  const previousSessionId = readNonEmptyString(previousSessionParams?.sessionId);
-  const previousCwd = readNonEmptyString(previousSessionParams?.cwd);
-  if (!previousSessionId || !previousCwd) {
-    return {
-      sessionParams: previousSessionParams,
-      warning: null as string | null,
-    };
-  }
-  if (resolvedWorkspace.source !== "project_primary") {
-    return {
-      sessionParams: previousSessionParams,
-      warning: null as string | null,
-    };
-  }
-  const projectCwd = readNonEmptyString(resolvedWorkspace.cwd);
-  if (!projectCwd) {
-    return {
-      sessionParams: previousSessionParams,
-      warning: null as string | null,
-    };
-  }
-  const fallbackAgentHomeCwd = resolveDefaultAgentWorkspaceDir(agentId);
-  if (path.resolve(previousCwd) !== path.resolve(fallbackAgentHomeCwd)) {
-    return {
-      sessionParams: previousSessionParams,
-      warning: null as string | null,
-    };
-  }
-  if (path.resolve(projectCwd) === path.resolve(previousCwd)) {
-    return {
-      sessionParams: previousSessionParams,
-      warning: null as string | null,
-    };
-  }
-  const previousWorkspaceId = readNonEmptyString(previousSessionParams?.workspaceId);
-  if (
-    previousWorkspaceId &&
-    resolvedWorkspace.workspaceId &&
-    previousWorkspaceId !== resolvedWorkspace.workspaceId
-  ) {
-    return {
-      sessionParams: previousSessionParams,
-      warning: null as string | null,
-    };
-  }
-
-  const migratedSessionParams: Record<string, unknown> = {
-    ...(previousSessionParams ?? {}),
-    cwd: projectCwd,
-  };
-  if (resolvedWorkspace.workspaceId) migratedSessionParams.workspaceId = resolvedWorkspace.workspaceId;
-  if (resolvedWorkspace.repoUrl) migratedSessionParams.repoUrl = resolvedWorkspace.repoUrl;
-  if (resolvedWorkspace.repoRef) migratedSessionParams.repoRef = resolvedWorkspace.repoRef;
-
-  return {
-    sessionParams: migratedSessionParams,
-    warning:
-      `Project workspace "${projectCwd}" is now available. ` +
-      `Attempting to resume session "${previousSessionId}" that was previously saved in fallback workspace "${previousCwd}".`,
-  };
 }
 
 function parseIssueAssigneeAdapterOverrides(
@@ -202,18 +126,11 @@ function deriveTaskKey(
   );
 }
 
-export function shouldResetTaskSessionForWake(
-  contextSnapshot: Record<string, unknown> | null | undefined,
-) {
-  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_assigned") return true;
-
-  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
-  if (wakeSource === "timer") return true;
-
-  const wakeTriggerDetail = readNonEmptyString(contextSnapshot?.wakeTriggerDetail);
-  return wakeSource === "on_demand" && wakeTriggerDetail === "manual";
-}
+export {
+  resolveRuntimeSessionParamsForWorkspace,
+  shouldResetTaskSessionForWake,
+  type ResolvedWorkspaceForRun,
+} from "./heartbeat-session.js";
 
 function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
@@ -413,6 +330,7 @@ function resolveNextSessionState(input: {
 export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
+  const outputDetector = outputDetectionService(db);
 
   // Register the secret resolver so API adapters can resolve API keys
   setSecretResolver((companyId, name) => secretsSvc.resolveByName(companyId, name));
@@ -487,7 +405,10 @@ export function heartbeatService(db: Db) {
     return runtimeForRun?.sessionId ?? null;
   }
 
-  async function fetchMemoryContext(companyId: string, issueId: string | null) {
+  const CONTEXT_MODE_LIMITS: Record<string, number> = { minimal: 3, standard: 10, full: 25 };
+
+  async function fetchMemoryContext(companyId: string, issueId: string | null, contextMode: string = "standard") {
+    const itemLimit = CONTEXT_MODE_LIMITS[contextMode] ?? 10;
     // Fetch company info (name/description — vision/mission added in V2)
     const company = await db
       .select({
@@ -498,21 +419,30 @@ export function heartbeatService(db: Db) {
       .where(eq(companies.id, companyId))
       .then((rows) => rows[0] ?? null);
 
-    // Determine issue's department/project for scoped memory lookup
+    // Determine issue's department/project and get title+description for semantic ranking
     let issueProjectId: string | null = null;
+    let issueText: string | null = null;
     if (issueId) {
-      issueProjectId = await db
-        .select({ projectId: issues.projectId })
+      const issueRow = await db
+        .select({
+          projectId: issues.projectId,
+          title: issues.title,
+          description: issues.description,
+        })
         .from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
-        .then((rows) => rows[0]?.projectId ?? null);
+        .then((rows) => rows[0] ?? null);
+      if (issueRow) {
+        issueProjectId = issueRow.projectId;
+        issueText = [issueRow.title, issueRow.description].filter(Boolean).join("\n");
+      }
     }
 
     // Query approved memory items:
     // - company-wide preferences (category='preference')
     // - department-scoped items matching the task's project/department
     // Priority: preferences first, then department-specific, then recent
-    // Cap at 10 items
+    // Cap based on contextMode (minimal=3, standard=10, full=25)
     const conditions = [
       eq(memoryItems.companyId, companyId),
       eq(memoryItems.status, "approved"),
@@ -526,8 +456,73 @@ export function heartbeatService(db: Db) {
         )
       : eq(memoryItems.category, "preference");
 
+    // Try semantic ranking when task has text and we can generate embeddings
+    if (issueText) {
+      try {
+        const { resolveApiKey: resolveKey } = await import("../adapters/api-common.js");
+        const { generateEmbedding: genEmbed } = await import("./embeddings.js");
+        const apiKey = await resolveKey(companyId, "openai");
+        const queryEmbedding = await genEmbed(issueText, apiKey);
+        const vectorStr = `[${queryEmbedding.join(",")}]`;
+
+        // Check if any items in scope have embeddings
+        const embeddedCount = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(memoryItems)
+          .where(
+            and(
+              ...conditions,
+              scopeConditions,
+              sql`${memoryItems.embedding} IS NOT NULL`,
+            ),
+          )
+          .then((rows) => Number(rows[0]?.count ?? 0));
+
+        if (embeddedCount > 0) {
+          // Fetch items ranked by semantic similarity to the task
+          const items = await db
+            .select({
+              title: memoryItems.title,
+              content: memoryItems.content,
+              category: memoryItems.category,
+              tags: memoryItems.tags,
+            })
+            .from(memoryItems)
+            .where(
+              and(
+                ...conditions,
+                scopeConditions,
+                sql`${memoryItems.embedding} IS NOT NULL`,
+              ),
+            )
+            .orderBy(
+              // preferences first (0), then others (1)
+              sql`CASE WHEN ${memoryItems.category} = 'preference' THEN 0 ELSE 1 END`,
+              sql`${memoryItems.embedding} <=> ${vectorStr}::vector`,
+            )
+            .limit(itemLimit);
+
+          return {
+            company: company
+              ? { name: company.name, description: company.description }
+              : null,
+            memory: items.map((item) => ({
+              title: item.title,
+              content: item.content,
+              category: item.category,
+              tags: item.tags ?? [],
+            })),
+          };
+        }
+      } catch {
+        // Fall through to priority + recency ranking
+      }
+    }
+
+    // Fallback: rank by priority + recency (original behavior)
     const items = await db
       .select({
+        id: memoryItems.id,
         title: memoryItems.title,
         content: memoryItems.content,
         category: memoryItems.category,
@@ -540,7 +535,19 @@ export function heartbeatService(db: Db) {
         sql`CASE WHEN ${memoryItems.category} = 'preference' THEN 0 ELSE 1 END`,
         desc(memoryItems.updatedAt),
       )
-      .limit(10);
+      .limit(itemLimit);
+
+    // Batch update accessedAt for all served items (after assembly, not per-item)
+    const servedIds = items.map((item) => item.id);
+    if (servedIds.length > 0) {
+      db.update(memoryItems)
+        .set({ accessedAt: new Date() })
+        .where(inArray(memoryItems.id, servedIds))
+        .execute()
+        .catch((err) => {
+          logger.warn({ err, servedIds }, "Failed to update accessedAt for served memory items");
+        });
+    }
 
     return {
       company: company
@@ -1098,6 +1105,54 @@ export function heartbeatService(db: Db) {
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  // ── V2: Run summary comments (Decision #88) ─────────────────────
+  async function createRunSummaryComment(input: {
+    agent: typeof agents.$inferSelect;
+    run: typeof heartbeatRuns.$inferSelect;
+    outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+    adapterResult: AdapterExecutionResult;
+    issueId: string | null;
+    detectedFiles: Array<{ path: string; type?: string }>;
+  }) {
+    const { agent, run, outcome, adapterResult, issueId, detectedFiles } = input;
+    if (!issueId) return;
+
+    // Check opt-out
+    const runtimeConfig = parseObject(agent.runtimeConfig);
+    if (runtimeConfig.autoRunSummary === false) return;
+
+    const startedAt = run.startedAt ?? run.createdAt;
+    const finishedAt = run.finishedAt ?? new Date();
+    const durationMs = finishedAt.getTime() - startedAt.getTime();
+
+    const body = formatRunSummary({
+      agentName: agent.name,
+      outcome,
+      durationMs,
+      inputTokens: adapterResult.usage?.inputTokens ?? null,
+      outputTokens: adapterResult.usage?.outputTokens ?? null,
+      costUsd: adapterResult.costUsd ?? null,
+      errorMessage: adapterResult.errorMessage ?? null,
+      detectedFiles,
+    });
+
+    try {
+      await db.insert(issueComments).values({
+        companyId: agent.companyId,
+        issueId,
+        authorAgentId: null,
+        authorUserId: null,
+        body,
+      });
+      await db
+        .update(issues)
+        .set({ updatedAt: new Date() })
+        .where(eq(issues.id, issueId));
+    } catch (err) {
+      logger.warn({ err, runId: run.id, issueId }, "run summary comment creation failed (non-fatal)");
+    }
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
@@ -1362,7 +1417,8 @@ export function heartbeatService(db: Db) {
 
     // Enrich context with memory items and company info for the agent
     try {
-      const memoryContext = await fetchMemoryContext(agent.companyId, issueId);
+      const agentContextMode = (parseObject(agent.runtimeConfig).contextMode as string) ?? "standard";
+      const memoryContext = await fetchMemoryContext(agent.companyId, issueId, agentContextMode);
       if (memoryContext.company) {
         context.company = memoryContext.company;
       }
@@ -1656,6 +1712,56 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // ── V2: Agent output capture (Decision #67) ─────────────────────
+      // Runs AFTER the run is finalized — detection failures are non-fatal.
+      let detectedFiles: Array<{ path: string; type?: string }> = [];
+      if (outcome === "succeeded" && resolvedWorkspace.cwd) {
+        try {
+          const detected = await outputDetector.detectAndCapture({
+            runId: run.id,
+            companyId: agent.companyId,
+            agentId: agent.id,
+            cwd: resolvedWorkspace.cwd,
+            startedAt: run.startedAt ?? run.createdAt,
+            adapterType: agent.adapterType,
+            adapterHints: adapterResult.outputFiles,
+            issueId: readNonEmptyString(context.issueId),
+          });
+          if (detected.length > 0) {
+            detectedFiles = detected.map((d) => ({
+              path: d.path,
+              type: d.artifactType ?? undefined,
+            }));
+            await db
+              .update(heartbeatRuns)
+              .set({
+                detectedOutputs: detected as unknown as Array<Record<string, unknown>>,
+                updatedAt: new Date(),
+              })
+              .where(eq(heartbeatRuns.id, run.id));
+            publishLiveEvent({
+              companyId: agent.companyId,
+              type: "heartbeat.run.outputs_detected",
+              payload: { runId: run.id, agentId: agent.id, count: detected.length },
+            });
+          }
+        } catch (detectErr) {
+          logger.warn({ err: detectErr, runId: run.id }, "output detection failed (non-fatal)");
+        }
+      }
+
+      // ── V2: Run summary comments (Decision #88) ─────────────────────
+      if (finalizedRun) {
+        await createRunSummaryComment({
+          agent,
+          run: finalizedRun,
+          outcome,
+          adapterResult,
+          issueId: readNonEmptyString(context.issueId),
+          detectedFiles,
+        });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown adapter failure";
       logger.error({ err, runId }, "heartbeat execution failed");
@@ -1717,6 +1823,23 @@ export function heartbeatService(db: Db) {
       }
 
       await finalizeAgentStatus(agent.id, "failed");
+
+      // ── V2: Run summary comments for crash path (Decision #88) ──────
+      if (failedRun) {
+        await createRunSummaryComment({
+          agent,
+          run: failedRun,
+          outcome: "failed",
+          adapterResult: {
+            exitCode: null,
+            signal: null,
+            timedOut: false,
+            errorMessage: message,
+          },
+          issueId: readNonEmptyString(context.issueId),
+          detectedFiles: [],
+        });
+      }
     } finally {
       await startNextQueuedRunForAgent(agent.id);
     }

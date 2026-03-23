@@ -81,6 +81,12 @@ export function ApprovalDetail() {
         queryKey: queryKeys.approvals.list(approval.companyId, "pending"),
       });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(approval.companyId) });
+      if (approval.requestedByAgentId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.trustScores.list(approval.companyId) });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.trustScores.detail(approval.companyId, approval.requestedByAgentId),
+        });
+      }
     }
   };
 

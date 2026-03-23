@@ -3,6 +3,8 @@ import type {
   HeartbeatRunStatus,
   WakeupTriggerDetail,
   WakeupRequestStatus,
+  DetectedOutputStatus,
+  DetectedOutputSource,
 } from "../constants.js";
 
 export interface HeartbeatRun {
@@ -32,8 +34,32 @@ export interface HeartbeatRun {
   errorCode: string | null;
   externalRunId: string | null;
   contextSnapshot: Record<string, unknown> | null;
+  detectedOutputs: DetectedOutput[] | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface DetectedOutput {
+  path: string;
+  filename: string;
+  byteSize: number;
+  contentType: string;
+  assetId: string | null;
+  sha256: string | null;
+  source: DetectedOutputSource;
+  label?: string | null;
+  artifactType?: string | null;
+  status: DetectedOutputStatus;
+  confirmedArtifactId?: string | null;
+  confirmedVersionId?: string | null;
+}
+
+/** DetectedOutput enriched with run metadata for UI consumption */
+export interface DetectedOutputForUI extends DetectedOutput {
+  runId: string;
+  runFinishedAt: string | null;
+  /** Index within the heartbeat_runs.detectedOutputs JSONB array for this run */
+  outputIndex: number;
 }
 
 export interface HeartbeatRunEvent {
