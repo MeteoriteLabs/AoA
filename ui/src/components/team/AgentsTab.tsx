@@ -6,14 +6,14 @@ import { agentsApi } from "../../api/agents";
 import { useCompany } from "../../context/CompanyContext";
 import { useDialog } from "../../context/DialogContext";
 import { useToast } from "../../context/ToastContext";
+import { useNavigate } from "../../lib/router";
 import { queryKeys } from "../../lib/queryKeys";
 import { agentStatusDot, agentStatusDotDefault } from "../../lib/status-colors";
-import { cn, formatCents } from "../../lib/utils";
+import { cn, formatCents, agentUrl } from "../../lib/utils";
 import { adapterLabels, roleLabels } from "../agent-config-primitives";
 import { AgentIcon } from "../AgentIconPicker";
 import { TrustScoreBadge } from "../TrustScoreBadge";
 import { StatusBadge } from "../StatusBadge";
-import { NewAgentDialog } from "../NewAgentDialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -65,9 +65,7 @@ export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScor
   const { openNewAgent } = useDialog();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
-
-  const [editAgent, setEditAgent] = useState<Agent | null>(null);
-  const [editOpen, setEditOpen] = useState(false);
+  const navigate = useNavigate();
   const [confirmAction, setConfirmAction] = useState<{ type: "terminate" | "delete"; agent: Agent } | null>(null);
 
   const highlightRef = useRef<HTMLDivElement>(null);
@@ -155,8 +153,7 @@ export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScor
   });
 
   function handleEdit(agent: Agent) {
-    setEditAgent(agent);
-    setEditOpen(true);
+    navigate(agentUrl(agent) + "/configure");
   }
 
   if (agents.length === 0) {
@@ -217,7 +214,12 @@ export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScor
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold truncate">{agent.name}</h3>
+                    <h3
+                      className="text-sm font-semibold truncate cursor-pointer hover:underline"
+                      onClick={() => navigate(agentUrl(agent))}
+                    >
+                      {agent.name}
+                    </h3>
                     <span className="relative flex h-2.5 w-2.5 shrink-0">
                       <span className={cn("absolute inline-flex h-full w-full rounded-full", statusColor)} />
                     </span>
@@ -331,15 +333,6 @@ export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScor
       </div>
 
       {/* Edit Agent Dialog */}
-      {editOpen && (
-        <NewAgentDialog
-          agent={editAgent}
-          open={editOpen}
-          onOpenChange={setEditOpen}
-          onUpdated={() => setEditAgent(null)}
-        />
-      )}
-
       {/* Confirmation Dialog */}
       {confirmAction && (
         <ConfirmActionDialog

@@ -132,15 +132,9 @@ vi.mock("../components/TrustScoreBadge", () => ({
     score ? <span data-testid="trust-score-badge">{score.currentScore}%</span> : null,
 }));
 
-// Mock NewAgentDialog to avoid deep rendering
+// Mock NewAgentDialog (create-only, no props needed)
 vi.mock("../components/NewAgentDialog", () => ({
-  NewAgentDialog: ({ agent, open, onOpenChange }: any) =>
-    open ? (
-      <div data-testid="edit-agent-dialog">
-        <span data-testid="edit-agent-name">{agent?.name}</span>
-        <button data-testid="close-edit" onClick={() => onOpenChange(false)}>Close</button>
-      </div>
-    ) : null,
+  NewAgentDialog: () => null,
 }));
 
 // --- Tests ---
@@ -270,16 +264,14 @@ describe("AgentsTab", () => {
     expect(mockMutate).not.toHaveBeenCalled();
   });
 
-  it("opens edit dialog when Edit button is clicked", async () => {
-    const user = userEvent.setup();
+  it("renders agent card for founder users", () => {
     const agents = [makeAgent({ id: "a1", name: "Alice", status: "active" })];
 
     renderWithProviders(
       <AgentsTab agents={agents as any} orgTree={[]} permissions={defaultPermissions} />,
     );
 
-    // Before click - no edit dialog
-    expect(screen.queryByTestId("edit-agent-dialog")).not.toBeInTheDocument();
+    expect(screen.getByText("Alice")).toBeInTheDocument();
   });
 
   it("shows terminate and delete options in more menu for founder", () => {
@@ -371,21 +363,17 @@ describe("AgentsTab", () => {
   });
 });
 
-describe("NewAgentDialog edit mode", () => {
-  // The edit mode is tested via integration with AgentsTab's mock
-  // Additional unit tests for the NewAgentDialog edit mode behavior
-
-  it("shows edit dialog with agent name when opened", async () => {
-    const user = userEvent.setup();
+describe("AgentsTab navigation", () => {
+  it("agent name is clickable for navigation", () => {
     const agents = [makeAgent({ id: "a1", name: "Alice", status: "active" })];
 
-    // We test through AgentsTab which opens the dialog
-    // Due to mocking, we verify the mock captures the correct agent data
     renderWithProviders(
       <AgentsTab agents={agents as any} orgTree={[]} permissions={{ isFounder: true }} />,
     );
 
-    // No dialog initially
-    expect(screen.queryByTestId("edit-agent-dialog")).not.toBeInTheDocument();
+    // Agent name should be present and clickable
+    const nameEl = screen.getByText("Alice");
+    expect(nameEl).toBeInTheDocument();
+    expect(nameEl.className).toContain("cursor-pointer");
   });
 });
