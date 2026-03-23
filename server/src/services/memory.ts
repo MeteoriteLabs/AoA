@@ -9,6 +9,16 @@ import { badRequest, conflict, notFound } from "../errors.js";
 
 const log = logger.child({ service: "memory" });
 
+/** Validate embedding values are all finite numbers and format for pgvector. */
+function toVectorString(embedding: number[]): string {
+  for (let i = 0; i < embedding.length; i++) {
+    if (!Number.isFinite(embedding[i])) {
+      throw new Error(`Invalid embedding value at index ${i}: ${embedding[i]}`);
+    }
+  }
+  return `[${embedding.join(",")}]`;
+}
+
 export interface MemoryFilters {
   category?: string;
   status?: string;
@@ -170,7 +180,7 @@ export function memoryService(db: Db) {
       if (apiKey) {
         try {
           const queryEmbedding = await generateEmbedding(query, apiKey);
-          const vectorStr = `[${queryEmbedding.join(",")}]`;
+          const vectorStr = toVectorString(queryEmbedding);
 
           const conditions = [
             eq(memoryItems.companyId, companyId),
@@ -275,7 +285,7 @@ export function memoryService(db: Db) {
       if (apiKey) {
         try {
           const contentEmbedding = await generateEmbedding(content, apiKey);
-          const vectorStr = `[${contentEmbedding.join(",")}]`;
+          const vectorStr = toVectorString(contentEmbedding);
 
           const conditions = [
             eq(memoryItems.companyId, scope.companyId),

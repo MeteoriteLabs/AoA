@@ -2,6 +2,9 @@ import { and, eq, lt, isNotNull, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { memoryItems, issues, taskDependencies, suggestions } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
+import { logger } from "../middleware/logger.js";
+
+const log = logger.child({ service: "memory-lifecycle" });
 
 const TERMINAL_STATUSES = ["done", "cancelled"];
 const WORKING_MEMORY_TTL_DAYS = 7;
@@ -78,6 +81,10 @@ async function isFullChainTerminal(
     }
 
     currentIds = nextIds;
+  }
+
+  if (currentIds.length > 0) {
+    log.warn({ taskId, companyId, depth: MAX_CHAIN_DEPTH }, "Dependency chain exceeded max depth; assuming terminal");
   }
 
   return true;

@@ -1,6 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentTrustScores, agents } from "@paperclipai/db";
+import { logger } from "../middleware/logger.js";
+
+const log = logger.child({ service: "trust-scores" });
 
 const RECENT_WINDOW = 20;
 
@@ -84,7 +87,10 @@ export function trustScoreService(db: Db) {
         .where(eq(agents.id, agentId))
         .then((rows) => rows[0] ?? null);
 
-      if (!agent) return;
+      if (!agent) {
+        log.warn({ agentId }, "Trust score update skipped: agent not found");
+        return;
+      }
 
       // Get or create the trust score row
       let existing = await db

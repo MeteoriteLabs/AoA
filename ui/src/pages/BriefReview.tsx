@@ -670,6 +670,7 @@ export function BriefReview() {
       queryClient.invalidateQueries({ queryKey: queryKeys.detectedOutputs.byIssue(sourceIssueId!) });
       pushToast({ title: "Output confirmed as artifact" });
     },
+    onError: () => pushToast({ title: "Failed to confirm output", tone: "warn" }),
   });
 
   const dismissOutput = useMutation({
@@ -677,6 +678,7 @@ export function BriefReview() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.detectedOutputs.byIssue(sourceIssueId!) });
     },
+    onError: () => pushToast({ title: "Failed to dismiss output", tone: "warn" }),
   });
 
   function detectCycles(deps: Array<{ dependentItemId: string; dependencyItemId: string }>): boolean {

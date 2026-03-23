@@ -44,7 +44,7 @@ export function getTrustScoreToneClasses(tone: TrustScoreTone) {
 
 export function getRecentTrustScore(score: Pick<AgentTrustScore, "recentCompleted" | "recentApproved">) {
   if (score.recentCompleted <= 0) return null;
-  return (score.recentApproved / score.recentCompleted) * 100;
+  return Math.round((score.recentApproved / score.recentCompleted) * 100);
 }
 
 export function getTrustScoreTrend(score: Pick<AgentTrustScore, "currentScore" | "recentCompleted" | "recentApproved">): TrustScoreTrend {
