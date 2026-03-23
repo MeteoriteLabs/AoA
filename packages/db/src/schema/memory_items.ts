@@ -60,6 +60,8 @@ export const memoryItems = pgTable(
     currentVersionId: uuid("current_version_id").references((): AnyPgColumn => memoryItemVersions.id, { onDelete: "set null" }),
     // V2: Semantic retrieval — pgvector embedding (1536-dim, OpenAI text-embedding-3-small)
     embedding: vector("embedding"),
+    // V2: Retry persistence — prevents infinite retry loops for failed embeddings
+    embeddingRetries: integer("embedding_retries").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

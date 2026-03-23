@@ -13,6 +13,16 @@ const BASE_RETRY_DELAY_MS = 1000;
 
 const log = logger.child({ service: "embeddings" });
 
+/** Validate embedding values are all finite numbers and format for pgvector. */
+function toVectorString(embedding: number[]): string {
+  for (let i = 0; i < embedding.length; i++) {
+    if (!Number.isFinite(embedding[i])) {
+      throw new Error(`Invalid embedding value at index ${i}: ${embedding[i]}`);
+    }
+  }
+  return `[${embedding.join(",")}]`;
+}
+
 /**
  * Generate an embedding vector for the given text using OpenAI text-embedding-3-small.
  * Returns a 1536-dimension number array, or null if the API key is not configured.
@@ -115,7 +125,7 @@ export async function processEmbeddingQueue(db: Db, companyId: string): Promise<
     throw err;
   }
 
-  // Find approved items with no embedding and non-empty content
+  // Find approved items with no embedding, non-empty content, and under retry limit
   const pending = await db
     .select({ id: memoryItems.id, title: memoryItems.title, content: memoryItems.content })
     .from(memoryItems)
@@ -125,6 +135,7 @@ export async function processEmbeddingQueue(db: Db, companyId: string): Promise<
         eq(memoryItems.status, "approved"),
         isNull(memoryItems.embedding),
         sql`${memoryItems.content} IS NOT NULL AND ${memoryItems.content} != ''`,
+        sql`${memoryItems.embeddingRetries} < ${MAX_RETRIES}`,
       ),
     )
     .limit(BATCH_SIZE);
@@ -133,45 +144,26 @@ export async function processEmbeddingQueue(db: Db, companyId: string): Promise<
 
   let processed = 0;
 
-  // Process in a single batch API call
-  const texts = pending.map((item) => `${item.title}\n${item.content}`);
-
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+  // Process each item individually so failures are tracked per-item
+  for (const item of pending) {
     try {
-      const embeddings = await generateEmbeddingsBatch(texts, apiKey);
-
-      // Update each item with its embedding
-      for (let i = 0; i < pending.length; i++) {
-        const item = pending[i];
-        const embedding = embeddings[i];
-        if (!embedding) continue;
-
-        await db
-          .update(memoryItems)
-          .set({ embedding: embedding })
-          .where(eq(memoryItems.id, item.id));
-
-        processed++;
-      }
-
-      log.info({ companyId, processed, total: pending.length }, "Embedding batch processed");
-      return processed;
+      const embedding = await generateEmbedding(`${item.title}\n${item.content}`, apiKey);
+      const vectorStr = toVectorString(embedding);
+      await db
+        .update(memoryItems)
+        .set({ embedding: sql`${vectorStr}::vector`, embeddingRetries: 0 })
+        .where(eq(memoryItems.id, item.id));
+      processed++;
     } catch (err: any) {
-      const delay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
-      log.warn(
-        { companyId, attempt: attempt + 1, error: err.message, retryInMs: delay },
-        "Embedding generation failed, retrying",
-      );
-
-      if (attempt < MAX_RETRIES - 1) {
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      } else {
-        log.error({ companyId, error: err.message }, "Embedding generation exhausted retries");
-        throw err;
-      }
+      await db
+        .update(memoryItems)
+        .set({ embeddingRetries: sql`${memoryItems.embeddingRetries} + 1` })
+        .where(eq(memoryItems.id, item.id));
+      log.warn({ itemId: item.id, error: err.message }, "Embedding failed, incremented retry count");
     }
   }
 
+  log.info({ companyId, processed, total: pending.length }, "Embedding queue processed");
   return processed;
 }
 
@@ -182,6 +174,6 @@ export async function processEmbeddingQueue(db: Db, companyId: string): Promise<
 export async function invalidateEmbedding(db: Db, itemId: string): Promise<void> {
   await db
     .update(memoryItems)
-    .set({ embedding: sql`NULL` } as any)
+    .set({ embedding: sql`NULL`, embeddingRetries: 0 } as any)
     .where(eq(memoryItems.id, itemId));
 }
