@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "@/lib/router";
 import {
@@ -225,19 +225,22 @@ export function Memory() {
     setSubtitle(parts.length > 0 ? parts.join(" \u00B7 ") : null);
   }, [items, setSubtitle]);
 
+  const invalidateMemoryQueries = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(selectedCompanyId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(selectedCompanyId!) });
+  }, [queryClient, selectedCompanyId]);
+
   const approveMutation = useMutation({
     mutationFn: (id: string) => memoryApi.approve(selectedCompanyId!, id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(selectedCompanyId!) });
+      invalidateMemoryQueries();
     },
   });
 
   const rejectMutation = useMutation({
     mutationFn: (id: string) => memoryApi.reject(selectedCompanyId!, id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(selectedCompanyId!) });
+      invalidateMemoryQueries();
     },
   });
 
@@ -245,8 +248,7 @@ export function Memory() {
     mutationFn: ({ itemId, versionId }: { itemId: string; versionId: string }) =>
       memoryApi.approveVersion(selectedCompanyId!, itemId, versionId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(selectedCompanyId!) });
+      invalidateMemoryQueries();
     },
   });
 
@@ -254,8 +256,7 @@ export function Memory() {
     mutationFn: ({ itemId, versionId }: { itemId: string; versionId: string }) =>
       memoryApi.rejectVersion(selectedCompanyId!, itemId, versionId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(selectedCompanyId!) });
+      invalidateMemoryQueries();
     },
   });
 
