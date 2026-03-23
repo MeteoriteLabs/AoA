@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Moon, Sun } from "lucide-react";
-import { NavLink, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
+import { Moon, Sun } from "lucide-react";
+import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { BreadcrumbBar } from "./BreadcrumbBar";
@@ -224,13 +224,7 @@ export function Layout() {
             <Sidebar />
           </div>
           <div className="border-t border-r border-border px-3 py-2 bg-background">
-            <div className="flex items-center gap-1">
-              <SidebarNavItem
-                to="/docs"
-                label="Documentation"
-                icon={BookOpen}
-                className="flex-1 min-w-0"
-              />
+            <div className="flex items-center gap-1 justify-end">
               <Button
                 type="button"
                 variant="ghost"
@@ -258,47 +252,18 @@ export function Layout() {
             </div>
           </div>
           <div className={cn("border-t border-r border-border py-2", collapsed ? "px-1" : "px-3")}>
-            <div className="flex items-center gap-1">
-              {collapsed ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <NavLink
-                      to="/docs"
-                      className={({ isActive }) =>
-                        cn(
-                          "flex items-center justify-center w-10 h-8 rounded-md transition-colors",
-                          isActive
-                            ? "bg-accent text-foreground"
-                            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
-                        )
-                      }
-                    >
-                      <BookOpen className="h-4 w-4" />
-                    </NavLink>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" sideOffset={8}>Documentation</TooltipContent>
-                </Tooltip>
-              ) : (
-                <SidebarNavItem
-                  to="/docs"
-                  label="Documentation"
-                  icon={BookOpen}
-                  className="flex-1 min-w-0"
-                />
-              )}
-              {!collapsed && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  className="text-muted-foreground shrink-0"
-                  onClick={toggleTheme}
-                  aria-label={`Switch to ${nextTheme} mode`}
-                  title={`Switch to ${nextTheme} mode`}
-                >
-                  {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                </Button>
-              )}
+            <div className={cn("flex items-center gap-1", collapsed ? "justify-center" : "justify-end")}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground shrink-0"
+                onClick={toggleTheme}
+                aria-label={`Switch to ${nextTheme} mode`}
+                title={`Switch to ${nextTheme} mode`}
+              >
+                {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </Button>
             </div>
           </div>
         </div>

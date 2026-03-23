@@ -136,6 +136,8 @@ function makeMockDb(rows: MockRow[] = []) {
     where: vi.fn().mockReturnThis(),
     orderBy: vi.fn().mockReturnThis(),
     limit: vi.fn().mockResolvedValue(rows),
+    innerJoin: vi.fn().mockReturnThis(),
+    leftJoin: vi.fn().mockReturnThis(),
     insert: vi.fn().mockReturnThis(),
     values: vi.fn().mockReturnThis(),
     returning: vi.fn().mockReturnThis(),
@@ -760,14 +762,16 @@ describe("V2 Memory QA", () => {
         title: "Agent suggestion",
         content: "Content",
         category: "reference",
+        layer: "domain",
         source: "agent",
+        sourceContext: "Learned during task TES-1",
         createdBy: "agent-1",
       });
 
       expect(insertedValues.status).toBe("pending");
     });
 
-    it("explicit status overrides default behavior", async () => {
+    it("agent status is always forced to pending regardless of explicit status", async () => {
       let insertedValues: any = null;
       const db = {
         insert: vi.fn().mockReturnThis(),
@@ -786,12 +790,14 @@ describe("V2 Memory QA", () => {
         title: "Pre-approved",
         content: "From brief approval",
         category: "reference",
+        layer: "domain",
         source: "agent",
+        sourceContext: "Extracted from brief review",
         status: "approved",
         createdBy: "agent-1",
       } as any);
 
-      expect(insertedValues.status).toBe("approved");
+      expect(insertedValues.status).toBe("pending");
     });
   });
 

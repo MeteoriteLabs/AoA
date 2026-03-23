@@ -181,6 +181,7 @@ export type {
   TeamMemberSummary,
   TeamInviteSummary,
   TeamSummary,
+  UnifiedOrgNode,
   CompanyPortabilityInclude,
   CompanyPortabilitySecretRequirement,
   CompanyPortabilityCompanyManifestEntry,

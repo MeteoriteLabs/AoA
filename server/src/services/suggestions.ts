@@ -178,7 +178,10 @@ async function expireOldPendingSuggestions(db: Db, companyId: string) {
       and(
         eq(suggestions.companyId, companyId),
         eq(suggestions.status, "pending"),
-        or(lt(suggestions.createdAt, cutoff), lt(suggestions.expiresAt, now)),
+        or(
+          sql`${suggestions.createdAt} < ${cutoff.toISOString()}`,
+          sql`${suggestions.expiresAt} < ${now.toISOString()}`,
+        ),
       ),
     );
 }
@@ -380,7 +383,7 @@ export function suggestionService(db: Db) {
               eq(memoryItems.companyId, companyId),
               eq(memoryItems.status, "approved"),
               inArray(memoryItems.layer, ["identity", "domain"]),
-              or(lt(memoryItems.accessedAt, staleCutoff), isNull(memoryItems.accessedAt)),
+              or(sql`${memoryItems.accessedAt} < ${staleCutoff.toISOString()}`, isNull(memoryItems.accessedAt)),
             ),
           ),
         db
@@ -628,7 +631,7 @@ export function suggestionService(db: Db) {
           goalId: issues.goalId,
         })
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), sql`${issues.createdAt} >= ${recentCutoff}`));
+        .where(and(eq(issues.companyId, companyId), sql`${issues.createdAt} >= ${recentCutoff.toISOString()}`));
 
       if (recentIssues.length === 0) return [];
 
@@ -681,7 +684,7 @@ export function suggestionService(db: Db) {
             eq(issues.companyId, companyId),
             notInArray(issues.status, ["done", "cancelled"]),
             sql`${issues.dueDate} is not null`,
-            lt(issues.dueDate, now),
+            sql`${issues.dueDate} < ${now.toISOString()}`,
           ),
         );
 

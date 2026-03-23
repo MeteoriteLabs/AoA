@@ -83,7 +83,10 @@ export const queryKeys = {
     ["heartbeats", companyId, agentId] as const,
   liveRuns: (companyId: string) => ["live-runs", companyId] as const,
   runIssues: (runId: string) => ["run-issues", runId] as const,
-  org: (companyId: string) => ["org", companyId] as const,
+  org: Object.assign(
+    (companyId: string) => ["org", companyId] as const,
+    { tree: (companyId: string) => ["org", companyId, "tree"] as const },
+  ),
   memory: {
     list: (companyId: string) => ["memory", companyId] as const,
     pending: (companyId: string) => ["memory", companyId, "pending"] as const,

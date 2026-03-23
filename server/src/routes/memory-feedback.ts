@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { memoryFeedbackService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertRole } from "../middleware/rbac.js";
 
 export function memoryFeedbackRoutes(db: Db) {
   const router = Router();
@@ -13,6 +14,7 @@ export function memoryFeedbackRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
 
       const result = await svc.runAllDetectors(companyId);
 

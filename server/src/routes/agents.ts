@@ -257,7 +257,7 @@ export function agentRoutes(db: Db) {
     }
     if (actorAgent.id === targetAgent.id) return;
 
-    const chainOfCommand = await svc.getChainOfCommand(targetAgent.id);
+    const chainOfCommand = await svc.getChainOfCommand(targetAgent.id, targetAgent.companyId);
     if (chainOfCommand.some((manager) => manager.id === actorAgent.id)) return;
 
     throw forbidden("Only the target agent or an ancestor manager can update instructions path");
@@ -299,6 +299,8 @@ export function agentRoutes(db: Db) {
       title: agent.title,
       status: agent.status,
       reportsTo: agent.reportsTo,
+      parentType: agent.parentType ?? null,
+      parentId: agent.parentId ?? null,
       adapterType: agent.adapterType,
       adapterConfig: redactEventPayload(agent.adapterConfig),
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
@@ -336,19 +338,6 @@ export function agentRoutes(db: Db) {
       ...revision,
       beforeConfig: redactRevisionSnapshot(revision.beforeConfig),
       afterConfig: redactRevisionSnapshot(revision.afterConfig),
-    };
-  }
-
-  function toLeanOrgNode(node: Record<string, unknown>): Record<string, unknown> {
-    const reports = Array.isArray(node.reports)
-      ? (node.reports as Array<Record<string, unknown>>).map((report) => toLeanOrgNode(report))
-      : [];
-    return {
-      id: String(node.id),
-      name: String(node.name),
-      role: String(node.role),
-      status: String(node.status),
-      reports,
     };
   }
 
@@ -421,8 +410,7 @@ export function agentRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const tree = await svc.orgForCompany(companyId);
-    const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
-    res.json(leanTree);
+    res.json(tree);
   });
 
   router.get("/companies/:companyId/agent-configurations", async (req, res) => {
@@ -442,7 +430,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    const chainOfCommand = await svc.getChainOfCommand(agent.id);
+    const chainOfCommand = await svc.getChainOfCommand(agent.id, agent.companyId);
     res.json({ ...agent, chainOfCommand });
   });
 
@@ -457,12 +445,12 @@ export function agentRoutes(db: Db) {
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
       const canRead = await actorCanReadConfigurationsForCompany(req, agent.companyId);
       if (!canRead) {
-        const chainOfCommand = await svc.getChainOfCommand(agent.id);
+        const chainOfCommand = await svc.getChainOfCommand(agent.id, agent.companyId);
         res.json({ ...redactForRestrictedAgentView(agent), chainOfCommand });
         return;
       }
     }
-    const chainOfCommand = await svc.getChainOfCommand(agent.id);
+    const chainOfCommand = await svc.getChainOfCommand(agent.id, agent.companyId);
     res.json({ ...agent, chainOfCommand });
   });
 
@@ -1456,6 +1444,14 @@ export function agentRoutes(db: Db) {
       agentName: agent.name,
       adapterType: agent.adapterType,
     });
+  });
+
+  // Temporary admin endpoint — backfill parentType/parentId from reportsTo (T3).
+  // Remove after confirming all data migrated.
+  router.post("/agents/admin/backfill-parent-fields", async (req, res) => {
+    assertBoard(req);
+    const count = await svc.backfillParentFields();
+    res.json({ ok: true, backfilledCount: count });
   });
 
   return router;

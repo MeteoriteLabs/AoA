@@ -74,6 +74,7 @@ export type {
   TeamMemberSummary,
   TeamInviteSummary,
   TeamSummary,
+  UnifiedOrgNode,
 } from "./team.js";
 export type {
   GlobalSearchEntityType,

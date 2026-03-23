@@ -39,6 +39,25 @@ export function contextPackagingService(db: Db) {
       throw new Error("Task not found");
     }
 
+    // Resolve contextMode from assigned agent (if any) to control section limits
+    let contextMode = "standard";
+    if (issue.assigneeAgentId) {
+      const assignedAgent = await db
+        .select({ runtimeConfig: agents.runtimeConfig })
+        .from(agents)
+        .where(eq(agents.id, issue.assigneeAgentId))
+        .then((rows) => rows[0] ?? null);
+      if (assignedAgent) {
+        contextMode = ((assignedAgent.runtimeConfig as Record<string, unknown>)?.contextMode as string) ?? "standard";
+      }
+    }
+
+    const sectionLimits = {
+      minimal: { memory: 2, dependencies: 3, preferences: 1 },
+      standard: { memory: 5, dependencies: 10, preferences: 5 },
+      full: { memory: 10, dependencies: 20, preferences: 10 },
+    }[contextMode] ?? { memory: 5, dependencies: 10, preferences: 5 };
+
     const sections: string[] = [];
 
     // 1. Company Identity
@@ -73,7 +92,7 @@ export function contextPackagingService(db: Db) {
           ),
         )
         .orderBy(desc(memoryItems.priority), desc(memoryItems.updatedAt))
-        .limit(5);
+        .limit(sectionLimits.memory);
 
       if (identityMemory.length > 0) {
         identityParts.push("");
@@ -119,7 +138,7 @@ export function contextPackagingService(db: Db) {
             ),
           )
           .orderBy(desc(memoryItems.priority), desc(memoryItems.updatedAt))
-          .limit(5);
+          .limit(sectionLimits.memory);
 
         if (domainMemory.length > 0) {
           projectParts.push("");
@@ -163,7 +182,7 @@ export function contextPackagingService(db: Db) {
             ),
           )
           .orderBy(desc(memoryItems.priority), desc(memoryItems.updatedAt))
-          .limit(5);
+          .limit(sectionLimits.memory);
 
         if (activeContextMemory.length > 0) {
           goalParts.push("");
@@ -194,7 +213,7 @@ export function contextPackagingService(db: Db) {
         ),
       )
       .orderBy(desc(issues.updatedAt))
-      .limit(10);
+      .limit(sectionLimits.dependencies);
 
     if (deps.length > 0) {
       const depParts: string[] = ["## Previous Tasks (Dependencies)"];
@@ -333,7 +352,7 @@ export function contextPackagingService(db: Db) {
         ),
       )
       .orderBy(desc(memoryItems.updatedAt))
-      .limit(5);
+      .limit(sectionLimits.preferences);
 
     if (preferences.length > 0) {
       const prefParts: string[] = ["## Preferences"];

@@ -57,7 +57,7 @@ async function fetchEdits(
         eq(activityLog.companyId, companyId),
         eq(activityLog.action, "brief_item.updated"),
         eq(activityLog.entityType, "brief_item"),
-        gte(activityLog.createdAt, windowStart),
+        sql`${activityLog.createdAt} >= ${windowStart.toISOString()}`,
       ),
     );
 

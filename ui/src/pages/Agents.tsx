@@ -57,9 +57,9 @@ function filterAgents(agents: Agent[], tab: FilterTab, showTerminated: boolean):
 
 function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean): OrgNode[] {
   return nodes.reduce<OrgNode[]>((acc, node) => {
-    const filteredReports = filterOrgTree(node.reports, tab, showTerminated);
-    if (matchesFilter(node.status, tab, showTerminated) || filteredReports.length > 0) {
-      acc.push({ ...node, reports: filteredReports });
+    const filteredChildren = filterOrgTree(node.children, tab, showTerminated);
+    if (matchesFilter(node.status, tab, showTerminated) || filteredChildren.length > 0) {
+      acc.push({ ...node, children: filteredChildren });
     }
     return acc;
   }, []);
@@ -440,9 +440,9 @@ function OrgTreeNode({
           </div>
         </div>
       </Link>
-      {node.reports && node.reports.length > 0 && (
+      {node.children && node.children.length > 0 && (
         <div className="border-l border-border/50 ml-4">
-          {node.reports.map((child) => (
+          {node.children.map((child) => (
             <OrgTreeNode key={child.id} node={child} depth={depth + 1} agentMap={agentMap} liveRunByAgent={liveRunByAgent} />
           ))}
         </div>
