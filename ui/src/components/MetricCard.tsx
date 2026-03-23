@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "@/lib/router";
+import { ClickableDiv } from "./ui/clickable-div";
 
 interface MetricCardProps {
   icon: LucideIcon;
@@ -43,9 +44,9 @@ export function MetricCard({ icon: Icon, value, label, description, to, onClick 
 
   if (onClick) {
     return (
-      <div className="h-full" onClick={onClick}>
+      <ClickableDiv className="h-full" onClick={onClick}>
         {inner}
-      </div>
+      </ClickableDiv>
     );
   }
 

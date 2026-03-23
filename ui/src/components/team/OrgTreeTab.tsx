@@ -4,6 +4,7 @@ import { AgentIcon } from "../AgentIconPicker";
 import { adapterLabels, roleLabels } from "../agent-config-primitives";
 import { Network } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ClickableDiv } from "../ui/clickable-div";
 
 // Layout constants
 const CARD_W = 200;
@@ -364,7 +365,7 @@ function AgentNodeCard({
   const dotColor = statusDotColor[node.status] ?? defaultDotColor;
 
   return (
-    <div
+    <ClickableDiv
       data-org-card
       data-testid={`org-node-${node.id}`}
       data-node-type="agent"
@@ -414,7 +415,7 @@ function AgentNodeCard({
           </span>
         </div>
       )}
-    </div>
+    </ClickableDiv>
   );
 }
 
@@ -436,7 +437,7 @@ function HumanNodeCard({
   onClick: (id: string, nodeType: "agent" | "user") => void;
 }) {
   return (
-    <div
+    <ClickableDiv
       data-org-card
       data-testid={`org-node-${node.id}`}
       data-node-type="user"
@@ -484,6 +485,6 @@ function HumanNodeCard({
           )}
         </div>
       </div>
-    </div>
+    </ClickableDiv>
   );
 }

@@ -4,6 +4,7 @@ import { StatusBadge } from "./StatusBadge";
 import { ChevronRight, AlertTriangle } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useState } from "react";
+import { ClickableDiv } from "./ui/clickable-div";
 
 interface GoalTreeProps {
   goals: Goal[];
@@ -86,13 +87,13 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
           {inner}
         </Link>
       ) : (
-        <div
+        <ClickableDiv
           className={classes}
           style={{ paddingLeft: `${depth * 16 + 12}px` }}
           onClick={() => onSelect?.(goal)}
         >
           {inner}
-        </div>
+        </ClickableDiv>
       )}
       {hasChildren && expanded && (
         <div>
