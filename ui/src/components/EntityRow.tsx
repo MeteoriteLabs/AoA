@@ -1,6 +1,7 @@
 import { type ReactNode } from "react";
 import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
+import { ClickableDiv } from "./ui/clickable-div";
 
 interface EntityRowProps {
   leading?: ReactNode;
@@ -62,8 +63,8 @@ export function EntityRow({
   }
 
   return (
-    <div className={classes} onClick={onClick}>
+    <ClickableDiv className={classes} onClick={onClick}>
       {content}
-    </div>
+    </ClickableDiv>
   );
 }

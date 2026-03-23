@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@/lib/router";
 import { agentsApi } from "../api/agents";
@@ -8,6 +9,7 @@ import { adapterLabels, roleLabels } from "./agent-config-primitives";
 import { AgentIcon } from "./AgentIconPicker";
 import { StatusBadge } from "./StatusBadge";
 import { relativeTime, cn, agentUrl, agentRouteRef } from "../lib/utils";
+import { ClickableDiv } from "./ui/clickable-div";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -31,7 +33,7 @@ interface AgentCardProps {
   trustScore?: AgentTrustScore | null;
 }
 
-export function AgentCard({ agent, liveRun, currentTaskTitle, trustScore }: AgentCardProps) {
+export const AgentCard = memo(function AgentCard({ agent, liveRun, currentTaskTitle, trustScore }: AgentCardProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -59,7 +61,7 @@ export function AgentCard({ agent, liveRun, currentTaskTitle, trustScore }: Agen
   const agentRef = agentRouteRef(agent);
 
   return (
-    <div
+    <ClickableDiv
       className={cn(
         "group relative border border-border bg-card rounded-lg p-4 transition-all duration-150 cursor-pointer agent-card-hover",
         isLive && "border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.06)]"
@@ -163,6 +165,6 @@ export function AgentCard({ agent, liveRun, currentTaskTitle, trustScore }: Agen
         </span>
         <TrustScoreBadge score={trustScore} />
       </div>
-    </div>
+    </ClickableDiv>
   );
-}
+});

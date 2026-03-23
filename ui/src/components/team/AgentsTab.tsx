@@ -13,6 +13,7 @@ import { cn, formatCents, agentUrl } from "../../lib/utils";
 import { adapterLabels, roleLabels } from "../agent-config-primitives";
 import { AgentIcon } from "../AgentIconPicker";
 import { TrustScoreBadge } from "../TrustScoreBadge";
+
 import { StatusBadge } from "../StatusBadge";
 import { Button } from "@/components/ui/button";
 import {
@@ -214,11 +215,14 @@ export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScor
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <h3
-                      className="text-sm font-semibold truncate cursor-pointer hover:underline"
-                      onClick={() => navigate(agentUrl(agent))}
-                    >
-                      {agent.name}
+                    <h3 className="text-sm font-semibold truncate">
+                      <button
+                        type="button"
+                        className="cursor-pointer hover:underline text-left"
+                        onClick={() => navigate(agentUrl(agent))}
+                      >
+                        {agent.name}
+                      </button>
                     </h3>
                     <span className="relative flex h-2.5 w-2.5 shrink-0">
                       <span className={cn("absolute inline-flex h-full w-full rounded-full", statusColor)} />

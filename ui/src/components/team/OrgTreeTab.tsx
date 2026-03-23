@@ -4,6 +4,7 @@ import { AgentIcon } from "../AgentIconPicker";
 import { adapterLabels, roleLabels } from "../agent-config-primitives";
 import { Network } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ClickableDiv } from "../ui/clickable-div";
 
 // Layout constants
 const CARD_W = 200;
@@ -364,7 +365,7 @@ function AgentNodeCard({
   const dotColor = statusDotColor[node.status] ?? defaultDotColor;
 
   return (
-    <div
+    <ClickableDiv
       data-org-card
       data-testid={`org-node-${node.id}`}
       data-node-type="agent"
@@ -382,6 +383,7 @@ function AgentNodeCard({
         borderBottomColor: "var(--border)",
       }}
       onClick={() => onClick(node.id, "agent")}
+      aria-label={`View agent ${node.name}`}
     >
       <div className="flex items-center px-4 py-3 gap-3">
         <div className="relative shrink-0">
@@ -414,7 +416,7 @@ function AgentNodeCard({
           </span>
         </div>
       )}
-    </div>
+    </ClickableDiv>
   );
 }
 
@@ -436,7 +438,7 @@ function HumanNodeCard({
   onClick: (id: string, nodeType: "agent" | "user") => void;
 }) {
   return (
-    <div
+    <ClickableDiv
       data-org-card
       data-testid={`org-node-${node.id}`}
       data-node-type="user"
@@ -451,6 +453,7 @@ function HumanNodeCard({
         borderBottomColor: "var(--border)",
       }}
       onClick={() => onClick(node.id, "user")}
+      aria-label={`View team member ${node.name}`}
     >
       <div className="flex items-center px-4 py-3 gap-3">
         <div className="shrink-0">
@@ -484,6 +487,6 @@ function HumanNodeCard({
           )}
         </div>
       </div>
-    </div>
+    </ClickableDiv>
   );
 }
