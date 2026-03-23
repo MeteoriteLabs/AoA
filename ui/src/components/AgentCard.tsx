@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@/lib/router";
 import { agentsApi } from "../api/agents";
@@ -32,7 +33,7 @@ interface AgentCardProps {
   trustScore?: AgentTrustScore | null;
 }
 
-export function AgentCard({ agent, liveRun, currentTaskTitle, trustScore }: AgentCardProps) {
+export const AgentCard = memo(function AgentCard({ agent, liveRun, currentTaskTitle, trustScore }: AgentCardProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -166,4 +167,4 @@ export function AgentCard({ agent, liveRun, currentTaskTitle, trustScore }: Agen
       </div>
     </ClickableDiv>
   );
-}
+});
