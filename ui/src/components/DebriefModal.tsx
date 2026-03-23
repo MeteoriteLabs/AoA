@@ -44,6 +44,10 @@ export function DebriefModal() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcription, setTranscription] = useState<string | null>(null);
   const [transcriptionEdited, setTranscriptionEdited] = useState("");
+  const [lastRecordingBlob, setLastRecordingBlob] = useState<Blob | null>(null);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [transcriptionRetries, setTranscriptionRetries] = useState(0);
+  const MAX_TRANSCRIPTION_RETRIES = 3;
 
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
@@ -103,6 +107,9 @@ export function DebriefModal() {
     setIsTranscribing(false);
     setTranscription(null);
     setTranscriptionEdited("");
+    setLastRecordingBlob(null);
+    setTranscriptionError(null);
+    setTranscriptionRetries(0);
     closeDebrief();
   }
 
@@ -131,8 +138,14 @@ export function DebriefModal() {
     }
   }
 
-  async function handleRecordingComplete(blob: Blob) {
+  async function handleRecordingComplete(blob: Blob, isRetry = false) {
+    if (!isRetry) {
+      // Fresh recording — reset retry count
+      setLastRecordingBlob(blob);
+      setTranscriptionRetries(0);
+    }
     setAudioBlob(blob);
+    setTranscriptionError(null);
 
     if (!selectedCompanyId) return;
 
@@ -144,11 +157,17 @@ export function DebriefModal() {
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Transcription failed";
-      pushToast({ title: message, tone: "warn" });
+      setTranscriptionError(message);
       setTranscription(null);
     } finally {
       setIsTranscribing(false);
     }
+  }
+
+  async function retryTranscription() {
+    if (!lastRecordingBlob || transcriptionRetries >= MAX_TRANSCRIPTION_RETRIES) return;
+    setTranscriptionRetries((r) => r + 1);
+    await handleRecordingComplete(lastRecordingBlob, true);
   }
 
   const isSubmitting = createMutation.isPending || isPolling;
@@ -230,6 +249,17 @@ export function DebriefModal() {
                         onChange={(e) => setTranscriptionEdited(e.target.value)}
                         className="min-h-[120px] resize-y"
                       />
+                    </div>
+                  )}
+
+                  {transcriptionError && !isTranscribing && (
+                    <div className="flex items-center gap-2 text-sm text-destructive">
+                      <span>{transcriptionError}</span>
+                      {transcriptionRetries < MAX_TRANSCRIPTION_RETRIES && (
+                        <Button variant="outline" size="sm" onClick={retryTranscription}>
+                          Retry ({MAX_TRANSCRIPTION_RETRIES - transcriptionRetries} left)
+                        </Button>
+                      )}
                     </div>
                   )}
                 </div>
