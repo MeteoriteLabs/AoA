@@ -9,7 +9,6 @@ const EMBEDDING_API_URL = "https://api.openai.com/v1/embeddings";
 const EMBEDDING_DIMENSIONS = 1536;
 const BATCH_SIZE = 10;
 const MAX_RETRIES = 3;
-const BASE_RETRY_DELAY_MS = 1000;
 
 const log = logger.child({ service: "embeddings" });
 
@@ -143,24 +142,40 @@ export async function processEmbeddingQueue(db: Db, companyId: string): Promise<
   if (pending.length === 0) return 0;
 
   let processed = 0;
+  const texts = pending.map((item) => `${item.title}\n${item.content}`);
 
-  // Process each item individually so failures are tracked per-item
-  for (const item of pending) {
-    try {
-      const embedding = await generateEmbedding(`${item.title}\n${item.content}`, apiKey);
-      const vectorStr = toVectorString(embedding);
-      await db
-        .update(memoryItems)
-        .set({ embedding: sql`${vectorStr}::vector`, embeddingRetries: 0 })
-        .where(eq(memoryItems.id, item.id));
-      processed++;
-    } catch (err: any) {
+  try {
+    // Single batch API call for all items
+    const embeddings = await generateEmbeddingsBatch(texts, apiKey);
+
+    // Process results per-item
+    for (let i = 0; i < pending.length; i++) {
+      const item = pending[i];
+      try {
+        const vectorStr = toVectorString(embeddings[i]);
+        await db
+          .update(memoryItems)
+          .set({ embedding: sql`${vectorStr}::vector`, embeddingRetries: 0 })
+          .where(eq(memoryItems.id, item.id));
+        processed++;
+      } catch (err: any) {
+        // Individual item had invalid embedding values
+        await db
+          .update(memoryItems)
+          .set({ embeddingRetries: sql`${memoryItems.embeddingRetries} + 1` })
+          .where(eq(memoryItems.id, item.id));
+        log.warn({ itemId: item.id, error: err.message }, "Embedding validation failed, incremented retry count");
+      }
+    }
+  } catch (err: any) {
+    // Batch API call failed — increment retry count for all items
+    for (const item of pending) {
       await db
         .update(memoryItems)
         .set({ embeddingRetries: sql`${memoryItems.embeddingRetries} + 1` })
         .where(eq(memoryItems.id, item.id));
-      log.warn({ itemId: item.id, error: err.message }, "Embedding failed, incremented retry count");
     }
+    log.warn({ companyId, error: err.message, count: pending.length }, "Batch embedding API failed, incremented retry count for all items");
   }
 
   log.info({ companyId, processed, total: pending.length }, "Embedding queue processed");

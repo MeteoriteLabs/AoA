@@ -383,6 +383,7 @@ function AgentNodeCard({
         borderBottomColor: "var(--border)",
       }}
       onClick={() => onClick(node.id, "agent")}
+      aria-label={`View agent ${node.name}`}
     >
       <div className="flex items-center px-4 py-3 gap-3">
         <div className="relative shrink-0">
@@ -452,6 +453,7 @@ function HumanNodeCard({
         borderBottomColor: "var(--border)",
       }}
       onClick={() => onClick(node.id, "user")}
+      aria-label={`View team member ${node.name}`}
     >
       <div className="flex items-center px-4 py-3 gap-3">
         <div className="shrink-0">

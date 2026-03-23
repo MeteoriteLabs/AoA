@@ -168,48 +168,71 @@ describe("Embedding Retry Persistence", () => {
     expect(db.setCalls[0]).toHaveProperty("embeddingRetries", 0);
   });
 
-  it("processes multiple items independently — one failure does not block others", async () => {
+  it("processes multiple items via batch — all succeed when API succeeds", async () => {
     const fakeEmbedding = makeFakeEmbedding();
     const db = createSequenceDb({
       selects: [
         [
           { id: "item-1", title: "Good", content: "Will succeed" },
-          { id: "item-2", title: "Bad", content: "Will fail" },
-          { id: "item-3", title: "Good2", content: "Will succeed too" },
+          { id: "item-2", title: "Good2", content: "Will succeed too" },
+          { id: "item-3", title: "Good3", content: "Will succeed three" },
         ],
       ],
       updates: [
         [], // item-1 success
-        [], // item-2 failure
+        [], // item-2 success
         [], // item-3 success
       ],
     });
 
-    let callCount = 0;
-    globalThis.fetch = vi.fn().mockImplementation(async () => {
-      callCount++;
-      if (callCount === 2) {
-        // Second item fails
-        return {
-          ok: false,
-          status: 429,
-          text: async () => "Rate limited",
-        };
-      }
-      return {
-        ok: true,
-        json: async () => ({ data: [{ embedding: fakeEmbedding }] }),
-      };
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [
+          { embedding: fakeEmbedding, index: 0 },
+          { embedding: fakeEmbedding, index: 1 },
+          { embedding: fakeEmbedding, index: 2 },
+        ],
+      }),
     });
 
     const result = await processEmbeddingQueue(db as any, "company-1");
-    expect(result).toBe(2); // 2 succeeded, 1 failed
+    expect(result).toBe(3); // all 3 succeeded
 
-    // 3 set calls total: success, failure, success
+    // 3 set calls, all success (embeddingRetries reset to 0)
     expect(db.setCalls.length).toBe(3);
-    expect(db.setCalls[0]).toHaveProperty("embeddingRetries", 0); // success
-    expect(db.setCalls[1]).toHaveProperty("embeddingRetries"); // failure (sql expression)
-    expect(db.setCalls[2]).toHaveProperty("embeddingRetries", 0); // success
+    expect(db.setCalls[0]).toHaveProperty("embeddingRetries", 0);
+    expect(db.setCalls[1]).toHaveProperty("embeddingRetries", 0);
+    expect(db.setCalls[2]).toHaveProperty("embeddingRetries", 0);
+  });
+
+  it("increments retry count for ALL items when batch API call fails", async () => {
+    const db = createSequenceDb({
+      selects: [
+        [
+          { id: "item-1", title: "A", content: "content" },
+          { id: "item-2", title: "B", content: "content" },
+        ],
+      ],
+      updates: [
+        [], // item-1 retry increment
+        [], // item-2 retry increment
+      ],
+    });
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: async () => "Rate limited",
+    });
+
+    const result = await processEmbeddingQueue(db as any, "company-1");
+    expect(result).toBe(0); // none succeeded
+
+    // Both items got their retry count incremented
+    expect(db.setCalls.length).toBe(2);
+    expect(db.setCalls[0]).toHaveProperty("embeddingRetries");
+    expect(db.setCalls[1]).toHaveProperty("embeddingRetries");
   });
 
   it("invalidateEmbedding resets embeddingRetries to 0", async () => {

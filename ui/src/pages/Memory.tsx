@@ -145,6 +145,16 @@ function isStale(item: MemoryItem): boolean {
   return daysSince(checkDate) >= STALENESS_THRESHOLD_DAYS;
 }
 
+/** Shared hook for invalidating memory list + pending queries. */
+function useInvalidateMemory(companyId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useCallback(() => {
+    if (!companyId) return;
+    queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(companyId) });
+  }, [queryClient, companyId]);
+}
+
 // ── Main Component ─────────────────────────────────────────────────────
 
 export function Memory() {
@@ -225,10 +235,7 @@ export function Memory() {
     setSubtitle(parts.length > 0 ? parts.join(" \u00B7 ") : null);
   }, [items, setSubtitle]);
 
-  const invalidateMemoryQueries = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(selectedCompanyId!) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(selectedCompanyId!) });
-  }, [queryClient, selectedCompanyId]);
+  const invalidateMemoryQueries = useInvalidateMemory(selectedCompanyId);
 
   const approveMutation = useMutation({
     mutationFn: (id: string) => memoryApi.approve(selectedCompanyId!, id),
@@ -872,9 +879,15 @@ function MemoryDetailPanel({
   canEditIdentityMemory: boolean;
 }) {
   const queryClient = useQueryClient();
+  const invalidateMemoryQueries = useInvalidateMemory(companyId);
   const [activeDetailTab, setActiveDetailTab] = useState<string>("content");
   const [draftContent, setDraftContent] = useState("");
   const [isEditing, setIsEditing] = useState(false);
+
+  const invalidateDetail = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.memory.detail(companyId, itemId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.memory.versions(companyId, itemId) });
+  }, [queryClient, companyId, itemId]);
 
   const { data: item } = useQuery({
     queryKey: queryKeys.memory.detail(companyId, itemId),
@@ -889,8 +902,7 @@ function MemoryDetailPanel({
   const saveDraftMutation = useMutation({
     mutationFn: (content: string) => memoryApi.saveDraft(companyId, itemId, content),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.versions(companyId, itemId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.detail(companyId, itemId) });
+      invalidateDetail();
       setIsEditing(false);
     },
   });
@@ -898,25 +910,24 @@ function MemoryDetailPanel({
   const publishMutation = useMutation({
     mutationFn: () => memoryApi.publishDraft(companyId, itemId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.versions(companyId, itemId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.detail(companyId, itemId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(companyId) });
+      invalidateDetail();
+      invalidateMemoryQueries();
     },
   });
 
   const restoreMutation = useMutation({
     mutationFn: () => memoryApi.restore(companyId, itemId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(companyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.detail(companyId, itemId) });
+      invalidateMemoryQueries();
+      invalidateDetail();
     },
   });
 
   const touchMutation = useMutation({
     mutationFn: () => memoryApi.touchAccessedAt(companyId, itemId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(companyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.detail(companyId, itemId) });
+      invalidateMemoryQueries();
+      invalidateDetail();
     },
   });
 
@@ -1281,7 +1292,7 @@ function SuggestionQueue({
   onRejectVersion: (itemId: string, versionId: string) => void;
   canEditIdentityMemory: boolean;
 }) {
-  const queryClient = useQueryClient();
+  const invalidateMemoryQueries = useInvalidateMemory(companyId);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
   const [editTitle, setEditTitle] = useState("");
@@ -1296,8 +1307,7 @@ function SuggestionQueue({
       return memoryApi.approve(companyId, id);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(companyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(companyId) });
+      invalidateMemoryQueries();
       setEditingId(null);
     },
   });
@@ -1576,7 +1586,7 @@ function CreateMemoryDialog({
   departments: Project[];
   canCreate: boolean;
 }) {
-  const queryClient = useQueryClient();
+  const invalidateMemoryQueries = useInvalidateMemory(companyId);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [category, setCategory] = useState<string>("reference");
@@ -1605,7 +1615,7 @@ function CreateMemoryDialog({
     mutationFn: (data: Record<string, unknown>) =>
       memoryApi.create(companyId, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.list(companyId) });
+      invalidateMemoryQueries();
       onOpenChange(false);
       resetForm();
     },

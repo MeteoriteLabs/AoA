@@ -29,7 +29,7 @@ export interface MemoryItem {
   sourceContext: string | null;
   accessedAt: Date | null;
   currentVersionId: string | null;
-  embeddingRetries?: number;
+  embeddingRetries: number;
   createdAt: Date;
   updatedAt: Date;
 }
