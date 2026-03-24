@@ -295,6 +295,13 @@
       "when": 1774258203961,
       "tag": "0041_spooky_ser_duncan",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1774385949837,
+      "tag": "0042_curly_siren",
+      "breakpoints": true
     }
   ]
 }
