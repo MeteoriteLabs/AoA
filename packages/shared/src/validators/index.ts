@@ -201,3 +201,23 @@ export {
   type CreateWorkflowTemplate,
   type UpdateWorkflowTemplate,
 } from "./workflow-template.js";
+
+export {
+  createDiscussionSchema,
+  createDiscussionEntrySchema,
+  updateDiscussionSchema,
+  approveItemsSchema,
+  createAnnotationSchema,
+  type CreateDiscussion,
+  type CreateDiscussionEntry,
+  type UpdateDiscussion,
+  type ApproveItems,
+  type CreateAnnotation,
+} from "./discussion.js";
+
+export {
+  updateInternalAgentConfigSchema,
+  chatMessageSchema,
+  type UpdateInternalAgentConfig,
+  type ChatMessage,
+} from "./internal-agent.js";
