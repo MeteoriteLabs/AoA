@@ -136,7 +136,6 @@ import {
   DISCUSSION_SCOPE_TYPES,
   DISCUSSION_ENTRY_INPUT_TYPES,
   EXTRACTION_ITEM_TYPES,
-  EXTRACTION_ITEM_STATUSES,
   MEMORY_ITEM_LAYERS,
   BRIEF_DEDUP_ACTIONS,
 } from "../constants.js";
@@ -318,7 +317,7 @@ export {
 
 ### File: `server/src/migrations/v2_5-migrate-debriefs-to-discussions.ts`
 
-#### `migrateDebriefsTodDiscussions(db: Db)`
+#### `migrateDebriefsToDiscussions(db: Db)`
 
 1. **Select all debriefs** joined through `debriefs → briefs → brief_items` chain. A debrief may have zero briefs (extraction failed before brief creation) or a brief may have zero items.
 2. **For each debrief:**
