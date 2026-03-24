@@ -13,6 +13,7 @@ import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { issues } from "./issues.js";
 import { memoryItems } from "./memory_items.js";
+import { internalAgentRuns } from "./internal_agent.js";
 
 // ── Table 1: discussions ──────────────────────────────────────────────────────
 
@@ -91,7 +92,10 @@ export const discussionEntries = pgTable(
     // Processing state
     extractionStatus: text("extraction_status").notNull().default("pending"),
     // 'pending' | 'processing' | 'completed' | 'failed' | 'skipped'
-    extractionRunId: uuid("extraction_run_id"), // FK to internal_agent_runs added in later session
+    extractionRunId: uuid("extraction_run_id").references(
+      () => internalAgentRuns.id,
+      { onDelete: "set null" },
+    ),
 
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -253,6 +257,10 @@ export const discussionEntriesRelations = relations(
     goal: one(goals, {
       fields: [discussionEntries.goalId],
       references: [goals.id],
+    }),
+    extractionRun: one(internalAgentRuns, {
+      fields: [discussionEntries.extractionRunId],
+      references: [internalAgentRuns.id],
     }),
   }),
 );

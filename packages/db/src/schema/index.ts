@@ -51,3 +51,12 @@ export {
   discussionExtractedItems,
   discussionAnnotations,
 } from "./discussions.js";
+export {
+  internalAgentConfig,
+  internalAgentConversations,
+  internalAgentMessages,
+  internalAgentRuns,
+  internalAgentReminders,
+} from "./internal_agent.js";
+export { workflowTemplates } from "./workflow_templates.js";
+export { notifications } from "./notifications.js";
