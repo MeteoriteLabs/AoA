@@ -207,6 +207,14 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.outputs_detected",
   "agent.status",
   "activity.logged",
+  // V2.5: Discussions
+  "discussion.entry.created",
+  "discussion.extraction.completed",
+  "discussion.extraction.failed",
+  // V2.5: Internal Agent
+  "internal_agent.greeting",
+  "internal_agent.reminder",
+  "internal_agent.notification",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -430,3 +438,84 @@ export const SEARCH_ENTITY_TYPES = [
   "memory",
 ] as const;
 export type SearchEntityType = (typeof SEARCH_ENTITY_TYPES)[number];
+
+// ── V2.5: Discussions ─────────────────────────────────────────────────
+
+export const DISCUSSION_STATUSES = ["active", "archived"] as const;
+export type DiscussionStatus = (typeof DISCUSSION_STATUSES)[number];
+
+export const DISCUSSION_SCOPE_TYPES = ["department", "project", "goal"] as const;
+export type DiscussionScopeType = (typeof DISCUSSION_SCOPE_TYPES)[number];
+
+export const DISCUSSION_ENTRY_INPUT_TYPES = ["paste", "write", "voice", "mcp"] as const;
+export type DiscussionEntryInputType = (typeof DISCUSSION_ENTRY_INPUT_TYPES)[number];
+
+export const EXTRACTION_STATUSES = ["pending", "processing", "completed", "failed", "skipped"] as const;
+export type ExtractionStatus = (typeof EXTRACTION_STATUSES)[number];
+
+export const EXTRACTION_ITEM_TYPES = ["decision", "task", "insight", "context", "reference", "preference"] as const;
+export type ExtractionItemType = (typeof EXTRACTION_ITEM_TYPES)[number];
+
+export const EXTRACTION_ITEM_STATUSES = ["pending", "approved", "rejected", "edited"] as const;
+export type ExtractionItemStatus = (typeof EXTRACTION_ITEM_STATUSES)[number];
+
+// ── V2.5: Internal Agent ──────────────────────────────────────────────
+
+export const AGENT_CAPABILITIES = [
+  "discussion_processing",
+  "proactive_suggestions",
+  "organizational_queries",
+  "system_actions",
+  "context_briefing",
+  "memory_management",
+  "conflict_detection",
+  "budget_awareness",
+  "workflow_coaching",
+  "workflow_discovery",
+  "cross_department_coordination",
+  "department_personas",
+] as const;
+export type AgentCapability = (typeof AGENT_CAPABILITIES)[number];
+
+export const AGENT_EXECUTION_MODES = ["api", "cli"] as const;
+export type AgentExecutionMode = (typeof AGENT_EXECUTION_MODES)[number];
+
+export const AGENT_PROVIDERS = ["anthropic", "openai", "google"] as const;
+export type AgentProvider = (typeof AGENT_PROVIDERS)[number];
+
+export const NOTIFICATION_PREFERENCES = ["silent", "digest", "realtime"] as const;
+export type NotificationPreference = (typeof NOTIFICATION_PREFERENCES)[number];
+
+export const TRIGGER_TYPES = ["conversation", "proactive", "event", "sub_agent"] as const;
+export type TriggerType = (typeof TRIGGER_TYPES)[number];
+
+export const TRIGGER_SOURCES = [
+  "user_message",
+  "discussion_entry",
+  "proactive_scan",
+  "event_hook",
+  "reminder_fire",
+  "sub_agent_dispatch",
+] as const;
+export type TriggerSource = (typeof TRIGGER_SOURCES)[number];
+
+export const IA_RUN_STATUSES = ["running", "completed", "failed"] as const;
+export type IaRunStatus = (typeof IA_RUN_STATUSES)[number];
+
+export const IA_MESSAGE_ROLES = ["user", "assistant", "system", "tool_call", "tool_result"] as const;
+export type IaMessageRole = (typeof IA_MESSAGE_ROLES)[number];
+
+export const IA_CONVERSATION_STATUSES = ["active", "archived"] as const;
+export type IaConversationStatus = (typeof IA_CONVERSATION_STATUSES)[number];
+
+export const REMINDER_STATUSES = ["pending", "fired", "cancelled"] as const;
+export type ReminderStatus = (typeof REMINDER_STATUSES)[number];
+
+export const NOTIFICATION_TYPES = [
+  "discussion.extraction_complete",
+  "discussion.extraction_failed",
+  "internal_agent.reminder",
+  "internal_agent.proactive",
+  "internal_agent.action_result",
+] as const;
+export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
