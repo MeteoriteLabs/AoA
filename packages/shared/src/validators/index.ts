@@ -192,3 +192,12 @@ export {
   updateTeamMemberRoleSchema,
   type UpdateTeamMemberRole,
 } from "./team.js";
+
+export {
+  workflowStepSchema,
+  workflowDependencySchema,
+  createWorkflowTemplateSchema,
+  updateWorkflowTemplateSchema,
+  type CreateWorkflowTemplate,
+  type UpdateWorkflowTemplate,
+} from "./workflow-template.js";
