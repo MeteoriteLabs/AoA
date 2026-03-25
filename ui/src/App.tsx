@@ -129,6 +129,8 @@ function boardRoutes() {
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="briefs" element={<Briefs />} />
       <Route path="briefs/:briefId" element={<BriefReview />} />
+      {/* TODO: redirect /briefs → /discussions once discussions page exists (V2.5) */}
+      <Route path="debriefs" element={<Navigate to="/briefs" replace />} />
       <Route path="active-agents" element={<ActiveAgents />} />
       <Route path="memory" element={<Memory />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
