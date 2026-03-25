@@ -10,6 +10,12 @@ import { companies } from "./companies.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 
+/**
+ * @deprecated V2.5 — Debriefs are replaced by Discussions (discussions table + discussion_entries table).
+ * This table is kept for backward compatibility and rollback safety.
+ * Do NOT drop — keep for ≥1 month after migration, then archive with `_deprecated_` prefix.
+ * See: docs/aoa/v2.5/v2_5_discussions_and_agent_rollout.md — Phase 4
+ */
 export const debriefs = pgTable(
   "debriefs",
   {
