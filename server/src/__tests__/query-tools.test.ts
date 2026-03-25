@@ -62,7 +62,7 @@ describe("Query Tools", () => {
     const result = await queryGoals.execute({}, ctx);
 
     expect(result.success).toBe(true);
-    expect(services.goals.list).toHaveBeenCalledWith("comp-1", undefined);
+    expect(services.goals.list).toHaveBeenCalledWith("comp-1");
   });
 
   it("all query tools have requiresConfirmation: false", () => {

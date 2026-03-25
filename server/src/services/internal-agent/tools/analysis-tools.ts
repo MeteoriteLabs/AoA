@@ -4,13 +4,10 @@ export function createAnalysisTools(): AgentTool[] {
   return [
     {
       name: "analyze_workload",
-      description: "Analyze workload distribution across agents or departments.",
+      description: "Get workload balance insights from the suggestion engine.",
       parameters: {
         type: "object",
-        properties: {
-          agentId: { type: "string", description: "Analyze specific agent's workload" },
-          departmentId: { type: "string", description: "Analyze specific department's workload" },
-        },
+        properties: {},
       },
       category: "analysis",
       requiredRole: "team_lead",
@@ -25,12 +22,10 @@ export function createAnalysisTools(): AgentTool[] {
     },
     {
       name: "suggest_improvements",
-      description: "Generate improvement suggestions for the organization.",
+      description: "Run all detectors and return pending improvement suggestions.",
       parameters: {
         type: "object",
-        properties: {
-          focus: { type: "string", enum: ["efficiency", "risk", "growth"], description: "Focus area for suggestions" },
-        },
+        properties: {},
       },
       category: "analysis",
       requiredRole: "team_lead",

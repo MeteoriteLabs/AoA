@@ -42,8 +42,11 @@ export function createQueryTools(): AgentTool[] {
       requiresConfirmation: false,
       execute: async (params: unknown, ctx) => {
         const { status, limit } = (params ?? {}) as Record<string, unknown>;
-        const goals = await ctx.services.goals.list(ctx.companyId, status as string | undefined);
-        const limited = Array.isArray(goals) ? goals.slice(0, (limit as number) ?? 20) : goals;
+        const goals = await ctx.services.goals.list(ctx.companyId);
+        const filtered = Array.isArray(goals) && status
+          ? goals.filter((g: any) => g.status === status)
+          : goals;
+        const limited = Array.isArray(filtered) ? filtered.slice(0, (limit as number) ?? 20) : filtered;
         const count = Array.isArray(limited) ? limited.length : 0;
         return { success: true, data: limited, summary: `Found ${count} goal(s)` };
       },
@@ -62,9 +65,12 @@ export function createQueryTools(): AgentTool[] {
       requiredRole: "team_member",
       requiresConfirmation: false,
       execute: async (params: unknown, ctx) => {
-        const { limit } = (params ?? {}) as Record<string, unknown>;
+        const { departmentId, limit } = (params ?? {}) as Record<string, unknown>;
         const agents = await ctx.services.agents.list(ctx.companyId);
-        const limited = Array.isArray(agents) ? agents.slice(0, (limit as number) ?? 20) : agents;
+        const filtered = Array.isArray(agents) && departmentId
+          ? agents.filter((a: any) => a.projectId === departmentId)
+          : agents;
+        const limited = Array.isArray(filtered) ? filtered.slice(0, (limit as number) ?? 20) : filtered;
         const count = Array.isArray(limited) ? limited.length : 0;
         return { success: true, data: limited, summary: `Found ${count} agent(s)` };
       },
@@ -118,7 +124,6 @@ export function createQueryTools(): AgentTool[] {
         type: "object",
         properties: {
           limit: { type: "number", description: "Max entries to return (default 20)" },
-          days: { type: "number", description: "Look back N days (default 7)" },
         },
       },
       category: "query",

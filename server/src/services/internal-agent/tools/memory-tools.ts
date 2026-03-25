@@ -101,7 +101,6 @@ export function createMemoryTools(): AgentTool[] {
         properties: {
           query: { type: "string", description: "Text to find similar items for (required)" },
           layer: { type: "string", enum: ["identity", "domain", "active_context", "working"], description: "Filter by layer" },
-          threshold: { type: "number", description: "Similarity threshold (0-1, default 0.6)" },
           limit: { type: "number", description: "Max results (default 5)" },
         },
         required: ["query"],

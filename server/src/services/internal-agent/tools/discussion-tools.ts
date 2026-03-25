@@ -24,7 +24,7 @@ export function createDiscussionTools(): AgentTool[] {
     },
     {
       name: "search_discussions",
-      description: "Search discussions by title or content.",
+      description: "Search discussions by title.",
       parameters: {
         type: "object",
         properties: {
