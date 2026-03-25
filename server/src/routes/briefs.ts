@@ -139,5 +139,12 @@ export function briefRoutes(db: Db) {
     res.json(result);
   });
 
+  // Redirect: GET /briefs/redirect → 302 to /discussions?hasPendingItems=true
+  // Using 302 (temporary) during transition — allows rollback without cached permanent redirects
+  router.get("/companies/:companyId/briefs/redirect", async (req, res) => {
+    res.set("X-Deprecated", "Use /discussions instead");
+    res.redirect(302, `/api/companies/${req.params.companyId}/discussions?hasPendingItems=true`);
+  });
+
   return router;
 }
