@@ -105,8 +105,8 @@ export function createQueryTools(): AgentTool[] {
         const { period } = (params ?? {}) as Record<string, unknown>;
         const range =
           period === "year"
-            ? { start: new Date(new Date().getFullYear(), 0, 1), end: new Date() }
-            : { start: new Date(new Date().getFullYear(), new Date().getMonth(), 1), end: new Date() };
+            ? { from: new Date(new Date().getFullYear(), 0, 1), to: new Date() }
+            : { from: new Date(new Date().getFullYear(), new Date().getMonth(), 1), to: new Date() };
         const summary = await ctx.services.costs.summary(ctx.companyId, range);
         return { success: true, data: summary, summary: `Budget summary retrieved` };
       },
