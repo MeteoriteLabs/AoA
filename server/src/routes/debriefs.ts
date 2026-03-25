@@ -131,5 +131,11 @@ export function debriefRoutes(db: Db) {
     res.json(debrief);
   });
 
+  // Redirect: POST /debriefs/redirect → 307 to /discussions (preserves POST method + body)
+  router.post("/companies/:companyId/debriefs/redirect", async (req, res) => {
+    res.set("X-Deprecated", "Use /discussions instead");
+    res.redirect(307, `/api/companies/${req.params.companyId}/discussions`);
+  });
+
   return router;
 }
