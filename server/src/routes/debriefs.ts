@@ -11,6 +11,7 @@ export function debriefRoutes(db: Db) {
   const extraction = extractionService(db);
 
   router.get("/companies/:companyId/debriefs", async (req, res) => {
+    res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const { status, departmentId, inputType } = req.query as Record<string, string | undefined>;
@@ -19,6 +20,7 @@ export function debriefRoutes(db: Db) {
   });
 
   router.get("/companies/:companyId/debriefs/:id", async (req, res) => {
+    res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAccess(req, companyId);
@@ -31,6 +33,7 @@ export function debriefRoutes(db: Db) {
   });
 
   router.post("/companies/:companyId/debriefs", validate(createDebriefSchema), async (req, res) => {
+    res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const actor = getActorInfo(req);
@@ -59,6 +62,7 @@ export function debriefRoutes(db: Db) {
 
   // MCP inbound — external content always enters via Debrief pipeline (Decision #14)
   router.post("/companies/:companyId/debriefs/mcp", validate(mcpDebriefSchema), async (req, res) => {
+    res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const actor = getActorInfo(req);
@@ -99,6 +103,7 @@ export function debriefRoutes(db: Db) {
   });
 
   router.patch("/companies/:companyId/debriefs/:id", validate(updateDebriefSchema), async (req, res) => {
+    res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAccess(req, companyId);
