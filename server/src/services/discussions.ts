@@ -263,6 +263,51 @@ export function discussionService(db: Db) {
     },
 
     /**
+     * Update a discussion's title, status, scope, or tags.
+     * Validates scope if changed. Follows goals.ts update pattern.
+     */
+    update: async (
+      companyId: string,
+      id: string,
+      data: {
+        title?: string | null;
+        status?: string;
+        scopeType?: string | null;
+        scopeId?: string | null;
+        tags?: string[];
+      },
+    ) => {
+      // Validate scope if being changed
+      if (data.scopeType !== undefined || data.scopeId !== undefined) {
+        // Need to merge with existing values for validation
+        const existing = await db
+          .select({
+            scopeType: discussions.scopeType,
+            scopeId: discussions.scopeId,
+          })
+          .from(discussions)
+          .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!existing) {
+          throw notFound("Discussion not found");
+        }
+
+        const newScopeType = data.scopeType !== undefined ? data.scopeType : existing.scopeType;
+        const newScopeId = data.scopeId !== undefined ? data.scopeId : existing.scopeId;
+        await validateScope(db, newScopeType, newScopeId);
+      }
+
+      const [updated] = await db
+        .update(discussions)
+        .set({ ...data, updatedAt: new Date() })
+        .where(and(eq(discussions.id, id), eq(discussions.companyId, companyId)))
+        .returning();
+
+      return updated ?? null;
+    },
+
+    /**
      * Add an entry to an existing discussion.
      * Fires extraction (fire-and-forget), updates lastEntryAt,
      * publishes discussion.entry.created LiveEvent.
