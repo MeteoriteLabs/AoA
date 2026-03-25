@@ -2,13 +2,14 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { createDebriefSchema, mcpDebriefSchema, updateDebriefSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { debriefService, extractionService, logActivity } from "../services/index.js";
+import { debriefService, discussionService, extractionService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function debriefRoutes(db: Db) {
   const router = Router();
   const svc = debriefService(db);
   const extraction = extractionService(db);
+  const discussions = discussionService(db);
 
   router.get("/companies/:companyId/debriefs", async (req, res) => {
     res.set("X-Deprecated", "Use /discussions instead");
@@ -60,7 +61,8 @@ export function debriefRoutes(db: Db) {
     res.status(201).json(debrief);
   });
 
-  // MCP inbound — external content always enters via Debrief pipeline (Decision #14)
+  // MCP inbound — external content now enters via Discussion pipeline (V2.5)
+  // Keeps old endpoint path for backward compatibility; creates discussion + entry instead of debrief
   router.post("/companies/:companyId/debriefs/mcp", validate(mcpDebriefSchema), async (req, res) => {
     res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
@@ -69,36 +71,39 @@ export function debriefRoutes(db: Db) {
 
     const { content, title, departmentId, projectId, source } = req.body;
 
-    const debrief = await svc.create(companyId, {
-      title: title ?? null,
-      inputType: "mcp",
-      rawContent: content,
-      departmentId: departmentId ?? null,
-      projectId: projectId ?? null,
-      sourceInfo: source ?? null,
-      createdBy: actor.actorId,
-    });
+    // Map old debrief fields to discussion shape
+    // departmentId → scopeType: 'department', scopeId
+    // projectId → scopeType: 'project', scopeId (departmentId takes priority)
+    const scopeType = departmentId ? "department" : projectId ? "project" : null;
+    const scopeId = departmentId ?? projectId ?? null;
 
-    await logActivity(db, {
+    const discussion = await discussions.create(
       companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "debrief.created",
-      entityType: "debrief",
-      entityId: debrief.id,
-      details: { title: debrief.title, inputType: "mcp", source },
-    });
+      {
+        title: title ?? null,
+        scopeType,
+        scopeId,
+        entry: {
+          inputType: "mcp",
+          rawContent: content,
+          departmentId: departmentId ?? null,
+          projectId: projectId ?? null,
+          sourceInfo: source ?? null,
+        },
+      },
+      actor.actorId,
+    );
 
-    // Fire-and-forget: trigger LLM extraction in background
-    extraction.extractFromDebrief(companyId, debrief.id).catch(() => {
-      // Error already logged and status updated inside extractFromDebrief
-    });
+    // Note: discussionService.create() already logs activity as 'discussion.created'
+    // and publishes LiveEvent for the entry, so no duplicate logging needed here.
+    // Extraction is not triggered here — entry is created with extractionStatus: 'pending'
+    // and will be picked up by the discussion extraction worker (future session).
 
     res.status(201).json({
-      debriefId: debrief.id,
-      status: "processing",
-      message: "Debrief received. Brief will be generated.",
+      discussionId: discussion.id,
+      entryId: discussion.entry?.id ?? null,
+      status: "pending",
+      message: "Discussion created. Entry queued for extraction.",
     });
   });
 
