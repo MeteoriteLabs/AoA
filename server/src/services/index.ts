@@ -37,3 +37,4 @@ export { contextPackagingService } from "./context-packaging.js";
 export { mcpService } from "./mcp.js";
 export { searchService } from "./search.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export { discussionService, type DiscussionFilters } from "./discussions.js";
