@@ -39,6 +39,9 @@ import { suggestionRoutes } from "./routes/suggestions.js";
 import { contextPackagingRoutes } from "./routes/context-packaging.js";
 import { mcpServerRoutes } from "./mcp/server.js";
 import { teamRoutes } from "./routes/team.js";
+import { discussionRoutes } from "./routes/discussions.js";
+import { notificationRoutes } from "./routes/notifications.js";
+import { internalAgentRoutes } from "./routes/internal-agent.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -135,6 +138,9 @@ export async function createApp(
   api.use(teamRoutes(db));
   api.use(suggestionRoutes(db));
   api.use(contextPackagingRoutes(db));
+  api.use(discussionRoutes(db));
+  api.use(notificationRoutes(db));
+  api.use(internalAgentRoutes(db));
   api.use(mcpServerRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));

@@ -21,11 +21,13 @@ import { GoalTree } from "../components/GoalTree";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { projectRouteRef, cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
-import { Plus, Bot, X, DollarSign, AlertTriangle } from "lucide-react";
+import { Plus, Bot, X, DollarSign, AlertTriangle, MessageSquare, ClipboardPen, PenLine, Mic, Plug } from "lucide-react";
+import { discussionsApi, type DiscussionListItem } from "../api/discussions";
+import { EmptyState } from "../components/EmptyState";
 
 /* ── Top-level tab types ── */
 
-type ProjectTab = "overview" | "list" | "goals" | "team" | "budget";
+type ProjectTab = "overview" | "list" | "goals" | "team" | "budget" | "discussions";
 
 function resolveProjectTab(pathname: string, projectId: string): ProjectTab | null {
   const segments = pathname.split("/").filter(Boolean);
@@ -37,6 +39,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "goals") return "goals";
   if (tab === "team") return "team";
   if (tab === "budget") return "budget";
+  if (tab === "discussions") return "discussions";
   return null;
 }
 
@@ -445,6 +448,156 @@ function ProjectBudgetTab({ projectId, companyId, projectType }: { projectId: st
   );
 }
 
+/* ── Discussions tab content ── */
+
+const SOURCE_BADGES: Record<string, { label: string; class: string; icon: typeof ClipboardPen }> = {
+  paste: { label: "Paste", class: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300", icon: ClipboardPen },
+  write: { label: "Write", class: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300", icon: PenLine },
+  voice: { label: "Voice", class: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300", icon: Mic },
+  mcp: { label: "MCP", class: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300", icon: Plug },
+};
+
+function ProjectDiscussions({
+  projectId,
+  companyId,
+  projectType,
+}: {
+  projectId: string;
+  companyId: string;
+  projectType?: string;
+}) {
+  const { openDiscussionCapture } = useDialog();
+  const scopeType = projectType === "project" ? "project" : "department";
+
+  const { data, isLoading } = useQuery({
+    queryKey: [...queryKeys.discussions.list(companyId), "scoped", projectId],
+    queryFn: () =>
+      discussionsApi.list(companyId, { scopeType, scopeId: projectId }),
+    enabled: !!companyId,
+  });
+
+  const discussions = data?.discussions ?? [];
+
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading discussions…</p>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium text-muted-foreground">
+          {discussions.length} {discussions.length === 1 ? "discussion" : "discussions"}
+        </h3>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="gap-1.5 text-xs"
+          onClick={() =>
+            openDiscussionCapture({ scopeType, scopeId: projectId })
+          }
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New Discussion
+        </Button>
+      </div>
+
+      {discussions.length === 0 ? (
+        <EmptyState
+          icon={MessageSquare}
+          message={`No discussions for this ${projectType === "project" ? "project" : "department"} yet`}
+          description="Start a discussion to capture and process raw content into structured tasks, decisions, and memory items."
+          entityColor="var(--entity-brief)"
+        />
+      ) : (
+        <div className="space-y-2">
+          {discussions.map((discussion) => (
+            <ProjectDiscussionRow key={discussion.id} discussion={discussion} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectDiscussionRow({ discussion }: { discussion: DiscussionListItem }) {
+  const hasPending = discussion.pendingItemCount > 0;
+  const source = discussion.lastEntryInputType
+    ? SOURCE_BADGES[discussion.lastEntryInputType]
+    : null;
+  const SourceIcon = source?.icon ?? MessageSquare;
+
+  return (
+    <Link
+      to={`/discussions/${discussion.id}`}
+      className={cn(
+        "flex items-center justify-between rounded-lg border p-4 transition-colors",
+        hasPending
+          ? "border-blue-300 bg-blue-50/60 hover:bg-blue-100/60 dark:border-blue-800 dark:bg-blue-950/30 dark:hover:bg-blue-950/50"
+          : "border-border bg-card hover:bg-accent/50",
+      )}
+    >
+      <div className="flex items-center gap-3 min-w-0">
+        <MessageSquare
+          className={cn(
+            "h-4 w-4 shrink-0",
+            hasPending ? "text-blue-600 dark:text-blue-400" : "text-muted-foreground",
+          )}
+        />
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-medium truncate">{discussion.title}</p>
+            {hasPending && (
+              <span className="inline-flex items-center rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-semibold text-white shrink-0">
+                {discussion.pendingItemCount} pending
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 mt-0.5">
+            {discussion.lastEntryAt && (
+              <span className="text-xs text-muted-foreground">
+                {new Date(discussion.lastEntryAt).toLocaleDateString()}
+              </span>
+            )}
+            <span className="text-xs text-muted-foreground">
+              {discussion.entryCount} {discussion.entryCount === 1 ? "entry" : "entries"}
+            </span>
+            {source && (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
+                  source.class,
+                )}
+              >
+                <SourceIcon className="h-3 w-3" />
+                {source.label}
+              </span>
+            )}
+            {discussion.tags.length > 0 &&
+              discussion.tags.slice(0, 3).map((tag) => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+                >
+                  {tag}
+                </span>
+              ))}
+          </div>
+        </div>
+      </div>
+      <span
+        className={cn(
+          "inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-medium shrink-0 capitalize",
+          discussion.status === "archived"
+            ? "bg-muted text-muted-foreground"
+            : "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+        )}
+      >
+        {discussion.status}
+      </span>
+    </Link>
+  );
+}
+
 /* ── Main project page ── */
 
 export function ProjectDetail() {
@@ -524,6 +677,7 @@ export function ProjectDetail() {
       goals: "goals",
       team: "team",
       budget: "budget",
+      discussions: "discussions",
     };
     if (activeTab) {
       navigate(`/projects/${canonicalProjectRef}/${tabPaths[activeTab]}`, { replace: true });
@@ -548,6 +702,7 @@ export function ProjectDetail() {
       goals: "goals",
       team: "team",
       budget: "budget",
+      discussions: "discussions",
     };
     navigate(`/projects/${canonicalProjectRef}/${tabPaths[tab]}`);
   };
@@ -610,6 +765,16 @@ export function ProjectDetail() {
         >
           Budget
         </button>
+        <button
+          className={`px-3 py-2 text-sm font-medium transition-colors border-b-2 ${
+            activeTab === "discussions"
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+          onClick={() => handleTabChange("discussions")}
+        >
+          Discussions
+        </button>
       </div>
 
       {/* Tab content */}
@@ -639,6 +804,10 @@ export function ProjectDetail() {
 
       {activeTab === "budget" && project?.id && resolvedCompanyId && (
         <ProjectBudgetTab projectId={project.id} companyId={resolvedCompanyId} projectType={project.type} />
+      )}
+
+      {activeTab === "discussions" && project?.id && resolvedCompanyId && (
+        <ProjectDiscussions projectId={project.id} companyId={resolvedCompanyId} projectType={project.type} />
       )}
     </>
   );

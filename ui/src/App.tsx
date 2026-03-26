@@ -28,6 +28,9 @@ import { Briefs } from "./pages/Briefs";
 import { ActiveAgents } from "./pages/ActiveAgents";
 import { BriefReview } from "./pages/BriefReview";
 import { DebriefModal } from "./components/DebriefModal";
+import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
+import { Discussions } from "./pages/Discussions";
+import { DiscussionDetail } from "./pages/DiscussionDetail";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { InviteLandingPage } from "./pages/InviteLanding";
@@ -118,6 +121,7 @@ function boardRoutes() {
       <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
       <Route path="projects/:projectId/team" element={<ProjectDetail />} />
       <Route path="projects/:projectId/budget" element={<ProjectDetail />} />
+      <Route path="projects/:projectId/discussions" element={<ProjectDetail />} />
       <Route path="issues" element={<Issues />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
       <Route path="issues/active" element={<Navigate to="/issues" replace />} />
@@ -127,8 +131,12 @@ function boardRoutes() {
       <Route path="issues/:issueId" element={<Issues />} />
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
+      <Route path="discussions" element={<Discussions />} />
+      <Route path="discussions/:discussionId" element={<DiscussionDetail />} />
       <Route path="briefs" element={<Briefs />} />
       <Route path="briefs/:briefId" element={<BriefReview />} />
+      {/* TODO: redirect /briefs → /discussions once discussions page exists (V2.5) */}
+      <Route path="debriefs" element={<Navigate to="/briefs" replace />} />
       <Route path="active-agents" element={<ActiveAgents />} />
       <Route path="memory" element={<Memory />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
@@ -230,6 +238,8 @@ export function App() {
           <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
+          <Route path="discussions" element={<UnprefixedBoardRedirect />} />
+          <Route path="discussions/:discussionId" element={<UnprefixedBoardRedirect />} />
           <Route path="briefs" element={<UnprefixedBoardRedirect />} />
           <Route path="briefs/:briefId" element={<UnprefixedBoardRedirect />} />
           <Route path="vision" element={<UnprefixedBoardRedirect />} />
@@ -249,6 +259,7 @@ export function App() {
       </Routes>
       <OnboardingWizard />
       <DebriefModal />
+      <DiscussionCaptureModal />
     </>
   );
 }

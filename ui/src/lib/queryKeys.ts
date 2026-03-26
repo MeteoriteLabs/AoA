@@ -105,6 +105,20 @@ export const queryKeys = {
     list: (companyId: string) => ["debriefs", companyId] as const,
     detail: (companyId: string, id: string) => ["debriefs", companyId, id] as const,
   },
+  discussions: {
+    list: (companyId: string) => ["discussions", companyId] as const,
+    detail: (companyId: string, id: string) => ["discussions", companyId, id] as const,
+  },
+  agentGreeting: (companyId: string) => ["agent-greeting", companyId] as const,
+  agentConversation: (companyId: string) => ["agent-conversation", companyId] as const,
+  agentConfig: (companyId: string) => ["agent-config", companyId] as const,
+  agentRuns: (companyId: string) => ["agent-runs", companyId] as const,
+  agentReminders: (companyId: string) => ["agent-reminders", companyId] as const,
+  notifications: (companyId: string) => ["notifications", companyId] as const,
+  workflowTemplates: {
+    list: (companyId: string) => ["workflow-templates", companyId] as const,
+    detail: (companyId: string, id: string) => ["workflow-templates", companyId, id] as const,
+  },
   briefs: {
     list: (companyId: string) => ["briefs", companyId] as const,
     detail: (companyId: string, id: string) => ["briefs", companyId, id] as const,

@@ -40,6 +40,10 @@ export const mockDialogContext = {
   debriefOpen: false,
   openDebrief: vi.fn(),
   closeDebrief: vi.fn(),
+  discussionCaptureOpen: false,
+  discussionCaptureDefaults: {},
+  openDiscussionCapture: vi.fn(),
+  closeDiscussionCapture: vi.fn(),
 };
 
 // --- Mock breadcrumb context ---

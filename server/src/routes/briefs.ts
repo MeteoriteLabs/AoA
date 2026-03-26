@@ -11,6 +11,7 @@ export function briefRoutes(db: Db) {
   const svc = briefService(db);
 
   router.get("/companies/:companyId/briefs", async (req, res) => {
+    res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const { status, departmentId } = req.query as Record<string, string | undefined>;
@@ -19,6 +20,7 @@ export function briefRoutes(db: Db) {
   });
 
   router.get("/companies/:companyId/briefs/:id", async (req, res) => {
+    res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAccess(req, companyId);
@@ -34,6 +36,7 @@ export function briefRoutes(db: Db) {
     "/companies/:companyId/briefs/:id",
     validate(updateBriefSchema),
     async (req, res) => {
+      res.set("X-Deprecated", "Use /discussions instead");
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
       assertCompanyAccess(req, companyId);
@@ -65,6 +68,7 @@ export function briefRoutes(db: Db) {
     "/companies/:companyId/briefs/:briefId/items/:itemId",
     validate(updateBriefItemSchema),
     async (req, res) => {
+      res.set("X-Deprecated", "Use /discussions instead");
       const companyId = req.params.companyId as string;
       const briefId = req.params.briefId as string;
       const itemId = req.params.itemId as string;
@@ -102,6 +106,7 @@ export function briefRoutes(db: Db) {
 
   // POST /companies/:companyId/briefs/:id/approve — approve brief (founder only)
   router.post("/companies/:companyId/briefs/:id/approve", validate(approveBriefSchema), async (req, res) => {
+    res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
     const briefId = req.params.id as string;
     assertCompanyAccess(req, companyId);
@@ -132,6 +137,13 @@ export function briefRoutes(db: Db) {
     });
 
     res.json(result);
+  });
+
+  // Redirect: GET /briefs/redirect → 302 to /discussions?hasPendingItems=true
+  // Using 302 (temporary) during transition — allows rollback without cached permanent redirects
+  router.get("/companies/:companyId/briefs/redirect", async (req, res) => {
+    res.set("X-Deprecated", "Use /discussions instead");
+    res.redirect(302, `/api/companies/${req.params.companyId}/discussions?hasPendingItems=true`);
   });
 
   return router;

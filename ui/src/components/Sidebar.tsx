@@ -9,6 +9,7 @@ import {
   Compass,
   Bot,
   Target,
+  MessageSquare,
   ChevronsLeft,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -113,6 +114,7 @@ export function Sidebar() {
         {/* WORK section */}
         <SidebarSection label="Work" collapsed={collapsed}>
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} entityColor="var(--entity-task)" collapsed={collapsed} />
+          <SidebarNavItem to="/discussions" label="Discussions" icon={MessageSquare} entityColor="var(--entity-brief)" collapsed={collapsed} />
           <SidebarNavItem to="/briefs" label="Briefs" icon={FileText} entityColor="var(--entity-brief)" collapsed={collapsed} />
           <SidebarNavItem to="/agents/all" label="Agents" icon={Bot} entityColor="var(--entity-agent)" collapsed={collapsed} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} entityColor="var(--entity-goal)" collapsed={collapsed} />

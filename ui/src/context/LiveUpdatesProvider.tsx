@@ -488,6 +488,49 @@ function handleLiveEvent(
       buildActivityToast(queryClient, expectedCompanyId, payload) ??
       buildJoinRequestToast(payload);
     if (toast) gatedPushToast(gate, pushToast, `activity:${action ?? "unknown"}`, toast);
+    return;
+  }
+
+  if (event.type === "discussion.entry.created") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(expectedCompanyId) });
+    const discussionId = readString(payload.discussionId);
+    if (discussionId) {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.discussions.detail(expectedCompanyId, discussionId),
+      });
+    }
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(expectedCompanyId) });
+    return;
+  }
+
+  if (
+    event.type === "discussion.extraction.completed" ||
+    event.type === "discussion.extraction.failed"
+  ) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.discussions.list(expectedCompanyId) });
+    const discussionId = readString(payload.discussionId);
+    if (discussionId) {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.discussions.detail(expectedCompanyId, discussionId),
+      });
+    }
+    return;
+  }
+
+  if (event.type === "internal_agent.greeting") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(expectedCompanyId) });
+    return;
+  }
+
+  if (event.type === "internal_agent.reminder") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.agentReminders(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.notifications(expectedCompanyId) });
+    return;
+  }
+
+  if (event.type === "internal_agent.notification") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.notifications(expectedCompanyId) });
+    return;
   }
 }
 

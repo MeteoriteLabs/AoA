@@ -45,3 +45,18 @@ export { agentTrustScores } from "./agent_trust_scores.js";
 export { userRoles } from "./user_roles.js";
 export { mcpApiKeys } from "./mcp_api_keys.js";
 export { mcpClientConnections } from "./mcp_client_connections.js";
+export {
+  discussions,
+  discussionEntries,
+  discussionExtractedItems,
+  discussionAnnotations,
+} from "./discussions.js";
+export {
+  internalAgentConfig,
+  internalAgentConversations,
+  internalAgentMessages,
+  internalAgentRuns,
+  internalAgentReminders,
+} from "./internal_agent.js";
+export { workflowTemplates } from "./workflow_templates.js";
+export { notifications } from "./notifications.js";
