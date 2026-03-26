@@ -41,6 +41,7 @@ export const mockDialogContext = {
   openDebrief: vi.fn(),
   closeDebrief: vi.fn(),
   discussionCaptureOpen: false,
+  discussionCaptureDefaults: {},
   openDiscussionCapture: vi.fn(),
   closeDiscussionCapture: vi.fn(),
 };

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
@@ -26,7 +26,7 @@ import { cn } from "../lib/utils";
 type TabValue = "paste" | "write" | "voice";
 
 export function DiscussionCaptureModal() {
-  const { discussionCaptureOpen, closeDiscussionCapture } = useDialog();
+  const { discussionCaptureOpen, discussionCaptureDefaults, closeDiscussionCapture } = useDialog();
   const { selectedCompanyId } = useCompany();
   const navigate = useNavigate();
   const { pushToast } = useToast();
@@ -35,7 +35,11 @@ export function DiscussionCaptureModal() {
   const [tab, setTab] = useState<TabValue>("paste");
   const [content, setContent] = useState("");
   const [title, setTitle] = useState("");
-  const [departmentId, setDepartmentId] = useState("");
+  const [scopeType, setScopeType] = useState(discussionCaptureDefaults.scopeType ?? "");
+  const [scopeId, setScopeId] = useState(discussionCaptureDefaults.scopeId ?? "");
+  const [departmentId, setDepartmentId] = useState(
+    discussionCaptureDefaults.scopeType === "department" ? (discussionCaptureDefaults.scopeId ?? "") : "",
+  );
   const [existingDiscussionId, setExistingDiscussionId] = useState("");
   const [discussionSearch, setDiscussionSearch] = useState("");
 
@@ -47,6 +51,17 @@ export function DiscussionCaptureModal() {
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [transcriptionRetries, setTranscriptionRetries] = useState(0);
   const MAX_TRANSCRIPTION_RETRIES = 3;
+
+  // Sync defaults when modal opens with pre-scoped values
+  useEffect(() => {
+    if (discussionCaptureOpen && discussionCaptureDefaults.scopeType) {
+      setScopeType(discussionCaptureDefaults.scopeType);
+      setScopeId(discussionCaptureDefaults.scopeId ?? "");
+      if (discussionCaptureDefaults.scopeType === "department") {
+        setDepartmentId(discussionCaptureDefaults.scopeId ?? "");
+      }
+    }
+  }, [discussionCaptureOpen, discussionCaptureDefaults]);
 
   // Fetch departments for scope dropdown
   const { data: projects } = useQuery({
@@ -115,6 +130,8 @@ export function DiscussionCaptureModal() {
     setTab("paste");
     setContent("");
     setTitle("");
+    setScopeType("");
+    setScopeId("");
     setDepartmentId("");
     setExistingDiscussionId("");
     setDiscussionSearch("");
@@ -150,10 +167,15 @@ export function DiscussionCaptureModal() {
         entry: entryPayload,
       });
     } else {
-      // Create new discussion
+      // Create new discussion — use explicit scope from defaults, or department dropdown
+      const resolvedScope = scopeType && scopeId
+        ? { scopeType, scopeId }
+        : departmentId
+          ? { scopeType: "department", scopeId: departmentId }
+          : {};
       createMutation.mutate({
         ...(title.trim() ? { title: title.trim() } : {}),
-        ...(departmentId ? { scopeType: "department", scopeId: departmentId } : {}),
+        ...resolvedScope,
         entry: entryPayload,
       });
     }
@@ -318,24 +340,34 @@ export function DiscussionCaptureModal() {
                   />
                 </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="discussion-dept" className="text-xs text-muted-foreground">
-                    Department (optional)
-                  </Label>
-                  <select
-                    id="discussion-dept"
-                    value={departmentId}
-                    onChange={(e) => setDepartmentId(e.target.value)}
-                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    <option value="">No department</option>
-                    {departments.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {/* Hide department selector when pre-scoped to a non-department entity */}
+                {!scopeType || scopeType === "department" ? (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="discussion-dept" className="text-xs text-muted-foreground">
+                      Department (optional)
+                    </Label>
+                    <select
+                      id="discussion-dept"
+                      value={departmentId}
+                      onChange={(e) => {
+                        setDepartmentId(e.target.value);
+                        if (!scopeType) {
+                          // Only update scope if not pre-scoped
+                          setScopeType(e.target.value ? "department" : "");
+                          setScopeId(e.target.value);
+                        }
+                      }}
+                      className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <option value="">No department</option>
+                      {departments.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
               </div>
             )}
 

@@ -25,6 +25,11 @@ interface NewProjectDefaults {
   type?: "department" | "project";
 }
 
+export interface DiscussionCaptureDefaults {
+  scopeType?: string;
+  scopeId?: string;
+}
+
 interface DialogContextValue {
   newIssueOpen: boolean;
   newIssueDefaults: NewIssueDefaults;
@@ -49,7 +54,8 @@ interface DialogContextValue {
   openDebrief: () => void;
   closeDebrief: () => void;
   discussionCaptureOpen: boolean;
-  openDiscussionCapture: () => void;
+  discussionCaptureDefaults: DiscussionCaptureDefaults;
+  openDiscussionCapture: (defaults?: DiscussionCaptureDefaults) => void;
   closeDiscussionCapture: () => void;
 }
 
@@ -67,6 +73,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const [onboardingOptions, setOnboardingOptions] = useState<OnboardingOptions>({});
   const [debriefOpen, setDebriefOpen] = useState(false);
   const [discussionCaptureOpen, setDiscussionCaptureOpen] = useState(false);
+  const [discussionCaptureDefaults, setDiscussionCaptureDefaults] = useState<DiscussionCaptureDefaults>({});
 
   const openNewIssue = useCallback((defaults: NewIssueDefaults = {}) => {
     setNewIssueDefaults(defaults);
@@ -124,12 +131,14 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     setDebriefOpen(false);
   }, []);
 
-  const openDiscussionCapture = useCallback(() => {
+  const openDiscussionCapture = useCallback((defaults: DiscussionCaptureDefaults = {}) => {
+    setDiscussionCaptureDefaults(defaults);
     setDiscussionCaptureOpen(true);
   }, []);
 
   const closeDiscussionCapture = useCallback(() => {
     setDiscussionCaptureOpen(false);
+    setDiscussionCaptureDefaults({});
   }, []);
 
   return (
@@ -158,6 +167,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         openDebrief,
         closeDebrief,
         discussionCaptureOpen,
+        discussionCaptureDefaults,
         openDiscussionCapture,
         closeDiscussionCapture,
       }}
