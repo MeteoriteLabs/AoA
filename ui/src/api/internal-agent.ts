@@ -227,7 +227,16 @@ function buildRunParams(filters: AgentRunFilters): string {
   return qs ? `?${qs}` : "";
 }
 
+export interface AgentGreeting {
+  greeting: string;
+  findingCount: number;
+  lastCheckedAt: string | null;
+}
+
 export const internalAgentApi = {
+  getGreeting: (companyId: string) =>
+    api.get<AgentGreeting>(`/companies/${companyId}/internal-agent/greeting`),
+
   getConversation: (
     companyId: string,
     opts?: { limit?: number; offset?: number; includeArchived?: boolean },
