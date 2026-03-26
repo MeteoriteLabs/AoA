@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
-import { discussionsApi, type DiscussionEntry, type ExtractedItem } from "../api/discussions";
+import { discussionsApi, type DiscussionEntry, type ExtractedItem, type Annotation } from "../api/discussions";
 import { projectsApi } from "../api/projects";
 import { transcriptionApi } from "../api/transcription";
 import { queryKeys } from "../lib/queryKeys";
@@ -22,6 +22,7 @@ import {
   ClipboardPen,
   Loader2,
   MessageSquare,
+  MessageCirclePlus,
   Mic,
   Pencil,
   PenLine,
@@ -191,8 +192,8 @@ export function DiscussionDetail() {
 
   // Add entry
   const addEntryMutation = useMutation({
-    mutationFn: (data: { inputType: string; rawContent: string; title?: string }) =>
-      discussionsApi.addEntry(selectedCompanyId!, discussionId!, data as any),
+    mutationFn: (data: { inputType: "paste" | "write" | "voice" | "mcp"; rawContent: string; title?: string }) =>
+      discussionsApi.addEntry(selectedCompanyId!, discussionId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: queryKeys.discussions.detail(selectedCompanyId!, discussionId!),
@@ -204,6 +205,26 @@ export function DiscussionDetail() {
     },
     onError: () => {
       pushToast({ title: "Failed to add entry", tone: "warn" });
+    },
+  });
+
+  // Add annotation
+  const addAnnotationMutation = useMutation({
+    mutationFn: ({
+      entryId,
+      data,
+    }: {
+      entryId: string;
+      data: { content: string; anchorStart: number | null; anchorEnd: number | null };
+    }) => discussionsApi.addAnnotation(selectedCompanyId!, discussionId!, entryId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.discussions.detail(selectedCompanyId!, discussionId!),
+      });
+      pushToast({ title: "Annotation added", tone: "success" });
+    },
+    onError: () => {
+      pushToast({ title: "Failed to add annotation", tone: "warn" });
     },
   });
 
@@ -289,6 +310,12 @@ export function DiscussionDetail() {
             onRejectItem={(itemId) =>
               rejectMutation.mutate([itemId])
             }
+            onAddAnnotation={(content, anchorStart, anchorEnd) =>
+              addAnnotationMutation.mutate({
+                entryId: entry.id,
+                data: { content, anchorStart, anchorEnd },
+              })
+            }
             isReprocessing={reprocessMutation.isPending && reprocessMutation.variables === entry.id}
           />
         ))}
@@ -307,6 +334,10 @@ export function DiscussionDetail() {
 }
 
 /* ─── Entry Card ─── */
+// TODO: Add aria-labels to icon-only buttons (edit pencil, reject X, expand/collapse chevron)
+// TODO: Add Cmd/Ctrl+Enter keyboard submit for annotation and entry textareas
+// TODO: Add edit/delete annotation support (needs server PATCH/DELETE endpoints first)
+// TODO: Add "View Memory" link for approved items with resultMemoryId
 
 function EntryCard({
   entry,
@@ -314,6 +345,7 @@ function EntryCard({
   onUpdateItem,
   onApproveItem,
   onRejectItem,
+  onAddAnnotation,
   isReprocessing,
 }: {
   entry: DiscussionEntry;
@@ -321,15 +353,107 @@ function EntryCard({
   onUpdateItem: (itemId: string, data: Record<string, unknown>) => void;
   onApproveItem: (itemId: string) => void;
   onRejectItem: (itemId: string) => void;
+  onAddAnnotation: (content: string, anchorStart: number | null, anchorEnd: number | null) => void;
   isReprocessing: boolean;
 }) {
   const [expanded, setExpanded] = useState(true);
+  const [showAnnotationInput, setShowAnnotationInput] = useState(false);
+  const [annotationText, setAnnotationText] = useState("");
+  const [selectedRange, setSelectedRange] = useState<{ start: number; end: number } | null>(null);
+  const contentRef = useRef<HTMLParagraphElement>(null);
   const SourceIcon = SOURCE_ICONS[entry.inputType] ?? MessageSquare;
   const sourceLabel = SOURCE_LABELS[entry.inputType] ?? entry.inputType;
 
   const pendingItems = entry.extractedItems.filter((i) => i.status === "pending");
   const approvedItems = entry.extractedItems.filter((i) => i.status === "approved" || i.status === "edited");
   const rejectedItems = entry.extractedItems.filter((i) => i.status === "rejected");
+
+  // Capture text selection within the raw content
+  const handleTextSelect = useCallback(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !contentRef.current) return;
+    // Only capture if selection is within the content element
+    if (!contentRef.current.contains(selection.anchorNode)) return;
+
+    const range = selection.getRangeAt(0);
+    const preRange = document.createRange();
+    preRange.setStart(contentRef.current, 0);
+    preRange.setEnd(range.startContainer, range.startOffset);
+    const start = preRange.toString().length;
+    const end = start + range.toString().length;
+
+    if (end > start) {
+      setSelectedRange({ start, end });
+      setShowAnnotationInput(true);
+    }
+  }, []);
+
+  function submitAnnotation() {
+    if (!annotationText.trim()) return;
+    onAddAnnotation(
+      annotationText.trim(),
+      selectedRange?.start ?? null,
+      selectedRange?.end ?? null,
+    );
+    setAnnotationText("");
+    setShowAnnotationInput(false);
+    setSelectedRange(null);
+  }
+
+  // Render raw content with merged annotation highlights.
+  // Handles overlapping annotations by building a character-level map,
+  // then merging adjacent characters with the same annotation set into segments.
+  // Hover shows all annotations covering that region.
+  const renderedContent = useMemo(() => {
+    if (!entry.annotations || entry.annotations.length === 0) return null;
+
+    const anchored = entry.annotations.filter(
+      (a) => a.anchorStart != null && a.anchorEnd != null,
+    );
+    if (anchored.length === 0) return null;
+
+    const text = entry.rawContent;
+    // Build a map: for each character position, which annotations cover it
+    const charMap: Annotation[][] = new Array(text.length);
+    for (let i = 0; i < text.length; i++) charMap[i] = [];
+
+    for (const ann of anchored) {
+      const start = Math.max(0, ann.anchorStart!);
+      const end = Math.min(text.length, ann.anchorEnd!);
+      for (let i = start; i < end; i++) {
+        charMap[i].push(ann);
+      }
+    }
+
+    // Merge adjacent characters with the same annotation set into segments
+    const segments: { text: string; annotations: Annotation[] }[] = [];
+    let segStart = 0;
+
+    for (let i = 1; i <= text.length; i++) {
+      // Boundary: different annotation set or end of text
+      const prevAnns = charMap[i - 1];
+      const currAnns = i < text.length ? charMap[i] : [];
+      const same =
+        prevAnns.length === currAnns.length &&
+        prevAnns.every((a, idx) => a.id === currAnns[idx]?.id);
+
+      if (!same || i === text.length) {
+        segments.push({
+          text: text.slice(segStart, i),
+          annotations: prevAnns,
+        });
+        segStart = i;
+      }
+    }
+
+    return segments;
+  }, [entry.rawContent, entry.annotations]);
+
+  // Non-anchored annotations (general notes)
+  const generalAnnotations = useMemo(
+    () => (entry.annotations ?? []).filter((a) => a.anchorStart == null),
+    [entry.annotations],
+  );
 
   return (
     <div className="rounded-lg border border-border bg-card">
@@ -349,27 +473,121 @@ function EntryCard({
             {new Date(entry.createdAt).toLocaleString()}
           </span>
           <ExtractionStatusBadge status={entry.extractionStatus} />
+          {entry.annotations && entry.annotations.length > 0 && (
+            <span className="text-[10px] text-muted-foreground">
+              {entry.annotations.length} {entry.annotations.length === 1 ? "note" : "notes"}
+            </span>
+          )}
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onReprocess}
-          disabled={isReprocessing || entry.extractionStatus === "processing"}
-          className="shrink-0"
-        >
-          <RefreshCw className={cn("h-3.5 w-3.5 mr-1", isReprocessing && "animate-spin")} />
-          Reprocess
-        </Button>
+        <div className="flex items-center gap-1 shrink-0">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setSelectedRange(null);
+              setShowAnnotationInput((p) => !p);
+            }}
+            className={cn(showAnnotationInput && "bg-accent")}
+          >
+            <MessageCirclePlus className="h-3.5 w-3.5 mr-1" />
+            Annotate
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onReprocess}
+            disabled={isReprocessing || entry.extractionStatus === "processing"}
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5 mr-1", isReprocessing && "animate-spin")} />
+            Reprocess
+          </Button>
+        </div>
       </div>
 
       {expanded && (
         <div className="px-4 pb-4 space-y-4">
-          {/* Raw content */}
+          {/* Raw content with annotation highlights */}
           <div className="rounded-md bg-muted/30 p-3">
-            <p className="text-sm whitespace-pre-wrap text-muted-foreground leading-relaxed">
-              {entry.rawContent}
+            <p
+              ref={contentRef}
+              onMouseUp={handleTextSelect}
+              className="text-sm whitespace-pre-wrap text-muted-foreground leading-relaxed select-text cursor-text"
+            >
+              {renderedContent
+                ? renderedContent.map((seg, i) =>
+                    seg.annotations.length > 0 ? (
+                      <span
+                        key={i}
+                        className="bg-yellow-200/60 dark:bg-yellow-800/40 border-b border-yellow-400 dark:border-yellow-600 cursor-help"
+                        title={seg.annotations.map((a) => a.content).join("\n---\n")}
+                      >
+                        {seg.text}
+                      </span>
+                    ) : (
+                      <span key={i}>{seg.text}</span>
+                    ),
+                  )
+                : entry.rawContent}
             </p>
           </div>
+
+          {/* General (non-anchored) annotations */}
+          {generalAnnotations.length > 0 && (
+            <div className="space-y-1">
+              {generalAnnotations.map((ann) => (
+                <div
+                  key={ann.id}
+                  className="flex items-start gap-2 rounded-md bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-200 dark:border-yellow-800 p-2"
+                >
+                  <MessageCirclePlus className="h-3.5 w-3.5 text-yellow-600 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <p className="text-xs text-yellow-800 dark:text-yellow-300">{ann.content}</p>
+                    <span className="text-[10px] text-yellow-600/80 dark:text-yellow-500">
+                      {new Date(ann.createdAt).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Annotation input */}
+          {showAnnotationInput && (
+            <div className="flex items-start gap-2 rounded-md border border-yellow-300 dark:border-yellow-700 bg-yellow-50/50 dark:bg-yellow-950/20 p-3">
+              <MessageCirclePlus className="h-4 w-4 text-yellow-600 shrink-0 mt-1" />
+              <div className="flex-1 space-y-2">
+                {selectedRange && (
+                  <p className="text-[10px] text-yellow-700 dark:text-yellow-400">
+                    Annotating: &ldquo;{entry.rawContent.slice(selectedRange.start, Math.min(selectedRange.end, selectedRange.start + 80))}
+                    {selectedRange.end - selectedRange.start > 80 ? "..." : ""}&rdquo;
+                  </p>
+                )}
+                <Textarea
+                  value={annotationText}
+                  onChange={(e) => setAnnotationText(e.target.value)}
+                  placeholder={selectedRange ? "Add a note about this selection..." : "Add a general note to this entry..."}
+                  className="min-h-[60px] text-sm resize-y bg-white dark:bg-background"
+                  autoFocus
+                />
+                <div className="flex justify-end gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setShowAnnotationInput(false);
+                      setAnnotationText("");
+                      setSelectedRange(null);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button size="sm" onClick={submitAnnotation} disabled={!annotationText.trim()}>
+                    Add Note
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Extracted items */}
           {entry.extractedItems.length > 0 && (
@@ -612,7 +830,7 @@ function AddEntryBar({
   isSubmitting,
   companyId,
 }: {
-  onSubmit: (inputType: string, rawContent: string) => void;
+  onSubmit: (inputType: InputTab, rawContent: string) => void;
   isSubmitting: boolean;
   companyId: string;
 }) {

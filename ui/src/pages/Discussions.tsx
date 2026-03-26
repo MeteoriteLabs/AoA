@@ -6,6 +6,8 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useDialog } from "../context/DialogContext";
 import { discussionsApi, type DiscussionListItem } from "../api/discussions";
 import { projectsApi } from "../api/projects";
+import { goalsApi } from "../api/goals";
+import type { Project, Goal } from "@paperclipai/shared";
 import { queryKeys } from "../lib/queryKeys";
 import {
   Loader2,
@@ -19,6 +21,7 @@ import {
   ArrowUpDown,
   Clock,
   AlertCircle,
+  Calendar,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -44,6 +47,7 @@ const SORT_OPTIONS = [
 
 type StatusFilterValue = (typeof STATUS_FILTERS)[number]["value"];
 type SortValue = (typeof SORT_OPTIONS)[number]["value"];
+type ScopeType = "department" | "project" | "goal";
 
 export function Discussions() {
   const { selectedCompanyId } = useCompany();
@@ -52,7 +56,10 @@ export function Discussions() {
 
   const [statusFilter, setStatusFilter] = useState<StatusFilterValue>("all");
   const [sourceFilter, setSourceFilter] = useState<string | null>(null);
-  const [scopeFilter, setScopeFilter] = useState<string | null>(null);
+  const [scopeFilter, setScopeFilter] = useState<ScopeType | null>(null);
+  const [scopeEntityId, setScopeEntityId] = useState<string | null>(null);
+  const [dateFrom, setDateFrom] = useState<string>("");
+  const [dateTo, setDateTo] = useState<string>("");
   const [sortBy, setSortBy] = useState<SortValue>("lastEntryAt");
   const [showFilters, setShowFilters] = useState(false);
 
@@ -62,6 +69,10 @@ export function Discussions() {
     return () => { setSubtitle(null); setEntityColor(null); };
   }, [setBreadcrumbs, setSubtitle, setEntityColor]);
 
+  // TODO: Pass filter params (scopeType, scopeId, inputType, sortBy) to discussionsApi.list()
+  // for server-side filtering + pagination when discussion volumes grow.
+  // The API client already supports DiscussionListFilters — currently filtering client-side.
+  // Also: add inline search input (API supports `search` param) and pagination (limit/offset).
   const { data, isLoading } = useQuery({
     queryKey: queryKeys.discussions.list(selectedCompanyId!),
     queryFn: () => discussionsApi.list(selectedCompanyId!),
@@ -73,6 +84,32 @@ export function Discussions() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && showFilters,
   });
+
+  const { data: goals } = useQuery({
+    queryKey: queryKeys.goals.list(selectedCompanyId!),
+    queryFn: () => goalsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && showFilters && scopeFilter === "goal",
+  });
+
+  // Build scope entity options based on selected scope type
+  const scopeEntities = useMemo(() => {
+    if (!scopeFilter || !projects) return [];
+    if (scopeFilter === "department") {
+      return (projects as Project[]).filter((p) => p.type === "department").map((p) => ({ id: p.id, name: p.name }));
+    }
+    if (scopeFilter === "project") {
+      return (projects as Project[]).filter((p) => p.type === "project").map((p) => ({ id: p.id, name: p.name }));
+    }
+    if (scopeFilter === "goal" && goals) {
+      return (goals as Goal[]).map((g) => ({ id: g.id, name: g.title }));
+    }
+    return [];
+  }, [scopeFilter, projects, goals]);
+
+  // Reset entity selection when scope type changes
+  useEffect(() => {
+    setScopeEntityId(null);
+  }, [scopeFilter]);
 
   const discussions = data?.discussions ?? [];
 
@@ -101,6 +138,27 @@ export function Discussions() {
       result = result.filter((d) => d.scopeType === scopeFilter);
     }
 
+    if (scopeEntityId) {
+      result = result.filter((d) => d.scopeId === scopeEntityId);
+    }
+
+    if (dateFrom) {
+      const from = new Date(dateFrom).getTime();
+      result = result.filter((d) => {
+        const dt = d.lastEntryAt ? new Date(d.lastEntryAt).getTime() : d.createdAt ? new Date(d.createdAt).getTime() : 0;
+        return dt >= from;
+      });
+    }
+
+    if (dateTo) {
+      // Include the entire "to" day
+      const to = new Date(dateTo).getTime() + 86400000;
+      result = result.filter((d) => {
+        const dt = d.lastEntryAt ? new Date(d.lastEntryAt).getTime() : d.createdAt ? new Date(d.createdAt).getTime() : 0;
+        return dt <= to;
+      });
+    }
+
     result.sort((a, b) => {
       if (sortBy === "pendingItemCount") {
         return b.pendingItemCount - a.pendingItemCount;
@@ -112,7 +170,7 @@ export function Discussions() {
     });
 
     return result;
-  }, [discussions, statusFilter, sourceFilter, scopeFilter, sortBy]);
+  }, [discussions, statusFilter, sourceFilter, scopeFilter, scopeEntityId, dateFrom, dateTo, sortBy]);
 
   const pendingCount = useMemo(
     () => discussions.filter((d) => d.pendingItemCount > 0).length,
@@ -182,6 +240,7 @@ export function Discussions() {
               value={sourceFilter ?? ""}
               onChange={(e) => setSourceFilter(e.target.value || null)}
               className="h-7 rounded-md border border-input bg-background px-2 text-xs"
+              aria-label="Filter by source"
             >
               <option value="">All sources</option>
               <option value="paste">Paste</option>
@@ -194,14 +253,60 @@ export function Discussions() {
             <span className="text-xs text-muted-foreground">Scope:</span>
             <select
               value={scopeFilter ?? ""}
-              onChange={(e) => setScopeFilter(e.target.value || null)}
+              onChange={(e) => setScopeFilter((e.target.value || null) as ScopeType | null)}
               className="h-7 rounded-md border border-input bg-background px-2 text-xs"
+              aria-label="Filter by scope type"
             >
               <option value="">All scopes</option>
               <option value="department">Department</option>
               <option value="project">Project</option>
               <option value="goal">Goal</option>
             </select>
+            {scopeFilter && scopeEntities.length > 0 && (
+              <select
+                value={scopeEntityId ?? ""}
+                onChange={(e) => setScopeEntityId(e.target.value || null)}
+                className="h-7 rounded-md border border-input bg-background px-2 text-xs max-w-[180px]"
+                aria-label={`Filter by specific ${scopeFilter}`}
+              >
+                <option value="">All {scopeFilter}s</option>
+                {scopeEntities.map((entity) => (
+                  <option key={entity.id} value={entity.id}>
+                    {entity.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Calendar className="h-3 w-3 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">From:</span>
+            <input
+              type="date"
+              value={dateFrom}
+              max={dateTo || undefined}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="h-7 rounded-md border border-input bg-background px-2 text-xs"
+              aria-label="Filter from date"
+            />
+            <span className="text-xs text-muted-foreground">To:</span>
+            <input
+              type="date"
+              value={dateTo}
+              min={dateFrom || undefined}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="h-7 rounded-md border border-input bg-background px-2 text-xs"
+              aria-label="Filter to date"
+            />
+            {(dateFrom || dateTo) && (
+              <button
+                onClick={() => { setDateFrom(""); setDateTo(""); }}
+                className="text-xs text-muted-foreground hover:text-foreground"
+                aria-label="Clear date range"
+              >
+                Clear
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-1.5">
             <ArrowUpDown className="h-3 w-3 text-muted-foreground" />
@@ -227,12 +332,21 @@ export function Discussions() {
 
       {/* Discussion list */}
       {filtered.length === 0 ? (
-        <EmptyState
-          icon={MessageSquare}
-          message="No discussions yet"
-          description="Start a discussion to capture and process raw content into structured tasks, decisions, and memory items."
-          entityColor="var(--entity-brief)"
-        />
+        discussions.length > 0 ? (
+          <EmptyState
+            icon={MessageSquare}
+            message="No discussions match the current filters"
+            description="Try adjusting your filters or clearing them to see all discussions."
+            entityColor="var(--entity-brief)"
+          />
+        ) : (
+          <EmptyState
+            icon={MessageSquare}
+            message="No discussions yet"
+            description="Start a discussion to capture and process raw content into structured tasks, decisions, and memory items."
+            entityColor="var(--entity-brief)"
+          />
+        )
       ) : (
         <div className="space-y-2">
           {filtered.map((discussion) => (
