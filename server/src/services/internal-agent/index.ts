@@ -16,3 +16,17 @@ export {
   toolToOpenAIFormat,
   executeTool,
 } from "./tool-registry.js";
+
+export {
+  blockedTaskScan,
+  budgetThresholdAlert,
+  staleWorkDetection,
+  dependencyChainGaps,
+  memoryConflictScan,
+  workloadImbalance,
+  morningDigest,
+  checkReminders,
+} from "./proactive.js";
+
+export { createEventListener } from "./event-listener.js";
+export type { EventTriggerResult } from "./event-listener.js";

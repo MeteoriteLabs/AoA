@@ -67,7 +67,7 @@ export function createAnthropicProvider(apiKey: string): LLMProvider {
 
         if (event.type === "content_block_stop") {
           // Access the completed content block from the snapshot
-          const snapshot = stream.currentMessageSnapshot;
+          const snapshot = stream.currentMessage;
           if (snapshot) {
             const block = snapshot.content[event.index];
             if (block && block.type === "tool_use") {
@@ -82,7 +82,7 @@ export function createAnthropicProvider(apiKey: string): LLMProvider {
         }
 
         if (event.type === "message_delta") {
-          inputTokens = stream.currentMessageSnapshot?.usage?.input_tokens ?? 0;
+          inputTokens = stream.currentMessage?.usage?.input_tokens ?? 0;
           outputTokens =
             (event.usage as Anthropic.Messages.MessageDeltaUsage)
               ?.output_tokens ?? 0;
