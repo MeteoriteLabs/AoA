@@ -286,6 +286,63 @@ export function internalAgentRoutes(db: Db) {
     },
   );
 
+  // ── 2.4b Get Greeting ──────────────────────────────────────────────
+  // No role restriction — the agent panel is available to all roles (DA-22).
+  // Greeting only exposes high-level summaries, not raw data.
+  router.get(
+    "/companies/:companyId/internal-agent/greeting",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      // Fetch recent proactive runs (last 24 hours) to build a greeting
+      const since = new Date();
+      since.setHours(since.getHours() - 24);
+
+      const recentRuns = await db
+        .select({
+          triggerSource: internalAgentRuns.triggerSource,
+          summary: internalAgentRuns.summary,
+          createdAt: internalAgentRuns.createdAt,
+        })
+        .from(internalAgentRuns)
+        .where(
+          and(
+            eq(internalAgentRuns.companyId, companyId),
+            eq(internalAgentRuns.triggerType, "proactive"),
+            eq(internalAgentRuns.status, "completed"),
+            gte(internalAgentRuns.createdAt, since),
+          ),
+        )
+        .orderBy(desc(internalAgentRuns.createdAt))
+        .limit(20);
+
+      // Build greeting from actionable findings, deduped by triggerSource (keep most recent)
+      const actionableKeywords = ["Found", "Budget alert", "Fired"];
+      const seen = new Set<string>();
+      const deduped: string[] = [];
+      for (const run of recentRuns) {
+        if (!seen.has(run.triggerSource) && run.summary && actionableKeywords.some((kw) => run.summary!.startsWith(kw))) {
+          seen.add(run.triggerSource);
+          deduped.push(run.summary);
+        }
+      }
+
+      let greeting: string;
+      if (deduped.length === 0) {
+        greeting = "Everything looks good! No issues detected in the last 24 hours.";
+      } else {
+        greeting = `Here's what I found since your last visit:\n${deduped.map((f) => `• ${f}`).join("\n")}`;
+      }
+
+      res.json({
+        greeting,
+        findingCount: deduped.length,
+        lastCheckedAt: recentRuns[0]?.createdAt ?? null,
+      });
+    },
+  );
+
   // ── 2.5 Get Agent Config ─────────────────────────────────────────────
   router.get(
     "/companies/:companyId/internal-agent/config",

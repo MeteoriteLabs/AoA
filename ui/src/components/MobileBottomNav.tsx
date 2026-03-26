@@ -1,18 +1,19 @@
 import { useMemo } from "react";
-import { NavLink, useLocation } from "@/lib/router";
+import { NavLink } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import {
   House,
   CircleDot,
-  SquarePen,
+  Bot,
   Users,
   Inbox,
 } from "lucide-react";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
+import { useAgentPanel } from "../context/AgentPanelContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
+
 
 interface MobileBottomNavProps {
   visible: boolean;
@@ -29,16 +30,15 @@ interface MobileNavLinkItem {
 interface MobileNavActionItem {
   type: "action";
   label: string;
-  icon: typeof SquarePen;
+  icon: typeof Bot;
   onClick: () => void;
 }
 
 type MobileNavItem = MobileNavLinkItem | MobileNavActionItem;
 
 export function MobileBottomNav({ visible }: MobileBottomNavProps) {
-  const location = useLocation();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue } = useDialog();
+  const { togglePanel, isOpen: agentPanelOpen } = useAgentPanel();
 
   const { data: sidebarBadges } = useQuery({
     queryKey: queryKeys.sidebarBadges(selectedCompanyId!),
@@ -50,7 +50,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
     () => [
       { type: "link", to: "/home", label: "Home", icon: House },
       { type: "link", to: "/issues", label: "Tasks", icon: CircleDot },
-      { type: "action", label: "Create", icon: SquarePen, onClick: () => openNewIssue() },
+      { type: "action", label: "AoA", icon: Bot, onClick: () => togglePanel() },
       { type: "link", to: "/agents/all", label: "Agents", icon: Users },
       {
         type: "link",
@@ -60,7 +60,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         badge: sidebarBadges?.inbox,
       },
     ],
-    [openNewIssue, sidebarBadges?.inbox],
+    [togglePanel, sidebarBadges?.inbox],
   );
 
   return (
@@ -75,7 +75,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         {items.map((item) => {
           if (item.type === "action") {
             const Icon = item.icon;
-            const active = /\/issues\/new(?:\/|$)/.test(location.pathname);
+            const active = agentPanelOpen;
             return (
               <button
                 key={item.label}

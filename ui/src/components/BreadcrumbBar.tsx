@@ -1,7 +1,8 @@
 import { Link } from "@/lib/router";
-import { Menu, Search } from "lucide-react";
+import { Bot, Menu, Search } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useAgentPanel } from "../context/AgentPanelContext";
 import { Button } from "@/components/ui/button";
 import {
   Breadcrumb,
@@ -16,6 +17,7 @@ import { Fragment } from "react";
 export function BreadcrumbBar() {
   const { breadcrumbs, subtitle, entityColor } = useBreadcrumbs();
   const { toggleSidebar, toggleCollapse, isMobile } = useSidebar();
+  const { togglePanel, isOpen: agentPanelOpen } = useAgentPanel();
 
   if (breadcrumbs.length === 0) return null;
 
@@ -35,17 +37,29 @@ export function BreadcrumbBar() {
     </Button>
   );
 
-  const searchButton = (
-    <Button
-      variant="ghost"
-      size="icon-sm"
-      className="ml-auto shrink-0 text-muted-foreground hover:text-foreground"
-      onClick={openSearch}
-      aria-label="Search (Cmd+K)"
-      title="Search (Cmd+K)"
-    >
-      <Search className="h-4 w-4" />
-    </Button>
+  const rightButtons = (
+    <div className="ml-auto flex items-center gap-0.5 shrink-0">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="text-muted-foreground hover:text-foreground"
+        onClick={openSearch}
+        aria-label="Search (Cmd+K)"
+        title="Search (Cmd+K)"
+      >
+        <Search className="h-4 w-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className={agentPanelOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"}
+        onClick={togglePanel}
+        aria-label="Toggle agent panel"
+        title="Toggle agent panel"
+      >
+        <Bot className="h-4 w-4" />
+      </Button>
+    </div>
   );
 
   // Single breadcrumb = page title (Title Case, with optional subtitle)
@@ -66,7 +80,7 @@ export function BreadcrumbBar() {
             </p>
           )}
         </div>
-        {searchButton}
+        {rightButtons}
       </div>
     );
   }
@@ -99,7 +113,7 @@ export function BreadcrumbBar() {
           })}
         </BreadcrumbList>
       </Breadcrumb>
-      {searchButton}
+      {rightButtons}
     </div>
   );
 }

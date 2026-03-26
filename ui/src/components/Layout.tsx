@@ -23,6 +23,8 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { AgentPanelProvider } from "../context/AgentPanelContext";
+import { InternalAgentPanel } from "./InternalAgentPanel";
 
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, collapsed, toggleCollapse } = useSidebar();
@@ -195,6 +197,7 @@ export function Layout() {
   );
 
   return (
+    <AgentPanelProvider>
     <div className="flex h-dvh bg-background text-foreground overflow-hidden pt-[env(safe-area-inset-top)]">
       <a
         href="#main-content"
@@ -281,6 +284,10 @@ export function Layout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Agent panel (desktop: inline right, mobile: sheet overlay) */}
+      <InternalAgentPanel />
+
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />
       <NewIssueDialog />
@@ -289,5 +296,6 @@ export function Layout() {
       <NewAgentDialog />
       <ToastViewport />
     </div>
+    </AgentPanelProvider>
   );
 }
