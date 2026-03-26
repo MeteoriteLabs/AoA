@@ -14,6 +14,7 @@ import {
 } from "./tool-registry.js";
 import { contextAssemblyService } from "./context-assembly.js";
 import { conversationService } from "./conversation.js";
+import { createServiceContainer } from "./service-container.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -106,6 +107,7 @@ export function agentLoopService(db: Db) {
   const convService = conversationService(db);
   const ctxService = contextAssemblyService(db);
   const allTools = createToolRegistry();
+  const services = createServiceContainer(db);
 
   return {
     async *chat(params: ChatInput): AsyncGenerator<AgentStreamChunk> {
@@ -147,7 +149,6 @@ export function agentLoopService(db: Db) {
             pageContext: params.pageContext,
             departmentContext: params.departmentContext,
             conversationSummary: conversation.summarizedContext ?? null,
-            contextTokenBudget: undefined, // use default
           },
         );
 
@@ -356,13 +357,15 @@ export function agentLoopService(db: Db) {
               };
 
               // Pause: await confirmation via Promise
+              // Use runId:toolCallId as key to avoid collision with multiple tool calls
+              const actionKey = `${runId}:${tc.id}`;
               const confirmed = await new Promise<boolean>((resolve) => {
                 const timer = setTimeout(() => {
-                  pendingActions.delete(runId);
+                  pendingActions.delete(actionKey);
                   resolve(false);
                 }, 5 * 60 * 1000); // 5 minute timeout
 
-                pendingActions.set(runId, {
+                pendingActions.set(actionKey, {
                   resolve,
                   timer,
                   toolName: tc.name,
@@ -388,13 +391,32 @@ export function agentLoopService(db: Db) {
               }
             }
 
+            // RBAC check
+            const roleHierarchy = { team_member: 0, team_lead: 1, founder: 2 };
+            const userLevel = roleHierarchy[params.userRole as keyof typeof roleHierarchy] ?? 0;
+            const requiredLevel = roleHierarchy[tool.requiredRole as keyof typeof roleHierarchy] ?? 0;
+            if (userLevel < requiredLevel) {
+              const forbiddenResult: ToolResult = {
+                success: false,
+                data: null,
+                summary: `Permission denied: ${tool.name} requires ${tool.requiredRole} role`,
+                error: "FORBIDDEN",
+              };
+              yield { type: "tool_result", name: tc.name, result: forbiddenResult };
+              currentMessages.push(
+                { role: "assistant", content: "", toolCalls: [tc] },
+                { role: "user", content: "", toolResults: [{ toolCallId: tc.id, name: tc.name, result: JSON.stringify(forbiddenResult) }] },
+              );
+              continue;
+            }
+
             // Execute tool
             const toolCtx: ToolContext = {
               companyId: params.companyId,
               userId: params.userId,
               userRole: params.userRole,
               db,
-              services: {} as any, // ServiceContainer injected at route level
+              services,
             };
 
             const toolStart = Date.now();
@@ -556,12 +578,15 @@ export function agentLoopService(db: Db) {
       runId: string,
       confirmed: boolean,
     ): Promise<void> {
-      const pending = pendingActions.get(runId);
-      if (!pending) return;
-
-      clearTimeout(pending.timer);
-      pending.resolve(confirmed);
-      pendingActions.delete(runId);
+      // Find pending action by runId prefix (key is runId:toolCallId)
+      for (const [key, pending] of pendingActions.entries()) {
+        if (key.startsWith(`${runId}:`) && pending.companyId === companyId) {
+          clearTimeout(pending.timer);
+          pending.resolve(confirmed);
+          pendingActions.delete(key);
+          return;
+        }
+      }
     },
   };
 }

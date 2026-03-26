@@ -77,7 +77,7 @@ export function conversationService(db: Db) {
         .select()
         .from(internalAgentMessages)
         .where(eq(internalAgentMessages.conversationId, conversationId))
-        .orderBy(desc(internalAgentMessages.createdAt))
+        .orderBy(desc(internalAgentMessages.createdAt), desc(internalAgentMessages.id))
         .limit(limit)
         .then((rows: any[]) => rows.reverse());
     },
@@ -107,8 +107,15 @@ export function conversationService(db: Db) {
       if (oldMessages.length === 0) return;
 
       const transcript = oldMessages
-        .filter((m: any) => m.content)
-        .map((m: any) => `${m.role}: ${m.content}`)
+        .map((m: any) => {
+          if (m.role === "tool_call" && m.toolCalls) {
+            const calls = (m.toolCalls as any[]).map((tc: any) => tc.name).join(", ");
+            return `assistant: [Called tools: ${calls}]`;
+          }
+          if (m.content) return `${m.role}: ${m.content}`;
+          return null;
+        })
+        .filter(Boolean)
         .join("\n");
 
       if (!transcript.trim()) return;

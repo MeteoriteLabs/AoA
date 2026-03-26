@@ -90,6 +90,11 @@ vi.mock("../services/internal-agent/context-assembly.js", () => ({
   }),
 }));
 
+// Mock service container
+vi.mock("../services/internal-agent/service-container.js", () => ({
+  createServiceContainer: () => ({}),
+}));
+
 // Mock conversation service
 const mockConversation = {
   id: "conv-1",
