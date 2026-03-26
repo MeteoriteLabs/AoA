@@ -89,6 +89,8 @@ export interface DiscussionDetail {
   entries: DiscussionEntry[];
 }
 
+// TODO: Verify ApproveItemsResponse shape matches backend — spec shows object arrays
+// ({ itemId, taskId, title }[]) but we type as string[]. Update if backend returns objects.
 export interface ApproveItemsResponse {
   approved: number;
   rejected: number;
@@ -184,6 +186,9 @@ export const discussionsApi = {
       `/companies/${companyId}/discussions/${discussionId}/approve`,
       { items: itemIds.map((id) => ({ itemId: id, action: "rejected" as const })) },
     ),
+
+  // TODO: Add entry linking (spec 1.10 — move entries between discussions)
+  // TODO: Add updateAnnotation / deleteAnnotation when server endpoints exist
 
   addAnnotation: (
     companyId: string,
