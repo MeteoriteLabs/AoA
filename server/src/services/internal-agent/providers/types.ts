@@ -5,7 +5,13 @@
  * can consume responses uniformly regardless of which LLM is backing it.
  */
 
-/** Message roles understood by all providers */
+/**
+ * Message roles understood by all providers.
+ *
+ * Note: "system" role messages in the messages array are ignored by all providers.
+ * Use ChatParams.systemPrompt instead — it maps to each provider's native system
+ * prompt mechanism (Anthropic: `system` param, OpenAI: system message, Gemini: systemInstruction).
+ */
 export type ChatMessageRole = "user" | "assistant" | "system";
 
 /** A single message in the conversation */

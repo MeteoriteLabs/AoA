@@ -68,6 +68,8 @@ export function toGeminiFunctionDeclarations(
   }));
 }
 
+let toolCallCounter = 0;
+
 export function createGeminiProvider(apiKey: string): LLMProvider {
   const genAI = new GoogleGenerativeAI(apiKey);
 
@@ -134,7 +136,7 @@ export function createGeminiProvider(apiKey: string): LLMProvider {
             if (part.functionCall) {
               yield {
                 type: "tool_call",
-                id: `gemini_${part.functionCall.name}_${Date.now()}`,
+                id: `gemini_${part.functionCall.name}_${++toolCallCounter}`,
                 name: part.functionCall.name,
                 input: part.functionCall.args ?? {},
               };

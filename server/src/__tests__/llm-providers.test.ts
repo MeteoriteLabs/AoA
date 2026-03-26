@@ -76,8 +76,7 @@ vi.mock("@google/generative-ai", () => ({
 /*  Mock secrets service — import after mocks are set up              */
 /* ------------------------------------------------------------------ */
 const mockSecretServiceInstance = {
-  getByName: vi.fn(),
-  resolveSecretValue: vi.fn(),
+  resolveByName: vi.fn(),
 };
 
 vi.mock("../services/secrets.js", () => ({
@@ -339,34 +338,23 @@ describe("getProviderApiKey", () => {
   const mockDb = {} as any;
 
   beforeEach(() => {
-    mockSecretServiceInstance.getByName.mockReset();
-    mockSecretServiceInstance.resolveSecretValue.mockReset();
+    mockSecretServiceInstance.resolveByName.mockReset();
   });
 
   it("returns API key from company_secrets when available", async () => {
-    mockSecretServiceInstance.getByName.mockResolvedValue({
-      id: "secret-1",
-      name: "ANTHROPIC_API_KEY",
-      latestVersion: 3,
-    });
-    mockSecretServiceInstance.resolveSecretValue.mockResolvedValue("sk-secret-from-db");
+    mockSecretServiceInstance.resolveByName.mockResolvedValue("sk-secret-from-db");
 
     const key = await getProviderApiKey(mockDb, "company-1", "anthropic");
 
     expect(key).toBe("sk-secret-from-db");
-    expect(mockSecretServiceInstance.getByName).toHaveBeenCalledWith(
+    expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith(
       "company-1",
       "ANTHROPIC_API_KEY",
-    );
-    expect(mockSecretServiceInstance.resolveSecretValue).toHaveBeenCalledWith(
-      "company-1",
-      "secret-1",
-      "latest",
     );
   });
 
   it("falls back to env var when no company secret exists", async () => {
-    mockSecretServiceInstance.getByName.mockResolvedValue(null);
+    mockSecretServiceInstance.resolveByName.mockRejectedValue(new Error("Secret not found"));
 
     const originalEnv = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = "sk-from-env";
@@ -383,14 +371,15 @@ describe("getProviderApiKey", () => {
     }
   });
 
-  it("returns empty string when no secret and no env var", async () => {
-    mockSecretServiceInstance.getByName.mockResolvedValue(null);
+  it("throws when no secret and no env var", async () => {
+    mockSecretServiceInstance.resolveByName.mockRejectedValue(new Error("Secret not found"));
     const originalEnv = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
 
     try {
-      const key = await getProviderApiKey(mockDb, "company-1", "openai");
-      expect(key).toBe("");
+      await expect(getProviderApiKey(mockDb, "company-1", "openai")).rejects.toThrow(
+        /No API key configured for provider "openai"/,
+      );
     } finally {
       if (originalEnv !== undefined) {
         process.env.OPENAI_API_KEY = originalEnv;
@@ -399,16 +388,33 @@ describe("getProviderApiKey", () => {
   });
 
   it("uses correct secret names per provider", async () => {
-    mockSecretServiceInstance.getByName.mockResolvedValue(null);
+    mockSecretServiceInstance.resolveByName.mockRejectedValue(new Error("Secret not found"));
 
-    await getProviderApiKey(mockDb, "c1", "anthropic");
-    expect(mockSecretServiceInstance.getByName).toHaveBeenCalledWith("c1", "ANTHROPIC_API_KEY");
+    // Set env vars so the calls don't throw
+    const savedKeys = {
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      GOOGLE_AI_API_KEY: process.env.GOOGLE_AI_API_KEY,
+    };
+    process.env.ANTHROPIC_API_KEY = "test";
+    process.env.OPENAI_API_KEY = "test";
+    process.env.GOOGLE_AI_API_KEY = "test";
 
-    await getProviderApiKey(mockDb, "c1", "openai");
-    expect(mockSecretServiceInstance.getByName).toHaveBeenCalledWith("c1", "OPENAI_API_KEY");
+    try {
+      await getProviderApiKey(mockDb, "c1", "anthropic");
+      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith("c1", "ANTHROPIC_API_KEY");
 
-    await getProviderApiKey(mockDb, "c1", "google");
-    expect(mockSecretServiceInstance.getByName).toHaveBeenCalledWith("c1", "GOOGLE_AI_API_KEY");
+      await getProviderApiKey(mockDb, "c1", "openai");
+      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith("c1", "OPENAI_API_KEY");
+
+      await getProviderApiKey(mockDb, "c1", "google");
+      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith("c1", "GOOGLE_AI_API_KEY");
+    } finally {
+      for (const [k, v] of Object.entries(savedKeys)) {
+        if (v !== undefined) process.env[k] = v;
+        else delete process.env[k];
+      }
+    }
   });
 });
 

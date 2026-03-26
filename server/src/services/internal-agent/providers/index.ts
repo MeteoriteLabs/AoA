@@ -7,15 +7,8 @@ import type { LLMProvider } from "./types.js";
 
 export type { LLMProvider, ChatParams, ChatStreamChunk, ProviderToolDef, ChatMessage } from "./types.js";
 
-/** Secret name convention per provider */
-const PROVIDER_SECRET_NAMES: Record<string, string> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  google: "GOOGLE_AI_API_KEY",
-};
-
-/** Env var fallback per provider */
-const PROVIDER_ENV_KEYS: Record<string, string> = {
+/** Secret name / env var key per provider (same convention for both) */
+const PROVIDER_KEY_NAMES: Record<string, string> = {
   anthropic: "ANTHROPIC_API_KEY",
   openai: "OPENAI_API_KEY",
   google: "GOOGLE_AI_API_KEY",
@@ -26,24 +19,34 @@ const PROVIDER_ENV_KEYS: Record<string, string> = {
  *
  * Checks company_secrets first (encrypted, versioned), then falls back
  * to environment variables for backward compatibility during transition.
+ * Throws if no key is found anywhere.
  */
 export async function getProviderApiKey(
   db: Db,
   companyId: string,
   provider: string,
 ): Promise<string> {
-  const secretName = PROVIDER_SECRET_NAMES[provider];
-  if (secretName) {
-    const svc = secretService(db);
-    const secret = await svc.getByName(companyId, secretName);
-    if (secret) {
-      return svc.resolveSecretValue(companyId, secret.id, "latest");
+  const keyName = PROVIDER_KEY_NAMES[provider];
+
+  // Try company_secrets first (uses resolveByName which does getByName + resolveSecretValue)
+  if (keyName) {
+    try {
+      return await secretService(db).resolveByName(companyId, keyName);
+    } catch {
+      // Secret not found — fall through to env var
     }
   }
 
   // Fallback to env var
-  const envKey = PROVIDER_ENV_KEYS[provider] ?? `${provider.toUpperCase()}_API_KEY`;
-  return process.env[envKey] ?? "";
+  const envKey = keyName ?? `${provider.toUpperCase()}_API_KEY`;
+  const envValue = process.env[envKey];
+  if (!envValue) {
+    throw new Error(
+      `No API key configured for provider "${provider}". ` +
+      `Set it in Settings → LLM Providers or as the ${envKey} environment variable.`,
+    );
+  }
+  return envValue;
 }
 
 /** Create an LLMProvider instance for the given provider name and API key */
