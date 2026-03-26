@@ -16,3 +16,8 @@ export {
   toolToOpenAIFormat,
   executeTool,
 } from "./tool-registry.js";
+
+export { contextAssemblyService } from "./context-assembly.js";
+export { conversationService } from "./conversation.js";
+export { agentLoopService, buildMessagesForProvider } from "./agent-loop.js";
+export type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
