@@ -20,6 +20,8 @@ export interface ChatMessage {
   content: string;
   /** Tool results to feed back after a tool_call chunk */
   toolResults?: ToolResultMessage[];
+  /** Tool calls from assistant (for conversation history reconstruction) */
+  toolCalls?: { id: string; name: string; input: unknown }[];
 }
 
 /** Result of a tool execution, sent back to the LLM */
