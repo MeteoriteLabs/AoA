@@ -21,3 +21,17 @@ export { contextAssemblyService } from "./context-assembly.js";
 export { conversationService } from "./conversation.js";
 export { agentLoopService, buildMessagesForProvider } from "./agent-loop.js";
 export type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
+
+export {
+  blockedTaskScan,
+  budgetThresholdAlert,
+  staleWorkDetection,
+  dependencyChainGaps,
+  memoryConflictScan,
+  workloadImbalance,
+  morningDigest,
+  checkReminders,
+} from "./proactive.js";
+
+export { createEventListener } from "./event-listener.js";
+export type { EventTriggerResult } from "./event-listener.js";
