@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createProactiveDb } from "./helpers/mock-db.js";
 
 // ── drizzle-orm mock ─────────────────────────────────────────────────────────
 vi.mock("drizzle-orm", () => ({
@@ -90,55 +91,6 @@ vi.mock("@paperclipai/db", () => ({
   },
 }));
 
-// ── Sequence-based mock DB ───────────────────────────────────────────────────
-
-function makeSelectChain(queue: any[]) {
-  return {
-    from: vi.fn().mockReturnThis(),
-    innerJoin: vi.fn().mockReturnThis(),
-    leftJoin: vi.fn().mockReturnThis(),
-    where: vi.fn().mockReturnThis(),
-    orderBy: vi.fn().mockReturnThis(),
-    groupBy: vi.fn().mockReturnThis(),
-    having: vi.fn().mockReturnThis(),
-    limit: vi.fn().mockReturnThis(),
-    offset: vi.fn().mockReturnThis(),
-    then: vi.fn((fn: (rows: any[]) => any) =>
-      Promise.resolve(fn(queue.shift() ?? [])),
-    ),
-  };
-}
-
-function makeInsertChain(queue: any[]) {
-  return {
-    values: vi.fn().mockReturnThis(),
-    returning: vi.fn(() =>
-      Promise.resolve(queue.shift() ?? [{ id: "new-run-id" }]),
-    ),
-    onConflictDoUpdate: vi.fn().mockReturnThis(),
-    onConflictDoNothing: vi.fn().mockReturnThis(),
-  };
-}
-
-function makeUpdateChain() {
-  return {
-    set: vi.fn().mockReturnThis(),
-    where: vi.fn().mockReturnThis(),
-    returning: vi.fn(() => Promise.resolve([{ id: "updated" }])),
-  };
-}
-
-function makeDb(
-  selectQueue: any[],
-  insertQueue: any[] = [],
-) {
-  return {
-    select: vi.fn(() => makeSelectChain(selectQueue)),
-    insert: vi.fn(() => makeInsertChain(insertQueue)),
-    update: vi.fn(() => makeUpdateChain()),
-  };
-}
-
 import {
   blockedTaskScan,
   budgetThresholdAlert,
@@ -172,7 +124,7 @@ describe("v2.5 Proactive Agent QA", () => {
       { id: "r-2", content: "Review proposal" },
     ];
 
-    const db = makeDb(
+    const db = createProactiveDb(
       [
         overnightActivity, // overnight activity from activityLog
         activeTasks,       // in_progress tasks
@@ -197,7 +149,7 @@ describe("v2.5 Proactive Agent QA", () => {
 
   // ── 2. Morning digest with empty state ──────────────────────────────────
   it("morning digest with empty state: no activity still returns valid digest with empty arrays", async () => {
-    const db = makeDb(
+    const db = createProactiveDb(
       [
         [], // no overnight activity
         [], // no active tasks
@@ -225,7 +177,7 @@ describe("v2.5 Proactive Agent QA", () => {
       { id: "task-3", title: "Blocked task C", status: "in_progress" },
     ];
 
-    const db = makeDb(
+    const db = createProactiveDb(
       [
         [{ notificationPreference: "realtime" }], // getNotificationPreference
         blockedTasks,                              // select blocked tasks
@@ -247,7 +199,7 @@ describe("v2.5 Proactive Agent QA", () => {
   // ── 4. Budget alert cascading: both budget and stale checks create runs ──
   it("budget alert at 85% + stale work found: both create independent run records", async () => {
     // Budget check
-    const budgetDb = makeDb(
+    const budgetDb = createProactiveDb(
       [
         [{ notificationPreference: "realtime" }], // getNotificationPreference
         [{ budgetMonthlyCents: 10000, spentMonthlyCents: 8500 }], // config at 85%
@@ -271,7 +223,7 @@ describe("v2.5 Proactive Agent QA", () => {
       { id: "task-2", title: "Stale B", updatedAt: new Date("2026-03-12") },
     ];
 
-    const staleDb = makeDb(
+    const staleDb = createProactiveDb(
       [
         [{ notificationPreference: "realtime" }],
         staleTasks,
@@ -292,7 +244,7 @@ describe("v2.5 Proactive Agent QA", () => {
   // ── 5. Multiple proactive checks in sequence: all 8 create run records ──
   it("all 8 proactive checks in sequence each create their own run record", async () => {
     // blockedTaskScan
-    const db1 = makeDb(
+    const db1 = createProactiveDb(
       [[{ notificationPreference: "realtime" }], []],
       [[{ id: "run-blocked" }]],
     );
@@ -300,7 +252,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r1.runCreated).toBe(true);
 
     // budgetThresholdAlert
-    const db2 = makeDb(
+    const db2 = createProactiveDb(
       [[{ notificationPreference: "realtime" }], [{ budgetMonthlyCents: 10000, spentMonthlyCents: 2000 }]],
       [[{ id: "run-budget" }]],
     );
@@ -308,7 +260,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r2.runCreated).toBe(true);
 
     // staleWorkDetection
-    const db3 = makeDb(
+    const db3 = createProactiveDb(
       [[{ notificationPreference: "realtime" }], []],
       [[{ id: "run-stale" }]],
     );
@@ -316,7 +268,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r3.runCreated).toBe(true);
 
     // dependencyChainGaps
-    const db4 = makeDb(
+    const db4 = createProactiveDb(
       [[{ notificationPreference: "realtime" }], []],
       [[{ id: "run-deps" }]],
     );
@@ -324,7 +276,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r4.runCreated).toBe(true);
 
     // memoryConflictScan
-    const db5 = makeDb(
+    const db5 = createProactiveDb(
       [[{ notificationPreference: "realtime" }], []],
       [[{ id: "run-memory" }]],
     );
@@ -332,7 +284,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r5.runCreated).toBe(true);
 
     // workloadImbalance
-    const db6 = makeDb(
+    const db6 = createProactiveDb(
       [[{ notificationPreference: "realtime" }], []],
       [[{ id: "run-workload" }]],
     );
@@ -340,7 +292,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r6.runCreated).toBe(true);
 
     // morningDigest
-    const db7 = makeDb(
+    const db7 = createProactiveDb(
       [[], [], []],
       [[{ id: "run-digest" }]],
     );
@@ -348,7 +300,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r7.runCreated).toBe(true);
 
     // checkReminders
-    const db8 = makeDb(
+    const db8 = createProactiveDb(
       [[]],
       [[{ id: "run-reminders" }]],
     );
@@ -366,7 +318,7 @@ describe("v2.5 Proactive Agent QA", () => {
       { id: "rem-5", userId: "user-2", content: "Send report", triggerAt: new Date("2026-03-25") },
     ];
 
-    const db = makeDb(
+    const db = createProactiveDb(
       [
         dueReminders, // due reminders query
       ],
@@ -397,7 +349,7 @@ describe("v2.5 Proactive Agent QA", () => {
       { id: "task-2", title: "Blocked 2", status: "in_progress" },
     ];
 
-    const db = makeDb(
+    const db = createProactiveDb(
       [
         [{ notificationPreference: "silent" }], // silent preference
         blockedTasks,
@@ -432,7 +384,7 @@ describe("v2.5 Proactive Agent QA", () => {
       ...Array.from({ length: 2 }, () => ({ assigneeAgentId: "agent-10" })),
     ];
 
-    const db = makeDb(
+    const db = createProactiveDb(
       [
         [{ notificationPreference: "realtime" }],
         tasks,
@@ -460,7 +412,7 @@ describe("v2.5 Proactive Agent QA", () => {
       { id: "p-5", patternType: "tone_correction", occurrenceCount: 10, status: "detected" },
     ];
 
-    const db = makeDb(
+    const db = createProactiveDb(
       [
         [{ notificationPreference: "realtime" }],
         conflicts,
@@ -489,7 +441,7 @@ describe("v2.5 Proactive Agent QA", () => {
     ];
     const cancelledTasks = [{ id: "task-cancelled" }];
 
-    const db = makeDb(
+    const db = createProactiveDb(
       [
         [{ notificationPreference: "realtime" }],
         allDeps,        // all dependencies for company
@@ -521,7 +473,7 @@ describe("v2.5 Proactive Agent QA", () => {
       { id: "task-5", title: "Stale E", updatedAt: new Date("2026-02-28"), status: "in_progress" },
     ];
 
-    const db = makeDb(
+    const db = createProactiveDb(
       [
         [{ notificationPreference: "realtime" }],
         staleTasks,
@@ -542,7 +494,7 @@ describe("v2.5 Proactive Agent QA", () => {
   // ── 12. Empty company: all checks return empty/no findings ──────────────
   it("empty company: all checks return empty findings or no-trigger with no errors", async () => {
     // blockedTaskScan — empty
-    const db1 = makeDb(
+    const db1 = createProactiveDb(
       [[{ notificationPreference: "realtime" }], []],
       [[{ id: "r1" }]],
     );
@@ -551,7 +503,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r1.runCreated).toBe(true);
 
     // budgetThresholdAlert — no config
-    const db2 = makeDb(
+    const db2 = createProactiveDb(
       [[{ notificationPreference: "realtime" }], []],
       [[{ id: "r2" }]],
     );
@@ -561,7 +513,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r2.runCreated).toBe(true);
 
     // staleWorkDetection — empty
-    const db3 = makeDb(
+    const db3 = createProactiveDb(
       [[{ notificationPreference: "realtime" }], []],
       [[{ id: "r3" }]],
     );
@@ -570,7 +522,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r3.runCreated).toBe(true);
 
     // dependencyChainGaps — no deps
-    const db4 = makeDb(
+    const db4 = createProactiveDb(
       [[{ notificationPreference: "realtime" }], []],
       [[{ id: "r4" }]],
     );
@@ -579,7 +531,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r4.runCreated).toBe(true);
 
     // memoryConflictScan — empty
-    const db5 = makeDb(
+    const db5 = createProactiveDb(
       [[{ notificationPreference: "realtime" }], []],
       [[{ id: "r5" }]],
     );
@@ -588,7 +540,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r5.runCreated).toBe(true);
 
     // workloadImbalance — no tasks
-    const db6 = makeDb(
+    const db6 = createProactiveDb(
       [[{ notificationPreference: "realtime" }], []],
       [[{ id: "r6" }]],
     );
@@ -597,7 +549,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r6.runCreated).toBe(true);
 
     // morningDigest — empty
-    const db7 = makeDb(
+    const db7 = createProactiveDb(
       [[], [], []],
       [[{ id: "r7" }]],
     );
@@ -608,7 +560,7 @@ describe("v2.5 Proactive Agent QA", () => {
     expect(r7.runCreated).toBe(true);
 
     // checkReminders — none due
-    const db8 = makeDb(
+    const db8 = createProactiveDb(
       [[]],
       [[{ id: "r8" }]],
     );

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createDiscussionDb } from "./helpers/mock-db.js";
 
 /**
  * V2.5 Discussion Flow QA Tests
@@ -140,76 +141,6 @@ import { discussionService } from "../services/discussions.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { logActivity } from "../services/activity-log.js";
 
-// ── Helper: sequence-based mock DB ──────────────────────────────────────────
-
-function createSequenceDb(selectQueue: any[][]) {
-  let selectIdx = 0;
-
-  function makeSelectChain() {
-    return {
-      from: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      innerJoin: vi.fn().mockReturnThis(),
-      orderBy: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockReturnThis(),
-      then: vi.fn((fn: (rows: any[]) => any) =>
-        Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
-      ),
-    };
-  }
-
-  const db: any = {
-    select: vi.fn(() => makeSelectChain()),
-    selectDistinctOn: vi.fn(() => makeSelectChain()),
-    insert: vi.fn(() => ({
-      values: vi.fn(() => ({
-        returning: vi.fn().mockReturnThis(),
-        then: vi.fn((fn: (rows: any[]) => any) =>
-          Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
-        ),
-      })),
-    })),
-    update: vi.fn(() => ({
-      set: vi.fn(() => ({
-        where: vi.fn(() => ({
-          returning: vi.fn().mockReturnThis(),
-          then: vi.fn((fn: (rows: any[]) => any) =>
-            Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
-          ),
-        })),
-      })),
-    })),
-    delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
-    transaction: vi.fn(async (fn: (tx: any) => Promise<any>) => {
-      const tx: any = {
-        select: vi.fn(() => makeSelectChain()),
-        insert: vi.fn(() => ({
-          values: vi.fn(() => ({
-            returning: vi.fn().mockReturnThis(),
-            then: vi.fn((fn: (rows: any[]) => any) =>
-              Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
-            ),
-          })),
-        })),
-        update: vi.fn(() => ({
-          set: vi.fn(() => ({
-            where: vi.fn(() => ({
-              returning: vi.fn().mockReturnThis(),
-              then: vi.fn((fn: (rows: any[]) => any) =>
-                Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
-              ),
-            })),
-          })),
-        })),
-        delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
-      };
-      return fn(tx);
-    }),
-  };
-
-  return db;
-}
-
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const COMPANY = "company-1";
@@ -249,7 +180,7 @@ describe("v2.5 Discussion Flow QA", () => {
         createdBy: ACTOR,
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // validateScope: no scope, skipped
         // transaction → insert discussion
         [createdDiscussion],
@@ -309,7 +240,7 @@ describe("v2.5 Discussion Flow QA", () => {
         pendingItemCount: 0,
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // transaction → insert discussion (no entry)
         [createdDiscussion],
       ]);
@@ -358,7 +289,7 @@ describe("v2.5 Discussion Flow QA", () => {
           createdBy: ACTOR,
         };
 
-        const db = createSequenceDb([
+        const db = createDiscussionDb([
           // select discussion exists
           [existingDiscussion],
           // insert entry returning
@@ -388,7 +319,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws notFound when adding entry to non-existent discussion", async () => {
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // select → discussion not found
         [],
       ]);
@@ -425,7 +356,7 @@ describe("v2.5 Discussion Flow QA", () => {
           sourceInfo: inputTypes[i] === "mcp" ? { tool: "github" } : null,
         };
 
-        const db = createSequenceDb([
+        const db = createDiscussionDb([
           [disc],
           [entryRow],
           [{ ...disc, entryCount: i + 1 }],
@@ -507,7 +438,7 @@ describe("v2.5 Discussion Flow QA", () => {
         mergedContent: null,
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // select discussion exists
         [disc],
         // tx.select items by IDs
@@ -548,7 +479,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws badRequest when no itemIds provided", async () => {
-      const db = createSequenceDb([]);
+      const db = createDiscussionDb([]);
       const svc = discussionService(db);
 
       await expect(
@@ -557,7 +488,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws notFound when discussion does not exist for approve", async () => {
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // select discussion → not found
         [],
       ]);
@@ -571,7 +502,7 @@ describe("v2.5 Discussion Flow QA", () => {
     it("throws badRequest when some item IDs not found", async () => {
       const disc = { id: "disc-x", companyId: COMPANY, pendingItemCount: 1 };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         [disc],
         // tx.select items → returns only 1 of 2 requested
         [{ id: "item-1", discussionEntryId: "e1", type: "task", title: "T", status: "pending" }],
@@ -615,7 +546,7 @@ describe("v2.5 Discussion Flow QA", () => {
       };
 
       // Step 1: approve 1 item
-      const dbApprove = createSequenceDb([
+      const dbApprove = createDiscussionDb([
         [disc],
         // tx.select items
         [taskItem],
@@ -646,7 +577,7 @@ describe("v2.5 Discussion Flow QA", () => {
         { id: "item-p-3", entryId: "entry-p-1", status: "rejected" },
       ];
 
-      const dbReject = createSequenceDb([
+      const dbReject = createDiscussionDb([
         // select discussion
         [disc],
         // select items to verify they belong to discussion
@@ -682,7 +613,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws badRequest when no items to reject", async () => {
-      const db = createSequenceDb([]);
+      const db = createDiscussionDb([]);
       const svc = discussionService(db);
 
       await expect(
@@ -709,7 +640,7 @@ describe("v2.5 Discussion Flow QA", () => {
         status: "edited",
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // select item
         [item],
         // select entry
@@ -732,7 +663,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws notFound when item does not exist", async () => {
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // select item → not found
         [],
       ]);
@@ -744,7 +675,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws notFound when item belongs to different company", async () => {
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // select item
         [{ id: "item-1", discussionEntryId: "entry-1" }],
         // select entry
@@ -775,7 +706,7 @@ describe("v2.5 Discussion Flow QA", () => {
         createdBy: ACTOR,
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // select entry
         [entry],
         // select discussion (company check)
@@ -817,7 +748,7 @@ describe("v2.5 Discussion Flow QA", () => {
         createdBy: ACTOR,
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         [{ discussionId: "disc-ann" }],
         [{ companyId: COMPANY }],
         [annotation],
@@ -836,7 +767,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws notFound when entry does not exist", async () => {
-      const db = createSequenceDb([[]]);
+      const db = createDiscussionDb([[]]);
       const svc = discussionService(db);
 
       await expect(
@@ -845,7 +776,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws notFound when entry belongs to different company", async () => {
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         [{ discussionId: "disc-x" }],
         [{ companyId: "other-company" }],
       ]);
@@ -869,7 +800,7 @@ describe("v2.5 Discussion Flow QA", () => {
         scopeId: "dept-1",
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // validateScope → select from projects where id=dept-1
         [{ id: "dept-1", type: "department" }],
         // transaction → insert discussion
@@ -893,7 +824,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws when scopeType is set but scopeId is missing", async () => {
-      const db = createSequenceDb([]);
+      const db = createDiscussionDb([]);
       const svc = discussionService(db);
 
       await expect(
@@ -906,7 +837,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws when scopeId is set but scopeType is missing", async () => {
-      const db = createSequenceDb([]);
+      const db = createDiscussionDb([]);
       const svc = discussionService(db);
 
       await expect(
@@ -919,7 +850,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws when scope references wrong type (project vs department)", async () => {
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // validateScope → select returns project, but scopeType is department
         [{ id: "proj-1", type: "project" }],
       ]);
@@ -935,7 +866,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws when scopeId references non-existent entity", async () => {
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // validateScope → select returns empty
         [],
       ]);
@@ -951,7 +882,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws for invalid scopeType", async () => {
-      const db = createSequenceDb([]);
+      const db = createDiscussionDb([]);
       const svc = discussionService(db);
 
       await expect(
@@ -972,7 +903,7 @@ describe("v2.5 Discussion Flow QA", () => {
         scopeId: "goal-1",
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // validateScope → select from goals
         [{ id: "goal-1" }],
         // transaction → insert discussion
@@ -1001,7 +932,7 @@ describe("v2.5 Discussion Flow QA", () => {
         status: "archived",
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // update → returning
         [updatedDiscussion],
       ]);
@@ -1023,7 +954,7 @@ describe("v2.5 Discussion Flow QA", () => {
         status: "active",
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // update → returning
         [restored],
       ]);
@@ -1037,7 +968,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("returns null when updating non-existent discussion", async () => {
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // update → empty returning (no row matched)
         [],
       ]);
@@ -1053,7 +984,7 @@ describe("v2.5 Discussion Flow QA", () => {
     it("validates scope when updating scope fields on discussion", async () => {
       const existing = { scopeType: null, scopeId: null };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // select existing scope
         [existing],
         // validateScope → select project
@@ -1072,7 +1003,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws notFound when updating scope on non-existent discussion", async () => {
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // select existing scope → not found
         [],
       ]);
@@ -1095,7 +1026,7 @@ describe("v2.5 Discussion Flow QA", () => {
       };
       const disc = { companyId: COMPANY };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // select entry
         [entry],
         // select discussion (company check)
@@ -1122,7 +1053,7 @@ describe("v2.5 Discussion Flow QA", () => {
       const entry = { id: "entry-rp-2", discussionId: "disc-rp" };
       const disc = { companyId: COMPANY };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         [entry],
         [disc],
         // approved items exist
@@ -1136,7 +1067,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws notFound when entry does not exist", async () => {
-      const db = createSequenceDb([[]]);
+      const db = createDiscussionDb([[]]);
       const svc = discussionService(db);
 
       await expect(
@@ -1145,7 +1076,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("throws notFound when entry belongs to different company", async () => {
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         [{ id: "entry-x", discussionId: "disc-x" }],
         [{ companyId: "other-company" }],
       ]);
@@ -1187,7 +1118,7 @@ describe("v2.5 Discussion Flow QA", () => {
         mergedContent: "Merged: old decision + new decision content.",
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // select discussion
         [disc],
         // tx.select items
@@ -1236,7 +1167,7 @@ describe("v2.5 Discussion Flow QA", () => {
         resultTaskId: "task-old",
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         [disc],
         // tx.select items
         [alreadyApproved],
@@ -1268,7 +1199,7 @@ describe("v2.5 Discussion Flow QA", () => {
         { id: "disc-2", title: "Active two", status: "active" },
       ];
 
-      const db = createSequenceDb([discRows]);
+      const db = createDiscussionDb([discRows]);
 
       const svc = discussionService(db);
       const result = await svc.list(COMPANY, { status: "active" });
@@ -1282,7 +1213,7 @@ describe("v2.5 Discussion Flow QA", () => {
         { id: "disc-s1", title: "Dept scoped", scopeType: "department", scopeId: "dept-1" },
       ];
 
-      const db = createSequenceDb([discRows]);
+      const db = createDiscussionDb([discRows]);
 
       const svc = discussionService(db);
       const result = await svc.list(COMPANY, {
@@ -1298,7 +1229,7 @@ describe("v2.5 Discussion Flow QA", () => {
         { id: "disc-p1", title: "Has pending", pendingItemCount: 3 },
       ];
 
-      const db = createSequenceDb([discRows]);
+      const db = createDiscussionDb([discRows]);
 
       const svc = discussionService(db);
       const result = await svc.list(COMPANY, { hasPendingItems: true });
@@ -1311,7 +1242,7 @@ describe("v2.5 Discussion Flow QA", () => {
         { id: "disc-p2", title: "No pending", pendingItemCount: 0 },
       ];
 
-      const db = createSequenceDb([discRows]);
+      const db = createDiscussionDb([discRows]);
 
       const svc = discussionService(db);
       const result = await svc.list(COMPANY, { hasPendingItems: false });
@@ -1327,7 +1258,7 @@ describe("v2.5 Discussion Flow QA", () => {
         },
       ];
 
-      const db = createSequenceDb([discRows]);
+      const db = createDiscussionDb([discRows]);
 
       const svc = discussionService(db);
       const result = await svc.list(COMPANY, { inputType: "voice" });
@@ -1338,7 +1269,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("returns empty array when no discussions match", async () => {
-      const db = createSequenceDb([[]]);
+      const db = createDiscussionDb([[]]);
 
       const svc = discussionService(db);
       const result = await svc.list(COMPANY, { status: "archived" });
@@ -1367,7 +1298,7 @@ describe("v2.5 Discussion Flow QA", () => {
         { id: "ann-g1", discussionEntryId: "entry-g1", content: "Note" },
       ];
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         // select discussion
         [disc],
         // select entries
@@ -1389,7 +1320,7 @@ describe("v2.5 Discussion Flow QA", () => {
     });
 
     it("returns null when discussion not found", async () => {
-      const db = createSequenceDb([[]]);
+      const db = createDiscussionDb([[]]);
 
       const svc = discussionService(db);
       const result = await svc.getById(COMPANY, "disc-nope");
@@ -1405,7 +1336,7 @@ describe("v2.5 Discussion Flow QA", () => {
         status: "active",
       };
 
-      const db = createSequenceDb([
+      const db = createDiscussionDb([
         [disc],
         // entries → empty
         [],

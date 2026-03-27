@@ -141,44 +141,9 @@ vi.mock("../services/internal-agent/conversation.js", () => ({
 }));
 
 import { agentLoopService, type AgentStreamChunk } from "../services/internal-agent/agent-loop.js";
+import { createAgentDb, collectChunks, createMockProvider } from "./helpers/mock-db.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-
-type MockRow = Record<string, unknown>;
-
-function createSequenceDb(config: { selects?: MockRow[][]; updates?: MockRow[][]; inserts?: MockRow[][] } = {}) {
-  let selectIdx = 0, updateIdx = 0, insertIdx = 0;
-  const selects = config.selects ?? [];
-  const updates = config.updates ?? [];
-  const inserts = config.inserts ?? [];
-  function makeChain(getResult: () => MockRow[]) {
-    const chain: Record<string, unknown> = {};
-    for (const m of ["from", "where", "set", "values", "returning", "innerJoin", "leftJoin", "orderBy", "limit"]) {
-      chain[m] = (..._args: unknown[]) => chain;
-    }
-    chain.then = (resolve: (v: MockRow[]) => unknown) => Promise.resolve(resolve(getResult()));
-    return chain;
-  }
-  return {
-    select: () => makeChain(() => selects[selectIdx++] ?? []),
-    update: (_table?: unknown) => makeChain(() => updates[updateIdx++] ?? []),
-    insert: (_table?: unknown) => makeChain(() => inserts[insertIdx++] ?? []),
-  };
-}
-
-async function collectChunks(gen: AsyncGenerator<AgentStreamChunk>): Promise<AgentStreamChunk[]> {
-  const chunks: AgentStreamChunk[] = [];
-  for await (const chunk of gen) { chunks.push(chunk); }
-  return chunks;
-}
-
-function createMockProvider(responses: Array<AsyncIterable<any>>) {
-  let callIdx = 0;
-  return {
-    name: "anthropic",
-    chat: vi.fn().mockImplementation(() => responses[callIdx++] ?? responses[responses.length - 1]),
-  };
-}
 
 /** Helper: provider yields a single tool_call then text on next round */
 function toolThenTextResponse(toolName: string, toolInput: unknown, finalText: string) {
@@ -269,7 +234,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider = createMockProvider(responses);
     mockCreateProvider.mockReturnValue(mockProvider);
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[agentConfig]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],
@@ -311,7 +276,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider = createMockProvider(responses);
     mockCreateProvider.mockReturnValue(mockProvider);
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[agentConfig]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],
@@ -353,7 +318,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider = createMockProvider(responses);
     mockCreateProvider.mockReturnValue(mockProvider);
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[{ ...agentConfig, autonomyLevel: 0 }]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],
@@ -403,7 +368,7 @@ describe("v2.5 Agent Panel QA", () => {
 
     // Use autonomyLevel > 0 to skip confirmation, so RBAC check is reached
     const configHighAutonomy = { ...agentConfig, autonomyLevel: 2 };
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[configHighAutonomy]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],
@@ -438,7 +403,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider = createMockProvider(responses);
     mockCreateProvider.mockReturnValue(mockProvider);
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[agentConfig]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],
@@ -474,7 +439,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider2 = createMockProvider(responses2);
     mockCreateProvider.mockReturnValue(mockProvider2);
 
-    const db2 = createSequenceDb({
+    const db2 = createAgentDb({
       selects: [[agentConfig]],
       inserts: [[{ id: "run-2" }]],
       updates: [[{}], [{}]],
@@ -505,7 +470,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider = createMockProvider(responses);
     mockCreateProvider.mockReturnValue(mockProvider);
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[agentConfig]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],
@@ -538,7 +503,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider = createMockProvider(responses);
     mockCreateProvider.mockReturnValue(mockProvider);
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[config79]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],
@@ -572,7 +537,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider2 = createMockProvider(responses2);
     mockCreateProvider.mockReturnValue(mockProvider2);
 
-    const db2 = createSequenceDb({
+    const db2 = createAgentDb({
       selects: [[config81]],
       inserts: [[{ id: "run-2" }]],
       updates: [[{}], [{}]],
@@ -594,7 +559,7 @@ describe("v2.5 Agent Panel QA", () => {
   it("budget exceeded: spend at 100% -> error chunk + done chunk", async () => {
     const overBudgetConfig = { ...agentConfig, spentMonthlyCents: 10000 };
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[overBudgetConfig]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}]],
@@ -626,7 +591,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider = createMockProvider(responses);
     mockCreateProvider.mockReturnValue(mockProvider);
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[agentConfig]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],
@@ -668,7 +633,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider = createMockProvider(responses);
     mockCreateProvider.mockReturnValue(mockProvider);
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[agentConfig]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],
@@ -705,7 +670,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider = createMockProvider(responses);
     mockCreateProvider.mockReturnValue(mockProvider);
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[agentConfig]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],
@@ -737,7 +702,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider = createMockProvider(responses);
     mockCreateProvider.mockReturnValue(mockProvider);
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[agentConfig]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],
@@ -798,7 +763,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider = createMockProvider(providerResponses);
     mockCreateProvider.mockReturnValue(mockProvider);
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[agentConfig]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],
@@ -841,7 +806,7 @@ describe("v2.5 Agent Panel QA", () => {
     const mockProvider = createMockProvider(responses);
     mockCreateProvider.mockReturnValue(mockProvider);
 
-    const db = createSequenceDb({
+    const db = createAgentDb({
       selects: [[agentConfig]],
       inserts: [[{ id: "run-1" }]],
       updates: [[{}], [{}]],

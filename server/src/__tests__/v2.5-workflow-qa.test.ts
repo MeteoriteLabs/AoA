@@ -31,49 +31,7 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 import { workflowTemplateService } from "../services/workflow-templates.js";
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-type MockRow = Record<string, unknown>;
-
-function createSequenceDb(config: {
-  selects?: MockRow[][];
-  inserts?: MockRow[][];
-  updates?: MockRow[][];
-  deletes?: MockRow[][];
-} = {}) {
-  let selectIdx = 0;
-  let insertIdx = 0;
-  let updateIdx = 0;
-  let deleteIdx = 0;
-  const insertValues: unknown[] = [];
-  const updateSets: unknown[] = [];
-
-  function makeChain(getResult: () => MockRow[]) {
-    const chain: Record<string, unknown> = {};
-    for (const method of ["from", "where", "groupBy", "orderBy", "limit", "values", "set", "returning"]) {
-      chain[method] = (...args: unknown[]) => {
-        if (method === "values") insertValues.push(args[0]);
-        if (method === "set") updateSets.push(args[0]);
-        return chain;
-      };
-    }
-    chain.then = (resolve: (value: MockRow[]) => unknown) => Promise.resolve(resolve(getResult()));
-    return chain;
-  }
-
-  const db = {
-    select: (..._args: unknown[]) => makeChain(() => config.selects?.[selectIdx++] ?? []),
-    insert: (..._args: unknown[]) => makeChain(() => config.inserts?.[insertIdx++] ?? []),
-    update: (..._args: unknown[]) => makeChain(() => config.updates?.[updateIdx++] ?? []),
-    delete: (..._args: unknown[]) => makeChain(() => config.deletes?.[deleteIdx++] ?? []),
-    transaction: async (callback: (tx: any) => unknown) => callback(db),
-    __insertValues: insertValues,
-    __updateSets: updateSets,
-  };
-
-  return db;
-}
+import { createWorkflowDb } from "./helpers/mock-db.js";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -115,7 +73,7 @@ describe("v2.5 Workflow QA", () => {
       updatedAt: new Date(),
     };
 
-    const db = createSequenceDb({ inserts: [[created]] });
+    const db = createWorkflowDb({ inserts: [[created]] });
     const svc = workflowTemplateService(db as any);
     const result = await svc.create(COMPANY_ID, {
       name: "Full Feature Pipeline",
@@ -149,7 +107,7 @@ describe("v2.5 Workflow QA", () => {
       updatedAt: new Date(),
     };
 
-    const db = createSequenceDb({ inserts: [[created]] });
+    const db = createWorkflowDb({ inserts: [[created]] });
     const svc = workflowTemplateService(db as any);
     const result = await svc.create(COMPANY_ID, {
       name: "Simple Template",
@@ -192,7 +150,7 @@ describe("v2.5 Workflow QA", () => {
     const task4 = { id: "task-4", title: "Implement frontend" };
     const task5 = { id: "task-5", title: "QA testing" };
 
-    const db = createSequenceDb({
+    const db = createWorkflowDb({
       selects: [[template]],
       inserts: [
         [task1], [task2], [task3], [task4], [task5], // 5 tasks
@@ -226,7 +184,7 @@ describe("v2.5 Workflow QA", () => {
     };
 
     // First instantiation
-    const db1 = createSequenceDb({
+    const db1 = createWorkflowDb({
       selects: [[template1]],
       inserts: [
         [{ id: "t1-1", title: "Step A" }], [{ id: "t1-2", title: "Step B" }],
@@ -240,7 +198,7 @@ describe("v2.5 Workflow QA", () => {
     expect(db1.__updateSets[0]).toHaveProperty("instantiationCount");
 
     // Second instantiation (counter is now 1)
-    const db2 = createSequenceDb({
+    const db2 = createWorkflowDb({
       selects: [[template2]],
       inserts: [
         [{ id: "t2-1", title: "Step A" }], [{ id: "t2-2", title: "Step B" }],
@@ -270,7 +228,7 @@ describe("v2.5 Workflow QA", () => {
     const task1 = { id: "task-1", title: "Urgent task" };
     const task2 = { id: "task-2", title: "Low task" };
 
-    const db = createSequenceDb({
+    const db = createWorkflowDb({
       selects: [[template]],
       inserts: [[task1], [task2], [{ id: "dep-1" }]],
       updates: [[{ ...template, instantiationCount: 1 }]],
@@ -297,7 +255,7 @@ describe("v2.5 Workflow QA", () => {
       steps: [], dependencies: [], instantiationCount: 5,
     };
 
-    const db = createSequenceDb({
+    const db = createWorkflowDb({
       selects: [[template]],
     });
 
@@ -314,7 +272,7 @@ describe("v2.5 Workflow QA", () => {
       steps: [], dependencies: [], instantiationCount: 0,
     };
 
-    const db = createSequenceDb({
+    const db = createWorkflowDb({
       selects: [[template]],
       deletes: [[template]],
     });
@@ -340,7 +298,7 @@ describe("v2.5 Workflow QA", () => {
       instantiationCount: 0, updatedAt: new Date(),
     };
 
-    const db = createSequenceDb({
+    const db = createWorkflowDb({
       updates: [[updated]],
     });
 
@@ -362,7 +320,7 @@ describe("v2.5 Workflow QA", () => {
       { id: "t-3", companyId: COMPANY_ID, name: "Pipeline C", steps: [], dependencies: [] },
     ];
 
-    const db = createSequenceDb({
+    const db = createWorkflowDb({
       selects: [templates],
     });
 
@@ -404,7 +362,7 @@ describe("v2.5 Workflow QA", () => {
     const tasks = steps.map((s, i) => ({ id: `task-${i + 1}`, title: s.title }));
     const depResults = deps.map((_, i) => [{ id: `dep-${i + 1}` }]);
 
-    const db = createSequenceDb({
+    const db = createWorkflowDb({
       selects: [[template]],
       inserts: [
         ...tasks.map((t) => [t]),
@@ -437,7 +395,7 @@ describe("v2.5 Workflow QA", () => {
       steps, dependencies: [], instantiationCount: 0,
     };
 
-    const db = createSequenceDb({
+    const db = createWorkflowDb({
       selects: [[template]],
       inserts: [[{ id: "task-only", title: "Only step" }]],
       updates: [[{ ...template, instantiationCount: 1 }]],
@@ -453,14 +411,14 @@ describe("v2.5 Workflow QA", () => {
 
   // ── 12. Template not found: getById returns null, instantiate throws ────
   it("getById returns null for nonexistent template", async () => {
-    const db = createSequenceDb({ selects: [[]] });
+    const db = createWorkflowDb({ selects: [[]] });
     const svc = workflowTemplateService(db as any);
     const result = await svc.getById(COMPANY_ID, "nonexistent-id");
     expect(result).toBeNull();
   });
 
   it("instantiate throws for nonexistent template", async () => {
-    const db = createSequenceDb({ selects: [[]] });
+    const db = createWorkflowDb({ selects: [[]] });
     const svc = workflowTemplateService(db as any);
     await expect(
       svc.instantiate(COMPANY_ID, "nonexistent-id", GOAL_ID, PROJECT_ID),
