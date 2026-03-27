@@ -89,7 +89,7 @@ describe("internal-agent-routes-contract", () => {
       (layer: any) => layer.route != null,
     );
 
-    expect(routeLayers).toHaveLength(9);
+    expect(routeLayers).toHaveLength(10);
   });
 
   it("registers all expected paths and methods", () => {
@@ -110,6 +110,7 @@ describe("internal-agent-routes-contract", () => {
       { path: "/companies/:companyId/internal-agent/conversation", method: "delete" },
       { path: "/companies/:companyId/internal-agent/config", method: "get" },
       { path: "/companies/:companyId/internal-agent/config", method: "patch" },
+      { path: "/companies/:companyId/internal-agent/greeting", method: "get" },
       { path: "/companies/:companyId/internal-agent/runs", method: "get" },
       { path: "/companies/:companyId/internal-agent/reminders", method: "get" },
       { path: "/companies/:companyId/internal-agent/reminders/:reminderId", method: "patch" },
