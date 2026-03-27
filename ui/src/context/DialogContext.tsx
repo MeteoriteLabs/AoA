@@ -50,9 +50,6 @@ interface DialogContextValue {
   onboardingOptions: OnboardingOptions;
   openOnboarding: (options?: OnboardingOptions) => void;
   closeOnboarding: () => void;
-  debriefOpen: boolean;
-  openDebrief: () => void;
-  closeDebrief: () => void;
   discussionCaptureOpen: boolean;
   discussionCaptureDefaults: DiscussionCaptureDefaults;
   openDiscussionCapture: (defaults?: DiscussionCaptureDefaults) => void;
@@ -71,7 +68,6 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const [newAgentOpen, setNewAgentOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingOptions, setOnboardingOptions] = useState<OnboardingOptions>({});
-  const [debriefOpen, setDebriefOpen] = useState(false);
   const [discussionCaptureOpen, setDiscussionCaptureOpen] = useState(false);
   const [discussionCaptureDefaults, setDiscussionCaptureDefaults] = useState<DiscussionCaptureDefaults>({});
 
@@ -123,14 +119,6 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     setOnboardingOptions({});
   }, []);
 
-  const openDebrief = useCallback(() => {
-    setDebriefOpen(true);
-  }, []);
-
-  const closeDebrief = useCallback(() => {
-    setDebriefOpen(false);
-  }, []);
-
   const openDiscussionCapture = useCallback((defaults: DiscussionCaptureDefaults = {}) => {
     setDiscussionCaptureDefaults(defaults);
     setDiscussionCaptureOpen(true);
@@ -163,9 +151,6 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         onboardingOptions,
         openOnboarding,
         closeOnboarding,
-        debriefOpen,
-        openDebrief,
-        closeDebrief,
         discussionCaptureOpen,
         discussionCaptureDefaults,
         openDiscussionCapture,

@@ -26,7 +26,6 @@ import { VisionMission } from "./pages/VisionMission";
 import { DesignGuide } from "./pages/DesignGuide";
 import { TeamPage } from "./pages/TeamPage";
 import { ActiveAgents } from "./pages/ActiveAgents";
-import { DebriefModal } from "./components/DebriefModal";
 import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
 import { Discussions } from "./pages/Discussions";
 import { DiscussionDetail } from "./pages/DiscussionDetail";
@@ -257,7 +256,6 @@ export function App() {
         </Route>
       </Routes>
       <OnboardingWizard />
-      <DebriefModal />
       <DiscussionCaptureModal />
     </>
   );

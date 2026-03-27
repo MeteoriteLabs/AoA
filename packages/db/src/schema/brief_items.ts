@@ -10,6 +10,7 @@ import { projects } from "./projects.js";
 import { issues } from "./issues.js";
 import { memoryItems } from "./memory_items.js";
 
+/** @deprecated V2.5 — replaced by discussion_extracted_items. Keep for rollback safety. */
 export const briefItems = pgTable(
   "brief_items",
   {

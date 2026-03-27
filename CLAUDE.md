@@ -16,11 +16,11 @@ Hybrid Workforce Operating System for solo founders. Built on Paperclip (open-so
 2. **Follow existing patterns.** New services follow `server/src/services/goals.ts`. New routes follow `server/src/routes/goals.ts`. New schemas follow `packages/db/src/schema/goals.ts`.
 3. **"Issues" = "Tasks" in UI only.** The DB table is `issues`. The API routes use `/issues`. But all user-facing text says "Task" / "Tasks". Never rename the table or routes.
 4. **"Projects" table serves both Departments and Projects.** Distinguished by `type` field: `'department'` | `'project'`. Same mechanics for both.
-5. **MCP inbound always routes through Debrief pipeline.** Never create raw tasks from MCP input. (Decision #14)
+5. **MCP inbound always routes through Discussion pipeline.** Never create raw tasks from MCP input. (Decision #14)
 6. **Agents cannot write to Memory directly.** They can suggest items (status: 'pending'), but only the founder can approve identity + domain layers. V2: team leads can additionally approve active_context for their departments. Working memory is auto-created. (Decisions #15, #52)
 7. **Artifact versions are immutable.** Once created, never modified. Changes = new version. Founder picks winner for branching — no auto-merge. (Decisions #43, #45)
 8. **Memory feedback requires ≥3 occurrences.** Don't suggest memory from one-off edits. Pattern must be consistent. (Decision #46)
-9. **Brief department fallback: item-level > brief-level > null.** Founder's per-item override always wins. (Decision #61)
+9. **Discussion scope fallback: item-level > entry-level > discussion-level > null.** Founder's per-item override always wins. (Decision #61)
 10. **Consult `docs/aoa/reference/decisions.md` before making architectural choices.** 90 locked decisions exist. Don't relitigate.
 
 ## Naming Map (Paperclip → AoA)
@@ -31,6 +31,8 @@ Hybrid Workforce Operating System for solo founders. Built on Paperclip (open-so
 | Dashboard | Home | routes |
 | Costs | Budget | `cost_events` table |
 | Org | Team | routes |
+| Debrief | Discussion | `discussions` table |
+| Brief Item | Extracted Item | `discussion_extracted_items` table |
 
 Goals, Agents, Company, Settings, Activity, Inbox — unchanged.
 
@@ -40,13 +42,13 @@ Goals, Agents, Company, Settings, Activity, Inbox — unchanged.
 - **Atomic checkout:** Issues use `SELECT FOR UPDATE NO WAIT` for single-agent locking.
 - **Adapters:** claude_local, opencode_local, openclaw, http, process, cursor, codex_local, claude_api, openai_api, gemini_api. Registered in `server/src/adapters/registry.ts`.
 - **API Adapters (claude_api, openai_api, gemini_api):** Call LLM provider APIs directly using stored API keys from LLM Providers settings. No local CLI required. Same heartbeat/cost/budget pipeline as local adapters.
-- **Debrief → Brief pipeline:** Raw content → Artifact → LLM extraction → Structured Brief → Founder approval → Tasks + Memory items.
+- **Discussion pipeline (V2.5):** Thread-based discussions replace Debrief/Brief. Input modes: paste, write, voice, MCP. Each entry → LLM extraction → `discussion_extracted_items` → founder approval → Tasks + Memory items. Entry-level scope overrides thread-level scope.
 - **Memory (V1):** Flat company knowledge store. Categories: decision, reference, context, insight, preference. Approval-gated. Founder is sole gatekeeper.
 - **Task dependencies:** `task_dependencies` table links tasks in blocking relationships. When a dependency task completes → dependent auto-unblocks. Separate from `parentId` (which is subtask hierarchy, not blocking). Tasks can be blocked from any non-terminal status (backlog, todo, in_progress).
 - **Why/What/How:** Agents receive context package: Vision + Mission + Goal + Memory items + Task details.
 - **Goal status machine:** `planned → active → at_risk → achieved/cancelled` with `at_risk → active` recovery.
 - **Department deletion:** Blocked if tasks or goals exist. Must reassign first. Memory items become unscoped.
-- **Extraction failure:** Debrief marked `processing_failed`, founder notified. Can retry or manually create.
+- **Extraction failure:** Discussion entry marked `processing_failed`, founder notified via `notifications` table. Can retry or manually create.
 
 ## V2 Architecture (Implemented)
 
@@ -69,9 +71,9 @@ V2 adds four pillars: **Intelligence**, **Team**, **Artifacts**, **Integration**
 - **Feedback loops:** [IMPLEMENTED — S13] `memory_feedback_patterns` table detects recurring founder edits on agent work. 4 detector types: tone_correction, format_change, content_addition, terminology_change. Suggests memory items after ≥3 occurrences. Grouped by agent.
 - **Agent trust score:** [IMPLEMENTED — S18-S19] `(approvedWithoutChanges / totalTasksCompleted) × 100`, last 20 tasks weighted 2x. Sliding window approximation for the recent window. Auto-creates trust score row on first review. Displayed on agent cards.
 - **RBAC:** [IMPLEMENTED — S25-S27] Three roles: `founder`, `team_lead`, `team_member`. Department-scoped. Additive from restrictive defaults. Team leads can approve active_context for their departments.
-- **MCP bidirectional:** V1 inbound (external → Debrief, per Decision #14). V2 adds outbound: AoA as MCP server exposing read-only resources (tasks, goals, memory, artifacts) + limited write tools (debrief push, suggest-memory, update-task-status, attach-artifact-version).
+- **MCP bidirectional:** V1 inbound (external → Discussion, per Decision #14). V2 adds outbound: AoA as MCP server exposing read-only resources (tasks, goals, memory, artifacts) + limited write tools (discussion push, suggest-memory, update-task-status, attach-artifact-version).
 - **Global search:** [IMPLEMENTED — S28] PostgreSQL full-text search (tsvector/tsquery), cmd+K, RBAC-scoped, results grouped by entity type.
-- **Voice debrief:** [IMPLEMENTED — S21] Browser recording → Whisper API transcription → enters Debrief pipeline. Third input mode alongside paste and write.
+- **Voice input:** [IMPLEMENTED — S21] Browser recording → Whisper API transcription → enters Discussion pipeline. Third input mode alongside paste and write.
 - **Context packaging:** [IMPLEMENTED — S20] "Open in [LLM]" button assembles 8-section markdown context (company identity + department/project + goal + dependencies + task details + artifacts + agent config + preferences). Token estimate: ceil(markdown.length / 4). 8000-token warning threshold.
 - **Per-agent context mode:** [IMPLEMENTED — Decision #87] Three levels (minimal/standard/full) control how much context each agent receives. Stored in `runtimeConfig.contextMode`. Default: `standard`. Prevents token waste for simple adapters.
 - **Run summary comments:** [IMPLEMENTED — S22, Decision #88] Auto-generated task comments after each heartbeat run showing duration, token usage, cost, outcome, and detected files. Uses existing `issue_comments` table. Opt-out via `runtimeConfig.autoRunSummary`. Files truncated to 10 shown + "+N more".
@@ -79,9 +81,9 @@ V2 adds four pillars: **Intelligence**, **Team**, **Artifacts**, **Integration**
 ## Sidebar Structure
 
 ```
-+ New Task / + Debrief
++ New Task / + Discussion
 Home, Inbox
-WORK: Tasks, Briefs
+WORK: Discussions, Tasks, Agents, Goals
 DEPARTMENTS: [list] + New
 PROJECTS: [list] + New
 TEAM
@@ -101,6 +103,38 @@ ui/src/pages/              → Page-level components
 ui/src/api/                → API client functions
 ```
 
+## V2.5 Architecture (Implemented)
+
+V2.5 replaces the Debrief/Brief pipeline with **Discussions** and adds the **Internal Agent** — an always-on AI assistant for coordination, proactive monitoring, and workflow management.
+
+- **Discussions:** Thread-based discussions with multiple entries (paste/write/voice/MCP). Each entry is independently extracted into decisions, tasks, insights, context, references, preferences. Polymorphic scope (department/project/goal) with entry-level overrides. Inline annotations on entries. Replaces V1 Debrief → Brief flow entirely.
+- **Internal Agent:** Always-on AI assistant with 30 tools across 8 categories (discussion, query, action, memory, workflow, file, coordination, analysis). API-mode execution (Anthropic/OpenAI/Google). SSE streaming responses. Per-company config with capability toggles, token budgets, and monthly cost tracking. Agent loop: message → LLM with tools → tool execution → response.
+- **Proactive checks:** Scheduled background monitoring (default 4-hour interval). Scans for blocked tasks, budget thresholds, stale work, dependency gaps, memory conflicts, workload imbalance. Results pushed to Inbox via notifications.
+- **Workflow templates:** Reusable task chain patterns (ordered steps with dependencies). One-click instantiation creates tasks + `task_dependencies` for a goal. Usage tracking (instantiationCount).
+- **Notifications:** Unified notification system for extraction completion/failure, agent reminders, proactive alerts, action results. Unread badge in sidebar.
+- **Conversation management:** One persistent conversation per user per company. History summarization for token management. Message-run linkage for cost tracking.
+- **Event-driven integration:** Listens to LiveEvents (heartbeat completion, activity changes, MCP inbound, discussion entry creation) to trigger agent actions with debouncing.
+
+## V2.5 New Tables
+
+- `discussions` — thread container with polymorphic scope (department/project/goal), status (active/archived), denormalized entryCount/pendingItemCount
+- `discussion_entries` — individual entries within a discussion, inputType (paste/write/voice/mcp), extractionStatus, entry-level scope override
+- `discussion_extracted_items` — extracted items (decision/task/insight/context/reference/preference), suggested fields, dedup support, approval workflow, resultTaskId/resultMemoryId
+- `discussion_annotations` — inline annotations on entries with anchorStart/anchorEnd character offsets
+- `internal_agent_config` — per-company agent config: executionMode, provider, model, autonomyLevel, enabledCapabilities (12 types), budget, proactive interval
+- `internal_agent_conversations` — one per user per company, summarizedContext for token management
+- `internal_agent_messages` — conversation messages: role (user/assistant/system/tool_call/tool_result), toolCalls/toolResults JSON, pageContext, departmentContext
+- `internal_agent_runs` — execution records: triggerType (conversation/proactive/event/sub_agent), toolsCalled, tokenUsage, costCents, provider/model
+- `internal_agent_reminders` — scheduled reminders: triggerAt, status (pending/fired/cancelled), entity linking
+- `workflow_templates` — reusable task chains: steps (JSON ordered array), dependencies (JSON fromStep/toStep), instantiationCount
+- `notifications` — type (discussion.extraction_complete/failed, internal_agent.reminder/proactive/action_result), readAt/dismissedAt
+
+## V2.5 Modified Tables
+
+- `debriefs` — @deprecated V2.5 (kept for rollback safety). New code uses `discussions`.
+- `briefs` — @deprecated V2.5 (kept for rollback safety). New code uses `discussions`.
+- `brief_items` — @deprecated V2.5. Replaced by `discussion_extracted_items`.
+
 ## V3 Architecture
 
 V3 adds five pillars: **Autonomy**, **Workflows**, **Connectors**, **Blueprints**, **Hosted**.
@@ -110,7 +144,7 @@ V3 adds five pillars: **Autonomy**, **Workflows**, **Connectors**, **Blueprints*
 - **Service connectors:** Bidirectional sync with GitHub, Figma, Linear, Slack. Department-scoped. AoA = control plane, external tools = execution plane. (Decisions #77, #78)
 - **Department/project blueprints:** Pre-configured templates with agents, goals, memory items, pipeline templates. Built-in + community (ClipHub). (Decision #79)
 - **Hosted deployment:** API adapters (claude_api, openai_api, gemini_api), cloud workspaces (containers), BYOK or bundled. Same upper layers, different execution layer. (Decisions #80, #81)
-- **Additional:** Meeting integration (Recall.ai → Debrief), mobile app, multi-company, advanced analytics, experiment system, version merge logic.
+- **Additional:** Meeting integration (Recall.ai → Discussion), mobile app, multi-company, advanced analytics, experiment system, version merge logic.
 
 ## V2 New Tables
 
@@ -157,6 +191,7 @@ Tests in `server/src/__tests__/` use these patterns to work around the drizzle-o
 - `docs/aoa/plans/v1_plan.md` — V1 session-by-session development plan (~35 sessions across 8 phases)
 - `docs/aoa/specs/v2_spec.md` — Full V2 technical spec (intelligence, team, artifacts, integration)
 - `docs/aoa/plans/v2_plan.md` — V2 session-by-session development plan (10 phases, ~51 sessions)
+- `docs/aoa/specs/v2_5_changelog.md` — V2.5 changelog (discussions, internal agent, workflow templates, notifications)
 - `docs/aoa/specs/v3_spec.md` — Full V3 technical spec (autonomy, workflows, connectors, blueprints, hosted)
 - `docs/aoa/reference/decisions.md` — All locked decisions (#1-90). Do not relitigate unless reopened.
 - `docs/aoa/reference/prd.md` — Full product requirements document (covers V1/V2/V3 roadmap)
