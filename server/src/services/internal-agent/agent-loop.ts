@@ -16,6 +16,7 @@ import { contextAssemblyService } from "./context-assembly.js";
 import { conversationService } from "./conversation.js";
 import { createServiceContainer } from "./service-container.js";
 import { publishLiveEvent } from "../live-events.js";
+import { cliModeService } from "./cli-mode.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -109,6 +110,7 @@ export function agentLoopService(db: Db) {
   const ctxService = contextAssemblyService(db);
   const allTools = createToolRegistry();
   const services = createServiceContainer(db);
+  const cliService = cliModeService(db);
 
   return {
     async *chat(params: ChatInput): AsyncGenerator<AgentStreamChunk> {
@@ -172,6 +174,12 @@ export function agentLoopService(db: Db) {
 
         if (!config) {
           yield { type: "error", message: "Internal agent not configured. Go to Settings to set up." };
+          return;
+        }
+
+        // CLI mode delegation (DA-5)
+        if (config.executionMode === "cli") {
+          yield* cliService.chat(params, config);
           return;
         }
 

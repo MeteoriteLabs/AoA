@@ -35,3 +35,8 @@ export {
 
 export { createEventListener } from "./event-listener.js";
 export type { EventTriggerResult } from "./event-listener.js";
+
+export { cliModeService, detectCliTool, buildMcpConfig, toolToMcpFormat } from "./cli-mode.js";
+export { createCLISessionStore } from "./cli-session-store.js";
+export type { CLISession, CLIToolType, CLISessionStore } from "./cli-session-store.js";
+export { createToolCallHandler, buildToolListResponse } from "./mcp-bridge.js";
