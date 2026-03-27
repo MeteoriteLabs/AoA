@@ -215,6 +215,8 @@ export const LIVE_EVENT_TYPES = [
   "internal_agent.greeting",
   "internal_agent.reminder",
   "internal_agent.notification",
+  "internal_agent.message",
+  "internal_agent.run.status",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
