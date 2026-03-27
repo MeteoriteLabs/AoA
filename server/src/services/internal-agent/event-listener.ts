@@ -108,22 +108,40 @@ export function createEventListener(
     lastFired.set(key, now);
 
     // Create run record (fire-and-forget — don't block event processing)
-    db.insert(internalAgentRuns)
-      .values({
-        companyId,
-        triggerType: "event",
-        triggerSource: trigger.triggerSource,
-        status: "completed",
-        summary: `Event trigger: ${trigger.eventType}`,
-        completedAt: new Date(),
-      })
-      .returning()
-      .catch(() => {
-        // Swallow — run logging is best-effort
-      });
+    // Skip for discussion_entry — extraction creates its own run record
+    if (trigger.triggerSource !== "discussion_entry") {
+      db.insert(internalAgentRuns)
+        .values({
+          companyId,
+          triggerType: "event",
+          triggerSource: trigger.triggerSource,
+          status: "completed",
+          summary: `Event trigger: ${trigger.eventType}`,
+          completedAt: new Date(),
+        })
+        .returning()
+        .catch(() => {
+          // Swallow — run logging is best-effort
+        });
+    }
 
     // Notify callback
     onTrigger?.(trigger);
+
+    // Trigger extraction for new discussion entries (fire-and-forget)
+    if (trigger.triggerSource === "discussion_entry") {
+      const eventPayload = (event.payload ?? {}) as Record<string, unknown>;
+      const entryId = (eventPayload.entryId ?? "") as string;
+      if (entryId) {
+        import("../extraction.js")
+          .then(({ extractionService }) => {
+            extractionService(db)
+              .extractFromDiscussionEntry(companyId, entryId)
+              .catch(() => {}); // errors handled internally
+          })
+          .catch(() => {}); // module load error — swallow
+      }
+    }
   }
 
   const unsubscribe = subscribeCompanyLiveEvents(companyId, handleEvent);

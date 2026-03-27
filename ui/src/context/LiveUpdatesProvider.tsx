@@ -532,6 +532,25 @@ function handleLiveEvent(
     queryClient.invalidateQueries({ queryKey: queryKeys.notifications(expectedCompanyId) });
     return;
   }
+
+  if (event.type === "internal_agent.message") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(expectedCompanyId) });
+    return;
+  }
+
+  if (event.type === "internal_agent.run.status") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.agentRuns(expectedCompanyId) });
+    const status = readString(payload.status);
+    if (status === "failed") {
+      gatedPushToast(gate, pushToast, "internal-agent-run", {
+        title: "Agent run failed",
+        tone: "error",
+        dedupeKey: `internal-agent-run:${readString(payload.runId) ?? "unknown"}:failed`,
+      });
+    }
+    return;
+  }
 }
 
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
