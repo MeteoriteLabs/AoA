@@ -18,8 +18,10 @@ export function createDiscussionTools(): AgentTool[] {
       requiresConfirmation: true,
       execute: async (params: unknown, ctx) => {
         const { entryId } = (params ?? {}) as Record<string, unknown>;
-        const result = await ctx.services.discussions.reprocessEntry(ctx.companyId, entryId as string);
-        return { success: true, data: result, summary: `Extraction triggered for entry ${entryId}` };
+        const { extractionService } = await import("../../extraction.js");
+        const service = extractionService(ctx.db);
+        await service.extractFromDiscussionEntry(ctx.companyId, entryId as string);
+        return { success: true, data: { entryId }, summary: `Extraction triggered for entry ${entryId}` };
       },
     },
     {
