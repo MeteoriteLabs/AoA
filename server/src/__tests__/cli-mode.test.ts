@@ -517,3 +517,87 @@ describe("buildToolListResponse", () => {
     });
   });
 });
+
+// ── CLI Mode Service Tests ──────────────────────────────────────────────────
+
+describe("cliModeService", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+  });
+
+  it("yields error when CLI tool not in PATH", async () => {
+    // Mock execSync to throw (tool not found)
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockImplementation(() => {
+      throw new Error("not found");
+    });
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+
+    const service = cliModeService({} as any);
+    const config = { cliTool: "claude_cli", executionMode: "cli" } as any;
+    const params = {
+      companyId: "comp1",
+      userId: "user1",
+      userRole: "founder",
+      content: "hello",
+    };
+
+    const chunks: any[] = [];
+    for await (const chunk of service.chat(params, config)) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.some((c) => c.type === "error")).toBe(true);
+    const errChunk = chunks.find((c) => c.type === "error");
+    expect(errChunk.message).toContain("not found in PATH");
+  });
+
+  it("yields error when cliTool is not configured", async () => {
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+
+    const service = cliModeService({} as any);
+    const config = { cliTool: null, executionMode: "cli" } as any;
+    const params = {
+      companyId: "comp1",
+      userId: "user1",
+      userRole: "founder",
+      content: "hello",
+    };
+
+    const chunks: any[] = [];
+    for await (const chunk of service.chat(params, config)) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.some((c) => c.type === "error")).toBe(true);
+    const errChunk = chunks.find((c) => c.type === "error");
+    expect(errChunk.message).toContain("No CLI tool configured");
+  });
+
+  it("exposes shutdown method", async () => {
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    expect(typeof service.shutdown).toBe("function");
+    // Should not throw
+    service.shutdown();
+  });
+
+  it("exposes getSessionStore method", async () => {
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    const store = service.getSessionStore();
+    expect(typeof store.get).toBe("function");
+    expect(typeof store.set).toBe("function");
+    expect(typeof store.shutdownAll).toBe("function");
+  });
+});
