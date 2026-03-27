@@ -21,6 +21,7 @@ import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Inbox } from "./pages/Inbox";
 import { SettingsPage } from "./pages/SettingsPage";
+import { InternalAgentSettingsPage } from "./pages/InternalAgentSettingsPage";
 import { VisionMission } from "./pages/VisionMission";
 import { DesignGuide } from "./pages/DesignGuide";
 import { TeamPage } from "./pages/TeamPage";
@@ -103,6 +104,7 @@ function boardRoutes() {
       <Route path="companies" element={<Companies />} />
       <Route path="vision" element={<VisionMission />} />
       <Route path="settings" element={<SettingsPage />} />
+      <Route path="settings/internal-agent" element={<InternalAgentSettingsPage />} />
       <Route path="company/settings" element={<Navigate to="../settings" replace />} />
       <Route path="org" element={<TeamPage />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />

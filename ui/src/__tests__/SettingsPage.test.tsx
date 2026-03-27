@@ -39,6 +39,7 @@ vi.mock("../lib/queryKeys", () => ({
       keys: () => ["mcp-keys"],
       clients: () => ["mcp-clients"],
     },
+    agentConfig: () => ["agent-config"],
   },
 }));
 
@@ -91,14 +92,46 @@ vi.mock("../api/mcp", () => ({
   },
 }));
 
+vi.mock("../api/internal-agent", () => ({
+  internalAgentApi: {
+    getConfig: vi.fn().mockResolvedValue({
+      id: "ia-cfg-1",
+      executionMode: "api",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      budgetMonthlyCents: 5000,
+      spentMonthlyCents: 1234,
+    }),
+  },
+}));
+
 vi.mock("../lib/utils", () => ({
   formatCents: (v: number) => `$${(v / 100).toFixed(2)}`,
   formatTokens: (v: number) => `${v}`,
+  budgetProgressColor: (u: number) =>
+    u >= 90 ? "bg-red-500" : u >= 70 ? "bg-amber-500" : "bg-emerald-500",
   cn: (...args: any[]) => args.filter(Boolean).join(" "),
 }));
 
 vi.mock("../components/LLMProvidersSection", () => ({
   LLMProvidersSection: () => <div data-testid="llm-providers">LLM Providers Content</div>,
+}));
+
+vi.mock("../components/PageTabBar", () => ({
+  PageTabBar: ({ items, value, onValueChange }: any) => (
+    <div data-testid="page-tab-bar">
+      {items.map((item: any) => (
+        <button
+          key={item.value}
+          data-testid={`tab-${item.value}`}
+          aria-selected={value === item.value}
+          onClick={() => onValueChange(item.value)}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 vi.mock("../components/EmptyState", () => ({
@@ -141,49 +174,38 @@ describe("SettingsPage", () => {
     mockCompanyContext.companies = [makeCompany()];
   });
 
-  it("renders all section headers", () => {
+  it("renders Settings title and icon", () => {
     renderWithProviders(<SettingsPage />);
+    expect(screen.getByText("Settings")).toBeInTheDocument();
+  });
 
-    // "General" appears both as collapsible header and inner subsection heading
+  it("renders internal agent link", () => {
+    renderWithProviders(<SettingsPage />);
+    expect(screen.getByText("Internal Agent")).toBeInTheDocument();
+  });
+
+  it("renders tab bar with all tabs", () => {
+    renderWithProviders(<SettingsPage />);
+    expect(screen.getByTestId("page-tab-bar")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-general")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-llm")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-activity")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-integrations")).toBeInTheDocument();
+  });
+
+  it("General tab is selected by default", () => {
+    renderWithProviders(<SettingsPage />);
+    // General content should be visible (inner subsection heading)
     expect(screen.getAllByText("General").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("LLM Providers")).toBeInTheDocument();
-    expect(screen.getByText("Budget")).toBeInTheDocument();
-    expect(screen.getByText("Activity")).toBeInTheDocument();
-    expect(screen.getByText("Integrations")).toBeInTheDocument();
   });
 
-  it("Budget section is collapsed by default", () => {
-    renderWithProviders(<SettingsPage />);
-
-    // Budget section header is visible, but budget content should not be
-    expect(screen.getByText("Budget")).toBeInTheDocument();
-    // The BudgetSection component shouldn't render its content when collapsed
-    // (Radix Collapsible hides content when open=false)
-  });
-
-  it("Activity section is collapsed by default", () => {
-    renderWithProviders(<SettingsPage />);
-
-    expect(screen.getByText("Activity")).toBeInTheDocument();
-  });
-
-  it("expanding and collapsing sections works", async () => {
+  it("switching tabs shows correct content", async () => {
     const user = userEvent.setup();
     renderWithProviders(<SettingsPage />);
 
-    // Budget is collapsed by default — click to expand
-    const budgetButton = screen.getByText("Budget").closest("button");
-    expect(budgetButton).toBeInTheDocument();
-    await user.click(budgetButton!);
-
-    // Click again to collapse
-    await user.click(budgetButton!);
-    // No error means toggle works
-  });
-
-  it("renders Settings title and icon", () => {
-    renderWithProviders(<SettingsPage />);
-
-    expect(screen.getByText("Settings")).toBeInTheDocument();
+    // Click LLM Providers tab
+    await user.click(screen.getByTestId("tab-llm"));
+    expect(screen.getByTestId("llm-providers")).toBeInTheDocument();
   });
 });

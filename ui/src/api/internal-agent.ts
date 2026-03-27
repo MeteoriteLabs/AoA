@@ -285,4 +285,10 @@ export const internalAgentApi = {
       `/companies/${companyId}/internal-agent/reminders/${reminderId}`,
       { status: "cancelled" },
     ),
+
+  testConnection: (companyId: string) =>
+    api.post<{ success: boolean; error?: string }>(
+      `/companies/${companyId}/internal-agent/test-connection`,
+      {},
+    ),
 };
