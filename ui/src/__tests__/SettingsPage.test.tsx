@@ -39,6 +39,7 @@ vi.mock("../lib/queryKeys", () => ({
       keys: () => ["mcp-keys"],
       clients: () => ["mcp-clients"],
     },
+    agentConfig: () => ["agent-config"],
   },
 }));
 
@@ -88,6 +89,19 @@ vi.mock("../api/mcp", () => ({
     createKey: vi.fn(),
     revokeKey: vi.fn(),
     listClients: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+vi.mock("../api/internal-agent", () => ({
+  internalAgentApi: {
+    getConfig: vi.fn().mockResolvedValue({
+      id: "ia-cfg-1",
+      executionMode: "api",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      budgetMonthlyCents: 5000,
+      spentMonthlyCents: 1234,
+    }),
   },
 }));
 
@@ -185,5 +199,10 @@ describe("SettingsPage", () => {
     renderWithProviders(<SettingsPage />);
 
     expect(screen.getByText("Settings")).toBeInTheDocument();
+  });
+
+  it("renders internal agent link in settings", () => {
+    renderWithProviders(<SettingsPage />);
+    expect(screen.getByText("Internal Agent")).toBeInTheDocument();
   });
 });
