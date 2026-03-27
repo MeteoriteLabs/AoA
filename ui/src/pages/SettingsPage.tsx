@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -1276,6 +1277,17 @@ export function SettingsPage() {
         <Settings className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Settings</h1>
       </div>
+
+      <Link
+        to="internal-agent"
+        className="flex items-center justify-between rounded-md border border-border p-3 mb-4 hover:bg-muted/50 transition-colors"
+      >
+        <div>
+          <p className="text-sm font-medium">Internal Agent</p>
+          <p className="text-xs text-muted-foreground">Configure the AI assistant, capabilities, and budget</p>
+        </div>
+        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+      </Link>
 
       {/* General */}
       <Collapsible open={generalOpen} onOpenChange={setGeneralOpen}>
