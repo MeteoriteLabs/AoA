@@ -24,7 +24,7 @@ vi.mock("../context/DialogContext", () => ({
     openNewIssue: vi.fn(),
     openNewAgent: vi.fn(),
     openNewGoal: vi.fn(),
-    openDebrief: vi.fn(),
+    openDiscussionCapture: vi.fn(),
   }),
 }));
 
