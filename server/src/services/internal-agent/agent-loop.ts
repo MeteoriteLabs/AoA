@@ -15,6 +15,7 @@ import {
 import { contextAssemblyService } from "./context-assembly.js";
 import { conversationService } from "./conversation.js";
 import { createServiceContainer } from "./service-container.js";
+import { publishLiveEvent } from "../live-events.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -206,6 +207,12 @@ export function agentLoopService(db: Db) {
 
         runId = run.id;
 
+        publishLiveEvent({
+          companyId: params.companyId,
+          type: "internal_agent.run.status",
+          payload: { runId, status: "running" },
+        });
+
         // 9. Budget check
         if (
           config.budgetMonthlyCents != null &&
@@ -306,6 +313,12 @@ export function agentLoopService(db: Db) {
                 toolsCalled,
               })
               .where(eq(internalAgentRuns.id, runId));
+
+            publishLiveEvent({
+              companyId: params.companyId,
+              type: "internal_agent.run.status",
+              payload: { runId, status: "failed" },
+            });
 
             yield {
               type: "error",
@@ -519,6 +532,24 @@ export function agentLoopService(db: Db) {
           })
           .where(eq(internalAgentRuns.id, runId));
 
+        // Publish live events for WebSocket subscribers
+        publishLiveEvent({
+          companyId: params.companyId,
+          type: "internal_agent.run.status",
+          payload: { runId, status: "completed", durationMs, costCents },
+        });
+        if (accumulatedText) {
+          publishLiveEvent({
+            companyId: params.companyId,
+            type: "internal_agent.message",
+            payload: {
+              runId,
+              conversationId: conversation.id,
+              messagePreview: accumulatedText.slice(0, 200),
+            },
+          });
+        }
+
         // Update spent budget
         if (costCents > 0) {
           await db
@@ -558,6 +589,12 @@ export function agentLoopService(db: Db) {
             })
             .where(eq(internalAgentRuns.id, runId))
             .catch(() => {});
+
+          publishLiveEvent({
+            companyId: params.companyId,
+            type: "internal_agent.run.status",
+            payload: { runId, status: "failed" },
+          });
         }
 
         yield {
