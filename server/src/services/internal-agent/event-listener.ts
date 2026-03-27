@@ -108,19 +108,22 @@ export function createEventListener(
     lastFired.set(key, now);
 
     // Create run record (fire-and-forget — don't block event processing)
-    db.insert(internalAgentRuns)
-      .values({
-        companyId,
-        triggerType: "event",
-        triggerSource: trigger.triggerSource,
-        status: "completed",
-        summary: `Event trigger: ${trigger.eventType}`,
-        completedAt: new Date(),
-      })
-      .returning()
-      .catch(() => {
-        // Swallow — run logging is best-effort
-      });
+    // Skip for discussion_entry — extraction creates its own run record
+    if (trigger.triggerSource !== "discussion_entry") {
+      db.insert(internalAgentRuns)
+        .values({
+          companyId,
+          triggerType: "event",
+          triggerSource: trigger.triggerSource,
+          status: "completed",
+          summary: `Event trigger: ${trigger.eventType}`,
+          completedAt: new Date(),
+        })
+        .returning()
+        .catch(() => {
+          // Swallow — run logging is best-effort
+        });
+    }
 
     // Notify callback
     onTrigger?.(trigger);

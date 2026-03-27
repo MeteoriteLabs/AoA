@@ -534,7 +534,7 @@ export function extractionService(db: Db) {
         publishLiveEvent({
           companyId,
           type: "discussion.extraction.failed",
-          payload: { discussionId, entryId },
+          payload: { discussionId, entryId, error: err instanceof Error ? err.message : String(err) },
         });
       }
     },
