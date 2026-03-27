@@ -1,9 +1,11 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { debriefs, briefs, briefItems, projects } from "@paperclipai/db";
+import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, internalAgentRuns } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { publishLiveEvent } from "./live-events.js";
+import { getProviderApiKey, createProvider } from "./internal-agent/providers/index.js";
 
-interface ExtractedItem {
+export interface ExtractedItem {
   type: "decision" | "task" | "insight" | "context" | "reference" | "preference";
   title: string;
   description: string;
@@ -165,7 +167,7 @@ async function callOpenAI(
  * Parse the LLM response text into structured items.
  * Handles potential markdown code fences around JSON.
  */
-function parseExtractedItems(text: string): ExtractedItem[] {
+export function parseExtractedItems(text: string): ExtractedItem[] {
   let cleaned = text.trim();
 
   // Strip markdown code fences if present
@@ -325,6 +327,215 @@ export function extractionService(db: Db) {
           .catch((updateErr) => {
             log.error({ err: updateErr }, "Failed to update debrief status after extraction failure");
           });
+      }
+    },
+
+    extractFromDiscussionEntry: async (companyId: string, entryId: string) => {
+      const log = logger.child({ service: "extraction", entryId, companyId });
+      let discussionId = "";
+
+      try {
+        // 1. Fetch the entry
+        const [entry] = await db
+          .select()
+          .from(discussionEntries)
+          .where(and(eq(discussionEntries.id, entryId)));
+
+        if (!entry) {
+          log.error("Discussion entry not found");
+          return;
+        }
+
+        discussionId = entry.discussionId;
+
+        // Guard: skip if already processing or completed (prevents double extraction)
+        if (entry.extractionStatus !== "pending") {
+          log.info({ currentStatus: entry.extractionStatus }, "Entry not in pending status — skipping");
+          return;
+        }
+
+        // 2. Fetch parent discussion for companyId verification
+        const [discussion] = await db
+          .select()
+          .from(discussions)
+          .where(eq(discussions.id, entry.discussionId));
+
+        if (!discussion || discussion.companyId !== companyId) {
+          log.error("Discussion not found or company mismatch");
+          return;
+        }
+
+        // 3. Set extraction status to processing
+        await db
+          .update(discussionEntries)
+          .set({ extractionStatus: "processing" })
+          .where(eq(discussionEntries.id, entryId));
+
+        // 4. Get thread context (most recent 10 entries, excluding current)
+        const previousEntries = await db
+          .select()
+          .from(discussionEntries)
+          .where(eq(discussionEntries.discussionId, entry.discussionId))
+          .orderBy(desc(discussionEntries.createdAt))
+          .limit(11);
+
+        const threadContext = previousEntries
+          .filter((e: any) => e.id !== entryId)
+          .slice(0, 10)
+          .reverse()
+          .map((e: any) => e.rawContent)
+          .join("\n---\n");
+
+        // 5. Build extraction prompt
+        const { text: deptList, lookup: deptLookup } =
+          await buildDepartmentsList(db, companyId);
+        const prompt = EXTRACTION_PROMPT_TEMPLATE.replace(
+          "{{DEPARTMENTS_AND_PROJECTS_LIST}}",
+          deptList,
+        );
+
+        // 6. Check if internal agent is configured
+        const [agentConfig] = await db
+          .select()
+          .from(internalAgentConfig)
+          .where(eq(internalAgentConfig.companyId, companyId));
+
+        let extractedItems: ExtractedItem[];
+
+        if (agentConfig?.provider) {
+          // ── Agent-based extraction ────────────────────────────────────
+          log.info("Using agent provider for extraction");
+
+          const [run] = await db
+            .insert(internalAgentRuns)
+            .values({
+              companyId,
+              triggerType: "event",
+              triggerSource: "discussion_entry",
+              status: "running",
+            })
+            .returning();
+
+          try {
+            const apiKey = await getProviderApiKey(db, companyId, agentConfig.provider);
+            const provider = createProvider(agentConfig.provider, apiKey);
+            const model = agentConfig.model ?? "claude-sonnet-4-6";
+
+            const userContent = threadContext
+              ? `Previous context:\n${threadContext}\n\n---\n\nNew entry to extract from:\n${entry.rawContent}`
+              : entry.rawContent;
+
+            let text = "";
+            for await (const chunk of provider.chat({
+              messages: [{ role: "user", content: userContent }],
+              tools: [],
+              model,
+              maxTokens: 4096,
+              systemPrompt: prompt,
+            })) {
+              if (chunk.type === "text") text += chunk.delta;
+            }
+
+            extractedItems = parseExtractedItems(text);
+
+            await db
+              .update(internalAgentRuns)
+              .set({ status: "completed", completedAt: new Date() })
+              .where(eq(internalAgentRuns.id, run.id));
+
+            await db
+              .update(discussionEntries)
+              .set({ extractionRunId: run.id })
+              .where(eq(discussionEntries.id, entryId));
+          } catch (providerErr: any) {
+            log.error({ err: providerErr }, "Agent provider extraction failed");
+            await db
+              .update(internalAgentRuns)
+              .set({
+                status: "failed",
+                errorMessage: providerErr?.message ?? "Unknown error",
+                completedAt: new Date(),
+              })
+              .where(eq(internalAgentRuns.id, run.id));
+            throw providerErr;
+          }
+        } else {
+          // ── Legacy fallback extraction ────────────────────────────────
+          log.info("No agent config — using legacy extraction");
+          const userContent = threadContext
+            ? `Previous context:\n${threadContext}\n\n---\n\nNew entry to extract from:\n${entry.rawContent}`
+            : entry.rawContent;
+          extractedItems = await callLLM(prompt, userContent);
+        }
+
+        log.info({ itemCount: extractedItems.length }, "Extraction complete");
+
+        // 7. Create extracted items
+        if (extractedItems.length > 0) {
+          const itemValues = extractedItems.map((item) => {
+            let suggestedDepartmentId: string | null = null;
+            let suggestedProjectId: string | null = null;
+
+            if (item.department) {
+              const match = deptLookup.get(item.department.toLowerCase());
+              if (match) {
+                if (match.type === "department") {
+                  suggestedDepartmentId = match.id;
+                } else {
+                  suggestedProjectId = match.id;
+                }
+              }
+            }
+
+            return {
+              discussionEntryId: entryId,
+              type: item.type,
+              title: item.title,
+              description: item.description || null,
+              suggestedPriority: item.priority || null,
+              suggestedDepartmentId,
+              suggestedProjectId,
+              suggestedLayer: item.layer ?? "domain",
+              layer: item.layer ?? "domain",
+              status: "pending" as const,
+            };
+          });
+
+          await db.insert(discussionExtractedItems).values(itemValues);
+        }
+
+        // 8. Mark completed
+        await db
+          .update(discussionEntries)
+          .set({ extractionStatus: "completed" })
+          .where(eq(discussionEntries.id, entryId));
+
+        // 9. Publish completion event
+        publishLiveEvent({
+          companyId,
+          type: "discussion.extraction.completed",
+          payload: {
+            discussionId: entry.discussionId,
+            entryId,
+            itemCount: extractedItems.length,
+          },
+        });
+      } catch (err) {
+        log.error({ err }, "Discussion entry extraction failed");
+
+        await db
+          .update(discussionEntries)
+          .set({ extractionStatus: "failed" })
+          .where(eq(discussionEntries.id, entryId))
+          .catch((updateErr: any) => {
+            log.error({ err: updateErr }, "Failed to update entry status after extraction failure");
+          });
+
+        publishLiveEvent({
+          companyId,
+          type: "discussion.extraction.failed",
+          payload: { discussionId, entryId },
+        });
       }
     },
   };
