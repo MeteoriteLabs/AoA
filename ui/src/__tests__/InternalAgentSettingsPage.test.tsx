@@ -351,4 +351,75 @@ describe("InternalAgentSettingsPage", () => {
     });
     expect(screen.queryByText("Load More")).not.toBeInTheDocument();
   });
+
+  it("toggling individual checkbox updates state", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Discussion Processing")).toBeInTheDocument();
+    });
+    const checkbox = screen.getByRole("checkbox", {
+      name: /Discussion Processing/i,
+    });
+    expect(checkbox).toBeChecked();
+    await user.click(checkbox);
+    expect(checkbox).not.toBeChecked();
+  });
+
+  it("notification preference radio selection changes value", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Silent")).toBeInTheDocument();
+    });
+    const silentRadio = screen.getByRole("radio", { name: /Silent/i });
+    await user.click(silentRadio);
+    expect(silentRadio).toBeChecked();
+  });
+
+  it("context token budget dropdown renders current value", async () => {
+    renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Context Token Budget")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Standard (8,000)")).toBeInTheDocument();
+  });
+
+  it("load more button fetches next page", async () => {
+    apiMock.getRuns.mockResolvedValue(
+      makeRunsResponse({
+        runs: [
+          {
+            id: "run-1",
+            triggerType: "conversation",
+            triggerSource: "user_message",
+            status: "completed",
+            toolsCalled: [],
+            tokenUsage: { inputTokens: 100, outputTokens: 50 },
+            costCents: 2,
+            durationMs: 1500,
+            summary: null,
+            departmentContext: null,
+            userId: "user-1",
+            createdAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+          },
+        ],
+        total: 25,
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Run History")).toBeInTheDocument();
+    });
+    await user.click(screen.getByText("Run History").closest("button")!);
+    await waitFor(() => {
+      expect(screen.getByText("Load More")).toBeInTheDocument();
+    });
+    await user.click(screen.getByText("Load More"));
+    await waitFor(() => {
+      expect(apiMock.getRuns).toHaveBeenCalledTimes(2);
+    });
+  });
 });
