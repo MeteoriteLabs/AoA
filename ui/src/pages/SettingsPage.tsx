@@ -12,6 +12,7 @@ import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { goalsApi } from "../api/goals";
 import { mcpApi } from "../api/mcp";
+import { internalAgentApi } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, formatTokens } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -675,6 +676,12 @@ function BudgetSection() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: agentConfig } = useQuery({
+    queryKey: queryKeys.agentConfig(selectedCompanyId!),
+    queryFn: () => internalAgentApi.getConfig(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
   if (!selectedCompanyId) {
     return (
       <EmptyState
@@ -825,6 +832,44 @@ function BudgetSection() {
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+                {/* Internal Agent */}
+                {agentConfig && agentConfig.budgetMonthlyCents != null && (
+                  <div className="mt-4 pt-4 border-t border-border">
+                    <p className="text-xs font-medium text-muted-foreground mb-2">
+                      Internal Agent
+                    </p>
+                    <div className="flex items-center justify-between text-sm">
+                      <span>AI Assistant</span>
+                      <span>
+                        {formatCents(agentConfig.spentMonthlyCents)} /{" "}
+                        {formatCents(agentConfig.budgetMonthlyCents)}
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-muted overflow-hidden mt-1">
+                      <div
+                        className={`h-full rounded-full ${
+                          agentConfig.budgetMonthlyCents > 0 &&
+                          agentConfig.spentMonthlyCents / agentConfig.budgetMonthlyCents >= 0.9
+                            ? "bg-red-500"
+                            : agentConfig.budgetMonthlyCents > 0 &&
+                                agentConfig.spentMonthlyCents / agentConfig.budgetMonthlyCents >= 0.7
+                              ? "bg-amber-500"
+                              : "bg-emerald-500"
+                        }`}
+                        style={{
+                          width: `${
+                            agentConfig.budgetMonthlyCents > 0
+                              ? Math.min(
+                                  (agentConfig.spentMonthlyCents / agentConfig.budgetMonthlyCents) * 100,
+                                  100,
+                                )
+                              : 0
+                          }%`,
+                        }}
+                      />
+                    </div>
                   </div>
                 )}
               </CardContent>
