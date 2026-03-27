@@ -84,6 +84,23 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => mockBreadcrumbContext,
 }));
 
+vi.mock("../components/PageTabBar", () => ({
+  PageTabBar: ({ items, value, onValueChange }: any) => (
+    <div data-testid="page-tab-bar">
+      {items.map((item: any) => (
+        <button
+          key={item.value}
+          data-testid={`tab-${item.value}`}
+          aria-selected={value === item.value}
+          onClick={() => onValueChange(item.value)}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  ),
+}));
+
 // --- Tests ---
 describe("InternalAgentSettingsPage", () => {
   beforeEach(() => {
@@ -95,22 +112,22 @@ describe("InternalAgentSettingsPage", () => {
     apiMock.getRuns.mockResolvedValue(makeRunsResponse());
   });
 
-  it("renders all section headers", async () => {
+  it("renders tab bar with all tabs", async () => {
     renderWithProviders(<InternalAgentSettingsPage />);
     await waitFor(() => {
-      expect(screen.getByText("Execution & Model")).toBeInTheDocument();
+      expect(screen.getByTestId("page-tab-bar")).toBeInTheDocument();
     });
-    expect(screen.getByText("Capabilities & Preferences")).toBeInTheDocument();
-    expect(screen.getByText("Budget & Spend")).toBeInTheDocument();
-    expect(screen.getByText("Run History")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-execution")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-history")).toBeInTheDocument();
   });
 
   it("shows provider and model dropdowns in API mode", async () => {
     renderWithProviders(<InternalAgentSettingsPage />);
     await waitFor(() => {
-      expect(screen.getByText("Execution & Model")).toBeInTheDocument();
+      expect(screen.getByText("Provider")).toBeInTheDocument();
     });
-    expect(screen.getByText("Provider")).toBeInTheDocument();
     expect(screen.getByText("Model")).toBeInTheDocument();
   });
 
@@ -145,8 +162,13 @@ describe("InternalAgentSettingsPage", () => {
     expect(autonomySelect.closest("button")).toBeDisabled();
   });
 
-  it("renders all 12 capability checkboxes", async () => {
+  it("renders all 12 capability checkboxes on capabilities tab", async () => {
+    const user = userEvent.setup();
     renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-capabilities"));
     await waitFor(() => {
       expect(screen.getByText("Discussion Processing")).toBeInTheDocument();
     });
@@ -162,6 +184,10 @@ describe("InternalAgentSettingsPage", () => {
     const user = userEvent.setup();
     renderWithProviders(<InternalAgentSettingsPage />);
     await waitFor(() => {
+      expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-capabilities"));
+    await waitFor(() => {
       expect(screen.getByText("Select All")).toBeInTheDocument();
     });
     await user.click(screen.getByText("Select All"));
@@ -174,8 +200,13 @@ describe("InternalAgentSettingsPage", () => {
     });
   });
 
-  it("renders notification preference options", async () => {
+  it("renders notification preference options on capabilities tab", async () => {
+    const user = userEvent.setup();
     renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-capabilities"));
     await waitFor(() => {
       expect(screen.getByText("Silent")).toBeInTheDocument();
     });
@@ -187,7 +218,12 @@ describe("InternalAgentSettingsPage", () => {
     apiMock.getConfig.mockResolvedValue(
       makeAgentConfig({ spentMonthlyCents: 1000, budgetMonthlyCents: 5000 }),
     );
+    const user = userEvent.setup();
     renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-budget"));
     await waitFor(() => {
       expect(screen.getByTestId("budget-progress")).toBeInTheDocument();
     });
@@ -199,7 +235,12 @@ describe("InternalAgentSettingsPage", () => {
     apiMock.getConfig.mockResolvedValue(
       makeAgentConfig({ spentMonthlyCents: 4000, budgetMonthlyCents: 5000 }),
     );
+    const user = userEvent.setup();
     renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-budget"));
     await waitFor(() => {
       expect(screen.getByTestId("budget-progress")).toBeInTheDocument();
     });
@@ -211,7 +252,12 @@ describe("InternalAgentSettingsPage", () => {
     apiMock.getConfig.mockResolvedValue(
       makeAgentConfig({ spentMonthlyCents: 4800, budgetMonthlyCents: 5000 }),
     );
+    const user = userEvent.setup();
     renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-budget"));
     await waitFor(() => {
       expect(screen.getByTestId("budget-progress")).toBeInTheDocument();
     });
@@ -223,13 +269,18 @@ describe("InternalAgentSettingsPage", () => {
     apiMock.getConfig.mockResolvedValue(
       makeAgentConfig({ spentMonthlyCents: 5000, budgetMonthlyCents: 5000 }),
     );
+    const user = userEvent.setup();
     renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-budget"));
     await waitFor(() => {
       expect(screen.getByText("Agent paused")).toBeInTheDocument();
     });
   });
 
-  it("save button calls updateConfig", async () => {
+  it("execution tab save calls updateConfig with execution fields", async () => {
     const user = userEvent.setup();
     renderWithProviders(<InternalAgentSettingsPage />);
     await waitFor(() => {
@@ -237,7 +288,12 @@ describe("InternalAgentSettingsPage", () => {
     });
     await user.click(screen.getByText("Save"));
     await waitFor(() => {
-      expect(apiMock.updateConfig).toHaveBeenCalled();
+      expect(apiMock.updateConfig).toHaveBeenCalledWith("comp-1", {
+        executionMode: "api",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        cliTool: undefined,
+      });
     });
   });
 
@@ -270,7 +326,85 @@ describe("InternalAgentSettingsPage", () => {
     });
   });
 
-  it("run history renders table columns", async () => {
+  it("run history tab renders empty state when no runs", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-history")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-history"));
+    await waitFor(() => {
+      expect(screen.getByText("No runs yet")).toBeInTheDocument();
+    });
+  });
+
+  it("toggling individual checkbox updates state", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-capabilities"));
+    await waitFor(() => {
+      expect(screen.getByText("Discussion Processing")).toBeInTheDocument();
+    });
+    const checkbox = screen.getByRole("checkbox", {
+      name: /Discussion Processing/i,
+    });
+    expect(checkbox).toBeChecked();
+    await user.click(checkbox);
+    expect(checkbox).not.toBeChecked();
+  });
+
+  it("notification preference radio selection changes value", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-capabilities"));
+    await waitFor(() => {
+      expect(screen.getByText("Silent")).toBeInTheDocument();
+    });
+    const silentRadio = screen.getByRole("radio", { name: /Silent/i });
+    await user.click(silentRadio);
+    expect(silentRadio).toBeChecked();
+  });
+
+  it("context token budget dropdown renders current value", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-capabilities"));
+    await waitFor(() => {
+      expect(screen.getByText("Context Token Budget")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Standard (8,000)")).toBeInTheDocument();
+  });
+
+  it("deselect all toggles all capabilities off", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-capabilities"));
+    await waitFor(() => {
+      expect(screen.getByText("Deselect All")).toBeInTheDocument();
+    });
+    await user.click(screen.getByText("Deselect All"));
+    const checkboxes = screen.getAllByRole("checkbox");
+    const capCheckboxes = checkboxes.filter(
+      (cb) => cb.getAttribute("data-capability") !== null,
+    );
+    capCheckboxes.forEach((cb) => {
+      expect(cb).not.toBeChecked();
+    });
+  });
+
+  it("run history tab renders table with run data", async () => {
     apiMock.getRuns.mockResolvedValue(
       makeRunsResponse({
         runs: [
@@ -293,99 +427,19 @@ describe("InternalAgentSettingsPage", () => {
         total: 1,
       }),
     );
-    renderWithProviders(<InternalAgentSettingsPage />);
     const user = userEvent.setup();
+    renderWithProviders(<InternalAgentSettingsPage />);
     await waitFor(() => {
-      expect(screen.getByText("Run History")).toBeInTheDocument();
+      expect(screen.getByTestId("tab-history")).toBeInTheDocument();
     });
-    await user.click(screen.getByText("Run History").closest("button")!);
+    await user.click(screen.getByTestId("tab-history"));
     await waitFor(() => {
       expect(screen.getByText("conversation")).toBeInTheDocument();
     });
     expect(screen.getByText("completed")).toBeInTheDocument();
   });
 
-  it("run history shows empty state when no runs", async () => {
-    renderWithProviders(<InternalAgentSettingsPage />);
-    const user = userEvent.setup();
-    await waitFor(() => {
-      expect(screen.getByText("Run History")).toBeInTheDocument();
-    });
-    await user.click(screen.getByText("Run History").closest("button")!);
-    await waitFor(() => {
-      expect(screen.getByText("No runs yet")).toBeInTheDocument();
-    });
-  });
-
-  it("run history hides load more when all loaded", async () => {
-    apiMock.getRuns.mockResolvedValue(
-      makeRunsResponse({
-        runs: [
-          {
-            id: "run-1",
-            triggerType: "conversation",
-            triggerSource: "user_message",
-            status: "completed",
-            toolsCalled: [],
-            tokenUsage: { inputTokens: 100, outputTokens: 50 },
-            costCents: 2,
-            durationMs: 1500,
-            summary: null,
-            departmentContext: null,
-            userId: "user-1",
-            createdAt: new Date().toISOString(),
-            completedAt: new Date().toISOString(),
-          },
-        ],
-        total: 1,
-      }),
-    );
-    renderWithProviders(<InternalAgentSettingsPage />);
-    const user = userEvent.setup();
-    await waitFor(() => {
-      expect(screen.getByText("Run History")).toBeInTheDocument();
-    });
-    await user.click(screen.getByText("Run History").closest("button")!);
-    await waitFor(() => {
-      expect(screen.getByText("conversation")).toBeInTheDocument();
-    });
-    expect(screen.queryByText("Load More")).not.toBeInTheDocument();
-  });
-
-  it("toggling individual checkbox updates state", async () => {
-    const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
-    await waitFor(() => {
-      expect(screen.getByText("Discussion Processing")).toBeInTheDocument();
-    });
-    const checkbox = screen.getByRole("checkbox", {
-      name: /Discussion Processing/i,
-    });
-    expect(checkbox).toBeChecked();
-    await user.click(checkbox);
-    expect(checkbox).not.toBeChecked();
-  });
-
-  it("notification preference radio selection changes value", async () => {
-    const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
-    await waitFor(() => {
-      expect(screen.getByText("Silent")).toBeInTheDocument();
-    });
-    const silentRadio = screen.getByRole("radio", { name: /Silent/i });
-    await user.click(silentRadio);
-    expect(silentRadio).toBeChecked();
-  });
-
-  it("context token budget dropdown renders current value", async () => {
-    renderWithProviders(<InternalAgentSettingsPage />);
-    await waitFor(() => {
-      expect(screen.getByText("Context Token Budget")).toBeInTheDocument();
-    });
-    expect(screen.getByText("Standard (8,000)")).toBeInTheDocument();
-  });
-
-  it("load more button fetches next page", async () => {
+  it("load more button visible when more pages exist", async () => {
     apiMock.getRuns.mockResolvedValue(
       makeRunsResponse({
         runs: [
@@ -411,15 +465,84 @@ describe("InternalAgentSettingsPage", () => {
     const user = userEvent.setup();
     renderWithProviders(<InternalAgentSettingsPage />);
     await waitFor(() => {
-      expect(screen.getByText("Run History")).toBeInTheDocument();
+      expect(screen.getByTestId("tab-history")).toBeInTheDocument();
     });
-    await user.click(screen.getByText("Run History").closest("button")!);
+    await user.click(screen.getByTestId("tab-history"));
     await waitFor(() => {
       expect(screen.getByText("Load More")).toBeInTheDocument();
     });
-    await user.click(screen.getByText("Load More"));
+  });
+
+  it("load more button hidden when all runs loaded", async () => {
+    apiMock.getRuns.mockResolvedValue(
+      makeRunsResponse({
+        runs: [
+          {
+            id: "run-1",
+            triggerType: "conversation",
+            triggerSource: "user_message",
+            status: "completed",
+            toolsCalled: [],
+            tokenUsage: { inputTokens: 100, outputTokens: 50 },
+            costCents: 2,
+            durationMs: 1500,
+            summary: null,
+            departmentContext: null,
+            userId: "user-1",
+            createdAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+          },
+        ],
+        total: 1,
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<InternalAgentSettingsPage />);
     await waitFor(() => {
-      expect(apiMock.getRuns).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId("tab-history")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-history"));
+    await waitFor(() => {
+      expect(screen.getByText("conversation")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Load More")).not.toBeInTheDocument();
+  });
+
+  it("capabilities tab save calls updateConfig with capabilities fields", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-capabilities"));
+    await waitFor(() => {
+      expect(screen.getByText("Save")).toBeInTheDocument();
+    });
+    await user.click(screen.getByText("Save"));
+    await waitFor(() => {
+      expect(apiMock.updateConfig).toHaveBeenCalledWith("comp-1", {
+        enabledCapabilities: expect.any(Array),
+        notificationPreference: "realtime",
+        contextTokenBudget: 8000,
+      });
+    });
+  });
+
+  it("budget tab save calls updateConfig with budget fields", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-budget"));
+    await waitFor(() => {
+      expect(screen.getByText("Save")).toBeInTheDocument();
+    });
+    await user.click(screen.getByText("Save"));
+    await waitFor(() => {
+      expect(apiMock.updateConfig).toHaveBeenCalledWith("comp-1", {
+        budgetMonthlyCents: 5000,
+      });
     });
   });
 });

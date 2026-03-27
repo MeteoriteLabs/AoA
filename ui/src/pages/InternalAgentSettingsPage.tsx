@@ -1,17 +1,18 @@
-import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useState } from "react";
+import { Link, useSearchParams } from "@/lib/router";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { internalAgentApi } from "../api/internal-agent";
-import type { AgentRunsResponse } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, budgetProgressColor, relativeTime } from "../lib/utils";
 import { Button } from "@/components/ui/button";
-import {
-  Collapsible,
-  CollapsibleTrigger,
-  CollapsibleContent,
-} from "@/components/ui/collapsible";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -21,11 +22,11 @@ import {
 } from "@/components/ui/select";
 import {
   Settings,
-  ChevronRight,
   Loader2,
   CheckCircle2,
   XCircle,
 } from "lucide-react";
+import { PageTabBar } from "../components/PageTabBar";
 import { PageSkeleton } from "../components/PageSkeleton";
 import {
   AGENT_CAPABILITIES,
@@ -34,35 +35,23 @@ import {
   CLI_TOOLS,
   NOTIFICATION_PREFERENCES,
 } from "@paperclipai/shared";
-import type { AgentProvider, AgentCapability, NotificationPreference } from "@paperclipai/shared";
+import type {
+  AgentProvider,
+  AgentCapability,
+  NotificationPreference,
+  UpdateInternalAgentConfig,
+} from "@paperclipai/shared";
 
 /* ------------------------------------------------------------------ */
-/*  Helpers                                                            */
+/*  Constants                                                          */
 /* ------------------------------------------------------------------ */
 
-function SectionHeader({
-  title,
-  subtitle,
-  open,
-}: {
-  title: string;
-  subtitle?: string;
-  open: boolean;
-}) {
-  return (
-    <div className="flex items-center gap-2 py-3 w-full">
-      <ChevronRight
-        className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${open ? "rotate-90" : ""}`}
-      />
-      <span className="text-sm font-medium">{title}</span>
-      {subtitle && !open && (
-        <span className="text-xs text-muted-foreground ml-auto">
-          {subtitle}
-        </span>
-      )}
-    </div>
-  );
-}
+const IA_TABS = [
+  { value: "execution", label: "Execution & Model" },
+  { value: "capabilities", label: "Capabilities" },
+  { value: "budget", label: "Budget & Spend" },
+  { value: "history", label: "Run History" },
+];
 
 const CAPABILITY_LABELS: Record<AgentCapability, string> = {
   discussion_processing: "Discussion Processing",
@@ -121,13 +110,43 @@ const CONTEXT_BUDGET_OPTIONS = [
 ];
 
 const NOTIFICATION_LABELS: Record<
-  string,
+  NotificationPreference,
   { label: string; description: string }
 > = {
   silent: { label: "Silent", description: "No notifications" },
   digest: { label: "Digest", description: "Batched summary" },
   realtime: { label: "Real-time", description: "Instant notifications" },
 };
+
+/* ------------------------------------------------------------------ */
+/*  Per-tab save button                                                */
+/* ------------------------------------------------------------------ */
+
+function TabSaveButton({
+  onClick,
+  isPending,
+  saveMessage,
+}: {
+  onClick: () => void;
+  isPending: boolean;
+  saveMessage: string | null;
+}) {
+  return (
+    <div className="pt-4 flex items-center gap-3">
+      <Button onClick={onClick} disabled={isPending}>
+        {isPending && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+        Save
+      </Button>
+      {saveMessage && (
+        <span
+          className={`text-sm ${saveMessage === "Settings saved" ? "text-emerald-600" : "text-red-600"}`}
+        >
+          {saveMessage}
+        </span>
+      )}
+    </div>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /*  Main Component                                                     */
@@ -137,12 +156,19 @@ export function InternalAgentSettingsPage() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = searchParams.get("tab") ?? "execution";
 
-  // Section open states
-  const [executionOpen, setExecutionOpen] = useState(true);
-  const [capabilitiesOpen, setCapabilitiesOpen] = useState(true);
-  const [budgetOpen, setBudgetOpen] = useState(true);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const handleTabChange = useCallback(
+    (value: string) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("tab", value);
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
 
   // Form state
   const [executionMode, setExecutionMode] = useState<"api" | "cli">("api");
@@ -163,14 +189,9 @@ export function InternalAgentSettingsPage() {
   >("untested");
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
-  // Run history pagination
-  const [runsOffset, setRunsOffset] = useState(0);
-  const [allRuns, setAllRuns] = useState<AgentRunsResponse["runs"]>([]);
-
-  // Save feedback
+  // Per-tab save feedback
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
-  // Auto-clear save message after 3 seconds
   useEffect(() => {
     if (!saveMessage) return;
     const timer = setTimeout(() => setSaveMessage(null), 3000);
@@ -185,14 +206,24 @@ export function InternalAgentSettingsPage() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: runsData } = useQuery({
-    queryKey: [...queryKeys.agentRuns(selectedCompanyId!), runsOffset],
-    queryFn: () =>
+  const {
+    data: runsPages,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: queryKeys.agentRuns(selectedCompanyId!),
+    queryFn: ({ pageParam = 0 }) =>
       internalAgentApi.getRuns(selectedCompanyId!, {
         limit: 20,
-        offset: runsOffset,
+        offset: pageParam,
       }),
-    enabled: !!selectedCompanyId && historyOpen,
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((n, p) => n + p.runs.length, 0);
+      return loaded < lastPage.total ? loaded : undefined;
+    },
+    enabled: !!selectedCompanyId && activeTab === "history",
   });
 
   // --- Effects ---
@@ -219,34 +250,15 @@ export function InternalAgentSettingsPage() {
     setBudgetMonthlyCents(config.budgetMonthlyCents ?? 5000);
   }, [config]);
 
-  // Accumulate runs (deduplicate by ID to prevent refetch duplicates)
-  useEffect(() => {
-    if (!runsData) return;
-    if (runsOffset === 0) {
-      setAllRuns(runsData.runs);
-    } else {
-      setAllRuns((prev) => {
-        const existingIds = new Set(prev.map((r) => r.id));
-        const newRuns = runsData.runs.filter((r) => !existingIds.has(r.id));
-        return [...prev, ...newRuns];
-      });
-    }
-  }, [runsData, runsOffset]);
+  // Derived: flatten all pages into a single runs array + aggregates from first page
+  const allRuns = runsPages?.pages.flatMap((p) => p.runs) ?? [];
+  const runsAggregates = runsPages?.pages[0]?.aggregates;
 
   // --- Mutations ---
 
   const saveMutation = useMutation({
-    mutationFn: () =>
-      internalAgentApi.updateConfig(selectedCompanyId!, {
-        executionMode,
-        provider: executionMode === "api" ? provider : undefined,
-        model: executionMode === "api" ? model : undefined,
-        cliTool: executionMode === "cli" ? cliTool : undefined,
-        enabledCapabilities: enabledCapabilities as AgentCapability[],
-        notificationPreference,
-        contextTokenBudget,
-        budgetMonthlyCents,
-      }),
+    mutationFn: (fields: UpdateInternalAgentConfig) =>
+      internalAgentApi.updateConfig(selectedCompanyId!, fields),
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: queryKeys.agentConfig(selectedCompanyId!),
@@ -257,6 +269,27 @@ export function InternalAgentSettingsPage() {
       setSaveMessage(err.message || "Failed to save settings");
     },
   });
+
+  function saveExecution() {
+    saveMutation.mutate({
+      executionMode,
+      provider: executionMode === "api" ? provider : undefined,
+      model: executionMode === "api" ? model : undefined,
+      cliTool: executionMode === "cli" ? cliTool : undefined,
+    });
+  }
+
+  function saveCapabilities() {
+    saveMutation.mutate({
+      enabledCapabilities: enabledCapabilities as AgentCapability[],
+      notificationPreference,
+      contextTokenBudget,
+    });
+  }
+
+  function saveBudget() {
+    saveMutation.mutate({ budgetMonthlyCents });
+  }
 
   // --- Handlers ---
 
@@ -309,30 +342,23 @@ export function InternalAgentSettingsPage() {
   // --- Render ---
 
   return (
-    <div className="max-w-3xl space-y-1">
+    <div className="max-w-3xl space-y-4">
       {/* Page header */}
-      <div className="flex items-center gap-2 mb-6">
+      <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Internal Agent Settings</h1>
       </div>
 
-      {/* Section 1: Execution & Model */}
-      <Collapsible open={executionOpen} onOpenChange={setExecutionOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left">
-            <SectionHeader
-              title="Execution & Model"
-              subtitle={
-                executionMode === "api"
-                  ? `${provider} / ${model}`
-                  : `CLI: ${cliTool}`
-              }
-              open={executionOpen}
-            />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="space-y-4 pb-4 pl-6">
+      <Tabs value={activeTab} onValueChange={handleTabChange}>
+        <PageTabBar
+          items={IA_TABS}
+          value={activeTab}
+          onValueChange={handleTabChange}
+        />
+
+        {/* ─── Execution & Model ─── */}
+        <TabsContent value="execution">
+          <div className="space-y-4">
             {/* Execution mode toggle */}
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">
@@ -410,9 +436,9 @@ export function InternalAgentSettingsPage() {
 
                 {/* API key link */}
                 <p className="text-xs text-muted-foreground">
-                  <a href="../settings" className="underline hover:text-foreground transition-colors">
+                  <Link to="../settings?tab=llm" className="underline hover:text-foreground transition-colors">
                     Configure API keys in LLM Providers settings
-                  </a>
+                  </Link>
                 </p>
               </>
             ) : (
@@ -485,23 +511,18 @@ export function InternalAgentSettingsPage() {
                 </span>
               )}
             </div>
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
 
-      {/* Section 2: Capabilities & Preferences */}
-      <Collapsible open={capabilitiesOpen} onOpenChange={setCapabilitiesOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left">
-            <SectionHeader
-              title="Capabilities & Preferences"
-              subtitle={`${enabledCapabilities.length}/${AGENT_CAPABILITIES.length} enabled`}
-              open={capabilitiesOpen}
+            <TabSaveButton
+              onClick={saveExecution}
+              isPending={saveMutation.isPending}
+              saveMessage={saveMessage}
             />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="space-y-4 pb-4 pl-6">
+          </div>
+        </TabsContent>
+
+        {/* ─── Capabilities & Preferences ─── */}
+        <TabsContent value="capabilities">
+          <div className="space-y-4">
             {/* Capability checkboxes */}
             <div>
               <div className="flex items-center justify-between mb-2">
@@ -592,27 +613,18 @@ export function InternalAgentSettingsPage() {
                 </SelectContent>
               </Select>
             </div>
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
 
-      {/* Section 3: Budget & Spend */}
-      <Collapsible open={budgetOpen} onOpenChange={setBudgetOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left">
-            <SectionHeader
-              title="Budget & Spend"
-              subtitle={
-                budgetMonthlyCents
-                  ? `${formatCents(spentCents)} / ${formatCents(budgetMonthlyCents)}`
-                  : undefined
-              }
-              open={budgetOpen}
+            <TabSaveButton
+              onClick={saveCapabilities}
+              isPending={saveMutation.isPending}
+              saveMessage={saveMessage}
             />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="space-y-4 pb-4 pl-6">
+          </div>
+        </TabsContent>
+
+        {/* ─── Budget & Spend ─── */}
+        <TabsContent value="budget">
+          <div className="space-y-4">
             {/* Monthly budget input */}
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">
@@ -666,50 +678,43 @@ export function InternalAgentSettingsPage() {
                 </p>
               )}
             </div>
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
 
-      {/* Section 4: Run History */}
-      <Collapsible open={historyOpen} onOpenChange={setHistoryOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left">
-            <SectionHeader
-              title="Run History"
-              subtitle={
-                runsData ? `${runsData.aggregates.totalRuns} runs` : undefined
-              }
-              open={historyOpen}
+            <TabSaveButton
+              onClick={saveBudget}
+              isPending={saveMutation.isPending}
+              saveMessage={saveMessage}
             />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="space-y-4 pb-4 pl-6">
+          </div>
+        </TabsContent>
+
+        {/* ─── Run History ─── */}
+        <TabsContent value="history">
+          <div className="space-y-4">
             {/* Aggregates */}
-            {runsData && (
+            {runsAggregates && (
               <div className="grid grid-cols-4 gap-3">
                 <div className="rounded-md border p-3">
                   <p className="text-xs text-muted-foreground">Total Runs</p>
                   <p className="text-lg font-semibold">
-                    {runsData.aggregates.totalRuns}
+                    {runsAggregates.totalRuns}
                   </p>
                 </div>
                 <div className="rounded-md border p-3">
                   <p className="text-xs text-muted-foreground">Total Cost</p>
                   <p className="text-lg font-semibold">
-                    {formatCents(runsData.aggregates.totalCostCents)}
+                    {formatCents(runsAggregates.totalCostCents)}
                   </p>
                 </div>
                 <div className="rounded-md border p-3">
                   <p className="text-xs text-muted-foreground">Avg Duration</p>
                   <p className="text-lg font-semibold">
-                    {(runsData.aggregates.avgDurationMs / 1000).toFixed(1)}s
+                    {(runsAggregates.avgDurationMs / 1000).toFixed(1)}s
                   </p>
                 </div>
                 <div className="rounded-md border p-3">
                   <p className="text-xs text-muted-foreground">Failure Rate</p>
                   <p className="text-lg font-semibold">
-                    {(runsData.aggregates.failureRate * 100).toFixed(0)}%
+                    {(runsAggregates.failureRate * 100).toFixed(0)}%
                   </p>
                 </div>
               </div>
@@ -764,40 +769,24 @@ export function InternalAgentSettingsPage() {
             )}
 
             {/* Load more */}
-            {runsData && allRuns.length < runsData.total && (
+            {hasNextPage && (
               <div className="flex justify-center">
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setRunsOffset((prev) => prev + 20)}
+                  onClick={() => fetchNextPage()}
+                  disabled={isFetchingNextPage}
                 >
+                  {isFetchingNextPage ? (
+                    <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                  ) : null}
                   Load More
                 </Button>
               </div>
             )}
           </div>
-        </CollapsibleContent>
-      </Collapsible>
-
-      {/* Save button */}
-      <div className="pt-4 flex items-center gap-3">
-        <Button
-          onClick={() => saveMutation.mutate()}
-          disabled={saveMutation.isPending}
-        >
-          {saveMutation.isPending && (
-            <Loader2 className="h-4 w-4 animate-spin mr-1" />
-          )}
-          Save
-        </Button>
-        {saveMessage && (
-          <span
-            className={`text-sm ${saveMessage === "Settings saved" ? "text-emerald-600" : "text-red-600"}`}
-          >
-            {saveMessage}
-          </span>
-        )}
-      </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

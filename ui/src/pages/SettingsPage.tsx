@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link } from "@/lib/router";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -17,11 +17,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { formatCents, formatTokens, budgetProgressColor } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Collapsible,
-  CollapsibleTrigger,
-  CollapsibleContent,
-} from "@/components/ui/collapsible";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -44,6 +40,7 @@ import {
   HintIcon,
 } from "../components/agent-config-primitives";
 import { LLMProvidersSection } from "../components/LLMProvidersSection";
+import { PageTabBar } from "../components/PageTabBar";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Identity } from "../components/Identity";
@@ -51,32 +48,13 @@ import { StatusBadge } from "../components/StatusBadge";
 import { ActivityRow } from "../components/ActivityRow";
 import type { Agent } from "@paperclipai/shared";
 
-// ─── Section header helper ────────────────────────────────────────────
-function SectionHeader({
-  title,
-  subtitle,
-  open,
-}: {
-  title: string;
-  subtitle?: string;
-  open: boolean;
-}) {
-  return (
-    <div className="flex items-center gap-2 py-3 w-full">
-      <ChevronRight
-        className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${
-          open ? "rotate-90" : ""
-        }`}
-      />
-      <span className="text-sm font-medium">{title}</span>
-      {subtitle && !open && (
-        <span className="text-xs text-muted-foreground ml-auto">
-          {subtitle}
-        </span>
-      )}
-    </div>
-  );
-}
+const SETTINGS_TABS = [
+  { value: "general", label: "General" },
+  { value: "llm", label: "LLM Providers" },
+  { value: "budget", label: "Budget" },
+  { value: "activity", label: "Activity" },
+  { value: "integrations", label: "Integrations" },
+];
 
 // ─── Agent snippet helpers (from CompanySettings.tsx) ─────────────────
 type AgentSnippetInput = {
@@ -1250,63 +1228,23 @@ function ActivitySection() {
   );
 }
 
-// ─── Budget Headline (collapsed summary) ──────────────────────────────
-function useBudgetHeadline() {
-  const { selectedCompanyId } = useCompany();
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-
-  const { data } = useQuery({
-    queryKey: queryKeys.costs(
-      selectedCompanyId!,
-      monthStart.toISOString(),
-      now.toISOString()
-    ),
-    queryFn: () =>
-      costsApi.summary(
-        selectedCompanyId!,
-        monthStart.toISOString(),
-        now.toISOString()
-      ),
-    enabled: !!selectedCompanyId,
-  });
-
-  if (!data) return null;
-  return `${formatCents(data.spendCents)} spent this month`;
-}
-
-// ─── Activity Headline (collapsed summary) ────────────────────────────
-function useActivityHeadline() {
-  const { selectedCompanyId } = useCompany();
-
-  const { data } = useQuery({
-    queryKey: queryKeys.activity(selectedCompanyId!),
-    queryFn: () => activityApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-
-  if (!data) return null;
-  const now = Date.now();
-  const dayAgo = now - 24 * 60 * 60 * 1000;
-  const recent = data.filter(
-    (e) => new Date(e.createdAt).getTime() > dayAgo
-  ).length;
-  return `Last 24h: ${recent} events`;
-}
-
 // ─── Main SettingsPage ────────────────────────────────────────────────
 export function SettingsPage() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompany } = useCompany();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = searchParams.get("tab") ?? "general";
 
-  const [generalOpen, setGeneralOpen] = useState(true);
-  const [llmOpen, setLlmOpen] = useState(true);
-  const [budgetOpen, setBudgetOpen] = useState(false);
-  const [activityOpen, setActivityOpen] = useState(false);
-  const [integrationsOpen, setIntegrationsOpen] = useState(true);
-
-  const budgetHeadline = useBudgetHeadline();
-  const activityHeadline = useActivityHeadline();
+  const handleTabChange = useCallback(
+    (value: string) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("tab", value);
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
 
   useEffect(() => {
     setBreadcrumbs([
@@ -1316,15 +1254,15 @@ export function SettingsPage() {
   }, [setBreadcrumbs, selectedCompany?.name]);
 
   return (
-    <div className="max-w-3xl space-y-1">
-      <div className="flex items-center gap-2 mb-6">
+    <div className="max-w-3xl space-y-4">
+      <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Settings</h1>
       </div>
 
       <Link
         to="internal-agent"
-        className="flex items-center justify-between rounded-md border border-border p-3 mb-4 hover:bg-muted/50 transition-colors"
+        className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-muted/50 transition-colors"
       >
         <div>
           <p className="text-sm font-medium">Internal Agent</p>
@@ -1333,91 +1271,33 @@ export function SettingsPage() {
         <ChevronRight className="h-4 w-4 text-muted-foreground" />
       </Link>
 
-      {/* General */}
-      <Collapsible open={generalOpen} onOpenChange={setGeneralOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
-            <SectionHeader title="General" open={generalOpen} />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="pb-6 pt-1 px-2 -mx-2">
-            <GeneralSection />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+      <Tabs value={activeTab} onValueChange={handleTabChange}>
+        <PageTabBar
+          items={SETTINGS_TABS}
+          value={activeTab}
+          onValueChange={handleTabChange}
+        />
 
-      <div className="border-t border-border" />
+        <TabsContent value="general">
+          <GeneralSection />
+        </TabsContent>
 
-      {/* LLM Providers */}
-      <Collapsible open={llmOpen} onOpenChange={setLlmOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
-            <SectionHeader title="LLM Providers" open={llmOpen} />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="pb-6 pt-1 px-2 -mx-2">
-            <LLMProvidersSection />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+        <TabsContent value="llm">
+          <LLMProvidersSection />
+        </TabsContent>
 
-      <div className="border-t border-border" />
+        <TabsContent value="budget">
+          <BudgetSection />
+        </TabsContent>
 
-      {/* Budget */}
-      <Collapsible open={budgetOpen} onOpenChange={setBudgetOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
-            <SectionHeader
-              title="Budget"
-              subtitle={budgetHeadline ?? undefined}
-              open={budgetOpen}
-            />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="pb-6 pt-1 px-2 -mx-2">
-            <BudgetSection />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+        <TabsContent value="activity">
+          <ActivitySection />
+        </TabsContent>
 
-      <div className="border-t border-border" />
-
-      {/* Activity */}
-      <Collapsible open={activityOpen} onOpenChange={setActivityOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
-            <SectionHeader
-              title="Activity"
-              subtitle={activityHeadline ?? undefined}
-              open={activityOpen}
-            />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="pb-6 pt-1 px-2 -mx-2">
-            <ActivitySection />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-
-      <div className="border-t border-border" />
-
-      {/* Integrations */}
-      <Collapsible open={integrationsOpen} onOpenChange={setIntegrationsOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
-            <SectionHeader title="Integrations" open={integrationsOpen} />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="pb-6 pt-1 px-2 -mx-2">
-            <IntegrationsSection />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+        <TabsContent value="integrations">
+          <IntegrationsSection />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
