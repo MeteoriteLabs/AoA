@@ -30,11 +30,11 @@ export function createCLISessionStore() {
   function killSession(session: CLISession): void {
     session.status = "ending";
     try {
-      session.cliProcess.kill();
+      session.cliProcess.kill("SIGTERM");
     } catch {}
     if (session.mcpProcess)
       try {
-        session.mcpProcess.kill();
+        session.mcpProcess.kill("SIGTERM");
       } catch {}
 
     // Force kill after grace period

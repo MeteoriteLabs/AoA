@@ -119,6 +119,66 @@ describe("CLISessionStore", () => {
     expect(stale).toHaveLength(0);
   });
 
+  it("canEnqueue returns false when queue is full", () => {
+    const mockSession = {
+      cliProcess: { kill: vi.fn(), on: vi.fn(), stdin: { write: vi.fn() }, stdout: { on: vi.fn() }, stderr: { on: vi.fn() } },
+      mcpProcess: null,
+      cliTool: "claude_cli" as const,
+      companyId: "comp1",
+      userId: "user1",
+      userRole: "founder",
+      startedAt: new Date(),
+      lastMessageAt: new Date(),
+      mcpConfigPath: "/tmp/test.json",
+      status: "active" as const,
+      messageQueue: Array.from({ length: 5 }, () => ({ resolve: vi.fn(), reject: vi.fn() })),
+      processing: false,
+    };
+    store.set("comp1:user1", mockSession);
+    expect(store.canEnqueue("comp1:user1")).toBe(false);
+  });
+
+  it("canEnqueue returns true when queue has space", () => {
+    const mockSession = {
+      cliProcess: { kill: vi.fn(), on: vi.fn(), stdin: { write: vi.fn() }, stdout: { on: vi.fn() }, stderr: { on: vi.fn() } },
+      mcpProcess: null,
+      cliTool: "claude_cli" as const,
+      companyId: "comp1",
+      userId: "user1",
+      userRole: "founder",
+      startedAt: new Date(),
+      lastMessageAt: new Date(),
+      mcpConfigPath: "/tmp/test.json",
+      status: "active" as const,
+      messageQueue: [],
+      processing: false,
+    };
+    store.set("comp1:user1", mockSession);
+    expect(store.canEnqueue("comp1:user1")).toBe(true);
+  });
+
+  it("cleanup kills process and removes session", () => {
+    const kill1 = vi.fn();
+    const mockSession = {
+      cliProcess: { kill: kill1, on: vi.fn(), stdin: { write: vi.fn() }, stdout: { on: vi.fn() }, stderr: { on: vi.fn() } },
+      mcpProcess: null,
+      cliTool: "claude_cli" as const,
+      companyId: "comp1",
+      userId: "user1",
+      userRole: "founder",
+      startedAt: new Date(),
+      lastMessageAt: new Date(),
+      mcpConfigPath: "/tmp/test.json",
+      status: "active" as const,
+      messageQueue: [],
+      processing: false,
+    };
+    store.set("comp1:user1", mockSession);
+    store.cleanup("comp1:user1");
+    expect(kill1).toHaveBeenCalledWith("SIGTERM");
+    expect(store.has("comp1:user1")).toBe(false);
+  });
+
   it("shutdownAll kills all processes", () => {
     const kill1 = vi.fn();
     const mockSession = {
