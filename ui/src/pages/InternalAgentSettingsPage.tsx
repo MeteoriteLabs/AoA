@@ -5,7 +5,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { internalAgentApi } from "../api/internal-agent";
 import type { AgentRunsResponse } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
-import { formatCents } from "../lib/utils";
+import { formatCents, budgetProgressColor, relativeTime } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -170,6 +170,13 @@ export function InternalAgentSettingsPage() {
   // Save feedback
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
+  // Auto-clear save message after 3 seconds
+  useEffect(() => {
+    if (!saveMessage) return;
+    const timer = setTimeout(() => setSaveMessage(null), 3000);
+    return () => clearTimeout(timer);
+  }, [saveMessage]);
+
   // --- Queries ---
 
   const { data: config, isLoading: configLoading } = useQuery({
@@ -212,13 +219,17 @@ export function InternalAgentSettingsPage() {
     setBudgetMonthlyCents(config.budgetMonthlyCents ?? 5000);
   }, [config]);
 
-  // Accumulate runs
+  // Accumulate runs (deduplicate by ID to prevent refetch duplicates)
   useEffect(() => {
     if (!runsData) return;
     if (runsOffset === 0) {
       setAllRuns(runsData.runs);
     } else {
-      setAllRuns((prev) => [...prev, ...runsData.runs]);
+      setAllRuns((prev) => {
+        const existingIds = new Set(prev.map((r) => r.id));
+        const newRuns = runsData.runs.filter((r) => !existingIds.has(r.id));
+        return [...prev, ...newRuns];
+      });
     }
   }, [runsData, runsOffset]);
 
@@ -241,11 +252,9 @@ export function InternalAgentSettingsPage() {
         queryKey: queryKeys.agentConfig(selectedCompanyId!),
       });
       setSaveMessage("Settings saved");
-      setTimeout(() => setSaveMessage(null), 3000);
     },
     onError: (err: Error) => {
       setSaveMessage(err.message || "Failed to save settings");
-      setTimeout(() => setSaveMessage(null), 3000);
     },
   });
 
@@ -289,12 +298,7 @@ export function InternalAgentSettingsPage() {
   const spentCents = config?.spentMonthlyCents ?? 0;
   const utilization =
     budgetMonthlyCents > 0 ? (spentCents / budgetMonthlyCents) * 100 : 0;
-  const progressColor =
-    utilization >= 90
-      ? "bg-red-500"
-      : utilization >= 70
-        ? "bg-amber-500"
-        : "bg-emerald-500";
+  const progressColor = budgetProgressColor(utilization);
 
   // --- Loading ---
 
@@ -334,14 +338,16 @@ export function InternalAgentSettingsPage() {
               <label className="text-xs text-muted-foreground mb-1 block">
                 Execution Mode
               </label>
-              <div className="flex gap-1 bg-muted rounded-md p-0.5 w-fit">
+              <div role="group" aria-label="Execution mode" className="flex gap-1 bg-muted rounded-md p-0.5 w-fit">
                 <button
+                  aria-pressed={executionMode === "api"}
                   className={`px-3 py-1 text-sm rounded ${executionMode === "api" ? "bg-background shadow-sm font-medium" : "text-muted-foreground"}`}
                   onClick={() => setExecutionMode("api")}
                 >
                   API
                 </button>
                 <button
+                  aria-pressed={executionMode === "cli"}
                   className={`px-3 py-1 text-sm rounded ${executionMode === "cli" ? "bg-background shadow-sm font-medium" : "text-muted-foreground"}`}
                   onClick={() => setExecutionMode("cli")}
                 >
@@ -513,7 +519,7 @@ export function InternalAgentSettingsPage() {
               </div>
               <div className="grid grid-cols-2 gap-x-6 gap-y-3">
                 {CAPABILITY_GROUPS.map((group) => (
-                  <div key={group.label}>
+                  <div key={group.label} role="group" aria-label={`${group.label} capabilities`}>
                     <p className="text-xs font-medium text-muted-foreground mb-1">
                       {group.label}
                     </p>
@@ -524,7 +530,6 @@ export function InternalAgentSettingsPage() {
                       >
                         <input
                           type="checkbox"
-                          role="checkbox"
                           data-capability={cap}
                           checked={enabledCapabilities.includes(cap)}
                           onChange={() => toggleCapability(cap)}
@@ -539,10 +544,10 @@ export function InternalAgentSettingsPage() {
             </div>
 
             {/* Notification preference */}
-            <div>
-              <label className="text-xs text-muted-foreground mb-1 block">
+            <fieldset>
+              <legend className="text-xs text-muted-foreground mb-1">
                 Notification Preference
-              </label>
+              </legend>
               <div className="space-y-2">
                 {NOTIFICATION_PREFERENCES.map((pref) => (
                   <label key={pref} className="flex items-center gap-2 text-sm">
@@ -564,7 +569,7 @@ export function InternalAgentSettingsPage() {
                   </label>
                 ))}
               </div>
-            </div>
+            </fieldset>
 
             {/* Context token budget */}
             <div>
@@ -745,7 +750,7 @@ export function InternalAgentSettingsPage() {
                           {(run.durationMs / 1000).toFixed(1)}s
                         </td>
                         <td className="py-2 text-muted-foreground">
-                          {new Date(run.createdAt).toLocaleDateString()}
+                          {relativeTime(run.createdAt)}
                         </td>
                       </tr>
                     ))}

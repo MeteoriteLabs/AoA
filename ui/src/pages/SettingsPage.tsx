@@ -14,7 +14,7 @@ import { goalsApi } from "../api/goals";
 import { mcpApi } from "../api/mcp";
 import { internalAgentApi } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
-import { formatCents, formatTokens } from "../lib/utils";
+import { formatCents, formatTokens, budgetProgressColor } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -852,15 +852,11 @@ function BudgetSection() {
                     </div>
                     <div className="h-1.5 rounded-full bg-muted overflow-hidden mt-1">
                       <div
-                        className={`h-full rounded-full ${
-                          agentConfig.budgetMonthlyCents > 0 &&
-                          agentConfig.spentMonthlyCents / agentConfig.budgetMonthlyCents >= 0.9
-                            ? "bg-red-500"
-                            : agentConfig.budgetMonthlyCents > 0 &&
-                                agentConfig.spentMonthlyCents / agentConfig.budgetMonthlyCents >= 0.7
-                              ? "bg-amber-500"
-                              : "bg-emerald-500"
-                        }`}
+                        className={`h-full rounded-full ${budgetProgressColor(
+                          agentConfig.budgetMonthlyCents > 0
+                            ? (agentConfig.spentMonthlyCents / agentConfig.budgetMonthlyCents) * 100
+                            : 0,
+                        )}`}
                         style={{
                           width: `${
                             agentConfig.budgetMonthlyCents > 0

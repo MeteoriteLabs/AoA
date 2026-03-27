@@ -10,6 +10,12 @@ export function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+export function budgetProgressColor(utilization: number): string {
+  if (utilization >= 90) return "bg-red-500";
+  if (utilization >= 70) return "bg-amber-500";
+  return "bg-emerald-500";
+}
+
 export function formatDate(date: Date | string): string {
   return new Date(date).toLocaleDateString("en-US", {
     month: "short",
