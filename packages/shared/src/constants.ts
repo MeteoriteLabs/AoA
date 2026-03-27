@@ -483,6 +483,27 @@ export type AgentExecutionMode = (typeof AGENT_EXECUTION_MODES)[number];
 export const AGENT_PROVIDERS = ["anthropic", "openai", "google"] as const;
 export type AgentProvider = (typeof AGENT_PROVIDERS)[number];
 
+export const AGENT_MODELS_BY_PROVIDER: Record<AgentProvider, { value: string; label: string }[]> = {
+  anthropic: [
+    { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+    { value: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+  ],
+  openai: [
+    { value: "gpt-4o", label: "GPT-4o" },
+    { value: "gpt-4o-mini", label: "GPT-4o Mini" },
+  ],
+  google: [
+    { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+    { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  ],
+};
+
+export const CLI_TOOLS = [
+  { value: "claude_cli", label: "Claude CLI" },
+  { value: "codex", label: "Codex" },
+  { value: "opencode", label: "OpenCode" },
+] as const;
+
 export const NOTIFICATION_PREFERENCES = ["silent", "digest", "realtime"] as const;
 export type NotificationPreference = (typeof NOTIFICATION_PREFERENCES)[number];
 
