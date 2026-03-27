@@ -47,12 +47,14 @@ function createSequenceDb(config: {
   let updateIdx = 0;
   let deleteIdx = 0;
   const insertValues: unknown[] = [];
+  const updateSets: unknown[] = [];
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
     for (const method of ["from", "where", "groupBy", "orderBy", "limit", "values", "set", "returning"]) {
       chain[method] = (...args: unknown[]) => {
         if (method === "values") insertValues.push(args[0]);
+        if (method === "set") updateSets.push(args[0]);
         return chain;
       };
     }
@@ -67,6 +69,7 @@ function createSequenceDb(config: {
     delete: (..._args: unknown[]) => makeChain(() => config.deletes?.[deleteIdx++] ?? []),
     transaction: async (callback: (tx: any) => unknown) => callback(db),
     __insertValues: insertValues,
+    __updateSets: updateSets,
   };
 
   return db;
@@ -173,13 +176,33 @@ describe("workflowTemplateService", () => {
   });
 
   describe("delete", () => {
-    it("deletes template when no active instances", async () => {
+    it("deletes template when instantiationCount is 0", async () => {
       const db = createSequenceDb({
+        // 1. select to check instantiationCount
+        selects: [[{ ...sampleTemplate, instantiationCount: 0 }]],
+        // 2. delete
         deletes: [[sampleTemplate]],
       });
       const svc = workflowTemplateService(db as any);
       const result = await svc.delete(COMPANY_ID, TEMPLATE_ID);
       expect(result).toEqual(sampleTemplate);
+    });
+
+    it("throws conflict when template has active instances", async () => {
+      const db = createSequenceDb({
+        selects: [[{ ...sampleTemplate, instantiationCount: 3 }]],
+      });
+      const svc = workflowTemplateService(db as any);
+      await expect(
+        svc.delete(COMPANY_ID, TEMPLATE_ID),
+      ).rejects.toThrow("Cannot delete template with 3 active instance(s)");
+    });
+
+    it("returns null when template not found", async () => {
+      const db = createSequenceDb({ selects: [[]] });
+      const svc = workflowTemplateService(db as any);
+      const result = await svc.delete(COMPANY_ID, "nonexistent");
+      expect(result).toBeNull();
     });
   });
 
@@ -230,7 +253,7 @@ describe("workflowTemplateService", () => {
       expect(depInserts).toHaveLength(2);
     });
 
-    it("increments instantiationCount", async () => {
+    it("increments instantiationCount via update", async () => {
       const task1 = { id: "task-1", title: "Write spec" };
       const task2 = { id: "task-2", title: "Design" };
       const task3 = { id: "task-3", title: "Implement" };
@@ -244,9 +267,12 @@ describe("workflowTemplateService", () => {
       const svc = workflowTemplateService(db as any);
       await svc.instantiate(COMPANY_ID, TEMPLATE_ID, GOAL_ID, PROJECT_ID);
 
-      // The update was called (instantiationCount increment) — verified by no error thrown
-      // and the result containing the updated template
-      expect(db.__insertValues.length).toBeGreaterThan(0);
+      // Verify update was called with instantiationCount, lastInstantiatedAt, updatedAt
+      expect(db.__updateSets).toHaveLength(1);
+      const setArg = db.__updateSets[0] as Record<string, unknown>;
+      expect(setArg).toHaveProperty("instantiationCount");
+      expect(setArg).toHaveProperty("lastInstantiatedAt");
+      expect(setArg).toHaveProperty("updatedAt");
     });
 
     it("throws when template not found", async () => {
