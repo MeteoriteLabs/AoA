@@ -34,7 +34,7 @@ import {
   CLI_TOOLS,
   NOTIFICATION_PREFERENCES,
 } from "@paperclipai/shared";
-import type { AgentProvider, AgentCapability } from "@paperclipai/shared";
+import type { AgentProvider, AgentCapability, NotificationPreference } from "@paperclipai/shared";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -153,7 +153,7 @@ export function InternalAgentSettingsPage() {
     ...AGENT_CAPABILITIES,
   ]);
   const [notificationPreference, setNotificationPreference] =
-    useState<string>("realtime");
+    useState<NotificationPreference>("realtime");
   const [contextTokenBudget, setContextTokenBudget] = useState<number>(8000);
   const [budgetMonthlyCents, setBudgetMonthlyCents] = useState<number>(5000);
 
@@ -207,7 +207,7 @@ export function InternalAgentSettingsPage() {
     if (config.model) setModel(config.model);
     if (config.cliTool) setCliTool(config.cliTool);
     setEnabledCapabilities([...config.enabledCapabilities]);
-    setNotificationPreference(config.notificationPreference);
+    setNotificationPreference(config.notificationPreference as NotificationPreference);
     setContextTokenBudget(config.contextTokenBudget);
     setBudgetMonthlyCents(config.budgetMonthlyCents ?? 5000);
   }, [config]);
@@ -232,7 +232,7 @@ export function InternalAgentSettingsPage() {
         model: executionMode === "api" ? model : undefined,
         cliTool: executionMode === "cli" ? cliTool : undefined,
         enabledCapabilities: enabledCapabilities as AgentCapability[],
-        notificationPreference: notificationPreference as any,
+        notificationPreference,
         contextTokenBudget,
         budgetMonthlyCents,
       }),
@@ -262,9 +262,11 @@ export function InternalAgentSettingsPage() {
         setConnectionStatus("failed");
         setConnectionError(result.error ?? "Connection failed");
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setConnectionStatus("failed");
-      setConnectionError(err.message ?? "Connection failed");
+      setConnectionError(
+        err instanceof Error ? err.message : "Connection failed",
+      );
     }
   }
 
@@ -399,6 +401,13 @@ export function InternalAgentSettingsPage() {
                     </SelectContent>
                   </Select>
                 </div>
+
+                {/* API key link */}
+                <p className="text-xs text-muted-foreground">
+                  <a href="../settings" className="underline hover:text-foreground transition-colors">
+                    Configure API keys in LLM Providers settings
+                  </a>
+                </p>
               </>
             ) : (
               /* CLI Tool */

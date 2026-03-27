@@ -755,7 +755,10 @@ function BudgetSection() {
                 )}
               </div>
               <p className="text-2xl font-bold">
-                {formatCents(data.summary.spendCents)}{" "}
+                {formatCents(
+                  data.summary.spendCents +
+                    (agentConfig?.spentMonthlyCents ?? 0),
+                )}{" "}
                 <span className="text-base font-normal text-muted-foreground">
                   {data.summary.budgetCents > 0
                     ? `/ ${formatCents(data.summary.budgetCents)}`

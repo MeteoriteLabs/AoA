@@ -80,7 +80,7 @@ describe("internal-agent-routes-contract", () => {
     expect(Array.isArray(router.stack)).toBe(true);
   });
 
-  it("registers exactly 9 route handlers", () => {
+  it("registers exactly 10 route handlers", () => {
     const db = {} as any;
     const router = internalAgentRoutes(db);
 
