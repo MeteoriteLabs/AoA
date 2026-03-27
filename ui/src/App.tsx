@@ -25,9 +25,7 @@ import { InternalAgentSettingsPage } from "./pages/InternalAgentSettingsPage";
 import { VisionMission } from "./pages/VisionMission";
 import { DesignGuide } from "./pages/DesignGuide";
 import { TeamPage } from "./pages/TeamPage";
-import { Briefs } from "./pages/Briefs";
 import { ActiveAgents } from "./pages/ActiveAgents";
-import { BriefReview } from "./pages/BriefReview";
 import { DebriefModal } from "./components/DebriefModal";
 import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
 import { Discussions } from "./pages/Discussions";
@@ -135,10 +133,9 @@ function boardRoutes() {
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="discussions" element={<Discussions />} />
       <Route path="discussions/:discussionId" element={<DiscussionDetail />} />
-      <Route path="briefs" element={<Briefs />} />
-      <Route path="briefs/:briefId" element={<BriefReview />} />
-      {/* TODO: redirect /briefs → /discussions once discussions page exists (V2.5) */}
-      <Route path="debriefs" element={<Navigate to="/briefs" replace />} />
+      <Route path="briefs" element={<Navigate to="/discussions" replace />} />
+      <Route path="briefs/:briefId" element={<Navigate to="/discussions" replace />} />
+      <Route path="debriefs" element={<Navigate to="/discussions" replace />} />
       <Route path="active-agents" element={<ActiveAgents />} />
       <Route path="memory" element={<Memory />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
@@ -242,8 +239,8 @@ export function App() {
           <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
           <Route path="discussions" element={<UnprefixedBoardRedirect />} />
           <Route path="discussions/:discussionId" element={<UnprefixedBoardRedirect />} />
-          <Route path="briefs" element={<UnprefixedBoardRedirect />} />
-          <Route path="briefs/:briefId" element={<UnprefixedBoardRedirect />} />
+          <Route path="briefs" element={<Navigate to="/discussions" replace />} />
+          <Route path="briefs/*" element={<Navigate to="/discussions" replace />} />
           <Route path="vision" element={<UnprefixedBoardRedirect />} />
           <Route path="memory" element={<UnprefixedBoardRedirect />} />
           <Route path="projects" element={<UnprefixedBoardRedirect />} />

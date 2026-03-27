@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
 import { accessApi } from "../api/access";
 import { ApiError } from "../api/client";
-import { briefsApi } from "../api/briefs";
+import { discussionsApi, type DiscussionListItem } from "../api/discussions";
 import { dashboardApi } from "../api/dashboard";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -36,13 +36,13 @@ import {
   ArrowUpRight,
   XCircle,
   X,
+  MessageSquare,
   RotateCcw,
   FileText,
 } from "lucide-react";
 import { Identity } from "../components/Identity";
 import { PageTabBar } from "../components/PageTabBar";
 import type { HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
-import type { Brief } from "../api/briefs";
 
 const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
 const RECENT_ISSUES_LIMIT = 100;
@@ -55,7 +55,7 @@ type InboxCategoryFilter =
   | "issues_i_touched"
   | "join_requests"
   | "approvals"
-  | "briefs_awaiting_review"
+  | "discussions_pending_review"
   | "failed_runs"
   | "alerts"
   | "stale_work";
@@ -64,7 +64,7 @@ type SectionKey =
   | "issues_i_touched"
   | "join_requests"
   | "approvals"
-  | "briefs_awaiting_review"
+  | "discussions_pending_review"
   | "failed_runs"
   | "alerts"
   | "stale_work";
@@ -390,14 +390,11 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: readyBriefs = [], isLoading: isBriefsLoading } = useQuery({
-    queryKey: [...queryKeys.briefs.list(selectedCompanyId!), { status: "ready" }],
-    queryFn: () => briefsApi.list(selectedCompanyId!, { status: "ready" }),
+  const { data: pendingDiscussions = [], isLoading: isDiscussionsLoading } = useQuery({
+    queryKey: [...queryKeys.discussions.list(selectedCompanyId!), { hasPendingItems: true }],
+    queryFn: () => discussionsApi.list(selectedCompanyId!, { hasPendingItems: true, sortBy: "lastEntryAt", sortOrder: "desc" }),
     enabled: !!selectedCompanyId,
-    select: (briefs: Brief[]) =>
-      [...briefs].sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      ),
+    select: (res) => res.discussions,
   });
 
   const staleIssues = useMemo(
@@ -554,20 +551,20 @@ export function Inbox() {
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
   const hasStale = staleIssues.length > 0;
   const hasJoinRequests = joinRequests.length > 0;
-  const hasBriefs = readyBriefs.length > 0;
+  const hasDiscussions = pendingDiscussions.length > 0;
   const hasTouchedIssues = touchedIssues.length > 0;
 
   const newItemCount =
     failedRuns.length +
-    readyBriefs.length +
+    pendingDiscussions.length +
     staleIssues.length +
     (showAggregateAgentError ? 1 : 0) +
     (showBudgetAlert ? 1 : 0);
 
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
-  const showBriefsCategory =
-    allCategoryFilter === "everything" || allCategoryFilter === "briefs_awaiting_review";
+  const showDiscussionsCategory =
+    allCategoryFilter === "everything" || allCategoryFilter === "discussions_pending_review";
   const showTouchedCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "issues_i_touched";
   const showApprovalsCategory = allCategoryFilter === "everything" || allCategoryFilter === "approvals";
@@ -584,15 +581,15 @@ export function Inbox() {
     tab === "new"
       ? actionableApprovals.length > 0
       : showApprovalsCategory && filteredAllApprovals.length > 0;
-  const showBriefsSection =
-    tab === "new" ? hasBriefs : showBriefsCategory && hasBriefs;
+  const showDiscussionsSection =
+    tab === "new" ? hasDiscussions : showDiscussionsCategory && hasDiscussions;
   const showFailedRunsSection =
     tab === "new" ? hasRunFailures : showFailedRunsCategory && hasRunFailures;
   const showAlertsSection = tab === "new" ? hasAlerts : showAlertsCategory && hasAlerts;
   const showStaleSection = tab === "new" ? hasStale : showStaleCategory && hasStale;
 
   const visibleSections = [
-    showBriefsSection ? "briefs_awaiting_review" : null,
+    showDiscussionsSection ? "discussions_pending_review" : null,
     showFailedRunsSection ? "failed_runs" : null,
     showAlertsSection ? "alerts" : null,
     showStaleSection ? "stale_work" : null,
@@ -604,7 +601,7 @@ export function Inbox() {
   const allLoaded =
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
-    !isBriefsLoading &&
+    !isDiscussionsLoading &&
     !isDashboardLoading &&
     !isIssuesLoading &&
     !isTouchedIssuesLoading &&
@@ -647,7 +644,7 @@ export function Inbox() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="everything">All categories</SelectItem>
-                <SelectItem value="briefs_awaiting_review">Briefs awaiting review</SelectItem>
+                <SelectItem value="discussions_pending_review">Discussions pending review</SelectItem>
                 <SelectItem value="issues_i_touched">My recent tasks</SelectItem>
                 <SelectItem value="join_requests">Join requests</SelectItem>
                 <SelectItem value="approvals">Approvals</SelectItem>
@@ -694,43 +691,38 @@ export function Inbox() {
         />
       )}
 
-      {showBriefsSection && (
+      {showDiscussionsSection && (
         <>
-          {showSeparatorBefore("briefs_awaiting_review") && <Separator />}
+          {showSeparatorBefore("discussions_pending_review") && <Separator />}
           <div>
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Briefs Awaiting Review
+              Discussion Items Pending Review
             </h3>
             <div className="divide-y divide-border border border-border">
-              {readyBriefs.map((brief) => (
+              {pendingDiscussions.map((discussion) => (
                 <Link
-                  key={brief.id}
-                  to={`/briefs/${brief.id}`}
+                  key={discussion.id}
+                  to={`/discussions/${discussion.id}`}
                   className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50 no-underline text-inherit"
                 >
-                  <FileText className="h-4 w-4 shrink-0 text-blue-500" />
+                  <MessageSquare className="h-4 w-4 shrink-0 text-blue-500" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="truncate text-sm font-medium">
-                        Brief — {brief.itemCount} {brief.itemCount === 1 ? "item" : "items"}
+                        {discussion.title}
                       </span>
-                      {brief.sourceType && (
-                        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                          {brief.sourceType}
-                        </span>
-                      )}
+                      <span className="shrink-0 rounded-full bg-blue-500/20 px-2 py-0.5 text-[10px] font-medium text-blue-500">
+                        {discussion.pendingItemCount} pending
+                      </span>
                     </div>
                     <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground">
-                      {brief.departmentName && <span>{brief.departmentName}</span>}
-                      {brief.departmentName && brief.projectName && <span>·</span>}
-                      {brief.projectName && <span>{brief.projectName}</span>}
-                      {(brief.departmentName || brief.projectName) && <span>·</span>}
-                      <span>{timeAgo(brief.createdAt)}</span>
+                      {discussion.scopeName && <span>{discussion.scopeName}</span>}
+                      {discussion.scopeName && <span>·</span>}
+                      <span>{discussion.entryCount} {discussion.entryCount === 1 ? "entry" : "entries"}</span>
+                      <span>·</span>
+                      <span>{timeAgo(discussion.lastEntryAt ?? discussion.createdAt)}</span>
                     </div>
                   </div>
-                  <span className="shrink-0 rounded-full bg-blue-500/20 px-2 py-0.5 text-[10px] font-medium text-blue-500">
-                    Needs Review
-                  </span>
                 </Link>
               ))}
             </div>

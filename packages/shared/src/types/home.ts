@@ -37,7 +37,7 @@ export interface GoalGapNudge {
 export interface HomeSummary {
   companyId: string;
   setupStatus: SetupStatus;
-  briefsAwaitingReview: number;
+  discussionsPendingReview: number;
   tasksInReview: number;
   myTasksDueToday: {
     id: string;

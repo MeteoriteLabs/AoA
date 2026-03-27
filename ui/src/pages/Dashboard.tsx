@@ -48,10 +48,10 @@ import {
   CircleDollarSign,
   Clock,
   Eye,
-  FileText,
   GitPullRequest,
   Home,
   Lightbulb,
+  MessageSquare,
   Plus,
   RotateCcw,
   ShieldAlert,
@@ -124,11 +124,11 @@ function buildActionGroups(data: HomeSummary): ActionGroup[] {
   const groups: ActionGroup[] = [];
   const needsReviewItems: ActionGroupItem[] = [];
 
-  if (data.briefsAwaitingReview > 0) {
+  if (data.discussionsPendingReview > 0) {
     needsReviewItems.push({
-      key: "briefs-review",
-      label: `${data.briefsAwaitingReview} brief${data.briefsAwaitingReview === 1 ? "" : "s"} awaiting review`,
-      to: "/briefs",
+      key: "discussions-review",
+      label: `${data.discussionsPendingReview} discussion${data.discussionsPendingReview === 1 ? "" : "s"} pending review`,
+      to: "/discussions",
     });
   }
   if (data.tasksInReview > 0) {
@@ -587,7 +587,7 @@ function SuggestedMemoryDialog({
 
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
-  const { openOnboarding, openNewIssue, openDebrief, openNewProject, openNewAgent, openNewGoal } = useDialog();
+  const { openOnboarding, openNewIssue, openDiscussionCapture, openNewProject, openNewAgent, openNewGoal } = useDialog();
   const { pushToast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -801,7 +801,7 @@ export function Dashboard() {
       {!showOnboarding && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <QuickActionCard icon={Plus} label="+ New Task" onClick={() => openNewIssue()} />
-          <QuickActionCard icon={FileText} label="+ Debrief" onClick={() => openDebrief()} />
+          <QuickActionCard icon={MessageSquare} label="+ Discussion" onClick={() => openDiscussionCapture()} />
           <QuickActionCard icon={Target} label="+ New Goal" onClick={() => openNewGoal()} />
         </div>
       )}

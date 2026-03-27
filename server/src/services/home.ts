@@ -1,7 +1,7 @@
-import { and, eq, gte, lte, sql, inArray } from "drizzle-orm";
+import { and, eq, gt, gte, lte, sql, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
-  briefs,
+  discussions,
   issues,
   memoryItems,
   memoryItemVersions,
@@ -21,7 +21,7 @@ export function homeService(db: Db) {
     summary: async (companyId: string, userId?: string): Promise<HomeSummary> => {
       // Run independent queries in parallel
       const [
-        briefsCount,
+        discussionsCount,
         reviewCount,
         blockedCount,
         pendingMemoryCount,
@@ -30,11 +30,11 @@ export function homeService(db: Db) {
         goalData,
         setupStatus,
       ] = await Promise.all([
-        // 1. Briefs awaiting review (status = 'ready')
+        // 1. Discussions with pending items
         db
           .select({ count: sql<number>`count(*)` })
-          .from(briefs)
-          .where(and(eq(briefs.companyId, companyId), eq(briefs.status, "ready")))
+          .from(discussions)
+          .where(and(eq(discussions.companyId, companyId), gt(discussions.pendingItemCount, 0)))
           .then((rows) => Number(rows[0]?.count ?? 0)),
 
         // 2. Tasks in review (status = 'in_review')
@@ -246,7 +246,7 @@ export function homeService(db: Db) {
       return {
         companyId,
         setupStatus,
-        briefsAwaitingReview: briefsCount,
+        discussionsPendingReview: discussionsCount,
         tasksInReview: reviewCount,
         myTasksDueToday: dueTodayTasks.map((t) => ({
           ...t,
