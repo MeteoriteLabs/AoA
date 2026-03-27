@@ -386,3 +386,134 @@ describe("parseCliOutput", () => {
     expect(chunks[0].type).toBe("text");
   });
 });
+
+// ── MCP Bridge Tests ──────────────────────────────────────────────────────────
+
+describe("MCP bridge tool handler", () => {
+  it("handleToolCall routes to executeTool and returns result", async () => {
+    const { createToolCallHandler } = await import(
+      "../services/internal-agent/mcp-bridge.js"
+    );
+
+    const mockExecuteTool = vi.fn().mockResolvedValue({
+      success: true,
+      data: [{ id: "t1", title: "Test task" }],
+      summary: "Found 1 task",
+    });
+
+    const handler = createToolCallHandler({
+      tools: [
+        {
+          name: "query_tasks",
+          description: "Query tasks",
+          parameters: { type: "object" as const, properties: {} },
+          category: "query" as const,
+          requiredRole: "team_member" as const,
+          requiresConfirmation: false,
+          execute: vi.fn(),
+        },
+      ],
+      executeTool: mockExecuteTool,
+      toolContext: {
+        companyId: "comp1",
+        userId: "user1",
+        userRole: "founder",
+        db: {} as any,
+        services: {} as any,
+      },
+    });
+
+    const result = await handler("query_tasks", { status: "todo" });
+    expect(mockExecuteTool).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "query_tasks" }),
+      { status: "todo" },
+      expect.objectContaining({ companyId: "comp1" }),
+    );
+    expect(result.content).toBeDefined();
+    expect(result.isError).toBeFalsy();
+  });
+
+  it("returns error for unknown tool name", async () => {
+    const { createToolCallHandler } = await import(
+      "../services/internal-agent/mcp-bridge.js"
+    );
+
+    const handler = createToolCallHandler({
+      tools: [],
+      executeTool: vi.fn(),
+      toolContext: {
+        companyId: "comp1",
+        userId: "user1",
+        userRole: "founder",
+        db: {} as any,
+        services: {} as any,
+      },
+    });
+
+    const result = await handler("nonexistent_tool", {});
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Unknown tool");
+  });
+
+  it("returns error when executeTool throws", async () => {
+    const { createToolCallHandler } = await import(
+      "../services/internal-agent/mcp-bridge.js"
+    );
+
+    const mockExecuteTool = vi.fn().mockRejectedValue(new Error("DB connection failed"));
+
+    const handler = createToolCallHandler({
+      tools: [
+        {
+          name: "query_tasks",
+          description: "Query tasks",
+          parameters: { type: "object" as const, properties: {} },
+          category: "query" as const,
+          requiredRole: "team_member" as const,
+          requiresConfirmation: false,
+          execute: vi.fn(),
+        },
+      ],
+      executeTool: mockExecuteTool,
+      toolContext: {
+        companyId: "comp1",
+        userId: "user1",
+        userRole: "founder",
+        db: {} as any,
+        services: {} as any,
+      },
+    });
+
+    const result = await handler("query_tasks", {});
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("DB connection failed");
+  });
+});
+
+describe("buildToolListResponse", () => {
+  it("converts AgentTool array to MCP tool list format", async () => {
+    const { buildToolListResponse } = await import(
+      "../services/internal-agent/mcp-bridge.js"
+    );
+
+    const tools = [
+      {
+        name: "query_tasks",
+        description: "Query tasks",
+        parameters: { type: "object" as const, properties: { status: { type: "string" } } },
+        category: "query" as const,
+        requiredRole: "team_member" as const,
+        requiresConfirmation: false,
+        execute: vi.fn(),
+      },
+    ];
+
+    const result = buildToolListResponse(tools as any);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({
+      name: "query_tasks",
+      description: "Query tasks",
+      inputSchema: { type: "object", properties: { status: { type: "string" } } },
+    });
+  });
+});
