@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, not, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, briefs, heartbeatRuns } from "@paperclipai/db";
+import { agents, approvals, discussions, heartbeatRuns } from "@paperclipai/db";
 import type { SidebarBadges } from "@paperclipai/shared";
 
 const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
@@ -42,13 +42,13 @@ export function sidebarBadgeService(db: Db) {
         FAILED_HEARTBEAT_STATUSES.includes(row.runStatus),
       ).length;
 
-      const pendingBriefs = await db
+      const pendingDiscussions = await db
         .select({ count: sql<number>`count(*)` })
-        .from(briefs)
+        .from(discussions)
         .where(
           and(
-            eq(briefs.companyId, companyId),
-            eq(briefs.status, "ready"),
+            eq(discussions.companyId, companyId),
+            gt(discussions.pendingItemCount, 0),
           ),
         )
         .then((rows) => Number(rows[0]?.count ?? 0));
@@ -56,11 +56,11 @@ export function sidebarBadgeService(db: Db) {
       const joinRequests = extra?.joinRequests ?? 0;
       const unreadTouchedIssues = extra?.unreadTouchedIssues ?? 0;
       return {
-        inbox: actionableApprovals + failedRuns + joinRequests + pendingBriefs + unreadTouchedIssues,
+        inbox: actionableApprovals + failedRuns + joinRequests + pendingDiscussions + unreadTouchedIssues,
         approvals: actionableApprovals,
         failedRuns,
         joinRequests,
-        pendingBriefs,
+        pendingDiscussions,
       };
     },
   };

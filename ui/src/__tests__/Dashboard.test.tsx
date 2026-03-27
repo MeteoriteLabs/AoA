@@ -15,7 +15,7 @@ const {
   pushToast: vi.fn(),
   mockHomeSummary: {
     companyId: "comp-1",
-    briefsAwaitingReview: 0,
+    discussionsPendingReview: 0,
     tasksInReview: 0,
     blockedTasks: 0,
     myTasksDueToday: [],

@@ -5,7 +5,6 @@ import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { debriefsApi } from "../api/debriefs";
-import { briefsApi } from "../api/briefs";
 import { projectsApi } from "../api/projects";
 import { transcriptionApi } from "../api/transcription";
 import { queryKeys } from "../lib/queryKeys";
@@ -38,6 +37,7 @@ export function DebriefModal() {
   const [departmentId, setDepartmentId] = useState("");
   const [isPolling, setIsPolling] = useState(false);
   const [createdDebriefId, setCreatedDebriefId] = useState<string | null>(null);
+  const [createdDiscussionId, setCreatedDiscussionId] = useState<string | null>(null);
 
   // Voice-specific state
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
@@ -57,25 +57,22 @@ export function DebriefModal() {
 
   const departments = projects?.filter((p) => p.type === "department") ?? [];
 
-  // Poll for briefs once a debrief is submitted
+  // Poll until extraction is complete
   useQuery({
     queryKey: ["debrief-poll", createdDebriefId],
     queryFn: async () => {
       if (!selectedCompanyId || !createdDebriefId) return null;
       const debrief = await debriefsApi.get(selectedCompanyId, createdDebriefId);
       if (debrief.status === "processing_failed") {
-        throw new Error("Debrief processing failed");
+        throw new Error("Discussion processing failed");
       }
       if (debrief.status === "ready") {
-        // Fetch briefs for this debrief to get the brief ID
-        const allBriefs = await briefsApi.list(selectedCompanyId);
-        const brief = allBriefs.find((b) => b.debriefId === createdDebriefId);
-        if (brief) {
-          setIsPolling(false);
-          resetAndClose();
-          navigate(`/briefs/${brief.id}`);
-          return brief;
+        setIsPolling(false);
+        resetAndClose();
+        if (createdDiscussionId) {
+          navigate(`/discussions/${createdDiscussionId}`);
         }
+        return debrief;
       }
       return debrief;
     },
@@ -86,13 +83,14 @@ export function DebriefModal() {
   const createMutation = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       debriefsApi.create(selectedCompanyId!, data),
-    onSuccess: (debrief) => {
+    onSuccess: (debrief: { id: string; discussionId?: string }) => {
       setCreatedDebriefId(debrief.id);
+      if (debrief.discussionId) setCreatedDiscussionId(debrief.discussionId);
       setIsPolling(true);
       queryClient.invalidateQueries({ queryKey: queryKeys.activity(selectedCompanyId!) });
     },
     onError: () => {
-      pushToast({ title: "Failed to create debrief", tone: "warn" });
+      pushToast({ title: "Failed to create discussion", tone: "warn" });
     },
   });
 
@@ -103,6 +101,7 @@ export function DebriefModal() {
     setDepartmentId("");
     setIsPolling(false);
     setCreatedDebriefId(null);
+    setCreatedDiscussionId(null);
     setAudioBlob(null);
     setIsTranscribing(false);
     setTranscription(null);
@@ -185,13 +184,13 @@ export function DebriefModal() {
         className="sm:max-w-[600px] gap-0 flex flex-col"
       >
         <DialogHeader className="px-6 pt-6 pb-4">
-          <DialogTitle>New Debrief</DialogTitle>
+          <DialogTitle>New Discussion</DialogTitle>
         </DialogHeader>
 
         {isSubmitting ? (
           <div className="flex flex-col items-center justify-center gap-3 py-12 px-6">
             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            <p className="text-sm text-muted-foreground">Processing your debrief...</p>
+            <p className="text-sm text-muted-foreground">Processing your discussion...</p>
             <p className="text-xs text-muted-foreground/60">
               Extracting decisions, tasks, insights, and context
             </p>
@@ -305,7 +304,7 @@ export function DebriefModal() {
                 onClick={handleSubmit}
                 disabled={!canSubmit || !selectedCompanyId}
               >
-                Process Debrief
+                Process Discussion
               </Button>
             </div>
           </div>

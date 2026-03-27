@@ -1040,7 +1040,7 @@ export function OnboardingWizard() {
                       <FileText className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Debriefs & Briefs</h3>
+                      <h3 className="font-medium">Discussions</h3>
                       <p className="text-xs text-muted-foreground">
                         The primary way to feed work into your agents.
                       </p>
@@ -1049,11 +1049,11 @@ export function OnboardingWizard() {
 
                   <div className="bg-muted/30 rounded-md border border-border px-4 py-3 space-y-3 text-sm">
                     <div>
-                      <p className="font-medium mb-1">What's a Debrief?</p>
+                      <p className="font-medium mb-1">What's a Discussion?</p>
                       <p className="text-muted-foreground text-xs leading-relaxed">
                         Paste meeting notes, research findings, or ideas. The AI
                         extracts decisions, tasks, and insights — creating a
-                        Brief you review and refine before your agents start
+                        Discussion you review and refine before your agents start
                         work.
                       </p>
                     </div>
@@ -1064,7 +1064,7 @@ export function OnboardingWizard() {
                         <ArrowRightLeft className="h-3 w-3 shrink-0" />
                         <span className="rounded bg-muted px-1.5 py-0.5">AI Extract</span>
                         <ArrowRightLeft className="h-3 w-3 shrink-0" />
-                        <span className="rounded bg-muted px-1.5 py-0.5">Brief</span>
+                        <span className="rounded bg-muted px-1.5 py-0.5">Discussion</span>
                         <ArrowRightLeft className="h-3 w-3 shrink-0" />
                         <span className="rounded bg-muted px-1.5 py-0.5">Approve</span>
                         <ArrowRightLeft className="h-3 w-3 shrink-0" />
@@ -1075,7 +1075,7 @@ export function OnboardingWizard() {
                       <p className="font-medium mb-1">Why this matters</p>
                       <p className="text-muted-foreground text-xs leading-relaxed">
                         Direct task creation works for quick one-offs (you just
-                        did one!). But Debriefs let you dump raw information and
+                        did one!). But Discussions let you dump raw information and
                         let the AI structure it — extracting multiple tasks,
                         decisions, and context in one go.
                       </p>
@@ -1084,8 +1084,8 @@ export function OnboardingWizard() {
 
                   <div className="rounded-md border border-border/60 bg-muted/10 px-3 py-2">
                     <p className="text-xs text-muted-foreground">
-                      You can create your first Debrief anytime from the{" "}
-                      <span className="font-medium text-foreground">+ Debrief</span>{" "}
+                      You can create your first Discussion anytime from the{" "}
+                      <span className="font-medium text-foreground">+ Discussion</span>{" "}
                       button in the sidebar. For now, let's finish setup.
                     </p>
                   </div>
