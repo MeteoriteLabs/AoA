@@ -54,11 +54,16 @@ export function DiscussionCaptureModal() {
 
   // Sync defaults when modal opens with pre-scoped values
   useEffect(() => {
-    if (discussionCaptureOpen && discussionCaptureDefaults.scopeType) {
-      setScopeType(discussionCaptureDefaults.scopeType);
-      setScopeId(discussionCaptureDefaults.scopeId ?? "");
-      if (discussionCaptureDefaults.scopeType === "department") {
-        setDepartmentId(discussionCaptureDefaults.scopeId ?? "");
+    if (discussionCaptureOpen) {
+      if (discussionCaptureDefaults.existingDiscussionId) {
+        setExistingDiscussionId(discussionCaptureDefaults.existingDiscussionId);
+      }
+      if (discussionCaptureDefaults.scopeType) {
+        setScopeType(discussionCaptureDefaults.scopeType);
+        setScopeId(discussionCaptureDefaults.scopeId ?? "");
+        if (discussionCaptureDefaults.scopeType === "department") {
+          setDepartmentId(discussionCaptureDefaults.scopeId ?? "");
+        }
       }
     }
   }, [discussionCaptureOpen, discussionCaptureDefaults]);

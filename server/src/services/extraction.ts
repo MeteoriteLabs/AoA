@@ -1,4 +1,4 @@
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, internalAgentRuns } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
@@ -14,38 +14,54 @@ export interface ExtractedItem {
   layer?: "identity" | "domain" | "active_context" | "working" | null;
 }
 
-const EXTRACTION_PROMPT_TEMPLATE = `You are analyzing content from a founder's debrief — raw notes, meeting summaries, brainstorming sessions, or pasted conversations.
+const EXTRACTION_PROMPT_TEMPLATE = `You are extracting structured items from a founder's discussion entry — raw notes, meeting summaries, brainstorming, or pasted conversations.
 
-Available departments and projects in this company:
+Previous entries in this thread (if any) are provided for context. Extract ONLY from the new entry — do not re-extract items already covered in previous entries.
+
+Available departments and projects:
 {{DEPARTMENTS_AND_PROJECTS_LIST}}
 
-Extract the following structured items:
+Extract these item types:
 
-1. DECISIONS — conclusions, choices, or commitments that were made
-2. TASKS — action items that need to be done (include suggested priority if apparent)
+1. DECISIONS — conclusions, choices, or commitments made
+2. TASKS — concrete action items (single work items assignable to one person, not epics or vague goals)
 3. INSIGHTS — notable observations, patterns, or learnings worth remembering
-4. CONTEXT — background information, facts, or data points worth storing
-5. REFERENCES — durable facts, links, contacts, docs, or resources worth retrieving later
-6. PREFERENCES — founder or team preferences about style, tooling, process, or constraints
+4. CONTEXT — background facts or data points worth storing
+5. REFERENCES — durable links, contacts, docs, or resources worth retrieving later
+6. PREFERENCES — founder/team preferences about style, tooling, process, or constraints
 
-For each item, provide:
+Skip: greetings, filler, small talk, emotional commentary, vague ideas without clear substance, and anything already captured in previous entries.
+
+For each item return:
 - type: 'decision' | 'task' | 'insight' | 'context' | 'reference' | 'preference'
-- title: concise one-line title
-- description: 1-3 sentence explanation
-- priority: 'urgent' | 'high' | 'medium' | 'low' (for tasks only, if determinable)
-- department: name of the most relevant department or project from the list above, or null if it doesn't clearly fit any
-- layer: suggest one memory layer using these heuristics:
-  - company-wide vision, principles, values, or enduring preferences => 'identity'
-  - department-specific process, standards, or guidelines => 'domain'
-  - goal or project-specific context that should persist while the work is active => 'active_context'
-  - task-specific working notes or execution details => 'working'
-  - if unclear, prefer 'domain'
+- title: concise one-line title (under 80 chars)
+- description: 1-3 sentence explanation with enough context to act on later
+- priority: 'urgent' | 'high' | 'medium' | 'low' (tasks only, omit if unclear)
+- department: most relevant name from the list above, or null
+- layer: one of:
+  - 'identity' — company-wide vision, values, enduring preferences
+  - 'domain' — department standards, processes, guidelines
+  - 'active_context' — goal/project-scoped, persists while work is active
+  - 'working' — task-scoped notes, ephemeral execution details
+  - default to 'domain' if unclear
 
-Return as JSON array. If the content doesn't contain a particular type, omit that type.
-Only extract items that are clearly present — do not infer or fabricate.
-If an item does not clearly belong to any department or project, set department to null — do not force a match.
+Return [] if the entry contains no extractable items.
+Do not infer or fabricate items. Do not force department matches — use null if uncertain.
+Respond ONLY with a valid JSON array. No markdown, no explanation.
 
-Respond ONLY with a valid JSON array. No markdown, no explanation, no code fences.`;
+Example input: "Had a call with Acme Corp. They want the dashboard done by April 15. We decided to use Tailwind instead of custom CSS. Sarah should set up the CI pipeline this week."
+
+Example output:
+[
+  {"type":"decision","title":"Use Tailwind CSS for dashboard","description":"Team decided to use Tailwind instead of custom CSS for the dashboard project.","department":"Engineering","layer":"domain"},
+  {"type":"task","title":"Set up CI pipeline","description":"Sarah should configure the CI pipeline this week.","priority":"high","department":"Engineering","layer":"working"},
+  {"type":"context","title":"Acme Corp dashboard deadline is April 15","description":"Client Acme Corp expects the dashboard completed by April 15.","department":null,"layer":"active_context"}
+]
+
+Example input: "Hey, just checking in. Nothing new really, will update tomorrow."
+
+Example output:
+[]`;
 
 /**
  * Build the departments/projects list string for the extraction prompt.
@@ -80,8 +96,23 @@ async function buildDepartmentsList(
  * Uses a direct fetch to an OpenAI-compatible API endpoint.
  * Falls back gracefully if no API key is configured.
  */
-async function callLLM(prompt: string, content: string): Promise<ExtractedItem[]> {
-  // Check for API key — support both Anthropic and OpenAI
+async function callLLM(prompt: string, content: string, db?: Db, companyId?: string): Promise<ExtractedItem[]> {
+  // Try DB-stored provider keys first (these are managed via Settings UI and always up-to-date)
+  if (db && companyId) {
+    for (const provider of ["anthropic", "openai"] as const) {
+      try {
+        const dbKey = await getProviderApiKey(db, companyId, provider);
+        if (provider === "anthropic") {
+          return callAnthropic(dbKey, prompt, content);
+        }
+        return callOpenAI(dbKey, prompt, content);
+      } catch {
+        // Key not found for this provider, try next
+      }
+    }
+  }
+
+  // Fallback to env vars
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
 
@@ -94,7 +125,7 @@ async function callLLM(prompt: string, content: string): Promise<ExtractedItem[]
   }
 
   throw new Error(
-    "No LLM API key configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable Debrief extraction.",
+    "No LLM API key configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or configure a provider in Settings → LLM Providers.",
   );
 }
 
@@ -113,6 +144,7 @@ async function callAnthropic(
     body: JSON.stringify({
       model: process.env.EXTRACTION_MODEL || "claude-sonnet-4-20250514",
       max_tokens: 4096,
+      temperature: 0.2,
       system: systemPrompt,
       messages: [{ role: "user", content }],
     }),
@@ -365,13 +397,77 @@ export function extractionService(db: Db) {
           return;
         }
 
-        // 3. Set extraction status to processing
+        // 3. Skip trivially short content
+        if (!entry.rawContent || entry.rawContent.trim().length < 10) {
+          log.info("Content too short — skipping extraction");
+          await db
+            .update(discussionEntries)
+            .set({
+              extractionStatus: "skipped",
+              sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', '"Content too short to extract from."'::jsonb)`,
+            })
+            .where(eq(discussionEntries.id, entryId));
+          return;
+        }
+
+        // 4. Pre-check: verify an LLM provider/key is available before proceeding
+        const [preCheckConfig] = await db
+          .select()
+          .from(internalAgentConfig)
+          .where(eq(internalAgentConfig.companyId, companyId));
+
+        const hasEnvKey = Boolean(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY);
+
+        if (preCheckConfig?.provider) {
+          try {
+            await getProviderApiKey(db, companyId, preCheckConfig.provider);
+          } catch {
+            if (!hasEnvKey) {
+              const msg = `No API key configured for provider "${preCheckConfig.provider}". Set it in Settings → LLM Providers or as an environment variable.`;
+              log.warn(msg);
+              await db
+                .update(discussionEntries)
+                .set({
+                  extractionStatus: "skipped",
+                  sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(msg)}::jsonb)`,
+                })
+                .where(eq(discussionEntries.id, entryId));
+              return;
+            }
+          }
+        } else if (!hasEnvKey) {
+          // No agent config and no env key — try DB-stored provider keys as fallback
+          let foundDbKey = false;
+          for (const provider of ["openai", "anthropic", "google"] as const) {
+            try {
+              await getProviderApiKey(db, companyId, provider);
+              foundDbKey = true;
+              break;
+            } catch {
+              // Key not found for this provider, try next
+            }
+          }
+          if (!foundDbKey) {
+            const msg = "No LLM provider configured. Set up a provider in Settings → LLM Providers, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.";
+            log.warn(msg);
+            await db
+              .update(discussionEntries)
+              .set({
+                extractionStatus: "skipped",
+                sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(msg)}::jsonb)`,
+              })
+              .where(eq(discussionEntries.id, entryId));
+            return;
+          }
+        }
+
+        // 5. Set extraction status to processing
         await db
           .update(discussionEntries)
           .set({ extractionStatus: "processing" })
           .where(eq(discussionEntries.id, entryId));
 
-        // 4. Get thread context (most recent 10 entries, excluding current)
+        // 6. Get thread context (most recent 10 entries, excluding current)
         const previousEntries = await db
           .select()
           .from(discussionEntries)
@@ -386,7 +482,7 @@ export function extractionService(db: Db) {
           .map((e: any) => e.rawContent)
           .join("\n---\n");
 
-        // 5. Build extraction prompt
+        // 7. Build extraction prompt
         const { text: deptList, lookup: deptLookup } =
           await buildDepartmentsList(db, companyId);
         const prompt = EXTRACTION_PROMPT_TEMPLATE.replace(
@@ -394,11 +490,8 @@ export function extractionService(db: Db) {
           deptList,
         );
 
-        // 6. Check if internal agent is configured
-        const [agentConfig] = await db
-          .select()
-          .from(internalAgentConfig)
-          .where(eq(internalAgentConfig.companyId, companyId));
+        // 8. Use agent config from pre-check (already fetched above)
+        const agentConfig = preCheckConfig;
 
         let extractedItems: ExtractedItem[];
 
@@ -465,7 +558,7 @@ export function extractionService(db: Db) {
           const userContent = threadContext
             ? `Previous context:\n${threadContext}\n\n---\n\nNew entry to extract from:\n${entry.rawContent}`
             : entry.rawContent;
-          extractedItems = await callLLM(prompt, userContent);
+          extractedItems = await callLLM(prompt, userContent, db, companyId);
         }
 
         log.info({ itemCount: extractedItems.length }, "Extraction complete");
@@ -502,9 +595,18 @@ export function extractionService(db: Db) {
           });
 
           await db.insert(discussionExtractedItems).values(itemValues);
+
+          // Increment discussion's pendingItemCount
+          await db
+            .update(discussions)
+            .set({
+              pendingItemCount: sql`${discussions.pendingItemCount} + ${itemValues.length}`,
+              updatedAt: new Date(),
+            })
+            .where(eq(discussions.id, entry.discussionId));
         }
 
-        // 8. Mark completed
+        // 9. Mark completed
         await db
           .update(discussionEntries)
           .set({ extractionStatus: "completed" })
@@ -523,9 +625,13 @@ export function extractionService(db: Db) {
       } catch (err) {
         log.error({ err }, "Discussion entry extraction failed");
 
+        const errMessage = err instanceof Error ? err.message : String(err);
         await db
           .update(discussionEntries)
-          .set({ extractionStatus: "failed" })
+          .set({
+            extractionStatus: "failed",
+            sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(errMessage)}::jsonb)`,
+          })
           .where(eq(discussionEntries.id, entryId))
           .catch((updateErr: any) => {
             log.error({ err: updateErr }, "Failed to update entry status after extraction failure");

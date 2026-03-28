@@ -36,6 +36,7 @@ export interface ExtractedItem {
   title: string;
   description: string | null;
   suggestedPriority: string | null;
+  suggestedAssigneeId: string | null;
   suggestedDepartmentId: string | null;
   suggestedLayer: string | null;
   layer: string | null;
@@ -66,7 +67,7 @@ export interface DiscussionEntry {
   departmentId: string | null;
   projectId: string | null;
   goalId: string | null;
-  extractionStatus: "pending" | "processing" | "completed" | "failed";
+  extractionStatus: "pending" | "processing" | "completed" | "failed" | "skipped";
   createdBy: string;
   createdAt: string;
   extractedItems: ExtractedItem[];
@@ -161,6 +162,12 @@ export const discussionsApi = {
     api.post<{ entryId: string; extractionStatus: string; runId: string }>(
       `/companies/${companyId}/discussions/${discussionId}/entries/${entryId}/reprocess`,
       opts ?? {},
+    ),
+
+  reprocessAll: (companyId: string, discussionId: string) =>
+    api.post<{ reprocessedCount: number; skippedCount: number }>(
+      `/companies/${companyId}/discussions/${discussionId}/reprocess`,
+      {},
     ),
 
   approveItems: (companyId: string, discussionId: string, data: ApproveItems) =>

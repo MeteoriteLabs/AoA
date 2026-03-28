@@ -28,6 +28,7 @@ interface NewProjectDefaults {
 export interface DiscussionCaptureDefaults {
   scopeType?: string;
   scopeId?: string;
+  existingDiscussionId?: string;
 }
 
 interface DialogContextValue {
