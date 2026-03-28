@@ -42,3 +42,4 @@ export { createStorageServiceFromConfig, getStorageService } from "../storage/in
 export { discussionService, type DiscussionFilters } from "./discussions.js";
 export { notificationService } from "./notifications.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
+export { budgetService } from "./budgets.js";

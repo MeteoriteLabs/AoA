@@ -246,6 +246,12 @@ export type {
   AgentEnvConfig,
   CompanySecret,
   SecretProviderDescriptor,
+  BudgetPolicy,
+  BudgetPolicySummary,
+  BudgetIncident,
+  BudgetOverview,
+  UpsertBudgetPolicyInput,
+  ResolveBudgetIncidentInput,
 } from "./types/index.js";
 
 export {
@@ -416,6 +422,10 @@ export {
   updateWorkflowTemplateSchema,
   type CreateWorkflowTemplate,
   type UpdateWorkflowTemplate,
+  upsertBudgetPolicySchema,
+  resolveBudgetIncidentSchema,
+  type UpsertBudgetPolicy,
+  type ResolveBudgetIncident,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

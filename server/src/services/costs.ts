@@ -2,6 +2,8 @@ import { and, desc, eq, gte, isNotNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { budgetService } from "./budgets.js";
+import { logger } from "../middleware/logger.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -22,7 +24,7 @@ export function costService(db: Db) {
         throw unprocessable("Agent does not belong to company");
       }
 
-      return db.transaction(async (tx) => {
+      const event = await db.transaction(async (tx) => {
         const event = await tx
           .insert(costEvents)
           .values({ ...data, companyId })
@@ -66,6 +68,13 @@ export function costService(db: Db) {
 
         return event;
       });
+
+      // Fire-and-forget budget evaluation
+      budgetService(db).evaluateCostEvent(event.agentId, companyId).catch((err) =>
+        logger.error({ err }, "budget evaluation failed after cost event")
+      );
+
+      return event;
     },
 
     summary: async (companyId: string, range?: CostDateRange) => {

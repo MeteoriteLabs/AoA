@@ -6,6 +6,8 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { costsApi } from "../api/costs";
+import { budgetsApi } from "../api/budgets";
+import type { ResolveBudgetIncidentInput } from "@paperclipai/shared";
 import { activityApi } from "../api/activity";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
@@ -660,6 +662,18 @@ function BudgetSection() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: budgetOverview, refetch: refetchOverview } = useQuery({
+    queryKey: ["budgets", "overview", selectedCompanyId],
+    queryFn: () => budgetsApi.overview(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const resolveIncident = useMutation({
+    mutationFn: ({ incidentId, input }: { incidentId: string; input: ResolveBudgetIncidentInput }) =>
+      budgetsApi.resolveIncident(selectedCompanyId!, incidentId, input),
+    onSuccess: () => { refetchOverview(); },
+  });
+
   if (!selectedCompanyId) {
     return (
       <EmptyState
@@ -879,6 +893,64 @@ function BudgetSection() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Open Budget Incidents */}
+          {budgetOverview && budgetOverview.openIncidents.length > 0 && (
+            <Card>
+              <CardContent className="p-4 space-y-3">
+                <h3 className="text-sm font-semibold">Open Incidents</h3>
+                <div className="space-y-3">
+                  {budgetOverview.openIncidents.map((incident) => (
+                    <div key={incident.id} className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${incident.thresholdType === "hard_stop" ? "bg-red-500/10 text-red-400" : "bg-yellow-500/10 text-yellow-400"}`}>
+                            {incident.thresholdType === "hard_stop" ? "Hard Stop" : "Warning"}
+                          </span>
+                          <span className="text-sm font-medium">{incident.scopeName ?? incident.scopeId}</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          ${(incident.amountObservedCents / 100).toFixed(2)} observed / ${(incident.amountLimitCents / 100).toFixed(2)} limit
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Created {new Date(incident.createdAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {incident.thresholdType === "hard_stop" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={resolveIncident.isPending}
+                            onClick={() => {
+                              const newAmount = window.prompt("New budget limit in dollars:", String(Math.round(incident.amountLimitCents / 100 * 1.5)));
+                              if (!newAmount) return;
+                              const parsed = parseFloat(newAmount);
+                              if (isNaN(parsed) || parsed <= 0) { window.alert("Please enter a valid dollar amount."); return; }
+                              resolveIncident.mutate({
+                                incidentId: incident.id,
+                                input: { action: "raise_and_resume", newAmountCents: Math.round(parsed * 100) },
+                              });
+                            }}
+                          >
+                            Raise &amp; Resume
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={resolveIncident.isPending}
+                          onClick={() => resolveIncident.mutate({ incidentId: incident.id, input: { action: "dismiss" } })}
+                        >
+                          Dismiss
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </>
       )}
     </div>

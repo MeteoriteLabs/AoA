@@ -105,3 +105,4 @@ export type {
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
 } from "./company-portability.js";
+export type { BudgetPolicy, BudgetPolicySummary, BudgetIncident, BudgetOverview, UpsertBudgetPolicyInput, ResolveBudgetIncidentInput } from "./budget.js";

@@ -38,6 +38,7 @@ import {
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { outputDetectionService } from "./output-detection.js";
 import { formatRunSummary } from "./run-summary.js";
+import { budgetService } from "./budgets.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -2044,6 +2045,14 @@ export function heartbeatService(db: Db) {
         finishedAt: new Date(),
       });
     };
+
+    // Budget preflight — check before spending any tokens
+    const budgetBlock = await budgetService(db).getInvocationBlock(agent.id, agent.companyId);
+    if (budgetBlock) {
+      logger.info({ agentId: agent.id, reason: budgetBlock }, "run blocked by budget policy");
+      await writeSkippedRequest(`budget.${budgetBlock}`);
+      return null;
+    }
 
     if (source === "timer" && !policy.enabled) {
       await writeSkippedRequest("heartbeat.disabled");

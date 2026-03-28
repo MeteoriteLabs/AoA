@@ -1,8 +1,9 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { createCostEventSchema, updateBudgetSchema } from "@paperclipai/shared";
+import { createCostEventSchema, updateBudgetSchema, upsertBudgetPolicySchema, resolveBudgetIncidentSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { costService, companyService, agentService, logActivity } from "../services/index.js";
+import { budgetService } from "../services/budgets.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function costRoutes(db: Db) {
@@ -10,6 +11,7 @@ export function costRoutes(db: Db) {
   const costs = costService(db);
   const companies = companyService(db);
   const agents = agentService(db);
+  const budgets = budgetService(db);
 
   router.post("/companies/:companyId/cost-events", validate(createCostEventSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -80,6 +82,14 @@ export function costRoutes(db: Db) {
       return;
     }
 
+    await budgets.upsertPolicy(companyId, {
+      scopeType: "company",
+      scopeId: companyId,
+      amountCents: req.body.budgetMonthlyCents,
+      warnPercent: 80,
+      hardStopEnabled: true,
+    });
+
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
@@ -117,6 +127,14 @@ export function costRoutes(db: Db) {
       return;
     }
 
+    await budgets.upsertPolicy(updated.companyId, {
+      scopeType: "agent",
+      scopeId: agentId,
+      amountCents: req.body.budgetMonthlyCents,
+      warnPercent: 80,
+      hardStopEnabled: true,
+    });
+
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: updated.companyId,
@@ -131,6 +149,57 @@ export function costRoutes(db: Db) {
     });
 
     res.json(updated);
+  });
+
+  router.get("/companies/:companyId/budgets/overview", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const [policies, openIncidents] = await Promise.all([
+      budgets.listPolicies(companyId),
+      budgets.listOpenIncidents(companyId),
+    ]);
+    res.json({ policies, openIncidents });
+  });
+
+  router.post("/companies/:companyId/budgets/policies", validate(upsertBudgetPolicySchema), async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const policy = await budgets.upsertPolicy(companyId, req.body);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "budget.policy_upserted",
+      entityType: "company",
+      entityId: companyId,
+      details: { scopeType: req.body.scopeType, scopeId: req.body.scopeId, amountCents: req.body.amountCents },
+    });
+    res.status(201).json(policy);
+  });
+
+  router.post("/companies/:companyId/budget-incidents/:incidentId/resolve", validate(resolveBudgetIncidentSchema), async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    const incidentId = req.params.incidentId as string;
+    assertCompanyAccess(req, companyId);
+    await budgets.resolveIncident(incidentId, companyId, req.body);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "budget.incident_resolved",
+      entityType: "company",
+      entityId: companyId,
+      details: { incidentId, action: req.body.action },
+    });
+    res.json({ ok: true });
   });
 
   return router;

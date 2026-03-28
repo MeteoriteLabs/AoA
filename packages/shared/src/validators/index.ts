@@ -226,3 +226,10 @@ export {
   type UpdateInternalAgentConfig,
   type ChatMessage,
 } from "./internal-agent.js";
+
+export {
+  upsertBudgetPolicySchema,
+  resolveBudgetIncidentSchema,
+  type UpsertBudgetPolicy,
+  type ResolveBudgetIncident,
+} from "./budget.js";
