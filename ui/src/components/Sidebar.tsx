@@ -19,6 +19,7 @@ import { SidebarProjectsByType } from "./SidebarProjectsByType";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
+import { notificationsApi } from "../api/notifications";
 import { queryKeys } from "../lib/queryKeys";
 import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,12 @@ export function Sidebar() {
     queryKey: queryKeys.sidebarBadges(selectedCompanyId!),
     queryFn: () => sidebarBadgesApi.get(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+  const { data: notifUnread } = useQuery({
+    queryKey: queryKeys.notifications.unreadCount(selectedCompanyId!),
+    queryFn: () => notificationsApi.getUnreadCount(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
   });
   const liveRunCount = useLiveAgentCount();
 
@@ -103,7 +110,7 @@ export function Sidebar() {
             to="/inbox"
             label="Inbox"
             icon={Inbox}
-            badge={sidebarBadges?.inbox}
+            badge={(sidebarBadges?.inbox ?? 0) + (notifUnread?.count ?? 0) || undefined}
             badgeTone={sidebarBadges?.failedRuns ? "danger" : "default"}
             alert={(sidebarBadges?.failedRuns ?? 0) > 0}
             collapsed={collapsed}

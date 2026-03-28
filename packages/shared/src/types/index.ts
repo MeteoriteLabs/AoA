@@ -20,6 +20,11 @@ export type {
   IssueAncestorGoal,
   IssueAttachment,
   IssueLabel,
+  DocumentFormat,
+  IssueDocumentSummary,
+  IssueDocument,
+  DocumentRevision,
+  LegacyPlanDocument,
 } from "./issue.js";
 export type { Goal, GoalProjectRef } from "./goal.js";
 export type { MemoryItem } from "./memory.js";

@@ -70,6 +70,11 @@ export {
   type AddIssueComment,
   type LinkIssueApproval,
   type CreateIssueAttachmentMetadata,
+  issueDocumentKeySchema,
+  issueDocumentFormatSchema,
+  upsertIssueDocumentSchema,
+  ISSUE_DOCUMENT_FORMATS,
+  type UpsertIssueDocument,
 } from "./issue.js";
 
 export {

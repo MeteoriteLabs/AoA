@@ -34,6 +34,8 @@ const adapterLabels: Record<string, string> = {
   openclaw: "OpenClaw",
   process: "Process",
   http: "HTTP",
+  hermes_local: "Hermes",
+  gemini_local: "Gemini CLI",
 };
 
 const roleLabels: Record<string, string> = {

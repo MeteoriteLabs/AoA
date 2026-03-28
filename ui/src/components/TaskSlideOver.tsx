@@ -19,6 +19,7 @@ import { useTeamAccess } from "../hooks/useTeamAccess";
 import { relativeTime, cn, formatTokens } from "../lib/utils";
 import { InlineEditor } from "./InlineEditor";
 import { CommentThread } from "./CommentThread";
+import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { IssueProperties } from "./IssueProperties";
 import { LiveRunWidget } from "./LiveRunWidget";
 import type { MentionOption } from "./MarkdownEditor";
@@ -902,6 +903,17 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                     inline
                   />
                 </div>
+
+                {/* Documents */}
+                <IssueDocumentsSection
+                  issue={issue}
+                  canDeleteDocuments={!!session?.user?.id}
+                  mentions={mentionOptions}
+                  imageUploadHandler={async (file) => {
+                    const attachment = await uploadAttachment.mutateAsync(file);
+                    return attachment.contentPath;
+                  }}
+                />
 
                 {/* Dependencies */}
                 <div className="space-y-3">

@@ -26,6 +26,8 @@ import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
+import { documentService } from "../services/documents.js";
+import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@paperclipai/shared";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
@@ -45,6 +47,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const documentsSvc = documentService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -291,16 +294,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const [ancestors, project, goal, mentionedProjectIds] = await Promise.all([
+    const [ancestors, project, goal, mentionedProjectIds, documentPayload] = await Promise.all([
       svc.getAncestors(issue.id),
       issue.projectId ? projectsSvc.getById(issue.projectId) : null,
       issue.goalId ? goalsSvc.getById(issue.goalId) : null,
       svc.findMentionedProjectIds(issue.id),
+      documentsSvc.getIssueDocumentPayload(issue),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
       : [];
-    res.json({ ...issue, ancestors, project: project ?? null, goal: goal ?? null, mentionedProjects });
+    res.json({ ...issue, ancestors, project: project ?? null, goal: goal ?? null, mentionedProjects, ...documentPayload });
   });
 
   router.post("/issues/:id/read", async (req, res) => {
@@ -1152,6 +1156,97 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
+    res.json({ ok: true });
+  });
+
+  // --- Issue Documents ---
+
+  router.get("/issues/:id/documents", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) { res.status(404).json({ error: "Issue not found" }); return; }
+    assertCompanyAccess(req, issue.companyId);
+    const docs = await documentsSvc.listIssueDocuments(issue.id);
+    res.json(docs);
+  });
+
+  router.get("/issues/:id/documents/:key", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) { res.status(404).json({ error: "Issue not found" }); return; }
+    assertCompanyAccess(req, issue.companyId);
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) { res.status(400).json({ error: "Invalid document key" }); return; }
+    const doc = await documentsSvc.getIssueDocumentByKey(issue.id, keyParsed.data);
+    if (!doc) { res.status(404).json({ error: "Document not found" }); return; }
+    res.json(doc);
+  });
+
+  router.put("/issues/:id/documents/:key", validate(upsertIssueDocumentSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) { res.status(404).json({ error: "Issue not found" }); return; }
+    assertCompanyAccess(req, issue.companyId);
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) { res.status(400).json({ error: "Invalid document key" }); return; }
+    const actor = getActorInfo(req);
+    const result = await documentsSvc.upsertIssueDocument({
+      issueId: issue.id,
+      key: keyParsed.data,
+      title: req.body.title ?? null,
+      format: req.body.format,
+      body: req.body.body,
+      changeSummary: req.body.changeSummary ?? null,
+      baseRevisionId: req.body.baseRevisionId ?? null,
+      createdByAgentId: actor.agentId ?? null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: result.created ? "issue.document_created" : "issue.document_updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { key: result.document.key, documentId: result.document.id },
+    });
+    res.status(result.created ? 201 : 200).json(result.document);
+  });
+
+  router.get("/issues/:id/documents/:key/revisions", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) { res.status(404).json({ error: "Issue not found" }); return; }
+    assertCompanyAccess(req, issue.companyId);
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) { res.status(400).json({ error: "Invalid document key" }); return; }
+    const revisions = await documentsSvc.listIssueDocumentRevisions(issue.id, keyParsed.data);
+    res.json(revisions);
+  });
+
+  router.delete("/issues/:id/documents/:key", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) { res.status(404).json({ error: "Issue not found" }); return; }
+    assertCompanyAccess(req, issue.companyId);
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) { res.status(400).json({ error: "Invalid document key" }); return; }
+    const actor = getActorInfo(req);
+    const deleted = await documentsSvc.deleteIssueDocument(issue.id, keyParsed.data);
+    if (!deleted) { res.status(404).json({ error: "Document not found" }); return; }
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.document_deleted",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { key: deleted.key, documentId: deleted.id },
+    });
     res.json({ ok: true });
   });
 

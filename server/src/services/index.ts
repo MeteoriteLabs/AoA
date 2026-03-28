@@ -41,3 +41,4 @@ export type { CreateWorkflowInput, UpdateWorkflowInput, InstantiateResult } from
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export { discussionService, type DiscussionFilters } from "./discussions.js";
 export { notificationService } from "./notifications.js";
+export { documentService, extractLegacyPlanBody } from "./documents.js";

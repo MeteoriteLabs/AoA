@@ -32,6 +32,8 @@ export const AGENT_ADAPTER_TYPES = [
   "claude_api",
   "openai_api",
   "gemini_api",
+  "hermes_local",
+  "gemini_local",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
