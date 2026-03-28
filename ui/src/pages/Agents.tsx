@@ -19,7 +19,10 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { Bot, Plus, List, GitBranch, LayoutGrid, SlidersHorizontal } from "lucide-react";
+import { Bot, Plus, List, GitBranch, LayoutGrid, SlidersHorizontal, ChevronRight } from "lucide-react";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
+import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
 import type { Agent } from "@paperclipai/shared";
 import type { AgentTrustScore } from "@paperclipai/shared";
 
@@ -79,6 +82,14 @@ export function Agents() {
   const effectiveView: ViewMode = forceListView ? "cards" : view;
   const [showTerminated, setShowTerminated] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const liveCount = useLiveAgentCount();
+  const [liveActivityOpen, setLiveActivityOpen] = useState(() => {
+    try { return localStorage.getItem("aoa.agents.liveActivityCollapsed") !== "true"; } catch { return true; }
+  });
+  const handleLiveActivityToggle = (open: boolean) => {
+    setLiveActivityOpen(open);
+    try { localStorage.setItem("aoa.agents.liveActivityCollapsed", String(!open)); } catch {}
+  };
 
   const { data: agents, isLoading, error } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -249,6 +260,32 @@ export function Agents() {
           </Button>
         </div>
       </div>
+
+      {liveCount > 0 && selectedCompanyId && (
+        <Collapsible open={liveActivityOpen} onOpenChange={handleLiveActivityToggle}>
+          <CollapsibleTrigger className="flex items-center gap-2 w-full">
+            <ChevronRight
+              className={cn(
+                "h-3 w-3 text-muted-foreground transition-transform",
+                liveActivityOpen && "rotate-90",
+              )}
+            />
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Live Activity
+            </span>
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+            </span>
+            <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+              {liveCount} live
+            </span>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="pt-3">
+            <ActiveAgentsPanel companyId={selectedCompanyId} hideHeader />
+          </CollapsibleContent>
+        </Collapsible>
+      )}
 
       {filtered.length > 0 && (
         <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
