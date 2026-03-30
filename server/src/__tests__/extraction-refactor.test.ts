@@ -6,6 +6,14 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: unknown[]) => args),
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
   desc: vi.fn((a: unknown) => ({ desc: a })),
+  sql: Object.assign(
+    vi.fn((strings: any, ...values: any[]) => ({
+      sql: strings,
+      values,
+      as: vi.fn().mockReturnValue("aliased"),
+    })),
+    { raw: vi.fn((input: any) => input) },
+  ),
 }));
 
 vi.mock("@paperclipai/db", () => {
@@ -163,13 +171,13 @@ describe("extractFromDiscussionEntry", () => {
       { type: "preference", title: "Use TypeScript strict mode", description: "Always enable strict", department: null, layer: "domain" },
     ]);
 
-    // Queue: 1) entry, 2) discussion, 3) previous entries (thread context), 4) departments, 5) internalAgentConfig
+    // Queue: 1) entry, 2) discussion, 3) internalAgentConfig (pre-check), 4) previous entries, 5) departments
     selectQueue.push(
       [createMockEntry()],
       [createMockDiscussion()],
+      [{ id: "cfg-1", companyId: "company-1", provider: "anthropic", model: "claude-sonnet-4-6" }],
       [],
       [{ id: "dept-1", name: "Engineering", type: "department" }],
-      [{ id: "cfg-1", companyId: "company-1", provider: "anthropic", model: "claude-sonnet-4-6" }],
     );
 
     const mockProvider = { name: "anthropic", chat: vi.fn(() => createMockStream(extractedJson)) };
@@ -211,13 +219,17 @@ describe("extractFromDiscussionEntry", () => {
       { type: "task", title: "Build onboarding flow", description: "User onboarding", priority: "medium" },
     ]);
 
+    // Queue: 1) entry, 2) discussion, 3) internalAgentConfig (empty), 4) previous entries, 5) departments
     selectQueue.push(
       [createMockEntry()],
       [createMockDiscussion()],
-      [],
-      [],
       [],  // no internalAgentConfig
+      [],  // previous entries
+      [],  // departments
     );
+
+    // Ensure callLLM falls through DB key lookup to env var fallback
+    mockGetProviderApiKey.mockRejectedValue(new Error("not found"));
 
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -252,12 +264,13 @@ describe("extractFromDiscussionEntry", () => {
   it("transitions status: pending → processing → completed", async () => {
     const { db, selectQueue, capturedUpdates } = createMockDb();
 
+    // Queue: 1) entry, 2) discussion, 3) internalAgentConfig, 4) previous entries, 5) departments
     selectQueue.push(
       [createMockEntry()],
       [createMockDiscussion()],
-      [],
-      [],
       [{ id: "cfg-1", companyId: "company-1", provider: "openai", model: "gpt-4o" }],
+      [],
+      [],
     );
 
     const mockProvider = {
@@ -280,15 +293,19 @@ describe("extractFromDiscussionEntry", () => {
   it("transitions to failed status on error", async () => {
     const { db, selectQueue, capturedUpdates } = createMockDb();
 
+    // Queue: 1) entry, 2) discussion, 3) internalAgentConfig, 4) previous entries, 5) departments
     selectQueue.push(
       [createMockEntry()],
       [createMockDiscussion()],
-      [],
-      [],
       [{ id: "cfg-1", companyId: "company-1", provider: "anthropic", model: "claude-sonnet-4-6" }],
+      [],
+      [],
     );
 
-    mockGetProviderApiKey.mockRejectedValue(new Error("No API key"));
+    // Pre-check succeeds, but actual extraction call fails
+    mockGetProviderApiKey
+      .mockResolvedValueOnce("test-api-key")
+      .mockRejectedValueOnce(new Error("No API key"));
 
     const service = extractionService(db as any);
     await service.extractFromDiscussionEntry("company-1", "entry-1");

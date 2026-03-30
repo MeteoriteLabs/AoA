@@ -5,6 +5,7 @@ import {
   renderWithProviders,
   mockCompanyContext,
   mockBreadcrumbContext,
+  mockDialogContext,
 } from "./test-utils";
 import { DiscussionDetail } from "../pages/DiscussionDetail";
 
@@ -127,6 +128,10 @@ vi.mock("../api/transcription", () => ({
   },
 }));
 
+vi.mock("../context/DialogContext", () => ({
+  useDialog: () => mockDialogContext,
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({ ...mockCompanyContext, selectedCompanyId: "comp-1" }),
 }));
@@ -168,18 +173,23 @@ describe("DiscussionDetail page", () => {
     expect(screen.getByText("active")).toBeInTheDocument();
   });
 
-  it("renders entry raw content", async () => {
+  it("renders entry raw content when expanded", async () => {
+    const user = userEvent.setup();
     renderWithProviders(<DiscussionDetail />);
+
+    // Entries are collapsed by default — expand the first one
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { expanded: false }).length).toBeGreaterThanOrEqual(1);
+    });
+
+    const entryHeaders = screen.getAllByRole("button", { expanded: false });
+    await user.click(entryHeaders[0]);
 
     await waitFor(() => {
       expect(
         screen.getByText(/We need to set up CI pipeline and write unit tests/),
       ).toBeInTheDocument();
     });
-
-    expect(
-      screen.getByText(/We decided to use PostgreSQL for the new service/),
-    ).toBeInTheDocument();
   });
 
   it("renders pending extracted items with checkboxes", async () => {
@@ -200,15 +210,12 @@ describe("DiscussionDetail page", () => {
     });
   });
 
-  it("shows Confirm All button with pending count", async () => {
+  it("shows Items to Review section header", async () => {
     renderWithProviders(<DiscussionDetail />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Confirm All/)).toBeInTheDocument();
+      expect(screen.getByText("Items to Review")).toBeInTheDocument();
     });
-
-    // Should show count of pending items (2 pending items in entry-1)
-    expect(screen.getByText(/Confirm All \(2\)/)).toBeInTheDocument();
   });
 
   it("shows source labels on entries", async () => {
@@ -232,12 +239,21 @@ describe("DiscussionDetail page", () => {
     });
   });
 
-  it("renders Reprocess buttons for each entry", async () => {
+  it("renders Reprocess button when entry is expanded", async () => {
+    const user = userEvent.setup();
     renderWithProviders(<DiscussionDetail />);
 
+    // Wait for entries to render (collapsed by default)
     await waitFor(() => {
-      const buttons = screen.getAllByText("Reprocess");
-      expect(buttons.length).toBe(2);
+      expect(screen.getAllByRole("button", { expanded: false }).length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Expand the first entry to reveal the Reprocess button
+    const entryHeaders = screen.getAllByRole("button", { expanded: false });
+    await user.click(entryHeaders[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Reprocess")).toBeInTheDocument();
     });
   });
 
@@ -263,18 +279,12 @@ describe("DiscussionDetail page", () => {
     expect(screen.getByText("medium")).toBeInTheDocument();
   });
 
-  it("renders the Add Entry bar with tabs", async () => {
+  it("renders the Add Entry button", async () => {
     renderWithProviders(<DiscussionDetail />);
 
     await waitFor(() => {
-      // "Add Entry" heading text
-      expect(screen.getAllByText("Add Entry").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText("Add Entry")).toBeInTheDocument();
     });
-
-    // Tab triggers in the Add Entry bar (use getAllByRole since there may be multiple tablists)
-    const tabs = screen.getAllByRole("tab");
-    const tabNames = tabs.map((t) => t.textContent);
-    expect(tabNames).toEqual(expect.arrayContaining(["Paste", "Write"]));
   });
 
   it("sets breadcrumbs with Discussions parent", async () => {
