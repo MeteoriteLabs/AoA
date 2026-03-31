@@ -12,6 +12,14 @@ import { queryKeys } from "../lib/queryKeys";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { EmptyState } from "../components/EmptyState";
 import { RoutineCard } from "../components/RoutineCard";
+import {
+  autoResizeTextarea,
+  catchUpPolicies,
+  catchUpPolicyDescriptions,
+  concurrencyPolicies,
+  concurrencyPolicyDescriptions,
+  runStatusStyle,
+} from "../lib/routine-constants";
 import { timeAgo } from "../lib/timeAgo";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -35,24 +43,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-
-const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
-const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
-const concurrencyPolicyDescriptions: Record<string, string> = {
-  coalesce_if_active: "If a run is already active, keep just one follow-up run queued.",
-  always_enqueue: "Queue every trigger occurrence, even if the routine is already running.",
-  skip_if_active: "Drop new trigger occurrences while a run is still active.",
-};
-const catchUpPolicyDescriptions: Record<string, string> = {
-  skip_missed: "Ignore windows that were missed while the scheduler or routine was paused.",
-  enqueue_missed_with_cap: "Catch up missed schedule windows in capped batches after recovery.",
-};
-
-function autoResizeTextarea(element: HTMLTextAreaElement | null) {
-  if (!element) return;
-  element.style.height = "auto";
-  element.style.height = `${element.scrollHeight}px`;
-}
 
 function nextRoutineStatus(currentStatus: string, enabled: boolean) {
   if (currentStatus === "archived" && enabled) return "active";
@@ -607,6 +597,8 @@ export function Routines() {
                 const enabled = routine.status === "active";
                 const isArchived = routine.status === "archived";
                 const isStatusPending = statusMutationRoutineId === routine.id;
+                const routineAgent = routine.assigneeAgentId ? agentById.get(routine.assigneeAgentId) : undefined;
+                const lastRun = routine.lastRun ? runStatusStyle(routine.lastRun.status) : null;
                 return (
                   <tr
                     key={routine.id}
@@ -635,32 +627,21 @@ export function Routines() {
                       )}
                     </td>
                     <td className="px-3 py-2.5">
-                      {routine.assigneeAgentId ? (() => {
-                        const agent = agentById.get(routine.assigneeAgentId);
-                        return agent ? (
-                          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                            <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0" />
-                            <span className="truncate">{agent.name}</span>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">Unknown</span>
-                        );
-                      })() : (
-                        <span className="text-xs text-muted-foreground">—</span>
+                      {routineAgent ? (
+                        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                          <AgentIcon icon={routineAgent.icon} className="h-3.5 w-3.5 shrink-0" />
+                          <span className="truncate">{routineAgent.name}</span>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">{routine.assigneeAgentId ? "Unknown" : "—"}</span>
                       )}
                     </td>
                     <td className="px-3 py-2.5">
-                      {routine.lastRun ? (
+                      {routine.lastRun && lastRun ? (
                         <div>
                           <div className="text-muted-foreground">{timeAgo(routine.lastRun.triggeredAt)}</div>
-                          <div className={`mt-0.5 text-xs ${
-                            routine.lastRun.status === "issue_created" || routine.lastRun.status === "completed"
-                              ? "text-emerald-400"
-                              : routine.lastRun.status === "failed"
-                                ? "text-destructive"
-                                : "text-muted-foreground"
-                          }`}>
-                            {routine.lastRun.status.replaceAll("_", " ")}
+                          <div className={`mt-0.5 text-xs ${lastRun.colorClass}`}>
+                            {lastRun.label}
                           </div>
                         </div>
                       ) : (

@@ -23,6 +23,12 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  autoResizeTextarea,
+  catchUpPolicies,
+  concurrencyPolicies,
+  runStatusBadgeClass,
+} from "../lib/routine-constants";
 import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
 import { timeAgo } from "../lib/timeAgo";
 import { EmptyState } from "../components/EmptyState";
@@ -46,20 +52,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import type { RoutineTrigger } from "@paperclipai/shared";
 
-const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
-const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const triggerKinds = ["schedule", "webhook"];
 const signingModes = ["bearer", "hmac_sha256"];
 const routineTabs = ["triggers", "runs", "activity"] as const;
-const concurrencyPolicyDescriptions: Record<string, string> = {
-  coalesce_if_active: "Keep one follow-up run queued while an active run is still working.",
-  always_enqueue: "Queue every trigger occurrence, even if several runs stack up.",
-  skip_if_active: "Drop overlapping trigger occurrences while the routine is already active.",
-};
-const catchUpPolicyDescriptions: Record<string, string> = {
-  skip_missed: "Ignore schedule windows that were missed while the routine or scheduler was paused.",
-  enqueue_missed_with_cap: "Catch up missed schedule windows in capped batches after recovery.",
-};
 
 type RoutineTab = (typeof routineTabs)[number];
 
@@ -68,12 +63,6 @@ type SecretMessage = {
   webhookUrl: string;
   webhookSecret: string;
 };
-
-function autoResizeTextarea(element: HTMLTextAreaElement | null) {
-  if (!element) return;
-  element.style.height = "auto";
-  element.style.height = `${element.scrollHeight}px`;
-}
 
 function isRoutineTab(value: string | null): value is RoutineTab {
   return value !== null && routineTabs.includes(value as RoutineTab);
@@ -736,14 +725,14 @@ export function RoutineDetail() {
               aria-checked={automationEnabled}
               aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
               disabled={automationToggleDisabled}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
                 automationEnabled ? "bg-emerald-500" : "bg-muted"
               } ${automationToggleDisabled ? "cursor-not-allowed opacity-50" : ""}`}
               onClick={() => updateRoutineStatus.mutate(automationEnabled ? "paused" : "active")}
             >
               <span
-                className={`inline-block h-5 w-5 rounded-full bg-background shadow-sm transition-transform ${
-                  automationEnabled ? "translate-x-5" : "translate-x-0.5"
+                className={`inline-block h-4 w-4 rounded-full bg-background shadow-sm transition-transform ${
+                  automationEnabled ? "translate-x-4.5" : "translate-x-0.5"
                 }`}
               />
             </button>
@@ -1103,15 +1092,7 @@ export function RoutineDetail() {
                       <Badge variant="secondary" className="shrink-0">{run.source}</Badge>
                       <Badge
                         variant="secondary"
-                        className={`shrink-0 ${
-                          run.status === "issue_created" || run.status === "completed"
-                            ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                            : run.status === "failed"
-                              ? "bg-destructive/10 text-destructive border border-destructive/20"
-                              : run.status === "received"
-                                ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
-                                : ""
-                        }`}
+                        className={`shrink-0 ${runStatusBadgeClass(run.status)}`}
                       >
                         {run.status.replaceAll("_", " ")}
                       </Badge>

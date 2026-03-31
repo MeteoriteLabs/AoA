@@ -2,6 +2,7 @@
 import { memo } from "react";
 import { Clock3, MoreHorizontal, Play, Repeat } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ClickableDiv } from "@/components/ui/clickable-div";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { AgentIcon } from "./AgentIconPicker";
 import { describeSchedule } from "./ScheduleEditor";
+import { runStatusStyle } from "../lib/routine-constants";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
 import type { Agent, RoutineListItem } from "@paperclipai/shared";
@@ -32,25 +34,6 @@ interface RoutineCardProps {
   onRun: () => void;
   onToggleStatus: () => void;
   onArchive: () => void;
-}
-
-function lastRunLabel(status: string): string {
-  const map: Record<string, string> = {
-    issue_created: "issue created",
-    completed: "completed",
-    failed: "failed",
-    skipped: "skipped",
-    coalesced: "coalesced",
-    received: "running",
-  };
-  return map[status] ?? status.replaceAll("_", " ");
-}
-
-function lastRunColor(status: string): string {
-  if (status === "issue_created" || status === "completed") return "text-emerald-400";
-  if (status === "failed") return "text-destructive";
-  if (status === "received") return "text-blue-400";
-  return "text-muted-foreground";
 }
 
 export const RoutineCard = memo(function RoutineCard({
@@ -75,7 +58,7 @@ export const RoutineCard = memo(function RoutineCard({
   const triggerCount = routine.triggers?.length ?? 0;
 
   return (
-    <div
+    <ClickableDiv
       className={cn(
         "group relative border bg-card rounded-lg p-4 cursor-pointer transition-all",
         hasLiveRun
@@ -156,15 +139,16 @@ export const RoutineCard = memo(function RoutineCard({
 
       {/* Last run line */}
       <div className="mt-1 text-xs text-muted-foreground">
-        {routine.lastRun ? (
-          <>
-            <span>Last: {timeAgo(routine.lastRun.triggeredAt)}</span>
-            <span className="mx-1 text-border">·</span>
-            <span className={lastRunColor(routine.lastRun.status)}>
-              {lastRunLabel(routine.lastRun.status)}
-            </span>
-          </>
-        ) : (
+        {routine.lastRun ? (() => {
+          const { label, colorClass } = runStatusStyle(routine.lastRun!.status);
+          return (
+            <>
+              <span>Last: {timeAgo(routine.lastRun!.triggeredAt)}</span>
+              <span className="mx-1 text-border">·</span>
+              <span className={colorClass}>{label}</span>
+            </>
+          );
+        })() : (
           <span className="italic">Never run</span>
         )}
       </div>
@@ -210,6 +194,6 @@ export const RoutineCard = memo(function RoutineCard({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-    </div>
+    </ClickableDiv>
   );
 });
