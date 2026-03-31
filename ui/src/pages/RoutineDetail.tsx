@@ -3,7 +3,6 @@ import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity as ActivityIcon,
-  ChevronDown,
   Clock3,
   Copy,
   Play,
@@ -607,231 +606,231 @@ export function RoutineDetail() {
     <div className="max-w-2xl space-y-4">
       {/* Routine definition card */}
       <div className="border border-border rounded-lg bg-card p-5 space-y-4">
-      {/* Header: editable title + actions */}
-      <div className="flex items-start gap-4">
-        <textarea
-          ref={titleInputRef}
-          className="flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
-          placeholder="Routine title"
-          rows={1}
-          value={editDraft.title}
-          onChange={(event) => {
-            setEditDraft((current) => ({ ...current, title: event.target.value }));
-            autoResizeTextarea(event.target);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              descriptionEditorRef.current?.focus();
-              return;
-            }
-            if (event.key === "Tab" && !event.shiftKey) {
-              event.preventDefault();
-              if (editDraft.assigneeAgentId) {
+        {/* Header: editable title + actions */}
+        <div className="flex items-start gap-4">
+          <textarea
+            ref={titleInputRef}
+            className="flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
+            placeholder="Routine title"
+            rows={1}
+            value={editDraft.title}
+            onChange={(event) => {
+              setEditDraft((current) => ({ ...current, title: event.target.value }));
+              autoResizeTextarea(event.target);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                descriptionEditorRef.current?.focus();
+                return;
+              }
+              if (event.key === "Tab" && !event.shiftKey) {
+                event.preventDefault();
+                if (editDraft.assigneeAgentId) {
+                  if (editDraft.projectId) {
+                    descriptionEditorRef.current?.focus();
+                  } else {
+                    projectSelectorRef.current?.focus();
+                  }
+                } else {
+                  assigneeSelectorRef.current?.focus();
+                }
+              }
+            }}
+          />
+          <div className="flex shrink-0 items-center gap-3 pt-1">
+            <Button size="sm" variant="outline" onClick={() => runRoutine.mutate()} disabled={runRoutine.isPending}>
+              <Play className="mr-1.5 h-3.5 w-3.5" /> Run now
+            </Button>
+            <button
+              type="button"
+              role="switch"
+              data-slot="toggle"
+              aria-checked={automationEnabled}
+              aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
+              disabled={automationToggleDisabled}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                automationEnabled ? "bg-emerald-500" : "bg-muted"
+              } ${automationToggleDisabled ? "cursor-not-allowed opacity-50" : ""}`}
+              onClick={() => updateRoutineStatus.mutate(automationEnabled ? "paused" : "active")}
+            >
+              <span
+                className={`inline-block h-5 w-5 rounded-full bg-background shadow-sm transition-transform ${
+                  automationEnabled ? "translate-x-5" : "translate-x-0.5"
+                }`}
+              />
+            </button>
+            <span className={`min-w-[3.75rem] text-sm font-medium ${automationLabelClassName}`}>
+              {automationLabel}
+            </span>
+          </div>
+        </div>
+
+        {/* Secret message banner */}
+        {secretMessage && (
+          <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 p-4 space-y-3 text-sm">
+            <div>
+              <p className="font-medium">{secretMessage.title}</p>
+              <p className="text-xs text-muted-foreground">Save this now. AoA will not show the secret value again.</p>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Input value={secretMessage.webhookUrl} readOnly className="flex-1" />
+                <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook URL", secretMessage.webhookUrl)}>
+                  <Copy className="h-3.5 w-3.5 mr-1" />
+                  URL
+                </Button>
+              </div>
+              <div className="flex items-center gap-2">
+                <Input value={secretMessage.webhookSecret} readOnly className="flex-1" />
+                <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook secret", secretMessage.webhookSecret)}>
+                  <Copy className="h-3.5 w-3.5 mr-1" />
+                  Secret
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Assignment row */}
+        <div className="overflow-x-auto overscroll-x-contain">
+          <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
+            <span>For</span>
+            <InlineEntitySelector
+              ref={assigneeSelectorRef}
+              value={editDraft.assigneeAgentId}
+              options={assigneeOptions}
+              placeholder="Assignee"
+              noneLabel="No assignee"
+              searchPlaceholder="Search assignees..."
+              emptyMessage="No assignees found."
+              onChange={(assigneeAgentId) => {
+                if (assigneeAgentId) trackRecentAssignee(assigneeAgentId);
+                setEditDraft((current) => ({ ...current, assigneeAgentId }));
+              }}
+              onConfirm={() => {
                 if (editDraft.projectId) {
                   descriptionEditorRef.current?.focus();
                 } else {
                   projectSelectorRef.current?.focus();
                 }
-              } else {
-                assigneeSelectorRef.current?.focus();
+              }}
+              renderTriggerValue={(option) =>
+                option ? (
+                  currentAssignee ? (
+                    <>
+                      <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span className="truncate">{option.label}</span>
+                    </>
+                  ) : (
+                    <span className="truncate">{option.label}</span>
+                  )
+                ) : (
+                  <span className="text-muted-foreground">Assignee</span>
+                )
               }
-            }
-          }}
-        />
-        <div className="flex shrink-0 items-center gap-3 pt-1">
-          <Button size="sm" variant="outline" onClick={() => runRoutine.mutate()} disabled={runRoutine.isPending}>
-            <Play className="mr-1.5 h-3.5 w-3.5" /> Run now
-          </Button>
-          <button
-            type="button"
-            role="switch"
-            data-slot="toggle"
-            aria-checked={automationEnabled}
-            aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
-            disabled={automationToggleDisabled}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-              automationEnabled ? "bg-emerald-500" : "bg-muted"
-            } ${automationToggleDisabled ? "cursor-not-allowed opacity-50" : ""}`}
-            onClick={() => updateRoutineStatus.mutate(automationEnabled ? "paused" : "active")}
-          >
-            <span
-              className={`inline-block h-5 w-5 rounded-full bg-background shadow-sm transition-transform ${
-                automationEnabled ? "translate-x-5" : "translate-x-0.5"
-              }`}
-            />
-          </button>
-          <span className={`min-w-[3.75rem] text-sm font-medium ${automationLabelClassName}`}>
-            {automationLabel}
-          </span>
-        </div>
-      </div>
-
-      {/* Secret message banner */}
-      {secretMessage && (
-        <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 p-4 space-y-3 text-sm">
-          <div>
-            <p className="font-medium">{secretMessage.title}</p>
-            <p className="text-xs text-muted-foreground">Save this now. AoA will not show the secret value again.</p>
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Input value={secretMessage.webhookUrl} readOnly className="flex-1" />
-              <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook URL", secretMessage.webhookUrl)}>
-                <Copy className="h-3.5 w-3.5 mr-1" />
-                URL
-              </Button>
-            </div>
-            <div className="flex items-center gap-2">
-              <Input value={secretMessage.webhookSecret} readOnly className="flex-1" />
-              <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook secret", secretMessage.webhookSecret)}>
-                <Copy className="h-3.5 w-3.5 mr-1" />
-                Secret
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Assignment row */}
-      <div className="overflow-x-auto overscroll-x-contain">
-        <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
-          <span>For</span>
-          <InlineEntitySelector
-            ref={assigneeSelectorRef}
-            value={editDraft.assigneeAgentId}
-            options={assigneeOptions}
-            placeholder="Assignee"
-            noneLabel="No assignee"
-            searchPlaceholder="Search assignees..."
-            emptyMessage="No assignees found."
-            onChange={(assigneeAgentId) => {
-              if (assigneeAgentId) trackRecentAssignee(assigneeAgentId);
-              setEditDraft((current) => ({ ...current, assigneeAgentId }));
-            }}
-            onConfirm={() => {
-              if (editDraft.projectId) {
-                descriptionEditorRef.current?.focus();
-              } else {
-                projectSelectorRef.current?.focus();
-              }
-            }}
-            renderTriggerValue={(option) =>
-              option ? (
-                currentAssignee ? (
+              renderOption={(option) => {
+                if (!option.id) return <span className="truncate">{option.label}</span>;
+                const assignee = agentById.get(option.id);
+                return (
                   <>
-                    <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                    <span className="truncate">{option.label}</span>
+                  </>
+                );
+              }}
+            />
+            <span>in</span>
+            <InlineEntitySelector
+              ref={projectSelectorRef}
+              value={editDraft.projectId}
+              options={projectOptions}
+              placeholder="Project"
+              noneLabel="No project"
+              searchPlaceholder="Search projects..."
+              emptyMessage="No projects found."
+              onChange={(projectId) => setEditDraft((current) => ({ ...current, projectId }))}
+              onConfirm={() => descriptionEditorRef.current?.focus()}
+              renderTriggerValue={(option) =>
+                option && currentProject ? (
+                  <>
+                    <span
+                      className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                      style={{ backgroundColor: currentProject.color ?? "#64748b" }}
+                    />
                     <span className="truncate">{option.label}</span>
                   </>
                 ) : (
-                  <span className="truncate">{option.label}</span>
+                  <span className="text-muted-foreground">Project</span>
                 )
-              ) : (
-                <span className="text-muted-foreground">Assignee</span>
-              )
-            }
-            renderOption={(option) => {
-              if (!option.id) return <span className="truncate">{option.label}</span>;
-              const assignee = agentById.get(option.id);
-              return (
-                <>
-                  {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
-                  <span className="truncate">{option.label}</span>
-                </>
-              );
-            }}
-          />
-          <span>in</span>
-          <InlineEntitySelector
-            ref={projectSelectorRef}
-            value={editDraft.projectId}
-            options={projectOptions}
-            placeholder="Project"
-            noneLabel="No project"
-            searchPlaceholder="Search projects..."
-            emptyMessage="No projects found."
-            onChange={(projectId) => setEditDraft((current) => ({ ...current, projectId }))}
-            onConfirm={() => descriptionEditorRef.current?.focus()}
-            renderTriggerValue={(option) =>
-              option && currentProject ? (
-                <>
-                  <span
-                    className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                    style={{ backgroundColor: currentProject.color ?? "#64748b" }}
-                  />
-                  <span className="truncate">{option.label}</span>
-                </>
-              ) : (
-                <span className="text-muted-foreground">Project</span>
-              )
-            }
-            renderOption={(option) => {
-              if (!option.id) return <span className="truncate">{option.label}</span>;
-              const project = projectById.get(option.id);
-              return (
-                <>
-                  <span
-                    className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                    style={{ backgroundColor: project?.color ?? "#64748b" }}
-                  />
-                  <span className="truncate">{option.label}</span>
-                </>
-              );
-            }}
-          />
+              }
+              renderOption={(option) => {
+                if (!option.id) return <span className="truncate">{option.label}</span>;
+                const project = projectById.get(option.id);
+                return (
+                  <>
+                    <span
+                      className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                      style={{ backgroundColor: project?.color ?? "#64748b" }}
+                    />
+                    <span className="truncate">{option.label}</span>
+                  </>
+                );
+              }}
+            />
+          </div>
         </div>
-      </div>
 
-      {/* Instructions */}
-      <MarkdownEditor
-        ref={descriptionEditorRef}
-        value={editDraft.description}
-        onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
-        placeholder="Add instructions..."
-        bordered={false}
-        contentClassName="min-h-[120px] text-[15px] leading-7"
-        onSubmit={() => {
-          if (!saveRoutine.isPending && editDraft.title.trim() && editDraft.projectId && editDraft.assigneeAgentId) {
-            saveRoutine.mutate();
-          }
-        }}
-      />
+        {/* Instructions */}
+        <MarkdownEditor
+          ref={descriptionEditorRef}
+          value={editDraft.description}
+          onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
+          placeholder="Add instructions..."
+          bordered={false}
+          contentClassName="min-h-[120px] text-[15px] leading-7"
+          onSubmit={() => {
+            if (!saveRoutine.isPending && editDraft.title.trim() && editDraft.projectId && editDraft.assigneeAgentId) {
+              saveRoutine.mutate();
+            }
+          }}
+        />
 
-      {/* Delivery settings — compact, always visible */}
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground">Concurrency:</span>
-          <Select
-            value={editDraft.concurrencyPolicy}
-            onValueChange={(concurrencyPolicy) => setEditDraft((current) => ({ ...current, concurrencyPolicy }))}
-          >
-            <SelectTrigger className="h-7 w-auto gap-1 border-0 bg-transparent px-1 text-sm focus:ring-0">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {concurrencyPolicies.map((value) => (
-                <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        {/* Delivery settings — compact, always visible */}
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground">Concurrency:</span>
+            <Select
+              value={editDraft.concurrencyPolicy}
+              onValueChange={(concurrencyPolicy) => setEditDraft((current) => ({ ...current, concurrencyPolicy }))}
+            >
+              <SelectTrigger className="h-7 w-auto gap-1 border-0 bg-transparent px-1 text-sm focus:ring-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {concurrencyPolicies.map((value) => (
+                  <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground">Catch-up:</span>
+            <Select
+              value={editDraft.catchUpPolicy}
+              onValueChange={(catchUpPolicy) => setEditDraft((current) => ({ ...current, catchUpPolicy }))}
+            >
+              <SelectTrigger className="h-7 w-auto gap-1 border-0 bg-transparent px-1 text-sm focus:ring-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {catchUpPolicies.map((value) => (
+                  <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground">Catch-up:</span>
-          <Select
-            value={editDraft.catchUpPolicy}
-            onValueChange={(catchUpPolicy) => setEditDraft((current) => ({ ...current, catchUpPolicy }))}
-          >
-            <SelectTrigger className="h-7 w-auto gap-1 border-0 bg-transparent px-1 text-sm focus:ring-0">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {catchUpPolicies.map((value) => (
-                <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
       </div>{/* closes definition card */}
 
       {/* Sticky save bar — only renders when dirty */}
