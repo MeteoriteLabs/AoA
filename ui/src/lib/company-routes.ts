@@ -19,6 +19,8 @@ const BOARD_ROUTE_ROOTS = new Set([
   "settings",
   "design-guide",
   "active-agents",
+  "skills",
+  "team",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "docs"]);

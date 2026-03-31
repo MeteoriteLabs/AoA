@@ -330,8 +330,8 @@ export function discussionService(db: Db) {
 
     /**
      * Add an entry to an existing discussion.
-     * Fires extraction (fire-and-forget), updates lastEntryAt,
-     * publishes discussion.entry.created LiveEvent.
+     * Extraction is manual-only — user clicks Reprocess on the detail page.
+     * Updates lastEntryAt, publishes discussion.entry.created LiveEvent.
      * Gotcha 1.2: increments entryCount in same operation.
      */
     addEntry: async (
@@ -402,14 +402,7 @@ export function discussionService(db: Db) {
         },
       });
 
-      // Trigger extraction directly (fire-and-forget)
-      import("./extraction.js")
-        .then(({ extractionService }) => {
-          extractionService(db)
-            .extractFromDiscussionEntry(companyId, entry.id)
-            .catch(() => {}); // errors handled internally
-        })
-        .catch(() => {}); // module load error — swallow
+      // Extraction is manual-only — user clicks "Reprocess" to trigger extraction
 
       await logActivity(db, {
         companyId,

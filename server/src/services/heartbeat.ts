@@ -28,6 +28,12 @@ import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { companySkillService } from "./company-skills.js";
+
+/** Strip non-Latin1 characters that crash WIN1252-encoded embedded Postgres on Windows. */
+function sanitizeForDb(text: string): string {
+  return text.replace(/[^\x00-\xFF]/g, "");
+}
 import { setSecretResolver } from "../adapters/api-common.js";
 import { secretService } from "./secrets.js";
 import {
@@ -1142,7 +1148,7 @@ export function heartbeatService(db: Db) {
         issueId,
         authorAgentId: null,
         authorUserId: null,
-        body,
+        body: sanitizeForDb(body),
       });
       await db
         .update(issues)
@@ -1588,6 +1594,24 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      // Fetch company skills attached to this agent and inject into context
+      try {
+        const skillSvc = companySkillService(db);
+        const agentSkills = await skillSvc.listRuntimeSkillEntries(agent.companyId, agent.id);
+        logger.info(
+          { companyId: agent.companyId, agentId: agent.id, runId: run.id, skillCount: agentSkills.length, skillKeys: agentSkills.map(s => s.key) },
+          "Fetched company skills for agent run",
+        );
+        if (agentSkills.length > 0) {
+          context.skills = agentSkills;
+        }
+      } catch (err) {
+        logger.warn(
+          { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
+          "Failed to fetch company skills for agent run; continuing without skill injection",
+        );
+      }
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
@@ -1646,7 +1670,7 @@ export function heartbeatService(db: Db) {
         error:
           outcome === "succeeded"
             ? null
-            : adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+            : sanitizeForDb(adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed")),
         errorCode:
           outcome === "timed_out"
             ? "timeout"
@@ -1660,8 +1684,8 @@ export function heartbeatService(db: Db) {
         usageJson,
         resultJson: adapterResult.resultJson ?? null,
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
-        stdoutExcerpt,
-        stderrExcerpt,
+        stdoutExcerpt: sanitizeForDb(stdoutExcerpt),
+        stderrExcerpt: sanitizeForDb(stderrExcerpt),
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
@@ -1779,8 +1803,8 @@ export function heartbeatService(db: Db) {
         error: message,
         errorCode: "adapter_failed",
         finishedAt: new Date(),
-        stdoutExcerpt,
-        stderrExcerpt,
+        stdoutExcerpt: sanitizeForDb(stdoutExcerpt),
+        stderrExcerpt: sanitizeForDb(stderrExcerpt),
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,

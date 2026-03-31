@@ -1315,8 +1315,8 @@ describe("v2.5 Discussion Flow QA", () => {
       expect(result).toBeTruthy();
       expect(result!.id).toBe("disc-get");
       expect(result!.entries).toHaveLength(1);
-      expect(result!.items).toHaveLength(1);
-      expect(result!.annotations).toHaveLength(1);
+      expect(result!.entries[0].extractedItems).toHaveLength(1);
+      expect(result!.entries[0].annotations).toHaveLength(1);
     });
 
     it("returns null when discussion not found", async () => {
@@ -1347,8 +1347,6 @@ describe("v2.5 Discussion Flow QA", () => {
 
       expect(result).toBeTruthy();
       expect(result!.entries).toHaveLength(0);
-      expect(result!.items).toHaveLength(0);
-      expect(result!.annotations).toHaveLength(0);
     });
   });
 });

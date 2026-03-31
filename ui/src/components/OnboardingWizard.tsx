@@ -56,6 +56,8 @@ type AdapterType =
   | "codex_local"
   | "opencode_local"
   | "cursor"
+  | "hermes_local"
+  | "gemini_local"
   | "process"
   | "http"
   | "openclaw";

@@ -349,7 +349,7 @@ describe("getProviderApiKey", () => {
     expect(key).toBe("sk-secret-from-db");
     expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith(
       "company-1",
-      "ANTHROPIC_API_KEY",
+      "llm:anthropic",
     );
   });
 
@@ -402,13 +402,13 @@ describe("getProviderApiKey", () => {
 
     try {
       await getProviderApiKey(mockDb, "c1", "anthropic");
-      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith("c1", "ANTHROPIC_API_KEY");
+      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith("c1", "llm:anthropic");
 
       await getProviderApiKey(mockDb, "c1", "openai");
-      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith("c1", "OPENAI_API_KEY");
+      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith("c1", "llm:openai");
 
       await getProviderApiKey(mockDb, "c1", "google");
-      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith("c1", "GOOGLE_AI_API_KEY");
+      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith("c1", "llm:google");
     } finally {
       for (const [k, v] of Object.entries(savedKeys)) {
         if (v !== undefined) process.env[k] = v;

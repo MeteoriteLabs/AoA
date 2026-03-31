@@ -13,6 +13,9 @@ export const queryKeys = {
     configRevisions: (agentId: string) => ["agents", "config-revisions", agentId] as const,
     adapterModels: (companyId: string, adapterType: string) =>
       ["agents", companyId, "adapter-models", adapterType] as const,
+    instructionsBundle: (id: string) => ["agents", "instructions-bundle", id] as const,
+    instructionsFile: (id: string, relativePath: string) =>
+      ["agents", "instructions-bundle", id, "file", relativePath] as const,
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
@@ -33,6 +36,7 @@ export const queryKeys = {
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
     dependencies: (issueId: string) => ["issues", "dependencies", issueId] as const,
+    documents: (issueId: string) => ["issues", "documents", issueId] as const,
   },
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
@@ -64,6 +68,8 @@ export const queryKeys = {
   },
   team: {
     summary: (companyId: string) => ["team", companyId] as const,
+    member: (companyId: string, userId: string) => ["team", companyId, "member", userId] as const,
+    dependencies: (companyId: string, userId: string) => ["team", companyId, "dependencies", userId] as const,
   },
   auth: {
     session: ["auth", "session"] as const,
@@ -131,5 +137,14 @@ export const queryKeys = {
   detectedOutputs: {
     byIssue: (issueId: string) => ["detected-outputs", "issue", issueId] as const,
     byRun: (runId: string) => ["detected-outputs", "run", runId] as const,
+  },
+  companySkills: {
+    list: (companyId: string) => ["company-skills", companyId] as const,
+    detail: (companyId: string, skillId: string) =>
+      ["company-skills", companyId, skillId] as const,
+    updateStatus: (companyId: string, skillId: string) =>
+      ["company-skills", companyId, skillId, "update-status"] as const,
+    file: (companyId: string, skillId: string, relativePath: string) =>
+      ["company-skills", companyId, skillId, "file", relativePath] as const,
   },
 };

@@ -32,6 +32,8 @@ export const AGENT_ADAPTER_TYPES = [
   "claude_api",
   "openai_api",
   "gemini_api",
+  "hermes_local",
+  "gemini_local",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
@@ -143,7 +145,7 @@ export const PROJECT_COLORS = [
   "#3b82f6", // blue
 ] as const;
 
-export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy"] as const;
+export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy", "budget_override_required"] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 
 export const APPROVAL_STATUSES = [
@@ -217,6 +219,11 @@ export const LIVE_EVENT_TYPES = [
   "internal_agent.notification",
   "internal_agent.message",
   "internal_agent.run.status",
+  // Budget
+  "budget.policy_created",
+  "budget.policy_updated",
+  "budget.incident_created",
+  "budget.incident_resolved",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -449,6 +456,7 @@ export type DiscussionStatus = (typeof DISCUSSION_STATUSES)[number];
 export const DISCUSSION_SCOPE_TYPES = ["department", "project", "goal"] as const;
 export type DiscussionScopeType = (typeof DISCUSSION_SCOPE_TYPES)[number];
 
+// "write" kept for backward compat with existing entries — UI now uses "paste" for both paste and write
 export const DISCUSSION_ENTRY_INPUT_TYPES = ["paste", "write", "voice", "mcp"] as const;
 export type DiscussionEntryInputType = (typeof DISCUSSION_ENTRY_INPUT_TYPES)[number];
 

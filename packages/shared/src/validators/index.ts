@@ -27,6 +27,8 @@ export {
   createAgentHireSchema,
   updateAgentSchema,
   updateAgentInstructionsPathSchema,
+  updateAgentInstructionsBundleSchema,
+  upsertAgentInstructionsFileSchema,
   createAgentKeySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
@@ -37,6 +39,8 @@ export {
   type CreateAgentHire,
   type UpdateAgent,
   type UpdateAgentInstructionsPath,
+  type UpdateAgentInstructionsBundle,
+  type UpsertAgentInstructionsFile,
   type CreateAgentKey,
   type WakeAgent,
   type ResetAgentSession,
@@ -70,6 +74,11 @@ export {
   type AddIssueComment,
   type LinkIssueApproval,
   type CreateIssueAttachmentMetadata,
+  issueDocumentKeySchema,
+  issueDocumentFormatSchema,
+  upsertIssueDocumentSchema,
+  ISSUE_DOCUMENT_FORMATS,
+  type UpsertIssueDocument,
 } from "./issue.js";
 
 export {
@@ -190,7 +199,13 @@ export {
 
 export {
   updateTeamMemberRoleSchema,
+  addMemberSchema,
+  transferAdminSchema,
+  reassignAndRemoveSchema,
   type UpdateTeamMemberRole,
+  type AddMember,
+  type TransferAdmin,
+  type ReassignAndRemove,
 } from "./team.js";
 
 export {
@@ -221,3 +236,36 @@ export {
   type UpdateInternalAgentConfig,
   type ChatMessage,
 } from "./internal-agent.js";
+
+export {
+  upsertBudgetPolicySchema,
+  resolveBudgetIncidentSchema,
+  type UpsertBudgetPolicy,
+  type ResolveBudgetIncident,
+} from "./budget.js";
+
+export {
+  companySkillSourceTypeSchema,
+  companySkillTrustLevelSchema,
+  companySkillCompatibilitySchema,
+  companySkillSourceBadgeSchema,
+  companySkillFileInventoryEntrySchema,
+  companySkillSchema,
+  companySkillListItemSchema,
+  companySkillUsageAgentSchema,
+  companySkillDetailSchema,
+  companySkillUpdateStatusSchema,
+  companySkillImportSchema,
+  companySkillProjectScanRequestSchema,
+  companySkillProjectScanSkippedSchema,
+  companySkillProjectScanConflictSchema,
+  companySkillProjectScanResultSchema,
+  companySkillCreateSchema,
+  companySkillFileDetailSchema,
+  companySkillFileUpdateSchema,
+  companySkillImportPackageSchema,
+  type CompanySkillImport,
+  type CompanySkillProjectScan,
+  type CompanySkillCreate,
+  type CompanySkillFileUpdate,
+} from "./company-skill.js";

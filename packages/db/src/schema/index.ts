@@ -60,3 +60,9 @@ export {
 } from "./internal_agent.js";
 export { workflowTemplates } from "./workflow_templates.js";
 export { notifications } from "./notifications.js";
+export { companySkills } from "./company_skills.js";
+export { budgetPolicies } from "./budget_policies.js";
+export { budgetIncidents } from "./budget_incidents.js";
+export { documents } from "./documents.js";
+export { documentRevisions } from "./document_revisions.js";
+export { issueDocuments } from "./issue_documents.js";

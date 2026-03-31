@@ -135,6 +135,7 @@ vi.mock("../lib/queryKeys", () => ({
       liveRuns: (id: string) => ["issues", "liveRuns", id],
       activeRun: (id: string) => ["issues", "activeRun", id],
       dependencies: (id: string) => ["issues", "dependencies", id],
+      documents: (id: string) => ["issues", "documents", id],
     },
     agents: { list: (id: string) => ["agents", "list", id] },
     projects: { list: (id: string) => ["projects", "list", id] },

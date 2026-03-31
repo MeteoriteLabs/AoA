@@ -41,3 +41,6 @@ export type { CreateWorkflowInput, UpdateWorkflowInput, InstantiateResult } from
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export { discussionService, type DiscussionFilters } from "./discussions.js";
 export { notificationService } from "./notifications.js";
+export { companySkillService } from "./company-skills.js";
+export type { RuntimeSkillEntry } from "./company-skills.js";
+export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";

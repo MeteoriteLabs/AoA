@@ -1,6 +1,6 @@
 import { and, desc, eq, gt, inArray, not, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, discussions, heartbeatRuns } from "@paperclipai/db";
+import { agents, approvals, discussions, discussionEntries, heartbeatRuns } from "@paperclipai/db";
 import type { SidebarBadges } from "@paperclipai/shared";
 
 const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
@@ -48,7 +48,11 @@ export function sidebarBadgeService(db: Db) {
         .where(
           and(
             eq(discussions.companyId, companyId),
-            gt(discussions.pendingItemCount, 0),
+            sql`(${discussions.pendingItemCount} > 0 OR EXISTS (
+              SELECT 1 FROM ${discussionEntries}
+              WHERE ${discussionEntries.discussionId} = ${discussions.id}
+                AND ${discussionEntries.extractionStatus} IN ('pending', 'failed')
+            ))`,
           ),
         )
         .then((rows) => Number(rows[0]?.count ?? 0));

@@ -8,6 +8,10 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AgentInstructionsBundleMode,
+  AgentInstructionsFileSummary,
+  AgentInstructionsFileDetail,
+  AgentInstructionsBundle,
 } from "./agent.js";
 export type { AssetImage } from "./asset.js";
 export type { Project, ProjectGoalRef, ProjectWorkspace } from "./project.js";
@@ -20,6 +24,11 @@ export type {
   IssueAncestorGoal,
   IssueAttachment,
   IssueLabel,
+  DocumentFormat,
+  IssueDocumentSummary,
+  IssueDocument,
+  DocumentRevision,
+  LegacyPlanDocument,
 } from "./issue.js";
 export type { Goal, GoalProjectRef } from "./goal.js";
 export type { MemoryItem } from "./memory.js";
@@ -74,6 +83,10 @@ export type {
   TeamMemberSummary,
   TeamInviteSummary,
   TeamSummary,
+  AddMemberInput,
+  TransferAdminInput,
+  MemberDependencies,
+  ReassignAndRemoveInput,
   UnifiedOrgNode,
 } from "./team.js";
 export type {
@@ -100,3 +113,33 @@ export type {
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
 } from "./company-portability.js";
+export type {
+  BudgetPolicy,
+  BudgetPolicySummary,
+  BudgetIncident,
+  BudgetOverview,
+  UpsertBudgetPolicyInput,
+  ResolveBudgetIncidentInput,
+} from "./budget.js";
+export type {
+  CompanySkillSourceType,
+  CompanySkillTrustLevel,
+  CompanySkillCompatibility,
+  CompanySkillSourceBadge,
+  CompanySkillFileInventoryEntry,
+  CompanySkill,
+  CompanySkillListItem,
+  CompanySkillDetail,
+  CompanySkillUsageAgent,
+  CompanySkillUpdateStatus,
+  CompanySkillImportRequest,
+  CompanySkillImportResult,
+  CompanySkillProjectScanRequest,
+  CompanySkillProjectScanResult,
+  CompanySkillProjectScanSkipped,
+  CompanySkillProjectScanConflict,
+  CompanySkillCreateRequest,
+  CompanySkillFileDetail,
+  CompanySkillFileUpdateRequest,
+  CompanySkillImportPackageRequest,
+} from "./company-skill.js";

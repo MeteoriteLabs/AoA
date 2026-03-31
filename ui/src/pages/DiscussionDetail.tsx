@@ -520,7 +520,7 @@ export function DiscussionDetail() {
             <div className="text-center py-8">
               <p className="text-sm text-muted-foreground">
                 {flatItems.length === 0
-                  ? "No items extracted yet. Add entries and they will be processed automatically."
+                  ? "No items extracted yet. Click Reprocess to extract items from your entries."
                   : "No items match this filter."}
               </p>
             </div>
