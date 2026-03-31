@@ -96,6 +96,16 @@ function formatActivityDetailValue(value: unknown): string {
   }
 }
 
+function formatActivityAction(action: string): string {
+  const parts = action.split(".");
+  const verb = parts[parts.length - 1];
+  const subject = parts.length > 1 ? parts[0] : null;
+  const verbFormatted = verb.replaceAll("_", " ").replace(/^\w/, (c) => c.toUpperCase());
+  if (subject === "routine" || !subject) return verbFormatted;
+  const subjectFormatted = subject.replace("routine_", "").replaceAll("_", " ").replace(/^\w/, (c) => c.toUpperCase());
+  return `${subjectFormatted} ${verb.replaceAll("_", " ")}`.replace(/^\w/, (c) => c.toUpperCase());
+}
+
 function getLocalTimezone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -948,15 +958,30 @@ export function RoutineDetail() {
           <TabsTrigger value="triggers" className="gap-1.5">
             <Clock3 className="h-3.5 w-3.5" />
             Triggers
+            {routine.triggers.length > 0 && (
+              <span className="ml-0.5 rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                {routine.triggers.length}
+              </span>
+            )}
           </TabsTrigger>
           <TabsTrigger value="runs" className="gap-1.5">
             <Play className="h-3.5 w-3.5" />
             Runs
+            {(routineRuns ?? []).length > 0 && (
+              <span className="ml-0.5 rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                {(routineRuns ?? []).length}
+              </span>
+            )}
             {hasLiveRun && <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />}
           </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
+            {(activity ?? []).length > 0 && (
+              <span className="ml-0.5 rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                {(activity ?? []).length}
+              </span>
+            )}
           </TabsTrigger>
         </TabsList>
 
@@ -1065,26 +1090,45 @@ export function RoutineDetail() {
             <LiveRunWidget issueId={activeIssueId} companyId={routine.companyId} />
           )}
           {(routineRuns ?? []).length === 0 ? (
-            <p className="text-xs text-muted-foreground">No runs yet.</p>
+            <div className="py-8 text-center">
+              <p className="text-sm text-muted-foreground">No runs yet.</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">Use Run now or add a trigger to start.</p>
+            </div>
           ) : (
             <div className="border border-border rounded-lg divide-y divide-border">
               {(routineRuns ?? []).map((run) => (
-                <div key={run.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Badge variant="outline" className="shrink-0">{run.source}</Badge>
-                    <Badge variant={run.status === "failed" ? "destructive" : "secondary"} className="shrink-0">
-                      {run.status.replaceAll("_", " ")}
-                    </Badge>
-                    {run.trigger && (
-                      <span className="text-muted-foreground truncate">{run.trigger.label ?? run.trigger.kind}</span>
-                    )}
-                    {run.linkedIssue && (
-                      <Link to={`/issues/${run.linkedIssue.identifier ?? run.linkedIssue.id}`} className="text-muted-foreground hover:underline truncate">
-                        {run.linkedIssue.identifier ?? run.linkedIssue.id.slice(0, 8)}
-                      </Link>
-                    )}
+                <div key={run.id} className="flex flex-col gap-0.5 px-4 py-3 text-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Badge variant="secondary" className="shrink-0">{run.source}</Badge>
+                      <Badge
+                        variant="secondary"
+                        className={`shrink-0 ${
+                          run.status === "issue_created" || run.status === "completed"
+                            ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                            : run.status === "failed"
+                              ? "bg-destructive/10 text-destructive border border-destructive/20"
+                              : run.status === "received"
+                                ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                                : ""
+                        }`}
+                      >
+                        {run.status.replaceAll("_", " ")}
+                      </Badge>
+                      {run.trigger && (
+                        <span className="text-muted-foreground truncate">{run.trigger.label ?? run.trigger.kind}</span>
+                      )}
+                      {run.linkedIssue && (
+                        <Link to={`/issues/${run.linkedIssue.identifier ?? run.linkedIssue.id}`} className="text-muted-foreground hover:underline truncate">
+                          {run.linkedIssue.identifier ?? run.linkedIssue.id.slice(0, 8)}
+                        </Link>
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground shrink-0">{timeAgo(run.triggeredAt)}</span>
                   </div>
-                  <span className="text-xs text-muted-foreground shrink-0 ml-2">{timeAgo(run.triggeredAt)}</span>
+                  {run.failureReason && (
+                    <p className="text-xs text-destructive/80 pl-0.5">{run.failureReason}</p>
+                  )}
                 </div>
               ))}
             </div>
@@ -1093,13 +1137,13 @@ export function RoutineDetail() {
 
         <TabsContent value="activity">
           {(activity ?? []).length === 0 ? (
-            <p className="text-xs text-muted-foreground">No activity yet.</p>
+            <p className="py-8 text-center text-sm text-muted-foreground">No activity yet.</p>
           ) : (
             <div className="border border-border rounded-lg divide-y divide-border">
               {(activity ?? []).map((event) => (
-                <div key={event.id} className="flex items-center justify-between px-3 py-2 text-xs gap-4">
+                <div key={event.id} className="flex items-start justify-between px-4 py-3 text-xs gap-4">
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-medium text-foreground/90 shrink-0">{event.action.replaceAll(".", " ")}</span>
+                    <span className="font-medium text-foreground/90 shrink-0">{formatActivityAction(event.action)}</span>
                     {event.details && Object.keys(event.details).length > 0 && (
                       <span className="text-muted-foreground truncate">
                         {Object.entries(event.details).slice(0, 3).map(([key, value], i) => (
