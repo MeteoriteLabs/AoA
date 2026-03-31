@@ -837,7 +837,7 @@ export function RoutineDetail() {
       {/* Sticky save bar — only renders when dirty */}
       {isEditDirty && (
         <div className="sticky bottom-0 z-10 border border-amber-500/30 bg-amber-950/60 backdrop-blur-sm px-5 py-3 rounded-lg flex items-center justify-between">
-          <span className="text-sm text-amber-200">Unsaved changes</span>
+          <span className="text-sm text-amber-200">⚠ Unsaved changes</span>
           <div className="flex items-center gap-2">
             <Button
               variant="ghost"
