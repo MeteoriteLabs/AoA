@@ -13,6 +13,9 @@ export const queryKeys = {
     configRevisions: (agentId: string) => ["agents", "config-revisions", agentId] as const,
     adapterModels: (companyId: string, adapterType: string) =>
       ["agents", companyId, "adapter-models", adapterType] as const,
+    instructionsBundle: (id: string) => ["agents", "instructions-bundle", id] as const,
+    instructionsFile: (id: string, relativePath: string) =>
+      ["agents", "instructions-bundle", id, "file", relativePath] as const,
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,

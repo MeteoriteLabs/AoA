@@ -69,6 +69,23 @@ export const updateAgentInstructionsPathSchema = z.object({
 
 export type UpdateAgentInstructionsPath = z.infer<typeof updateAgentInstructionsPathSchema>;
 
+export const updateAgentInstructionsBundleSchema = z.object({
+  mode: z.enum(["managed", "external"]).optional(),
+  rootPath: z.string().trim().min(1).nullable().optional(),
+  entryFile: z.string().trim().min(1).optional(),
+  clearLegacyPromptTemplate: z.boolean().optional().default(false),
+});
+
+export type UpdateAgentInstructionsBundle = z.infer<typeof updateAgentInstructionsBundleSchema>;
+
+export const upsertAgentInstructionsFileSchema = z.object({
+  path: z.string().trim().min(1),
+  content: z.string(),
+  clearLegacyPromptTemplate: z.boolean().optional().default(false),
+});
+
+export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
+
 export const createAgentKeySchema = z.object({
   name: z.string().min(1).default("default"),
 });

@@ -16,6 +16,7 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { AgentInstructionsTab } from "../components/AgentInstructionsTab";
 import { adapterLabels, roleLabels } from "../components/agent-config-primitives";
 import { Tabs } from "@/components/ui/tabs";
 import { PageTabBar } from "../components/PageTabBar";
@@ -177,10 +178,11 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "overview" | "configure" | "runs" | "skills";
+type AgentDetailView = "overview" | "instructions" | "configure" | "runs" | "skills";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "configure" || value === "configuration") return "configure";
+  if (value === "instructions") return value;
   if (value === "runs") return value;
   if (value === "skills") return value;
   return "overview";
@@ -250,6 +252,10 @@ export function AgentDetail() {
   const [configSaving, setConfigSaving] = useState(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
   const cancelConfigActionRef = useRef<(() => void) | null>(null);
+  const [instrDirty, setInstrDirty] = useState(false);
+  const [instrSaving, setInstrSaving] = useState(false);
+  const saveInstrActionRef = useRef<(() => void) | null>(null);
+  const cancelInstrActionRef = useRef<(() => void) | null>(null);
   const { isMobile } = useSidebar();
   const routeAgentRef = agentId ?? "";
   const routeCompanyId = useMemo(() => {
@@ -261,6 +267,8 @@ export function AgentDetail() {
   const canFetchAgent = routeAgentRef.length > 0 && (isUuidLike(routeAgentRef) || Boolean(lookupCompanyId));
   const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
   const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
+  const setSaveInstrAction = useCallback((fn: (() => void) | null) => { saveInstrActionRef.current = fn; }, []);
+  const setCancelInstrAction = useCallback((fn: (() => void) | null) => { cancelInstrActionRef.current = fn; }, []);
 
   const { data: agent, isLoading, error } = useQuery({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
@@ -425,20 +433,23 @@ export function AgentDetail() {
 
   useBeforeUnload(
     useCallback((event) => {
-      if (!configDirty) return;
+      if (!configDirty && !instrDirty) return;
       event.preventDefault();
       event.returnValue = "";
-    }, [configDirty]),
+    }, [configDirty, instrDirty]),
   );
 
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
   const isPendingApproval = agent.status === "pending_approval";
-  const showConfigActionBar = activeView === "configure" && configDirty;
+  const showActionBar = (activeView === "configure" && configDirty) || (activeView === "instructions" && instrDirty);
+  const activeSaving = activeView === "instructions" ? instrSaving : configSaving;
+  const activeSaveRef = activeView === "instructions" ? saveInstrActionRef : saveConfigActionRef;
+  const activeCancelRef = activeView === "instructions" ? cancelInstrActionRef : cancelConfigActionRef;
 
   return (
-    <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
+    <div className={cn("space-y-6", isMobile && showActionBar && "pb-24")}>
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
@@ -576,7 +587,7 @@ export function AgentDetail() {
         <div
           className={cn(
             "sticky top-6 z-10 float-right transition-opacity duration-150",
-            showConfigActionBar
+            showActionBar
               ? "opacity-100"
               : "opacity-0 pointer-events-none"
           )}
@@ -585,24 +596,24 @@ export function AgentDetail() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => cancelConfigActionRef.current?.()}
-              disabled={configSaving}
+              onClick={() => activeCancelRef.current?.()}
+              disabled={activeSaving}
             >
               Cancel
             </Button>
             <Button
               size="sm"
-              onClick={() => saveConfigActionRef.current?.()}
-              disabled={configSaving}
+              onClick={() => activeSaveRef.current?.()}
+              disabled={activeSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {activeSaving ? "Saving…" : "Save"}
             </Button>
           </div>
         </div>
       )}
 
       {/* Mobile bottom Save/Cancel bar */}
-      {isMobile && showConfigActionBar && (
+      {isMobile && showActionBar && (
         <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 backdrop-blur-sm">
           <div
             className="flex items-center justify-end gap-2 px-3 py-2"
@@ -611,17 +622,17 @@ export function AgentDetail() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => cancelConfigActionRef.current?.()}
-              disabled={configSaving}
+              onClick={() => activeCancelRef.current?.()}
+              disabled={activeSaving}
             >
               Cancel
             </Button>
             <Button
               size="sm"
-              onClick={() => saveConfigActionRef.current?.()}
-              disabled={configSaving}
+              onClick={() => activeSaveRef.current?.()}
+              disabled={activeSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {activeSaving ? "Saving…" : "Save"}
             </Button>
           </div>
         </div>
@@ -641,6 +652,7 @@ export function AgentDetail() {
           <PageTabBar
             items={[
               { value: "overview", label: "Overview" },
+              { value: "instructions", label: "Instructions" },
               { value: "runs", label: "Runs" },
               { value: "skills", label: "Skills" },
               { value: "configure", label: "Config" },
@@ -649,7 +661,7 @@ export function AgentDetail() {
             onValueChange={(v) => {
               const target = v === "overview"
                 ? `/agents/${canonicalAgentRef}`
-                : `/agents/${canonicalAgentRef}/${v === "configure" ? "configure" : "runs"}`;
+                : `/agents/${canonicalAgentRef}/${v}`;
               navigate(target);
             }}
           />
@@ -668,6 +680,17 @@ export function AgentDetail() {
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
           trustScore={trustScore}
+        />
+      )}
+
+      {activeView === "instructions" && (
+        <AgentInstructionsTab
+          agent={agent}
+          companyId={resolvedCompanyId ?? undefined}
+          onDirtyChange={setInstrDirty}
+          onSaveActionChange={setSaveInstrAction}
+          onCancelActionChange={setCancelInstrAction}
+          onSavingChange={setInstrSaving}
         />
       )}
 
