@@ -195,7 +195,13 @@ export {
 
 export {
   updateTeamMemberRoleSchema,
+  addMemberSchema,
+  transferAdminSchema,
+  reassignAndRemoveSchema,
   type UpdateTeamMemberRole,
+  type AddMember,
+  type TransferAdmin,
+  type ReassignAndRemove,
 } from "./team.js";
 
 export {
@@ -233,3 +239,29 @@ export {
   type UpsertBudgetPolicy,
   type ResolveBudgetIncident,
 } from "./budget.js";
+
+export {
+  companySkillSourceTypeSchema,
+  companySkillTrustLevelSchema,
+  companySkillCompatibilitySchema,
+  companySkillSourceBadgeSchema,
+  companySkillFileInventoryEntrySchema,
+  companySkillSchema,
+  companySkillListItemSchema,
+  companySkillUsageAgentSchema,
+  companySkillDetailSchema,
+  companySkillUpdateStatusSchema,
+  companySkillImportSchema,
+  companySkillProjectScanRequestSchema,
+  companySkillProjectScanSkippedSchema,
+  companySkillProjectScanConflictSchema,
+  companySkillProjectScanResultSchema,
+  companySkillCreateSchema,
+  companySkillFileDetailSchema,
+  companySkillFileUpdateSchema,
+  companySkillImportPackageSchema,
+  type CompanySkillImport,
+  type CompanySkillProjectScan,
+  type CompanySkillCreate,
+  type CompanySkillFileUpdate,
+} from "./company-skill.js";

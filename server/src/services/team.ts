@@ -1,15 +1,19 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import crypto from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
   authUsers,
   companyMemberships,
   instanceUserRoles,
   invites,
+  issues,
   principalPermissionGrants,
   projects,
   userRoles,
 } from "@paperclipai/db";
 import type {
+  MemberDependencies,
   PermissionKey,
   TeamSummary,
   UpdateTeamMemberRole,
@@ -36,10 +40,12 @@ function parseInviteRoleMetadata(defaultsPayload: Record<string, unknown> | null
   const email = record.email;
   const projectId = record.projectId;
   if (role !== "team_lead" && role !== "team_member" && role !== "founder") return null;
+  const parentId = record.parentId;
   return {
     email: typeof email === "string" ? email : null,
     role: role as UserRole,
     projectId: typeof projectId === "string" ? projectId : null,
+    parentId: typeof parentId === "string" ? parentId : null,
   };
 }
 
@@ -124,6 +130,7 @@ export function teamService(db: Db) {
         status: companyMemberships.status,
         parentType: companyMemberships.parentType,
         parentId: companyMemberships.parentId,
+        isSystemAdmin: companyMemberships.isSystemAdmin,
       })
       .from(companyMemberships)
       .where(
@@ -232,6 +239,7 @@ export function teamService(db: Db) {
           departmentName: effectiveRole.projectId ? (departmentMap.get(effectiveRole.projectId) ?? null) : null,
           permissions: grantsByUser.get(membership.principalId) ?? [],
           isCurrentUser: membership.principalId === currentUserId,
+          isSystemAdmin: membership.isSystemAdmin ?? false,
           parentType: (membership.parentType as "user" | null) ?? null,
           parentId: membership.parentId ?? null,
         };
@@ -250,12 +258,15 @@ export function teamService(db: Db) {
       .map((invite) => {
         const metadata = parseInviteRoleMetadata(invite.defaultsPayload as Record<string, unknown> | null);
         if (!metadata) return null;
+        const reportsToMember = metadata.parentId ? members.find((m) => m.userId === metadata.parentId) : null;
         return {
           id: invite.id,
           email: metadata.email,
           role: metadata.role,
           departmentId: metadata.projectId,
           departmentName: metadata.projectId ? (departmentMap.get(metadata.projectId) ?? null) : null,
+          reportsToId: metadata.parentId,
+          reportsToName: reportsToMember?.displayName ?? null,
           expiresAt: invite.expiresAt,
           inviteUrl: "",
         };
@@ -263,11 +274,34 @@ export function teamService(db: Db) {
       .filter((invite): invite is NonNullable<typeof invite> => Boolean(invite));
 
     const currentUser = await getUserRole(companyId, currentUserId);
+    const currentMembership = memberships.find((m) => m.principalId === currentUserId);
+
+    // Lazy bootstrap: if current user is founder and nobody has isSystemAdmin, auto-assign
+    let isSystemAdmin = currentMembership?.isSystemAdmin ?? false;
+    if (
+      !isSystemAdmin &&
+      currentUser.role === "founder" &&
+      currentMembership &&
+      !memberships.some((m) => m.isSystemAdmin)
+    ) {
+      await db
+        .update(companyMemberships)
+        .set({ isSystemAdmin: true, updatedAt: new Date() })
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.principalId, currentMembership.principalId),
+          ),
+        );
+      isSystemAdmin = true;
+    }
+
     return {
       currentUser: {
         userId: currentUserId ?? null,
         role: currentUser.role,
         departmentId: currentUser.projectId,
+        isSystemAdmin,
         permissions: currentUser.role
           ? derivePermissions(currentUser.role)
           : {
@@ -324,6 +358,11 @@ export function teamService(db: Db) {
       }
     }
 
+    // Humans can only report to humans
+    if (input.parentType && input.parentType !== "user") {
+      throw conflict("Team members can only report to other team members");
+    }
+
     // Handle parent assignment
     if (input.parentType !== undefined || input.parentId !== undefined) {
       if (input.parentId && input.parentType) {
@@ -365,6 +404,12 @@ export function teamService(db: Db) {
     const membership = await access.getMembership(companyId, "user", userId);
     if (!membership || membership.status !== "active") throw notFound("Team member not found");
 
+    // Cannot remove system admin — must transfer first
+    const isTargetAdmin = await isCompanySystemAdmin(companyId, userId);
+    if (isTargetAdmin) {
+      throw conflict("Cannot remove the system admin. Transfer admin rights first.");
+    }
+
     const currentRole = await getUserRole(companyId, userId);
     if (currentRole.role === "founder") {
       const founders = await founderCount(companyId);
@@ -395,21 +440,363 @@ export function teamService(db: Db) {
   ) {
     const metadata = parseInviteRoleMetadata(defaultsPayload);
     if (!metadata) return null;
-    return updateUserRole(
+
+    const result = await updateUserRole(
       companyId,
       userId,
       { role: metadata.role as UserRole, projectId: metadata.projectId },
       grantedByUserId,
     );
+
+    // Auto-assign system admin to the first founder in a company
+    if (metadata.role === "founder") {
+      const founders = await founderCount(companyId);
+      if (founders === 1) {
+        await db
+          .update(companyMemberships)
+          .set({ isSystemAdmin: true, updatedAt: new Date() })
+          .where(
+            and(
+              eq(companyMemberships.companyId, companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, userId),
+            ),
+          );
+      }
+    }
+
+    return result;
+  }
+
+  async function isCompanySystemAdmin(companyId: string, userId: string | null | undefined): Promise<boolean> {
+    if (!userId) return false;
+    const rows = await db
+      .select({ isSystemAdmin: companyMemberships.isSystemAdmin })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId),
+          eq(companyMemberships.status, "active"),
+        ),
+      );
+    return rows[0]?.isSystemAdmin === true;
+  }
+
+  async function assertSystemAdmin(companyId: string, userId: string | null | undefined): Promise<void> {
+    const isAdmin = await isCompanySystemAdmin(companyId, userId);
+    if (!isAdmin) throw conflict("Only the system admin can perform this action");
+  }
+
+  async function transferAdmin(companyId: string, fromUserId: string, toUserId: string): Promise<void> {
+    await assertSystemAdmin(companyId, fromUserId);
+
+    if (fromUserId === toUserId) throw conflict("Cannot transfer admin to yourself");
+
+    const targetRole = await getUserRole(companyId, toUserId);
+    if (targetRole.role !== "founder") {
+      throw conflict("System admin can only be transferred to a founder");
+    }
+
+    await db.transaction(async (tx) => {
+      await tx
+        .update(companyMemberships)
+        .set({ isSystemAdmin: false, updatedAt: new Date() })
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, fromUserId),
+          ),
+        );
+      await tx
+        .update(companyMemberships)
+        .set({ isSystemAdmin: true, updatedAt: new Date() })
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, toUserId),
+          ),
+        );
+    });
+  }
+
+  async function addMember(
+    companyId: string,
+    input: { name: string; email: string; role: UserRole; projectId?: string | null; parentType?: "user" | null; parentId?: string | null },
+    addedByUserId: string,
+  ): Promise<{ userId: string }> {
+    await assertFounder(companyId, addedByUserId);
+
+    if (input.role === "founder") {
+      await assertSystemAdmin(companyId, addedByUserId);
+    }
+
+    // Check email uniqueness within company
+    const existingMembers = await db
+      .select({ principalId: companyMemberships.principalId })
+      .from(companyMemberships)
+      .innerJoin(authUsers, eq(companyMemberships.principalId, authUsers.id))
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(authUsers.email, input.email),
+        ),
+      );
+    if (existingMembers.length > 0) {
+      throw conflict("A team member with this email already exists in this company");
+    }
+
+    // Find or create auth user by email
+    const existingUsers = await db
+      .select({ id: authUsers.id })
+      .from(authUsers)
+      .where(eq(authUsers.email, input.email));
+
+    let userId: string;
+
+    if (existingUsers.length > 0) {
+      userId = existingUsers[0].id;
+    } else {
+      const newUserId = crypto.randomUUID();
+      await db.insert(authUsers).values({
+        id: newUserId,
+        email: input.email,
+        name: input.name,
+        displayName: input.name,
+        invitedBy: addedByUserId,
+        invitedAt: new Date(),
+        emailVerified: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      userId = newUserId;
+    }
+
+    // Create membership
+    await access.ensureMembership(companyId, "user", userId, input.role ?? "team_member", "active");
+
+    // Create role (also sets parent via membership update)
+    await updateUserRole(
+      companyId,
+      userId,
+      {
+        role: input.role,
+        projectId: input.role === "founder" ? null : (input.projectId ?? null),
+        parentType: input.parentType,
+        parentId: input.parentId,
+      },
+      addedByUserId,
+    );
+
+    return { userId };
+  }
+
+  async function getReportsFor(companyId: string, userId: string) {
+    // Humans reporting to this user
+    const humanReports = await db
+      .select({
+        userId: companyMemberships.principalId,
+        displayName: authUsers.displayName,
+        email: authUsers.email,
+        role: userRoles.role,
+      })
+      .from(companyMemberships)
+      .innerJoin(authUsers, eq(companyMemberships.principalId, authUsers.id))
+      .leftJoin(
+        userRoles,
+        and(eq(userRoles.companyId, companyId), eq(userRoles.userId, companyMemberships.principalId)),
+      )
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.parentType, "user"),
+          eq(companyMemberships.parentId, userId),
+          eq(companyMemberships.status, "active"),
+        ),
+      );
+
+    // Agents directly reporting to this user
+    const directAgents = await db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.companyId, companyId),
+          eq(agents.parentType, "user"),
+          eq(agents.parentId, userId),
+          ne(agents.status, "terminated"),
+        ),
+      );
+
+    // Count sub-agents per direct agent via BFS
+    const agentTrees: Array<{ rootAgentId: string; rootAgentName: string; subAgentCount: number }> = [];
+    for (const agent of directAgents) {
+      let subCount = 0;
+      const queue = [agent.id];
+      const visited = new Set<string>();
+      while (queue.length > 0) {
+        const parentId = queue.shift()!;
+        if (visited.has(parentId)) continue;
+        visited.add(parentId);
+        const children = await db
+          .select({ id: agents.id })
+          .from(agents)
+          .where(
+            and(
+              eq(agents.companyId, companyId),
+              eq(agents.parentType, "agent"),
+              eq(agents.parentId, parentId),
+              ne(agents.status, "terminated"),
+            ),
+          );
+        subCount += children.length;
+        for (const child of children) {
+          queue.push(child.id);
+        }
+      }
+      agentTrees.push({ rootAgentId: agent.id, rootAgentName: agent.name, subAgentCount: subCount });
+    }
+
+    return { teamMembers: humanReports, agentTrees };
+  }
+
+  async function getDependencies(companyId: string, userId: string): Promise<MemberDependencies> {
+    const reports = await getReportsFor(companyId, userId);
+
+    const assignedRows = await db
+      .select({ cnt: count() })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.assigneeUserId, userId),
+          ne(issues.status, "done"),
+          ne(issues.status, "cancelled"),
+        ),
+      );
+
+    const createdRows = await db
+      .select({ cnt: count() })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.createdByUserId, userId),
+          ne(issues.status, "done"),
+          ne(issues.status, "cancelled"),
+        ),
+      );
+
+    return {
+      teamMembers: reports.teamMembers.map((m) => ({
+        userId: m.userId,
+        displayName: m.displayName,
+        email: m.email,
+        role: (m.role as UserRole) ?? "team_member",
+      })),
+      agentTrees: reports.agentTrees,
+      assignedTaskCount: Number(assignedRows[0]?.cnt ?? 0),
+      createdTaskCount: Number(createdRows[0]?.cnt ?? 0),
+    };
+  }
+
+  async function reassignAndRemove(
+    companyId: string,
+    userId: string,
+    input: {
+      humanReassignments: Array<{ userId: string; newParentId: string | null }>;
+      agentReassignments: Array<{ agentId: string; newParentId: string; newParentType: "user" }>;
+    },
+  ): Promise<void> {
+    // Cannot remove system admin
+    const isTargetAdmin = await isCompanySystemAdmin(companyId, userId);
+    if (isTargetAdmin) {
+      throw conflict("Cannot remove the system admin. Transfer admin rights first.");
+    }
+
+    // Cannot remove last founder
+    const currentRole = await getUserRole(companyId, userId);
+    if (currentRole.role === "founder") {
+      const founders = await founderCount(companyId);
+      if (founders <= 1) throw conflict("Cannot remove the last founder");
+    }
+
+    await db.transaction(async (tx) => {
+      // Reassign human reports
+      for (const reassignment of input.humanReassignments) {
+        await tx
+          .update(companyMemberships)
+          .set({
+            parentType: reassignment.newParentId ? "user" : null,
+            parentId: reassignment.newParentId,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(companyMemberships.companyId, companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, reassignment.userId),
+            ),
+          );
+      }
+
+      // Reassign agent trees (top-level only — sub-agents stay with parent agent)
+      for (const reassignment of input.agentReassignments) {
+        await tx
+          .update(agents)
+          .set({
+            parentType: reassignment.newParentType,
+            parentId: reassignment.newParentId,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(agents.id, reassignment.agentId),
+              eq(agents.companyId, companyId),
+            ),
+          );
+      }
+
+      // Delete roles, permissions, membership
+      await tx.delete(userRoles).where(
+        and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)),
+      );
+      await tx.delete(principalPermissionGrants).where(
+        and(
+          eq(principalPermissionGrants.companyId, companyId),
+          eq(principalPermissionGrants.principalType, "user"),
+          eq(principalPermissionGrants.principalId, userId),
+        ),
+      );
+      await tx.delete(companyMemberships).where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId),
+        ),
+      );
+    });
   }
 
   return {
+    addMember,
     assertFounder,
+    assertSystemAdmin,
     applyInviteRole,
+    getDependencies,
+    getReportsFor,
     getUserRole,
+    isCompanySystemAdmin,
     listTeam,
+    reassignAndRemove,
     removeMember,
     roleGrants,
+    transferAdmin,
     updateUserRole,
   };
 }

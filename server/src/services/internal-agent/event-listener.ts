@@ -128,20 +128,7 @@ export function createEventListener(
     // Notify callback
     onTrigger?.(trigger);
 
-    // Trigger extraction for new discussion entries (fire-and-forget)
-    if (trigger.triggerSource === "discussion_entry") {
-      const eventPayload = (event.payload ?? {}) as Record<string, unknown>;
-      const entryId = (eventPayload.entryId ?? "") as string;
-      if (entryId) {
-        import("../extraction.js")
-          .then(({ extractionService }) => {
-            extractionService(db)
-              .extractFromDiscussionEntry(companyId, entryId)
-              .catch(() => {}); // errors handled internally
-          })
-          .catch(() => {}); // module load error — swallow
-      }
-    }
+    // Extraction is manual-only — user clicks "Reprocess" on the discussion detail page
   }
 
   const unsubscribe = subscribeCompanyLiveEvents(companyId, handleEvent);

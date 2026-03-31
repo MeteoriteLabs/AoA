@@ -23,7 +23,7 @@ import { Loader2, Mic, MessageSquare } from "lucide-react";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { cn } from "../lib/utils";
 
-type TabValue = "paste" | "write" | "voice";
+type TabValue = "paste" | "voice";
 
 export function DiscussionCaptureModal() {
   const { discussionCaptureOpen, discussionCaptureDefaults, closeDiscussionCapture } = useDialog();
@@ -99,7 +99,7 @@ export function DiscussionCaptureModal() {
       resetAndClose();
       pushToast({
         title: "Discussion created",
-        body: "Processing your content — items will appear shortly.",
+        body: "Click Reprocess to extract items from your content.",
         tone: "success",
       });
       navigate(`/discussions/${discussion.id}`);
@@ -121,7 +121,7 @@ export function DiscussionCaptureModal() {
       resetAndClose();
       pushToast({
         title: "Entry added",
-        body: "Processing your content — items will appear shortly.",
+        body: "Click Reprocess to extract items from your content.",
         tone: "success",
       });
       navigate(`/discussions/${vars.discussionId}`);
@@ -227,7 +227,7 @@ export function DiscussionCaptureModal() {
     <Dialog open={discussionCaptureOpen} onOpenChange={(open) => { if (!open) resetAndClose(); }}>
       <DialogContent
         showCloseButton={!isSubmitting}
-        className="sm:max-w-[600px] gap-0 flex flex-col"
+        className="sm:max-w-[600px] max-h-[80vh] overflow-y-auto gap-0 flex flex-col"
       >
         <DialogHeader className="px-6 pt-6 pb-4">
           <DialogTitle>
@@ -269,8 +269,7 @@ export function DiscussionCaptureModal() {
             {/* Input tabs */}
             <Tabs value={tab} onValueChange={(v) => setTab(v as TabValue)}>
               <TabsList>
-                <TabsTrigger value="paste">Paste / Import</TabsTrigger>
-                <TabsTrigger value="write">Write</TabsTrigger>
+                <TabsTrigger value="paste">Paste / Write</TabsTrigger>
                 <TabsTrigger value="voice" className="gap-1.5">
                   <Mic className="h-3.5 w-3.5" />
                   Voice
@@ -280,16 +279,8 @@ export function DiscussionCaptureModal() {
                 <Textarea
                   value={content}
                   onChange={(e) => setContent(e.target.value)}
-                  placeholder="Paste meeting notes, research, conversation transcripts..."
-                  className="min-h-[200px] resize-y"
-                />
-              </TabsContent>
-              <TabsContent value="write" className="mt-3">
-                <Textarea
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  placeholder="Write your observations, decisions, ideas..."
-                  className="min-h-[200px] resize-y"
+                  placeholder="Paste meeting notes, transcripts, or write your observations..."
+                  className="min-h-[200px] max-h-[300px] resize-y"
                 />
               </TabsContent>
               <TabsContent value="voice" className="mt-3">

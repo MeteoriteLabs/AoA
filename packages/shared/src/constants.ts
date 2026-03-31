@@ -456,6 +456,7 @@ export type DiscussionStatus = (typeof DISCUSSION_STATUSES)[number];
 export const DISCUSSION_SCOPE_TYPES = ["department", "project", "goal"] as const;
 export type DiscussionScopeType = (typeof DISCUSSION_SCOPE_TYPES)[number];
 
+// "write" kept for backward compat with existing entries — UI now uses "paste" for both paste and write
 export const DISCUSSION_ENTRY_INPUT_TYPES = ["paste", "write", "voice", "mcp"] as const;
 export type DiscussionEntryInputType = (typeof DISCUSSION_ENTRY_INPUT_TYPES)[number];
 

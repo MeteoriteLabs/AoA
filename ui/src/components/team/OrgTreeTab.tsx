@@ -1,10 +1,16 @@
 import { useRef, useState, useMemo, useCallback, useEffect } from "react";
-import type { UnifiedOrgNode } from "@paperclipai/shared";
+import type { UnifiedOrgNode, TeamInviteSummary } from "@paperclipai/shared";
 import { AgentIcon } from "../AgentIconPicker";
 import { adapterLabels, roleLabels } from "../agent-config-primitives";
-import { Network } from "lucide-react";
+import { Network, MoreVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ClickableDiv } from "../ui/clickable-div";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // Layout constants
 const CARD_W = 200;
@@ -17,7 +23,7 @@ const PADDING = 60;
 
 interface LayoutNode {
   id: string;
-  nodeType: "agent" | "user";
+  nodeType: "agent" | "user" | "ghost";
   name: string;
   role: string;
   status: string;
@@ -29,11 +35,23 @@ interface LayoutNode {
   avatarUrl?: string;
   userRole?: string;
   departmentName?: string;
+  // Ghost (pending invite) fields
+  isGhost?: boolean;
+  inviteId?: string;
   // Position
   x: number;
   y: number;
   children: LayoutNode[];
 }
+
+export type OrgNodeAction =
+  | { type: "view-profile"; userId: string }
+  | { type: "view-agent"; agentId: string }
+  | { type: "change-role"; userId: string }
+  | { type: "change-reports-to"; agentId: string }
+  | { type: "remove"; userId: string }
+  | { type: "resend-invite"; inviteId: string }
+  | { type: "revoke-invite"; inviteId: string };
 
 // ── Layout algorithm (reused from OrgChart.tsx) ─────────────────────────
 
@@ -135,17 +153,60 @@ const ROLE_LABELS: Record<string, string> = {
 
 export interface OrgTreeTabProps {
   orgTree: UnifiedOrgNode[];
+  pendingInvites?: TeamInviteSummary[];
   onNodeClick: (id: string, nodeType: "agent" | "user") => void;
+  onNodeAction?: (action: OrgNodeAction) => void;
 }
 
-export function OrgTreeTab({ orgTree, onNodeClick }: OrgTreeTabProps) {
+function mergeGhostNodes(orgTree: UnifiedOrgNode[], pendingInvites: TeamInviteSummary[]): UnifiedOrgNode[] {
+  if (pendingInvites.length === 0) return orgTree;
+
+  const ghostNodes: UnifiedOrgNode[] = [];
+  const parentedGhosts = new Map<string, UnifiedOrgNode[]>();
+
+  for (const invite of pendingInvites) {
+    const ghost: UnifiedOrgNode = {
+      id: `ghost-${invite.id}`,
+      name: invite.email ?? "Pending invite",
+      role: invite.role,
+      status: "pending",
+      nodeType: "user",
+      userRole: invite.role as "founder" | "team_lead" | "team_member",
+      departmentName: invite.departmentName ?? undefined,
+      children: [],
+    };
+
+    if (invite.reportsToId) {
+      const existing = parentedGhosts.get(invite.reportsToId) ?? [];
+      existing.push(ghost);
+      parentedGhosts.set(invite.reportsToId, existing);
+    } else {
+      ghostNodes.push(ghost);
+    }
+  }
+
+  // Deep clone and inject parented ghosts
+  function injectGhosts(node: UnifiedOrgNode): UnifiedOrgNode {
+    const children = node.children.map(injectGhosts);
+    const ghosts = parentedGhosts.get(node.id) ?? [];
+    return { ...node, children: [...children, ...ghosts] };
+  }
+
+  return [...orgTree.map(injectGhosts), ...ghostNodes];
+}
+
+export function OrgTreeTab({ orgTree, pendingInvites, onNodeClick, onNodeAction }: OrgTreeTabProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [dragging, setDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
 
-  const layout = useMemo(() => layoutForest(orgTree), [orgTree]);
+  const mergedTree = useMemo(
+    () => mergeGhostNodes(orgTree, pendingInvites ?? []),
+    [orgTree, pendingInvites],
+  );
+  const layout = useMemo(() => layoutForest(mergedTree), [mergedTree]);
   const allNodes = useMemo(() => flattenLayout(layout), [layout]);
   const edges = useMemo(() => collectEdges(layout), [layout]);
 
@@ -341,13 +402,16 @@ export function OrgTreeTab({ orgTree, onNodeClick }: OrgTreeTabProps) {
           transformOrigin: "0 0",
         }}
       >
-        {allNodes.map((node) =>
-          node.nodeType === "agent" ? (
-            <AgentNodeCard key={node.id} node={node} onClick={onNodeClick} />
-          ) : (
-            <HumanNodeCard key={node.id} node={node} onClick={onNodeClick} />
-          ),
-        )}
+        {allNodes.map((node) => {
+          const isGhost = node.id.startsWith("ghost-");
+          if (node.nodeType === "agent") {
+            return <AgentNodeCard key={node.id} node={node} onClick={onNodeClick} onNodeAction={onNodeAction} />;
+          }
+          if (isGhost) {
+            return <GhostNodeCard key={node.id} node={node} onNodeAction={onNodeAction} />;
+          }
+          return <HumanNodeCard key={node.id} node={node} onClick={onNodeClick} onNodeAction={onNodeAction} />;
+        })}
       </div>
     </div>
   );
@@ -358,9 +422,11 @@ export function OrgTreeTab({ orgTree, onNodeClick }: OrgTreeTabProps) {
 function AgentNodeCard({
   node,
   onClick,
+  onNodeAction,
 }: {
   node: LayoutNode;
   onClick: (id: string, nodeType: "agent" | "user") => void;
+  onNodeAction?: (action: OrgNodeAction) => void;
 }) {
   const dotColor = statusDotColor[node.status] ?? defaultDotColor;
 
@@ -370,7 +436,7 @@ function AgentNodeCard({
       data-testid={`org-node-${node.id}`}
       data-node-type="agent"
       className={cn(
-        "absolute bg-card border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none border-l-[3px] border-l-blue-400",
+        "absolute bg-card border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none border-l-[3px] border-l-blue-400 group",
         node.pendingApproval && "opacity-50",
       )}
       style={{
@@ -416,6 +482,29 @@ function AgentNodeCard({
           </span>
         </div>
       )}
+      {onNodeAction && (
+        <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <MoreVertical className="h-3.5 w-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+              <DropdownMenuItem onClick={() => onNodeAction({ type: "view-agent", agentId: node.id })}>
+                View Agent
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onNodeAction({ type: "change-reports-to", agentId: node.id })}>
+                Change Reports-To
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
     </ClickableDiv>
   );
 }
@@ -433,16 +522,18 @@ function getInitials(name: string): string {
 function HumanNodeCard({
   node,
   onClick,
+  onNodeAction,
 }: {
   node: LayoutNode;
   onClick: (id: string, nodeType: "agent" | "user") => void;
+  onNodeAction?: (action: OrgNodeAction) => void;
 }) {
   return (
     <ClickableDiv
       data-org-card
       data-testid={`org-node-${node.id}`}
       data-node-type="user"
-      className="absolute bg-card border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none border-l-[3px] border-l-green-400"
+      className="absolute bg-card border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none border-l-[3px] border-l-green-400 group"
       style={{
         left: node.x,
         top: node.y,
@@ -487,6 +578,110 @@ function HumanNodeCard({
           )}
         </div>
       </div>
+      {onNodeAction && (
+        <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <MoreVertical className="h-3.5 w-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+              <DropdownMenuItem onClick={() => onNodeAction({ type: "view-profile", userId: node.id })}>
+                View Profile
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onNodeAction({ type: "change-role", userId: node.id })}>
+                Change Role
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="text-destructive"
+                onClick={() => onNodeAction({ type: "remove", userId: node.id })}
+              >
+                Remove
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
     </ClickableDiv>
+  );
+}
+
+// ── Ghost (pending invite) node card ──────────────────────────────────────
+
+function GhostNodeCard({
+  node,
+  onNodeAction,
+}: {
+  node: LayoutNode;
+  onNodeAction?: (action: OrgNodeAction) => void;
+}) {
+  const inviteId = node.id.replace("ghost-", "");
+
+  return (
+    <div
+      data-org-card
+      data-testid={`org-node-${node.id}`}
+      data-node-type="ghost"
+      className="absolute border border-dashed rounded-lg opacity-50 select-none group"
+      style={{
+        left: node.x,
+        top: node.y,
+        width: CARD_W,
+        minHeight: CARD_H,
+        borderColor: "var(--border)",
+      }}
+    >
+      <div className="flex items-center px-4 py-3 gap-3">
+        <div className="shrink-0">
+          <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center border border-dashed border-border">
+            <span className="text-xs text-muted-foreground">?</span>
+          </div>
+        </div>
+        <div className="flex flex-col items-start min-w-0 flex-1">
+          <span className="text-sm font-medium text-muted-foreground leading-tight truncate w-full">
+            {node.name}
+          </span>
+          {node.userRole && (
+            <span className="text-[11px] text-muted-foreground/60 leading-tight mt-0.5">
+              {ROLE_LABELS[node.userRole] ?? node.userRole}
+            </span>
+          )}
+          <span className="text-[10px] font-medium bg-amber-100/60 text-amber-800/80 dark:bg-amber-900/20 dark:text-amber-300/60 px-1.5 py-0.5 rounded mt-1">
+            Pending
+          </span>
+        </div>
+      </div>
+      {onNodeAction && (
+        <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <MoreVertical className="h-3.5 w-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+              <DropdownMenuItem onClick={() => onNodeAction({ type: "resend-invite", inviteId })}>
+                Resend Invite
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="text-destructive"
+                onClick={() => onNodeAction({ type: "revoke-invite", inviteId })}
+              >
+                Revoke Invite
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
+    </div>
   );
 }

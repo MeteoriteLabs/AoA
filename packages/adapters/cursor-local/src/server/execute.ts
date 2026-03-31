@@ -94,14 +94,19 @@ type EnsureCursorSkillsInjectedOptions = {
   skillsDir?: string | null;
   skillsHome?: string;
   linkSkill?: (source: string, target: string) => Promise<void>;
+  dbSkills?: Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }>;
 };
 
 export async function ensureCursorSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCursorSkillsInjectedOptions = {},
-) {
+): Promise<string[]> {
+  const injectedDbDirs: string[] = [];
   const skillsDir = options.skillsDir ?? await resolvePaperclipSkillsDir();
-  if (!skillsDir) return;
+  const dbSkills = options.dbSkills ?? [];
+
+  // Nothing to inject
+  if (!skillsDir && dbSkills.length === 0) return injectedDbDirs;
 
   const skillsHome = options.skillsHome ?? cursorSkillsHome();
   try {
@@ -111,38 +116,80 @@ export async function ensureCursorSkillsInjected(
       "stderr",
       `[paperclip] Failed to prepare Cursor skills directory ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
     );
-    return;
+    return injectedDbDirs;
   }
 
-  let entries: Dirent[];
-  try {
-    entries = await fs.readdir(skillsDir, { withFileTypes: true });
-  } catch (err) {
-    await onLog(
-      "stderr",
-      `[paperclip] Failed to read Paperclip skills from ${skillsDir}: ${err instanceof Error ? err.message : String(err)}\n`,
-    );
-    return;
-  }
-
-  const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target, process.platform === "win32" ? "junction" : undefined));
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const source = path.join(skillsDir, entry.name);
-    const target = path.join(skillsHome, entry.name);
-    const existing = await fs.lstat(target).catch(() => null);
-    if (existing) continue;
-
+  // Symlink bundled skills when a local skills directory exists
+  if (skillsDir) {
+    let entries: Dirent[];
     try {
-      await linkSkill(source, target);
-      await onLog(
-        "stderr",
-        `[paperclip] Injected Cursor skill "${entry.name}" into ${skillsHome}\n`,
-      );
+      entries = await fs.readdir(skillsDir, { withFileTypes: true });
     } catch (err) {
       await onLog(
         "stderr",
-        `[paperclip] Failed to inject Cursor skill "${entry.name}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[paperclip] Failed to read Paperclip skills from ${skillsDir}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      entries = [];
+    }
+
+    const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target, process.platform === "win32" ? "junction" : undefined));
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const source = path.join(skillsDir, entry.name);
+      const target = path.join(skillsHome, entry.name);
+      const existing = await fs.lstat(target).catch(() => null);
+      if (existing) continue;
+
+      try {
+        await linkSkill(source, target);
+        await onLog(
+          "stderr",
+          `[paperclip] Injected Cursor skill "${entry.name}" into ${skillsHome}\n`,
+        );
+      } catch (err) {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to inject Cursor skill "${entry.name}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+    }
+  }
+
+  // Write DB-backed company skills
+  for (const skill of dbSkills) {
+    const skillFolderName = skill.key.replace(/\//g, "--");
+    const target = path.join(skillsHome, skillFolderName);
+    try {
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(path.join(target, "SKILL.md"), skill.markdown, "utf-8");
+      for (const file of skill.files ?? []) {
+        const fullPath = path.join(target, file.path);
+        await fs.mkdir(path.dirname(fullPath), { recursive: true });
+        await fs.writeFile(fullPath, file.content, "utf-8");
+      }
+      injectedDbDirs.push(target);
+    } catch (err) {
+      await onLog?.(
+        "stderr",
+        `[aoa] Failed to write DB skill "${skill.key}": ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  return injectedDbDirs;
+}
+
+async function cleanupDbSkillDirs(
+  dirs: string[],
+  onLog: AdapterExecutionContext["onLog"],
+) {
+  for (const dir of dirs) {
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+    } catch (err) {
+      await onLog?.(
+        "stderr",
+        `[aoa] Failed to cleanup DB skill dir "${dir}": ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
   }
@@ -175,7 +222,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  await ensureCursorSkillsInjected(onLog);
+  const dbSkills = (context.skills as Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }> | undefined) ?? [];
+  const injectedDbDirs = await ensureCursorSkillsInjected(onLog, { dbSkills: dbSkills.length > 0 ? dbSkills : undefined });
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -466,20 +514,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
-  const initial = await runAttempt(sessionId);
-  if (
-    sessionId &&
-    !initial.proc.timedOut &&
-    (initial.proc.exitCode ?? 0) !== 0 &&
-    isCursorUnknownSessionError(initial.proc.stdout, initial.proc.stderr)
-  ) {
-    await onLog(
-      "stderr",
-      `[paperclip] Cursor resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-    );
-    const retry = await runAttempt(null);
-    return toResult(retry, true);
-  }
+  try {
+    const initial = await runAttempt(sessionId);
+    if (
+      sessionId &&
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      isCursorUnknownSessionError(initial.proc.stdout, initial.proc.stderr)
+    ) {
+      await onLog(
+        "stderr",
+        `[paperclip] Cursor resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+      );
+      const retry = await runAttempt(null);
+      return toResult(retry, true);
+    }
 
-  return toResult(initial);
+    return toResult(initial);
+  } finally {
+    if (injectedDbDirs.length > 0) {
+      await cleanupDbSkillDirs(injectedDbDirs, onLog);
+    }
+  }
 }

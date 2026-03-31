@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
+import { companySkillsApi } from "../api/companySkills";
+import type { CompanySkillListItem } from "@paperclipai/shared";
 import { heartbeatsApi } from "../api/heartbeats";
 import { trustScoresApi } from "../api/trust-scores";
 import { ApiError } from "../api/client";
@@ -175,11 +177,12 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "overview" | "configure" | "runs";
+type AgentDetailView = "overview" | "configure" | "runs" | "skills";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "configure" || value === "configuration") return "configure";
   if (value === "runs") return value;
+  if (value === "skills") return value;
   return "overview";
 }
 
@@ -631,7 +634,7 @@ export function AgentDetail() {
           onValueChange={(v) => {
             const target = v === "overview"
               ? `/agents/${canonicalAgentRef}`
-              : `/agents/${canonicalAgentRef}/${v === "configure" ? "configure" : "runs"}`;
+              : `/agents/${canonicalAgentRef}/${v}`;
             navigate(target);
           }}
         >
@@ -639,6 +642,7 @@ export function AgentDetail() {
             items={[
               { value: "overview", label: "Overview" },
               { value: "runs", label: "Runs" },
+              { value: "skills", label: "Skills" },
               { value: "configure", label: "Config" },
             ]}
             value={activeView}
@@ -688,6 +692,14 @@ export function AgentDetail() {
           agentRouteId={canonicalAgentRef}
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
+        />
+      )}
+
+      {activeView === "skills" && resolvedCompanyId && (
+        <AgentSkillsTab
+          agentId={agent.id}
+          companyId={resolvedCompanyId}
+          skillKeys={(agent as any).skillKeys ?? []}
         />
       )}
     </div>
@@ -2669,6 +2681,94 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---- Agent Skills Tab ---- */
+
+function AgentSkillsTab({
+  agentId,
+  companyId,
+  skillKeys: initialSkillKeys,
+}: {
+  agentId: string;
+  companyId: string;
+  skillKeys: string[];
+}) {
+  const queryClient = useQueryClient();
+  const [localKeys, setLocalKeys] = useState<string[]>(initialSkillKeys);
+  const [saving, setSaving] = useState(false);
+
+  const { data: allSkills, isLoading } = useQuery({
+    queryKey: queryKeys.companySkills.list(companyId),
+    queryFn: () => companySkillsApi.list(companyId),
+    enabled: Boolean(companyId),
+  });
+
+  async function handleToggle(skillKey: string) {
+    const next = localKeys.includes(skillKey)
+      ? localKeys.filter((k) => k !== skillKey)
+      : [...localKeys, skillKey];
+    setLocalKeys(next);
+    setSaving(true);
+    try {
+      await agentsApi.update(agentId, { skillKeys: next } as any);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (isLoading) return <PageSkeleton variant="list" />;
+
+  if (!allSkills || allSkills.length === 0) {
+    return (
+      <div className="px-6 py-10 text-center text-sm text-muted-foreground">
+        No skills available. <Link to="/skills" className="underline">Create or import skills</Link> first.
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-6 py-4">
+      <p className="text-sm text-muted-foreground mb-4">
+        Skills injected into this agent's context on every run.
+      </p>
+      <div className="space-y-2">
+        {allSkills.map((skill: CompanySkillListItem) => {
+          const attached = localKeys.includes(skill.key);
+          return (
+            <div
+              key={skill.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => { if (!saving) handleToggle(skill.key); }}
+              onKeyDown={(e) => { if (!saving && (e.key === " " || e.key === "Enter")) { e.preventDefault(); handleToggle(skill.key); } }}
+              className={cn(
+                "flex items-start gap-3 rounded-md border border-border p-3 cursor-pointer transition-colors",
+                attached ? "bg-accent/30 border-foreground/20" : "hover:bg-accent/10",
+                saving && "opacity-60 cursor-wait",
+              )}
+            >
+              <input
+                type="checkbox"
+                checked={attached}
+                readOnly
+                className="mt-0.5 h-4 w-4 rounded border-border pointer-events-none"
+              />
+              <div className="min-w-0">
+                <div className="text-sm font-medium">{skill.name}</div>
+                {skill.description && (
+                  <div className="text-xs text-muted-foreground mt-0.5">{skill.description}</div>
+                )}
+                <div className="text-xs text-muted-foreground mt-1 font-mono">{skill.key}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

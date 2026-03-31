@@ -29,6 +29,7 @@ export interface Agent {
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
   metadata: Record<string, unknown> | null;
+  skillKeys: string[];
   createdAt: Date;
   updatedAt: Date;
 }

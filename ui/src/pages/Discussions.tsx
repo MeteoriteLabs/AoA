@@ -243,8 +243,7 @@ export function Discussions() {
               aria-label="Filter by source"
             >
               <option value="">All sources</option>
-              <option value="paste">Paste</option>
-              <option value="write">Write</option>
+              <option value="paste">Paste / Write</option>
               <option value="voice">Voice</option>
               <option value="mcp">MCP</option>
             </select>

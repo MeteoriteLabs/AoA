@@ -25,10 +25,12 @@ import { InternalAgentSettingsPage } from "./pages/InternalAgentSettingsPage";
 import { VisionMission } from "./pages/VisionMission";
 import { DesignGuide } from "./pages/DesignGuide";
 import { TeamPage } from "./pages/TeamPage";
+import { HumanDetail } from "./pages/HumanDetail";
 import { ActiveAgents } from "./pages/ActiveAgents";
 import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
 import { Discussions } from "./pages/Discussions";
 import { DiscussionDetail } from "./pages/DiscussionDetail";
+import { Skills } from "./pages/Skills";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { InviteLandingPage } from "./pages/InviteLanding";
@@ -104,6 +106,8 @@ function boardRoutes() {
       <Route path="settings/internal-agent" element={<InternalAgentSettingsPage />} />
       <Route path="company/settings" element={<Navigate to="../settings" replace />} />
       <Route path="org" element={<TeamPage />} />
+      <Route path="team/:userId" element={<HumanDetail />} />
+      <Route path="team/:userId/:tab" element={<HumanDetail />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -130,6 +134,7 @@ function boardRoutes() {
       <Route path="issues/:issueId" element={<Issues />} />
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
+      <Route path="skills/*" element={<Skills />} />
       <Route path="discussions" element={<Discussions />} />
       <Route path="discussions/:discussionId" element={<DiscussionDetail />} />
       <Route path="briefs" element={<Navigate to="/discussions" replace />} />
@@ -250,6 +255,7 @@ export function App() {
           <Route path="projects/:projectId/goals" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/team" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/budget" element={<UnprefixedBoardRedirect />} />
+          <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}
           </Route>

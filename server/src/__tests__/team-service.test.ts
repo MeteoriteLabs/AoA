@@ -92,6 +92,8 @@ describe("teamService.removeMember", () => {
       selects: [
         // access.getMembership → found active membership
         [{ id: "mem-1", status: "active", principalType: "user", principalId: "user-2", companyId: "c1" }],
+        // isCompanySystemAdmin → not admin
+        [{ isSystemAdmin: false }],
         // isInstanceAdmin for getUserRole → not admin
         [],
         // getUserRole → team_member role
@@ -134,6 +136,8 @@ describe("teamService.removeMember", () => {
       selects: [
         // access.getMembership → found
         [{ id: "mem-1", status: "active", principalType: "user", principalId: "user-1", companyId: "c1" }],
+        // isCompanySystemAdmin → not admin
+        [{ isSystemAdmin: false }],
         // isInstanceAdmin for getUserRole → not admin
         [],
         // getUserRole → founder
@@ -156,6 +160,8 @@ describe("teamService.removeMember", () => {
       selects: [
         // access.getMembership → found
         [{ id: "mem-1", status: "active", principalType: "user", principalId: "user-1", companyId: "c1" }],
+        // isCompanySystemAdmin → not admin
+        [{ isSystemAdmin: false }],
         // isInstanceAdmin for getUserRole → not admin
         [],
         // getUserRole → founder

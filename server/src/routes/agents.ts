@@ -21,6 +21,7 @@ import {
   agentService,
   accessService,
   approvalService,
+  companySkillService,
   heartbeatService,
   issueApprovalService,
   issueService,
@@ -56,6 +57,7 @@ export function agentRoutes(db: Db) {
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
+  const skillSvc = companySkillService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   function canCreateAgents(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
@@ -949,6 +951,14 @@ export function agentRoutes(db: Db) {
         requestedAdapterType,
         effectiveAdapterConfig,
       );
+    }
+
+    // Validate skillKeys against company's available skills (throws 422 on unknown/ambiguous)
+    if (Object.prototype.hasOwnProperty.call(patchData, "skillKeys")) {
+      const requestedKeys = patchData.skillKeys;
+      if (Array.isArray(requestedKeys) && requestedKeys.length > 0) {
+        await skillSvc.resolveSkillKeys(existing.companyId, requestedKeys as string[]);
+      }
     }
 
     const actor = getActorInfo(req);

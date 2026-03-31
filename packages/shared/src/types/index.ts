@@ -79,6 +79,10 @@ export type {
   TeamMemberSummary,
   TeamInviteSummary,
   TeamSummary,
+  AddMemberInput,
+  TransferAdminInput,
+  MemberDependencies,
+  ReassignAndRemoveInput,
   UnifiedOrgNode,
 } from "./team.js";
 export type {
@@ -105,4 +109,33 @@ export type {
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
 } from "./company-portability.js";
-export type { BudgetPolicy, BudgetPolicySummary, BudgetIncident, BudgetOverview, UpsertBudgetPolicyInput, ResolveBudgetIncidentInput } from "./budget.js";
+export type {
+  BudgetPolicy,
+  BudgetPolicySummary,
+  BudgetIncident,
+  BudgetOverview,
+  UpsertBudgetPolicyInput,
+  ResolveBudgetIncidentInput,
+} from "./budget.js";
+export type {
+  CompanySkillSourceType,
+  CompanySkillTrustLevel,
+  CompanySkillCompatibility,
+  CompanySkillSourceBadge,
+  CompanySkillFileInventoryEntry,
+  CompanySkill,
+  CompanySkillListItem,
+  CompanySkillDetail,
+  CompanySkillUsageAgent,
+  CompanySkillUpdateStatus,
+  CompanySkillImportRequest,
+  CompanySkillImportResult,
+  CompanySkillProjectScanRequest,
+  CompanySkillProjectScanResult,
+  CompanySkillProjectScanSkipped,
+  CompanySkillProjectScanConflict,
+  CompanySkillCreateRequest,
+  CompanySkillFileDetail,
+  CompanySkillFileUpdateRequest,
+  CompanySkillImportPackageRequest,
+} from "./company-skill.js";

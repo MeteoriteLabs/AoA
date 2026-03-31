@@ -34,8 +34,6 @@ export const queryKeys = {
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
     dependencies: (issueId: string) => ["issues", "dependencies", issueId] as const,
     documents: (issueId: string) => ["issues", "documents", issueId] as const,
-    document: (issueId: string, key: string) => ["issues", "documents", issueId, key] as const,
-    documentRevisions: (issueId: string, key: string) => ["issues", "documents", issueId, key, "revisions"] as const,
   },
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
@@ -67,6 +65,8 @@ export const queryKeys = {
   },
   team: {
     summary: (companyId: string) => ["team", companyId] as const,
+    member: (companyId: string, userId: string) => ["team", companyId, "member", userId] as const,
+    dependencies: (companyId: string, userId: string) => ["team", companyId, "dependencies", userId] as const,
   },
   auth: {
     session: ["auth", "session"] as const,
@@ -117,10 +117,7 @@ export const queryKeys = {
   agentConfig: (companyId: string) => ["agent-config", companyId] as const,
   agentRuns: (companyId: string) => ["agent-runs", companyId] as const,
   agentReminders: (companyId: string) => ["agent-reminders", companyId] as const,
-  notifications: Object.assign(
-    (companyId: string) => ["notifications", companyId] as const,
-    { unreadCount: (companyId: string) => ["notifications", companyId, "unread-count"] as const },
-  ),
+  notifications: (companyId: string) => ["notifications", companyId] as const,
   workflowTemplates: {
     list: (companyId: string) => ["workflow-templates", companyId] as const,
     detail: (companyId: string, id: string) => ["workflow-templates", companyId, id] as const,
@@ -137,5 +134,14 @@ export const queryKeys = {
   detectedOutputs: {
     byIssue: (issueId: string) => ["detected-outputs", "issue", issueId] as const,
     byRun: (runId: string) => ["detected-outputs", "run", runId] as const,
+  },
+  companySkills: {
+    list: (companyId: string) => ["company-skills", companyId] as const,
+    detail: (companyId: string, skillId: string) =>
+      ["company-skills", companyId, skillId] as const,
+    updateStatus: (companyId: string, skillId: string) =>
+      ["company-skills", companyId, skillId, "update-status"] as const,
+    file: (companyId: string, skillId: string, relativePath: string) =>
+      ["company-skills", companyId, skillId, "file", relativePath] as const,
   },
 };
