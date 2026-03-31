@@ -20,6 +20,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "design-guide",
   "active-agents",
   "skills",
+  "routines",
   "team",
 ]);
 

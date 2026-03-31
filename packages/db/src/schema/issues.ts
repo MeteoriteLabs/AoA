@@ -9,6 +9,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { agents } from "./agents.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
@@ -50,6 +51,9 @@ export const issues = pgTable(
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
     artifactId: uuid("artifact_id").references(() => artifacts.id, { onDelete: "set null" }),
+    originKind: text("origin_kind"),
+    originId: text("origin_id"),
+    originRunId: uuid("origin_run_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -68,5 +72,8 @@ export const issues = pgTable(
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
+    originRoutineUq: index("issues_open_routine_execution_uq")
+      .on(table.originKind, table.originId)
+      .where(sql`origin_kind IS NOT NULL AND status NOT IN ('done', 'cancelled')`),
   }),
 );

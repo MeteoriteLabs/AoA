@@ -28,6 +28,7 @@ import { memoryRoutes } from "./routes/memory.js";
 import { searchRoutes } from "./routes/search.js";
 import { debriefRoutes } from "./routes/debriefs.js";
 import { briefRoutes } from "./routes/briefs.js";
+import { routineRoutes } from "./routes/routines.js";
 import { dependencyRoutes } from "./routes/dependencies.js";
 import { artifactRoutes } from "./routes/artifacts.js";
 import { outputDetectionRoutes } from "./routes/output-detection.js";
@@ -149,6 +150,7 @@ export async function createApp(
   api.use(secretRoutes(db));
   api.use(costRoutes(db));
   api.use(companySkillRoutes(db));
+  api.use(routineRoutes(db));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));

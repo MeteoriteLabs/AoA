@@ -31,6 +31,8 @@ import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
 import { Discussions } from "./pages/Discussions";
 import { DiscussionDetail } from "./pages/DiscussionDetail";
 import { Skills } from "./pages/Skills";
+import { Routines } from "./pages/Routines";
+import { RoutineDetail } from "./pages/RoutineDetail";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { InviteLandingPage } from "./pages/InviteLanding";
@@ -135,6 +137,8 @@ function boardRoutes() {
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="skills/*" element={<Skills />} />
+      <Route path="routines" element={<Routines />} />
+      <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="discussions" element={<Discussions />} />
       <Route path="discussions/:discussionId" element={<DiscussionDetail />} />
       <Route path="briefs" element={<Navigate to="/discussions" replace />} />

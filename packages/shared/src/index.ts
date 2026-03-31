@@ -147,6 +147,22 @@ export {
   type IaConversationStatus,
   type ReminderStatus,
   type NotificationType,
+  ISSUE_ORIGIN_KINDS,
+  ROUTINE_STATUSES,
+  ROUTINE_CONCURRENCY_POLICIES,
+  ROUTINE_CATCH_UP_POLICIES,
+  ROUTINE_TRIGGER_KINDS,
+  ROUTINE_TRIGGER_SIGNING_MODES,
+  ROUTINE_RUN_STATUSES,
+  ROUTINE_RUN_SOURCES,
+  type IssueOriginKind,
+  type RoutineStatus,
+  type RoutineConcurrencyPolicy,
+  type RoutineCatchUpPolicy,
+  type RoutineTriggerKind,
+  type RoutineTriggerSigningMode,
+  type RoutineRunStatus,
+  type RoutineRunSource,
 } from "./constants.js";
 
 export type {
@@ -278,6 +294,13 @@ export type {
   TransferAdminInput,
   MemberDependencies,
   ReassignAndRemoveInput,
+  Routine,
+  RoutineTrigger,
+  RoutineRun,
+  RoutineTriggerSecretMaterial,
+  RoutineDetail,
+  RoutineRunSummary,
+  RoutineListItem,
 } from "./types/index.js";
 
 export {
@@ -485,6 +508,17 @@ export {
   type AddMember,
   type TransferAdmin,
   type ReassignAndRemove,
+  createRoutineSchema,
+  updateRoutineSchema,
+  createRoutineTriggerSchema,
+  updateRoutineTriggerSchema,
+  runRoutineSchema,
+  rotateRoutineTriggerSecretSchema,
+  type CreateRoutine,
+  type UpdateRoutine,
+  type CreateRoutineTrigger,
+  type UpdateRoutineTrigger,
+  type RunRoutine,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

@@ -143,3 +143,12 @@ export type {
   CompanySkillFileUpdateRequest,
   CompanySkillImportPackageRequest,
 } from "./company-skill.js";
+export type {
+  Routine,
+  RoutineTrigger,
+  RoutineRun,
+  RoutineTriggerSecretMaterial,
+  RoutineDetail,
+  RoutineRunSummary,
+  RoutineListItem,
+} from "./routine.js";

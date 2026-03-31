@@ -20,3 +20,4 @@ export { artifactRoutes } from "./artifacts.js";
 export { outputDetectionRoutes } from "./output-detection.js";
 export { trustScoreRoutes } from "./trust-scores.js";
 export { memoryFeedbackRoutes } from "./memory-feedback.js";
+export { routineRoutes } from "./routines.js";

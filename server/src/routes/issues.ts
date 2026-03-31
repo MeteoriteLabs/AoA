@@ -21,6 +21,7 @@ import {
   issueService,
   logActivity,
   projectService,
+  routineService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
@@ -537,6 +538,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
       entityId: issue.id,
       details: { ...updateFields, identifier: issue.identifier, _previous: Object.keys(previous).length > 0 ? previous : undefined },
     });
+
+    // Sync routine run status when a linked issue reaches a terminal state
+    if (
+      issue.originKind === "routine_execution" &&
+      issue.originRunId &&
+      (issue.status === "done" || issue.status === "cancelled")
+    ) {
+      void routineService(db)
+        .syncRunStatusForIssue(issue.id)
+        .catch((err) => logger.warn({ err, issueId: issue.id }, "syncRunStatusForIssue failed"));
+    }
 
     let comment = null;
     if (commentBody) {
