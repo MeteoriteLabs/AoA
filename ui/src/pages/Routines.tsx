@@ -550,7 +550,14 @@ export function Routines() {
         <div className="py-12">
           <EmptyState
             icon={Repeat}
-            message={filterTab === "all" ? "No routines yet. Create your first routine to automate recurring work." : `No ${filterTab} routines`}
+            message={filterTab === "all" ? "No routines yet" : `No ${filterTab} routines`}
+            description={
+              filterTab === "all"
+                ? "Create your first routine to automate recurring work."
+                : undefined
+            }
+            action={filterTab === "all" ? "Create routine" : undefined}
+            onAction={filterTab === "all" ? () => setComposerOpen(true) : undefined}
           />
         </div>
       ) : viewMode === "grid" ? (
@@ -619,7 +626,7 @@ export function Routines() {
                         <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
                           <span
                             className="shrink-0 h-2.5 w-2.5 rounded-sm"
-                            style={{ backgroundColor: projectById.get(routine.projectId)?.color ?? "#6366f1" }}
+                            style={{ backgroundColor: projectById.get(routine.projectId)?.color ?? "#64748b" }}
                           />
                           <span className="truncate">{projectById.get(routine.projectId)?.name ?? "Unknown"}</span>
                         </div>
@@ -711,7 +718,7 @@ export function Routines() {
                             onClick={() =>
                               updateRoutineStatus.mutate({
                                 id: routine.id,
-                                status: enabled ? "paused" : "active",
+                                status: nextRoutineStatus(routine.status, !enabled),
                               })
                             }
                             disabled={isStatusPending || isArchived}
