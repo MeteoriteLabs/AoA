@@ -60,10 +60,6 @@ const catchUpPolicyDescriptions: Record<string, string> = {
   skip_missed: "Ignore schedule windows that were missed while the routine or scheduler was paused.",
   enqueue_missed_with_cap: "Catch up missed schedule windows in capped batches after recovery.",
 };
-const signingModeDescriptions: Record<string, string> = {
-  bearer: "Expect a shared bearer token in the Authorization header.",
-  hmac_sha256: "Expect an HMAC SHA-256 signature over the request using the shared secret.",
-};
 
 type RoutineTab = (typeof routineTabs)[number];
 
@@ -174,7 +170,7 @@ function TriggerCard({
               Edit
             </Button>
           )}
-          {confirmDelete ? (
+          {!isEditing && (confirmDelete ? (
             <div className="flex items-center gap-1">
               <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setConfirmDelete(false)}>
                 Cancel
@@ -197,7 +193,7 @@ function TriggerCard({
             >
               <Trash2 className="h-3.5 w-3.5" />
             </Button>
-          )}
+          ))}
         </div>
       </div>
 
@@ -207,28 +203,30 @@ function TriggerCard({
       )}
 
       {/* Metadata grid */}
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        {trigger.kind === "schedule" && trigger.nextRunAt && (
-          <>
-            <span className="font-medium text-foreground/70">Next run</span>
-            <span>{new Date(trigger.nextRunAt).toLocaleString()}</span>
-          </>
-        )}
-        {trigger.lastFiredAt && (
-          <>
-            <span className="font-medium text-foreground/70">Last fired</span>
-            <span>{new Date(trigger.lastFiredAt).toLocaleString()}</span>
-          </>
-        )}
-        {trigger.lastResult && (
-          <>
-            <span className="font-medium text-foreground/70">Last result</span>
-            <span className={trigger.lastResult === "success" ? "text-emerald-400" : "text-muted-foreground"}>
-              {trigger.lastResult}
-            </span>
-          </>
-        )}
-      </div>
+      {(trigger.nextRunAt || trigger.lastFiredAt || trigger.lastResult) && (
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          {trigger.kind === "schedule" && trigger.nextRunAt && (
+            <>
+              <span className="font-medium text-foreground/70">Next run</span>
+              <span>{new Date(trigger.nextRunAt).toLocaleString()}</span>
+            </>
+          )}
+          {trigger.lastFiredAt && (
+            <>
+              <span className="font-medium text-foreground/70">Last fired</span>
+              <span>{new Date(trigger.lastFiredAt).toLocaleString()}</span>
+            </>
+          )}
+          {trigger.lastResult && (
+            <>
+              <span className="font-medium text-foreground/70">Last result</span>
+              <span className={trigger.lastResult === "success" ? "text-emerald-400" : "text-muted-foreground"}>
+                {trigger.lastResult}
+              </span>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Inline edit form — only when isEditing */}
       {isEditing && (
