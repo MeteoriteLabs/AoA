@@ -1,4 +1,5 @@
 // ui/src/components/RoutineCard.tsx
+import { memo } from "react";
 import { Clock3, MoreHorizontal, Play, Repeat } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,8 +13,7 @@ import { AgentIcon } from "./AgentIconPicker";
 import { describeSchedule } from "./ScheduleEditor";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
-import type { RoutineListItem } from "@paperclipai/shared";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, RoutineListItem } from "@paperclipai/shared";
 
 interface Project {
   id: string;
@@ -53,7 +53,7 @@ function lastRunColor(status: string): string {
   return "text-muted-foreground";
 }
 
-export function RoutineCard({
+export const RoutineCard = memo(function RoutineCard({
   routine,
   agentById,
   projectById,
@@ -80,7 +80,7 @@ export function RoutineCard({
         "group relative border bg-card rounded-lg p-4 cursor-pointer transition-all",
         hasLiveRun
           ? "border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.06)]"
-          : "border-border hover:border-border/80",
+          : "border-border",
       )}
       onClick={onNavigate}
     >
@@ -112,7 +112,7 @@ export function RoutineCard({
           <span
             className={cn(
               "inline-block h-4 w-4 rounded-full bg-background shadow-sm transition-transform",
-              enabled ? "translate-x-[18px]" : "translate-x-0.5",
+              enabled ? "translate-x-4.5" : "translate-x-0.5",
             )}
           />
         </button>
@@ -212,4 +212,4 @@ export function RoutineCard({
       </div>
     </div>
   );
-}
+});
