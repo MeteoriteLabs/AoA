@@ -6,6 +6,7 @@ import {
   Clock3,
   Copy,
   Play,
+  Plus,
   RefreshCw,
   Repeat,
   Save,
@@ -107,7 +108,7 @@ function getLocalTimezone(): string {
   }
 }
 
-function TriggerEditor({
+function TriggerCard({
   trigger,
   onSave,
   onRotate,
@@ -118,6 +119,8 @@ function TriggerEditor({
   onRotate: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [draft, setDraft] = useState({
     label: trigger.label ?? "",
     cronExpression: trigger.cronExpression ?? "",
@@ -134,95 +137,169 @@ function TriggerEditor({
     });
   }, [trigger]);
 
+  const borderColorClass =
+    trigger.kind === "schedule"
+      ? "border-l-blue-500"
+      : trigger.kind === "webhook"
+        ? "border-l-purple-500"
+        : "border-l-gray-500";
+
   return (
-    <div className="rounded-lg border border-border p-4 space-y-4">
+    <div className={`rounded-lg border border-l-4 ${borderColorClass} p-4 space-y-3`}>
+      {/* Card header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-medium">
-          {trigger.kind === "schedule" ? <Clock3 className="h-3.5 w-3.5" /> : trigger.kind === "webhook" ? <Webhook className="h-3.5 w-3.5" /> : <Zap className="h-3.5 w-3.5" />}
-          {trigger.label ?? trigger.kind}
+          {trigger.kind === "schedule" ? (
+            <Clock3 className="h-3.5 w-3.5 text-blue-400" />
+          ) : trigger.kind === "webhook" ? (
+            <Webhook className="h-3.5 w-3.5 text-purple-400" />
+          ) : (
+            <Zap className="h-3.5 w-3.5 text-muted-foreground" />
+          )}
+          <span className="capitalize text-xs font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+            {trigger.kind}
+          </span>
+          {trigger.label && trigger.label !== trigger.kind && (
+            <span className="text-muted-foreground text-xs">{trigger.label}</span>
+          )}
         </div>
-        <span className="text-xs text-muted-foreground">
-          {trigger.kind === "schedule" && trigger.nextRunAt
-            ? `Next: ${new Date(trigger.nextRunAt).toLocaleString()}`
-            : trigger.kind === "webhook"
-              ? "Webhook"
-              : "API"}
-        </span>
+        <div className="flex items-center gap-1">
+          {!isEditing && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs text-muted-foreground"
+              onClick={() => setIsEditing(true)}
+            >
+              Edit
+            </Button>
+          )}
+          {confirmDelete ? (
+            <div className="flex items-center gap-1">
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setConfirmDelete(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                onClick={() => onDelete(trigger.id)}
+              >
+                Delete
+              </Button>
+            </div>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground hover:text-destructive"
+              onClick={() => setConfirmDelete(true)}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label className="text-xs">Label</Label>
-          <Input
-            value={draft.label}
-            onChange={(event) => setDraft((current) => ({ ...current, label: event.target.value }))}
-          />
-        </div>
-        {trigger.kind === "schedule" && (
-          <div className="md:col-span-2 space-y-1.5">
-            <Label className="text-xs">Schedule</Label>
-            <ScheduleEditor
-              value={draft.cronExpression}
-              onChange={(cronExpression) => setDraft((current) => ({ ...current, cronExpression }))}
-            />
-          </div>
-        )}
-        {trigger.kind === "webhook" && (
+      {/* Schedule description */}
+      {trigger.kind === "schedule" && trigger.cronExpression && (
+        <p className="text-sm">{describeSchedule(trigger.cronExpression)}</p>
+      )}
+
+      {/* Metadata grid */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        {trigger.kind === "schedule" && trigger.nextRunAt && (
           <>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Signing mode</Label>
-              <Select
-                value={draft.signingMode}
-                onValueChange={(signingMode) => setDraft((current) => ({ ...current, signingMode }))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {signingModes.map((mode) => (
-                    <SelectItem key={mode} value={mode}>{mode}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Replay window (seconds)</Label>
-              <Input
-                value={draft.replayWindowSec}
-                onChange={(event) => setDraft((current) => ({ ...current, replayWindowSec: event.target.value }))}
-              />
-            </div>
+            <span className="font-medium text-foreground/70">Next run</span>
+            <span>{new Date(trigger.nextRunAt).toLocaleString()}</span>
+          </>
+        )}
+        {trigger.lastFiredAt && (
+          <>
+            <span className="font-medium text-foreground/70">Last fired</span>
+            <span>{new Date(trigger.lastFiredAt).toLocaleString()}</span>
+          </>
+        )}
+        {trigger.lastResult && (
+          <>
+            <span className="font-medium text-foreground/70">Last result</span>
+            <span className={trigger.lastResult === "success" ? "text-emerald-400" : "text-muted-foreground"}>
+              {trigger.lastResult}
+            </span>
           </>
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        {trigger.lastResult && <span className="text-xs text-muted-foreground">Last: {trigger.lastResult}</span>}
-        <div className="ml-auto flex items-center gap-2">
-          {trigger.kind === "webhook" && (
-            <Button variant="outline" size="sm" onClick={() => onRotate(trigger.id)}>
-              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-              Rotate secret
-            </Button>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onSave(trigger.id, buildRoutineTriggerPatch(trigger, draft, getLocalTimezone()))}
-          >
-            <Save className="mr-1.5 h-3.5 w-3.5" />
-            Save
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground hover:text-destructive"
-            onClick={() => onDelete(trigger.id)}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+      {/* Inline edit form — only when isEditing */}
+      {isEditing && (
+        <div className="border-t border-border pt-3 space-y-3">
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label className="text-xs">Label</Label>
+              <Input
+                value={draft.label}
+                onChange={(e) => setDraft((c) => ({ ...c, label: e.target.value }))}
+              />
+            </div>
+            {trigger.kind === "schedule" && (
+              <div className="md:col-span-2 space-y-1.5">
+                <Label className="text-xs">Schedule</Label>
+                <ScheduleEditor
+                  value={draft.cronExpression}
+                  onChange={(cronExpression) => setDraft((c) => ({ ...c, cronExpression }))}
+                />
+              </div>
+            )}
+            {trigger.kind === "webhook" && (
+              <>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Signing mode</Label>
+                  <Select
+                    value={draft.signingMode}
+                    onValueChange={(signingMode) => setDraft((c) => ({ ...c, signingMode }))}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {signingModes.map((mode) => (<SelectItem key={mode} value={mode}>{mode}</SelectItem>))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Replay window (seconds)</Label>
+                  <Input
+                    value={draft.replayWindowSec}
+                    onChange={(e) => setDraft((c) => ({ ...c, replayWindowSec: e.target.value }))}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {trigger.kind === "webhook" && (
+              <Button variant="outline" size="sm" onClick={() => onRotate(trigger.id)}>
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                Rotate secret
+              </Button>
+            )}
+            <div className="ml-auto flex items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setIsEditing(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  onSave(trigger.id, buildRoutineTriggerPatch(trigger, draft, getLocalTimezone()));
+                  setIsEditing(false);
+                }}
+              >
+                <Save className="mr-1.5 h-3.5 w-3.5" />
+                Save
+              </Button>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -241,6 +318,7 @@ export function RoutineDetail() {
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
   const [secretMessage, setSecretMessage] = useState<SecretMessage | null>(null);
+  const [addTriggerOpen, setAddTriggerOpen] = useState(false);
   const [newTrigger, setNewTrigger] = useState({
     kind: "schedule",
     cronExpression: "0 10 * * *",
@@ -464,6 +542,7 @@ export function RoutineDetail() {
       });
     },
     onSuccess: async (result) => {
+      setAddTriggerOpen(false);
       if (result.secretMaterial) {
         setSecretMessage({
           title: "Webhook trigger created",
@@ -883,80 +962,103 @@ export function RoutineDetail() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="triggers" className="space-y-4">
-          {/* Add trigger form */}
-          <div className="rounded-lg border border-border p-4 space-y-3">
-            <p className="text-sm font-medium">Add trigger</p>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label className="text-xs">Kind</Label>
-                <Select value={newTrigger.kind} onValueChange={(kind) => setNewTrigger((current) => ({ ...current, kind }))}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {triggerKinds.map((kind) => (
-                      <SelectItem key={kind} value={kind} disabled={kind === "webhook"}>
-                        {kind}{kind === "webhook" ? " — COMING SOON" : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {newTrigger.kind === "schedule" && (
-                <div className="md:col-span-2 space-y-1.5">
-                  <Label className="text-xs">Schedule</Label>
-                  <ScheduleEditor
-                    value={newTrigger.cronExpression}
-                    onChange={(cronExpression) => setNewTrigger((current) => ({ ...current, cronExpression }))}
-                  />
-                </div>
-              )}
-              {newTrigger.kind === "webhook" && (
-                <>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Signing mode</Label>
-                    <Select value={newTrigger.signingMode} onValueChange={(signingMode) => setNewTrigger((current) => ({ ...current, signingMode }))}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {signingModes.map((mode) => (
-                          <SelectItem key={mode} value={mode}>{mode}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">{signingModeDescriptions[newTrigger.signingMode]}</p>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Replay window (seconds)</Label>
-                    <Input value={newTrigger.replayWindowSec} onChange={(event) => setNewTrigger((current) => ({ ...current, replayWindowSec: event.target.value }))} />
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="flex items-center justify-end">
-              <Button size="sm" onClick={() => createTrigger.mutate()} disabled={createTrigger.isPending}>
-                {createTrigger.isPending ? "Adding..." : "Add trigger"}
+        <TabsContent value="triggers" className="space-y-3">
+          {/* Existing trigger cards */}
+          {routine.triggers.length === 0 && !addTriggerOpen ? (
+            <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground space-y-3">
+              <p>No triggers configured.</p>
+              <p className="text-xs">Add a schedule or webhook trigger to automate this routine.</p>
+              <Button variant="outline" size="sm" onClick={() => setAddTriggerOpen(true)}>
+                <Plus className="mr-1.5 h-3.5 w-3.5" />
+                Add trigger
               </Button>
             </div>
-          </div>
-
-          {/* Existing triggers */}
-          {routine.triggers.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No triggers configured yet.</p>
           ) : (
-            <div className="space-y-3">
-              {routine.triggers.map((trigger) => (
-                <TriggerEditor
-                  key={trigger.id}
-                  trigger={trigger}
-                  onSave={(id, patch) => updateTrigger.mutate({ id, patch })}
-                  onRotate={(id) => rotateTrigger.mutate(id)}
-                  onDelete={(id) => deleteTrigger.mutate(id)}
-                />
-              ))}
-            </div>
+            <>
+              <div className="space-y-3">
+                {routine.triggers.map((trigger) => (
+                  <TriggerCard
+                    key={trigger.id}
+                    trigger={trigger}
+                    onSave={(id, patch) => updateTrigger.mutate({ id, patch })}
+                    onRotate={(id) => rotateTrigger.mutate(id)}
+                    onDelete={(id) => deleteTrigger.mutate(id)}
+                  />
+                ))}
+              </div>
+
+              {/* Add trigger — collapsed button or expanded form */}
+              {addTriggerOpen ? (
+                <div className="rounded-lg border border-border p-4 space-y-3">
+                  <p className="text-sm font-medium">New trigger</p>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Kind</Label>
+                      <Select value={newTrigger.kind} onValueChange={(kind) => setNewTrigger((current) => ({ ...current, kind }))}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {triggerKinds.map((kind) => (
+                            <SelectItem key={kind} value={kind} disabled={kind === "webhook"}>
+                              {kind}{kind === "webhook" ? " — coming soon" : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {newTrigger.kind === "schedule" && (
+                      <div className="md:col-span-2 space-y-1.5">
+                        <Label className="text-xs">Schedule</Label>
+                        <ScheduleEditor
+                          value={newTrigger.cronExpression}
+                          onChange={(cronExpression) => setNewTrigger((current) => ({ ...current, cronExpression }))}
+                        />
+                      </div>
+                    )}
+                    {newTrigger.kind === "webhook" && (
+                      <>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Signing mode</Label>
+                          <Select value={newTrigger.signingMode} onValueChange={(signingMode) => setNewTrigger((current) => ({ ...current, signingMode }))}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {signingModes.map((mode) => (<SelectItem key={mode} value={mode}>{mode}</SelectItem>))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Replay window (seconds)</Label>
+                          <Input value={newTrigger.replayWindowSec} onChange={(e) => setNewTrigger((c) => ({ ...c, replayWindowSec: e.target.value }))} />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setAddTriggerOpen(false)}
+                      disabled={createTrigger.isPending}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => createTrigger.mutate()}
+                      disabled={createTrigger.isPending}
+                    >
+                      {createTrigger.isPending ? "Adding..." : "Add trigger"}
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button variant="outline" size="sm" onClick={() => setAddTriggerOpen(true)}>
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />
+                  Add trigger
+                </Button>
+              )}
+            </>
           )}
         </TabsContent>
 
