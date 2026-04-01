@@ -13,6 +13,7 @@ import { validate } from "../middleware/validate.js";
 import { projectService, logActivity } from "../services/index.js";
 import { conflict, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -70,7 +71,10 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, project.companyId);
-    res.json(project);
+    res.json({
+      ...project,
+      executionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(project.executionWorkspacePolicy) ?? null,
+    });
   });
 
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
@@ -120,7 +124,15 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const project = await svc.update(id, req.body);
+
+    // Accept executionWorkspacePolicy outside of the validated schema fields
+    const { executionWorkspacePolicy, ...validatedBody } = req.body as Record<string, unknown>;
+    const updateData: Record<string, unknown> = { ...validatedBody };
+    if (executionWorkspacePolicy !== undefined) {
+      updateData.executionWorkspacePolicy = executionWorkspacePolicy;
+    }
+
+    const project = await svc.update(id, updateData);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
@@ -139,7 +151,10 @@ export function projectRoutes(db: Db) {
       details: req.body,
     });
 
-    res.json(project);
+    res.json({
+      ...project,
+      executionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(project.executionWorkspacePolicy) ?? null,
+    });
   });
 
   router.get("/projects/:id/workspaces", async (req, res) => {
