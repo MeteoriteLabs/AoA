@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useNavigate as useRouterNavigate } from "react-router-dom";
+import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Plus, Settings } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 export function Lobby() {
   const { companies, loading: companiesLoading } = useCompany();
   const { openOnboarding } = useDialog();
-  const navigate = useRouterNavigate();
+  const navigate = useNavigate();
   const onboardingTriggered = useRef(false);
 
   // Filter out archived companies
@@ -52,14 +52,11 @@ export function Lobby() {
         <button
           type="button"
           onClick={() => {
-            // Navigate to first company's settings if available, otherwise no-op
-            const first = visibleCompanies[0];
-            if (first) navigate(`/${first.issuePrefix}/settings`);
+            navigate("/instance/settings");
           }}
           className={cn(
             "flex items-center justify-center h-8 w-8 rounded-md text-muted-foreground",
             "hover:bg-accent hover:text-foreground transition-colors",
-            visibleCompanies.length === 0 && "hidden",
           )}
           aria-label="Settings"
         >

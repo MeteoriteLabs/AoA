@@ -153,4 +153,8 @@ export const queryKeys = {
     file: (companyId: string, skillId: string, relativePath: string) =>
       ["company-skills", companyId, skillId, "file", relativePath] as const,
   },
+  instanceSettings: {
+    general: ["instance-settings", "general"] as const,
+    experimental: ["instance-settings", "experimental"] as const,
+  },
 };

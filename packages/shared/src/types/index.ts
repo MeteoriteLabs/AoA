@@ -152,3 +152,8 @@ export type {
   RoutineRunSummary,
   RoutineListItem,
 } from "./routine.js";
+export type {
+  InstanceGeneralSettings,
+  InstanceExperimentalSettings,
+  InstanceSettings,
+} from "./instance.js";

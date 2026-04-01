@@ -8,6 +8,7 @@ import { authApi } from "./api/auth";
 import { healthApi } from "./api/health";
 import { Dashboard } from "./pages/Dashboard";
 import { Lobby } from "./pages/Lobby";
+import { InstanceSettingsPage } from "./pages/InstanceSettingsPage";
 import { Companies } from "./pages/Companies";
 import { Agents } from "./pages/Agents";
 import { AgentDetail } from "./pages/AgentDetail";
@@ -238,6 +239,7 @@ export function App() {
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<Lobby />} />
+          <Route path="instance/settings" element={<InstanceSettingsPage />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />

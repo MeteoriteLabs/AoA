@@ -283,3 +283,12 @@ export {
   type UpdateRoutineTrigger,
   type RunRoutine,
 } from "./routine.js";
+
+export {
+  instanceGeneralSettingsSchema,
+  patchInstanceGeneralSettingsSchema,
+  instanceExperimentalSettingsSchema,
+  patchInstanceExperimentalSettingsSchema,
+  type PatchInstanceGeneralSettings,
+  type PatchInstanceExperimentalSettings,
+} from "./instance.js";

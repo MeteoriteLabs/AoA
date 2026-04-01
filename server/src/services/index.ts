@@ -46,3 +46,4 @@ export type { RuntimeSkillEntry } from "./company-skills.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { routineService } from "./routines.js";
 export { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
+export { instanceSettingsService } from "./instance-settings.js";

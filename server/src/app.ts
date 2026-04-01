@@ -45,6 +45,7 @@ import { notificationRoutes } from "./routes/notifications.js";
 import { internalAgentRoutes } from "./routes/internal-agent.js";
 import { workflowTemplateRoutes } from "./routes/workflow-templates.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
+import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -151,6 +152,7 @@ export async function createApp(
   api.use(costRoutes(db));
   api.use(companySkillRoutes(db));
   api.use(routineRoutes(db));
+  api.use(instanceSettingsRoutes(db));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));

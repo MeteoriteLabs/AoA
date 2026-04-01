@@ -301,6 +301,9 @@ export type {
   RoutineDetail,
   RoutineRunSummary,
   RoutineListItem,
+  InstanceGeneralSettings,
+  InstanceExperimentalSettings,
+  InstanceSettings,
 } from "./types/index.js";
 
 export {
@@ -519,6 +522,12 @@ export {
   type CreateRoutineTrigger,
   type UpdateRoutineTrigger,
   type RunRoutine,
+  instanceGeneralSettingsSchema,
+  patchInstanceGeneralSettingsSchema,
+  instanceExperimentalSettingsSchema,
+  patchInstanceExperimentalSettingsSchema,
+  type PatchInstanceGeneralSettings,
+  type PatchInstanceExperimentalSettings,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
