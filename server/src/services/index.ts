@@ -49,3 +49,29 @@ export { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 export { instanceSettingsService } from "./instance-settings.js";
 
 export { boardAuthService } from "./board-auth.js";
+
+export { executionWorkspaceService, toExecutionWorkspace } from "./execution-workspaces.js";
+export {
+  parseProjectExecutionWorkspacePolicy,
+  gateProjectExecutionWorkspacePolicy,
+  parseIssueExecutionWorkspaceSettings,
+  defaultIssueExecutionWorkspaceSettingsForProject,
+  issueExecutionWorkspaceModeForPersistedWorkspace,
+  resolveExecutionWorkspaceMode,
+  buildExecutionWorkspaceAdapterConfig,
+} from "./execution-workspace-policy.js";
+export { workspaceOperationService } from "./workspace-operations.js";
+export { getWorkspaceOperationLogStore } from "./workspace-operation-log-store.js";
+export {
+  realizeExecutionWorkspace,
+  cleanupExecutionWorkspaceArtifacts,
+  ensureRuntimeServicesForRun,
+  releaseRuntimeServicesForRun,
+  stopRuntimeServicesForExecutionWorkspace,
+  reconcilePersistedRuntimeServicesOnStartup,
+  persistAdapterManagedRuntimeServices,
+  normalizeAdapterManagedRuntimeServices,
+  buildWorkspaceReadyComment,
+  sanitizeRuntimeServiceBaseEnv,
+  listWorkspaceRuntimeServicesForProjectWorkspaces,
+} from "./workspace-runtime.js";
