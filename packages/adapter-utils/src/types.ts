@@ -75,9 +75,11 @@ export interface AdapterRuntimeServiceReport {
   command?: string | null;
   cwd?: string | null;
   port?: number | null;
-  env?: Record<string, string | undefined> | null;
-  startedAt?: string | null;
-  stoppedAt?: string | null;
+  url?: string | null;
+  providerRef?: string | null;
+  ownerAgentId?: string | null;
+  stopPolicy?: Record<string, unknown> | null;
+  healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
 export interface AdapterSessionCodec {
