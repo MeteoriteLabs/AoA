@@ -17,6 +17,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { authUsers } from "./auth.js";
 import { artifacts } from "./artifacts.js";
+import { executionWorkspaces } from "./execution_workspaces.js";
 
 export const issues = pgTable(
   "issues",
@@ -36,6 +37,10 @@ export const issues = pgTable(
     executionRunId: uuid("execution_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     executionAgentNameKey: text("execution_agent_name_key"),
     executionLockedAt: timestamp("execution_locked_at", { withTimezone: true }),
+    executionWorkspaceId: uuid("execution_workspace_id")
+      .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
+    executionWorkspacePreference: text("execution_workspace_preference"),
+    executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
     createdByUserId: text("created_by_user_id"),
     issueNumber: integer("issue_number"),
@@ -75,5 +80,6 @@ export const issues = pgTable(
     originRoutineUq: index("issues_open_routine_execution_uq")
       .on(table.originKind, table.originId)
       .where(sql`origin_kind IS NOT NULL AND status NOT IN ('done', 'cancelled')`),
+    executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
   }),
 );
