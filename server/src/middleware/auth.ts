@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles, mcpApiKeys } from "@paperclipai/db";
+import { agentApiKeys, agents, boardApiKeys, companyMemberships, instanceUserRoles, mcpApiKeys } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -76,6 +76,45 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const token = authHeader.slice("bearer ".length).trim();
     if (!token) {
+      next();
+      return;
+    }
+
+    // Check board API keys first (CLI auth bearer tokens)
+    const boardKeyRow = await db
+      .select()
+      .from(boardApiKeys)
+      .where(and(eq(boardApiKeys.keyHash, hashToken(token)), isNull(boardApiKeys.revokedAt)))
+      .then((rows) => rows.find((row) => !row.expiresAt || row.expiresAt.getTime() > Date.now()) ?? null);
+
+    if (boardKeyRow) {
+      const [roleRow, memberships] = await Promise.all([
+        db
+          .select({ id: instanceUserRoles.id })
+          .from(instanceUserRoles)
+          .where(and(eq(instanceUserRoles.userId, boardKeyRow.userId), eq(instanceUserRoles.role, "instance_admin")))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ companyId: companyMemberships.companyId })
+          .from(companyMemberships)
+          .where(
+            and(
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, boardKeyRow.userId),
+              eq(companyMemberships.status, "active"),
+            ),
+          ),
+      ]);
+      await db.update(boardApiKeys).set({ lastUsedAt: new Date() }).where(eq(boardApiKeys.id, boardKeyRow.id));
+      req.actor = {
+        type: "board",
+        userId: boardKeyRow.userId,
+        companyIds: memberships.map((row) => row.companyId),
+        isInstanceAdmin: Boolean(roleRow),
+        keyId: boardKeyRow.id,
+        runId: runIdHeader || undefined,
+        source: "board_key",
+      };
       next();
       return;
     }

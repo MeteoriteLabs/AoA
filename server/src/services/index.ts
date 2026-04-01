@@ -47,3 +47,5 @@ export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } fr
 export { routineService } from "./routines.js";
 export { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 export { instanceSettingsService } from "./instance-settings.js";
+
+export { boardAuthService } from "./board-auth.js";

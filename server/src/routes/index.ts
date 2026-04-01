@@ -22,3 +22,5 @@ export { trustScoreRoutes } from "./trust-scores.js";
 export { memoryFeedbackRoutes } from "./memory-feedback.js";
 export { routineRoutes } from "./routines.js";
 export { instanceSettingsRoutes } from "./instance-settings.js";
+
+export { cliAuthRoutes } from "./cli-auth.js";
