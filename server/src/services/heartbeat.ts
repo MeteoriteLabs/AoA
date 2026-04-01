@@ -64,7 +64,6 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { issueService } from "./issues.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -361,7 +360,6 @@ export function heartbeatService(db: Db) {
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
-  const issuesSvc = issueService(db);
 
   // Register the secret resolver so API adapters can resolve API keys
   setSecretResolver((companyId, name) => secretsSvc.resolveByName(companyId, name));
@@ -1642,7 +1640,10 @@ export function heartbeatService(db: Db) {
           };
         }
         if (Object.keys(nextIssuePatch).length > 0) {
-          await issuesSvc.update(issueId, nextIssuePatch);
+          await db
+            .update(issues)
+            .set({ ...nextIssuePatch, updatedAt: new Date() })
+            .where(eq(issues.id, issueId));
         }
       }
 
@@ -1921,14 +1922,16 @@ export function heartbeatService(db: Db) {
         }
         if (issueId && runtimeServices.some((service) => !service.reused)) {
           try {
-            await issuesSvc.addComment(
+            await db.insert(issueComments).values({
+              companyId: agent.companyId,
               issueId,
-              buildWorkspaceReadyComment({
+              authorAgentId: agent.id,
+              authorUserId: null,
+              body: buildWorkspaceReadyComment({
                 workspace: realizedWorkspace,
                 runtimeServices,
               }),
-              { agentId: agent.id },
-            );
+            });
           } catch (err) {
             await onLog(
               "stderr",
@@ -2024,14 +2027,16 @@ export function heartbeatService(db: Db) {
             .where(eq(heartbeatRuns.id, run.id));
           if (issueId) {
             try {
-              await issuesSvc.addComment(
+              await db.insert(issueComments).values({
+                companyId: agent.companyId,
                 issueId,
-                buildWorkspaceReadyComment({
+                authorAgentId: agent.id,
+                authorUserId: null,
+                body: buildWorkspaceReadyComment({
                   workspace: realizedWorkspace,
                   runtimeServices: adapterManagedRuntimeServices,
                 }),
-                { agentId: agent.id },
-              );
+              });
             } catch (err) {
               await onLog(
                 "stderr",

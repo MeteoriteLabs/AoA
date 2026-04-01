@@ -1122,7 +1122,7 @@ async function startLocalRuntimeService(input: {
     const portEnvKey = asString(portConfig.envKey, "PORT");
     env[portEnvKey] = String(port);
   }
-  const shell = process.env.SHELL?.trim() || "/bin/sh";
+  const shell = process.env.SHELL?.trim() || (process.platform === "win32" ? "bash" : "/bin/sh");
   const child = spawn(shell, ["-lc", command], {
     cwd: serviceCwd,
     env,
