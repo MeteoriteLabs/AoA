@@ -10,10 +10,10 @@ import {
   updateProjectWorkspaceSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { projectService, logActivity } from "../services/index.js";
+import { projectService, logActivity, instanceSettingsService } from "../services/index.js";
 import { conflict, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
+import { gateProjectExecutionWorkspacePolicy, parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -73,7 +73,10 @@ export function projectRoutes(db: Db) {
     assertCompanyAccess(req, project.companyId);
     res.json({
       ...project,
-      executionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(project.executionWorkspacePolicy) ?? null,
+      executionWorkspacePolicy: gateProjectExecutionWorkspacePolicy(
+        parseProjectExecutionWorkspacePolicy(project.executionWorkspacePolicy),
+        (await instanceSettingsService(db).getExperimental()).enableIsolatedWorkspaces,
+      ),
     });
   });
 
@@ -125,14 +128,7 @@ export function projectRoutes(db: Db) {
     }
     assertCompanyAccess(req, existing.companyId);
 
-    // Accept executionWorkspacePolicy outside of the validated schema fields
-    const { executionWorkspacePolicy, ...validatedBody } = req.body as Record<string, unknown>;
-    const updateData: Record<string, unknown> = { ...validatedBody };
-    if (executionWorkspacePolicy !== undefined) {
-      updateData.executionWorkspacePolicy = executionWorkspacePolicy;
-    }
-
-    const project = await svc.update(id, updateData);
+    const project = await svc.update(id, req.body);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
@@ -153,7 +149,10 @@ export function projectRoutes(db: Db) {
 
     res.json({
       ...project,
-      executionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(project.executionWorkspacePolicy) ?? null,
+      executionWorkspacePolicy: gateProjectExecutionWorkspacePolicy(
+        parseProjectExecutionWorkspacePolicy(project.executionWorkspacePolicy),
+        (await instanceSettingsService(db).getExperimental()).enableIsolatedWorkspaces,
+      ),
     });
   });
 

@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { Router } from "express";
+import { Router, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { updateExecutionWorkspaceSchema } from "@paperclipai/shared";
@@ -20,7 +20,7 @@ export function executionWorkspaceRoutes(db: Db) {
   const workspaceOperationsSvc = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
 
-  async function assertIsolatedWorkspacesEnabled(res: import("express").Response): Promise<boolean> {
+  async function assertIsolatedWorkspacesEnabled(res: Response): Promise<boolean> {
     const experimental = await instanceSettings.getExperimental();
     if (!experimental.enableIsolatedWorkspaces) {
       res.status(404).json({ error: "Execution workspaces are not enabled" });
