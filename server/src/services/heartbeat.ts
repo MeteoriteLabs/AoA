@@ -1476,193 +1476,249 @@ export function heartbeatService(db: Db) {
         }
       : null;
 
-    // ── Realize execution workspace ─────────────────────────────────
-    const existingExecutionWorkspace =
-      issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
-    const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
-      companyId: agent.companyId,
-      heartbeatRunId: run.id,
-      executionWorkspaceId: existingExecutionWorkspace?.id ?? null,
-    });
-    const executionWorkspace = await realizeExecutionWorkspace({
-      base: {
-        baseCwd: resolvedWorkspace.cwd,
-        source: resolvedWorkspace.source,
-        projectId: resolvedWorkspace.projectId,
-        workspaceId: resolvedWorkspace.workspaceId,
-        repoUrl: resolvedWorkspace.repoUrl,
-        repoRef: resolvedWorkspace.repoRef,
-      },
-      config: resolvedConfig,
-      issue: issueRef,
-      agent: {
-        id: agent.id,
-        name: agent.name,
-        companyId: agent.companyId,
-      },
-      recorder: workspaceOperationRecorder,
-    });
-    const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
-    const resolvedProjectWorkspaceId = resolvedWorkspace.workspaceId ?? null;
+    // ── Realize execution workspace (gated by isolatedWorkspacesEnabled) ──
+    let persistedExecutionWorkspace: Awaited<ReturnType<typeof executionWorkspacesSvc.create>> | null = null;
+    let executionWorkspaceWarnings: string[] = [];
+    let effectiveCwd = resolvedWorkspace.cwd;
+    let realizedWorkspace: Awaited<ReturnType<typeof realizeExecutionWorkspace>> | null = null;
 
-    // ── Persist execution workspace ─────────────────────────────────
-    const shouldReuseExisting =
-      issueRef?.executionWorkspacePreference === "reuse_existing" &&
-      existingExecutionWorkspace &&
-      existingExecutionWorkspace.status !== "archived";
-    let persistedExecutionWorkspace = null;
-    try {
-      persistedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
-        ? await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
-            cwd: executionWorkspace.cwd,
-            repoUrl: executionWorkspace.repoUrl,
-            baseRef: executionWorkspace.repoRef,
-            branchName: executionWorkspace.branchName,
-            providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
-            providerRef: executionWorkspace.worktreePath,
-            status: "active",
-            lastUsedAt: new Date(),
-            metadata: {
-              ...(existingExecutionWorkspace.metadata ?? {}),
-              source: executionWorkspace.source,
-              createdByRuntime: executionWorkspace.created,
-            },
-          })
-        : resolvedProjectId
-          ? await executionWorkspacesSvc.create({
-              companyId: agent.companyId,
-              projectId: resolvedProjectId,
-              projectWorkspaceId: resolvedProjectWorkspaceId,
-              sourceIssueId: issueRef?.id ?? null,
-              mode:
-                executionWorkspaceMode === "isolated_workspace"
-                  ? "isolated_workspace"
-                  : executionWorkspaceMode === "operator_branch"
-                    ? "operator_branch"
-                    : executionWorkspaceMode === "agent_default"
-                      ? "adapter_managed"
-                      : "shared_workspace",
-              strategyType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "project_primary",
-              name: executionWorkspace.branchName ?? issueRef?.identifier ?? `workspace-${agent.id.slice(0, 8)}`,
-              status: "active",
+    if (isolatedWorkspacesEnabled) {
+      const existingExecutionWorkspace =
+        issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
+      const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
+        companyId: agent.companyId,
+        heartbeatRunId: run.id,
+        executionWorkspaceId: existingExecutionWorkspace?.id ?? null,
+      });
+      const executionWorkspace = await realizeExecutionWorkspace({
+        base: {
+          baseCwd: resolvedWorkspace.cwd,
+          source: resolvedWorkspace.source,
+          projectId: resolvedWorkspace.projectId,
+          workspaceId: resolvedWorkspace.workspaceId,
+          repoUrl: resolvedWorkspace.repoUrl,
+          repoRef: resolvedWorkspace.repoRef,
+        },
+        config: resolvedConfig,
+        issue: issueRef,
+        agent: {
+          id: agent.id,
+          name: agent.name,
+          companyId: agent.companyId,
+        },
+        recorder: workspaceOperationRecorder,
+      });
+      effectiveCwd = executionWorkspace.cwd;
+      executionWorkspaceWarnings = executionWorkspace.warnings;
+      realizedWorkspace = executionWorkspace;
+      const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
+      const resolvedProjectWorkspaceId = resolvedWorkspace.workspaceId ?? null;
+
+      // ── Persist execution workspace ─────────────────────────────────
+      const shouldReuseExisting =
+        issueRef?.executionWorkspacePreference === "reuse_existing" &&
+        existingExecutionWorkspace &&
+        existingExecutionWorkspace.status !== "archived";
+      try {
+        persistedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
+          ? await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
               cwd: executionWorkspace.cwd,
               repoUrl: executionWorkspace.repoUrl,
               baseRef: executionWorkspace.repoRef,
               branchName: executionWorkspace.branchName,
               providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
               providerRef: executionWorkspace.worktreePath,
+              status: "active",
               lastUsedAt: new Date(),
-              openedAt: new Date(),
               metadata: {
+                ...(existingExecutionWorkspace.metadata ?? {}),
                 source: executionWorkspace.source,
                 createdByRuntime: executionWorkspace.created,
               },
             })
-          : null;
-    } catch (error) {
-      if (executionWorkspace.created) {
-        try {
-          await cleanupExecutionWorkspaceArtifacts({
-            workspace: {
-              id: existingExecutionWorkspace?.id ?? `transient-${run.id}`,
-              cwd: executionWorkspace.cwd,
-              providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
-              providerRef: executionWorkspace.worktreePath,
-              branchName: executionWorkspace.branchName,
-              repoUrl: executionWorkspace.repoUrl,
-              baseRef: executionWorkspace.repoRef,
-              projectId: resolvedProjectId,
-              projectWorkspaceId: resolvedProjectWorkspaceId,
-              sourceIssueId: issueRef?.id ?? null,
-              metadata: {
-                createdByRuntime: true,
-                source: executionWorkspace.source,
+          : resolvedProjectId
+            ? await executionWorkspacesSvc.create({
+                companyId: agent.companyId,
+                projectId: resolvedProjectId,
+                projectWorkspaceId: resolvedProjectWorkspaceId,
+                sourceIssueId: issueRef?.id ?? null,
+                mode:
+                  executionWorkspaceMode === "isolated_workspace"
+                    ? "isolated_workspace"
+                    : executionWorkspaceMode === "operator_branch"
+                      ? "operator_branch"
+                      : executionWorkspaceMode === "agent_default"
+                        ? "adapter_managed"
+                        : "shared_workspace",
+                strategyType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "project_primary",
+                name: executionWorkspace.branchName ?? issueRef?.identifier ?? `workspace-${agent.id.slice(0, 8)}`,
+                status: "active",
+                cwd: executionWorkspace.cwd,
+                repoUrl: executionWorkspace.repoUrl,
+                baseRef: executionWorkspace.repoRef,
+                branchName: executionWorkspace.branchName,
+                providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+                providerRef: executionWorkspace.worktreePath,
+                lastUsedAt: new Date(),
+                openedAt: new Date(),
+                metadata: {
+                  source: executionWorkspace.source,
+                  createdByRuntime: executionWorkspace.created,
+                },
+              })
+            : null;
+      } catch (error) {
+        if (executionWorkspace.created) {
+          try {
+            await cleanupExecutionWorkspaceArtifacts({
+              workspace: {
+                id: existingExecutionWorkspace?.id ?? `transient-${run.id}`,
+                cwd: executionWorkspace.cwd,
+                providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+                providerRef: executionWorkspace.worktreePath,
+                branchName: executionWorkspace.branchName,
+                repoUrl: executionWorkspace.repoUrl,
+                baseRef: executionWorkspace.repoRef,
+                projectId: resolvedProjectId,
+                projectWorkspaceId: resolvedProjectWorkspaceId,
+                sourceIssueId: issueRef?.id ?? null,
+                metadata: {
+                  createdByRuntime: true,
+                  source: executionWorkspace.source,
+                },
               },
-            },
-            projectWorkspace: {
-              cwd: resolvedWorkspace.cwd,
-              cleanupCommand: null,
-            },
-            teardownCommand: projectExecutionWorkspacePolicy?.workspaceStrategy?.teardownCommand ?? null,
-            recorder: workspaceOperationRecorder,
-          });
-        } catch (cleanupError) {
-          logger.warn(
-            {
-              runId: run.id,
-              issueId,
-              executionWorkspaceCwd: executionWorkspace.cwd,
-              cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-            },
-            "Failed to cleanup realized execution workspace after persistence failure",
-          );
+              projectWorkspace: {
+                cwd: resolvedWorkspace.cwd,
+                cleanupCommand: null,
+              },
+              teardownCommand: projectExecutionWorkspacePolicy?.workspaceStrategy?.teardownCommand ?? null,
+              recorder: workspaceOperationRecorder,
+            });
+          } catch (cleanupError) {
+            logger.warn(
+              {
+                runId: run.id,
+                issueId,
+                executionWorkspaceCwd: executionWorkspace.cwd,
+                cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+              },
+              "Failed to cleanup realized execution workspace after persistence failure",
+            );
+          }
+        }
+        throw error;
+      }
+      await workspaceOperationRecorder.attachExecutionWorkspaceId(persistedExecutionWorkspace?.id ?? null);
+
+      // ── Reconcile old execution workspace ───────────────────────────
+      if (
+        existingExecutionWorkspace &&
+        persistedExecutionWorkspace &&
+        existingExecutionWorkspace.id !== persistedExecutionWorkspace.id &&
+        existingExecutionWorkspace.status === "active"
+      ) {
+        await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
+          status: "idle",
+          cleanupReason: null,
+        });
+      }
+
+      // ── Update issue with execution workspace link ──────────────────
+      if (issueId && persistedExecutionWorkspace) {
+        const nextIssueWorkspaceMode = issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode);
+        const shouldSwitchIssueToExistingWorkspace =
+          issueRef?.executionWorkspacePreference === "reuse_existing" ||
+          executionWorkspaceMode === "isolated_workspace" ||
+          executionWorkspaceMode === "operator_branch";
+        const nextIssuePatch: Record<string, unknown> = {};
+        if (issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id) {
+          nextIssuePatch.executionWorkspaceId = persistedExecutionWorkspace.id;
+        }
+        if (shouldSwitchIssueToExistingWorkspace) {
+          nextIssuePatch.executionWorkspacePreference = "reuse_existing";
+          nextIssuePatch.executionWorkspaceSettings = {
+            ...(issueExecutionWorkspaceSettings ?? {}),
+            mode: nextIssueWorkspaceMode,
+          };
+        }
+        if (Object.keys(nextIssuePatch).length > 0) {
+          await issuesSvc.update(issueId, nextIssuePatch);
         }
       }
-      throw error;
-    }
-    await workspaceOperationRecorder.attachExecutionWorkspaceId(persistedExecutionWorkspace?.id ?? null);
 
-    // ── Reconcile old execution workspace ───────────────────────────
-    if (
-      existingExecutionWorkspace &&
-      persistedExecutionWorkspace &&
-      existingExecutionWorkspace.id !== persistedExecutionWorkspace.id &&
-      existingExecutionWorkspace.status === "active"
-    ) {
-      await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
-        status: "idle",
-        cleanupReason: null,
-      });
-    }
-
-    // ── Update issue with execution workspace link ──────────────────
-    if (issueId && persistedExecutionWorkspace) {
-      const nextIssueWorkspaceMode = issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode);
-      const shouldSwitchIssueToExistingWorkspace =
-        issueRef?.executionWorkspacePreference === "reuse_existing" ||
-        executionWorkspaceMode === "isolated_workspace" ||
-        executionWorkspaceMode === "operator_branch";
-      const nextIssuePatch: Record<string, unknown> = {};
-      if (issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id) {
-        nextIssuePatch.executionWorkspaceId = persistedExecutionWorkspace.id;
+      // ── Snapshot execution workspace into run context ────────────────
+      if (persistedExecutionWorkspace) {
+        context.executionWorkspaceId = persistedExecutionWorkspace.id;
+        await db
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: context,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, run.id));
       }
-      if (shouldSwitchIssueToExistingWorkspace) {
-        nextIssuePatch.executionWorkspacePreference = "reuse_existing";
-        nextIssuePatch.executionWorkspaceSettings = {
-          ...(issueExecutionWorkspaceSettings ?? {}),
-          mode: nextIssueWorkspaceMode,
-        };
+
+      // ── Populate context with execution workspace details ───────────
+      context.paperclipWorkspace = {
+        cwd: executionWorkspace.cwd,
+        source: executionWorkspace.source,
+        mode: executionWorkspaceMode,
+        strategy: executionWorkspace.strategy,
+        projectId: executionWorkspace.projectId,
+        workspaceId: executionWorkspace.workspaceId,
+        repoUrl: executionWorkspace.repoUrl,
+        repoRef: executionWorkspace.repoRef,
+        branchName: executionWorkspace.branchName,
+        worktreePath: executionWorkspace.worktreePath,
+        agentHome: await (async () => {
+          const home = resolveDefaultAgentWorkspaceDir(agent.id);
+          await fs.mkdir(home, { recursive: true });
+          return home;
+        })(),
+      };
+
+      if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
+        context.projectId = executionWorkspace.projectId;
       }
-      if (Object.keys(nextIssuePatch).length > 0) {
-        await issuesSvc.update(issueId, nextIssuePatch);
+    } else {
+      // ── Isolated workspaces disabled — use resolvedWorkspace directly ──
+      context.paperclipWorkspace = {
+        cwd: resolvedWorkspace.cwd,
+        source: resolvedWorkspace.source,
+        mode: executionWorkspaceMode,
+        strategy: "project_primary" as const,
+        projectId: resolvedWorkspace.projectId,
+        workspaceId: resolvedWorkspace.workspaceId,
+        repoUrl: resolvedWorkspace.repoUrl,
+        repoRef: resolvedWorkspace.repoRef,
+        branchName: null,
+        worktreePath: null,
+        agentHome: await (async () => {
+          const home = resolveDefaultAgentWorkspaceDir(agent.id);
+          await fs.mkdir(home, { recursive: true });
+          return home;
+        })(),
+      };
+
+      if (resolvedWorkspace.projectId && !readNonEmptyString(context.projectId)) {
+        context.projectId = resolvedWorkspace.projectId;
       }
     }
+    context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
 
-    // ── Snapshot execution workspace into run context ────────────────
-    if (persistedExecutionWorkspace) {
-      context.executionWorkspaceId = persistedExecutionWorkspace.id;
-      await db
-        .update(heartbeatRuns)
-        .set({
-          contextSnapshot: context,
-          updatedAt: new Date(),
-        })
-        .where(eq(heartbeatRuns.id, run.id));
-    }
-
-    // ── Session resolution with execution workspace cwd ─────────────
+    // ── Session resolution with effective workspace cwd ──────────────
     const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
       agentId: agent.id,
       previousSessionParams,
       resolvedWorkspace: {
         ...resolvedWorkspace,
-        cwd: executionWorkspace.cwd,
+        cwd: effectiveCwd,
       },
     });
     const runtimeSessionParams = runtimeSessionResolution.sessionParams;
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
-      ...executionWorkspace.warnings,
+      ...executionWorkspaceWarnings,
       ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
       ...(resetTaskSession && sessionResetReason
         ? [
@@ -1672,24 +1728,6 @@ export function heartbeatService(db: Db) {
           ]
         : []),
     ];
-    context.paperclipWorkspace = {
-      cwd: executionWorkspace.cwd,
-      source: executionWorkspace.source,
-      mode: executionWorkspaceMode,
-      strategy: executionWorkspace.strategy,
-      projectId: executionWorkspace.projectId,
-      workspaceId: executionWorkspace.workspaceId,
-      repoUrl: executionWorkspace.repoUrl,
-      repoRef: executionWorkspace.repoRef,
-      branchName: executionWorkspace.branchName,
-      worktreePath: executionWorkspace.worktreePath,
-      agentHome: await (async () => {
-        const home = resolveDefaultAgentWorkspaceDir(agent.id);
-        await fs.mkdir(home, { recursive: true });
-        return home;
-      })(),
-    };
-    context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
 
     // ── Runtime service intents ─────────────────────────────────────
     const runtimeServiceIntents = (() => {
@@ -1704,10 +1742,6 @@ export function heartbeatService(db: Db) {
       context.paperclipRuntimeServiceIntents = runtimeServiceIntents;
     } else {
       delete context.paperclipRuntimeServiceIntents;
-    }
-
-    if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
-      context.projectId = executionWorkspace.projectId;
     }
 
     // Enrich context with memory items and company info for the agent
@@ -1850,54 +1884,57 @@ export function heartbeatService(db: Db) {
         await onLog("stderr", `[paperclip] ${warning}\n`);
       }
 
-      // ── Runtime services (ensureRuntimeServicesForRun) ──────────────
+      // ── Runtime services (ensureRuntimeServicesForRun) — gated ─────
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfig.env)).filter(
           (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
         ),
       );
-      const runtimeServices = await ensureRuntimeServicesForRun({
-        db,
-        runId: run.id,
-        agent: {
-          id: agent.id,
-          name: agent.name,
-          companyId: agent.companyId,
-        },
-        issue: issueRef,
-        workspace: executionWorkspace,
-        executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
-        config: resolvedConfig,
-        adapterEnv,
-        onLog,
-      });
-      if (runtimeServices.length > 0) {
-        context.paperclipRuntimeServices = runtimeServices;
-        context.paperclipRuntimePrimaryUrl =
-          runtimeServices.find((service) => readNonEmptyString(service.url))?.url ?? null;
-        await db
-          .update(heartbeatRuns)
-          .set({
-            contextSnapshot: context,
-            updatedAt: new Date(),
-          })
-          .where(eq(heartbeatRuns.id, run.id));
-      }
-      if (issueId && (executionWorkspace.created || runtimeServices.some((service) => !service.reused))) {
-        try {
-          await issuesSvc.addComment(
-            issueId,
-            buildWorkspaceReadyComment({
-              workspace: executionWorkspace,
-              runtimeServices,
-            }),
-            { agentId: agent.id },
-          );
-        } catch (err) {
-          await onLog(
-            "stderr",
-            `[paperclip] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
-          );
+      let runtimeServices: Awaited<ReturnType<typeof ensureRuntimeServicesForRun>> = [];
+      if (isolatedWorkspacesEnabled && realizedWorkspace) {
+        runtimeServices = await ensureRuntimeServicesForRun({
+          db,
+          runId: run.id,
+          agent: {
+            id: agent.id,
+            name: agent.name,
+            companyId: agent.companyId,
+          },
+          issue: issueRef,
+          workspace: realizedWorkspace,
+          executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
+          config: resolvedConfig,
+          adapterEnv,
+          onLog,
+        });
+        if (runtimeServices.length > 0) {
+          context.paperclipRuntimeServices = runtimeServices;
+          context.paperclipRuntimePrimaryUrl =
+            runtimeServices.find((service) => readNonEmptyString(service.url))?.url ?? null;
+          await db
+            .update(heartbeatRuns)
+            .set({
+              contextSnapshot: context,
+              updatedAt: new Date(),
+            })
+            .where(eq(heartbeatRuns.id, run.id));
+        }
+        if (issueId && runtimeServices.some((service) => !service.reused)) {
+          try {
+            await issuesSvc.addComment(
+              issueId,
+              buildWorkspaceReadyComment({
+                workspace: realizedWorkspace,
+                runtimeServices,
+              }),
+              { agentId: agent.id },
+            );
+          } catch (err) {
+            await onLog(
+              "stderr",
+              `[paperclip] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
         }
       }
 
@@ -1955,52 +1992,52 @@ export function heartbeatService(db: Db) {
         authToken: authToken ?? undefined,
       });
 
-      // ── Persist adapter-managed runtime services ──────────────────
-      const adapterManagedRuntimeServices = adapterResult.runtimeServices
-        ? await persistAdapterManagedRuntimeServices({
-            db,
-            adapterType: agent.adapterType,
-            runId: run.id,
-            agent: {
-              id: agent.id,
-              name: agent.name,
-              companyId: agent.companyId,
-            },
-            issue: issueRef,
-            workspace: executionWorkspace,
-            reports: adapterResult.runtimeServices,
-          })
-        : [];
-      if (adapterManagedRuntimeServices.length > 0) {
-        const combinedRuntimeServices = [
-          ...runtimeServices,
-          ...adapterManagedRuntimeServices,
-        ];
-        context.paperclipRuntimeServices = combinedRuntimeServices;
-        context.paperclipRuntimePrimaryUrl =
-          combinedRuntimeServices.find((service) => readNonEmptyString(service.url))?.url ?? null;
-        await db
-          .update(heartbeatRuns)
-          .set({
-            contextSnapshot: context,
-            updatedAt: new Date(),
-          })
-          .where(eq(heartbeatRuns.id, run.id));
-        if (issueId) {
-          try {
-            await issuesSvc.addComment(
-              issueId,
-              buildWorkspaceReadyComment({
-                workspace: executionWorkspace,
-                runtimeServices: adapterManagedRuntimeServices,
-              }),
-              { agentId: agent.id },
-            );
-          } catch (err) {
-            await onLog(
-              "stderr",
-              `[paperclip] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
-            );
+      // ── Persist adapter-managed runtime services (gated) ───────────
+      if (isolatedWorkspacesEnabled && realizedWorkspace && adapterResult.runtimeServices) {
+        const adapterManagedRuntimeServices = await persistAdapterManagedRuntimeServices({
+          db,
+          adapterType: agent.adapterType,
+          runId: run.id,
+          agent: {
+            id: agent.id,
+            name: agent.name,
+            companyId: agent.companyId,
+          },
+          issue: issueRef,
+          workspace: realizedWorkspace,
+          reports: adapterResult.runtimeServices,
+        });
+        if (adapterManagedRuntimeServices.length > 0) {
+          const combinedRuntimeServices = [
+            ...runtimeServices,
+            ...adapterManagedRuntimeServices,
+          ];
+          context.paperclipRuntimeServices = combinedRuntimeServices;
+          context.paperclipRuntimePrimaryUrl =
+            combinedRuntimeServices.find((service) => readNonEmptyString(service.url))?.url ?? null;
+          await db
+            .update(heartbeatRuns)
+            .set({
+              contextSnapshot: context,
+              updatedAt: new Date(),
+            })
+            .where(eq(heartbeatRuns.id, run.id));
+          if (issueId) {
+            try {
+              await issuesSvc.addComment(
+                issueId,
+                buildWorkspaceReadyComment({
+                  workspace: realizedWorkspace,
+                  runtimeServices: adapterManagedRuntimeServices,
+                }),
+                { agentId: agent.id },
+              );
+            } catch (err) {
+              await onLog(
+                "stderr",
+                `[paperclip] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
+              );
+            }
           }
         }
       }
@@ -2123,13 +2160,13 @@ export function heartbeatService(db: Db) {
       // ── V2: Agent output capture (Decision #67) ─────────────────────
       // Runs AFTER the run is finalized — detection failures are non-fatal.
       let detectedFiles: Array<{ path: string; type?: string }> = [];
-      if (outcome === "succeeded" && executionWorkspace.cwd) {
+      if (outcome === "succeeded" && effectiveCwd) {
         try {
           const detected = await outputDetector.detectAndCapture({
             runId: run.id,
             companyId: agent.companyId,
             agentId: agent.id,
-            cwd: executionWorkspace.cwd,
+            cwd: effectiveCwd,
             startedAt: run.startedAt ?? run.createdAt,
             adapterType: agent.adapterType,
             adapterHints: adapterResult.outputFiles,
@@ -2248,7 +2285,9 @@ export function heartbeatService(db: Db) {
         });
       }
     } finally {
-      await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+      if (isolatedWorkspacesEnabled) {
+        await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+      }
       await startNextQueuedRunForAgent(agent.id);
     }
   }
