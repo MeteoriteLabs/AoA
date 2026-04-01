@@ -295,3 +295,9 @@ export {
   type PatchInstanceGeneralSettings,
   type PatchInstanceExperimentalSettings,
 } from "./instance.js";
+
+export {
+  executionWorkspaceStatusSchema,
+  updateExecutionWorkspaceSchema,
+  type UpdateExecutionWorkspace,
+} from "./execution-workspace.js";

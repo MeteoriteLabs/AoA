@@ -61,6 +61,25 @@ export interface AdapterExecutionResult {
   }>;
 }
 
+export interface AdapterRuntimeServiceReport {
+  id?: string | null;
+  projectId?: string | null;
+  projectWorkspaceId?: string | null;
+  issueId?: string | null;
+  scopeType?: "project_workspace" | "execution_workspace" | "run" | "agent";
+  scopeId?: string | null;
+  serviceName: string;
+  status?: "starting" | "running" | "stopped" | "failed";
+  lifecycle?: "shared" | "ephemeral";
+  reuseKey?: string | null;
+  command?: string | null;
+  cwd?: string | null;
+  port?: number | null;
+  env?: Record<string, string | undefined> | null;
+  startedAt?: string | null;
+  stoppedAt?: string | null;
+}
+
 export interface AdapterSessionCodec {
   deserialize(raw: unknown): Record<string, unknown> | null;
   serialize(params: Record<string, unknown> | null): Record<string, unknown> | null;
