@@ -232,7 +232,7 @@ export function InternalAgentSettingsPage() {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/home" },
       { label: "Settings", href: "/settings" },
-      { label: "Internal Agent" },
+      { label: "Commander" },
     ]);
   }, [setBreadcrumbs, selectedCompany?.name]);
 
@@ -346,7 +346,7 @@ export function InternalAgentSettingsPage() {
       {/* Page header */}
       <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Internal Agent Settings</h1>
+        <h1 className="text-lg font-semibold">Commander Settings</h1>
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange}>

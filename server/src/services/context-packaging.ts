@@ -39,8 +39,9 @@ export function contextPackagingService(db: Db) {
       throw new Error("Task not found");
     }
 
-    // Resolve contextMode from assigned agent (if any) to control section limits
+    // Resolve contextMode and injectCompanyContext from assigned agent (if any)
     let contextMode = "standard";
+    let injectCompanyContext = false;
     if (issue.assigneeAgentId) {
       const assignedAgent = await db
         .select({ runtimeConfig: agents.runtimeConfig })
@@ -48,7 +49,9 @@ export function contextPackagingService(db: Db) {
         .where(eq(agents.id, issue.assigneeAgentId))
         .then((rows) => rows[0] ?? null);
       if (assignedAgent) {
-        contextMode = ((assignedAgent.runtimeConfig as Record<string, unknown>)?.contextMode as string) ?? "standard";
+        const rc = (assignedAgent.runtimeConfig as Record<string, unknown>) ?? {};
+        contextMode = (rc.contextMode as string) ?? "standard";
+        injectCompanyContext = rc.injectCompanyContext === true;
       }
     }
 
@@ -76,29 +79,33 @@ export function contextPackagingService(db: Db) {
     if (company) {
       const identityParts: string[] = [`# Company: ${company.name}`];
       if (company.description) identityParts.push(company.description);
-      if (company.vision) identityParts.push(`**Vision:** ${company.vision}`);
-      if (company.mission) identityParts.push(`**Mission:** ${company.mission}`);
-      if (company.values) identityParts.push(`**Values:** ${company.values}`);
 
-      // Fetch identity-layer memory items
-      const identityMemory = await db
-        .select({ title: memoryItems.title, content: memoryItems.content })
-        .from(memoryItems)
-        .where(
-          and(
-            eq(memoryItems.companyId, companyId),
-            eq(memoryItems.status, "approved"),
-            eq(memoryItems.layer, "identity"),
-          ),
-        )
-        .orderBy(desc(memoryItems.priority), desc(memoryItems.updatedAt))
-        .limit(sectionLimits.memory);
+      // Vision/Mission/Values and identity memory only when agent opts in
+      if (injectCompanyContext) {
+        if (company.vision) identityParts.push(`**Vision:** ${company.vision}`);
+        if (company.mission) identityParts.push(`**Mission:** ${company.mission}`);
+        if (company.values) identityParts.push(`**Values:** ${company.values}`);
 
-      if (identityMemory.length > 0) {
-        identityParts.push("");
-        identityParts.push("**Key Knowledge:**");
-        for (const item of identityMemory) {
-          identityParts.push(`- **${item.title}:** ${item.content}`);
+        // Fetch identity-layer memory items
+        const identityMemory = await db
+          .select({ title: memoryItems.title, content: memoryItems.content })
+          .from(memoryItems)
+          .where(
+            and(
+              eq(memoryItems.companyId, companyId),
+              eq(memoryItems.status, "approved"),
+              eq(memoryItems.layer, "identity"),
+            ),
+          )
+          .orderBy(desc(memoryItems.priority), desc(memoryItems.updatedAt))
+          .limit(sectionLimits.memory);
+
+        if (identityMemory.length > 0) {
+          identityParts.push("");
+          identityParts.push("**Key Knowledge:**");
+          for (const item of identityMemory) {
+            identityParts.push(`- **${item.title}:** ${item.content}`);
+          }
         }
       }
 

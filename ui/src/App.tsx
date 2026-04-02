@@ -24,6 +24,8 @@ import { Inbox } from "./pages/Inbox";
 import { SettingsPage } from "./pages/SettingsPage";
 import { InternalAgentSettingsPage } from "./pages/InternalAgentSettingsPage";
 import { VisionMission } from "./pages/VisionMission";
+import { Objectives } from "./pages/Objectives";
+import { Commander } from "./pages/Commander";
 import { DesignGuide } from "./pages/DesignGuide";
 import { TeamPage } from "./pages/TeamPage";
 import { HumanDetail } from "./pages/HumanDetail";
@@ -106,8 +108,11 @@ function boardRoutes() {
       <Route path="home" element={<Dashboard />} />
       <Route path="companies" element={<Companies />} />
       <Route path="vision" element={<VisionMission />} />
+      <Route path="objectives" element={<Objectives />} />
+      <Route path="commander" element={<Commander />} />
       <Route path="settings" element={<SettingsPage />} />
-      <Route path="settings/internal-agent" element={<InternalAgentSettingsPage />} />
+      <Route path="settings/commander" element={<InternalAgentSettingsPage />} />
+      <Route path="settings/internal-agent" element={<Navigate to="../settings/commander" replace />} />
       <Route path="company/settings" element={<Navigate to="../settings" replace />} />
       <Route path="org" element={<TeamPage />} />
       <Route path="team/:userId" element={<HumanDetail />} />
@@ -136,7 +141,7 @@ function boardRoutes() {
       <Route path="issues/done" element={<Navigate to="/issues" replace />} />
       <Route path="issues/recent" element={<Navigate to="/issues" replace />} />
       <Route path="issues/:issueId" element={<Issues />} />
-      <Route path="goals" element={<Goals />} />
+      <Route path="goals" element={<Navigate to="../objectives?tab=goals" replace />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="skills/*" element={<Skills />} />
       <Route path="routines" element={<Routines />} />
@@ -254,6 +259,8 @@ export function App() {
           <Route path="briefs" element={<Navigate to="/discussions" replace />} />
           <Route path="briefs/*" element={<Navigate to="/discussions" replace />} />
           <Route path="vision" element={<UnprefixedBoardRedirect />} />
+          <Route path="objectives" element={<UnprefixedBoardRedirect />} />
+          <Route path="commander" element={<UnprefixedBoardRedirect />} />
           <Route path="memory" element={<UnprefixedBoardRedirect />} />
           <Route path="projects" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />

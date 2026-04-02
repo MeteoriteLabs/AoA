@@ -29,7 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, ChevronRight, X, Brain, User, Plug, SlidersHorizontal } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
@@ -38,7 +38,6 @@ import {
   Field,
   ToggleField,
   ToggleWithNumber,
-  CollapsibleSection,
   DraftInput,
   DraftNumberInput,
   help,
@@ -260,9 +259,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
       // Separate runtimeConfig-level fields from heartbeat-level fields
       const hb = overlay.heartbeat as Record<string, unknown>;
-      const { autoRunSummary: ars, ...heartbeatFields } = hb;
+      const { autoRunSummary: ars, injectCompanyContext: icc, contextMode: cm, ...heartbeatFields } = hb;
       const mergedRc: Record<string, unknown> = { ...existingRc, heartbeat: { ...existingHb, ...heartbeatFields } };
       if (ars !== undefined) mergedRc.autoRunSummary = ars;
+      if (icc !== undefined) mergedRc.injectCompanyContext = icc;
+      if (cm !== undefined) mergedRc.contextMode = cm;
       patch.runtimeConfig = mergedRc;
     }
     if (Object.keys(overlay.runtime).length > 0) {
@@ -334,7 +335,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   };
 
   // Section toggle state — advanced always starts collapsed
-  const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
+  const [identityOpen, setIdentityOpen] = useState(false);
+  const [adapterOpen, setAdapterOpen] = useState(false);
+  const [permissionsConfigOpen, setPermissionsConfigOpen] = useState(false);
+  const [runPolicyOpen, setRunPolicyOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
@@ -422,12 +427,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Identity (edit only) ---- */}
       {!isCreate && (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div className={cn("w-full", !cards && "border-b border-border", cards && "border border-border rounded-lg overflow-hidden")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Identity</h3>
+            ? <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setIdentityOpen(!identityOpen)}><User className="h-3 w-3" /> Identity<span className="ml-auto">{identityOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span></button>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div className={cn(cards ? "px-4 pt-4 pb-4 space-y-3 border-t border-border" : "px-4 pb-3 space-y-3", cards && !identityOpen && "hidden")}>
             <Field label="Name" hint={help.name}>
               <DraftInput
                 value={eff("identity", "name", props.agent.name)}
@@ -537,24 +542,40 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       )}
 
       {/* ---- Adapter ---- */}
-      <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
-        <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
-          {cards
-            ? <h3 className="text-sm font-medium">Adapter</h3>
-            : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
-          }
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 px-2.5 text-xs"
-            onClick={() => testEnvironment.mutate()}
-            disabled={testEnvironment.isPending || !selectedCompanyId}
-          >
-            {testEnvironment.isPending ? "Testing..." : "Test environment"}
-          </Button>
-        </div>
-        <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+      <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"), cards && !isCreate && "border border-border rounded-lg overflow-hidden")}>
+        {cards && !isCreate
+          ? <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setAdapterOpen(!adapterOpen)}><Plug className="h-3 w-3" /> Adapter<span className="ml-auto">{adapterOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span></button>
+          : (
+          <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
+            {cards
+              ? <h3 className="text-sm font-medium">Adapter</h3>
+              : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
+            }
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-2.5 text-xs"
+              onClick={() => testEnvironment.mutate()}
+              disabled={testEnvironment.isPending || !selectedCompanyId}
+            >
+              {testEnvironment.isPending ? "Testing..." : "Test environment"}
+            </Button>
+          </div>
+        )}
+        <div className={cn(cards && !isCreate ? "px-4 pt-4 pb-4 space-y-3 border-t border-border" : cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3", cards && !isCreate && !adapterOpen && "hidden")}>
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-2.5 text-xs"
+              onClick={() => testEnvironment.mutate()}
+              disabled={testEnvironment.isPending || !selectedCompanyId}
+            >
+              {testEnvironment.isPending ? "Testing..." : "Test environment"}
+            </Button>
+          </div>
           <Field label="Adapter type" hint={help.adapterType}>
             <AdapterTypeDropdown
               value={adapterType}
@@ -671,12 +692,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Permissions & Configuration ---- */}
       {isLocal && (
-        <div className={cn(!cards && "border-b border-border")}>
-          {cards
-            ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
+        <div className={cn(!cards && "border-b border-border", cards && !isCreate && "border border-border rounded-lg overflow-hidden")}>
+          {cards && !isCreate
+            ? <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setPermissionsConfigOpen(!permissionsConfigOpen)}><SlidersHorizontal className="h-3 w-3" /> Permissions &amp; Configuration<span className="ml-auto">{permissionsConfigOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span></button>
+            : cards
+              ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
+              : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div className={cn(cards && !isCreate ? "px-4 pt-4 pb-4 space-y-3 border-t border-border" : cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3", cards && !isCreate && !permissionsConfigOpen && "hidden")}>
               <Field label="Command" hint={help.localCommand}>
                 <DraftInput
                   value={
@@ -869,13 +892,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         </div>
       ) : (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div className={cn(!cards && "border-b border-border", cards && "border border-border rounded-lg overflow-hidden")}>
           {cards
-            ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
+            ? <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setRunPolicyOpen(!runPolicyOpen)}><Heart className="h-3 w-3" /> Run Policy<span className="ml-auto">{runPolicyOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span></button>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg overflow-hidden" : "")}>
-            <div className={cn(cards ? "p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div className={cn(cards ? "px-4 pt-4 pb-4 space-y-3 border-t border-border" : "px-4 pb-3 space-y-3", cards && !runPolicyOpen && "hidden")}>
               <ToggleWithNumber
                 label="Heartbeat on interval"
                 hint={help.heartbeatInterval}
@@ -888,14 +910,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 numberHint={help.intervalSec}
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled !== false)}
               />
-            </div>
-            <CollapsibleSection
-              title="Advanced Run Policy"
-              bordered={cards}
-              open={runPolicyAdvancedOpen}
-              onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}
-            >
-            <div className="space-y-3">
               <ToggleField
                 label="Wake on demand"
                 hint={help.wakeOnDemand}
@@ -940,8 +954,47 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 )}
                 onChange={(v) => mark("heartbeat", "autoRunSummary", v)}
               />
-            </div>
-          </CollapsibleSection>
+          </div>
+        </div>
+      )}
+
+      {/* ── Context section (edit mode only — defaults are fine for new agents) ── */}
+      {!isCreate && (
+        <div className={cn(!cards && "border-b border-border", cards && "border border-border rounded-lg overflow-hidden")}>
+          {cards
+            ? <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setContextOpen(!contextOpen)}><Brain className="h-3 w-3" /> Context<span className="ml-auto">{contextOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span></button>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Brain className="h-3 w-3" /> Context</div>
+          }
+          <div className={cn(cards ? "px-4 pt-4 pb-4 space-y-3 border-t border-border" : "px-4 pb-3 space-y-3", cards && !contextOpen && "hidden")}>
+              <ToggleField
+                label="Inject company context"
+                hint={help.injectCompanyContext}
+                checked={eff(
+                  "heartbeat",
+                  "injectCompanyContext",
+                  runtimeConfig.injectCompanyContext === true,
+                )}
+                onChange={(v) => mark("heartbeat", "injectCompanyContext", v)}
+              />
+              <Field label="Context depth" hint={help.contextMode}>
+                <Select
+                  value={eff(
+                    "heartbeat",
+                    "contextMode",
+                    (runtimeConfig.contextMode as string) ?? "standard",
+                  )}
+                  onValueChange={(v) => mark("heartbeat", "contextMode", v)}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="minimal">Minimal</SelectItem>
+                    <SelectItem value="standard">Standard</SelectItem>
+                    <SelectItem value="full">Full</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
           </div>
         </div>
       )}

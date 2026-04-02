@@ -1746,20 +1746,25 @@ export function heartbeatService(db: Db) {
     }
 
     // Enrich context with memory items and company info for the agent
-    try {
-      const agentContextMode = (parseObject(agent.runtimeConfig).contextMode as string) ?? "standard";
-      const memoryContext = await fetchMemoryContext(agent.companyId, issueId, agentContextMode);
-      if (memoryContext.company) {
-        context.company = memoryContext.company;
+    // When injectCompanyContext is false (default), skip memory/company injection — agent gets task-only context
+    const agentRc = parseObject(agent.runtimeConfig);
+    const injectCompanyContext = agentRc.injectCompanyContext === true;
+    if (injectCompanyContext) {
+      try {
+        const agentContextMode = (agentRc.contextMode as string) ?? "standard";
+        const memoryContext = await fetchMemoryContext(agent.companyId, issueId, agentContextMode);
+        if (memoryContext.company) {
+          context.company = memoryContext.company;
+        }
+        if (memoryContext.memory.length > 0) {
+          context.memory = memoryContext.memory;
+        }
+      } catch (err) {
+        logger.warn(
+          { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
+          "Failed to fetch memory context for agent run; continuing without memory enrichment",
+        );
       }
-      if (memoryContext.memory.length > 0) {
-        context.memory = memoryContext.memory;
-      }
-    } catch (err) {
-      logger.warn(
-        { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
-        "Failed to fetch memory context for agent run; continuing without memory enrichment",
-      );
     }
 
     // Enrich context with completed dependency task outputs

@@ -86,7 +86,7 @@ describe("Lobby", () => {
     renderWithProviders(<Lobby />);
 
     await user.click(screen.getByTestId("company-card-c1"));
-    expect(mockNavigate).toHaveBeenCalledWith("/ACME/home");
+    expect(mockNavigate).toHaveBeenCalledWith("/ACME/home", undefined);
   });
 
   it("handles 0 companies by triggering onboarding", () => {
