@@ -53,6 +53,10 @@ export function resolveDefaultBackupDir(instanceId?: string): string {
   return path.resolve(resolvePaperclipInstanceRoot(instanceId), "data", "backups");
 }
 
+export function resolveDefaultCliAuthPath(): string {
+  return path.resolve(resolvePaperclipHomeDir(), "auth.json");
+}
+
 export function expandHomePrefix(value: string): string {
   if (value === "~") return os.homedir();
   if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));

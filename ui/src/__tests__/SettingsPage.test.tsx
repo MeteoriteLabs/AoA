@@ -179,9 +179,9 @@ describe("SettingsPage", () => {
     expect(screen.getByText("Settings")).toBeInTheDocument();
   });
 
-  it("renders internal agent link", () => {
+  it("renders commander link", () => {
     renderWithProviders(<SettingsPage />);
-    expect(screen.getByText("Internal Agent")).toBeInTheDocument();
+    expect(screen.getByText("Commander")).toBeInTheDocument();
   });
 
   it("renders tab bar with all tabs", () => {

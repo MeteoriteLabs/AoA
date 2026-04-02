@@ -550,3 +550,43 @@ export const NOTIFICATION_TYPES = [
   "internal_agent.action_result",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
+
+// ── Routines ──────────────────────────────────────────────────────────
+
+export const ISSUE_ORIGIN_KINDS = ["routine_execution"] as const;
+export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
+
+export const ROUTINE_STATUSES = ["active", "paused", "archived"] as const;
+export type RoutineStatus = (typeof ROUTINE_STATUSES)[number];
+
+export const ROUTINE_CONCURRENCY_POLICIES = [
+  "coalesce_if_active",
+  "always_enqueue",
+  "skip_if_active",
+] as const;
+export type RoutineConcurrencyPolicy = (typeof ROUTINE_CONCURRENCY_POLICIES)[number];
+
+export const ROUTINE_CATCH_UP_POLICIES = [
+  "skip_missed",
+  "enqueue_missed_with_cap",
+] as const;
+export type RoutineCatchUpPolicy = (typeof ROUTINE_CATCH_UP_POLICIES)[number];
+
+export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api"] as const;
+export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
+
+export const ROUTINE_TRIGGER_SIGNING_MODES = ["bearer", "hmac_sha256"] as const;
+export type RoutineTriggerSigningMode = (typeof ROUTINE_TRIGGER_SIGNING_MODES)[number];
+
+export const ROUTINE_RUN_STATUSES = [
+  "received",
+  "issue_created",
+  "coalesced",
+  "skipped",
+  "completed",
+  "failed",
+] as const;
+export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
+
+export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
+export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];

@@ -58,6 +58,8 @@ import {
   ChevronDown,
   ArrowLeft,
   Settings,
+  Shield,
+  History,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
@@ -1191,26 +1193,24 @@ function AgentConfigurePage({
         updatePermissions={updatePermissions}
         companyId={companyId}
       />
-      <div>
-        <h3 className="text-sm font-medium mb-3">API Keys</h3>
-        <KeysTab agentId={agentId} companyId={companyId} />
-      </div>
+      <ApiKeysAccordion agentId={agentId} companyId={companyId} />
 
-      {/* Configuration Revisions — collapsible at the bottom */}
-      <div>
+      {/* Configuration Revisions — card accordion */}
+      <div className="border border-border rounded-lg overflow-hidden">
         <button
-          className="flex items-center gap-2 text-sm font-medium hover:text-foreground transition-colors"
+          type="button"
+          className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors"
           onClick={() => setRevisionsOpen((v) => !v)}
         >
-          {revisionsOpen
+          <History className="h-3 w-3" /> Configuration Revisions
+          <span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
+          <span className="ml-auto">{revisionsOpen
             ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
             : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-          }
-          Configuration Revisions
-          <span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
+          }</span>
         </button>
         {revisionsOpen && (
-          <div className="mt-3">
+          <div className="px-4 pt-4 pb-4 border-t border-border">
             {(configRevisions ?? []).length === 0 ? (
               <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
             ) : (
@@ -1246,6 +1246,53 @@ function AgentConfigurePage({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---- Small card accordion helpers ---- */
+
+function PermissionsAccordion({ agent, updatePermissions }: { agent: Agent; updatePermissions: { mutate: (canCreate: boolean) => void; isPending: boolean } }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setOpen(!open)}>
+        <Shield className="h-3 w-3" /> Permissions
+        <span className="ml-auto">{open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span>
+      </button>
+      {open && (
+        <div className="px-4 pt-4 pb-4 border-t border-border">
+          <div className="flex items-center justify-between text-sm">
+            <span>Can create new agents</span>
+            <Button
+              variant={agent.permissions?.canCreateAgents ? "default" : "outline"}
+              size="sm"
+              className="h-7 px-2.5 text-xs"
+              onClick={() => updatePermissions.mutate(!Boolean(agent.permissions?.canCreateAgents))}
+              disabled={updatePermissions.isPending}
+            >
+              {agent.permissions?.canCreateAgents ? "Enabled" : "Disabled"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ApiKeysAccordion({ agentId, companyId }: { agentId: string; companyId?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setOpen(!open)}>
+        <Key className="h-3 w-3" /> API Keys
+        <span className="ml-auto">{open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span>
+      </button>
+      {open && (
+        <div className="px-4 pt-4 pb-4 border-t border-border">
+          <KeysTab agentId={agentId} companyId={companyId} />
+        </div>
+      )}
     </div>
   );
 }
@@ -1308,25 +1355,7 @@ function ConfigurationTab({
         sectionLayout="cards"
       />
 
-      <div>
-        <h3 className="text-sm font-medium mb-3">Permissions</h3>
-        <div className="border border-border rounded-lg p-4">
-          <div className="flex items-center justify-between text-sm">
-            <span>Can create new agents</span>
-            <Button
-              variant={agent.permissions?.canCreateAgents ? "default" : "outline"}
-              size="sm"
-              className="h-7 px-2.5 text-xs"
-              onClick={() =>
-                updatePermissions.mutate(!Boolean(agent.permissions?.canCreateAgents))
-              }
-              disabled={updatePermissions.isPending}
-            >
-              {agent.permissions?.canCreateAgents ? "Enabled" : "Disabled"}
-            </Button>
-          </div>
-        </div>
-      </div>
+      <PermissionsAccordion agent={agent} updatePermissions={updatePermissions} />
     </div>
   );
 }

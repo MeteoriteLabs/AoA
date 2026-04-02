@@ -189,6 +189,9 @@ export {
   claimJoinRequestApiKeySchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
+  boardCliAuthAccessLevelSchema,
+  createCliAuthChallengeSchema,
+  resolveCliAuthChallengeSchema,
   type CreateCompanyInvite,
   type AcceptInvite,
   type ListJoinRequestsQuery,
@@ -269,3 +272,32 @@ export {
   type CompanySkillCreate,
   type CompanySkillFileUpdate,
 } from "./company-skill.js";
+
+export {
+  createRoutineSchema,
+  updateRoutineSchema,
+  createRoutineTriggerSchema,
+  updateRoutineTriggerSchema,
+  runRoutineSchema,
+  rotateRoutineTriggerSecretSchema,
+  type CreateRoutine,
+  type UpdateRoutine,
+  type CreateRoutineTrigger,
+  type UpdateRoutineTrigger,
+  type RunRoutine,
+} from "./routine.js";
+
+export {
+  instanceGeneralSettingsSchema,
+  patchInstanceGeneralSettingsSchema,
+  instanceExperimentalSettingsSchema,
+  patchInstanceExperimentalSettingsSchema,
+  type PatchInstanceGeneralSettings,
+  type PatchInstanceExperimentalSettings,
+} from "./instance.js";
+
+export {
+  executionWorkspaceStatusSchema,
+  updateExecutionWorkspaceSchema,
+  type UpdateExecutionWorkspace,
+} from "./execution-workspace.js";

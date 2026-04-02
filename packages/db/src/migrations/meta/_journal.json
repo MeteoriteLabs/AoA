@@ -330,6 +330,34 @@
       "when": 1774888536191,
       "tag": "0046_chemical_wolverine",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1774975816881,
+      "tag": "0047_huge_paibok",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1775026266490,
+      "tag": "0048_yellow_drax",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1775031170503,
+      "tag": "0049_clammy_meltdown",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1775052548300,
+      "tag": "0050_elite_spencer_smythe",
+      "breakpoints": true
     }
   ]
 }

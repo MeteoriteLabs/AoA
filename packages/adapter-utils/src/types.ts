@@ -51,6 +51,7 @@ export interface AdapterExecutionResult {
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
+  runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
   clearSession?: boolean;
   /** Adapter-hinted output files (paths relative to workspace) */
@@ -59,6 +60,27 @@ export interface AdapterExecutionResult {
     label?: string;
     artifactType?: string;
   }>;
+}
+
+export interface AdapterRuntimeServiceReport {
+  id?: string | null;
+  projectId?: string | null;
+  projectWorkspaceId?: string | null;
+  issueId?: string | null;
+  scopeType?: "project_workspace" | "execution_workspace" | "run" | "agent";
+  scopeId?: string | null;
+  serviceName: string;
+  status?: "starting" | "running" | "stopped" | "failed";
+  lifecycle?: "shared" | "ephemeral";
+  reuseKey?: string | null;
+  command?: string | null;
+  cwd?: string | null;
+  port?: number | null;
+  url?: string | null;
+  providerRef?: string | null;
+  ownerAgentId?: string | null;
+  stopPolicy?: Record<string, unknown> | null;
+  healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
 export interface AdapterSessionCodec {

@@ -143,3 +143,35 @@ export type {
   CompanySkillFileUpdateRequest,
   CompanySkillImportPackageRequest,
 } from "./company-skill.js";
+export type {
+  Routine,
+  RoutineTrigger,
+  RoutineRun,
+  RoutineTriggerSecretMaterial,
+  RoutineDetail,
+  RoutineRunSummary,
+  RoutineListItem,
+} from "./routine.js";
+export type {
+  InstanceGeneralSettings,
+  InstanceExperimentalSettings,
+  InstanceSettings,
+} from "./instance.js";
+export type {
+  ExecutionWorkspaceStrategyType,
+  ProjectExecutionWorkspaceDefaultMode,
+  ExecutionWorkspaceMode,
+  ExecutionWorkspaceProviderType,
+  ExecutionWorkspaceStatus,
+  ExecutionWorkspaceStrategy,
+  ProjectExecutionWorkspacePolicy,
+  IssueExecutionWorkspaceSettings,
+  ExecutionWorkspace,
+  WorkspaceRuntimeService,
+} from "./workspace-runtime.js";
+
+export type {
+  WorkspaceOperationPhase,
+  WorkspaceOperationStatus,
+  WorkspaceOperation,
+} from "./workspace-operation.js";

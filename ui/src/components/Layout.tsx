@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Moon, Sun } from "lucide-react";
 import { Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -15,7 +14,7 @@ import { MobileBottomNav } from "./MobileBottomNav";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
-import { useTheme } from "../context/ThemeContext";
+
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
@@ -30,14 +29,14 @@ export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, collapsed, toggleCollapse } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { companies, loading: companiesLoading, selectedCompanyId, selectionSource, setSelectedCompanyId } = useCompany();
-  const { theme, toggleTheme } = useTheme();
+
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
   const location = useLocation();
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
-  const nextTheme = theme === "dark" ? "light" : "dark";
+
   const { data: health } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
@@ -226,21 +225,6 @@ export function Layout() {
           <div className="flex flex-1 min-h-0 overflow-hidden">
             <Sidebar />
           </div>
-          <div className="border-t border-r border-border px-3 py-2 bg-background">
-            <div className="flex items-center gap-1 justify-end">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground shrink-0"
-                onClick={toggleTheme}
-                aria-label={`Switch to ${nextTheme} mode`}
-                title={`Switch to ${nextTheme} mode`}
-              >
-                {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </Button>
-            </div>
-          </div>
         </div>
       ) : (
         <div className="flex flex-col shrink-0 h-full">
@@ -252,21 +236,6 @@ export function Layout() {
               )}
             >
               <Sidebar />
-            </div>
-          </div>
-          <div className={cn("border-t border-r border-border py-2", collapsed ? "px-1" : "px-3")}>
-            <div className={cn("flex items-center gap-1", collapsed ? "justify-center" : "justify-end")}>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="text-muted-foreground shrink-0"
-                onClick={toggleTheme}
-                aria-label={`Switch to ${nextTheme} mode`}
-                title={`Switch to ${nextTheme} mode`}
-              >
-                {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </Button>
             </div>
           </div>
         </div>

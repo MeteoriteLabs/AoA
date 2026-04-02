@@ -50,6 +50,12 @@ export const queryKeys = {
       ["goals", companyId, "project", projectId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
   },
+  routines: {
+    list: (companyId: string) => ["routines", companyId] as const,
+    detail: (id: string) => ["routines", "detail", id] as const,
+    runs: (id: string) => ["routines", id, "runs"] as const,
+    activity: (id: string) => ["routines", id, "activity"] as const,
+  },
   approvals: {
     list: (companyId: string, status?: string) =>
       ["approvals", companyId, status] as const,
@@ -146,5 +152,9 @@ export const queryKeys = {
       ["company-skills", companyId, skillId, "update-status"] as const,
     file: (companyId: string, skillId: string, relativePath: string) =>
       ["company-skills", companyId, skillId, "file", relativePath] as const,
+  },
+  instanceSettings: {
+    general: ["instance-settings", "general"] as const,
+    experimental: ["instance-settings", "experimental"] as const,
   },
 };

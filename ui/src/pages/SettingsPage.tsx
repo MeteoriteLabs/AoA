@@ -829,11 +829,11 @@ function BudgetSection() {
                     ))}
                   </div>
                 )}
-                {/* Internal Agent */}
+                {/* Commander */}
                 {agentConfig && agentConfig.budgetMonthlyCents != null && (
                   <div className="mt-4 pt-4 border-t border-border">
                     <p className="text-xs font-medium text-muted-foreground mb-2">
-                      Internal Agent
+                      Commander
                     </p>
                     <div className="flex items-center justify-between text-sm">
                       <span>AI Assistant</span>
@@ -1333,12 +1333,12 @@ export function SettingsPage() {
       </div>
 
       <Link
-        to="internal-agent"
+        to="commander"
         className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-muted/50 transition-colors"
       >
         <div>
-          <p className="text-sm font-medium">Internal Agent</p>
-          <p className="text-xs text-muted-foreground">Configure the AI assistant, capabilities, and budget</p>
+          <p className="text-sm font-medium">Commander</p>
+          <p className="text-xs text-muted-foreground">Configure the Commander, capabilities, and budget</p>
         </div>
         <ChevronRight className="h-4 w-4 text-muted-foreground" />
       </Link>

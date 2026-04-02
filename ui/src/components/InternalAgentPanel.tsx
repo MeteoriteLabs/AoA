@@ -91,7 +91,7 @@ function serverToLocal(m: AgentMessage): LocalMessage {
 /*  Panel content (shared between desktop inline & mobile sheet)       */
 /* ------------------------------------------------------------------ */
 
-function AgentPanelContent() {
+export function AgentPanelContent() {
   const { selectedCompanyId } = useCompany();
   const { breadcrumbs } = useBreadcrumbs();
   const { closePanel, setIsStreaming, setCurrentConversationId } = useAgentPanel();
@@ -356,7 +356,7 @@ function AgentPanelContent() {
       <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           <Bot className="h-4 w-4 text-primary shrink-0" />
-          <span className="text-sm font-semibold truncate">AoA Agent</span>
+          <span className="text-sm font-semibold truncate">Commander</span>
           {pageContext && (
             <span className="text-[10px] text-muted-foreground truncate max-w-[120px]">
               {breadcrumbs[breadcrumbs.length - 1]?.label}
@@ -378,7 +378,7 @@ function AgentPanelContent() {
             variant="ghost"
             size="icon-sm"
             onClick={closePanel}
-            aria-label="Close agent panel"
+            aria-label="Close Commander"
             className="md:hidden"
           >
             <X className="h-4 w-4" />
@@ -553,7 +553,7 @@ export function InternalAgentPanel() {
     return (
       <Sheet open={isOpen} onOpenChange={(open) => !open && closePanel()}>
         <SheetContent side="right" showCloseButton={false} className="w-full sm:max-w-full p-0">
-          <SheetTitle className="sr-only">AoA Agent</SheetTitle>
+          <SheetTitle className="sr-only">Commander</SheetTitle>
           <AgentPanelContent />
         </SheetContent>
       </Sheet>

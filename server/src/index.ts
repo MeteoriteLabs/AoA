@@ -24,7 +24,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService } from "./services/index.js";
+import { heartbeatService, routineService } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -509,6 +509,13 @@ if (config.heartbeatSchedulerEnabled) {
       .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
       .catch((err) => {
         logger.error({ err }, "periodic reap of orphaned heartbeat runs failed");
+      });
+
+    // Tick scheduled routine triggers
+    void routineService(db as any)
+      .tickScheduledTriggers(new Date())
+      .catch((err) => {
+        logger.error({ err }, "routine scheduled trigger tick failed");
       });
   }, config.heartbeatSchedulerIntervalMs);
 }
