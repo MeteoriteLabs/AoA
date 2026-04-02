@@ -22,6 +22,7 @@ import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { dependencyService } from "./dependencies.js";
 import { heartbeatService } from "./heartbeat.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { deriveIssueUserContext } from "./issue-user-context.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
@@ -653,6 +654,13 @@ export function issueService(db: Db) {
       if (!existing) return null;
 
       const { labelIds: nextLabelIds, ...issueData } = data;
+
+      const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental()).enableIsolatedWorkspaces;
+      if (!isolatedWorkspacesEnabled) {
+        delete (issueData as Record<string, unknown>).executionWorkspaceId;
+        delete (issueData as Record<string, unknown>).executionWorkspacePreference;
+        delete (issueData as Record<string, unknown>).executionWorkspaceSettings;
+      }
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);

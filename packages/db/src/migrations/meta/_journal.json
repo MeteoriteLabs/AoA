@@ -351,6 +351,13 @@
       "when": 1775031170503,
       "tag": "0049_clammy_meltdown",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1775052548300,
+      "tag": "0050_elite_spencer_smythe",
+      "breakpoints": true
     }
   ]
 }

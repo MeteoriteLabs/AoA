@@ -66,6 +66,9 @@ export interface Issue {
   executionRunId: string | null;
   executionAgentNameKey: string | null;
   executionLockedAt: Date | null;
+  executionWorkspaceId: string | null;
+  executionWorkspacePreference: string | null;
+  executionWorkspaceSettings: Record<string, unknown> | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   issueNumber: number | null;

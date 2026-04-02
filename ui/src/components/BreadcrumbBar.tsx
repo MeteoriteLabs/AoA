@@ -1,8 +1,9 @@
 import { Link } from "@/lib/router";
-import { Bot, Menu, Search } from "lucide-react";
+import { Bot, Menu, Moon, Search, Sun } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useAgentPanel } from "../context/AgentPanelContext";
+import { useTheme } from "../context/ThemeContext";
 import { Button } from "@/components/ui/button";
 import {
   Breadcrumb,
@@ -18,6 +19,7 @@ export function BreadcrumbBar() {
   const { breadcrumbs, subtitle, entityColor } = useBreadcrumbs();
   const { toggleSidebar, toggleCollapse, isMobile } = useSidebar();
   const { togglePanel, isOpen: agentPanelOpen } = useAgentPanel();
+  const { theme, toggleTheme } = useTheme();
 
   if (breadcrumbs.length === 0) return null;
 
@@ -52,10 +54,20 @@ export function BreadcrumbBar() {
       <Button
         variant="ghost"
         size="icon-sm"
+        className="text-muted-foreground hover:text-foreground"
+        onClick={toggleTheme}
+        aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+        title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+      >
+        {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
         className={agentPanelOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"}
         onClick={togglePanel}
-        aria-label="Toggle agent panel"
-        title="Toggle agent panel"
+        aria-label="Toggle Commander"
+        title="Toggle Commander"
       >
         <Bot className="h-4 w-4" />
       </Button>

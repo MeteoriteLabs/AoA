@@ -45,6 +45,7 @@ const projectFields = {
   targetDate: z.string().optional().nullable(),
   color: z.string().optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
+  executionWorkspacePolicy: z.record(z.unknown()).nullable().optional(),
 };
 
 export const createProjectSchema = z.object({

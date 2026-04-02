@@ -157,3 +157,21 @@ export type {
   InstanceExperimentalSettings,
   InstanceSettings,
 } from "./instance.js";
+export type {
+  ExecutionWorkspaceStrategyType,
+  ProjectExecutionWorkspaceDefaultMode,
+  ExecutionWorkspaceMode,
+  ExecutionWorkspaceProviderType,
+  ExecutionWorkspaceStatus,
+  ExecutionWorkspaceStrategy,
+  ProjectExecutionWorkspacePolicy,
+  IssueExecutionWorkspaceSettings,
+  ExecutionWorkspace,
+  WorkspaceRuntimeService,
+} from "./workspace-runtime.js";
+
+export type {
+  WorkspaceOperationPhase,
+  WorkspaceOperationStatus,
+  WorkspaceOperation,
+} from "./workspace-operation.js";

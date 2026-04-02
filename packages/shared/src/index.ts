@@ -304,6 +304,19 @@ export type {
   InstanceGeneralSettings,
   InstanceExperimentalSettings,
   InstanceSettings,
+  ExecutionWorkspaceStrategyType,
+  ProjectExecutionWorkspaceDefaultMode,
+  ExecutionWorkspaceMode,
+  ExecutionWorkspaceProviderType,
+  ExecutionWorkspaceStatus,
+  ExecutionWorkspaceStrategy,
+  ProjectExecutionWorkspacePolicy,
+  IssueExecutionWorkspaceSettings,
+  ExecutionWorkspace,
+  WorkspaceRuntimeService,
+  WorkspaceOperationPhase,
+  WorkspaceOperationStatus,
+  WorkspaceOperation,
 } from "./types/index.js";
 
 export {
@@ -531,6 +544,9 @@ export {
   patchInstanceExperimentalSettingsSchema,
   type PatchInstanceGeneralSettings,
   type PatchInstanceExperimentalSettings,
+  executionWorkspaceStatusSchema,
+  updateExecutionWorkspaceSchema,
+  type UpdateExecutionWorkspace,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

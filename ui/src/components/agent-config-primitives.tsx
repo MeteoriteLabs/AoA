@@ -48,6 +48,8 @@ export const help: Record<string, string> = {
   maxConcurrentRuns: "Maximum number of heartbeat runs that can execute simultaneously for this agent.",
   budgetMonthlyCents: "Monthly spending limit in cents. 0 means no limit.",
   autoRunSummary: "Automatically add a comment to tasks after each agent run with duration, cost, and outcome.",
+  injectCompanyContext: "Include company goals and memory items in the context sent to this agent during runs.",
+  contextMode: "Controls how much memory and context is fetched per run. Minimal keeps prompts lean; Full provides maximum context.",
 };
 
 export const adapterLabels: Record<string, string> = {
@@ -223,6 +225,35 @@ export function CollapsibleSection({
         {title}
       </button>
       {open && <div className="px-4 pb-3">{children}</div>}
+    </div>
+  );
+}
+
+export function CardAccordion({
+  title,
+  icon,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  icon?: React.ReactNode;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <button
+        type="button"
+        className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors"
+        onClick={onToggle}
+      >
+        {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+        {icon}
+        {title}
+      </button>
+      {open && <div className="px-4 pb-4 space-y-3 border-t border-border">{children}</div>}
     </div>
   );
 }
