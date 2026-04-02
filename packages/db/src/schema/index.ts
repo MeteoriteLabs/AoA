@@ -60,3 +60,16 @@ export {
 } from "./internal_agent.js";
 export { workflowTemplates } from "./workflow_templates.js";
 export { notifications } from "./notifications.js";
+export { companySkills } from "./company_skills.js";
+export { budgetPolicies } from "./budget_policies.js";
+export { budgetIncidents } from "./budget_incidents.js";
+export { documents } from "./documents.js";
+export { documentRevisions } from "./document_revisions.js";
+export { issueDocuments } from "./issue_documents.js";
+export { routines, routineTriggers, routineRuns } from "./routines.js";
+export { instanceSettings } from "./instance_settings.js";
+export { boardApiKeys } from "./board_api_keys.js";
+export { cliAuthChallenges } from "./cli_auth_challenges.js";
+export { executionWorkspaces } from "./execution_workspaces.js";
+export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
+export { workspaceOperations } from "./workspace_operations.js";

@@ -24,9 +24,10 @@ const MIN_DASHBOARD_RUNS = 4;
 
 interface ActiveAgentsPanelProps {
   companyId: string;
+  hideHeader?: boolean;
 }
 
-export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
+export function ActiveAgentsPanel({ companyId, hideHeader }: ActiveAgentsPanelProps) {
   const [feedByRun, setFeedByRun] = useState<Map<string, FeedItem[]>>(new Map());
   const seenKeysRef = useRef(new Set<string>());
   const pendingByRunRef = useRef(new Map<string, string>());
@@ -178,11 +179,15 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
     };
   }, [activeRunIds, companyId, runById]);
 
+  if (hideHeader && runs.length === 0) return null;
+
   return (
     <div>
-      <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-        Agents
-      </h3>
+      {!hideHeader && (
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+          Agents
+        </h3>
+      )}
       {runs.length === 0 ? (
         <div className="border border-border rounded-lg p-4">
           <p className="text-sm text-muted-foreground">No recent agent runs.</p>

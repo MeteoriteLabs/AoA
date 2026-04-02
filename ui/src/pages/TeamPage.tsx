@@ -1,13 +1,16 @@
 import { useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@/lib/router";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Users } from "lucide-react";
 import { agentsApi } from "../api/agents";
+import { teamApi } from "../api/team";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { useTeamAccess } from "../hooks/useTeamAccess";
 import { queryKeys } from "../lib/queryKeys";
-import { OrgTreeTab } from "../components/team/OrgTreeTab";
+import { OrgTreeTab, type OrgNodeAction } from "../components/team/OrgTreeTab";
 import { AgentsTab } from "../components/team/AgentsTab";
 import { HumansTab } from "../components/team/HumansTab";
 import { EmptyState } from "../components/EmptyState";
@@ -39,6 +42,8 @@ export function TeamPage() {
   const activeTab: TeamTab = isValidTab(rawTab) ? rawTab : "org";
   const highlightId = searchParams.get("highlight");
 
+  const navigate = useNavigate();
+  const { pushToast } = useToast();
   const { summary: teamSummary, permissions, role, isLoading: isTeamLoading } = useTeamAccess(selectedCompanyId);
 
   // Org tree (shared: OrgTreeTab + AgentsTab)
@@ -95,6 +100,53 @@ export function TeamPage() {
     queryClient.invalidateQueries({ queryKey: queryKeys.team.summary(selectedCompanyId) });
   }, [queryClient, selectedCompanyId]);
 
+  const resendInviteMutation = useMutation({
+    mutationFn: (inviteId: string) => teamApi.resendInvite(selectedCompanyId!, inviteId),
+    onSuccess: () => {
+      invalidateAll();
+      pushToast({ title: "Invite resent", tone: "success" });
+    },
+    onError: (err: Error) => pushToast({ title: "Failed", body: err.message, tone: "error" }),
+  });
+
+  const revokeInviteMutation = useMutation({
+    mutationFn: (inviteId: string) => teamApi.revokeInvite(selectedCompanyId!, inviteId),
+    onSuccess: () => {
+      invalidateAll();
+      pushToast({ title: "Invite revoked", tone: "success" });
+    },
+    onError: (err: Error) => pushToast({ title: "Failed", body: err.message, tone: "error" }),
+  });
+
+  const handleNodeAction = useCallback(
+    (action: OrgNodeAction) => {
+      switch (action.type) {
+        case "view-profile":
+          navigate(`/team/${action.userId}`);
+          break;
+        case "view-agent":
+          navigate(`/agents/${action.agentId}`);
+          break;
+        case "change-role":
+          setSearchParams({ tab: "humans", highlight: action.userId });
+          break;
+        case "change-reports-to":
+          setSearchParams({ tab: "agents", highlight: action.agentId });
+          break;
+        case "remove":
+          setSearchParams({ tab: "humans", highlight: action.userId });
+          break;
+        case "resend-invite":
+          resendInviteMutation.mutate(action.inviteId);
+          break;
+        case "revoke-invite":
+          revokeInviteMutation.mutate(action.inviteId);
+          break;
+      }
+    },
+    [navigate, setSearchParams, resendInviteMutation, revokeInviteMutation],
+  );
+
   if (!selectedCompanyId) {
     return <EmptyState icon={Users} message="Select a company to view team." />;
   }
@@ -130,7 +182,9 @@ export function TeamPage() {
           {!isLoading && activeTab === "org" && (
             <OrgTreeTab
               orgTree={orgTreeQuery.data ?? []}
+              pendingInvites={teamSummary?.pendingInvites}
               onNodeClick={handleNodeClick}
+              onNodeAction={handleNodeAction}
             />
           )}
 
@@ -149,6 +203,7 @@ export function TeamPage() {
               teamSummary={teamSummary}
               highlightId={highlightId}
               permissions={permissions}
+              isSystemAdmin={teamSummary.currentUser?.isSystemAdmin ?? false}
               onMutationSuccess={invalidateAll}
             />
           )}

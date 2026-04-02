@@ -36,6 +36,42 @@ export type { EntityType, PermissionAction } from "./permissions.js";
 export { contextPackagingService } from "./context-packaging.js";
 export { mcpService } from "./mcp.js";
 export { searchService } from "./search.js";
+export { workflowTemplateService } from "./workflow-templates.js";
+export type { CreateWorkflowInput, UpdateWorkflowInput, InstantiateResult } from "./workflow-templates.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export { discussionService, type DiscussionFilters } from "./discussions.js";
 export { notificationService } from "./notifications.js";
+export { companySkillService } from "./company-skills.js";
+export type { RuntimeSkillEntry } from "./company-skills.js";
+export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
+export { routineService } from "./routines.js";
+export { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
+export { instanceSettingsService } from "./instance-settings.js";
+
+export { boardAuthService } from "./board-auth.js";
+
+export { executionWorkspaceService, toExecutionWorkspace } from "./execution-workspaces.js";
+export {
+  parseProjectExecutionWorkspacePolicy,
+  gateProjectExecutionWorkspacePolicy,
+  parseIssueExecutionWorkspaceSettings,
+  defaultIssueExecutionWorkspaceSettingsForProject,
+  issueExecutionWorkspaceModeForPersistedWorkspace,
+  resolveExecutionWorkspaceMode,
+  buildExecutionWorkspaceAdapterConfig,
+} from "./execution-workspace-policy.js";
+export { workspaceOperationService } from "./workspace-operations.js";
+export { getWorkspaceOperationLogStore } from "./workspace-operation-log-store.js";
+export {
+  realizeExecutionWorkspace,
+  cleanupExecutionWorkspaceArtifacts,
+  ensureRuntimeServicesForRun,
+  releaseRuntimeServicesForRun,
+  stopRuntimeServicesForExecutionWorkspace,
+  reconcilePersistedRuntimeServicesOnStartup,
+  persistAdapterManagedRuntimeServices,
+  normalizeAdapterManagedRuntimeServices,
+  buildWorkspaceReadyComment,
+  sanitizeRuntimeServiceBaseEnv,
+  listWorkspaceRuntimeServicesForProjectWorkspaces,
+} from "./workspace-runtime.js";

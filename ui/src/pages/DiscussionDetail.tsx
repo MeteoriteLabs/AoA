@@ -3,39 +3,46 @@ import { useParams, Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useDialog } from "../context/DialogContext";
 import { useToast } from "../context/ToastContext";
 import { discussionsApi, type DiscussionEntry, type ExtractedItem, type Annotation } from "../api/discussions";
-import { projectsApi } from "../api/projects";
-import { transcriptionApi } from "../api/transcription";
+import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  AlertTriangle,
   Check,
   CheckCheck,
   ChevronDown,
   ChevronRight,
   ClipboardPen,
+  ExternalLink,
   Loader2,
-  MessageSquare,
   MessageCirclePlus,
+  MessageSquare,
   Mic,
   Pencil,
   PenLine,
+  Plus,
   Plug,
   RefreshCw,
-  Send,
   X,
   XCircle,
 } from "lucide-react";
-import { cn } from "../lib/utils";
-import { VoiceRecorder } from "../components/VoiceRecorder";
+import { cn, relativeTime } from "../lib/utils";
 
-type InputTab = "paste" | "write" | "voice";
+/* ─── Constants ─── */
 
 const SOURCE_ICONS: Record<string, typeof ClipboardPen> = {
   paste: ClipboardPen,
@@ -69,23 +76,55 @@ const PRIORITY_COLORS: Record<string, string> = {
 
 const MEMORY_TYPES = new Set(["decision", "insight", "context", "reference", "preference"]);
 
-function humanLayer(layer: string | null | undefined) {
-  return (layer ?? "domain").replace("_", " ");
+type FilterChip = "all" | "tasks" | "decisions" | "memory" | "approved" | "rejected";
+
+/** Map extracted item across all entries, keeping entryId for mutations */
+interface FlatItem {
+  item: ExtractedItem;
+  entryId: string;
 }
+
+function humanLayer(layer: string | null | undefined) {
+  return (layer ?? "domain").replaceAll("_", " ");
+}
+
+function getExtractionError(sourceInfo: Record<string, unknown> | null): string | null {
+  if (!sourceInfo || typeof sourceInfo.extractionError !== "string") return null;
+  return sourceInfo.extractionError;
+}
+
+
+/* ════════════════════════════════════════════════════════════════════════
+   Main Page Component
+   ════════════════════════════════════════════════════════════════════════ */
 
 export function DiscussionDetail() {
   const { discussionId } = useParams<{ discussionId: string }>();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs, setSubtitle, setEntityColor } = useBreadcrumbs();
+  const { openDiscussionCapture } = useDialog();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
 
+  // ── State ──
+  const [activeFilter, setActiveFilter] = useState<FilterChip>("all");
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
+  const [slideOverItem, setSlideOverItem] = useState<FlatItem | null>(null);
+
+  // ── Queries ──
   const { data: discussion, isLoading } = useQuery({
     queryKey: queryKeys.discussions.detail(selectedCompanyId!, discussionId!),
     queryFn: () => discussionsApi.get(selectedCompanyId!, discussionId!),
     enabled: !!selectedCompanyId && !!discussionId,
   });
 
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  // ── Breadcrumbs ──
   useEffect(() => {
     setBreadcrumbs([
       { label: "Discussions", href: "/discussions" },
@@ -95,7 +134,6 @@ export function DiscussionDetail() {
     return () => { setSubtitle(null); setEntityColor(null); };
   }, [discussion?.title, setBreadcrumbs, setSubtitle, setEntityColor]);
 
-  // Subtitle with pending count
   useEffect(() => {
     if (!discussion) return;
     setSubtitle(
@@ -105,27 +143,76 @@ export function DiscussionDetail() {
     );
   }, [discussion, setSubtitle]);
 
-  // All pending item IDs across all entries
-  const allPendingItemIds = useMemo(() => {
+  // ── Flatten all items from all entries ──
+  const flatItems = useMemo<FlatItem[]>(() => {
     if (!discussion) return [];
-    return discussion.entries.flatMap((e) =>
-      e.extractedItems.filter((i) => i.status === "pending").map((i) => i.id),
+    return discussion.entries.flatMap((entry) =>
+      entry.extractedItems.map((item) => ({ item, entryId: entry.id })),
     );
   }, [discussion]);
 
-  // Approve all pending items
+  // ── Filter counts ──
+  const filterCounts = useMemo(() => {
+    const counts = { all: 0, tasks: 0, decisions: 0, memory: 0, approved: 0, rejected: 0 };
+    for (const { item } of flatItems) {
+      counts.all++;
+      if (item.status === "approved" || item.status === "edited") { counts.approved++; continue; }
+      if (item.status === "rejected") { counts.rejected++; continue; }
+      // pending items — count by type
+      if (item.type === "task") counts.tasks++;
+      else if (item.type === "decision") counts.decisions++;
+      else if (MEMORY_TYPES.has(item.type)) counts.memory++;
+    }
+    return counts;
+  }, [flatItems]);
+
+  // ── Filtered items ──
+  const filteredItems = useMemo(() => {
+    return flatItems.filter(({ item }) => {
+      switch (activeFilter) {
+        case "tasks": return item.type === "task" && item.status === "pending";
+        case "decisions": return item.type === "decision" && item.status === "pending";
+        case "memory": return MEMORY_TYPES.has(item.type) && item.status === "pending";
+        case "approved": return item.status === "approved" || item.status === "edited";
+        case "rejected": return item.status === "rejected";
+        default: return true;
+      }
+    });
+  }, [flatItems, activeFilter]);
+
+  // ── Pending items for batch actions ──
+  const pendingItemIds = useMemo(() => {
+    return flatItems
+      .filter(({ item }) => item.status === "pending")
+      .map(({ item }) => item.id);
+  }, [flatItems]);
+
+  // ── Reprocessable count ──
+  const reprocessableCount = useMemo(() => {
+    if (!discussion) return 0;
+    return discussion.entries.filter(
+      (e) => e.extractionStatus === "failed" || e.extractionStatus === "pending" || e.extractionStatus === "skipped",
+    ).length;
+  }, [discussion]);
+
+  // ── Mutations ──
+  const invalidate = useCallback(() => {
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.discussions.detail(selectedCompanyId!, discussionId!),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.discussions.list(selectedCompanyId!),
+    });
+  }, [queryClient, selectedCompanyId, discussionId]);
+
   const approveMutation = useMutation({
     mutationFn: (itemIds: string[]) =>
       discussionsApi.approveItems(selectedCompanyId!, discussionId!, {
         items: itemIds.map((id) => ({ itemId: id, action: "approved" as const })),
       }),
     onSuccess: (result) => {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.discussions.detail(selectedCompanyId!, discussionId!),
-      });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.discussions.list(selectedCompanyId!),
-      });
+      invalidate();
+      setSelectedItemIds(new Set());
       pushToast({
         title: "Items approved",
         body: `${result.tasksCreated.length} tasks, ${result.memoryItemsCreated.length} memory items created`,
@@ -137,31 +224,23 @@ export function DiscussionDetail() {
     },
   });
 
-  // Reject items
   const rejectMutation = useMutation({
     mutationFn: (itemIds: string[]) =>
       discussionsApi.rejectItems(selectedCompanyId!, discussionId!, itemIds),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.discussions.detail(selectedCompanyId!, discussionId!),
-      });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.discussions.list(selectedCompanyId!),
-      });
+      invalidate();
+      setSelectedItemIds(new Set());
     },
     onError: () => {
       pushToast({ title: "Failed to reject items", tone: "warn" });
     },
   });
 
-  // Reprocess entry
   const reprocessMutation = useMutation({
     mutationFn: (entryId: string) =>
       discussionsApi.reprocessEntry(selectedCompanyId!, discussionId!, entryId),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.discussions.detail(selectedCompanyId!, discussionId!),
-      });
+      invalidate();
       pushToast({ title: "Reprocessing entry...", tone: "success" });
     },
     onError: () => {
@@ -169,7 +248,22 @@ export function DiscussionDetail() {
     },
   });
 
-  // Update item
+  const reprocessAllMutation = useMutation({
+    mutationFn: () =>
+      discussionsApi.reprocessAll(selectedCompanyId!, discussionId!),
+    onSuccess: (result) => {
+      invalidate();
+      pushToast({
+        title: "Reprocessing entries...",
+        body: `${result.reprocessedCount} entries queued${result.skippedCount > 0 ? `, ${result.skippedCount} skipped` : ""}`,
+        tone: "success",
+      });
+    },
+    onError: () => {
+      pushToast({ title: "Failed to reprocess entries", tone: "warn" });
+    },
+  });
+
   const updateItemMutation = useMutation({
     mutationFn: ({
       entryId,
@@ -181,34 +275,14 @@ export function DiscussionDetail() {
       data: Record<string, unknown>;
     }) => discussionsApi.updateItem(selectedCompanyId!, discussionId!, entryId, itemId, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.discussions.detail(selectedCompanyId!, discussionId!),
-      });
+      invalidate();
+      pushToast({ title: "Item updated", tone: "success" });
     },
     onError: () => {
       pushToast({ title: "Failed to update item", tone: "warn" });
     },
   });
 
-  // Add entry
-  const addEntryMutation = useMutation({
-    mutationFn: (data: { inputType: "paste" | "write" | "voice" | "mcp"; rawContent: string; title?: string }) =>
-      discussionsApi.addEntry(selectedCompanyId!, discussionId!, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.discussions.detail(selectedCompanyId!, discussionId!),
-      });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.discussions.list(selectedCompanyId!),
-      });
-      pushToast({ title: "Entry added — processing...", tone: "success" });
-    },
-    onError: () => {
-      pushToast({ title: "Failed to add entry", tone: "warn" });
-    },
-  });
-
-  // Add annotation
   const addAnnotationMutation = useMutation({
     mutationFn: ({
       entryId,
@@ -218,9 +292,7 @@ export function DiscussionDetail() {
       data: { content: string; anchorStart: number | null; anchorEnd: number | null };
     }) => discussionsApi.addAnnotation(selectedCompanyId!, discussionId!, entryId, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.discussions.detail(selectedCompanyId!, discussionId!),
-      });
+      invalidate();
       pushToast({ title: "Annotation added", tone: "success" });
     },
     onError: () => {
@@ -228,6 +300,24 @@ export function DiscussionDetail() {
     },
   });
 
+  // ── Selection helpers ──
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedItemIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectAllVisible = useCallback(() => {
+    const pendingVisible = filteredItems
+      .filter(({ item }) => item.status === "pending")
+      .map(({ item }) => item.id);
+    setSelectedItemIds(new Set(pendingVisible));
+  }, [filteredItems]);
+
+  // ── Loading / not found ──
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -247,13 +337,17 @@ export function DiscussionDetail() {
     );
   }
 
+  const selectedPendingIds = [...selectedItemIds].filter((id) =>
+    flatItems.some(({ item }) => item.id === id && item.status === "pending"),
+  );
+
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* ═══ HEADER ═══ */}
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold">{discussion.title}</h1>
-          <div className="flex items-center gap-2 mt-1">
+          <div className="flex items-center gap-2 mt-1 flex-wrap">
             <span className="text-xs text-muted-foreground">
               {discussion.entryCount} {discussion.entryCount === 1 ? "entry" : "entries"}
             </span>
@@ -278,110 +372,240 @@ export function DiscussionDetail() {
             </Badge>
           </div>
         </div>
-        {allPendingItemIds.length > 0 && (
-          <Button
-            size="sm"
-            onClick={() => approveMutation.mutate(allPendingItemIds)}
-            disabled={approveMutation.isPending}
-          >
-            {approveMutation.isPending ? (
-              <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
-            ) : (
-              <CheckCheck className="h-4 w-4 mr-1.5" />
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() =>
+            openDiscussionCapture({
+              existingDiscussionId: discussionId,
+              scopeType: discussion.scopeType ?? undefined,
+              scopeId: discussion.scopeId ?? undefined,
+            })
+          }
+        >
+          <Plus className="h-4 w-4 mr-1.5" />
+          Add Entry
+        </Button>
+      </div>
+
+      {/* ═══ THREAD ZONE ═══ */}
+      <section>
+        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+          Thread
+        </h2>
+        <div className="space-y-1.5">
+          {discussion.entries.map((entry) => (
+            <ThreadEntryRow
+              key={entry.id}
+              entry={entry}
+              onReprocess={() => reprocessMutation.mutate(entry.id)}
+              onAddAnnotation={(content, start, end) =>
+                addAnnotationMutation.mutate({
+                  entryId: entry.id,
+                  data: { content, anchorStart: start, anchorEnd: end },
+                })
+              }
+              isReprocessing={reprocessMutation.isPending && reprocessMutation.variables === entry.id}
+            />
+          ))}
+        </div>
+      </section>
+
+      {/* ═══ ITEMS ZONE ═══ */}
+      <section>
+        {/* Section header with Reprocess All */}
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+            Items to Review
+          </h2>
+          <div className="flex items-center gap-2">
+            {reprocessableCount > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => reprocessAllMutation.mutate()}
+                disabled={reprocessAllMutation.isPending}
+              >
+                {reprocessAllMutation.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                )}
+                Reprocess All ({reprocessableCount})
+              </Button>
             )}
-            Confirm All ({allPendingItemIds.length})
-          </Button>
+          </div>
+        </div>
+
+        {/* Filter chips */}
+        <div className="flex items-center gap-1.5 mb-4 flex-wrap" role="group" aria-label="Filter items">
+          {(
+            [
+              ["all", `All (${filterCounts.all})`],
+              ["tasks", `Tasks (${filterCounts.tasks})`],
+              ["decisions", `Decisions (${filterCounts.decisions})`],
+              ["memory", `Memory (${filterCounts.memory})`],
+              ["approved", `Approved (${filterCounts.approved})`],
+              ["rejected", `Rejected (${filterCounts.rejected})`],
+            ] as [FilterChip, string][]
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              aria-pressed={activeFilter === key}
+              onClick={() => { setActiveFilter(key); setSelectedItemIds(new Set()); }}
+              className={cn(
+                "inline-flex items-center rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                activeFilter === key
+                  ? "bg-foreground text-background"
+                  : "bg-muted text-muted-foreground hover:bg-muted/80",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Batch action bar */}
+        {selectedPendingIds.length > 0 && (
+          <div className="flex items-center gap-2 mb-3 p-2 rounded-md bg-muted/50 border border-border">
+            <span className="text-xs text-muted-foreground">
+              {selectedPendingIds.length} selected
+            </span>
+            <Button
+              size="sm"
+              variant="default"
+              onClick={() => approveMutation.mutate(selectedPendingIds)}
+              disabled={approveMutation.isPending}
+            >
+              {approveMutation.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+              ) : (
+                <CheckCheck className="h-3.5 w-3.5 mr-1" />
+              )}
+              Approve Selected
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => rejectMutation.mutate(selectedPendingIds)}
+              disabled={rejectMutation.isPending}
+            >
+              <X className="h-3.5 w-3.5 mr-1" />
+              Reject Selected
+            </Button>
+            <button
+              onClick={() => setSelectedItemIds(new Set())}
+              className="text-xs text-muted-foreground hover:text-foreground ml-auto"
+            >
+              Clear
+            </button>
+          </div>
         )}
-      </div>
 
-      {/* Entries thread */}
-      <div className="space-y-4">
-        {discussion.entries.map((entry) => (
-          <EntryCard
-            key={entry.id}
-            entry={entry}
-            onReprocess={() => reprocessMutation.mutate(entry.id)}
-            onUpdateItem={(itemId, data) =>
-              updateItemMutation.mutate({ entryId: entry.id, itemId, data })
-            }
-            onApproveItem={(itemId) =>
-              approveMutation.mutate([itemId])
-            }
-            onRejectItem={(itemId) =>
-              rejectMutation.mutate([itemId])
-            }
-            onAddAnnotation={(content, anchorStart, anchorEnd) =>
-              addAnnotationMutation.mutate({
-                entryId: entry.id,
-                data: { content, anchorStart, anchorEnd },
-              })
-            }
-            isReprocessing={reprocessMutation.isPending && reprocessMutation.variables === entry.id}
-          />
-        ))}
-      </div>
+        {/* Select all helper */}
+        {activeFilter !== "approved" && activeFilter !== "rejected" && pendingItemIds.length > 0 && selectedPendingIds.length === 0 && (
+          <div className="flex items-center gap-2 mb-3">
+            <button
+              onClick={selectAllVisible}
+              className="text-xs text-blue-600 hover:underline"
+            >
+              Select all visible pending items
+            </button>
+          </div>
+        )}
 
-      {/* Add entry input bar */}
-      <AddEntryBar
-        onSubmit={(inputType, rawContent) =>
-          addEntryMutation.mutate({ inputType, rawContent })
-        }
-        isSubmitting={addEntryMutation.isPending}
-        companyId={selectedCompanyId!}
+        {/* Item cards */}
+        <div className="space-y-2">
+          {filteredItems.length === 0 && (
+            <div className="text-center py-8">
+              <p className="text-sm text-muted-foreground">
+                {flatItems.length === 0
+                  ? "No items extracted yet. Click Reprocess to extract items from your entries."
+                  : "No items match this filter."}
+              </p>
+            </div>
+          )}
+          {filteredItems.map(({ item, entryId }) => (
+            <ItemCard
+              key={item.id}
+              item={item}
+              selected={selectedItemIds.has(item.id)}
+              onToggleSelect={() => toggleSelect(item.id)}
+              onClick={() => setSlideOverItem({ item, entryId })}
+            />
+          ))}
+        </div>
+      </section>
+
+      {/* ═══ RELATED DISCUSSIONS ═══ */}
+      {discussion.scopeType && discussion.scopeId && (
+        <RelatedDiscussions
+          companyId={selectedCompanyId!}
+          scopeType={discussion.scopeType}
+          scopeId={discussion.scopeId}
+          currentDiscussionId={discussion.id}
+        />
+      )}
+
+      {/* ═══ ITEM MODAL ═══ */}
+      <ItemModal
+        flatItem={slideOverItem}
+        open={!!slideOverItem}
+        onClose={() => setSlideOverItem(null)}
+        agents={agents}
+        onApprove={(id) => {
+          approveMutation.mutate([id]);
+          setSlideOverItem(null);
+        }}
+        onReject={(id) => {
+          rejectMutation.mutate([id]);
+          setSlideOverItem(null);
+        }}
+        onUpdate={(entryId, itemId, data) => {
+          updateItemMutation.mutate({ entryId, itemId, data });
+        }}
+        isUpdating={updateItemMutation.isPending}
       />
     </div>
   );
 }
 
-/* ─── Entry Card ─── */
-// TODO: Add aria-labels to icon-only buttons (edit pencil, reject X, expand/collapse chevron)
-// TODO: Add Cmd/Ctrl+Enter keyboard submit for annotation and entry textareas
-// TODO: Add edit/delete annotation support (needs server PATCH/DELETE endpoints first)
-// TODO: Add "View Memory" link for approved items with resultMemoryId
+/* ════════════════════════════════════════════════════════════════════════
+   Thread Entry Row — compact, collapsible
+   ════════════════════════════════════════════════════════════════════════ */
 
-function EntryCard({
+function ThreadEntryRow({
   entry,
   onReprocess,
-  onUpdateItem,
-  onApproveItem,
-  onRejectItem,
   onAddAnnotation,
   isReprocessing,
 }: {
   entry: DiscussionEntry;
   onReprocess: () => void;
-  onUpdateItem: (itemId: string, data: Record<string, unknown>) => void;
-  onApproveItem: (itemId: string) => void;
-  onRejectItem: (itemId: string) => void;
   onAddAnnotation: (content: string, anchorStart: number | null, anchorEnd: number | null) => void;
   isReprocessing: boolean;
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [showAnnotationInput, setShowAnnotationInput] = useState(false);
   const [annotationText, setAnnotationText] = useState("");
   const [selectedRange, setSelectedRange] = useState<{ start: number; end: number } | null>(null);
   const contentRef = useRef<HTMLParagraphElement>(null);
+
   const SourceIcon = SOURCE_ICONS[entry.inputType] ?? MessageSquare;
   const sourceLabel = SOURCE_LABELS[entry.inputType] ?? entry.inputType;
+  const itemCount = entry.extractedItems.length;
+  const pendingCount = entry.extractedItems.filter((i) => i.status === "pending").length;
 
-  const pendingItems = entry.extractedItems.filter((i) => i.status === "pending");
-  const approvedItems = entry.extractedItems.filter((i) => i.status === "approved" || i.status === "edited");
-  const rejectedItems = entry.extractedItems.filter((i) => i.status === "rejected");
-
-  // Capture text selection within the raw content
   const handleTextSelect = useCallback(() => {
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || !contentRef.current) return;
-    // Only capture if selection is within the content element
     if (!contentRef.current.contains(selection.anchorNode)) return;
-
     const range = selection.getRangeAt(0);
     const preRange = document.createRange();
     preRange.setStart(contentRef.current, 0);
     preRange.setEnd(range.startContainer, range.startOffset);
     const start = preRange.toString().length;
     const end = start + range.toString().length;
-
     if (end > start) {
       setSelectedRange({ start, end });
       setShowAnnotationInput(true);
@@ -400,113 +624,77 @@ function EntryCard({
     setSelectedRange(null);
   }
 
-  // Render raw content with merged annotation highlights.
-  // Handles overlapping annotations by building a character-level map,
-  // then merging adjacent characters with the same annotation set into segments.
-  // Hover shows all annotations covering that region.
+  // Rendered content with annotation highlights
   const renderedContent = useMemo(() => {
     if (!entry.annotations || entry.annotations.length === 0) return null;
-
     const anchored = entry.annotations.filter(
       (a) => a.anchorStart != null && a.anchorEnd != null,
     );
     if (anchored.length === 0) return null;
 
     const text = entry.rawContent;
-    // Build a map: for each character position, which annotations cover it
     const charMap: Annotation[][] = new Array(text.length);
     for (let i = 0; i < text.length; i++) charMap[i] = [];
-
     for (const ann of anchored) {
       const start = Math.max(0, ann.anchorStart!);
       const end = Math.min(text.length, ann.anchorEnd!);
-      for (let i = start; i < end; i++) {
-        charMap[i].push(ann);
-      }
+      for (let i = start; i < end; i++) charMap[i].push(ann);
     }
 
-    // Merge adjacent characters with the same annotation set into segments
     const segments: { text: string; annotations: Annotation[] }[] = [];
     let segStart = 0;
-
     for (let i = 1; i <= text.length; i++) {
-      // Boundary: different annotation set or end of text
       const prevAnns = charMap[i - 1];
       const currAnns = i < text.length ? charMap[i] : [];
       const same =
         prevAnns.length === currAnns.length &&
         prevAnns.every((a, idx) => a.id === currAnns[idx]?.id);
-
       if (!same || i === text.length) {
-        segments.push({
-          text: text.slice(segStart, i),
-          annotations: prevAnns,
-        });
+        segments.push({ text: text.slice(segStart, i), annotations: prevAnns });
         segStart = i;
       }
     }
-
     return segments;
   }, [entry.rawContent, entry.annotations]);
 
-  // Non-anchored annotations (general notes)
   const generalAnnotations = useMemo(
     () => (entry.annotations ?? []).filter((a) => a.anchorStart == null),
     [entry.annotations],
   );
 
+  const extractionError = getExtractionError(entry.sourceInfo);
+  const errorMentionsProvider = extractionError
+    ? extractionError.toLowerCase().includes("api key") || extractionError.toLowerCase().includes("provider")
+    : false;
+
   return (
     <div className="rounded-lg border border-border bg-card">
-      {/* Entry header */}
-      <div className="flex items-center justify-between gap-2 p-4 pb-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <button onClick={() => setExpanded((e) => !e)} className="shrink-0">
-            {expanded ? (
-              <ChevronDown className="h-4 w-4 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-            )}
-          </button>
-          <SourceIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <span className="text-xs font-medium text-muted-foreground">{sourceLabel}</span>
-          <span className="text-xs text-muted-foreground">
-            {new Date(entry.createdAt).toLocaleString()}
+      {/* Compact header row */}
+      <button
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+        className="flex items-center gap-2 w-full px-3 py-2.5 text-left hover:bg-muted/30 transition-colors rounded-lg"
+      >
+        {expanded ? (
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        )}
+        <SourceIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="text-xs font-medium text-muted-foreground">{sourceLabel}</span>
+        <span className="text-xs text-muted-foreground">{relativeTime(entry.createdAt)}</span>
+        <ExtractionStatusBadge status={entry.extractionStatus} />
+        {itemCount > 0 && (
+          <span className="text-[10px] text-muted-foreground ml-auto">
+            {pendingCount > 0 ? `${pendingCount} pending / ` : ""}{itemCount} items
           </span>
-          <ExtractionStatusBadge status={entry.extractionStatus} />
-          {entry.annotations && entry.annotations.length > 0 && (
-            <span className="text-[10px] text-muted-foreground">
-              {entry.annotations.length} {entry.annotations.length === 1 ? "note" : "notes"}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setSelectedRange(null);
-              setShowAnnotationInput((p) => !p);
-            }}
-            className={cn(showAnnotationInput && "bg-accent")}
-          >
-            <MessageCirclePlus className="h-3.5 w-3.5 mr-1" />
-            Annotate
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onReprocess}
-            disabled={isReprocessing || entry.extractionStatus === "processing"}
-          >
-            <RefreshCw className={cn("h-3.5 w-3.5 mr-1", isReprocessing && "animate-spin")} />
-            Reprocess
-          </Button>
-        </div>
-      </div>
+        )}
+      </button>
 
+      {/* Expanded content */}
       {expanded && (
-        <div className="px-4 pb-4 space-y-4">
-          {/* Raw content with annotation highlights */}
+        <div className="px-3 pb-3 space-y-3 border-t border-border pt-3">
+          {/* Raw content */}
           <div className="rounded-md bg-muted/30 p-3">
             <p
               ref={contentRef}
@@ -531,7 +719,7 @@ function EntryCard({
             </p>
           </div>
 
-          {/* General (non-anchored) annotations */}
+          {/* General annotations */}
           {generalAnnotations.length > 0 && (
             <div className="space-y-1">
               {generalAnnotations.map((ann) => (
@@ -542,7 +730,7 @@ function EntryCard({
                   <MessageCirclePlus className="h-3.5 w-3.5 text-yellow-600 shrink-0 mt-0.5" />
                   <div className="min-w-0">
                     <p className="text-xs text-yellow-800 dark:text-yellow-300">{ann.content}</p>
-                    <span className="text-[10px] text-yellow-600/80 dark:text-yellow-500">
+                    <span className="text-[10px] text-yellow-600/80">
                       {new Date(ann.createdAt).toLocaleString()}
                     </span>
                   </div>
@@ -589,66 +777,7 @@ function EntryCard({
             </div>
           )}
 
-          {/* Extracted items */}
-          {entry.extractedItems.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Extracted Items ({entry.extractedItems.length})
-              </p>
-
-              {/* Pending items */}
-              {pendingItems.map((item) => (
-                <ExtractedItemCard
-                  key={item.id}
-                  item={item}
-                  onUpdate={(data) => onUpdateItem(item.id, data)}
-                  onApprove={() => onApproveItem(item.id)}
-                  onReject={() => onRejectItem(item.id)}
-                />
-              ))}
-
-              {/* Approved items */}
-              {approvedItems.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50/70 dark:border-green-800 dark:bg-green-950/30 p-3"
-                >
-                  <Check className="h-4 w-4 text-green-600 shrink-0" />
-                  <span className="text-sm">{item.title}</span>
-                  <span
-                    className={cn(
-                      "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
-                      TYPE_COLORS[item.type] ?? "bg-muted text-muted-foreground",
-                    )}
-                  >
-                    {item.type}
-                  </span>
-                  {item.resultTaskId && (
-                    <Link
-                      to={`/issues?selected=${item.resultTaskId}`}
-                      className="text-xs text-blue-600 hover:underline"
-                    >
-                      View Task
-                    </Link>
-                  )}
-                </div>
-              ))}
-
-              {/* Rejected items */}
-              {rejectedItems.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center gap-2 rounded-md border border-border p-3 opacity-50"
-                >
-                  <XCircle className="h-4 w-4 text-muted-foreground shrink-0" />
-                  <span className="text-sm line-through text-muted-foreground">{item.title}</span>
-                  <span className="text-[10px] text-muted-foreground uppercase">{item.type}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Processing indicator */}
+          {/* Processing / failed / skipped status messages */}
           {entry.extractionStatus === "processing" && (
             <div className="flex items-center gap-2 rounded-md bg-muted/50 p-3">
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -657,20 +786,81 @@ function EntryCard({
           )}
 
           {entry.extractionStatus === "failed" && (
-            <div className="flex items-center gap-2 rounded-md bg-red-50 dark:bg-red-950/30 p-3">
-              <XCircle className="h-4 w-4 text-red-600" />
-              <span className="text-sm text-red-700 dark:text-red-400">
-                Extraction failed — try reprocessing
-              </span>
+            <div className="flex flex-col gap-1 rounded-md bg-red-50 dark:bg-red-950/30 p-3">
+              <div className="flex items-center gap-2">
+                <XCircle className="h-4 w-4 text-red-600 shrink-0" />
+                <span className="text-sm text-red-700 dark:text-red-400">
+                  Extraction failed
+                </span>
+              </div>
+              {extractionError && (
+                <p className="text-xs text-red-600/80 dark:text-red-400/80 ml-6">
+                  {extractionError}
+                  {errorMentionsProvider ? (
+                    <Link to="/settings?tab=llm" className="ml-1 underline hover:no-underline">
+                      Go to Settings
+                    </Link>
+                  ) : null}
+                </p>
+              )}
             </div>
           )}
+
+          {entry.extractionStatus === "skipped" && (
+            <div className="flex flex-col gap-1 rounded-md bg-amber-50 dark:bg-amber-950/30 p-3">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+                <span className="text-sm text-amber-700 dark:text-amber-400">
+                  Extraction skipped
+                </span>
+              </div>
+              {extractionError && (
+                <p className="text-xs text-amber-600/80 dark:text-amber-400/80 ml-6">
+                  {extractionError}
+                  {errorMentionsProvider ? (
+                    <Link to="/settings?tab=llm" className="ml-1 underline hover:no-underline">
+                      Go to Settings
+                    </Link>
+                  ) : null}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSelectedRange(null);
+                setShowAnnotationInput((p) => !p);
+              }}
+              className={cn("text-xs", showAnnotationInput && "bg-accent")}
+            >
+              <MessageCirclePlus className="h-3.5 w-3.5 mr-1" />
+              Annotate
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onReprocess}
+              disabled={isReprocessing || entry.extractionStatus === "processing"}
+              className="text-xs"
+            >
+              <RefreshCw className={cn("h-3.5 w-3.5 mr-1", isReprocessing && "animate-spin")} />
+              Reprocess
+            </Button>
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-/* ─── Extraction Status Badge ─── */
+/* ════════════════════════════════════════════════════════════════════════
+   Extraction Status Badge
+   ════════════════════════════════════════════════════════════════════════ */
 
 function ExtractionStatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
@@ -678,6 +868,7 @@ function ExtractionStatusBadge({ status }: { status: string }) {
     processing: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
     completed: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
     failed: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
+    skipped: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
   };
 
   return (
@@ -693,248 +884,466 @@ function ExtractionStatusBadge({ status }: { status: string }) {
   );
 }
 
-/* ─── Extracted Item Card ─── */
+/* ════════════════════════════════════════════════════════════════════════
+   Item Card — task-card-like in the Items zone
+   ════════════════════════════════════════════════════════════════════════ */
 
-function ExtractedItemCard({
+function ItemCard({
   item,
-  onUpdate,
-  onApprove,
-  onReject,
+  selected,
+  onToggleSelect,
+  onClick,
 }: {
   item: ExtractedItem;
-  onUpdate: (data: Record<string, unknown>) => void;
-  onApprove: () => void;
-  onReject: () => void;
+  selected: boolean;
+  onToggleSelect: () => void;
+  onClick: () => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [editTitle, setEditTitle] = useState(item.title);
-  const [editDescription, setEditDescription] = useState(item.description ?? "");
-  const [editPriority, setEditPriority] = useState(item.suggestedPriority ?? "medium");
-  const isMemoryType = MEMORY_TYPES.has(item.type);
+  const isPending = item.status === "pending";
+  const isApproved = item.status === "approved" || item.status === "edited";
+  const isRejected = item.status === "rejected";
+  const isMemory = MEMORY_TYPES.has(item.type);
   const effectiveLayer = item.layer ?? item.suggestedLayer ?? "domain";
 
-  function saveEdit() {
-    onUpdate({
-      status: "edited",
-      title: editTitle,
-      description: editDescription,
-      ...(item.type === "task" ? { suggestedPriority: editPriority } : {}),
-    });
-    setEditing(false);
-  }
-
   return (
-    <div className="rounded-md border border-border bg-card p-3 space-y-2">
-      {editing ? (
-        <div className="space-y-2">
-          <Input
-            value={editTitle}
-            onChange={(e) => setEditTitle(e.target.value)}
-            className="text-sm font-medium"
+    <div
+      className={cn(
+        "group flex items-center gap-3 rounded-lg border p-3 transition-colors cursor-pointer",
+        isApproved && "border-green-200 bg-green-50/50 dark:border-green-800 dark:bg-green-950/20",
+        isRejected && "border-border bg-card opacity-50",
+        isPending && "border-border bg-card hover:bg-muted/30",
+      )}
+      onClick={onClick}
+    >
+      {/* Checkbox — only for pending items */}
+      {isPending && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <Checkbox
+            checked={selected}
+            onCheckedChange={() => onToggleSelect()}
+            aria-label={`Select item: ${item.title}`}
           />
-          <Textarea
-            value={editDescription}
-            onChange={(e) => setEditDescription(e.target.value)}
-            className="min-h-[80px] text-sm resize-y"
-          />
-          {item.type === "task" && (
-            <select
-              value={editPriority}
-              onChange={(e) => setEditPriority(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-            >
-              <option value="urgent">Urgent</option>
-              <option value="high">High</option>
-              <option value="medium">Medium</option>
-              <option value="low">Low</option>
-            </select>
-          )}
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
-              Cancel
-            </Button>
-            <Button size="sm" onClick={saveEdit}>
-              Save
-            </Button>
-          </div>
         </div>
-      ) : (
-        <>
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-2 flex-wrap min-w-0">
-              <Checkbox
-                checked={false}
-                onCheckedChange={() => onApprove()}
-              />
-              <span className="text-sm font-medium">{item.title}</span>
-              <span
-                className={cn(
-                  "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
-                  TYPE_COLORS[item.type] ?? "bg-muted text-muted-foreground",
-                )}
-              >
-                {item.type}
-              </span>
-              {item.type === "task" && item.suggestedPriority && (
-                <span
-                  className={cn(
-                    "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium",
-                    PRIORITY_COLORS[item.suggestedPriority] ?? "bg-muted text-muted-foreground",
-                  )}
-                >
-                  {item.suggestedPriority}
-                </span>
+      )}
+
+      {/* Status icon for non-pending */}
+      {isApproved && <Check className="h-4 w-4 text-green-600 shrink-0" />}
+      {isRejected && <XCircle className="h-4 w-4 text-muted-foreground shrink-0" />}
+
+      {/* Title + badges */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={cn("text-sm font-medium truncate", isRejected && "line-through text-muted-foreground")}>
+            {item.title}
+          </span>
+          <span
+            className={cn(
+              "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase shrink-0",
+              TYPE_COLORS[item.type] ?? "bg-muted text-muted-foreground",
+            )}
+          >
+            {item.type}
+          </span>
+          {item.type === "task" && item.suggestedPriority && (
+            <span
+              className={cn(
+                "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0",
+                PRIORITY_COLORS[item.suggestedPriority] ?? "bg-muted text-muted-foreground",
               )}
-              {isMemoryType && (
-                <Badge variant="outline" className="text-[10px]">
-                  {humanLayer(effectiveLayer)}
-                </Badge>
-              )}
-              {item.conflictsWith && (
-                <Badge variant="destructive" className="text-[10px]">
-                  Conflict
-                </Badge>
-              )}
-            </div>
-            <div className="flex items-center gap-1 shrink-0">
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                onClick={() => {
-                  setEditTitle(item.title);
-                  setEditDescription(item.description ?? "");
-                  setEditPriority(item.suggestedPriority ?? "medium");
-                  setEditing(true);
-                }}
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </Button>
-              <Button variant="ghost" size="icon-xs" onClick={onReject}>
-                <X className="h-3.5 w-3.5 text-red-500" />
-              </Button>
-            </div>
-          </div>
-          {item.description && (
-            <p className="text-xs text-muted-foreground pl-7">{item.description}</p>
+            >
+              {item.suggestedPriority}
+            </span>
           )}
-        </>
+          {isMemory && (
+            <Badge variant="outline" className="text-[10px] shrink-0">
+              {humanLayer(effectiveLayer)}
+            </Badge>
+          )}
+          {item.conflictsWith && (
+            <Badge variant="destructive" className="text-[10px] shrink-0">
+              Conflict
+            </Badge>
+          )}
+        </div>
+        {item.description && (
+          <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{item.description}</p>
+        )}
+      </div>
+
+      {/* Links for approved items */}
+      {isApproved && (
+        <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+          {item.resultTaskId && (
+            <Link
+              to={`/issues?selected=${item.resultTaskId}`}
+              className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+            >
+              <ExternalLink className="h-3 w-3" />
+              View Task
+            </Link>
+          )}
+          {item.resultMemoryId && (
+            <Link
+              to="/memory"
+              className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+            >
+              <ExternalLink className="h-3 w-3" />
+              View Memory
+            </Link>
+          )}
+        </div>
+      )}
+
+      {/* Chevron hint for pending */}
+      {isPending && (
+        <ChevronRight className="h-4 w-4 text-muted-foreground/40 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
       )}
     </div>
   );
 }
 
-/* ─── Add Entry Bar ─── */
+/* ════════════════════════════════════════════════════════════════════════
+   Item Modal — centered dialog, adapts by type (task vs memory)
+   ════════════════════════════════════════════════════════════════════════ */
 
-function AddEntryBar({
-  onSubmit,
-  isSubmitting,
-  companyId,
+function ItemModal({
+  flatItem,
+  open,
+  onClose,
+  agents,
+  onApprove,
+  onReject,
+  onUpdate,
+  isUpdating,
 }: {
-  onSubmit: (inputType: InputTab, rawContent: string) => void;
-  isSubmitting: boolean;
-  companyId: string;
+  flatItem: FlatItem | null;
+  open: boolean;
+  onClose: () => void;
+  agents?: Array<{ id: string; name: string; status: string }>;
+  onApprove: (itemId: string) => void;
+  onReject: (itemId: string) => void;
+  onUpdate: (entryId: string, itemId: string, data: Record<string, unknown>) => void;
+  isUpdating: boolean;
 }) {
-  const [tab, setTab] = useState<InputTab>("write");
-  const [content, setContent] = useState("");
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [transcription, setTranscription] = useState<string | null>(null);
-  const [transcriptionEdited, setTranscriptionEdited] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editPriority, setEditPriority] = useState("medium");
+  const [editAssigneeId, setEditAssigneeId] = useState("");
+  const [editLayer, setEditLayer] = useState("domain");
 
-  function handleSubmit() {
-    if (tab === "voice") {
-      const voiceContent = transcriptionEdited.trim() || transcription?.trim();
-      if (!voiceContent) return;
-      onSubmit("voice", voiceContent);
-      setTranscription(null);
-      setTranscriptionEdited("");
-    } else {
-      if (!content.trim()) return;
-      onSubmit(tab, content.trim());
-      setContent("");
+  // Sync edit state when a new item is opened
+  useEffect(() => {
+    if (flatItem) {
+      setEditTitle(flatItem.item.title);
+      setEditDescription(flatItem.item.description ?? "");
+      setEditPriority(flatItem.item.suggestedPriority ?? "medium");
+      setEditAssigneeId(flatItem.item.suggestedAssigneeId ?? "");
+      setEditLayer(flatItem.item.layer ?? flatItem.item.suggestedLayer ?? "domain");
+      setEditing(false);
     }
-  }
+  }, [flatItem]);
 
-  async function handleRecordingComplete(blob: Blob) {
-    setIsTranscribing(true);
-    try {
-      const result = await transcriptionApi.transcribe(companyId, blob);
-      setTranscription(result.text);
-      setTranscriptionEdited(result.text);
-    } catch {
-      setTranscription(null);
-    } finally {
-      setIsTranscribing(false);
+  if (!flatItem) return null;
+
+  const { item, entryId } = flatItem;
+  const isPending = item.status === "pending";
+  const isApproved = item.status === "approved" || item.status === "edited";
+  const isRejected = item.status === "rejected";
+  const isTask = item.type === "task";
+  const isMemory = MEMORY_TYPES.has(item.type);
+
+  function handleSave() {
+    const data: Record<string, unknown> = {
+      status: "edited",
+      title: editTitle,
+      description: editDescription,
+    };
+    if (isTask) {
+      data.suggestedPriority = editPriority;
+      data.suggestedAssigneeId = editAssigneeId || null;
     }
+    if (isMemory) {
+      data.layer = editLayer;
+    }
+    onUpdate(entryId, item.id, data);
+    setEditing(false);
   }
-
-  const canSubmit =
-    tab === "voice"
-      ? !!(transcriptionEdited.trim() || transcription?.trim()) && !isTranscribing
-      : !!content.trim();
 
   return (
-    <div className="rounded-lg border border-border bg-card p-4 space-y-3">
-      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-        Add Entry
-      </p>
-      <Tabs value={tab} onValueChange={(v) => setTab(v as InputTab)}>
-        <TabsList>
-          <TabsTrigger value="paste">Paste</TabsTrigger>
-          <TabsTrigger value="write">Write</TabsTrigger>
-          <TabsTrigger value="voice" className="gap-1.5">
-            <Mic className="h-3.5 w-3.5" />
-            Voice
-          </TabsTrigger>
-        </TabsList>
-        <TabsContent value="paste" className="mt-3">
-          <Textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder="Paste meeting notes, research, conversation transcripts..."
-            className="min-h-[120px] resize-y"
-          />
-        </TabsContent>
-        <TabsContent value="write" className="mt-3">
-          <Textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder="Write your observations, decisions, ideas..."
-            className="min-h-[120px] resize-y"
-          />
-        </TabsContent>
-        <TabsContent value="voice" className="mt-3">
-          <div className="flex flex-col gap-3">
-            <VoiceRecorder onRecordingComplete={handleRecordingComplete} disabled={isTranscribing} />
-            {isTranscribing && (
-              <div className="flex items-center gap-2 rounded-md bg-muted/50 p-3">
-                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                <span className="text-sm text-muted-foreground">Transcribing...</span>
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="sm:max-w-lg gap-0 flex flex-col max-h-[85vh]">
+        <DialogHeader className="px-6 pt-6 pb-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span
+              className={cn(
+                "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase",
+                TYPE_COLORS[item.type] ?? "bg-muted text-muted-foreground",
+              )}
+            >
+              {item.type}
+            </span>
+            {isPending && <Badge variant="outline" className="text-[10px]">Pending</Badge>}
+            {isApproved && <Badge className="bg-green-100 text-green-800 text-[10px]">Approved</Badge>}
+            {isRejected && <Badge variant="secondary" className="text-[10px] opacity-60">Rejected</Badge>}
+          </div>
+          <DialogTitle className="text-base mt-2">
+            {editing ? (
+              <Input
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                className="text-base font-semibold"
+              />
+            ) : (
+              item.title
+            )}
+          </DialogTitle>
+          <DialogDescription className="sr-only">Item details</DialogDescription>
+        </DialogHeader>
+
+        <div className="flex-1 overflow-y-auto px-6">
+          <div className="space-y-4 pb-4">
+            {/* Description */}
+            <div>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Description
+              </label>
+              {editing ? (
+                <Textarea
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  className="mt-1 min-h-[100px] text-sm resize-y"
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground mt-1">
+                  {item.description || "No description"}
+                </p>
+              )}
+            </div>
+
+            {/* Task-specific fields */}
+            {isTask && (
+              <>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Priority
+                  </label>
+                  {editing ? (
+                    <select
+                      value={editPriority}
+                      onChange={(e) => setEditPriority(e.target.value)}
+                      className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                    >
+                      <option value="urgent">Urgent</option>
+                      <option value="high">High</option>
+                      <option value="medium">Medium</option>
+                      <option value="low">Low</option>
+                    </select>
+                  ) : (
+                    <div className="mt-1">
+                      <span
+                        className={cn(
+                          "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize",
+                          PRIORITY_COLORS[item.suggestedPriority ?? "medium"] ?? "bg-muted text-muted-foreground",
+                        )}
+                      >
+                        {item.suggestedPriority ?? "medium"}
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Assign To
+                  </label>
+                  {editing ? (
+                    <select
+                      value={editAssigneeId}
+                      onChange={(e) => setEditAssigneeId(e.target.value)}
+                      className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                    >
+                      <option value="">Unassigned (backlog)</option>
+                      {(agents ?? [])
+                        .filter((a) => a.status !== "disabled")
+                        .map((a) => (
+                          <option key={a.id} value={a.id}>{a.name}</option>
+                        ))}
+                    </select>
+                  ) : (
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {item.suggestedAssigneeId
+                        ? (agents ?? []).find((a) => a.id === item.suggestedAssigneeId)?.name ?? "Assigned"
+                        : "Unassigned (will go to backlog)"}
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* Memory-specific fields */}
+            {isMemory && (
+              <div>
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Memory Layer
+                </label>
+                {editing ? (
+                  <select
+                    value={editLayer}
+                    onChange={(e) => setEditLayer(e.target.value)}
+                    className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                  >
+                    <option value="identity">Identity</option>
+                    <option value="domain">Domain</option>
+                    <option value="active_context">Active Context</option>
+                    <option value="working">Working</option>
+                  </select>
+                ) : (
+                  <div className="mt-1">
+                    <Badge variant="outline" className="text-xs capitalize">
+                      {humanLayer(item.layer ?? item.suggestedLayer ?? "domain")}
+                    </Badge>
+                  </div>
+                )}
               </div>
             )}
-            {transcription !== null && !isTranscribing && (
-              <Textarea
-                value={transcriptionEdited}
-                onChange={(e) => setTranscriptionEdited(e.target.value)}
-                className="min-h-[80px] resize-y text-sm"
-              />
+
+            {/* Conflict warning */}
+            {item.conflictsWith && (
+              <div className="rounded-md bg-red-50 dark:bg-red-950/30 p-3">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+                  <span className="text-sm text-red-700 dark:text-red-400">
+                    Conflicts with existing item
+                  </span>
+                </div>
+                <p className="text-xs text-red-600/80 mt-1 ml-6">{item.conflictsWith}</p>
+              </div>
+            )}
+
+            {/* Result links for approved items */}
+            {isApproved && (item.resultTaskId || item.resultMemoryId) && (
+              <div className="rounded-md bg-green-50 dark:bg-green-950/30 p-3 space-y-2">
+                <p className="text-xs font-medium text-green-800 dark:text-green-300 uppercase">
+                  Created
+                </p>
+                {item.resultTaskId && (
+                  <Link
+                    to={`/issues?selected=${item.resultTaskId}`}
+                    className="flex items-center gap-1.5 text-sm text-blue-600 hover:underline"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    View Task
+                  </Link>
+                )}
+                {item.resultMemoryId && (
+                  <Link
+                    to="/memory"
+                    className="flex items-center gap-1.5 text-sm text-blue-600 hover:underline"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    View Memory Item
+                  </Link>
+                )}
+              </div>
             )}
           </div>
-        </TabsContent>
-      </Tabs>
-      <div className="flex justify-end">
-        <Button
-          size="sm"
-          onClick={handleSubmit}
-          disabled={!canSubmit || isSubmitting}
-        >
-          {isSubmitting ? (
-            <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
-          ) : (
-            <Send className="h-4 w-4 mr-1.5" />
+        </div>
+
+        {/* Footer actions */}
+        <div className="border-t border-border px-6 py-4 space-y-2">
+          {isPending && !editing && (
+            <div className="flex items-center gap-2">
+              <Button className="flex-1" onClick={() => onApprove(item.id)}>
+                <Check className="h-4 w-4 mr-1.5" />
+                Approve
+              </Button>
+              <Button variant="outline" className="flex-1" onClick={() => onReject(item.id)}>
+                <X className="h-4 w-4 mr-1.5" />
+                Reject
+              </Button>
+            </div>
           )}
-          Add Entry
-        </Button>
+          {isPending && !editing && (
+            <Button
+              variant="ghost"
+              className="w-full"
+              onClick={() => setEditing(true)}
+            >
+              <Pencil className="h-4 w-4 mr-1.5" />
+              Edit Before Approving
+            </Button>
+          )}
+          {editing && (
+            <div className="flex items-center gap-2">
+              <Button className="flex-1" onClick={handleSave} disabled={isUpdating}>
+                {isUpdating ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : null}
+                Save Changes
+              </Button>
+              <Button variant="ghost" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+            </div>
+          )}
+          {isRejected && (
+            <p className="text-xs text-center text-muted-foreground">
+              This item was rejected.
+            </p>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Related Discussions
+   ════════════════════════════════════════════════════════════════════════ */
+
+function RelatedDiscussions({
+  companyId,
+  scopeType,
+  scopeId,
+  currentDiscussionId,
+}: {
+  companyId: string;
+  scopeType: string;
+  scopeId: string;
+  currentDiscussionId: string;
+}) {
+  const { data } = useQuery({
+    queryKey: [...queryKeys.discussions.list(companyId), "related", scopeType, scopeId],
+    queryFn: () => discussionsApi.list(companyId, { scopeType, scopeId }),
+    enabled: !!companyId && !!scopeId,
+  });
+
+  const related = useMemo(() => {
+    if (!data?.discussions) return [];
+    return data.discussions
+      .filter((d) => d.id !== currentDiscussionId)
+      .slice(0, 5);
+  }, [data, currentDiscussionId]);
+
+  if (related.length === 0) return null;
+
+  return (
+    <section className="mt-2 rounded-lg border border-border p-4">
+      <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+        Related Discussions
+      </h3>
+      <div className="space-y-1.5">
+        {related.map((d) => (
+          <Link
+            key={d.id}
+            to={`/discussions/${d.id}`}
+            className="flex items-center justify-between rounded-md px-3 py-2 hover:bg-muted/50 transition-colors text-sm"
+          >
+            <span className="truncate">{d.title || "Untitled"}</span>
+            <span className="text-xs text-muted-foreground shrink-0 ml-2">
+              {d.entryCount} {d.entryCount === 1 ? "entry" : "entries"}
+            </span>
+          </Link>
+        ))}
       </div>
-    </div>
+    </section>
   );
 }

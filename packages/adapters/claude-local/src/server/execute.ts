@@ -46,19 +46,40 @@ async function resolvePaperclipSkillsDir(): Promise<string | null> {
  * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
  * them as proper registered skills.
  */
-async function buildSkillsDir(): Promise<string> {
+async function buildSkillsDir(
+  dbSkills?: Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }>,
+): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
   const target = path.join(tmp, ".claude", "skills");
   await fs.mkdir(target, { recursive: true });
   const skillsDir = await resolvePaperclipSkillsDir();
-  if (!skillsDir) return tmp;
-  const entries = await fs.readdir(skillsDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      await fs.symlink(
-        path.join(skillsDir, entry.name),
-        path.join(target, entry.name),
-      );
+  if (skillsDir) {
+    const entries = await fs.readdir(skillsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const src = path.join(skillsDir, entry.name);
+        const dest = path.join(target, entry.name);
+        try {
+          await fs.symlink(src, dest, process.platform === "win32" ? "junction" : undefined);
+        } catch {
+          // Fallback to copy if symlink/junction fails (Windows without admin)
+          await fs.cp(src, dest, { recursive: true });
+        }
+      }
+    }
+  }
+  // Write DB-backed company skills
+  if (dbSkills) {
+    for (const skill of dbSkills) {
+      const skillFolderName = skill.key.replace(/\//g, "--");
+      const skillDir = path.join(target, skillFolderName);
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), skill.markdown, "utf-8");
+      for (const file of skill.files ?? []) {
+        const fullPath = path.join(skillDir, file.path);
+        await fs.mkdir(path.dirname(fullPath), { recursive: true });
+        await fs.writeFile(fullPath, file.content, "utf-8");
+      }
     }
   }
   return tmp;
@@ -304,7 +325,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   const billingType = resolveClaudeBillingType(env);
-  const skillsDir = await buildSkillsDir();
+  const dbSkills = (context.skills as Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }> | undefined) ?? [];
+  const skillsDir = await buildSkillsDir(dbSkills.length > 0 ? dbSkills : undefined);
 
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need

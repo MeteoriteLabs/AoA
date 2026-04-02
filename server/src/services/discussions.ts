@@ -165,7 +165,28 @@ export function discussionService(db: Db) {
           .where(inArray(discussionAnnotations.discussionEntryId, entryIds));
       }
 
-      return { ...discussion, entries, items, annotations };
+      // Group items and annotations by entry for the frontend
+      const itemsByEntry = new Map<string, typeof items>();
+      for (const item of items) {
+        const list = itemsByEntry.get(item.discussionEntryId) ?? [];
+        list.push(item);
+        itemsByEntry.set(item.discussionEntryId, list);
+      }
+
+      const annotationsByEntry = new Map<string, typeof annotations>();
+      for (const ann of annotations) {
+        const list = annotationsByEntry.get(ann.discussionEntryId) ?? [];
+        list.push(ann);
+        annotationsByEntry.set(ann.discussionEntryId, list);
+      }
+
+      const enrichedEntries = entries.map((e) => ({
+        ...e,
+        extractedItems: itemsByEntry.get(e.id) ?? [],
+        annotations: annotationsByEntry.get(e.id) ?? [],
+      }));
+
+      return { ...discussion, entries: enrichedEntries };
     },
 
     /**
@@ -309,8 +330,8 @@ export function discussionService(db: Db) {
 
     /**
      * Add an entry to an existing discussion.
-     * Fires extraction (fire-and-forget), updates lastEntryAt,
-     * publishes discussion.entry.created LiveEvent.
+     * Extraction is manual-only — user clicks Reprocess on the detail page.
+     * Updates lastEntryAt, publishes discussion.entry.created LiveEvent.
      * Gotcha 1.2: increments entryCount in same operation.
      */
     addEntry: async (
@@ -380,6 +401,8 @@ export function discussionService(db: Db) {
           inputType: data.inputType,
         },
       });
+
+      // Extraction is manual-only — user clicks "Reprocess" to trigger extraction
 
       await logActivity(db, {
         companyId,
@@ -788,7 +811,125 @@ export function discussionService(db: Db) {
           .where(eq(discussions.id, entry.discussionId));
       }
 
+      // Trigger re-extraction via the event pipeline
+      publishLiveEvent({
+        companyId,
+        type: "discussion.entry.created",
+        payload: { discussionId: entry.discussionId, entryId },
+      });
+
+      // Trigger extraction directly (fire-and-forget)
+      import("./extraction.js")
+        .then(({ extractionService }) => {
+          extractionService(db)
+            .extractFromDiscussionEntry(companyId, entryId)
+            .catch(() => {}); // errors handled internally
+        })
+        .catch(() => {}); // module load error — swallow
+
       return { entryId, extractionStatus: "pending" as const };
+    },
+
+    /**
+     * Reprocess all failed/pending/skipped entries in a discussion.
+     */
+    reprocessAllEntries: async (companyId: string, discussionId: string) => {
+      // Verify discussion belongs to company
+      const disc = await db
+        .select({ id: discussions.id, companyId: discussions.companyId })
+        .from(discussions)
+        .where(and(eq(discussions.id, discussionId), eq(discussions.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+
+      if (!disc) {
+        throw notFound("Discussion not found");
+      }
+
+      // Fetch entries that need reprocessing
+      const entries = await db
+        .select()
+        .from(discussionEntries)
+        .where(eq(discussionEntries.discussionId, discussionId));
+
+      const reprocessable = entries.filter(
+        (e) => e.extractionStatus === "failed" || e.extractionStatus === "pending" || e.extractionStatus === "skipped",
+      );
+
+      let reprocessedCount = 0;
+      let skippedCount = 0;
+      let deletedPendingCount = 0;
+
+      for (const entry of reprocessable) {
+        // Check for approved items — skip if any
+        const approvedItems = await db
+          .select({ id: discussionExtractedItems.id })
+          .from(discussionExtractedItems)
+          .where(
+            and(
+              eq(discussionExtractedItems.discussionEntryId, entry.id),
+              eq(discussionExtractedItems.status, "approved"),
+            ),
+          );
+
+        if (approvedItems.length > 0) {
+          skippedCount++;
+          continue;
+        }
+
+        // Count pending items being deleted
+        const pendingItems = await db
+          .select({ id: discussionExtractedItems.id })
+          .from(discussionExtractedItems)
+          .where(
+            and(
+              eq(discussionExtractedItems.discussionEntryId, entry.id),
+              eq(discussionExtractedItems.status, "pending"),
+            ),
+          );
+        deletedPendingCount += pendingItems.length;
+
+        // Delete non-approved extracted items
+        await db
+          .delete(discussionExtractedItems)
+          .where(eq(discussionExtractedItems.discussionEntryId, entry.id));
+
+        // Reset extraction status
+        await db
+          .update(discussionEntries)
+          .set({ extractionStatus: "pending", extractionRunId: null })
+          .where(eq(discussionEntries.id, entry.id));
+
+        // Trigger extraction
+        publishLiveEvent({
+          companyId,
+          type: "discussion.entry.created",
+          payload: { discussionId, entryId: entry.id },
+        });
+
+        // Trigger extraction directly (fire-and-forget)
+        import("./extraction.js")
+          .then(({ extractionService }) => {
+            extractionService(db)
+              .extractFromDiscussionEntry(companyId, entry.id)
+              .catch(() => {}); // errors handled internally
+          })
+          .catch(() => {}); // module load error — swallow
+
+        reprocessedCount++;
+      }
+
+      // Update pending count on discussion
+      if (deletedPendingCount > 0) {
+        await db
+          .update(discussions)
+          .set({
+            pendingItemCount: sql`GREATEST(${discussions.pendingItemCount} - ${deletedPendingCount}, 0)`,
+            updatedAt: new Date(),
+          })
+          .where(eq(discussions.id, discussionId));
+      }
+
+      return { reprocessedCount, skippedCount };
     },
 
     /**

@@ -3,5 +3,5 @@ export interface SidebarBadges {
   approvals: number;
   failedRuns: number;
   joinRequests: number;
-  pendingBriefs: number;
+  pendingDiscussions: number;
 }

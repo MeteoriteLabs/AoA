@@ -1,32 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Users, UserPlus, Trash2 } from "lucide-react";
-import type { Project, TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@paperclipai/shared";
+import { Users, UserPlus, Shield, ArrowRightLeft, RotateCw, X } from "lucide-react";
+import type { TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@paperclipai/shared";
+import { useNavigate } from "@/lib/router";
 import { teamApi } from "../../api/team";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { useToast } from "../../context/ToastContext";
 import { queryKeys } from "../../lib/queryKeys";
-import { InviteDialog } from "../InviteDialog";
+import { AddMemberDialog } from "./AddMemberDialog";
+import { TransferAdminDialog } from "./TransferAdminDialog";
 import { EmptyState } from "../EmptyState";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { ClickableDiv } from "@/components/ui/clickable-div";
 import { cn } from "@/lib/utils";
 
 const ROLE_STYLES: Record<UserRole, string> = {
@@ -45,6 +34,7 @@ interface HumansTabProps {
   teamSummary: TeamSummary;
   highlightId?: string | null;
   permissions: TeamPermissionSummary;
+  isSystemAdmin: boolean;
   onMutationSuccess?: () => void;
 }
 
@@ -68,125 +58,28 @@ function PermissionDisabledButton({
   );
 }
 
-function ReportsToSelect({
-  member,
-  members,
-  disabled,
-  onParentChange,
-  isUpdating,
-}: {
-  member: TeamMemberSummary;
-  members: TeamMemberSummary[];
-  disabled: boolean;
-  onParentChange: (parentId: string | null) => void;
-  isUpdating: boolean;
-}) {
-  // D1: humans only report to humans — filter to accepted users only, exclude self
-  const options = useMemo(
-    () => members.filter((m) => m.userId !== member.userId),
-    [members, member.userId],
-  );
-
-  return (
-    <PermissionDisabledButton
-      disabled={disabled}
-      tooltip="You don't have permission to change reporting structure"
-    >
-      <Select
-        value={member.parentId ?? "none"}
-        onValueChange={(value) => onParentChange(value === "none" ? null : value)}
-        disabled={disabled || isUpdating}
-      >
-        <SelectTrigger className="w-full">
-          <SelectValue placeholder="No manager" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="none">No manager (root)</SelectItem>
-          {options.map((opt) => (
-            <SelectItem key={opt.userId} value={opt.userId}>
-              {opt.displayName ?? opt.email ?? opt.userId.slice(0, 8)}
-              {" "}
-              <span className="text-muted-foreground">({ROLE_LABELS[opt.role]})</span>
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </PermissionDisabledButton>
-  );
-}
-
-function RemoveConfirmDialog({
-  member,
-  open,
-  onOpenChange,
-  onConfirm,
-  isPending,
-}: {
-  member: TeamMemberSummary;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onConfirm: () => void;
-  isPending: boolean;
-}) {
-  const displayName = member.displayName ?? member.email ?? member.userId.slice(0, 8);
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Remove team member</DialogTitle>
-          <DialogDescription>
-            This will remove <strong>{displayName}</strong> from the team. Agents or team members
-            reporting to them will be unlinked.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={isPending}>
-            Cancel
-          </Button>
-          <Button variant="destructive" onClick={onConfirm} disabled={isPending}>
-            {isPending ? "Removing..." : "Remove"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+function deriveInitials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
 }
 
 function MemberCard({
   member,
   members,
-  departments,
-  canManageRoles,
-  onRoleChange,
-  onParentChange,
-  onRemove,
-  isUpdating,
-  founderCount,
   isHighlighted,
 }: {
   member: TeamMemberSummary;
   members: TeamMemberSummary[];
-  departments: Project[];
-  canManageRoles: boolean;
-  onRoleChange: (member: TeamMemberSummary, nextRole: UserRole, nextDepartmentId: string | null) => void;
-  onParentChange: (member: TeamMemberSummary, parentId: string | null) => void;
-  onRemove: (member: TeamMemberSummary) => void;
-  isUpdating: boolean;
-  founderCount: number;
   isHighlighted: boolean;
 }) {
+  const navigate = useNavigate();
   const cardRef = useRef<HTMLDivElement>(null);
-  const [draftRole, setDraftRole] = useState<UserRole>(member.role);
-  const [draftDepartmentId, setDraftDepartmentId] = useState<string>(member.departmentId ?? "none");
-  const selfFounderLock = member.isCurrentUser && member.role === "founder" && founderCount <= 1;
-  const roleChangeDisabled = !canManageRoles || selfFounderLock;
-  const canRemove = canManageRoles && !member.isCurrentUser && !(member.role === "founder" && founderCount <= 1);
-
-  useEffect(() => {
-    setDraftRole(member.role);
-    setDraftDepartmentId(member.departmentId ?? "none");
-  }, [member.departmentId, member.role]);
+  const displayName = member.displayName ?? member.email ?? member.userId.slice(0, 8);
+  const initials = deriveInitials(displayName);
+  const parent = member.parentId
+    ? members.find((m) => m.userId === member.parentId)
+    : null;
 
   useEffect(() => {
     if (isHighlighted && cardRef.current) {
@@ -195,139 +88,162 @@ function MemberCard({
   }, [isHighlighted]);
 
   return (
-    <div
+    <ClickableDiv
       ref={cardRef}
       className={cn(
-        "rounded-xl border border-border bg-card p-4 transition-all duration-500",
+        "border border-border bg-card rounded-lg p-4 transition-all duration-150 cursor-pointer hover:bg-accent/30",
         isHighlighted && "ring-2 ring-primary animate-pulse",
       )}
+      onClick={() => navigate(`/team/${member.userId}`)}
     >
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-semibold">
-              {member.displayName ?? member.email ?? member.userId.slice(0, 8)}
-            </span>
-            <Badge variant="secondary" className={cn("border-0", ROLE_STYLES[member.role])}>
-              {ROLE_LABELS[member.role]}
-            </Badge>
+      {/* Header */}
+      <div className="flex items-start gap-3">
+        <Avatar className="h-10 w-10 shrink-0">
+          {member.avatarUrl && <AvatarImage src={member.avatarUrl} alt={displayName} />}
+          <AvatarFallback className="text-xs">{initials}</AvatarFallback>
+        </Avatar>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm font-semibold truncate">{displayName}</span>
             {member.isCurrentUser && (
-              <Badge variant="outline" className="text-[11px]">
-                You
-              </Badge>
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0">You</Badge>
             )}
           </div>
-          <div className="text-xs text-muted-foreground">
-            {member.email ?? "No email"} · {member.departmentName ?? "No department"}
+          <div className="text-xs text-muted-foreground truncate mt-0.5">
+            {member.email ?? "No email"}
           </div>
         </div>
+      </div>
 
-        <div className="flex flex-col gap-2 sm:w-[320px]">
-          <PermissionDisabledButton
-            disabled={roleChangeDisabled}
-            tooltip={
-              selfFounderLock
-                ? "You don't have permission to demote the last founder"
-                : "You don't have permission to manage roles"
-            }
+      {/* Body */}
+      <div className="mt-3 space-y-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <Badge variant="secondary" className={cn("border-0 text-[10px]", ROLE_STYLES[member.role])}>
+            {ROLE_LABELS[member.role]}
+          </Badge>
+          {member.isSystemAdmin && (
+            <Badge variant="secondary" className="border-0 text-[10px] bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
+              <Shield className="mr-0.5 h-2.5 w-2.5" />
+              Admin
+            </Badge>
+          )}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {member.departmentName ?? "No department"}
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="mt-3 pt-3 border-t border-border/50 text-[11px] text-muted-foreground">
+        {parent
+          ? `Reports to ${parent.displayName ?? parent.email ?? parent.userId.slice(0, 8)}`
+          : "No manager (root)"}
+      </div>
+    </ClickableDiv>
+  );
+}
+
+function PendingInvitesSection({
+  companyId,
+  pendingInvites,
+  canManage,
+  onMutationSuccess,
+}: {
+  companyId: string;
+  pendingInvites: TeamSummary["pendingInvites"];
+  canManage: boolean;
+  onMutationSuccess: () => Promise<void>;
+}) {
+  const { pushToast } = useToast();
+
+  const resendMutation = useMutation({
+    mutationFn: (inviteId: string) => teamApi.resendInvite(companyId, inviteId),
+    onSuccess: async () => {
+      await onMutationSuccess();
+      pushToast({ title: "Invite resent", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to resend invite", body: err.message, tone: "error" });
+    },
+  });
+
+  const revokeMutation = useMutation({
+    mutationFn: (inviteId: string) => teamApi.revokeInvite(companyId, inviteId),
+    onSuccess: async () => {
+      await onMutationSuccess();
+      pushToast({ title: "Invite revoked", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to revoke invite", body: err.message, tone: "error" });
+    },
+  });
+
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5">
+      <h2 className="text-sm font-semibold">Pending invites</h2>
+      <div className="mt-3 space-y-2">
+        {pendingInvites.map((invite) => (
+          <div
+            key={invite.id}
+            className="flex flex-col gap-1 rounded-lg border border-border/80 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
           >
-            <Select
-              value={draftRole}
-              onValueChange={(value) => {
-                const nextRole = value as UserRole;
-                setDraftRole(nextRole);
-                if (nextRole === "founder") {
-                  setDraftDepartmentId("none");
-                }
-                onRoleChange(
-                  member,
-                  nextRole,
-                  nextRole === "founder"
-                    ? null
-                    : nextRole === "team_lead" || draftDepartmentId !== "none"
-                      ? (draftDepartmentId === "none" ? null : draftDepartmentId)
-                      : null,
-                );
-              }}
-              disabled={roleChangeDisabled || isUpdating}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="founder">Founder</SelectItem>
-                <SelectItem value="team_lead">Team Lead</SelectItem>
-                <SelectItem value="team_member">Team Member</SelectItem>
-              </SelectContent>
-            </Select>
-          </PermissionDisabledButton>
-
-          <PermissionDisabledButton
-            disabled={!canManageRoles}
-            tooltip="You don't have permission to manage department scope"
-          >
-            <Select
-              value={draftDepartmentId}
-              onValueChange={(value) => {
-                setDraftDepartmentId(value);
-                onRoleChange(member, draftRole, value === "none" ? null : value);
-              }}
-              disabled={!canManageRoles || draftRole === "founder" || isUpdating}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">No department</SelectItem>
-                {departments.map((department) => (
-                  <SelectItem key={department.id} value={department.id}>
-                    {department.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </PermissionDisabledButton>
-
-          <div className="flex items-center gap-2">
-            <div className="flex-1">
-              <ReportsToSelect
-                member={member}
-                members={members}
-                disabled={!canManageRoles || isUpdating}
-                onParentChange={(parentId) => onParentChange(member, parentId)}
-                isUpdating={isUpdating}
-              />
+            <div>
+              <div className="font-medium">{invite.email ?? "Pending invite"}</div>
+              <div className="text-xs text-muted-foreground">
+                {ROLE_LABELS[invite.role]} · {invite.departmentName ?? "No department"}
+              </div>
             </div>
-            {canRemove && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-9 w-9 shrink-0 text-muted-foreground hover:text-destructive"
-                    onClick={() => onRemove(member)}
-                    disabled={isUpdating}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Remove team member</TooltipContent>
-              </Tooltip>
-            )}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">
+                Expires {new Date(invite.expiresAt).toLocaleString()}
+              </span>
+              {canManage && (
+                <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => resendMutation.mutate(invite.id)}
+                        disabled={resendMutation.isPending || revokeMutation.isPending}
+                      >
+                        <RotateCw className="h-3.5 w-3.5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Resend invite</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => revokeMutation.mutate(invite.id)}
+                        disabled={resendMutation.isPending || revokeMutation.isPending}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Revoke invite</TooltipContent>
+                  </Tooltip>
+                </>
+              )}
+            </div>
           </div>
-        </div>
+        ))}
       </div>
     </div>
   );
 }
 
-export function HumansTab({ teamSummary, highlightId, permissions, onMutationSuccess }: HumansTabProps) {
+export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin, onMutationSuccess }: HumansTabProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
-  const { pushToast } = useToast();
-  const [inviteOpen, setInviteOpen] = useState(false);
-  const [removeTarget, setRemoveTarget] = useState<TeamMemberSummary | null>(null);
+  const [addMemberOpen, setAddMemberOpen] = useState(false);
+  const [transferAdminOpen, setTransferAdminOpen] = useState(false);
 
+  // Departments needed for AddMemberDialog
   const { data: projects } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.projects.list(selectedCompanyId) : ["projects", "none"],
     queryFn: () => projectsApi.list(selectedCompanyId!),
@@ -341,8 +257,6 @@ export function HumansTab({ teamSummary, highlightId, permissions, onMutationSuc
 
   const members = teamSummary.members;
   const pendingInvites = teamSummary.pendingInvites;
-  const founderCount = members.filter((m) => m.role === "founder").length;
-  const nonFounderMembers = members;
 
   const invalidateTeam = useCallback(async () => {
     if (selectedCompanyId) {
@@ -350,60 +264,6 @@ export function HumansTab({ teamSummary, highlightId, permissions, onMutationSuc
     }
     onMutationSuccess?.();
   }, [queryClient, selectedCompanyId, onMutationSuccess]);
-
-  const updateRole = useMutation({
-    mutationFn: ({
-      userId,
-      role,
-      projectId,
-      parentType,
-      parentId,
-    }: {
-      userId: string;
-      role: UserRole;
-      projectId: string | null;
-      parentType?: "user" | null;
-      parentId?: string | null;
-    }) =>
-      teamApi.updateRole(selectedCompanyId!, userId, { role, projectId, parentType, parentId }),
-    onSuccess: invalidateTeam,
-  });
-
-  const removeMember = useMutation({
-    mutationFn: (userId: string) => teamApi.removeMember(selectedCompanyId!, userId),
-    onSuccess: async () => {
-      setRemoveTarget(null);
-      await invalidateTeam();
-      pushToast({ title: "Team member removed", tone: "success" });
-    },
-    onError: () => {
-      pushToast({ title: "Failed to remove team member", tone: "error" });
-    },
-  });
-
-  const handleRoleChange = useCallback(
-    (member: TeamMemberSummary, nextRole: UserRole, nextDepartmentId: string | null) => {
-      updateRole.mutate({
-        userId: member.userId,
-        role: nextRole,
-        projectId: nextDepartmentId,
-      });
-    },
-    [updateRole],
-  );
-
-  const handleParentChange = useCallback(
-    (member: TeamMemberSummary, parentId: string | null) => {
-      updateRole.mutate({
-        userId: member.userId,
-        role: member.role,
-        projectId: member.departmentId,
-        parentType: parentId ? "user" : null,
-        parentId,
-      });
-    },
-    [updateRole],
-  );
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Users} message="Select a company to view team." />;
@@ -419,86 +279,74 @@ export function HumansTab({ teamSummary, highlightId, permissions, onMutationSuc
               Manage roles, reporting structure, and invites for human collaborators.
             </p>
           </div>
-          <PermissionDisabledButton
-            disabled={!permissions.canInviteUsers}
-            tooltip="You don't have permission to invite users"
-          >
-            <Button
-              onClick={() => setInviteOpen(true)}
+          <div className="flex gap-2">
+            {isSystemAdmin && (
+              <Button variant="outline" onClick={() => setTransferAdminOpen(true)}>
+                <ArrowRightLeft className="mr-1.5 h-4 w-4" />
+                Transfer Admin
+              </Button>
+            )}
+            <PermissionDisabledButton
               disabled={!permissions.canInviteUsers}
+              tooltip="You don't have permission to add members"
             >
-              <UserPlus className="mr-1.5 h-4 w-4" />
-              Invite teammate
-            </Button>
-          </PermissionDisabledButton>
+              <Button
+                onClick={() => setAddMemberOpen(true)}
+                disabled={!permissions.canInviteUsers}
+              >
+                <UserPlus className="mr-1.5 h-4 w-4" />
+                Add Member
+              </Button>
+            </PermissionDisabledButton>
+          </div>
         </div>
 
-        {nonFounderMembers.length === 0 && pendingInvites.length === 0 ? (
+        {members.length === 0 && pendingInvites.length === 0 ? (
           <EmptyState
             icon={Users}
-            message="Invite your first team member"
-            description="Create a scoped invite to bring in a team lead or contributor."
-            action="Invite teammate"
-            onAction={permissions.canInviteUsers ? () => setInviteOpen(true) : undefined}
+            message="Add your first team member"
+            description="Add a team lead or contributor directly, or send an invite link."
+            action="Add Member"
+            onAction={permissions.canInviteUsers ? () => setAddMemberOpen(true) : undefined}
           />
         ) : (
-          <div className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {members.map((member) => (
               <MemberCard
                 key={member.userId}
                 member={member}
                 members={members}
-                departments={departments}
-                canManageRoles={permissions.canManageRoles}
-                founderCount={founderCount}
-                isUpdating={updateRole.isPending}
                 isHighlighted={highlightId === member.userId}
-                onRoleChange={handleRoleChange}
-                onParentChange={handleParentChange}
-                onRemove={setRemoveTarget}
               />
             ))}
           </div>
         )}
 
         {pendingInvites.length > 0 && (
-          <div className="rounded-2xl border border-border bg-card p-5">
-            <h2 className="text-sm font-semibold">Pending invites</h2>
-            <div className="mt-3 space-y-2">
-              {pendingInvites.map((invite) => (
-                <div
-                  key={invite.id}
-                  className="flex flex-col gap-1 rounded-lg border border-border/80 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
-                >
-                  <div>
-                    <div className="font-medium">{invite.email ?? "Pending invite"}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {ROLE_LABELS[invite.role]} · {invite.departmentName ?? "No department"}
-                    </div>
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    Expires {new Date(invite.expiresAt).toLocaleString()}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <PendingInvitesSection
+            companyId={selectedCompanyId}
+            pendingInvites={pendingInvites}
+            canManage={permissions.canInviteUsers}
+            onMutationSuccess={invalidateTeam}
+          />
         )}
 
-        <InviteDialog
+        <AddMemberDialog
           companyId={selectedCompanyId}
           departments={departments}
-          open={inviteOpen}
-          onOpenChange={setInviteOpen}
+          members={members}
+          isSystemAdmin={isSystemAdmin}
+          open={addMemberOpen}
+          onOpenChange={setAddMemberOpen}
         />
 
-        {removeTarget && (
-          <RemoveConfirmDialog
-            member={removeTarget}
-            open={Boolean(removeTarget)}
-            onOpenChange={(open) => { if (!open) setRemoveTarget(null); }}
-            onConfirm={() => removeMember.mutate(removeTarget.userId)}
-            isPending={removeMember.isPending}
+        {isSystemAdmin && (
+          <TransferAdminDialog
+            companyId={selectedCompanyId}
+            founders={members.filter((m) => m.role === "founder")}
+            currentUserId={teamSummary.currentUser?.userId ?? ""}
+            open={transferAdminOpen}
+            onOpenChange={setTransferAdminOpen}
           />
         )}
       </div>

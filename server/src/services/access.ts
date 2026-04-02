@@ -1,12 +1,34 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { createHash, randomBytes } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import {
   companyMemberships,
   instanceUserRoles,
+  invites,
   principalPermissionGrants,
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+import { conflict, notFound } from "../errors.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
+
+const INVITE_TOKEN_PREFIX = "pcp_invite_";
+const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+const INVITE_TOKEN_SUFFIX_LENGTH = 24;
+const INVITE_TOKEN_MAX_RETRIES = 5;
+const COMPANY_INVITE_TTL_MS = 10 * 60 * 1000;
+
+function hashToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function generateInviteToken() {
+  const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
+  let suffix = "";
+  for (let idx = 0; idx < INVITE_TOKEN_SUFFIX_LENGTH; idx += 1) {
+    suffix += INVITE_TOKEN_ALPHABET[bytes[idx]! % INVITE_TOKEN_ALPHABET.length];
+  }
+  return `${INVITE_TOKEN_PREFIX}${suffix}`;
+}
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
@@ -259,6 +281,77 @@ export function accessService(db: Db) {
     });
   }
 
+  async function revokeInvite(companyId: string, inviteId: string) {
+    const invite = await db
+      .select()
+      .from(invites)
+      .where(and(eq(invites.id, inviteId), eq(invites.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    if (!invite) throw notFound("Invite not found");
+    if (invite.acceptedAt) throw conflict("Cannot revoke an already accepted invite");
+    if (invite.revokedAt) throw conflict("Invite is already revoked");
+
+    await db
+      .update(invites)
+      .set({ revokedAt: new Date(), updatedAt: new Date() })
+      .where(eq(invites.id, inviteId));
+
+    return invite;
+  }
+
+  async function resendInvite(companyId: string, inviteId: string) {
+    const oldInvite = await db
+      .select()
+      .from(invites)
+      .where(and(eq(invites.id, inviteId), eq(invites.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    if (!oldInvite) throw notFound("Invite not found");
+    if (oldInvite.acceptedAt) throw conflict("Cannot resend an already accepted invite");
+
+    // Revoke the old invite if it's still active
+    if (!oldInvite.revokedAt) {
+      await db
+        .update(invites)
+        .set({ revokedAt: new Date(), updatedAt: new Date() })
+        .where(eq(invites.id, inviteId));
+    }
+
+    // Create a new invite with the same payload but fresh token and expiry
+    let token: string | null = null;
+    let created: typeof invites.$inferSelect | null = null;
+    for (let attempt = 0; attempt < INVITE_TOKEN_MAX_RETRIES; attempt += 1) {
+      const candidateToken = generateInviteToken();
+      try {
+        const row = await db
+          .insert(invites)
+          .values({
+            companyId: oldInvite.companyId,
+            inviteType: oldInvite.inviteType,
+            tokenHash: hashToken(candidateToken),
+            allowedJoinTypes: oldInvite.allowedJoinTypes,
+            defaultsPayload: oldInvite.defaultsPayload,
+            expiresAt: new Date(Date.now() + COMPANY_INVITE_TTL_MS),
+            invitedByUserId: oldInvite.invitedByUserId,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+        token = candidateToken;
+        created = row;
+        break;
+      } catch {
+        // Retry on token hash collision
+      }
+    }
+
+    if (!token || !created) {
+      throw conflict("Failed to generate a unique invite token. Please retry.");
+    }
+
+    return { invite: created, token };
+  }
+
   return {
     isInstanceAdmin,
     canUser,
@@ -272,5 +365,7 @@ export function accessService(db: Db) {
     listUserCompanyAccess,
     setUserCompanyAccess,
     setPrincipalGrants,
+    revokeInvite,
+    resendInvite,
   };
 }

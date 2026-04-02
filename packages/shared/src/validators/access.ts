@@ -60,3 +60,19 @@ export const updateUserCompanyAccessSchema = z.object({
 });
 
 export type UpdateUserCompanyAccess = z.infer<typeof updateUserCompanyAccessSchema>;
+
+export const boardCliAuthAccessLevelSchema = z.enum([
+  "board",
+  "instance_admin_required",
+]);
+
+export const createCliAuthChallengeSchema = z.object({
+  command: z.string().min(1).max(240),
+  clientName: z.string().max(120).optional().nullable(),
+  requestedAccess: boardCliAuthAccessLevelSchema.default("board"),
+  requestedCompanyId: z.string().uuid().optional().nullable(),
+});
+
+export const resolveCliAuthChallengeSchema = z.object({
+  token: z.string().min(16).max(256),
+});

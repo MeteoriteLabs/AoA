@@ -1,25 +1,25 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { costsApi } from "../api/costs";
+import { budgetsApi } from "../api/budgets";
+import type { ResolveBudgetIncidentInput } from "@paperclipai/shared";
 import { activityApi } from "../api/activity";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { goalsApi } from "../api/goals";
 import { mcpApi } from "../api/mcp";
+import { internalAgentApi } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
-import { formatCents, formatTokens } from "../lib/utils";
+import { formatCents, formatTokens, budgetProgressColor } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Collapsible,
-  CollapsibleTrigger,
-  CollapsibleContent,
-} from "@/components/ui/collapsible";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -42,6 +42,7 @@ import {
   HintIcon,
 } from "../components/agent-config-primitives";
 import { LLMProvidersSection } from "../components/LLMProvidersSection";
+import { PageTabBar } from "../components/PageTabBar";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Identity } from "../components/Identity";
@@ -49,32 +50,13 @@ import { StatusBadge } from "../components/StatusBadge";
 import { ActivityRow } from "../components/ActivityRow";
 import type { Agent } from "@paperclipai/shared";
 
-// ─── Section header helper ────────────────────────────────────────────
-function SectionHeader({
-  title,
-  subtitle,
-  open,
-}: {
-  title: string;
-  subtitle?: string;
-  open: boolean;
-}) {
-  return (
-    <div className="flex items-center gap-2 py-3 w-full">
-      <ChevronRight
-        className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${
-          open ? "rotate-90" : ""
-        }`}
-      />
-      <span className="text-sm font-medium">{title}</span>
-      {subtitle && !open && (
-        <span className="text-xs text-muted-foreground ml-auto">
-          {subtitle}
-        </span>
-      )}
-    </div>
-  );
-}
+const SETTINGS_TABS = [
+  { value: "general", label: "General" },
+  { value: "llm", label: "LLM Providers" },
+  { value: "budget", label: "Budget" },
+  { value: "activity", label: "Activity" },
+  { value: "integrations", label: "Integrations" },
+];
 
 // ─── Agent snippet helpers (from CompanySettings.tsx) ─────────────────
 type AgentSnippetInput = {
@@ -674,6 +656,24 @@ function BudgetSection() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: agentConfig } = useQuery({
+    queryKey: queryKeys.agentConfig(selectedCompanyId!),
+    queryFn: () => internalAgentApi.getConfig(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: budgetOverview, refetch: refetchOverview } = useQuery({
+    queryKey: ["budgets", "overview", selectedCompanyId],
+    queryFn: () => budgetsApi.overview(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const resolveIncident = useMutation({
+    mutationFn: ({ incidentId, input }: { incidentId: string; input: ResolveBudgetIncidentInput }) =>
+      budgetsApi.resolveIncident(selectedCompanyId!, incidentId, input),
+    onSuccess: () => { refetchOverview(); },
+  });
+
   if (!selectedCompanyId) {
     return (
       <EmptyState
@@ -747,7 +747,10 @@ function BudgetSection() {
                 )}
               </div>
               <p className="text-2xl font-bold">
-                {formatCents(data.summary.spendCents)}{" "}
+                {formatCents(
+                  data.summary.spendCents +
+                    (agentConfig?.spentMonthlyCents ?? 0),
+                )}{" "}
                 <span className="text-base font-normal text-muted-foreground">
                   {data.summary.budgetCents > 0
                     ? `/ ${formatCents(data.summary.budgetCents)}`
@@ -826,6 +829,40 @@ function BudgetSection() {
                     ))}
                   </div>
                 )}
+                {/* Commander */}
+                {agentConfig && agentConfig.budgetMonthlyCents != null && (
+                  <div className="mt-4 pt-4 border-t border-border">
+                    <p className="text-xs font-medium text-muted-foreground mb-2">
+                      Commander
+                    </p>
+                    <div className="flex items-center justify-between text-sm">
+                      <span>AI Assistant</span>
+                      <span>
+                        {formatCents(agentConfig.spentMonthlyCents)} /{" "}
+                        {formatCents(agentConfig.budgetMonthlyCents)}
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-muted overflow-hidden mt-1">
+                      <div
+                        className={`h-full rounded-full ${budgetProgressColor(
+                          agentConfig.budgetMonthlyCents > 0
+                            ? (agentConfig.spentMonthlyCents / agentConfig.budgetMonthlyCents) * 100
+                            : 0,
+                        )}`}
+                        style={{
+                          width: `${
+                            agentConfig.budgetMonthlyCents > 0
+                              ? Math.min(
+                                  (agentConfig.spentMonthlyCents / agentConfig.budgetMonthlyCents) * 100,
+                                  100,
+                                )
+                              : 0
+                          }%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -856,6 +893,64 @@ function BudgetSection() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Open Budget Incidents */}
+          {budgetOverview && budgetOverview.openIncidents.length > 0 && (
+            <Card>
+              <CardContent className="p-4 space-y-3">
+                <h3 className="text-sm font-semibold">Open Incidents</h3>
+                <div className="space-y-3">
+                  {budgetOverview.openIncidents.map((incident) => (
+                    <div key={incident.id} className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${incident.thresholdType === "hard_stop" ? "bg-red-500/10 text-red-400" : "bg-yellow-500/10 text-yellow-400"}`}>
+                            {incident.thresholdType === "hard_stop" ? "Hard Stop" : "Warning"}
+                          </span>
+                          <span className="text-sm font-medium">{incident.scopeName ?? incident.scopeId}</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          ${(incident.amountObservedCents / 100).toFixed(2)} observed / ${(incident.amountLimitCents / 100).toFixed(2)} limit
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Created {new Date(incident.createdAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {incident.thresholdType === "hard_stop" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={resolveIncident.isPending}
+                            onClick={() => {
+                              const newAmount = window.prompt("New budget limit in dollars:", String(Math.round(incident.amountLimitCents / 100 * 1.5)));
+                              if (!newAmount) return;
+                              const parsed = parseFloat(newAmount);
+                              if (isNaN(parsed) || parsed <= 0) { window.alert("Please enter a valid dollar amount."); return; }
+                              resolveIncident.mutate({
+                                incidentId: incident.id,
+                                input: { action: "raise_and_resume", newAmountCents: Math.round(parsed * 100) },
+                              });
+                            }}
+                          >
+                            Raise &amp; Resume
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={resolveIncident.isPending}
+                          onClick={() => resolveIncident.mutate({ incidentId: incident.id, input: { action: "dismiss" } })}
+                        >
+                          Dismiss
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </>
       )}
     </div>
@@ -1205,63 +1300,23 @@ function ActivitySection() {
   );
 }
 
-// ─── Budget Headline (collapsed summary) ──────────────────────────────
-function useBudgetHeadline() {
-  const { selectedCompanyId } = useCompany();
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-
-  const { data } = useQuery({
-    queryKey: queryKeys.costs(
-      selectedCompanyId!,
-      monthStart.toISOString(),
-      now.toISOString()
-    ),
-    queryFn: () =>
-      costsApi.summary(
-        selectedCompanyId!,
-        monthStart.toISOString(),
-        now.toISOString()
-      ),
-    enabled: !!selectedCompanyId,
-  });
-
-  if (!data) return null;
-  return `${formatCents(data.spendCents)} spent this month`;
-}
-
-// ─── Activity Headline (collapsed summary) ────────────────────────────
-function useActivityHeadline() {
-  const { selectedCompanyId } = useCompany();
-
-  const { data } = useQuery({
-    queryKey: queryKeys.activity(selectedCompanyId!),
-    queryFn: () => activityApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-
-  if (!data) return null;
-  const now = Date.now();
-  const dayAgo = now - 24 * 60 * 60 * 1000;
-  const recent = data.filter(
-    (e) => new Date(e.createdAt).getTime() > dayAgo
-  ).length;
-  return `Last 24h: ${recent} events`;
-}
-
 // ─── Main SettingsPage ────────────────────────────────────────────────
 export function SettingsPage() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompany } = useCompany();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = searchParams.get("tab") ?? "general";
 
-  const [generalOpen, setGeneralOpen] = useState(true);
-  const [llmOpen, setLlmOpen] = useState(true);
-  const [budgetOpen, setBudgetOpen] = useState(false);
-  const [activityOpen, setActivityOpen] = useState(false);
-  const [integrationsOpen, setIntegrationsOpen] = useState(true);
-
-  const budgetHeadline = useBudgetHeadline();
-  const activityHeadline = useActivityHeadline();
+  const handleTabChange = useCallback(
+    (value: string) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("tab", value);
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
 
   useEffect(() => {
     setBreadcrumbs([
@@ -1271,97 +1326,50 @@ export function SettingsPage() {
   }, [setBreadcrumbs, selectedCompany?.name]);
 
   return (
-    <div className="max-w-3xl space-y-1">
-      <div className="flex items-center gap-2 mb-6">
+    <div className="max-w-3xl space-y-4">
+      <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Settings</h1>
       </div>
 
-      {/* General */}
-      <Collapsible open={generalOpen} onOpenChange={setGeneralOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
-            <SectionHeader title="General" open={generalOpen} />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="pb-6 pt-1 px-2 -mx-2">
-            <GeneralSection />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+      <Link
+        to="commander"
+        className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-muted/50 transition-colors"
+      >
+        <div>
+          <p className="text-sm font-medium">Commander</p>
+          <p className="text-xs text-muted-foreground">Configure the Commander, capabilities, and budget</p>
+        </div>
+        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+      </Link>
 
-      <div className="border-t border-border" />
+      <Tabs value={activeTab} onValueChange={handleTabChange}>
+        <PageTabBar
+          items={SETTINGS_TABS}
+          value={activeTab}
+          onValueChange={handleTabChange}
+        />
 
-      {/* LLM Providers */}
-      <Collapsible open={llmOpen} onOpenChange={setLlmOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
-            <SectionHeader title="LLM Providers" open={llmOpen} />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="pb-6 pt-1 px-2 -mx-2">
-            <LLMProvidersSection />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+        <TabsContent value="general">
+          <GeneralSection />
+        </TabsContent>
 
-      <div className="border-t border-border" />
+        <TabsContent value="llm">
+          <LLMProvidersSection />
+        </TabsContent>
 
-      {/* Budget */}
-      <Collapsible open={budgetOpen} onOpenChange={setBudgetOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
-            <SectionHeader
-              title="Budget"
-              subtitle={budgetHeadline ?? undefined}
-              open={budgetOpen}
-            />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="pb-6 pt-1 px-2 -mx-2">
-            <BudgetSection />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+        <TabsContent value="budget">
+          <BudgetSection />
+        </TabsContent>
 
-      <div className="border-t border-border" />
+        <TabsContent value="activity">
+          <ActivitySection />
+        </TabsContent>
 
-      {/* Activity */}
-      <Collapsible open={activityOpen} onOpenChange={setActivityOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
-            <SectionHeader
-              title="Activity"
-              subtitle={activityHeadline ?? undefined}
-              open={activityOpen}
-            />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="pb-6 pt-1 px-2 -mx-2">
-            <ActivitySection />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-
-      <div className="border-t border-border" />
-
-      {/* Integrations */}
-      <Collapsible open={integrationsOpen} onOpenChange={setIntegrationsOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full text-left hover:bg-muted/50 rounded-md px-2 -mx-2 transition-colors">
-            <SectionHeader title="Integrations" open={integrationsOpen} />
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="pb-6 pt-1 px-2 -mx-2">
-            <IntegrationsSection />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+        <TabsContent value="integrations">
+          <IntegrationsSection />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

@@ -36,7 +36,12 @@ export function discussionRoutes(db: Db) {
     };
 
     const result = await svc.list(companyId, filters);
-    res.json(result);
+    res.json({
+      discussions: result,
+      total: result.length,
+      limit: 50,
+      offset: 0,
+    });
   });
 
   // 1.2 Get discussion detail
@@ -171,6 +176,41 @@ export function discussionRoutes(db: Db) {
           entityType: "discussion_entry",
           entityId: entryId,
           details: { discussionId },
+        });
+
+        res.json(result);
+      } catch (err) {
+        if (err instanceof HttpError) {
+          res.status(err.status).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+    },
+  );
+
+  // 1.6b Reprocess all entries in a discussion — founder only
+  router.post(
+    "/companies/:companyId/discussions/:discussionId/reprocess",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const discussionId = req.params.discussionId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+
+      try {
+        const result = await svc.reprocessAllEntries(companyId, discussionId);
+
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          action: "discussion.reprocessed",
+          entityType: "discussion",
+          entityId: discussionId,
+          details: result,
         });
 
         res.json(result);

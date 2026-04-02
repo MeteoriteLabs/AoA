@@ -7,18 +7,25 @@ import type { LLMProvider } from "./types.js";
 
 export type { LLMProvider, ChatParams, ChatStreamChunk, ProviderToolDef, ChatMessage } from "./types.js";
 
-/** Secret name / env var key per provider (same convention for both) */
-const PROVIDER_KEY_NAMES: Record<string, string> = {
+/** Env var key per provider */
+const PROVIDER_ENV_KEYS: Record<string, string> = {
   anthropic: "ANTHROPIC_API_KEY",
   openai: "OPENAI_API_KEY",
   google: "GOOGLE_AI_API_KEY",
 };
 
+/** Secret names used by the UI's LLM Providers settings */
+const PROVIDER_SECRET_NAMES: Record<string, string[]> = {
+  anthropic: ["llm:anthropic", "ANTHROPIC_API_KEY"],
+  openai: ["llm:openai", "OPENAI_API_KEY"],
+  google: ["llm:google", "GOOGLE_AI_API_KEY"],
+};
+
 /**
  * Resolve an API key for a provider.
  *
- * Checks company_secrets first (encrypted, versioned), then falls back
- * to environment variables for backward compatibility during transition.
+ * Checks company_secrets first (both "llm:" prefixed names from the UI and
+ * legacy env-style names), then falls back to environment variables.
  * Throws if no key is found anywhere.
  */
 export async function getProviderApiKey(
@@ -26,19 +33,20 @@ export async function getProviderApiKey(
   companyId: string,
   provider: string,
 ): Promise<string> {
-  const keyName = PROVIDER_KEY_NAMES[provider];
+  const secretNames = PROVIDER_SECRET_NAMES[provider] ?? [];
 
-  // Try company_secrets first (uses resolveByName which does getByName + resolveSecretValue)
-  if (keyName) {
+  // Try company_secrets first — check all known secret name variants
+  const svc = secretService(db);
+  for (const name of secretNames) {
     try {
-      return await secretService(db).resolveByName(companyId, keyName);
+      return await svc.resolveByName(companyId, name);
     } catch {
-      // Secret not found — fall through to env var
+      // Secret not found under this name — try next
     }
   }
 
   // Fallback to env var
-  const envKey = keyName ?? `${provider.toUpperCase()}_API_KEY`;
+  const envKey = PROVIDER_ENV_KEYS[provider] ?? `${provider.toUpperCase()}_API_KEY`;
   const envValue = process.env[envKey];
   if (!envValue) {
     throw new Error(

@@ -4,13 +4,14 @@ import {
   Home,
   Users,
   Settings,
-  FileText,
   Brain,
   Compass,
   Bot,
-  Target,
   MessageSquare,
+  Boxes,
+  Repeat,
   ChevronsLeft,
+  Shield,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
@@ -97,7 +98,7 @@ export function Sidebar() {
       </div>
 
       <nav className={cn("flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 py-2", collapsed ? "px-0 items-center" : "px-3")}>
-        {/* Top nav: Home + Inbox */}
+        {/* Top nav: Home + Inbox + Commander */}
         <div className={cn("flex flex-col gap-0.5", collapsed && "w-full items-center")}>
           <SidebarNavItem to="/home" label="Home" icon={Home} liveCount={liveRunCount} collapsed={collapsed} />
           <SidebarNavItem
@@ -109,15 +110,15 @@ export function Sidebar() {
             alert={(sidebarBadges?.failedRuns ?? 0) > 0}
             collapsed={collapsed}
           />
+          <SidebarNavItem to="/commander" label="Commander" icon={Shield} collapsed={collapsed} />
         </div>
 
         {/* WORK section */}
         <SidebarSection label="Work" collapsed={collapsed}>
+          <SidebarNavItem to="/discussions" label="Discussions" icon={MessageSquare} badge={sidebarBadges?.pendingDiscussions} entityColor="var(--entity-brief)" collapsed={collapsed} />
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} entityColor="var(--entity-task)" collapsed={collapsed} />
-          <SidebarNavItem to="/discussions" label="Discussions" icon={MessageSquare} entityColor="var(--entity-brief)" collapsed={collapsed} />
-          <SidebarNavItem to="/briefs" label="Briefs" icon={FileText} entityColor="var(--entity-brief)" collapsed={collapsed} />
           <SidebarNavItem to="/agents/all" label="Agents" icon={Bot} entityColor="var(--entity-agent)" collapsed={collapsed} />
-          <SidebarNavItem to="/goals" label="Goals" icon={Target} entityColor="var(--entity-goal)" collapsed={collapsed} />
+          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} collapsed={collapsed} />
         </SidebarSection>
 
         {/* DEPARTMENTS section */}
@@ -128,16 +129,13 @@ export function Sidebar() {
 
         {/* COMPANY section */}
         <SidebarSection label="Company" collapsed={collapsed}>
-          <SidebarNavItem to="/vision" label="Vision & Mission" icon={Compass} collapsed={collapsed} />
+          <SidebarNavItem to="/objectives" label="Objectives" icon={Compass} collapsed={collapsed} />
           <SidebarNavItem to="/memory" label="Memory" icon={Brain} entityColor="var(--entity-memory)" collapsed={collapsed} />
           <SidebarNavItem to="/org" label="Team" icon={Users} collapsed={collapsed} />
+          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} collapsed={collapsed} />
+          <SidebarNavItem to="/settings" label="Settings" icon={Settings} collapsed={collapsed} />
         </SidebarSection>
       </nav>
-
-      {/* Settings at bottom, above any footer */}
-      <div className={cn("shrink-0 border-t border-border py-2", collapsed ? "px-0 flex justify-center" : "px-3")}>
-        <SidebarNavItem to="/settings" label="Settings" icon={Settings} collapsed={collapsed} />
-      </div>
     </aside>
   );
 }

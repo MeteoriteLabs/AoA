@@ -13,6 +13,9 @@ export const queryKeys = {
     configRevisions: (agentId: string) => ["agents", "config-revisions", agentId] as const,
     adapterModels: (companyId: string, adapterType: string) =>
       ["agents", companyId, "adapter-models", adapterType] as const,
+    instructionsBundle: (id: string) => ["agents", "instructions-bundle", id] as const,
+    instructionsFile: (id: string, relativePath: string) =>
+      ["agents", "instructions-bundle", id, "file", relativePath] as const,
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
@@ -33,6 +36,7 @@ export const queryKeys = {
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
     dependencies: (issueId: string) => ["issues", "dependencies", issueId] as const,
+    documents: (issueId: string) => ["issues", "documents", issueId] as const,
   },
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
@@ -45,6 +49,12 @@ export const queryKeys = {
     listByProject: (companyId: string, projectId: string) =>
       ["goals", companyId, "project", projectId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
+  },
+  routines: {
+    list: (companyId: string) => ["routines", companyId] as const,
+    detail: (id: string) => ["routines", "detail", id] as const,
+    runs: (id: string) => ["routines", id, "runs"] as const,
+    activity: (id: string) => ["routines", id, "activity"] as const,
   },
   approvals: {
     list: (companyId: string, status?: string) =>
@@ -64,6 +74,8 @@ export const queryKeys = {
   },
   team: {
     summary: (companyId: string) => ["team", companyId] as const,
+    member: (companyId: string, userId: string) => ["team", companyId, "member", userId] as const,
+    dependencies: (companyId: string, userId: string) => ["team", companyId, "dependencies", userId] as const,
   },
   auth: {
     session: ["auth", "session"] as const,
@@ -119,10 +131,6 @@ export const queryKeys = {
     list: (companyId: string) => ["workflow-templates", companyId] as const,
     detail: (companyId: string, id: string) => ["workflow-templates", companyId, id] as const,
   },
-  briefs: {
-    list: (companyId: string) => ["briefs", companyId] as const,
-    detail: (companyId: string, id: string) => ["briefs", companyId, id] as const,
-  },
   artifacts: {
     byIssue: (issueId: string) => ["artifacts", "issue", issueId] as const,
     detail: (id: string) => ["artifacts", "detail", id] as const,
@@ -135,5 +143,18 @@ export const queryKeys = {
   detectedOutputs: {
     byIssue: (issueId: string) => ["detected-outputs", "issue", issueId] as const,
     byRun: (runId: string) => ["detected-outputs", "run", runId] as const,
+  },
+  companySkills: {
+    list: (companyId: string) => ["company-skills", companyId] as const,
+    detail: (companyId: string, skillId: string) =>
+      ["company-skills", companyId, skillId] as const,
+    updateStatus: (companyId: string, skillId: string) =>
+      ["company-skills", companyId, skillId, "update-status"] as const,
+    file: (companyId: string, skillId: string, relativePath: string) =>
+      ["company-skills", companyId, skillId, "file", relativePath] as const,
+  },
+  instanceSettings: {
+    general: ["instance-settings", "general"] as const,
+    experimental: ["instance-settings", "experimental"] as const,
   },
 };

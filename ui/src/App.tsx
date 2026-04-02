@@ -8,6 +8,7 @@ import { authApi } from "./api/auth";
 import { healthApi } from "./api/health";
 import { Dashboard } from "./pages/Dashboard";
 import { Lobby } from "./pages/Lobby";
+import { InstanceSettingsPage } from "./pages/InstanceSettingsPage";
 import { Companies } from "./pages/Companies";
 import { Agents } from "./pages/Agents";
 import { AgentDetail } from "./pages/AgentDetail";
@@ -21,18 +22,23 @@ import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Inbox } from "./pages/Inbox";
 import { SettingsPage } from "./pages/SettingsPage";
+import { InternalAgentSettingsPage } from "./pages/InternalAgentSettingsPage";
 import { VisionMission } from "./pages/VisionMission";
+import { Objectives } from "./pages/Objectives";
+import { Commander } from "./pages/Commander";
 import { DesignGuide } from "./pages/DesignGuide";
 import { TeamPage } from "./pages/TeamPage";
-import { Briefs } from "./pages/Briefs";
+import { HumanDetail } from "./pages/HumanDetail";
 import { ActiveAgents } from "./pages/ActiveAgents";
-import { BriefReview } from "./pages/BriefReview";
-import { DebriefModal } from "./components/DebriefModal";
 import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
 import { Discussions } from "./pages/Discussions";
 import { DiscussionDetail } from "./pages/DiscussionDetail";
+import { Skills } from "./pages/Skills";
+import { Routines } from "./pages/Routines";
+import { RoutineDetail } from "./pages/RoutineDetail";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
+import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
@@ -102,9 +108,15 @@ function boardRoutes() {
       <Route path="home" element={<Dashboard />} />
       <Route path="companies" element={<Companies />} />
       <Route path="vision" element={<VisionMission />} />
+      <Route path="objectives" element={<Objectives />} />
+      <Route path="commander" element={<Commander />} />
       <Route path="settings" element={<SettingsPage />} />
+      <Route path="settings/commander" element={<InternalAgentSettingsPage />} />
+      <Route path="settings/internal-agent" element={<Navigate to="../settings/commander" replace />} />
       <Route path="company/settings" element={<Navigate to="../settings" replace />} />
       <Route path="org" element={<TeamPage />} />
+      <Route path="team/:userId" element={<HumanDetail />} />
+      <Route path="team/:userId/:tab" element={<HumanDetail />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -129,14 +141,16 @@ function boardRoutes() {
       <Route path="issues/done" element={<Navigate to="/issues" replace />} />
       <Route path="issues/recent" element={<Navigate to="/issues" replace />} />
       <Route path="issues/:issueId" element={<Issues />} />
-      <Route path="goals" element={<Goals />} />
+      <Route path="goals" element={<Navigate to="../objectives?tab=goals" replace />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
+      <Route path="skills/*" element={<Skills />} />
+      <Route path="routines" element={<Routines />} />
+      <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="discussions" element={<Discussions />} />
       <Route path="discussions/:discussionId" element={<DiscussionDetail />} />
-      <Route path="briefs" element={<Briefs />} />
-      <Route path="briefs/:briefId" element={<BriefReview />} />
-      {/* TODO: redirect /briefs → /discussions once discussions page exists (V2.5) */}
-      <Route path="debriefs" element={<Navigate to="/briefs" replace />} />
+      <Route path="briefs" element={<Navigate to="/discussions" replace />} />
+      <Route path="briefs/:briefId" element={<Navigate to="/discussions" replace />} />
+      <Route path="debriefs" element={<Navigate to="/discussions" replace />} />
       <Route path="active-agents" element={<ActiveAgents />} />
       <Route path="memory" element={<Memory />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
@@ -227,10 +241,12 @@ export function App() {
       <Routes>
         <Route path="auth" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
+        <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<Lobby />} />
+          <Route path="instance/settings" element={<InstanceSettingsPage />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
@@ -240,9 +256,11 @@ export function App() {
           <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
           <Route path="discussions" element={<UnprefixedBoardRedirect />} />
           <Route path="discussions/:discussionId" element={<UnprefixedBoardRedirect />} />
-          <Route path="briefs" element={<UnprefixedBoardRedirect />} />
-          <Route path="briefs/:briefId" element={<UnprefixedBoardRedirect />} />
+          <Route path="briefs" element={<Navigate to="/discussions" replace />} />
+          <Route path="briefs/*" element={<Navigate to="/discussions" replace />} />
           <Route path="vision" element={<UnprefixedBoardRedirect />} />
+          <Route path="objectives" element={<UnprefixedBoardRedirect />} />
+          <Route path="commander" element={<UnprefixedBoardRedirect />} />
           <Route path="memory" element={<UnprefixedBoardRedirect />} />
           <Route path="projects" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
@@ -252,13 +270,13 @@ export function App() {
           <Route path="projects/:projectId/goals" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/team" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/budget" element={<UnprefixedBoardRedirect />} />
+          <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}
           </Route>
         </Route>
       </Routes>
       <OnboardingWizard />
-      <DebriefModal />
       <DiscussionCaptureModal />
     </>
   );

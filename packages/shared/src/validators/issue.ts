@@ -39,6 +39,9 @@ export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 export const updateIssueSchema = createIssueSchema.partial().extend({
   comment: z.string().min(1).optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  executionWorkspaceId: z.string().uuid().nullable().optional(),
+  executionWorkspacePreference: z.string().nullable().optional(),
+  executionWorkspaceSettings: z.record(z.unknown()).nullable().optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
@@ -69,3 +72,23 @@ export const createIssueAttachmentMetadataSchema = z.object({
 });
 
 export type CreateIssueAttachmentMetadata = z.infer<typeof createIssueAttachmentMetadataSchema>;
+
+export const ISSUE_DOCUMENT_FORMATS = ["markdown"] as const;
+export const issueDocumentFormatSchema = z.enum(ISSUE_DOCUMENT_FORMATS);
+
+export const issueDocumentKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9][a-z0-9_-]*$/, "Document key must be lowercase letters, numbers, _ or -");
+
+export const upsertIssueDocumentSchema = z.object({
+  title: z.string().trim().max(200).nullable().optional(),
+  format: issueDocumentFormatSchema,
+  body: z.string().max(524288),
+  changeSummary: z.string().trim().max(500).nullable().optional(),
+  baseRevisionId: z.string().uuid().nullable().optional(),
+});
+
+export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;

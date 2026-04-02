@@ -113,7 +113,7 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue, openNewAgent, openNewGoal, openDebrief } = useDialog();
+  const { openNewIssue, openNewAgent, openNewGoal, openDiscussionCapture } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
   const deferredQuery = useDeferredValue(query);
   const searchQuery = deferredQuery.trim();
@@ -189,7 +189,7 @@ export function CommandPalette() {
       }}
     >
       <CommandInput
-        placeholder="Search tasks, goals, agents, briefs, memory, artifacts..."
+        placeholder="Search tasks, goals, agents, discussions, memory, artifacts..."
         value={query}
         onValueChange={setQuery}
       />
@@ -210,11 +210,11 @@ export function CommandPalette() {
           <CommandItem
             onSelect={() => {
               setOpen(false);
-              openDebrief();
+              openDiscussionCapture();
             }}
           >
             <FileText className="mr-2 h-4 w-4" />
-            New Debrief
+            New Discussion
           </CommandItem>
           <CommandItem
             onSelect={() => {

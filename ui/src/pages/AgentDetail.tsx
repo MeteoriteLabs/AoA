@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
+import { companySkillsApi } from "../api/companySkills";
+import type { CompanySkillListItem } from "@paperclipai/shared";
 import { heartbeatsApi } from "../api/heartbeats";
 import { trustScoresApi } from "../api/trust-scores";
 import { ApiError } from "../api/client";
@@ -14,6 +16,7 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { AgentInstructionsTab } from "../components/AgentInstructionsTab";
 import { adapterLabels, roleLabels } from "../components/agent-config-primitives";
 import { Tabs } from "@/components/ui/tabs";
 import { PageTabBar } from "../components/PageTabBar";
@@ -55,6 +58,8 @@ import {
   ChevronDown,
   ArrowLeft,
   Settings,
+  Shield,
+  History,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
@@ -175,11 +180,13 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "overview" | "configure" | "runs";
+type AgentDetailView = "overview" | "instructions" | "configure" | "runs" | "skills";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "configure" || value === "configuration") return "configure";
+  if (value === "instructions") return value;
   if (value === "runs") return value;
+  if (value === "skills") return value;
   return "overview";
 }
 
@@ -247,6 +254,10 @@ export function AgentDetail() {
   const [configSaving, setConfigSaving] = useState(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
   const cancelConfigActionRef = useRef<(() => void) | null>(null);
+  const [instrDirty, setInstrDirty] = useState(false);
+  const [instrSaving, setInstrSaving] = useState(false);
+  const saveInstrActionRef = useRef<(() => void) | null>(null);
+  const cancelInstrActionRef = useRef<(() => void) | null>(null);
   const { isMobile } = useSidebar();
   const routeAgentRef = agentId ?? "";
   const routeCompanyId = useMemo(() => {
@@ -258,6 +269,8 @@ export function AgentDetail() {
   const canFetchAgent = routeAgentRef.length > 0 && (isUuidLike(routeAgentRef) || Boolean(lookupCompanyId));
   const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
   const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
+  const setSaveInstrAction = useCallback((fn: (() => void) | null) => { saveInstrActionRef.current = fn; }, []);
+  const setCancelInstrAction = useCallback((fn: (() => void) | null) => { cancelInstrActionRef.current = fn; }, []);
 
   const { data: agent, isLoading, error } = useQuery({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
@@ -422,20 +435,23 @@ export function AgentDetail() {
 
   useBeforeUnload(
     useCallback((event) => {
-      if (!configDirty) return;
+      if (!configDirty && !instrDirty) return;
       event.preventDefault();
       event.returnValue = "";
-    }, [configDirty]),
+    }, [configDirty, instrDirty]),
   );
 
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
   const isPendingApproval = agent.status === "pending_approval";
-  const showConfigActionBar = activeView === "configure" && configDirty;
+  const showActionBar = (activeView === "configure" && configDirty) || (activeView === "instructions" && instrDirty);
+  const activeSaving = activeView === "instructions" ? instrSaving : configSaving;
+  const activeSaveRef = activeView === "instructions" ? saveInstrActionRef : saveConfigActionRef;
+  const activeCancelRef = activeView === "instructions" ? cancelInstrActionRef : cancelConfigActionRef;
 
   return (
-    <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
+    <div className={cn("space-y-6", isMobile && showActionBar && "pb-24")}>
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
@@ -573,7 +589,7 @@ export function AgentDetail() {
         <div
           className={cn(
             "sticky top-6 z-10 float-right transition-opacity duration-150",
-            showConfigActionBar
+            showActionBar
               ? "opacity-100"
               : "opacity-0 pointer-events-none"
           )}
@@ -582,24 +598,24 @@ export function AgentDetail() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => cancelConfigActionRef.current?.()}
-              disabled={configSaving}
+              onClick={() => activeCancelRef.current?.()}
+              disabled={activeSaving}
             >
               Cancel
             </Button>
             <Button
               size="sm"
-              onClick={() => saveConfigActionRef.current?.()}
-              disabled={configSaving}
+              onClick={() => activeSaveRef.current?.()}
+              disabled={activeSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {activeSaving ? "Saving…" : "Save"}
             </Button>
           </div>
         </div>
       )}
 
       {/* Mobile bottom Save/Cancel bar */}
-      {isMobile && showConfigActionBar && (
+      {isMobile && showActionBar && (
         <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 backdrop-blur-sm">
           <div
             className="flex items-center justify-end gap-2 px-3 py-2"
@@ -608,17 +624,17 @@ export function AgentDetail() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => cancelConfigActionRef.current?.()}
-              disabled={configSaving}
+              onClick={() => activeCancelRef.current?.()}
+              disabled={activeSaving}
             >
               Cancel
             </Button>
             <Button
               size="sm"
-              onClick={() => saveConfigActionRef.current?.()}
-              disabled={configSaving}
+              onClick={() => activeSaveRef.current?.()}
+              disabled={activeSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {activeSaving ? "Saving…" : "Save"}
             </Button>
           </div>
         </div>
@@ -631,21 +647,23 @@ export function AgentDetail() {
           onValueChange={(v) => {
             const target = v === "overview"
               ? `/agents/${canonicalAgentRef}`
-              : `/agents/${canonicalAgentRef}/${v === "configure" ? "configure" : "runs"}`;
+              : `/agents/${canonicalAgentRef}/${v}`;
             navigate(target);
           }}
         >
           <PageTabBar
             items={[
               { value: "overview", label: "Overview" },
+              { value: "instructions", label: "Instructions" },
               { value: "runs", label: "Runs" },
+              { value: "skills", label: "Skills" },
               { value: "configure", label: "Config" },
             ]}
             value={activeView}
             onValueChange={(v) => {
               const target = v === "overview"
                 ? `/agents/${canonicalAgentRef}`
-                : `/agents/${canonicalAgentRef}/${v === "configure" ? "configure" : "runs"}`;
+                : `/agents/${canonicalAgentRef}/${v}`;
               navigate(target);
             }}
           />
@@ -664,6 +682,17 @@ export function AgentDetail() {
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
           trustScore={trustScore}
+        />
+      )}
+
+      {activeView === "instructions" && (
+        <AgentInstructionsTab
+          agent={agent}
+          companyId={resolvedCompanyId ?? undefined}
+          onDirtyChange={setInstrDirty}
+          onSaveActionChange={setSaveInstrAction}
+          onCancelActionChange={setCancelInstrAction}
+          onSavingChange={setInstrSaving}
         />
       )}
 
@@ -688,6 +717,14 @@ export function AgentDetail() {
           agentRouteId={canonicalAgentRef}
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
+        />
+      )}
+
+      {activeView === "skills" && resolvedCompanyId && (
+        <AgentSkillsTab
+          agentId={agent.id}
+          companyId={resolvedCompanyId}
+          skillKeys={(agent as any).skillKeys ?? []}
         />
       )}
     </div>
@@ -1156,26 +1193,24 @@ function AgentConfigurePage({
         updatePermissions={updatePermissions}
         companyId={companyId}
       />
-      <div>
-        <h3 className="text-sm font-medium mb-3">API Keys</h3>
-        <KeysTab agentId={agentId} companyId={companyId} />
-      </div>
+      <ApiKeysAccordion agentId={agentId} companyId={companyId} />
 
-      {/* Configuration Revisions — collapsible at the bottom */}
-      <div>
+      {/* Configuration Revisions — card accordion */}
+      <div className="border border-border rounded-lg overflow-hidden">
         <button
-          className="flex items-center gap-2 text-sm font-medium hover:text-foreground transition-colors"
+          type="button"
+          className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors"
           onClick={() => setRevisionsOpen((v) => !v)}
         >
-          {revisionsOpen
+          <History className="h-3 w-3" /> Configuration Revisions
+          <span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
+          <span className="ml-auto">{revisionsOpen
             ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
             : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-          }
-          Configuration Revisions
-          <span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
+          }</span>
         </button>
         {revisionsOpen && (
-          <div className="mt-3">
+          <div className="px-4 pt-4 pb-4 border-t border-border">
             {(configRevisions ?? []).length === 0 ? (
               <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
             ) : (
@@ -1211,6 +1246,53 @@ function AgentConfigurePage({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---- Small card accordion helpers ---- */
+
+function PermissionsAccordion({ agent, updatePermissions }: { agent: Agent; updatePermissions: { mutate: (canCreate: boolean) => void; isPending: boolean } }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setOpen(!open)}>
+        <Shield className="h-3 w-3" /> Permissions
+        <span className="ml-auto">{open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span>
+      </button>
+      {open && (
+        <div className="px-4 pt-4 pb-4 border-t border-border">
+          <div className="flex items-center justify-between text-sm">
+            <span>Can create new agents</span>
+            <Button
+              variant={agent.permissions?.canCreateAgents ? "default" : "outline"}
+              size="sm"
+              className="h-7 px-2.5 text-xs"
+              onClick={() => updatePermissions.mutate(!Boolean(agent.permissions?.canCreateAgents))}
+              disabled={updatePermissions.isPending}
+            >
+              {agent.permissions?.canCreateAgents ? "Enabled" : "Disabled"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ApiKeysAccordion({ agentId, companyId }: { agentId: string; companyId?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setOpen(!open)}>
+        <Key className="h-3 w-3" /> API Keys
+        <span className="ml-auto">{open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span>
+      </button>
+      {open && (
+        <div className="px-4 pt-4 pb-4 border-t border-border">
+          <KeysTab agentId={agentId} companyId={companyId} />
+        </div>
+      )}
     </div>
   );
 }
@@ -1273,25 +1355,7 @@ function ConfigurationTab({
         sectionLayout="cards"
       />
 
-      <div>
-        <h3 className="text-sm font-medium mb-3">Permissions</h3>
-        <div className="border border-border rounded-lg p-4">
-          <div className="flex items-center justify-between text-sm">
-            <span>Can create new agents</span>
-            <Button
-              variant={agent.permissions?.canCreateAgents ? "default" : "outline"}
-              size="sm"
-              className="h-7 px-2.5 text-xs"
-              onClick={() =>
-                updatePermissions.mutate(!Boolean(agent.permissions?.canCreateAgents))
-              }
-              disabled={updatePermissions.isPending}
-            >
-              {agent.permissions?.canCreateAgents ? "Enabled" : "Disabled"}
-            </Button>
-          </div>
-        </div>
-      </div>
+      <PermissionsAccordion agent={agent} updatePermissions={updatePermissions} />
     </div>
   );
 }
@@ -2669,6 +2733,94 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---- Agent Skills Tab ---- */
+
+function AgentSkillsTab({
+  agentId,
+  companyId,
+  skillKeys: initialSkillKeys,
+}: {
+  agentId: string;
+  companyId: string;
+  skillKeys: string[];
+}) {
+  const queryClient = useQueryClient();
+  const [localKeys, setLocalKeys] = useState<string[]>(initialSkillKeys);
+  const [saving, setSaving] = useState(false);
+
+  const { data: allSkills, isLoading } = useQuery({
+    queryKey: queryKeys.companySkills.list(companyId),
+    queryFn: () => companySkillsApi.list(companyId),
+    enabled: Boolean(companyId),
+  });
+
+  async function handleToggle(skillKey: string) {
+    const next = localKeys.includes(skillKey)
+      ? localKeys.filter((k) => k !== skillKey)
+      : [...localKeys, skillKey];
+    setLocalKeys(next);
+    setSaving(true);
+    try {
+      await agentsApi.update(agentId, { skillKeys: next } as any);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (isLoading) return <PageSkeleton variant="list" />;
+
+  if (!allSkills || allSkills.length === 0) {
+    return (
+      <div className="px-6 py-10 text-center text-sm text-muted-foreground">
+        No skills available. <Link to="/skills" className="underline">Create or import skills</Link> first.
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-6 py-4">
+      <p className="text-sm text-muted-foreground mb-4">
+        Skills injected into this agent's context on every run.
+      </p>
+      <div className="space-y-2">
+        {allSkills.map((skill: CompanySkillListItem) => {
+          const attached = localKeys.includes(skill.key);
+          return (
+            <div
+              key={skill.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => { if (!saving) handleToggle(skill.key); }}
+              onKeyDown={(e) => { if (!saving && (e.key === " " || e.key === "Enter")) { e.preventDefault(); handleToggle(skill.key); } }}
+              className={cn(
+                "flex items-start gap-3 rounded-md border border-border p-3 cursor-pointer transition-colors",
+                attached ? "bg-accent/30 border-foreground/20" : "hover:bg-accent/10",
+                saving && "opacity-60 cursor-wait",
+              )}
+            >
+              <input
+                type="checkbox"
+                checked={attached}
+                readOnly
+                className="mt-0.5 h-4 w-4 rounded border-border pointer-events-none"
+              />
+              <div className="min-w-0">
+                <div className="text-sm font-medium">{skill.name}</div>
+                {skill.description && (
+                  <div className="text-xs text-muted-foreground mt-0.5">{skill.description}</div>
+                )}
+                <div className="text-xs text-muted-foreground mt-1 font-mono">{skill.key}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

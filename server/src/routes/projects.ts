@@ -10,9 +10,10 @@ import {
   updateProjectWorkspaceSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { projectService, logActivity } from "../services/index.js";
+import { projectService, logActivity, instanceSettingsService } from "../services/index.js";
 import { conflict, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { gateProjectExecutionWorkspacePolicy, parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -70,7 +71,13 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, project.companyId);
-    res.json(project);
+    res.json({
+      ...project,
+      executionWorkspacePolicy: gateProjectExecutionWorkspacePolicy(
+        parseProjectExecutionWorkspacePolicy(project.executionWorkspacePolicy),
+        (await instanceSettingsService(db).getExperimental()).enableIsolatedWorkspaces,
+      ),
+    });
   });
 
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
@@ -120,6 +127,7 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+
     const project = await svc.update(id, req.body);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
@@ -139,7 +147,13 @@ export function projectRoutes(db: Db) {
       details: req.body,
     });
 
-    res.json(project);
+    res.json({
+      ...project,
+      executionWorkspacePolicy: gateProjectExecutionWorkspacePolicy(
+        parseProjectExecutionWorkspacePolicy(project.executionWorkspacePolicy),
+        (await instanceSettingsService(db).getExperimental()).enableIsolatedWorkspaces,
+      ),
+    });
   });
 
   router.get("/projects/:id/workspaces", async (req, res) => {

@@ -29,6 +29,7 @@ export interface Agent {
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
   metadata: Record<string, unknown> | null;
+  skillKeys: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -63,6 +64,38 @@ export interface AdapterEnvironmentCheck {
   message: string;
   detail?: string | null;
   hint?: string | null;
+}
+
+export type AgentInstructionsBundleMode = "managed" | "external";
+
+export interface AgentInstructionsFileSummary {
+  path: string;
+  size: number;
+  language: string;
+  markdown: boolean;
+  isEntryFile: boolean;
+  editable: boolean;
+  deprecated: boolean;
+  virtual: boolean;
+}
+
+export interface AgentInstructionsFileDetail extends AgentInstructionsFileSummary {
+  content: string;
+}
+
+export interface AgentInstructionsBundle {
+  agentId: string;
+  companyId: string;
+  mode: AgentInstructionsBundleMode | null;
+  rootPath: string | null;
+  managedRootPath: string;
+  entryFile: string;
+  resolvedEntryPath: string | null;
+  editable: boolean;
+  warnings: string[];
+  legacyPromptTemplateActive: boolean;
+  legacyBootstrapPromptTemplateActive: boolean;
+  files: AgentInstructionsFileSummary[];
 }
 
 export interface AdapterEnvironmentTestResult {

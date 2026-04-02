@@ -32,6 +32,8 @@ export const AGENT_ADAPTER_TYPES = [
   "claude_api",
   "openai_api",
   "gemini_api",
+  "hermes_local",
+  "gemini_local",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
@@ -143,7 +145,7 @@ export const PROJECT_COLORS = [
   "#3b82f6", // blue
 ] as const;
 
-export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy"] as const;
+export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy", "budget_override_required"] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 
 export const APPROVAL_STATUSES = [
@@ -215,6 +217,13 @@ export const LIVE_EVENT_TYPES = [
   "internal_agent.greeting",
   "internal_agent.reminder",
   "internal_agent.notification",
+  "internal_agent.message",
+  "internal_agent.run.status",
+  // Budget
+  "budget.policy_created",
+  "budget.policy_updated",
+  "budget.incident_created",
+  "budget.incident_resolved",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -447,6 +456,7 @@ export type DiscussionStatus = (typeof DISCUSSION_STATUSES)[number];
 export const DISCUSSION_SCOPE_TYPES = ["department", "project", "goal"] as const;
 export type DiscussionScopeType = (typeof DISCUSSION_SCOPE_TYPES)[number];
 
+// "write" kept for backward compat with existing entries — UI now uses "paste" for both paste and write
 export const DISCUSSION_ENTRY_INPUT_TYPES = ["paste", "write", "voice", "mcp"] as const;
 export type DiscussionEntryInputType = (typeof DISCUSSION_ENTRY_INPUT_TYPES)[number];
 
@@ -482,6 +492,27 @@ export type AgentExecutionMode = (typeof AGENT_EXECUTION_MODES)[number];
 
 export const AGENT_PROVIDERS = ["anthropic", "openai", "google"] as const;
 export type AgentProvider = (typeof AGENT_PROVIDERS)[number];
+
+export const AGENT_MODELS_BY_PROVIDER: Record<AgentProvider, { value: string; label: string }[]> = {
+  anthropic: [
+    { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+    { value: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+  ],
+  openai: [
+    { value: "gpt-4o", label: "GPT-4o" },
+    { value: "gpt-4o-mini", label: "GPT-4o Mini" },
+  ],
+  google: [
+    { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+    { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  ],
+};
+
+export const CLI_TOOLS = [
+  { value: "claude_cli", label: "Claude CLI" },
+  { value: "codex", label: "Codex" },
+  { value: "opencode", label: "OpenCode" },
+] as const;
 
 export const NOTIFICATION_PREFERENCES = ["silent", "digest", "realtime"] as const;
 export type NotificationPreference = (typeof NOTIFICATION_PREFERENCES)[number];
@@ -519,3 +550,43 @@ export const NOTIFICATION_TYPES = [
   "internal_agent.action_result",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
+
+// ── Routines ──────────────────────────────────────────────────────────
+
+export const ISSUE_ORIGIN_KINDS = ["routine_execution"] as const;
+export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
+
+export const ROUTINE_STATUSES = ["active", "paused", "archived"] as const;
+export type RoutineStatus = (typeof ROUTINE_STATUSES)[number];
+
+export const ROUTINE_CONCURRENCY_POLICIES = [
+  "coalesce_if_active",
+  "always_enqueue",
+  "skip_if_active",
+] as const;
+export type RoutineConcurrencyPolicy = (typeof ROUTINE_CONCURRENCY_POLICIES)[number];
+
+export const ROUTINE_CATCH_UP_POLICIES = [
+  "skip_missed",
+  "enqueue_missed_with_cap",
+] as const;
+export type RoutineCatchUpPolicy = (typeof ROUTINE_CATCH_UP_POLICIES)[number];
+
+export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api"] as const;
+export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
+
+export const ROUTINE_TRIGGER_SIGNING_MODES = ["bearer", "hmac_sha256"] as const;
+export type RoutineTriggerSigningMode = (typeof ROUTINE_TRIGGER_SIGNING_MODES)[number];
+
+export const ROUTINE_RUN_STATUSES = [
+  "received",
+  "issue_created",
+  "coalesced",
+  "skipped",
+  "completed",
+  "failed",
+] as const;
+export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
+
+export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
+export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];

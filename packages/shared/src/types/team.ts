@@ -11,6 +11,7 @@ export interface TeamCurrentUserSummary {
   userId: string | null;
   role: UserRole | null;
   departmentId: string | null;
+  isSystemAdmin: boolean;
   permissions: TeamPermissionSummary;
 }
 
@@ -24,6 +25,7 @@ export interface TeamMemberSummary {
   departmentName: string | null;
   permissions: PermissionKey[];
   isCurrentUser: boolean;
+  isSystemAdmin: boolean;
   parentType: "user" | null;
   parentId: string | null;
 }
@@ -34,6 +36,8 @@ export interface TeamInviteSummary {
   role: UserRole;
   departmentId: string | null;
   departmentName: string | null;
+  reportsToId: string | null;
+  reportsToName: string | null;
   expiresAt: Date;
   inviteUrl: string;
 }
@@ -42,6 +46,32 @@ export interface TeamSummary {
   currentUser: TeamCurrentUserSummary;
   members: TeamMemberSummary[];
   pendingInvites: TeamInviteSummary[];
+}
+
+export interface AddMemberInput {
+  name: string;
+  email: string;
+  role: UserRole;
+  projectId?: string | null;
+  parentType?: "user" | null;
+  parentId?: string | null;
+}
+
+export interface TransferAdminInput {
+  toUserId: string;
+  confirmation: string;
+}
+
+export interface MemberDependencies {
+  teamMembers: Array<{ userId: string; displayName: string | null; email: string | null; role: UserRole }>;
+  agentTrees: Array<{ rootAgentId: string; rootAgentName: string; subAgentCount: number }>;
+  assignedTaskCount: number;
+  createdTaskCount: number;
+}
+
+export interface ReassignAndRemoveInput {
+  humanReassignments: Array<{ userId: string; newParentId: string | null }>;
+  agentReassignments: Array<{ agentId: string; newParentId: string; newParentType: "user" }>;
 }
 
 /** A node in the unified org tree that can represent either an agent or a human. */

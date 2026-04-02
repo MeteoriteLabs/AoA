@@ -66,6 +66,9 @@ export interface Issue {
   executionRunId: string | null;
   executionAgentNameKey: string | null;
   executionLockedAt: Date | null;
+  executionWorkspaceId: string | null;
+  executionWorkspacePreference: string | null;
+  executionWorkspaceSettings: Record<string, unknown> | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   issueNumber: number | null;
@@ -89,6 +92,9 @@ export interface Issue {
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   isUnreadForMe?: boolean;
+  planDocument?: IssueDocument | null;
+  documentSummaries?: IssueDocumentSummary[];
+  legacyPlanDocument?: LegacyPlanDocument | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -121,4 +127,47 @@ export interface IssueAttachment {
   createdAt: Date;
   updatedAt: Date;
   contentPath: string;
+}
+
+export type DocumentFormat = "markdown";
+
+export interface IssueDocumentSummary {
+  id: string;
+  companyId: string;
+  issueId: string;
+  key: string;
+  title: string | null;
+  format: DocumentFormat;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IssueDocument extends IssueDocumentSummary {
+  body: string;
+}
+
+export interface DocumentRevision {
+  id: string;
+  companyId: string;
+  documentId: string;
+  issueId: string;
+  key: string;
+  revisionNumber: number;
+  body: string;
+  changeSummary: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+}
+
+export interface LegacyPlanDocument {
+  key: "plan";
+  body: string;
+  source: "issue_description";
 }
