@@ -23,7 +23,6 @@ import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AgentPanelProvider } from "../context/AgentPanelContext";
-import { InternalAgentPanel } from "./InternalAgentPanel";
 
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, collapsed, toggleCollapse } = useSidebar();
@@ -254,8 +253,6 @@ export function Layout() {
         </main>
       </div>
 
-      {/* Agent panel (desktop: inline right, mobile: sheet overlay) */}
-      <InternalAgentPanel />
 
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />

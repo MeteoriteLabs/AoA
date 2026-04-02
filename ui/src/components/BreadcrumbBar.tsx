@@ -1,8 +1,7 @@
-import { Link } from "@/lib/router";
+import { Link, useNavigate } from "@/lib/router";
 import { Bot, Menu, Moon, Search, Sun } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
-import { useAgentPanel } from "../context/AgentPanelContext";
 import { useTheme } from "../context/ThemeContext";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,7 +17,7 @@ import { Fragment } from "react";
 export function BreadcrumbBar() {
   const { breadcrumbs, subtitle, entityColor } = useBreadcrumbs();
   const { toggleSidebar, toggleCollapse, isMobile } = useSidebar();
-  const { togglePanel, isOpen: agentPanelOpen } = useAgentPanel();
+  const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
 
   if (breadcrumbs.length === 0) return null;
@@ -64,10 +63,10 @@ export function BreadcrumbBar() {
       <Button
         variant="ghost"
         size="icon-sm"
-        className={agentPanelOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"}
-        onClick={togglePanel}
-        aria-label="Toggle Commander"
-        title="Toggle Commander"
+        className="text-muted-foreground hover:text-foreground"
+        onClick={() => navigate("/commander")}
+        aria-label="Commander"
+        title="Commander"
       >
         <Bot className="h-4 w-4" />
       </Button>

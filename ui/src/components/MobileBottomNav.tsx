@@ -10,7 +10,6 @@ import {
 } from "lucide-react";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { useCompany } from "../context/CompanyContext";
-import { useAgentPanel } from "../context/AgentPanelContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 
@@ -27,18 +26,10 @@ interface MobileNavLinkItem {
   badge?: number;
 }
 
-interface MobileNavActionItem {
-  type: "action";
-  label: string;
-  icon: typeof Bot;
-  onClick: () => void;
-}
-
-type MobileNavItem = MobileNavLinkItem | MobileNavActionItem;
+type MobileNavItem = MobileNavLinkItem;
 
 export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const { selectedCompanyId } = useCompany();
-  const { togglePanel, isOpen: agentPanelOpen } = useAgentPanel();
 
   const { data: sidebarBadges } = useQuery({
     queryKey: queryKeys.sidebarBadges(selectedCompanyId!),
@@ -50,7 +41,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
     () => [
       { type: "link", to: "/home", label: "Home", icon: House },
       { type: "link", to: "/issues", label: "Tasks", icon: CircleDot },
-      { type: "action", label: "AoA", icon: Bot, onClick: () => togglePanel() },
+      { type: "link", to: "/commander", label: "Commander", icon: Bot },
       { type: "link", to: "/agents/all", label: "Agents", icon: Users },
       {
         type: "link",
@@ -60,7 +51,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         badge: sidebarBadges?.inbox,
       },
     ],
-    [togglePanel, sidebarBadges?.inbox],
+    [sidebarBadges?.inbox],
   );
 
   return (
@@ -73,27 +64,6 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
     >
       <div className="grid h-16 grid-cols-5 px-1">
         {items.map((item) => {
-          if (item.type === "action") {
-            const Icon = item.icon;
-            const active = agentPanelOpen;
-            return (
-              <button
-                key={item.label}
-                type="button"
-                onClick={item.onClick}
-                className={cn(
-                  "relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-md text-[10px] font-medium transition-colors",
-                  active
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <Icon className="h-[18px] w-[18px]" />
-                <span className="truncate">{item.label}</span>
-              </button>
-            );
-          }
-
           const Icon = item.icon;
           return (
             <NavLink
