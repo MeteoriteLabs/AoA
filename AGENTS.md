@@ -4,29 +4,33 @@ Guidance for human and AI contributors working in this repository.
 
 ## 1. Purpose
 
-Paperclip is a control plane for AI-agent companies.
-The current implementation target is V1 and is defined in `docs/aoa/specs/paperclip-impl_spec.md`.
+AoA (Army of Agents) is a Hybrid Workforce Operating System for solo founders — built on Paperclip (open-source AI agent orchestration). The current implementation is **V2.5**.
 
 ## 2. Read This First
 
 Before making changes, read in this order:
 
-1. `docs/aoa/reference/goal.md`
-2. `docs/aoa/reference/product.md`
-3. `docs/aoa/specs/paperclip-impl_spec.md`
-4. `docs/aoa/guides/developing.md`
-5. `docs/aoa/reference/database.md`
-
-`docs/aoa/specs/paperclip_spec.md` is long-horizon product context.
-`docs/aoa/specs/paperclip-impl_spec.md` is the concrete V1 build contract.
+1. `CLAUDE.md` — architecture baseline, critical rules, naming map, all implemented tables
+2. `docs/aoa/reference/decisions.md` — 90 locked product and architectural decisions. **Do not relitigate.**
+3. `docs/aoa/specs/v2_5_changelog.md` — what shipped in V2.5 (Discussions, Internal Agent, Workflow Templates, Notifications)
+4. `docs/aoa/v2.5/REVIEW_REPORT.md` — cross-reference audit of V2.5 spec docs against codebase; known deviations
 
 ## 3. Repo Map
 
-- `server/`: Express REST API and orchestration services
-- `ui/`: React + Vite board UI
-- `packages/db/`: Drizzle schema, migrations, DB clients
-- `packages/shared/`: shared types, constants, validators, API path constants
-- `doc/`: operational and product docs
+```
+server/src/           → Express 5.x REST API, services, adapters, heartbeat
+ui/src/               → React + Vite board UI
+packages/db/          → Drizzle schema, migrations, DB clients
+packages/shared/      → Shared types, constants, validators, API path constants
+packages/adapters/    → Adapter utilities
+docs/                 → All documentation
+```
+
+Key doc paths:
+- `docs/aoa/reference/decisions.md` — locked decisions (#1–90 + DA series)
+- `docs/aoa/specs/v2_5_changelog.md` — V2.5 shipped features
+- `docs/aoa/v2.5/` — V2.5 architecture, API contracts, schema, flow docs
+- `docs/superpowers/` — session plans and design specs
 
 ## 4. Dev Setup (Auto DB)
 
@@ -39,8 +43,7 @@ pnpm dev
 
 This starts:
 
-- API: `http://localhost:3100`
-- UI: `http://localhost:3100` (served by API server in dev middleware mode)
+- API + UI: `http://localhost:3100`
 
 Quick checks:
 
@@ -58,29 +61,35 @@ pnpm dev
 
 ## 5. Core Engineering Rules
 
-1. Keep changes company-scoped.
-Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
+1. **Keep changes company-scoped.**
+   Every domain entity must be scoped to a company. Enforce company boundaries in routes and services.
 
-2. Keep contracts synchronized.
-If you change schema/API behavior, update all impacted layers:
-- `packages/db` schema and exports
-- `packages/shared` types/constants/validators
-- `server` routes/services
-- `ui` API clients and pages
+2. **Keep contracts synchronized.**
+   If you change schema or API behavior, update all impacted layers:
+   - `packages/db` — schema and exports
+   - `packages/shared` — types, constants, validators
+   - `server` — routes and services
+   - `ui` — API clients and pages
 
-3. Preserve control-plane invariants.
-- Single-assignee task model
-- Atomic issue checkout semantics
-- Approval gates for governed actions
-- Budget hard-stop auto-pause behavior
-- Activity logging for mutating actions
+3. **Preserve control-plane invariants.**
+   - Single-assignee task model
+   - Atomic issue checkout semantics (`SELECT FOR UPDATE NO WAIT`)
+   - Approval gates for governed actions
+   - Budget hard-stop auto-pause behavior
+   - Activity logging for all mutating actions
 
-4. Do not replace strategic docs wholesale unless asked.
-Prefer additive updates. Keep `docs/aoa/specs/paperclip_spec.md` and `docs/aoa/specs/paperclip-impl_spec.md` aligned.
+4. **Naming map — UI says Task/Home/Budget/Team/Discussion, DB/API stay unchanged.**
+   See `CLAUDE.md` §Naming Map for the full table. Never rename DB tables or API routes.
+
+5. **MCP inbound always routes through the Discussion pipeline.** Never create raw tasks from MCP input. (Decision #14)
+
+6. **Drizzle ORM only.** Schema changes go in `packages/db/src/schema/`. Run `pnpm db:generate`. Never write raw SQL migration files. (Decision #19)
+
+7. **New services follow `server/src/services/goals.ts`. New routes follow `server/src/routes/goals.ts`.**
 
 ## 6. Database Change Workflow
 
-When changing data model:
+When changing the data model:
 
 1. Edit `packages/db/src/schema/*.ts`
 2. Ensure new tables are exported from `packages/db/src/schema/index.ts`
@@ -120,11 +129,10 @@ If anything cannot be run, explicitly report what was not run and why.
 - Agent keys must not access other companies
 
 When adding endpoints:
-
-- apply company access checks
-- enforce actor permissions (board vs agent)
-- write activity log entries for mutations
-- return consistent HTTP errors (`400/401/403/404/409/422/500`)
+- Apply company access checks
+- Enforce actor permissions (board vs agent)
+- Write activity log entries for mutations
+- Return consistent HTTP errors (`400/401/403/404/409/422/500`)
 
 ## 9. UI Expectations
 
@@ -136,7 +144,7 @@ When adding endpoints:
 
 A change is done when all are true:
 
-1. Behavior matches `docs/aoa/specs/paperclip-impl_spec.md`
+1. Behavior matches `CLAUDE.md` and relevant V2.5 spec docs
 2. Typecheck, tests, and build pass
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change

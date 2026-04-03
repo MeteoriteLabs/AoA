@@ -5,7 +5,7 @@ Hybrid Workforce Operating System for solo founders. Built on Paperclip (open-so
 ## Stack
 
 - **Frontend:** React + Vite + TailwindCSS (`ui/src/`)
-- **Backend:** Hono framework (`server/src/`)
+- **Backend:** Express 5.x framework (`server/src/`)
 - **Database:** PostgreSQL + Drizzle ORM (`packages/db/src/schema/`)
 - **Shared types:** `packages/shared/src/`
 - **Adapters:** `packages/adapters/` + `server/src/adapters/`
