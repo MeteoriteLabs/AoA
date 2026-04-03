@@ -96,7 +96,7 @@ COMPANY: Vision & Mission, Memory, Budget, Activity, Settings
 packages/db/src/schema/    → Drizzle table definitions
 packages/shared/src/       → Types, validators, constants
 server/src/services/       → Business logic (one file per domain)
-server/src/routes/         → Hono route handlers
+server/src/routes/         → Express route handlers
 server/src/adapters/       → Agent execution adapters
 ui/src/components/         → React components
 ui/src/pages/              → Page-level components
