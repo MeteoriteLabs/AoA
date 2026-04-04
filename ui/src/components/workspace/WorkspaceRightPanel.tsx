@@ -8,7 +8,7 @@ import { ContextSection } from "./sections/ContextSection";
 import { ProcessSection } from "./sections/ProcessSection";
 import { ToolsSection } from "./sections/ToolsSection";
 import { NotesSection } from "./sections/NotesSection";
-import type { ArtifactWithVersions, ArtifactVersion } from "@paperclipai/shared";
+import type { ArtifactWithVersions, ArtifactVersion, ExecutionWorkspace } from "@paperclipai/shared";
 
 function sectionKey(name: string) {
   return `aoa:workspace:section:${name}`;
@@ -35,7 +35,7 @@ interface WorkspaceRightPanelProps {
   issueId: string;
   companyId: string;
   companyPrefix: string;
-  workspaceId: string;
+  workspace: ExecutionWorkspace;
   functionType: string | null;
   onPreviewArtifact?: (artifact: ArtifactWithVersions, version: ArtifactVersion) => void;
 }
@@ -58,7 +58,7 @@ export function WorkspaceRightPanel({
   issueId,
   companyId,
   companyPrefix,
-  workspaceId,
+  workspace,
   functionType,
   onPreviewArtifact,
 }: WorkspaceRightPanelProps) {
@@ -109,10 +109,15 @@ export function WorkspaceRightPanel({
                   <ProcessSection issueId={issueId} companyId={companyId} companyPrefix={companyPrefix} />
                 )}
                 {section.name === "tools" && (
-                  <ToolsSection functionType={functionType} />
+                  <ToolsSection
+                    functionType={functionType}
+                    workspace={workspace}
+                    issueId={issueId}
+                    companyId={companyId}
+                  />
                 )}
                 {section.name === "notes" && (
-                  <NotesSection workspaceId={workspaceId} />
+                  <NotesSection workspaceId={workspace.id} />
                 )}
               </div>
             </CollapsibleContent>

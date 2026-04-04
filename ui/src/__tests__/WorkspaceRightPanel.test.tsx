@@ -7,6 +7,33 @@ import { mockCompanyContext } from "./test-utils";
 
 // ─── Mock data ───────────────────────────────────────────────────────────────
 
+const mockWorkspace = {
+  id: "ws-1",
+  companyId: "comp-1",
+  projectId: "proj-1",
+  projectWorkspaceId: null,
+  sourceIssueId: "issue-1",
+  mode: "local_checkout" as const,
+  strategyType: "git_branch" as const,
+  name: "workspace-1",
+  status: "active" as const,
+  cwd: "/home/agent/workspace",
+  repoUrl: "https://github.com/org/repo",
+  branchName: "feat/fix-auth",
+  baseRef: "main",
+  providerType: "local" as const,
+  providerRef: null,
+  derivedFromExecutionWorkspaceId: null,
+  lastUsedAt: new Date(),
+  openedAt: new Date(),
+  closedAt: null,
+  cleanupEligibleAt: null,
+  cleanupReason: null,
+  metadata: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
 const mockArtifact = {
   id: "art-1",
   companyId: "comp-1",
@@ -136,6 +163,9 @@ const activityApiMock = {
 
 const heartbeatsApiMock = {
   activeRunForIssue: vi.fn().mockResolvedValue(null),
+  liveRunsForIssue: vi.fn().mockResolvedValue([]),
+  events: vi.fn().mockResolvedValue([]),
+  log: vi.fn().mockResolvedValue({ content: "", nextOffset: undefined }),
 };
 
 const issuesApiMock = {
@@ -166,6 +196,25 @@ vi.mock("../api/issues", () => ({
   issuesApi: new Proxy({}, { get: (_t, prop) => (issuesApiMock as any)[prop] }),
 }));
 
+// Mock xterm modules to avoid DOM issues in jsdom
+vi.mock("@xterm/xterm", () => ({
+  Terminal: vi.fn().mockImplementation(() => ({
+    loadAddon: vi.fn(),
+    open: vi.fn(),
+    clear: vi.fn(),
+    write: vi.fn(),
+    dispose: vi.fn(),
+  })),
+}));
+
+vi.mock("@xterm/addon-fit", () => ({
+  FitAddon: vi.fn().mockImplementation(() => ({
+    fit: vi.fn(),
+  })),
+}));
+
+vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
     ...mockCompanyContext,
@@ -191,7 +240,7 @@ function renderRightPanel(props: Partial<React.ComponentProps<typeof WorkspaceRi
           issueId="issue-1"
           companyId="comp-1"
           companyPrefix="TC"
-          workspaceId="ws-1"
+          workspace={mockWorkspace}
           functionType="software_development"
           {...props}
         />
@@ -390,7 +439,7 @@ describe("ProcessSection", () => {
 });
 
 describe("ToolsSection", () => {
-  it("shows Git and Terminal placeholders for software_development", async () => {
+  it("shows Git and Terminal sub-sections for software_development", async () => {
     // Tools section defaults to collapsed; open it
     localStorage.setItem("aoa:workspace:section:tools", "true");
 
@@ -400,9 +449,8 @@ describe("ToolsSection", () => {
       expect(screen.getByTestId("tools-dev")).toBeInTheDocument();
     });
 
-    expect(screen.getByTestId("tool-placeholder-git")).toBeInTheDocument();
-    expect(screen.getByTestId("tool-placeholder-terminal")).toBeInTheDocument();
-    expect(screen.getAllByText("Coming in Phase 4")).toHaveLength(2);
+    expect(screen.getByTestId("git-toggle")).toBeInTheDocument();
+    expect(screen.getByTestId("terminal-toggle")).toBeInTheDocument();
   });
 
   it("shows empty message for non-software departments", async () => {

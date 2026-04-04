@@ -139,7 +139,7 @@ export function WorkspaceLayout({
             issueId={selectedIssueId}
             companyId={companyId}
             companyPrefix={companyPrefix}
-            workspaceId={workspace.id}
+            workspace={workspace}
             functionType={project?.functionType ?? null}
             onPreviewArtifact={handlePreviewArtifact}
           />
