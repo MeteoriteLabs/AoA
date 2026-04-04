@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { dependenciesApi } from "../../../api/dependencies";
 import { artifactsApi } from "../../../api/artifacts";
 import { queryKeys } from "../../../lib/queryKeys";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Brain, ArrowDown } from "lucide-react";
 import type { ArtifactWithVersions } from "@paperclipai/shared";
 
@@ -11,10 +12,19 @@ interface ContextSectionProps {
 }
 
 export function ContextSection({ issueId, companyId }: ContextSectionProps) {
-  const { data: deps } = useQuery({
+  const { data: deps, isLoading } = useQuery({
     queryKey: queryKeys.issues.dependencies(issueId),
     queryFn: () => dependenciesApi.list(companyId, issueId),
   });
+
+  if (isLoading) {
+    return (
+      <div className="px-3 space-y-2" data-testid="context-skeleton">
+        <Skeleton className="h-8 w-full" />
+        <Skeleton className="h-8 w-full" />
+      </div>
+    );
+  }
 
   const completedUpstream = (deps?.upstream ?? []).filter(
     (d) => d.status === "done" || d.status === "completed",

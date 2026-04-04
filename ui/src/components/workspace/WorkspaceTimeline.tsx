@@ -10,7 +10,9 @@ import { cn, relativeTime } from "@/lib/utils";
 import { RunBlock } from "./RunBlock";
 import { LiveRunWidget } from "../LiveRunWidget";
 import { Identity } from "../Identity";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { useToast } from "../../context/ToastContext";
 import { Send, CheckCircle2 } from "lucide-react";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 
@@ -49,7 +51,7 @@ export function WorkspaceTimeline({
     enabled: !!issueId,
   });
 
-  const { data: comments } = useQuery({
+  const { data: comments, error: commentsError } = useQuery({
     queryKey: queryKeys.issues.comments(issueId),
     queryFn: () => issuesApi.listComments(issueId),
     enabled: !!issueId,
@@ -81,6 +83,14 @@ export function WorkspaceTimeline({
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  const { pushToast } = useToast();
+
+  useEffect(() => {
+    if (commentsError) {
+      pushToast({ tone: "error", title: "Failed to load comments", body: (commentsError as Error).message });
+    }
+  }, [commentsError, pushToast]);
 
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();
@@ -152,6 +162,14 @@ export function WorkspaceTimeline({
     <div className={cn("flex flex-col h-full", className)} data-testid="workspace-timeline">
       {/* Scrollable timeline */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3" data-testid="timeline-scroll">
+        {!comments && !linkedRuns && (
+          <div className="space-y-3" data-testid="timeline-skeleton">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-20 w-full" />
+            ))}
+          </div>
+        )}
+
         {/* Live run widget at top if active */}
         {hasLiveRuns && (
           <LiveRunWidget issueId={issueId} companyId={issue?.companyId ?? null} />

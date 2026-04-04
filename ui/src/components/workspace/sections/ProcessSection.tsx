@@ -7,6 +7,7 @@ import { issuesApi } from "../../../api/issues";
 import { dependenciesApi } from "../../../api/dependencies";
 import { queryKeys } from "../../../lib/queryKeys";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Bot, ExternalLink, AlertTriangle } from "lucide-react";
 import type { Agent, Issue } from "@paperclipai/shared";
 
@@ -19,7 +20,7 @@ interface ProcessSectionProps {
 export function ProcessSection({ issueId, companyId, companyPrefix }: ProcessSectionProps) {
   const navigate = useNavigate();
 
-  const { data: issue } = useQuery({
+  const { data: issue, isLoading: issueLoading } = useQuery({
     queryKey: queryKeys.issues.detail(issueId),
     queryFn: () => issuesApi.get(issueId),
   });
@@ -54,6 +55,15 @@ export function ProcessSection({ issueId, companyId, companyPrefix }: ProcessSec
   const blockingTasks = isBlocked
     ? (deps?.upstream ?? []).filter((d) => d.status !== "done" && d.status !== "completed")
     : [];
+
+  if (issueLoading) {
+    return (
+      <div className="px-3 space-y-2" data-testid="process-skeleton">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-4 w-32" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-2 px-3" data-testid="process-section">

@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronDown, ChevronRight, Search } from "lucide-react";
 import { issuesApi } from "../../api/issues";
 import { queryKeys } from "../../lib/queryKeys";
 import { StatusIcon } from "../StatusIcon";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useToast } from "../../context/ToastContext";
 import { cn } from "../../lib/utils";
 import type { Issue } from "@paperclipai/shared";
 
@@ -41,11 +43,19 @@ export function WorkspaceTaskNav({
   const [search, setSearch] = useState("");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set(["Completed"]));
 
-  const { data: allIssues = [] } = useQuery({
+  const { data: allIssues = [], isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listByProject(companyId, projectId),
     queryFn: () => issuesApi.list(companyId, { projectId }),
     enabled: !!companyId && !!projectId,
   });
+
+  const { pushToast } = useToast();
+
+  useEffect(() => {
+    if (error) {
+      pushToast({ tone: "error", title: "Failed to load tasks", body: (error as Error).message });
+    }
+  }, [error, pushToast]);
 
   // Only tasks with workspaces
   const issues = useMemo(
@@ -106,51 +116,59 @@ export function WorkspaceTaskNav({
       </div>
 
       {/* Task groups */}
-      <div className="flex-1 overflow-y-auto" data-testid="workspace-task-list">
-        {TASK_GROUPS.map((group) => {
-          const groupIssues = filtered.filter((i) => group.statuses.includes(i.status));
-          if (groupIssues.length === 0) return null;
-          const isCollapsed = collapsedGroups.has(group.label);
+      {isLoading ? (
+        <div className="p-3 space-y-2" data-testid="task-nav-skeleton">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-8 w-full" />
+          ))}
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto" data-testid="workspace-task-list">
+          {TASK_GROUPS.map((group) => {
+            const groupIssues = filtered.filter((i) => group.statuses.includes(i.status));
+            if (groupIssues.length === 0) return null;
+            const isCollapsed = collapsedGroups.has(group.label);
 
-          return (
-            <div key={group.label}>
-              <button
-                type="button"
-                onClick={() => toggleGroup(group.label)}
-                className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-                data-testid={`workspace-group-${group.label.toLowerCase().replace(/\s+/g, "-")}`}
-              >
-                {isCollapsed ? (
-                  <ChevronRight className="h-3 w-3 shrink-0" />
-                ) : (
-                  <ChevronDown className="h-3 w-3 shrink-0" />
+            return (
+              <div key={group.label}>
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.label)}
+                  className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                  data-testid={`workspace-group-${group.label.toLowerCase().replace(/\s+/g, "-")}`}
+                >
+                  {isCollapsed ? (
+                    <ChevronRight className="h-3 w-3 shrink-0" />
+                  ) : (
+                    <ChevronDown className="h-3 w-3 shrink-0" />
+                  )}
+                  {group.label}
+                  <span className="ml-auto text-xs text-muted-foreground/60">{groupIssues.length}</span>
+                </button>
+
+                {!isCollapsed && (
+                  <div>
+                    {groupIssues.map((issue) => (
+                      <TaskRow
+                        key={issue.id}
+                        issue={issue}
+                        isSelected={issue.id === selectedIssueId}
+                        onSelect={() => onSelectIssue(issue.id)}
+                      />
+                    ))}
+                  </div>
                 )}
-                {group.label}
-                <span className="ml-auto text-xs text-muted-foreground/60">{groupIssues.length}</span>
-              </button>
+              </div>
+            );
+          })}
 
-              {!isCollapsed && (
-                <div>
-                  {groupIssues.map((issue) => (
-                    <TaskRow
-                      key={issue.id}
-                      issue={issue}
-                      isSelected={issue.id === selectedIssueId}
-                      onSelect={() => onSelectIssue(issue.id)}
-                    />
-                  ))}
-                </div>
-              )}
+          {filtered.length === 0 && (
+            <div className="px-3 py-8 text-center text-xs text-muted-foreground">
+              {search ? "No tasks match your search" : "No tasks with workspaces"}
             </div>
-          );
-        })}
-
-        {filtered.length === 0 && (
-          <div className="px-3 py-8 text-center text-xs text-muted-foreground">
-            {search ? "No tasks match your search" : "No tasks with workspaces"}
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { dependenciesApi, type DependencyItem } from "../../api/dependencies";
 import { queryKeys } from "../../lib/queryKeys";
 import { StatusIcon } from "../StatusIcon";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { ArrowRight } from "lucide-react";
 
@@ -18,7 +19,7 @@ export function DependencyChain({
   selectedIssueId,
   onSelectIssue,
 }: DependencyChainProps) {
-  const { data: deps } = useQuery({
+  const { data: deps, isLoading } = useQuery({
     queryKey: queryKeys.issues.dependencies(issueId),
     queryFn: () => dependenciesApi.list(companyId, issueId),
     enabled: !!issueId && !!companyId,
@@ -51,6 +52,18 @@ export function DependencyChain({
       isCurrent: false,
     })),
   ];
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 px-4 py-2" data-testid="dependency-chain-skeleton">
+        <Skeleton className="h-8 w-24" />
+        <ArrowRight className="h-3 w-3 text-muted-foreground" />
+        <Skeleton className="h-8 w-24" />
+        <ArrowRight className="h-3 w-3 text-muted-foreground" />
+        <Skeleton className="h-8 w-24" />
+      </div>
+    );
+  }
 
   if (upstream.length === 0 && downstream.length === 0) return null;
 

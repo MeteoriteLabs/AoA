@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { artifactsApi } from "../../../api/artifacts";
 import { queryKeys } from "../../../lib/queryKeys";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { FileCode, FileText, Image, File, Package } from "lucide-react";
 import type { ArtifactWithVersions, ArtifactVersion, ArtifactType } from "@paperclipai/shared";
 
@@ -33,7 +34,11 @@ export function ArtifactsSection({ issueId, onPreviewArtifact }: ArtifactsSectio
   });
 
   if (isLoading) {
-    return <div className="px-3 py-2 text-xs text-muted-foreground">Loading...</div>;
+    return (
+      <div className="px-3 space-y-2" data-testid="artifacts-skeleton">
+        <Skeleton className="h-10 w-full" />
+      </div>
+    );
   }
 
   if (!artifact) {
