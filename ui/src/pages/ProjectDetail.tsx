@@ -24,11 +24,13 @@ import { projectRouteRef, cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Plus, Bot, X, DollarSign, AlertTriangle, MessageSquare, ClipboardPen, PenLine, Mic, Plug } from "lucide-react";
 import { discussionsApi, type DiscussionListItem } from "../api/discussions";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { EmptyState } from "../components/EmptyState";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 
 /* ── Top-level tab types ── */
 
-type ProjectTab = "overview" | "list" | "goals" | "team" | "budget" | "discussions";
+type ProjectTab = "overview" | "list" | "goals" | "team" | "budget" | "discussions" | "workspaces";
 
 function resolveProjectTab(pathname: string, projectId: string): ProjectTab | null {
   const segments = pathname.split("/").filter(Boolean);
@@ -41,6 +43,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "team") return "team";
   if (tab === "budget") return "budget";
   if (tab === "discussions") return "discussions";
+  if (tab === "workspaces") return "workspaces";
   return null;
 }
 
@@ -458,6 +461,103 @@ function ProjectBudgetTab({ projectId, companyId, projectType }: { projectId: st
   );
 }
 
+/* ── Workspaces tab content ── */
+
+const STATUS_BADGE_CLASSES: Record<string, string> = {
+  active: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  idle: "bg-muted text-muted-foreground",
+  in_review: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
+  archived: "bg-muted text-muted-foreground",
+  cleanup_failed: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
+};
+
+function formatRelativeTime(date: Date): string {
+  const now = Date.now();
+  const diffMs = now - new Date(date).getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (diffDays === 0) return "today";
+  if (diffDays === 1) return "yesterday";
+  if (diffDays < 30) return `${diffDays}d ago`;
+  const diffMonths = Math.floor(diffDays / 30);
+  return `${diffMonths}mo ago`;
+}
+
+function WorkspaceRow({ workspace }: { workspace: ExecutionWorkspace }) {
+  const displayName = workspace.branchName ?? workspace.name;
+  const statusClass = STATUS_BADGE_CLASSES[workspace.status] ?? "bg-muted text-muted-foreground";
+  const isIsolated = workspace.mode === "isolated_workspace";
+
+  return (
+    <div className="flex items-center gap-3 px-4 py-3 text-sm hover:bg-accent/30 transition-colors">
+      <span className="font-mono text-xs font-medium truncate flex-1">{displayName}</span>
+      <span
+        className={cn(
+          "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium capitalize shrink-0",
+          statusClass,
+        )}
+      >
+        {workspace.status}
+      </span>
+      <span className="text-xs text-muted-foreground shrink-0">
+        {formatRelativeTime(workspace.lastUsedAt)}
+      </span>
+      <span
+        className={cn(
+          "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0",
+          isIsolated
+            ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+            : "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300",
+        )}
+      >
+        {isIsolated ? "Isolated" : "Shared"}
+      </span>
+    </div>
+  );
+}
+
+function ProjectWorkspaces({
+  projectId,
+  companyId,
+}: {
+  projectId: string;
+  companyId: string;
+}) {
+  const { data: workspaces, isLoading } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
+    queryFn: () => executionWorkspacesApi.list(companyId, { projectId }),
+    enabled: !!companyId && !!projectId,
+  });
+
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading workspaces…</p>;
+  }
+
+  if (!workspaces || workspaces.length === 0) {
+    return (
+      <EmptyState
+        icon={Bot}
+        message="No workspaces yet"
+        description="Workspaces are automatically created when agents start working on tasks."
+        entityColor="var(--entity-agent)"
+      />
+    );
+  }
+
+  return (
+    <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
+      <div className="grid px-4 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide bg-muted/30" style={{ gridTemplateColumns: "1fr auto auto auto" }}>
+        <span>Name</span>
+        <span>Status</span>
+        <span>Last used</span>
+        <span>Mode</span>
+      </div>
+      {workspaces.map((ws) => (
+        <WorkspaceRow key={ws.id} workspace={ws} />
+      ))}
+    </div>
+  );
+}
+
 /* ── Discussions tab content ── */
 
 const SOURCE_BADGES: Record<string, { label: string; class: string; icon: typeof ClipboardPen }> = {
@@ -689,6 +789,7 @@ export function ProjectDetail() {
       team: "team",
       budget: "budget",
       discussions: "discussions",
+      workspaces: "workspaces",
     };
     if (activeTab) {
       navigate(`/projects/${canonicalProjectRef}/${tabPaths[activeTab]}`, { replace: true });
@@ -715,6 +816,7 @@ export function ProjectDetail() {
       team: "team",
       budget: "budget",
       discussions: "discussions",
+      workspaces: "workspaces",
     };
     navigate(`/projects/${canonicalProjectRef}/${tabPaths[tab]}`);
   };
@@ -787,6 +889,16 @@ export function ProjectDetail() {
         >
           Discussions
         </button>
+        <button
+          className={`px-3 py-2 text-sm font-medium transition-colors border-b-2 ${
+            activeTab === "workspaces"
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+          onClick={() => handleTabChange("workspaces")}
+        >
+          Workspaces
+        </button>
       </div>
 
       {/* Tab content */}
@@ -824,6 +936,10 @@ export function ProjectDetail() {
 
       {activeTab === "discussions" && project?.id && resolvedCompanyId && (
         <ProjectDiscussions projectId={project.id} companyId={resolvedCompanyId} projectType={project.type} />
+      )}
+
+      {activeTab === "workspaces" && project?.id && resolvedCompanyId && (
+        <ProjectWorkspaces projectId={project.id} companyId={resolvedCompanyId} />
       )}
     </>
   );
