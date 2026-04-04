@@ -8,6 +8,7 @@ interface SidebarContextValue {
   toggleSidebar: () => void;
   isMobile: boolean;
   collapsed: boolean;
+  setCollapsed: (value: boolean) => void;
   toggleCollapse: () => void;
 }
 
@@ -51,8 +52,15 @@ export function SidebarProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const setCollapsedWithStorage = useCallback((value: boolean) => {
+    setCollapsed(value);
+    try {
+      localStorage.setItem(COLLAPSED_KEY, String(value));
+    } catch { /* ignore */ }
+  }, []);
+
   return (
-    <SidebarContext.Provider value={{ sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, collapsed, toggleCollapse }}>
+    <SidebarContext.Provider value={{ sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, collapsed, setCollapsed: setCollapsedWithStorage, toggleCollapse }}>
       {children}
     </SidebarContext.Provider>
   );

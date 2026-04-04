@@ -25,7 +25,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { AgentPanelProvider } from "../context/AgentPanelContext";
 
 export function Layout() {
-  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, collapsed, toggleCollapse } = useSidebar();
+  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, collapsed, setCollapsed, toggleCollapse } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { companies, loading: companiesLoading, selectedCompanyId, selectionSource, setSelectedCompanyId } = useCompany();
 
@@ -111,6 +111,13 @@ export function Layout() {
     },
     [companies, setSelectedCompanyId],
   );
+
+  // Auto-collapse sidebar on workspace routes
+  useEffect(() => {
+    if (!isMobile && location.pathname.includes("/workspaces/")) {
+      setCollapsed(true);
+    }
+  }, [location.pathname, isMobile, setCollapsed]);
 
   useCompanyPageMemory();
 

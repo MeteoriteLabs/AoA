@@ -34,6 +34,7 @@ import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
 import { Discussions } from "./pages/Discussions";
 import { DiscussionDetail } from "./pages/DiscussionDetail";
 import { Skills } from "./pages/Skills";
+import { WorkspaceView } from "./pages/WorkspaceView";
 import { Routines } from "./pages/Routines";
 import { RoutineDetail } from "./pages/RoutineDetail";
 import { AuthPage } from "./pages/Auth";
@@ -164,6 +165,7 @@ function boardRoutes() {
       <Route path="inbox/new" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />
       <Route path="design-guide" element={<DesignGuide />} />
+      <Route path="workspaces/:workspaceId" element={<WorkspaceView />} />
     </>
   );
 }
