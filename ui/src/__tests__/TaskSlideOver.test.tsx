@@ -246,13 +246,19 @@ vi.mock("../components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: any) => <div data-testid="markdown-body">{children}</div>,
 }));
 
-// Mock the Dialog component to just render children when open
-vi.mock("@/components/ui/dialog", () => ({
-  Dialog: ({ open, children, onOpenChange }: any) =>
-    open ? <div data-testid="dialog" data-open={open}>{children}</div> : null,
-  DialogContent: ({ children }: any) => <div data-testid="dialog-content">{children}</div>,
-  DialogHeader: ({ children }: any) => <div>{children}</div>,
-  DialogTitle: ({ children }: any) => <div>{children}</div>,
+vi.mock("../components/IssueDocumentsSection", () => ({
+  IssueDocumentsSection: () => <div data-testid="issue-documents" />,
+}));
+
+// Mock the Sheet component to just render children when open
+vi.mock("@/components/ui/sheet", () => ({
+  Sheet: ({ open, children, onOpenChange }: any) =>
+    open ? <div data-testid="sheet" data-open={open}>{children}</div> : null,
+  SheetContent: ({ children, side }: any) => (
+    <div data-testid="sheet-content" data-side={side ?? "right"}>{children}</div>
+  ),
+  SheetHeader: ({ children }: any) => <div>{children}</div>,
+  SheetTitle: ({ children }: any) => <div>{children}</div>,
 }));
 
 vi.mock("@/components/ui/scroll-area", () => ({
@@ -312,12 +318,13 @@ describe("TaskSlideOver", () => {
 
   it("renders nothing when open=false", () => {
     const { container } = renderSlideOver({ issueId: "issue-1", open: false });
-    expect(container.querySelector("[data-testid='dialog']")).not.toBeInTheDocument();
+    expect(container.querySelector("[data-testid='sheet']")).not.toBeInTheDocument();
   });
 
-  it("opens when issueId is set and open=true", () => {
+  it("opens as right-side Sheet when issueId is set and open=true", () => {
     renderSlideOver({ issueId: "issue-1", open: true });
-    expect(screen.getByTestId("dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("sheet")).toBeInTheDocument();
+    expect(screen.getByTestId("sheet-content")).toHaveAttribute("data-side", "right");
   });
 
   it("renders task title when issue data is loaded", () => {
@@ -345,5 +352,34 @@ describe("TaskSlideOver", () => {
     expect(screen.getByText("Copy context to clipboard")).toBeInTheDocument();
     expect(screen.getByText("Open in Claude")).toBeInTheDocument();
     expect(screen.getByText("Open in ChatGPT")).toBeInTheDocument();
+  });
+
+  it("calls onClose when X button is clicked", async () => {
+    const user = userEvent.setup();
+    renderSlideOver({ issueId: "issue-1", open: true });
+
+    await user.click(screen.getByTestId("close-button"));
+    expect(mockOnClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders all four tab triggers inside Sheet", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+    expect(screen.getByTestId("tab-comments")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-subissues")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-activity")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-artifacts")).toBeInTheDocument();
+  });
+
+  it("renders StatusIcon and PriorityIcon in Sheet header", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+    expect(screen.getByTestId("status-icon")).toBeInTheDocument();
+    expect(screen.getByTestId("priority-icon")).toBeInTheDocument();
+  });
+
+  it("renders popovers (LLM and more-menu) within Sheet without crashing", () => {
+    // Popovers are mocked to render inline — verifies they don't break in Sheet context
+    renderSlideOver({ issueId: "issue-1", open: true });
+    expect(screen.getByText("Copy context to clipboard")).toBeInTheDocument();
+    expect(screen.getByText("Hide this Task")).toBeInTheDocument();
   });
 });

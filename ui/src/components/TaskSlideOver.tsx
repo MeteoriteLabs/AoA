@@ -31,6 +31,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -718,11 +719,12 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
   /* ── Render ── */
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent
+    <Sheet open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <SheetContent
+        side="right"
         showCloseButton={false}
         aria-describedby={undefined}
-        className="sm:max-w-4xl max-h-[calc(100dvh-2rem)] p-0 gap-0 overflow-hidden flex flex-col"
+        className="w-[560px] sm:w-[600px] sm:max-w-[600px] p-0 gap-0 overflow-hidden flex flex-col"
         onPointerDownOutside={(event) => {
           const target = event.detail.originalEvent.target as HTMLElement | null;
           if (target?.closest("[data-radix-popper-content-wrapper]")) {
@@ -824,7 +826,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                 </Popover>
               </>
             )}
-            <Button variant="ghost" size="icon-xs" onClick={onClose} className="shrink-0">
+            <Button variant="ghost" size="icon-xs" onClick={onClose} className="shrink-0" data-testid="close-button">
               <X className="h-4 w-4" />
             </Button>
           </div>
@@ -1603,7 +1605,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
             )}
           </div>
         </ScrollArea>
-      </DialogContent>
-    </Dialog>
+      </SheetContent>
+    </Sheet>
   );
 }
