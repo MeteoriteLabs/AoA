@@ -768,9 +768,24 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
               <span className="text-sm truncate text-foreground">
                 {workspace?.branchName ?? workspace?.name ?? "Workspace"}
               </span>
-              <Button variant="ghost" size="icon-xs" onClick={onClose} className="ml-auto shrink-0">
-                <X className="h-4 w-4" />
-              </Button>
+              <div className="ml-auto flex items-center gap-1 shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1.5 text-xs"
+                  data-testid="open-workspace-button"
+                  onClick={() => {
+                    onClose();
+                    navigate(`/workspaces/${workspace!.id}`);
+                  }}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Open Workspace
+                </Button>
+                <Button variant="ghost" size="icon-xs" onClick={onClose}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
 
             {/* Shared workspace timeline + input */}

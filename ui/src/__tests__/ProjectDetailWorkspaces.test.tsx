@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   mockCompanyContext,
@@ -270,5 +270,41 @@ describe("ProjectDetail — Workspaces tab", () => {
     });
 
     expect(screen.getByText("Workspaces")).toBeInTheDocument();
+  });
+
+  it("workspace row navigates to workspace view on click", async () => {
+    function LocationDisplay() {
+      const location = useLocation();
+      return <div data-testid="location">{location.pathname}</div>;
+    }
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces"]}>
+          <Routes>
+            <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
+            <Route path="workspaces/:workspaceId" element={<div data-testid="workspace-page" />} />
+          </Routes>
+          <LocationDisplay />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("ENG-99-fix-auth")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("workspace-row-ws-1"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("location")).toHaveTextContent("/workspaces/ws-1");
+    });
   });
 });

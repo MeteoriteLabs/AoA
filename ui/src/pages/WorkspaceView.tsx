@@ -45,14 +45,14 @@ export function WorkspaceView() {
   useEffect(() => {
     if (workspace && project) {
       setBreadcrumbs([
-        { label: project.name, href: `/${selectedCompany?.issuePrefix}/projects/${project.id}` },
-        { label: issue?.identifier ?? workspace.name, href: "" },
-        { label: "Workspace" },
+        { label: project.name, href: `/projects/${project.id}` },
+        { label: issue?.identifier ?? workspace.name, href: issue ? `/issues?selected=${issue.id}` : "" },
+        { label: workspace.name },
       ]);
     } else {
       setBreadcrumbs([{ label: "Workspace" }]);
     }
-  }, [workspace, project, issue, selectedCompany?.issuePrefix, setBreadcrumbs]);
+  }, [workspace, project, issue, setBreadcrumbs]);
 
   if (wsLoading) {
     return <PageSkeleton />;
@@ -76,7 +76,7 @@ export function WorkspaceView() {
       companyPrefix={selectedCompany?.issuePrefix ?? ""}
       onBack={() => {
         if (project) {
-          navigate(`/${selectedCompany?.issuePrefix}/projects/${project.id}/workspaces`);
+          navigate(`/projects/${project.id}`);
         } else {
           navigate(-1);
         }

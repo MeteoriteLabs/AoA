@@ -484,3 +484,77 @@ describe("WorkspaceView — left panel task navigator", () => {
     });
   });
 });
+
+describe("WorkspaceView — navigation", () => {
+  it("sets breadcrumbs with correct department and task links", async () => {
+    renderWorkspaceView();
+
+    // Wait for data to load and breadcrumbs to be set with full info
+    await waitFor(() => {
+      const calls = mockBreadcrumbContext.setBreadcrumbs.mock.calls;
+      const hasFullBreadcrumbs = calls.some(
+        (call: any) => call[0].length === 3 && call[0][0].label === "Engineering",
+      );
+      expect(hasFullBreadcrumbs).toBe(true);
+    });
+
+    const calls = mockBreadcrumbContext.setBreadcrumbs.mock.calls;
+    const fullCall = calls.find(
+      (call: any) => call[0].length === 3 && call[0][0].label === "Engineering",
+    )![0];
+    // Department breadcrumb links to project page (prefix-free; auto-applied by router)
+    expect(fullCall[0]).toEqual({
+      label: "Engineering",
+      href: "/projects/proj-1",
+    });
+    // Task breadcrumb links to issues page with selected param
+    expect(fullCall[1]).toEqual({
+      label: "ENG-42",
+      href: "/issues?selected=issue-1",
+    });
+    // Workspace label (no link)
+    expect(fullCall[2]).toEqual({
+      label: "ENG-42-fix-auth",
+    });
+  });
+
+  it("'Back to Department' navigates to project page", async () => {
+    // We'll render with a LocationDisplay helper to verify the navigate call
+    function LocationDisplay() {
+      const location = useLocation();
+      return <div data-testid="location">{location.pathname}</div>;
+    }
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/TC/workspaces/ws-abc"]}>
+          <Routes>
+            <Route path=":companyPrefix" element={<LayoutStub />}>
+              <Route path="workspaces/:workspaceId" element={<WorkspaceView />} />
+              <Route path="projects/:projectId" element={<div data-testid="project-page">Project</div>} />
+            </Route>
+          </Routes>
+          <LocationDisplay />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-layout")).toBeInTheDocument();
+    });
+
+    const backButton = screen.getByText("Back to Department");
+    fireEvent.click(backButton);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("location")).toHaveTextContent("/TC/projects/proj-1");
+    });
+  });
+});

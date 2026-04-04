@@ -45,11 +45,12 @@ const mockIssue = {
 };
 
 // Mock all heavy dependencies
+const mockNavigate = vi.fn();
 vi.mock("@/lib/router", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
   return {
     ...actual,
-    useNavigate: () => vi.fn(),
+    useNavigate: () => mockNavigate,
     Link: actual.Link,
     NavLink: actual.NavLink,
   };
@@ -442,8 +443,8 @@ const mockWorkspaceData = {
 function renderSlideOverWithWorkspace() {
   vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
     const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
-    if (key.includes("detail")) return { data: mockIssueWithWorkspace, isLoading: false, error: null } as any;
     if (key.includes("executionWorkspaces")) return { data: mockWorkspaceData, isLoading: false, error: null } as any;
+    if (key.includes("detail")) return { data: mockIssueWithWorkspace, isLoading: false, error: null } as any;
     if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
         key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
         key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
@@ -497,5 +498,21 @@ describe("TaskSlideOver — workspace with executionWorkspaceId", () => {
 
     expect(screen.getByTestId("workspace-section")).toBeInTheDocument();
     expect(screen.queryByTestId("workspace-input-area")).not.toBeInTheDocument();
+  });
+
+  it("'Open Workspace' button navigates to workspace view and closes sheet", async () => {
+    const user = userEvent.setup();
+    renderSlideOverWithWorkspace();
+
+    // Enter Mode 2
+    await user.click(screen.getByTestId("workspace-row"));
+
+    // Click "Open Workspace"
+    const openBtn = screen.getByTestId("open-workspace-button");
+    expect(openBtn).toBeInTheDocument();
+    await user.click(openBtn);
+
+    expect(mockOnClose).toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith("/workspaces/ws-123");
   });
 });

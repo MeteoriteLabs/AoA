@@ -483,12 +483,17 @@ function formatRelativeTime(date: Date): string {
 }
 
 function WorkspaceRow({ workspace }: { workspace: ExecutionWorkspace }) {
+  const navigate = useNavigate();
   const displayName = workspace.branchName ?? workspace.name;
   const statusClass = STATUS_BADGE_CLASSES[workspace.status] ?? "bg-muted text-muted-foreground";
   const isIsolated = workspace.mode === "isolated_workspace";
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3 text-sm hover:bg-accent/30 transition-colors">
+    <div
+      className="flex items-center gap-3 px-4 py-3 text-sm hover:bg-accent/30 transition-colors cursor-pointer"
+      data-testid={`workspace-row-${workspace.id}`}
+      onClick={() => navigate(`/workspaces/${workspace.id}`)}
+    >
       <span className="font-mono text-xs font-medium truncate flex-1">{displayName}</span>
       <span
         className={cn(
