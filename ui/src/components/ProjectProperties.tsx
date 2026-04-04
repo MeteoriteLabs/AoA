@@ -618,7 +618,7 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
                           <label className="mb-1 block text-xs text-muted-foreground">{label}</label>
                           <input
                             className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                            defaultValue={(project.executionWorkspacePolicy?.workspaceStrategy as Record<string, unknown>)?.[key] as string ?? ""}
+                            defaultValue={(project.executionWorkspacePolicy?.workspaceStrategy as unknown as Record<string, unknown>)?.[key] as string ?? ""}
                             onBlur={(e) => updatePolicyStrategy({ [key]: e.target.value || null })}
                             placeholder={placeholder}
                             disabled={!onUpdate}

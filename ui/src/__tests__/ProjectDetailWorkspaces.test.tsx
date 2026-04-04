@@ -187,7 +187,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   projectsApiMock.get.mockResolvedValue(mockProject);
   executionWorkspacesApiMock.list.mockResolvedValue(mockWorkspaces);
-  vi.spyOn(window, "confirm").mockReturnValue(true);
+  // Archive now uses a Dialog instead of window.confirm
 });
 
 // --- Tests ---
@@ -296,7 +296,7 @@ describe("ProjectDetail — Workspaces tab", () => {
         <MemoryRouter initialEntries={["/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces"]}>
           <Routes>
             <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
-            <Route path="workspaces/:workspaceId" element={<div data-testid="workspace-page" />} />
+            <Route path=":companyPrefix/workspaces/:workspaceId" element={<div data-testid="workspace-page" />} />
           </Routes>
           <LocationDisplay />
         </MemoryRouter>
@@ -310,7 +310,7 @@ describe("ProjectDetail — Workspaces tab", () => {
     fireEvent.click(screen.getByTestId("workspace-row-ws-1"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("location")).toHaveTextContent("/workspaces/ws-1");
+      expect(screen.getByTestId("location")).toHaveTextContent("/TC/workspaces/ws-1");
     });
   });
 
@@ -325,14 +325,21 @@ describe("ProjectDetail — Workspaces tab", () => {
     expect(screen.getByTestId("archive-workspace-ws-2")).toBeInTheDocument();
   });
 
-  it("calls update with archived status when Archive is clicked", async () => {
+  it("calls update with archived status when Archive is confirmed via dialog", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
 
     await waitFor(() => {
       expect(screen.getByText("ENG-99-fix-auth")).toBeInTheDocument();
     });
 
+    // Clicking Archive opens confirmation dialog
     fireEvent.click(screen.getByTestId("archive-workspace-ws-1"));
+
+    // Confirm via the dialog button
+    await waitFor(() => {
+      expect(screen.getByTestId("confirm-archive-workspace")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("confirm-archive-workspace"));
 
     await waitFor(() => {
       expect(executionWorkspacesApiMock.update).toHaveBeenCalledWith("ws-1", { status: "archived" });

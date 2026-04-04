@@ -28,6 +28,7 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useToast } from "../context/ToastContext";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { EmptyState } from "../components/EmptyState";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 
@@ -487,9 +488,11 @@ function formatRelativeTime(date: Date): string {
 
 function WorkspaceRow({
   workspace,
+  companyPrefix,
   onArchive,
 }: {
   workspace: ExecutionWorkspace;
+  companyPrefix: string;
   onArchive?: (id: string) => void;
 }) {
   const navigate = useNavigate();
@@ -501,7 +504,7 @@ function WorkspaceRow({
     <div
       className="flex items-center gap-3 px-4 py-3 text-sm hover:bg-accent/30 transition-colors cursor-pointer"
       data-testid={`workspace-row-${workspace.id}`}
-      onClick={() => navigate(`/workspaces/${workspace.id}`)}
+      onClick={() => navigate(`/${companyPrefix}/workspaces/${workspace.id}`)}
     >
       <span className="font-mono text-xs font-medium truncate flex-1">{displayName}</span>
       <span
@@ -545,13 +548,16 @@ function WorkspaceRow({
 function ProjectWorkspaces({
   projectId,
   companyId,
+  companyPrefix,
 }: {
   projectId: string;
   companyId: string;
+  companyPrefix: string;
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [archivedOpen, setArchivedOpen] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<string | null>(null);
 
   const { data: workspaces, isLoading } = useQuery({
     queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
@@ -566,9 +572,11 @@ function ProjectWorkspaces({
         queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
       });
       pushToast({ tone: "success", title: "Workspace archived" });
+      setArchiveTarget(null);
     },
     onError: () => {
       pushToast({ tone: "error", title: "Failed to archive workspace" });
+      setArchiveTarget(null);
     },
   });
 
@@ -614,10 +622,8 @@ function ProjectWorkspaces({
             <WorkspaceRow
               key={ws.id}
               workspace={ws}
-              onArchive={(id) => {
-                if (!window.confirm("Archive this workspace? It will be moved to the archived section.")) return;
-                archiveMutation.mutate(id);
-              }}
+              companyPrefix={companyPrefix}
+              onArchive={(id) => setArchiveTarget(id)}
             />
           ))}
         </div>
@@ -638,12 +644,36 @@ function ProjectWorkspaces({
           <CollapsibleContent>
             <div className="mt-2 border border-border divide-y divide-border rounded-md overflow-hidden" data-testid="archived-workspaces-list">
               {archivedWorkspaces.map((ws) => (
-                <WorkspaceRow key={ws.id} workspace={ws} />
+                <WorkspaceRow key={ws.id} workspace={ws} companyPrefix={companyPrefix} />
               ))}
             </div>
           </CollapsibleContent>
         </Collapsible>
       )}
+
+      {/* Archive confirmation dialog */}
+      <Dialog open={!!archiveTarget} onOpenChange={(open) => { if (!open) setArchiveTarget(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Archive workspace?</DialogTitle>
+            <DialogDescription>
+              This workspace will be moved to the archived section. You can still view it but agents will no longer use it.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={() => setArchiveTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => { if (archiveTarget) archiveMutation.mutate(archiveTarget); }}
+              data-testid="confirm-archive-workspace"
+            >
+              Archive
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -831,6 +861,7 @@ export function ProjectDetail() {
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
+  const resolvedPrefix = companyPrefix ?? companies.find((c) => c.id === resolvedCompanyId)?.issuePrefix ?? "";
 
   useEffect(() => {
     if (!project?.companyId || project.companyId === selectedCompanyId) return;
@@ -1029,7 +1060,7 @@ export function ProjectDetail() {
       )}
 
       {activeTab === "workspaces" && project?.id && resolvedCompanyId && (
-        <ProjectWorkspaces projectId={project.id} companyId={resolvedCompanyId} />
+        <ProjectWorkspaces projectId={project.id} companyId={resolvedCompanyId} companyPrefix={resolvedPrefix} />
       )}
     </>
   );

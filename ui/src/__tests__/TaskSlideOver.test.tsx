@@ -57,7 +57,7 @@ vi.mock("@/lib/router", async () => {
 });
 
 vi.mock("../context/CompanyContext", () => ({
-  useCompany: () => ({ selectedCompanyId: "comp-1" }),
+  useCompany: () => ({ selectedCompanyId: "comp-1", selectedCompany: { id: "comp-1", issuePrefix: "TC" } }),
 }));
 
 vi.mock("../context/ToastContext", () => ({
@@ -513,6 +513,6 @@ describe("TaskSlideOver — workspace with executionWorkspaceId", () => {
     await user.click(openBtn);
 
     expect(mockOnClose).toHaveBeenCalled();
-    expect(mockNavigate).toHaveBeenCalledWith("/workspaces/ws-123");
+    expect(mockNavigate).toHaveBeenCalledWith("/TC/workspaces/ws-123");
   });
 });

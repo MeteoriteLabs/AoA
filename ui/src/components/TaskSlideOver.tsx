@@ -205,7 +205,7 @@ interface TaskSlideOverProps {
 /* ── Component ── */
 
 export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -776,7 +776,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                   data-testid="open-workspace-button"
                   onClick={() => {
                     onClose();
-                    navigate(`/workspaces/${workspace!.id}`);
+                    navigate(`/${selectedCompany?.issuePrefix ?? ''}/workspaces/${workspace!.id}`);
                   }}
                 >
                   <ExternalLink className="h-3.5 w-3.5" />
