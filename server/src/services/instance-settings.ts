@@ -29,12 +29,12 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
   const parsed = instanceExperimentalSettingsSchema.safeParse(raw ?? {});
   if (parsed.success) {
     return {
-      enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? true,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
     };
   }
   return {
-    enableIsolatedWorkspaces: false,
+    enableIsolatedWorkspaces: true,
     autoRestartDevServerWhenIdle: false,
   };
 }

@@ -7,7 +7,7 @@ export const instanceGeneralSettingsSchema = z.object({
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();
 
 export const instanceExperimentalSettingsSchema = z.object({
-  enableIsolatedWorkspaces: z.boolean().default(false),
+  enableIsolatedWorkspaces: z.boolean().default(true),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
 }).strict();
 

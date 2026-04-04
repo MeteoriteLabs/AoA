@@ -88,6 +88,26 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, ...projectData } = req.body as CreateProjectPayload;
+
+    // Auto-configure executionWorkspacePolicy for departments
+    if (projectData.type === "department" && !projectData.executionWorkspacePolicy) {
+      const functionType = projectData.functionType as string | undefined;
+      if (functionType === "software_development") {
+        projectData.executionWorkspacePolicy = {
+          enabled: true,
+          defaultMode: "isolated_workspace",
+          allowIssueOverride: true,
+          workspaceStrategy: { type: "git_worktree", baseRef: "main" },
+        };
+      } else {
+        projectData.executionWorkspacePolicy = {
+          enabled: true,
+          defaultMode: "isolated_workspace",
+          allowIssueOverride: true,
+        };
+      }
+    }
+
     const project = await svc.create(companyId, projectData);
     let createdWorkspaceId: string | null = null;
     if (workspace) {
