@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, Outlet, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect as reactUseEffect } from "react";
@@ -154,6 +154,11 @@ const agentsApiMock = {
   wakeup: vi.fn().mockResolvedValue(undefined),
 };
 
+const artifactsApiMock = {
+  getByIssueId: vi.fn().mockResolvedValue(null),
+  get: vi.fn().mockResolvedValue(null),
+};
+
 vi.mock("../api/dependencies", () => ({
   dependenciesApi: new Proxy(
     {},
@@ -179,6 +184,13 @@ vi.mock("../api/agents", () => ({
   agentsApi: new Proxy(
     {},
     { get: (_t, prop) => (agentsApiMock as any)[prop] },
+  ),
+}));
+
+vi.mock("../api/artifacts", () => ({
+  artifactsApi: new Proxy(
+    {},
+    { get: (_t, prop) => (artifactsApiMock as any)[prop] },
   ),
 }));
 
@@ -360,22 +372,26 @@ describe("WorkspaceView — three-panel layout", () => {
     expect(screen.getByTestId("workspace-right-panel")).toBeInTheDocument();
   });
 
-  it("renders a resizable handle between center panels", async () => {
+  it("renders resizable handle only when preview mode is active", async () => {
     renderWorkspaceView();
 
     await waitFor(() => {
-      expect(screen.getByTestId("workspace-resizable-handle")).toBeInTheDocument();
+      expect(screen.getByTestId("workspace-layout")).toBeInTheDocument();
     });
+
+    // Handle not present by default (preview mode is off)
+    expect(screen.queryByTestId("workspace-resizable-handle")).not.toBeInTheDocument();
   });
 
-  it("renders timeline in center panel and placeholder for right panel", async () => {
+  it("renders timeline in center panel and right panel sections", async () => {
     renderWorkspaceView();
 
     await waitFor(() => {
       expect(screen.getByTestId("workspace-timeline")).toBeInTheDocument();
     });
 
-    expect(screen.getByText(/Context sections coming soon/)).toBeInTheDocument();
+    // Right panel now has real sections instead of placeholder
+    expect(screen.getByTestId("workspace-right-panel")).toBeInTheDocument();
   });
 });
 
@@ -406,8 +422,9 @@ describe("WorkspaceView — left panel task navigator", () => {
     renderWorkspaceView();
 
     await waitFor(() => {
-      expect(screen.getByText("Running")).toBeInTheDocument();
-      expect(screen.getByText("Idle")).toBeInTheDocument();
+      const nav = screen.getByTestId("workspace-task-nav");
+      expect(within(nav).getByText("Running")).toBeInTheDocument();
+      expect(within(nav).getByText("Idle")).toBeInTheDocument();
     });
   });
 
