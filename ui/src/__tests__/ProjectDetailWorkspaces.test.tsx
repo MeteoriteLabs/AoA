@@ -71,6 +71,7 @@ const mockWorkspaces = [
 
 const executionWorkspacesApiMock = {
   list: vi.fn().mockResolvedValue(mockWorkspaces),
+  update: vi.fn().mockResolvedValue({}),
 };
 
 const projectsApiMock = {
@@ -141,6 +142,10 @@ vi.mock("../context/BreadcrumbContext", () => ({
 
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => mockDialogContext,
+}));
+
+vi.mock("../context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn(), toasts: [], dismissToast: vi.fn(), clearToasts: vi.fn() }),
 }));
 
 vi.mock("../lib/utils", async (importOriginal) => {
@@ -306,5 +311,75 @@ describe("ProjectDetail — Workspaces tab", () => {
     await waitFor(() => {
       expect(screen.getByTestId("location")).toHaveTextContent("/workspaces/ws-1");
     });
+  });
+
+  it("shows Archive button on active workspace rows", async () => {
+    renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
+
+    await waitFor(() => {
+      expect(screen.getByText("ENG-99-fix-auth")).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId("archive-workspace-ws-1")).toBeInTheDocument();
+    expect(screen.getByTestId("archive-workspace-ws-2")).toBeInTheDocument();
+  });
+
+  it("calls update with archived status when Archive is clicked", async () => {
+    renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
+
+    await waitFor(() => {
+      expect(screen.getByText("ENG-99-fix-auth")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("archive-workspace-ws-1"));
+
+    await waitFor(() => {
+      expect(executionWorkspacesApiMock.update).toHaveBeenCalledWith("ws-1", { status: "archived" });
+    });
+  });
+
+  it("shows archived workspaces in a collapsed section", async () => {
+    executionWorkspacesApiMock.list.mockResolvedValue([
+      makeWorkspace({ id: "ws-active", status: "active" }),
+      makeWorkspace({ id: "ws-archived-1", status: "archived", name: "old-branch", branchName: "old-branch" }),
+      makeWorkspace({ id: "ws-archived-2", status: "archived", name: "older-branch", branchName: "older-branch" }),
+    ]);
+
+    renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("archived-workspaces-trigger")).toBeInTheDocument();
+    });
+
+    // The trigger shows count
+    expect(screen.getByText("Archived (2)")).toBeInTheDocument();
+
+    // Archived workspaces are NOT visible by default (collapsed)
+    expect(screen.queryByTestId("archived-workspaces-list")).not.toBeInTheDocument();
+
+    // Click to expand
+    fireEvent.click(screen.getByTestId("archived-workspaces-trigger"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("archived-workspaces-list")).toBeInTheDocument();
+    });
+  });
+
+  it("shows loading skeletons while fetching workspaces", async () => {
+    executionWorkspacesApiMock.list.mockReturnValue(new Promise(() => {}));
+
+    renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
+
+    // Wait for project to load first (tab bar appears), then workspace loading shows
+    await waitFor(() => {
+      expect(screen.getByText("Workspaces")).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspaces-loading")).toBeInTheDocument();
+    });
+
+    const skeletons = screen.getByTestId("workspaces-loading").querySelectorAll("[data-slot='skeleton']");
+    expect(skeletons.length).toBeGreaterThanOrEqual(2);
   });
 });
