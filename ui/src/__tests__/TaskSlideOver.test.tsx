@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 
 // Mock @mdxeditor/editor before any imports to avoid CSS-in-ESM cycle
 vi.mock("@mdxeditor/editor", () => ({
@@ -104,6 +104,10 @@ vi.mock("@tanstack/react-query", async () => {
       if (key.includes("detected-outputs")) {
         return { data: [], isLoading: false, error: null };
       }
+      // Execution workspaces — return null by default (no workspace)
+      if (key.includes("executionWorkspaces")) {
+        return { data: null, isLoading: false, error: null };
+      }
       return { data: undefined, isLoading: false, error: null };
     }),
     useQueries: ({ queries }: any) =>
@@ -150,6 +154,11 @@ vi.mock("../lib/queryKeys", () => ({
     },
     activity: (id: string) => ["activity", id],
     auth: { session: "auth.session" },
+    executionWorkspaces: {
+      detail: (id: string) => ["executionWorkspaces", "detail", id],
+      list: (id: string) => ["executionWorkspaces", id],
+      listForProject: (cId: string, pId: string) => ["executionWorkspaces", cId, pId],
+    },
   },
 }));
 
@@ -196,6 +205,14 @@ vi.mock("../api/output-detection", () => ({
 vi.mock("../api/context-packaging", () => ({
   contextPackagingApi: {
     getContextPackage: vi.fn().mockResolvedValue({ markdown: "# Test context", tokenEstimate: 100 }),
+  },
+}));
+
+vi.mock("../api/execution-workspaces", () => ({
+  executionWorkspacesApi: {
+    get: vi.fn().mockResolvedValue(null),
+    list: vi.fn().mockResolvedValue([]),
+    update: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -381,5 +398,104 @@ describe("TaskSlideOver", () => {
     renderSlideOver({ issueId: "issue-1", open: true });
     expect(screen.getByText("Copy context to clipboard")).toBeInTheDocument();
     expect(screen.getByText("Hide this Task")).toBeInTheDocument();
+  });
+
+  describe("workspace section", () => {
+    it("renders 'No workspace yet' when issue has no executionWorkspaceId", () => {
+      // mockIssue has no executionWorkspaceId (undefined/null by default)
+      renderSlideOver({ issueId: "issue-1", open: true });
+      expect(screen.getByTestId("workspace-section")).toBeInTheDocument();
+      expect(screen.getByTestId("workspace-empty-state")).toBeInTheDocument();
+      expect(screen.getByText(/No workspace yet/)).toBeInTheDocument();
+    });
+  });
+});
+
+// ── Workspace mode tests (require custom useQuery setup) ──────────────────────
+
+const mockIssueWithWorkspace = {
+  id: "issue-1",
+  title: "Fix login bug",
+  description: "The login page has a bug",
+  status: "in_progress",
+  priority: "high",
+  identifier: "TC-1",
+  assigneeAgentId: "agent-1",
+  assigneeUserId: null,
+  projectId: null,
+  parentId: null,
+  goalId: null,
+  labels: ["bug"],
+  executionWorkspaceId: "ws-123",
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
+
+const mockWorkspaceData = {
+  id: "ws-123",
+  status: "active",
+  branchName: "ENG-42-fix-auth",
+  name: "eng-42-fix-auth",
+  lastUsedAt: new Date("2026-04-04T10:00:00Z"),
+};
+
+function renderSlideOverWithWorkspace() {
+  vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+    const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+    if (key.includes("detail")) return { data: mockIssueWithWorkspace, isLoading: false, error: null } as any;
+    if (key.includes("executionWorkspaces")) return { data: mockWorkspaceData, isLoading: false, error: null } as any;
+    if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+        key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+        key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+        key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+    if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+    if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+    if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+    return { data: undefined, isLoading: false, error: null } as any;
+  });
+
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <TaskSlideOver issueId="issue-1" open={true} onClose={mockOnClose} />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe("TaskSlideOver — workspace with executionWorkspaceId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders workspace row when executionWorkspaceId is set", () => {
+    renderSlideOverWithWorkspace();
+    expect(screen.getByTestId("workspace-row")).toBeInTheDocument();
+  });
+
+  it("switches to Mode 2 (workspace chat) when workspace row is clicked", async () => {
+    const user = userEvent.setup();
+    renderSlideOverWithWorkspace();
+
+    await user.click(screen.getByTestId("workspace-row"));
+
+    expect(screen.getByTestId("workspace-breadcrumb-back")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-input-area")).toBeInTheDocument();
+  });
+
+  it("breadcrumb back button returns to Mode 1 (task properties)", async () => {
+    const user = userEvent.setup();
+    renderSlideOverWithWorkspace();
+
+    // Enter Mode 2
+    await user.click(screen.getByTestId("workspace-row"));
+    expect(screen.getByTestId("workspace-breadcrumb-back")).toBeInTheDocument();
+
+    // Go back to Mode 1
+    await user.click(screen.getByTestId("workspace-breadcrumb-back"));
+
+    expect(screen.getByTestId("workspace-section")).toBeInTheDocument();
+    expect(screen.queryByTestId("workspace-input-area")).not.toBeInTheDocument();
   });
 });

@@ -11,6 +11,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -37,9 +38,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Activity as ActivityIcon,
+  ArrowLeft,
   ChevronDown,
   ChevronRight,
   EyeOff,
+  GitBranch,
   Hexagon,
   Link2,
   ListTree,
@@ -48,6 +51,7 @@ import {
   FileBox,
   FileCode,
   GitPullRequestArrow,
+  MonitorPlay,
   Paperclip,
   Plus,
   Search,
@@ -220,6 +224,11 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
   const [contextLoading, setContextLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Two-mode sidebar state
+  const [sidebarMode, setSidebarMode] = useState<"task" | "workspace">("task");
+  const [workspaceChatInput, setWorkspaceChatInput] = useState("");
+  const [workspaceSendAgentId, setWorkspaceSendAgentId] = useState<string | null>(null);
+
   /* ── Data fetching ── */
 
   const { data: issue, isLoading, error } = useQuery({
@@ -291,6 +300,13 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     queryKey: queryKeys.detectedOutputs.byIssue(issueId!),
     queryFn: () => outputDetectionApi.listForIssue(issueId!),
     enabled: !!issueId && open,
+  });
+
+  // Execution workspace linked to this task (if any)
+  const { data: workspace } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.detail(issue?.executionWorkspaceId ?? ""),
+    queryFn: () => executionWorkspacesApi.get(issue!.executionWorkspaceId!),
+    enabled: !!issue?.executionWorkspaceId && open,
   });
 
   const pendingOutputs = useMemo(
@@ -644,6 +660,20 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     },
   });
 
+  const sendWorkspaceMessage = useMutation({
+    mutationFn: async ({ text, agentId }: { text: string; agentId: string | null }) => {
+      await issuesApi.addComment(issueId!, text);
+      if (agentId) {
+        await agentsApi.wakeup(agentId, { source: "on_demand", reason: text });
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
+      setWorkspaceChatInput("");
+    },
+  });
+
   /* ── Derived data ── */
 
   const upstreamDeps = deps?.upstream ?? [];
@@ -691,15 +721,41 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     return results;
   }, [depArtifactQueries, upstreamDeps]);
 
+  // Merged timeline of runs + comments for Mode 2
+  const mergedTimeline = useMemo(() => {
+    type TimelineItem =
+      | { kind: "run"; ts: string; data: (typeof timelineRuns)[number] }
+      | { kind: "comment"; ts: string; data: (typeof commentsWithRunMeta)[number] };
+    const items: TimelineItem[] = [
+      ...(timelineRuns ?? []).map((r) => ({
+        kind: "run" as const,
+        ts: r.startedAt ?? r.createdAt,
+        data: r,
+      })),
+      ...(commentsWithRunMeta ?? []).map((c) => ({
+        kind: "comment" as const,
+        ts: typeof c.createdAt === "string" ? c.createdAt : c.createdAt.toISOString(),
+        data: c,
+      })),
+    ];
+    return items.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+  }, [timelineRuns, commentsWithRunMeta]);
+
+  // The agent to use for workspace send (default to current assignee)
+  const effectiveSendAgentId = workspaceSendAgentId ?? issue?.assigneeAgentId ?? null;
+
   /* ── Side effects ── */
 
-  // Reset tab when issue changes
+  // Reset tab and mode when issue changes
   useEffect(() => {
     if (issueId) {
       setDetailTab("comments");
       setSecondaryOpen({ approvals: false, cost: false });
       setShowAddVersion(false);
       setShowAllVersions(false);
+      setSidebarMode("task");
+      setWorkspaceChatInput("");
+      setWorkspaceSendAgentId(null);
     }
   }, [issueId]);
 
@@ -732,6 +788,151 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
           }
         }}
       >
+        {/* Mode 2: Workspace Chat */}
+        {sidebarMode === "workspace" && issue && (
+          <>
+            {/* Workspace breadcrumb header */}
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
+              <button
+                type="button"
+                className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setSidebarMode("task")}
+                data-testid="workspace-breadcrumb-back"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                <span className="font-mono">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+              </button>
+              <span className="text-muted-foreground">/</span>
+              <span className="text-sm truncate text-foreground">
+                {workspace?.branchName ?? workspace?.name ?? "Workspace"}
+              </span>
+              <Button variant="ghost" size="icon-xs" onClick={onClose} className="ml-auto shrink-0">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            {/* Workspace timeline */}
+            <ScrollArea className="flex-1 overflow-y-auto">
+              <div className="p-4 space-y-3">
+                {/* Live run widget at top if active */}
+                {hasLiveRuns && (
+                  <LiveRunWidget issueId={issueId!} companyId={issue.companyId} />
+                )}
+
+                {/* Merged run + comment timeline */}
+                {mergedTimeline.length === 0 && !hasLiveRuns && (
+                  <p className="text-xs text-muted-foreground text-center py-8">
+                    No runs or comments yet. Send a message to start work.
+                  </p>
+                )}
+                {mergedTimeline.map((item, idx) => {
+                  if (item.kind === "run") {
+                    const run = item.data;
+                    const agent = agentMap.get(run.agentId);
+                    return (
+                      <div key={`run-${run.runId}`} className="rounded-lg border border-border bg-accent/10 p-3 space-y-1">
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <Hexagon className="h-3 w-3" />
+                          <span className="font-medium text-foreground">
+                            {agent?.name ?? run.agentId.slice(0, 8)}
+                          </span>
+                          <span className="capitalize">{run.status}</span>
+                          <span className="ml-auto">{relativeTime(run.startedAt ?? run.createdAt)}</span>
+                        </div>
+                        {run.finishedAt && (
+                          <p className="text-[11px] text-muted-foreground">
+                            Completed {relativeTime(run.finishedAt)}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  }
+                  // comment
+                  const comment = item.data;
+                  const authorAgent = comment.authorAgentId
+                    ? agentMap.get(comment.authorAgentId)
+                    : null;
+                  return (
+                    <div key={`comment-${comment.id}`} className="flex gap-2.5">
+                      <div className="shrink-0 mt-0.5">
+                        <Identity
+                          name={authorAgent?.name ?? (comment.authorUserId ? "Board" : "Unknown")}
+                          size="sm"
+                        />
+                      </div>
+                      <div className="flex-1 space-y-0.5">
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="font-medium">
+                            {authorAgent?.name ?? (comment.authorUserId ? "Board" : "Unknown")}
+                          </span>
+                          <span className="text-muted-foreground ml-auto">{relativeTime(comment.createdAt)}</span>
+                        </div>
+                        <p className="text-sm">{comment.body}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </ScrollArea>
+
+            {/* Open Workspace button */}
+            <div className="px-4 pt-2 shrink-0">
+              <Button variant="outline" size="sm" disabled className="w-full">
+                Open Workspace (coming soon)
+              </Button>
+            </div>
+
+            {/* Workspace input area */}
+            <div className="p-4 border-t border-border shrink-0 space-y-2" data-testid="workspace-input-area">
+              <textarea
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+                placeholder="Continue working on this task..."
+                rows={2}
+                value={workspaceChatInput}
+                onChange={(e) => setWorkspaceChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    if (workspaceChatInput.trim()) {
+                      sendWorkspaceMessage.mutate({ text: workspaceChatInput.trim(), agentId: effectiveSendAgentId });
+                    }
+                  }
+                }}
+              />
+              <div className="flex items-center gap-2">
+                <select
+                  className="flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+                  value={effectiveSendAgentId ?? ""}
+                  onChange={(e) => setWorkspaceSendAgentId(e.target.value || null)}
+                >
+                  <option value="">No agent</option>
+                  {(agents ?? [])
+                    .filter((a) => a.status !== "terminated")
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                </select>
+                <Button
+                  size="sm"
+                  disabled={!workspaceChatInput.trim() || sendWorkspaceMessage.isPending}
+                  onClick={() => {
+                    if (workspaceChatInput.trim()) {
+                      sendWorkspaceMessage.mutate({ text: workspaceChatInput.trim(), agentId: effectiveSendAgentId });
+                    }
+                  }}
+                >
+                  {sendWorkspaceMessage.isPending ? "Sending..." : "Send"}
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Mode 1: Task Properties (default) */}
+        {sidebarMode === "task" && (
+          <>
         {/* Custom header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
           <div className="flex items-center gap-2 min-w-0">
@@ -916,6 +1117,69 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                     return attachment.contentPath;
                   }}
                 />
+
+                {/* Workspace Section */}
+                <div className="space-y-2" data-testid="workspace-section">
+                  <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                    <MonitorPlay className="h-3.5 w-3.5" />
+                    Workspace
+                  </h3>
+                  {!issue.executionWorkspaceId ? (
+                    <p className="text-xs text-muted-foreground" data-testid="workspace-empty-state">
+                      No workspace yet — will be created when agent starts work
+                    </p>
+                  ) : workspace ? (
+                    <button
+                      type="button"
+                      data-testid="workspace-row"
+                      className="w-full flex items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-sm hover:bg-accent/30 transition-colors text-left"
+                      onClick={() => setSidebarMode("workspace")}
+                    >
+                      <span
+                        className={cn(
+                          "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0",
+                          workspace.status === "active"
+                            ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400"
+                            : workspace.status === "idle"
+                              ? "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
+                              : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+                        )}
+                      >
+                        {workspace.status}
+                      </span>
+                      {workspace.branchName && (
+                        <span className="flex items-center gap-1 min-w-0">
+                          <GitBranch className="h-3 w-3 text-muted-foreground shrink-0" />
+                          <span className="font-mono text-xs text-muted-foreground truncate">
+                            {workspace.branchName}
+                          </span>
+                          <button
+                            type="button"
+                            className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                            title="Copy branch name"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void navigator.clipboard.writeText(workspace.branchName!);
+                            }}
+                          >
+                            <Copy className="h-3 w-3" />
+                          </button>
+                        </span>
+                      )}
+                      {!workspace.branchName && (
+                        <span className="text-xs text-muted-foreground truncate min-w-0">
+                          {workspace.name}
+                        </span>
+                      )}
+                      <span className="ml-auto text-xs text-muted-foreground shrink-0">
+                        {relativeTime(workspace.lastUsedAt)}
+                      </span>
+                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    </button>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Loading workspace...</p>
+                  )}
+                </div>
 
                 {/* Dependencies */}
                 <div className="space-y-3">
@@ -1605,6 +1869,8 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
             )}
           </div>
         </ScrollArea>
+          </>
+        )}
       </SheetContent>
     </Sheet>
   );
