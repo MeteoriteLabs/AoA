@@ -22,9 +22,12 @@ import { GoalTree } from "../components/GoalTree";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { projectRouteRef, cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
-import { Plus, Bot, X, DollarSign, AlertTriangle, MessageSquare, ClipboardPen, PenLine, Mic, Plug } from "lucide-react";
+import { Plus, Bot, X, DollarSign, AlertTriangle, MessageSquare, ClipboardPen, PenLine, Mic, Plug, ChevronDown, ChevronRight } from "lucide-react";
 import { discussionsApi, type DiscussionListItem } from "../api/discussions";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { useToast } from "../context/ToastContext";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { EmptyState } from "../components/EmptyState";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 
@@ -482,7 +485,13 @@ function formatRelativeTime(date: Date): string {
   return `${diffMonths}mo ago`;
 }
 
-function WorkspaceRow({ workspace }: { workspace: ExecutionWorkspace }) {
+function WorkspaceRow({
+  workspace,
+  onArchive,
+}: {
+  workspace: ExecutionWorkspace;
+  onArchive?: (id: string) => void;
+}) {
   const navigate = useNavigate();
   const displayName = workspace.branchName ?? workspace.name;
   const statusClass = STATUS_BADGE_CLASSES[workspace.status] ?? "bg-muted text-muted-foreground";
@@ -516,6 +525,19 @@ function WorkspaceRow({ workspace }: { workspace: ExecutionWorkspace }) {
       >
         {isIsolated ? "Isolated" : "Shared"}
       </span>
+      {onArchive && workspace.status !== "archived" && (
+        <button
+          type="button"
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors shrink-0"
+          data-testid={`archive-workspace-${workspace.id}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onArchive(workspace.id);
+          }}
+        >
+          Archive
+        </button>
+      )}
     </div>
   );
 }
@@ -527,14 +549,37 @@ function ProjectWorkspaces({
   projectId: string;
   companyId: string;
 }) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+  const [archivedOpen, setArchivedOpen] = useState(false);
+
   const { data: workspaces, isLoading } = useQuery({
     queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
     queryFn: () => executionWorkspacesApi.list(companyId, { projectId }),
     enabled: !!companyId && !!projectId,
   });
 
+  const archiveMutation = useMutation({
+    mutationFn: (id: string) => executionWorkspacesApi.update(id, { status: "archived" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
+      });
+      pushToast({ tone: "success", title: "Workspace archived" });
+    },
+    onError: () => {
+      pushToast({ tone: "error", title: "Failed to archive workspace" });
+    },
+  });
+
   if (isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading workspaces…</p>;
+    return (
+      <div className="space-y-2" data-testid="workspaces-loading">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+      </div>
+    );
   }
 
   if (!workspaces || workspaces.length === 0) {
@@ -548,17 +593,54 @@ function ProjectWorkspaces({
     );
   }
 
+  const activeWorkspaces = workspaces.filter((w) => w.status !== "archived");
+  const archivedWorkspaces = workspaces.filter((w) => w.status === "archived");
+
   return (
-    <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
-      <div className="grid px-4 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide bg-muted/30" style={{ gridTemplateColumns: "1fr auto auto auto" }}>
-        <span>Name</span>
-        <span>Status</span>
-        <span>Last used</span>
-        <span>Mode</span>
-      </div>
-      {workspaces.map((ws) => (
-        <WorkspaceRow key={ws.id} workspace={ws} />
-      ))}
+    <div className="space-y-4">
+      {activeWorkspaces.length > 0 ? (
+        <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
+          <div
+            className="grid px-4 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide bg-muted/30"
+            style={{ gridTemplateColumns: "1fr auto auto auto auto" }}
+          >
+            <span>Name</span>
+            <span>Status</span>
+            <span>Last used</span>
+            <span>Mode</span>
+            <span />
+          </div>
+          {activeWorkspaces.map((ws) => (
+            <WorkspaceRow
+              key={ws.id}
+              workspace={ws}
+              onArchive={(id) => archiveMutation.mutate(id)}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">All workspaces are archived.</p>
+      )}
+
+      {archivedWorkspaces.length > 0 && (
+        <Collapsible open={archivedOpen} onOpenChange={setArchivedOpen}>
+          <CollapsibleTrigger className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors" data-testid="archived-workspaces-trigger">
+            {archivedOpen ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+            Archived ({archivedWorkspaces.length})
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="mt-2 border border-border divide-y divide-border rounded-md overflow-hidden" data-testid="archived-workspaces-list">
+              {archivedWorkspaces.map((ws) => (
+                <WorkspaceRow key={ws.id} workspace={ws} />
+              ))}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
     </div>
   );
 }
