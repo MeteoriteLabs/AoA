@@ -1,6 +1,20 @@
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { api } from "./client";
 
+export interface WorkspaceRuntimeService {
+  id: string;
+  serviceName: string;
+  status: string;
+  port: number | null;
+  url: string | null;
+  command: string | null;
+  cwd: string | null;
+  provider: string;
+  lifecycle: string;
+  startedAt: string | null;
+  stoppedAt: string | null;
+}
+
 export const executionWorkspacesApi = {
   list: (
     companyId: string,
@@ -24,4 +38,6 @@ export const executionWorkspacesApi = {
   get: (id: string) => api.get<ExecutionWorkspace>(`/execution-workspaces/${id}`),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<ExecutionWorkspace>(`/execution-workspaces/${id}`, data),
+  runtimeServices: (workspaceId: string) =>
+    api.get<WorkspaceRuntimeService[]>(`/execution-workspaces/${workspaceId}/runtime-services`),
 };
