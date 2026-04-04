@@ -231,6 +231,10 @@ vi.mock("../context/CompanyContext", () => ({
   }),
 }));
 
+vi.mock("../context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn(), toasts: [], dismissToast: vi.fn(), clearToasts: vi.fn() }),
+}));
+
 vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => mockBreadcrumbContext,
 }));

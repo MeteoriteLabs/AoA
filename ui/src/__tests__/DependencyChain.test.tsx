@@ -135,12 +135,10 @@ describe("DependencyChain", () => {
     dependenciesApiMock.list.mockResolvedValue(emptyDepsResponse);
     const { container } = renderChain();
 
-    // Wait for query to settle
+    // Wait for query to resolve and component to render nothing
     await waitFor(() => {
       expect(dependenciesApiMock.list).toHaveBeenCalled();
+      expect(container.innerHTML).toBe("");
     });
-
-    // Should render nothing
-    expect(container.innerHTML).toBe("");
   });
 });

@@ -121,6 +121,10 @@ vi.mock("../api/agents", () => ({
   ),
 }));
 
+vi.mock("../context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn(), toasts: [], dismissToast: vi.fn(), clearToasts: vi.fn() }),
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "comp-1",
