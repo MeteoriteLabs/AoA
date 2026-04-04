@@ -12,7 +12,8 @@ interface TerminalPanelProps {
   companyId: string;
 }
 
-export function TerminalPanel({ issueId, companyId: _companyId }: TerminalPanelProps) {
+// companyId kept in interface for future company-scoped endpoints
+export function TerminalPanel({ issueId }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -70,7 +71,12 @@ export function TerminalPanel({ issueId, companyId: _companyId }: TerminalPanelP
   // Resize observer
   useEffect(() => {
     if (!containerRef.current) return;
-    const ro = new ResizeObserver(() => fitRef.current?.fit());
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+        fitRef.current?.fit();
+      }
+    });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, []);
@@ -120,7 +126,10 @@ export function TerminalPanel({ issueId, companyId: _companyId }: TerminalPanelP
         try {
           let offset = 0;
           let hasMore = true;
-          while (hasMore && !cancelled) {
+          let chunks = 0;
+          const MAX_CHUNKS = 50;
+          while (hasMore && !cancelled && chunks < MAX_CHUNKS) {
+            chunks++;
             const result = await heartbeatsApi.log(currentRunId, offset);
             if (cancelled || !termRef.current) return;
             if (result.content) {

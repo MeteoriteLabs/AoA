@@ -21,13 +21,21 @@ const prStatusColor: Record<string, string> = {
 
 export function GitPanel({ workspace }: GitPanelProps) {
   const [copied, setCopied] = useState(false);
-  const pr = (workspace.metadata as Record<string, unknown> | null)?.pr as PrMetadata | undefined;
+  const raw = (workspace.metadata as Record<string, unknown> | null)?.pr;
+  const pr =
+    typeof raw === "object" && raw !== null && "url" in raw && "status" in raw && "number" in raw
+      ? (raw as PrMetadata)
+      : undefined;
 
   const handleCopy = async () => {
     if (!workspace.branchName) return;
-    await navigator.clipboard.writeText(workspace.branchName);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    try {
+      await navigator.clipboard.writeText(workspace.branchName);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard not available in this context
+    }
   };
 
   return (
