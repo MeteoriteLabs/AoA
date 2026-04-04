@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PROJECT_COLORS, isUuidLike } from "@paperclipai/shared";
 import { projectsApi } from "../api/projects";
 import type { ProjectAgentAssignment, ProjectBudget } from "../api/projects";
+import { TaskSlideOver } from "../components/TaskSlideOver";
 import { issuesApi } from "../api/issues";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
@@ -136,7 +137,15 @@ function ColorPicker({
 
 /* ── List (issues) tab content ── */
 
-function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
+function ProjectIssuesList({
+  projectId,
+  companyId,
+  onSelectIssue,
+}: {
+  projectId: string;
+  companyId: string;
+  onSelectIssue?: (issueIdentifier: string) => void;
+}) {
   const queryClient = useQueryClient();
 
   const { data: agents } = useQuery({
@@ -185,6 +194,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       projectId={projectId}
       viewStateKey={`paperclip:project-view:${projectId}`}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+      onSelectIssue={onSelectIssue}
     />
   );
 }
@@ -621,6 +631,7 @@ export function ProjectDetail() {
   const canFetchProject = routeProjectRef.length > 0 && (isUuidLike(routeProjectRef) || Boolean(lookupCompanyId));
 
   const activeTab = routeProjectRef ? resolveProjectTab(location.pathname, routeProjectRef) : null;
+  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
 
   const { data: project, isLoading, error } = useQuery({
     queryKey: [...queryKeys.projects.detail(routeProjectRef), lookupCompanyId ?? null],
@@ -696,6 +707,7 @@ export function ProjectDetail() {
   if (!project) return null;
 
   const handleTabChange = (tab: ProjectTab) => {
+    if (tab !== "list") setSelectedIssueId(null);
     const tabPaths: Record<ProjectTab, string> = {
       overview: "overview",
       list: "issues",
@@ -791,7 +803,11 @@ export function ProjectDetail() {
       )}
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
-        <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
+        <ProjectIssuesList
+          projectId={project.id}
+          companyId={resolvedCompanyId}
+          onSelectIssue={setSelectedIssueId}
+        />
       )}
 
       {activeTab === "goals" && project?.id && resolvedCompanyId && (
@@ -833,6 +849,11 @@ export function ProjectDetail() {
     <div className="space-y-6">
       {headerContent}
       {tabContent}
+      <TaskSlideOver
+        issueId={selectedIssueId}
+        open={!!selectedIssueId}
+        onClose={() => setSelectedIssueId(null)}
+      />
     </div>
   );
 }

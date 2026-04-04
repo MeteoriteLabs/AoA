@@ -79,6 +79,10 @@ const projectsApiMock = {
   unassignAgent: vi.fn(),
 };
 
+vi.mock("../components/TaskSlideOver", () => ({
+  TaskSlideOver: () => null,
+}));
+
 vi.mock("../api/discussions", () => ({
   discussionsApi: new Proxy(
     {},
