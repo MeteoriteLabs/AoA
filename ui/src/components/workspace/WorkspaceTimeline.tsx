@@ -51,13 +51,13 @@ export function WorkspaceTimeline({
     enabled: !!issueId,
   });
 
-  const { data: comments, error: commentsError } = useQuery({
+  const { data: comments, error: commentsError, isLoading: commentsLoading } = useQuery({
     queryKey: queryKeys.issues.comments(issueId),
     queryFn: () => issuesApi.listComments(issueId),
     enabled: !!issueId,
   });
 
-  const { data: linkedRuns } = useQuery({
+  const { data: linkedRuns, isLoading: runsLoading } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
     enabled: !!issueId,
@@ -162,7 +162,7 @@ export function WorkspaceTimeline({
     <div className={cn("flex flex-col h-full", className)} data-testid="workspace-timeline">
       {/* Scrollable timeline */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3" data-testid="timeline-scroll">
-        {!comments && !linkedRuns && (
+        {(commentsLoading || runsLoading) && (
           <div className="space-y-3" data-testid="timeline-skeleton">
             {Array.from({ length: 3 }).map((_, i) => (
               <Skeleton key={i} className="h-20 w-full" />

@@ -187,6 +187,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   projectsApiMock.get.mockResolvedValue(mockProject);
   executionWorkspacesApiMock.list.mockResolvedValue(mockWorkspaces);
+  vi.spyOn(window, "confirm").mockReturnValue(true);
 });
 
 // --- Tests ---

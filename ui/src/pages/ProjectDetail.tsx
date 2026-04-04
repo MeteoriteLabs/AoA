@@ -614,7 +614,10 @@ function ProjectWorkspaces({
             <WorkspaceRow
               key={ws.id}
               workspace={ws}
-              onArchive={(id) => archiveMutation.mutate(id)}
+              onArchive={(id) => {
+                if (!window.confirm("Archive this workspace? It will be moved to the archived section.")) return;
+                archiveMutation.mutate(id);
+              }}
             />
           ))}
         </div>
