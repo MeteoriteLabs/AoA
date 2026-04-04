@@ -125,6 +125,8 @@ export function WorkspaceLayout({
                   activeMode={previewMode}
                   onModeChange={handleModeChange}
                   previewArtifact={previewArtifact}
+                  functionType={project?.functionType ?? null}
+                  workspaceId={workspace.id}
                 />
               )}
             </Panel>
