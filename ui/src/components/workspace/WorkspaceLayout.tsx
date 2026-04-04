@@ -2,6 +2,8 @@ import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panel
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import type { Project } from "@paperclipai/shared";
 import { WorkspaceTaskNav } from "./WorkspaceTaskNav";
+import { DependencyChain } from "./DependencyChain";
+import { WorkspaceTimeline } from "./WorkspaceTimeline";
 
 interface WorkspaceLayoutProps {
   workspace: ExecutionWorkspace;
@@ -51,10 +53,22 @@ export function WorkspaceLayout({
         onLayoutChanged={onLayoutChanged}
         data-testid="workspace-center-group"
       >
-        <Panel id="center-left" minSize="20%" className="min-w-0 h-full overflow-hidden" data-testid="workspace-center-panel">
-          <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
-            Timeline coming in next session
-          </div>
+        <Panel id="center-left" minSize="20%" className="min-w-0 h-full overflow-hidden flex flex-col" data-testid="workspace-center-panel">
+          {selectedIssueId && (
+            <DependencyChain
+              issueId={selectedIssueId}
+              companyId={companyId}
+              selectedIssueId={selectedIssueId}
+              onSelectIssue={onSelectIssue}
+            />
+          )}
+          {selectedIssueId ? (
+            <WorkspaceTimeline issueId={selectedIssueId} />
+          ) : (
+            <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+              Select a task to view its timeline
+            </div>
+          )}
         </Panel>
 
         <Separator

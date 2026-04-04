@@ -23,6 +23,7 @@ import { CommentThread } from "./CommentThread";
 import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { IssueProperties } from "./IssueProperties";
 import { LiveRunWidget } from "./LiveRunWidget";
+import { WorkspaceTimeline } from "./workspace/WorkspaceTimeline";
 import type { MentionOption } from "./MarkdownEditor";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
@@ -43,7 +44,7 @@ import {
   ChevronRight,
   EyeOff,
   GitBranch,
-  Hexagon,
+
   Link2,
   ListTree,
   MessageSquare,
@@ -226,8 +227,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
 
   // Two-mode sidebar state
   const [sidebarMode, setSidebarMode] = useState<"task" | "workspace">("task");
-  const [workspaceChatInput, setWorkspaceChatInput] = useState("");
-  const [workspaceSendAgentId, setWorkspaceSendAgentId] = useState<string | null>(null);
 
   /* ── Data fetching ── */
 
@@ -660,19 +659,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     },
   });
 
-  const sendWorkspaceMessage = useMutation({
-    mutationFn: async ({ text, agentId }: { text: string; agentId: string | null }) => {
-      await issuesApi.addComment(issueId!, text);
-      if (agentId) {
-        await agentsApi.wakeup(agentId, { source: "on_demand", reason: text });
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
-      setWorkspaceChatInput("");
-    },
-  });
 
   /* ── Derived data ── */
 
@@ -721,28 +707,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     return results;
   }, [depArtifactQueries, upstreamDeps]);
 
-  // Merged timeline of runs + comments for Mode 2
-  const mergedTimeline = useMemo(() => {
-    type TimelineItem =
-      | { kind: "run"; ts: string; data: (typeof timelineRuns)[number] }
-      | { kind: "comment"; ts: string; data: (typeof commentsWithRunMeta)[number] };
-    const items: TimelineItem[] = [
-      ...(timelineRuns ?? []).map((r) => ({
-        kind: "run" as const,
-        ts: r.startedAt ?? r.createdAt,
-        data: r,
-      })),
-      ...(commentsWithRunMeta ?? []).map((c) => ({
-        kind: "comment" as const,
-        ts: typeof c.createdAt === "string" ? c.createdAt : c.createdAt.toISOString(),
-        data: c,
-      })),
-    ];
-    return items.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
-  }, [timelineRuns, commentsWithRunMeta]);
-
-  // The agent to use for workspace send (default to current assignee)
-  const effectiveSendAgentId = workspaceSendAgentId ?? issue?.assigneeAgentId ?? null;
 
   /* ── Side effects ── */
 
@@ -754,8 +718,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
       setShowAddVersion(false);
       setShowAllVersions(false);
       setSidebarMode("task");
-      setWorkspaceChatInput("");
-      setWorkspaceSendAgentId(null);
     }
   }, [issueId]);
 
@@ -811,122 +773,14 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
               </Button>
             </div>
 
-            {/* Workspace timeline */}
-            <ScrollArea className="flex-1 overflow-y-auto">
-              <div className="p-4 space-y-3">
-                {/* Live run widget at top if active */}
-                {hasLiveRuns && (
-                  <LiveRunWidget issueId={issueId!} companyId={issue.companyId} />
-                )}
-
-                {/* Merged run + comment timeline */}
-                {mergedTimeline.length === 0 && !hasLiveRuns && (
-                  <p className="text-xs text-muted-foreground text-center py-8">
-                    No runs or comments yet. Send a message to start work.
-                  </p>
-                )}
-                {mergedTimeline.map((item, idx) => {
-                  if (item.kind === "run") {
-                    const run = item.data;
-                    const agent = agentMap.get(run.agentId);
-                    return (
-                      <div key={`run-${run.runId}`} className="rounded-lg border border-border bg-accent/10 p-3 space-y-1">
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <Hexagon className="h-3 w-3" />
-                          <span className="font-medium text-foreground">
-                            {agent?.name ?? run.agentId.slice(0, 8)}
-                          </span>
-                          <span className="capitalize">{run.status}</span>
-                          <span className="ml-auto">{relativeTime(run.startedAt ?? run.createdAt)}</span>
-                        </div>
-                        {run.finishedAt && (
-                          <p className="text-[11px] text-muted-foreground">
-                            Completed {relativeTime(run.finishedAt)}
-                          </p>
-                        )}
-                      </div>
-                    );
-                  }
-                  // comment
-                  const comment = item.data;
-                  const authorAgent = comment.authorAgentId
-                    ? agentMap.get(comment.authorAgentId)
-                    : null;
-                  return (
-                    <div key={`comment-${comment.id}`} className="flex gap-2.5">
-                      <div className="shrink-0 mt-0.5">
-                        <Identity
-                          name={authorAgent?.name ?? (comment.authorUserId ? "Board" : "Unknown")}
-                          size="sm"
-                        />
-                      </div>
-                      <div className="flex-1 space-y-0.5">
-                        <div className="flex items-center gap-2 text-xs">
-                          <span className="font-medium">
-                            {authorAgent?.name ?? (comment.authorUserId ? "Board" : "Unknown")}
-                          </span>
-                          <span className="text-muted-foreground ml-auto">{relativeTime(comment.createdAt)}</span>
-                        </div>
-                        <p className="text-sm">{comment.body}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-
-            {/* Open Workspace button */}
-            <div className="px-4 pt-2 shrink-0">
-              <Button variant="outline" size="sm" disabled className="w-full">
-                Open Workspace (coming soon)
-              </Button>
-            </div>
-
-            {/* Workspace input area */}
-            <div className="p-4 border-t border-border shrink-0 space-y-2" data-testid="workspace-input-area">
-              <textarea
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
-                placeholder="Continue working on this task..."
-                rows={2}
-                value={workspaceChatInput}
-                onChange={(e) => setWorkspaceChatInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                    e.preventDefault();
-                    if (workspaceChatInput.trim()) {
-                      sendWorkspaceMessage.mutate({ text: workspaceChatInput.trim(), agentId: effectiveSendAgentId });
-                    }
-                  }
-                }}
-              />
-              <div className="flex items-center gap-2">
-                <select
-                  className="flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
-                  value={effectiveSendAgentId ?? ""}
-                  onChange={(e) => setWorkspaceSendAgentId(e.target.value || null)}
-                >
-                  <option value="">No agent</option>
-                  {(agents ?? [])
-                    .filter((a) => a.status !== "terminated")
-                    .map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name}
-                      </option>
-                    ))}
-                </select>
-                <Button
-                  size="sm"
-                  disabled={!workspaceChatInput.trim() || sendWorkspaceMessage.isPending}
-                  onClick={() => {
-                    if (workspaceChatInput.trim()) {
-                      sendWorkspaceMessage.mutate({ text: workspaceChatInput.trim(), agentId: effectiveSendAgentId });
-                    }
-                  }}
-                >
-                  {sendWorkspaceMessage.isPending ? "Sending..." : "Send"}
-                </Button>
-              </div>
-            </div>
+            {/* Shared workspace timeline + input */}
+            <WorkspaceTimeline
+              issueId={issueId!}
+              compact
+              showMarkComplete={!!issue.assigneeUserId && !issue.assigneeAgentId}
+              onMarkComplete={() => updateIssue.mutate({ status: "done" })}
+              className="flex-1 min-h-0"
+            />
           </>
         )}
 

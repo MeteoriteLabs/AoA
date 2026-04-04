@@ -127,11 +127,67 @@ const executionWorkspacesApiMock = {
 const issuesApiMock = {
   get: vi.fn().mockResolvedValue(mockIssue),
   list: vi.fn().mockResolvedValue(mockIssues),
+  listComments: vi.fn().mockResolvedValue([]),
+  addComment: vi.fn().mockResolvedValue({ id: "c-1" }),
 };
 
 const projectsApiMock = {
   get: vi.fn().mockResolvedValue(mockProject),
 };
+
+const dependenciesApiMock = {
+  list: vi.fn().mockResolvedValue({ upstream: [], downstream: [] }),
+};
+
+const activityApiMock = {
+  runsForIssue: vi.fn().mockResolvedValue([]),
+};
+
+const heartbeatsApiMock = {
+  liveRunsForIssue: vi.fn().mockResolvedValue([]),
+  activeRunForIssue: vi.fn().mockResolvedValue(null),
+  log: vi.fn().mockResolvedValue({ runId: "", store: "file", logRef: "", content: "" }),
+};
+
+const agentsApiMock = {
+  list: vi.fn().mockResolvedValue([]),
+  wakeup: vi.fn().mockResolvedValue(undefined),
+};
+
+vi.mock("../api/dependencies", () => ({
+  dependenciesApi: new Proxy(
+    {},
+    { get: (_t, prop) => (dependenciesApiMock as any)[prop] },
+  ),
+}));
+
+vi.mock("../api/activity", () => ({
+  activityApi: new Proxy(
+    {},
+    { get: (_t, prop) => (activityApiMock as any)[prop] },
+  ),
+}));
+
+vi.mock("../api/heartbeats", () => ({
+  heartbeatsApi: new Proxy(
+    {},
+    { get: (_t, prop) => (heartbeatsApiMock as any)[prop] },
+  ),
+}));
+
+vi.mock("../api/agents", () => ({
+  agentsApi: new Proxy(
+    {},
+    { get: (_t, prop) => (agentsApiMock as any)[prop] },
+  ),
+}));
+
+// Mock LiveRunWidget to avoid WebSocket dependencies
+vi.mock("../components/LiveRunWidget", () => ({
+  LiveRunWidget: ({ issueId }: { issueId: string }) => (
+    <div data-testid="live-run-widget">Live runs for {issueId}</div>
+  ),
+}));
 
 vi.mock("../api/execution-workspaces", () => ({
   executionWorkspacesApi: new Proxy(
@@ -312,11 +368,11 @@ describe("WorkspaceView — three-panel layout", () => {
     });
   });
 
-  it("renders placeholder text for center and right panels", async () => {
+  it("renders timeline in center panel and placeholder for right panel", async () => {
     renderWorkspaceView();
 
     await waitFor(() => {
-      expect(screen.getByText(/Timeline coming in next session/)).toBeInTheDocument();
+      expect(screen.getByTestId("workspace-timeline")).toBeInTheDocument();
     });
 
     expect(screen.getByText(/Context sections coming soon/)).toBeInTheDocument();
