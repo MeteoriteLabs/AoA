@@ -49,6 +49,17 @@ import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { cliAuthRoutes } from "./routes/cli-auth.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
+import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
+import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { pluginLoader } from "./services/plugin-loader.js";
+import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { createPluginEventBus } from "./services/plugin-event-bus.js";
+import { createPluginStreamBus } from "./services/plugin-stream-bus.js";
+import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
+import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
+import { pluginJobStore } from "./services/plugin-job-store.js";
+import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
+import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -170,7 +181,70 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
+
+  // Plugin subsystem initialization
+  const workerMgr = createPluginWorkerManager();
+  const eventBus = createPluginEventBus();
+  const streamBus = createPluginStreamBus();
+  const jobStoreInst = pluginJobStore(db);
+  const toolDispatcherInst = createPluginToolDispatcher({
+    workerManager: workerMgr,
+    db,
+  });
+  const jobSchedulerInst = createPluginJobScheduler({
+    db,
+    jobStore: jobStoreInst,
+    workerManager: workerMgr,
+  });
+  const lifecycleMgr = pluginLifecycleManager(db, {
+    workerManager: workerMgr,
+  });
+  const jobCoordinatorInst = createPluginJobCoordinator({
+    db,
+    lifecycle: lifecycleMgr,
+    scheduler: jobSchedulerInst,
+    jobStore: jobStoreInst,
+  });
+  // Loader is created without runtimeServices initially — loadAll() is called
+  // from index.ts after full runtime wiring.
+  const loaderInst = pluginLoader(db);
+
+  api.use(pluginRoutes(db, loaderInst, {
+    scheduler: jobSchedulerInst,
+    jobStore: jobStoreInst,
+  }, {
+    workerManager: workerMgr,
+  }, {
+    toolDispatcher: toolDispatcherInst,
+  }, {
+    workerManager: workerMgr,
+    streamBus,
+  }));
+  api.use(pluginCompanySettingsRoutes(db));
+
   app.use("/api", api);
+
+  // Plugin UI static assets (outside /api prefix)
+  const pluginDir = path.resolve(
+    process.env.PAPERCLIP_PLUGIN_DIR ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".paperclip", "plugins"),
+  );
+  app.use("/_plugins", pluginUiStaticRoutes(db, { localPluginDir: pluginDir }));
+
+  // Expose tool dispatcher globally so heartbeat can inject plugin tools into agent context
+  (globalThis as any).__paperclipPluginToolDispatcher = toolDispatcherInst;
+
+  // Expose plugin subsystem for startup/shutdown in index.ts
+  (app as any).__pluginSubsystem = {
+    workerManager: workerMgr,
+    eventBus,
+    streamBus,
+    jobStore: jobStoreInst,
+    toolDispatcher: toolDispatcherInst,
+    jobScheduler: jobSchedulerInst,
+    jobCoordinator: jobCoordinatorInst,
+    lifecycle: lifecycleMgr,
+    loader: loaderInst,
+  };
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {

@@ -590,3 +590,202 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
+
+// ---------------------------------------------------------------------------
+// Plugin system constants
+// ---------------------------------------------------------------------------
+
+export const PLUGIN_API_VERSION = 1 as const;
+
+export const PLUGIN_STATUSES = [
+  "installed",
+  "ready",
+  "disabled",
+  "error",
+  "upgrade_pending",
+  "uninstalled",
+] as const;
+export type PluginStatus = (typeof PLUGIN_STATUSES)[number];
+
+export const PLUGIN_CATEGORIES = [
+  "connector",
+  "ui",
+  "automation",
+  "workspace",
+] as const;
+export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
+
+export const PLUGIN_CAPABILITIES = [
+  // Data read
+  "companies.read",
+  "projects.read",
+  "project.workspaces.read",
+  "issues.read",
+  "issue.comments.read",
+  "issue.documents.read",
+  "agents.read",
+  "goals.read",
+  "activity.read",
+  "costs.read",
+  // Data write
+  "issues.create",
+  "issues.update",
+  "issue.comments.create",
+  "issue.documents.write",
+  "activity.log.write",
+  "metrics.write",
+  // Plugin state
+  "plugin.state.read",
+  "plugin.state.write",
+  // Integration
+  "events.subscribe",
+  "events.emit",
+  "jobs.schedule",
+  "webhooks.receive",
+  "http.outbound",
+  "secrets.read-ref",
+  // Agent tools
+  "agent.tools.register",
+  // Agent control
+  "agents.pause",
+  "agents.resume",
+  "agents.invoke",
+  "agent.sessions.create",
+  "agent.sessions.list",
+  "agent.sessions.send",
+  "agent.sessions.close",
+  // Goals
+  "goals.create",
+  "goals.update",
+  // UI
+  "ui.sidebar.register",
+  "ui.page.register",
+  "ui.detailTab.register",
+  "ui.dashboardWidget.register",
+  "ui.commentAnnotation.register",
+  "ui.action.register",
+  // Instance
+  "instance.settings.register",
+] as const;
+export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
+
+export const PLUGIN_UI_SLOT_TYPES = [
+  "sidebar",
+  "sidebarPanel",
+  "projectSidebarItem",
+  "page",
+  "detailTab",
+  "taskDetailView",
+  "dashboardWidget",
+  "globalToolbarButton",
+  "toolbarButton",
+  "contextMenuItem",
+  "commentAnnotation",
+  "commentContextMenuItem",
+  "settingsPage",
+] as const;
+export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
+
+export const PLUGIN_UI_SLOT_ENTITY_TYPES = [
+  "project",
+  "issue",
+  "comment",
+] as const;
+export type PluginUiSlotEntityType = (typeof PLUGIN_UI_SLOT_ENTITY_TYPES)[number];
+
+export const PLUGIN_STATE_SCOPE_KINDS = [
+  "instance",
+  "company",
+  "project",
+  "issue",
+] as const;
+export type PluginStateScopeKind = (typeof PLUGIN_STATE_SCOPE_KINDS)[number];
+
+export const PLUGIN_LAUNCHER_PLACEMENT_ZONES = [
+  "page",
+  "detailTab",
+  "taskDetailView",
+  "dashboardWidget",
+  "sidebar",
+  "sidebarPanel",
+  "projectSidebarItem",
+  "globalToolbarButton",
+  "toolbarButton",
+  "contextMenuItem",
+  "commentAnnotation",
+  "commentContextMenuItem",
+  "settingsPage",
+] as const;
+export type PluginLauncherPlacementZone = (typeof PLUGIN_LAUNCHER_PLACEMENT_ZONES)[number];
+
+export const PLUGIN_LAUNCHER_ACTIONS = [
+  "navigate",
+  "deepLink",
+  "performAction",
+  "openModal",
+  "openDrawer",
+  "openPopover",
+] as const;
+export type PluginLauncherAction = (typeof PLUGIN_LAUNCHER_ACTIONS)[number];
+
+export const PLUGIN_LAUNCHER_BOUNDS = [
+  "default",
+  "compact",
+  "wide",
+  "full",
+  "inline",
+] as const;
+export type PluginLauncherBounds = (typeof PLUGIN_LAUNCHER_BOUNDS)[number];
+
+export const PLUGIN_LAUNCHER_RENDER_ENVIRONMENTS = [
+  "hostOverlay",
+  "iframe",
+] as const;
+export type PluginLauncherRenderEnvironment = (typeof PLUGIN_LAUNCHER_RENDER_ENVIRONMENTS)[number];
+
+export const PLUGIN_EVENT_TYPES = [
+  "issue.created",
+  "issue.updated",
+  "issue.deleted",
+  "project.created",
+  "project.updated",
+  "project.deleted",
+  "agent.created",
+  "agent.updated",
+  "agent.run.started",
+  "agent.run.completed",
+  "goal.created",
+  "goal.updated",
+  "goal.deleted",
+] as const;
+export type PluginEventType = (typeof PLUGIN_EVENT_TYPES)[number];
+
+export const PLUGIN_JOB_STATUSES = ["active", "paused", "failed"] as const;
+export type PluginJobStatus = (typeof PLUGIN_JOB_STATUSES)[number];
+
+export const PLUGIN_JOB_RUN_STATUSES = [
+  "pending",
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+] as const;
+export type PluginJobRunStatus = (typeof PLUGIN_JOB_RUN_STATUSES)[number];
+
+export const PLUGIN_JOB_RUN_TRIGGERS = ["schedule", "manual", "retry"] as const;
+export type PluginJobRunTrigger = (typeof PLUGIN_JOB_RUN_TRIGGERS)[number];
+
+export const PLUGIN_WEBHOOK_DELIVERY_STATUSES = ["pending", "success", "failed"] as const;
+export type PluginWebhookDeliveryStatus = (typeof PLUGIN_WEBHOOK_DELIVERY_STATUSES)[number];
+
+export const PLUGIN_BRIDGE_ERROR_CODES = [
+  "WORKER_UNAVAILABLE",
+  "CAPABILITY_DENIED",
+  "TIMEOUT",
+  "WORKER_ERROR",
+  "VALIDATION_ERROR",
+  "NOT_FOUND",
+  "UNKNOWN",
+] as const;
+export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];

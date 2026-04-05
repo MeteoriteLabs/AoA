@@ -600,6 +600,17 @@ server.listen(listenPort, config.host, () => {
     databaseBackupDir: config.databaseBackupDir,
   });
 
+  // Bootstrap plugin subsystem after server is listening
+  const pluginSys = (app as any).__pluginSubsystem;
+  if (pluginSys) {
+    pluginSys.jobScheduler.start();
+    pluginSys.jobCoordinator.start();
+    pluginSys.loader.loadAll().catch((err: unknown) => {
+      logger.error({ err }, "Plugin loadAll failed at startup");
+    });
+    logger.info("Plugin subsystem initialized");
+  }
+
   const boardClaimUrl = getBoardClaimWarningUrl(config.host, listenPort);
   if (boardClaimUrl) {
     const red = "\x1b[41m\x1b[30m";
@@ -619,6 +630,16 @@ server.listen(listenPort, config.host, () => {
 
 if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
   const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+    // Shutdown plugin subsystem first
+    const pluginSys = (app as any).__pluginSubsystem;
+    if (pluginSys) {
+      logger.info("Stopping plugin subsystem");
+      pluginSys.jobScheduler.stop();
+      await pluginSys.workerManager.stopAll().catch((err: unknown) => {
+        logger.error({ err }, "Plugin worker shutdown failed");
+      });
+    }
+
     logger.info({ signal }, "Stopping embedded PostgreSQL");
     try {
       await embeddedPostgres?.stop();

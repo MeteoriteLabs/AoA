@@ -301,3 +301,8 @@ export {
   updateExecutionWorkspaceSchema,
   type UpdateExecutionWorkspace,
 } from "./execution-workspace.js";
+
+export {
+  pluginManifestV1Schema,
+  type PluginManifestV1Input,
+} from "./plugin.js";

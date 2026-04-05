@@ -75,3 +75,39 @@ export {
   sanitizeRuntimeServiceBaseEnv,
   listWorkspaceRuntimeServicesForProjectWorkspaces,
 } from "./workspace-runtime.js";
+
+// Plugin system
+export { pluginRegistryService } from "./plugin-registry.js";
+export { pluginLifecycleManager } from "./plugin-lifecycle.js";
+export type { PluginLifecycleManager } from "./plugin-lifecycle.js";
+export { pluginLoader } from "./plugin-loader.js";
+export type { PluginLoader } from "./plugin-loader.js";
+export { pluginManifestValidator } from "./plugin-manifest-validator.js";
+export { pluginCapabilityValidator } from "./plugin-capability-validator.js";
+export type { PluginCapabilityValidator, CapabilityCheckResult } from "./plugin-capability-validator.js";
+export { validateInstanceConfig } from "./plugin-config-validator.js";
+export type { ConfigValidationResult } from "./plugin-config-validator.js";
+// Plugin runtime services
+export { createPluginWorkerManager } from "./plugin-worker-manager.js";
+export type { PluginWorkerManager, WorkerStartOptions, WorkerToHostHandlers } from "./plugin-worker-manager.js";
+export { createCapabilityScopedInvoker } from "./plugin-runtime-sandbox.js";
+export { createPluginEventBus } from "./plugin-event-bus.js";
+export type { PluginEventBus } from "./plugin-event-bus.js";
+export { createPluginStreamBus } from "./plugin-stream-bus.js";
+export type { PluginStreamBus } from "./plugin-stream-bus.js";
+export { createPluginJobScheduler } from "./plugin-job-scheduler.js";
+export type { PluginJobScheduler } from "./plugin-job-scheduler.js";
+export { createPluginJobCoordinator } from "./plugin-job-coordinator.js";
+export type { PluginJobCoordinator } from "./plugin-job-coordinator.js";
+export { pluginJobStore } from "./plugin-job-store.js";
+export type { PluginJobStore } from "./plugin-job-store.js";
+export { pluginStateStore } from "./plugin-state-store.js";
+export { buildHostServices } from "./plugin-host-services.js";
+export { createPluginHostServiceCleanup } from "./plugin-host-service-cleanup.js";
+export { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
+export { startPluginLogRetention } from "./plugin-log-retention.js";
+export { createPluginDevWatcher } from "./plugin-dev-watcher.js";
+export { createPluginToolRegistry, TOOL_NAMESPACE_SEPARATOR } from "./plugin-tool-registry.js";
+export type { PluginToolRegistry } from "./plugin-tool-registry.js";
+export { createPluginToolDispatcher } from "./plugin-tool-dispatcher.js";
+export type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";

@@ -14,6 +14,7 @@ import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { goalsApi } from "../api/goals";
 import { mcpApi } from "../api/mcp";
+import { pluginsApi, type CompanyPluginSetting } from "../api/plugins";
 import { internalAgentApi } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, formatTokens, budgetProgressColor } from "../lib/utils";
@@ -56,6 +57,7 @@ const SETTINGS_TABS = [
   { value: "budget", label: "Budget" },
   { value: "activity", label: "Activity" },
   { value: "integrations", label: "Integrations" },
+  { value: "plugins", label: "Plugins" },
 ];
 
 // ─── Agent snippet helpers (from CompanySettings.tsx) ─────────────────
@@ -1300,6 +1302,111 @@ function ActivitySection() {
   );
 }
 
+// ─── Plugins Section ─────────────────────────────────────────────────
+function PluginsSection() {
+  const { selectedCompanyId } = useCompany();
+  const queryClient = useQueryClient();
+
+  const { data: companyPlugins, isLoading } = useQuery({
+    queryKey: queryKeys.plugins.companySettings(selectedCompanyId!),
+    queryFn: () => pluginsApi.listCompanySettings(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const toggleMutation = useMutation({
+    mutationFn: ({ pluginId, enabled }: { pluginId: string; enabled: boolean }) =>
+      pluginsApi.updateCompanyPluginSetting(selectedCompanyId!, pluginId, { enabled }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.companySettings(selectedCompanyId!) });
+    },
+  });
+
+  if (isLoading) {
+    return <div className="text-sm text-muted-foreground py-4">Loading plugins...</div>;
+  }
+
+  if (!companyPlugins || companyPlugins.length === 0) {
+    return (
+      <div className="space-y-3">
+        <div className="space-y-1">
+          <h2 className="text-base font-semibold">Plugins</h2>
+          <p className="text-sm text-muted-foreground">
+            Manage which plugins are active for this company.
+          </p>
+        </div>
+        <Card>
+          <CardContent className="py-8 text-center">
+            <Puzzle className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
+            <p className="text-sm font-medium">No plugins installed</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Plugins are installed at the instance level. Go to Instance Settings to install plugins.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-1">
+        <h2 className="text-base font-semibold">Plugins</h2>
+        <p className="text-sm text-muted-foreground">
+          Enable or disable plugins for this company. Disabled plugins won't contribute UI, tools, or jobs.
+        </p>
+      </div>
+      <div className="space-y-3">
+        {companyPlugins.map((plugin: CompanyPluginSetting) => (
+          <Card key={plugin.pluginId} className={plugin.enabled ? "" : "opacity-60"}>
+            <CardContent className="py-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Puzzle className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <span className="text-sm font-semibold truncate">{plugin.displayName}</span>
+                    <span className="text-xs text-muted-foreground">v{plugin.version}</span>
+                    {plugin.categories.map((cat) => (
+                      <span
+                        key={cat}
+                        className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+                      >
+                        {cat}
+                      </span>
+                    ))}
+                  </div>
+                  {plugin.description && (
+                    <p className="text-xs text-muted-foreground line-clamp-2">{plugin.description}</p>
+                  )}
+                  {plugin.lastError && (
+                    <p className="text-xs text-destructive mt-1">{plugin.lastError}</p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  aria-label={`${plugin.enabled ? "Disable" : "Enable"} ${plugin.displayName}`}
+                  disabled={toggleMutation.isPending}
+                  className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                    plugin.enabled ? "bg-green-600" : "bg-muted"
+                  }`}
+                  onClick={() =>
+                    toggleMutation.mutate({ pluginId: plugin.pluginId, enabled: !plugin.enabled })
+                  }
+                >
+                  <span
+                    className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                      plugin.enabled ? "translate-x-4.5" : "translate-x-0.5"
+                    }`}
+                  />
+                </button>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main SettingsPage ────────────────────────────────────────────────
 export function SettingsPage() {
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -1368,6 +1475,10 @@ export function SettingsPage() {
 
         <TabsContent value="integrations">
           <IntegrationsSection />
+        </TabsContent>
+
+        <TabsContent value="plugins">
+          <PluginsSection />
         </TabsContent>
       </Tabs>
     </div>

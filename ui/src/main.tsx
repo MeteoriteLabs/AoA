@@ -1,4 +1,5 @@
-import { StrictMode } from "react";
+import React, { StrictMode } from "react";
+import ReactDOM from "react-dom";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "@/lib/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -11,8 +12,12 @@ import { DialogProvider } from "./context/DialogContext";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { initPluginBridge } from "./plugins/bridge-init";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
+
+// Initialize plugin bridge before React renders
+initPluginBridge(React, ReactDOM);
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {

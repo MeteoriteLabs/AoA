@@ -369,6 +369,24 @@ export function contextPackagingService(db: Db) {
       sections.push(prefParts.join("\n"));
     }
 
+    // 9. Plugin tools (if available)
+    try {
+      const dispatcher: import("./plugin-tool-dispatcher.js").PluginToolDispatcher | undefined =
+        (globalThis as any).__paperclipPluginToolDispatcher;
+      if (dispatcher) {
+        const tools = dispatcher.listToolsForAgent();
+        if (tools.length > 0) {
+          const toolParts: string[] = ["## Available Plugin Tools"];
+          for (const tool of tools) {
+            toolParts.push(`- **${tool.name}:** ${tool.description}`);
+          }
+          sections.push(toolParts.join("\n"));
+        }
+      }
+    } catch {
+      // Plugin tools are optional — silently skip if unavailable
+    }
+
     const markdown = sections.join("\n\n---\n\n");
 
     // Rough token estimate: ~4 chars per token for English text

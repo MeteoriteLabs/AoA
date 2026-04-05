@@ -73,3 +73,13 @@ export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { workspaceOperations } from "./workspace_operations.js";
+
+// Plugin system
+export { plugins } from "./plugins.js";
+export { pluginConfig } from "./plugin_config.js";
+export { pluginCompanySettings } from "./plugin_company_settings.js";
+export { pluginEntities } from "./plugin_entities.js";
+export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
+export { pluginLogs } from "./plugin_logs.js";
+export { pluginState } from "./plugin_state.js";
+export { pluginWebhookDeliveries } from "./plugin_webhooks.js";

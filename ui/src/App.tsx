@@ -41,6 +41,8 @@ import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
+import { PluginPage } from "./pages/PluginPage";
+import { PluginSettings } from "./pages/PluginSettings";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -166,6 +168,7 @@ function boardRoutes() {
       <Route path="inbox/all" element={<Inbox />} />
       <Route path="design-guide" element={<DesignGuide />} />
       <Route path="workspaces/:workspaceId" element={<WorkspaceView />} />
+      <Route path="plugins/:pluginId" element={<PluginPage />} />
     </>
   );
 }
@@ -250,6 +253,7 @@ export function App() {
         <Route element={<CloudAccessGate />}>
           <Route index element={<Lobby />} />
           <Route path="instance/settings" element={<InstanceSettingsPage />} />
+          <Route path="instance/settings/plugins/:pluginId" element={<PluginSettings />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />

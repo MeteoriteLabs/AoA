@@ -12,6 +12,7 @@ import {
   Repeat,
   ChevronsLeft,
   Shield,
+  Puzzle,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
@@ -21,6 +22,7 @@ import { SidebarProjectsByType } from "./SidebarProjectsByType";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
+import { pluginsApi } from "../api/plugins";
 import { queryKeys } from "../lib/queryKeys";
 import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
 import { Button } from "@/components/ui/button";
@@ -37,6 +39,15 @@ export function Sidebar() {
     enabled: !!selectedCompanyId,
   });
   const liveRunCount = useLiveAgentCount();
+  const { data: pluginContributions } = useQuery({
+    queryKey: queryKeys.plugins.uiContributions,
+    queryFn: () => pluginsApi.listUiContributions(),
+    enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+  });
+  const pluginsWithPages = (pluginContributions ?? []).filter(
+    (c) => c.slots.some((s) => s.type === "page"),
+  );
 
   return (
     <aside className={cn("h-full min-h-0 border-r border-border bg-background flex flex-col", collapsed ? "w-12" : "w-60")}>
@@ -135,6 +146,21 @@ export function Sidebar() {
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} collapsed={collapsed} />
           <SidebarNavItem to="/settings" label="Settings" icon={Settings} collapsed={collapsed} />
         </SidebarSection>
+
+        {/* PLUGINS section — only shown when plugins with page slots are installed */}
+        {pluginsWithPages.length > 0 && (
+          <SidebarSection label="Plugins" collapsed={collapsed}>
+            {pluginsWithPages.map((contribution) => (
+              <SidebarNavItem
+                key={contribution.pluginId}
+                to={`/plugins/${contribution.pluginId}`}
+                label={contribution.displayName}
+                icon={Puzzle}
+                collapsed={collapsed}
+              />
+            ))}
+          </SidebarSection>
+        )}
       </nav>
     </aside>
   );
