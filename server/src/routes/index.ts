@@ -25,3 +25,4 @@ export { instanceSettingsRoutes } from "./instance-settings.js";
 
 export { cliAuthRoutes } from "./cli-auth.js";
 export { executionWorkspaceRoutes } from "./execution-workspaces.js";
+export { filesystemRoutes } from "./filesystem.js";

@@ -561,7 +561,23 @@ export async function realizeExecutionWorkspace(input: {
     };
   }
 
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
+  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd).catch(() => null);
+  if (!repoRoot) {
+    // baseCwd is not inside a git repository — cannot create a worktree.
+    // Fall back to project_primary so the run still proceeds.
+    return {
+      ...input.base,
+      strategy: "project_primary" as const,
+      cwd: input.base.baseCwd,
+      branchName: null,
+      worktreePath: null,
+      warnings: [
+        `Workspace directory "${input.base.baseCwd}" is not a git repository. ` +
+        `Cannot create an isolated worktree. Using shared workspace instead.`,
+      ],
+      created: false,
+    };
+  }
   const branchTemplate = asString(rawStrategy.branchTemplate, "{{issue.identifier}}-{{slug}}");
   const renderedBranch = renderWorkspaceTemplate(branchTemplate, {
     issue: input.issue,

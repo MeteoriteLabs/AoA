@@ -27,6 +27,8 @@ import {
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { ChoosePathButton } from "./PathInstructionsModal";
+import { FolderBrowserDialog } from "./FolderBrowserDialog";
+import { filesystemApi } from "../api/filesystem";
 import { HintIcon } from "./agent-config-primitives";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import {
@@ -50,7 +52,7 @@ import {
   ArrowRightLeft,
 } from "lucide-react";
 
-type Step = 1 | 2 | 3 | 4 | 5;
+type Step = 1 | 2 | 3 | 4 | 5 | 6;
 type AdapterType =
   | "claude_local"
   | "codex_local"
@@ -87,10 +89,16 @@ export function OnboardingWizard() {
   const [companyName, setCompanyName] = useState("");
   const [companyGoal, setCompanyGoal] = useState("");
 
-  // Step 2
+  // Step 2 (root folder)
+  const [rootFolder, setRootFolder] = useState("");
+  const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
+  const [suggestedRootFolder, setSuggestedRootFolder] = useState("");
+
+  // Step 3 (agent — was step 2)
   const [agentName, setAgentName] = useState("CEO");
   const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
   const [cwd, setCwd] = useState("");
+  const [cwdManuallyEdited, setCwdManuallyEdited] = useState(false);
   const [model, setModel] = useState("");
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
@@ -150,9 +158,19 @@ export function OnboardingWizard() {
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [onboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
-  // Resize textarea when step 3 is shown or description changes
+  // Auto-suggest agent cwd from rootFolder when entering agent step
   useEffect(() => {
-    if (step === 3) autoResizeTextarea();
+    if (step !== 3 || !rootFolder || cwdManuallyEdited || cwd) return;
+    const isLocal = ["claude_local", "codex_local", "opencode_local", "cursor", "hermes_local", "gemini_local"].includes(adapterType);
+    if (!isLocal) return;
+    const sep = rootFolder.includes("\\") ? "\\" : "/";
+    const slug = agentName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "ceo";
+    setCwd(`${rootFolder}${sep}agents${sep}${slug}`);
+  }, [step, rootFolder, agentName, adapterType, cwdManuallyEdited, cwd]);
+
+  // Resize textarea when step 4 (task) is shown or description changes
+  useEffect(() => {
+    if (step === 4) autoResizeTextarea();
   }, [step, taskDescription, autoResizeTextarea]);
 
   const {
@@ -166,7 +184,7 @@ export function OnboardingWizard() {
         ? queryKeys.agents.adapterModels(createdCompanyId, adapterType)
         : ["agents", "none", "adapter-models", adapterType],
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
-    enabled: Boolean(createdCompanyId) && onboardingOpen && step === 2
+    enabled: Boolean(createdCompanyId) && onboardingOpen && step === 3
   });
   const isLocalAdapter =
     adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local" || adapterType === "cursor";
@@ -181,7 +199,7 @@ export function OnboardingWizard() {
           : "claude");
 
   useEffect(() => {
-    if (step !== 2) return;
+    if (step !== 3) return;
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
   }, [step, adapterType, cwd, model, command, args, url]);
@@ -241,6 +259,7 @@ export function OnboardingWizard() {
     setAgentName("CEO");
     setAdapterType("claude_local");
     setCwd("");
+    setCwdManuallyEdited(false);
     setModel("");
     setCommand("");
     setArgs("");
@@ -252,6 +271,9 @@ export function OnboardingWizard() {
     setUnsetAnthropicLoading(false);
     setTaskTitle("Create your CEO HEARTBEAT.md");
     setTaskDescription(DEFAULT_TASK_DESCRIPTION);
+    setRootFolder("");
+    setFolderBrowserOpen(false);
+    setSuggestedRootFolder("");
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedAgentId(null);
@@ -349,6 +371,19 @@ export function OnboardingWizard() {
         });
       }
 
+      // Suggest a root folder path
+      try {
+        const { homePath } = await filesystemApi.home();
+        const slug = companyName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        const sep = homePath.includes("\\") ? "\\" : "/";
+        const suggested = `${homePath}${sep}AoA${sep}${slug}`;
+        setSuggestedRootFolder(suggested);
+        setRootFolder(suggested);
+      } catch {
+        // Fallback if API fails
+        setSuggestedRootFolder("");
+      }
+
       setStep(2);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create company");
@@ -358,6 +393,23 @@ export function OnboardingWizard() {
   }
 
   async function handleStep2Next() {
+    if (!createdCompanyId || !rootFolder.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      // Create folder and save to company
+      await filesystemApi.mkdir(rootFolder.trim());
+      await companiesApi.update(createdCompanyId, { rootFolder: rootFolder.trim() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      setStep(3);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to set root folder");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleStep3Next() {
     if (!createdCompanyId) return;
     setLoading(true);
     setError(null);
@@ -396,11 +448,14 @@ export function OnboardingWizard() {
         if (!result) return;
       }
 
+      // Default agent cwd to company root folder if not manually set
+      const agentCwd = cwd.trim() || (rootFolder ? `${rootFolder}${rootFolder.includes("\\") ? "\\" : "/"}agents${rootFolder.includes("\\") ? "\\" : "/"}${agentName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-")}` : "");
+
       const agent = await agentsApi.create(createdCompanyId, {
         name: agentName.trim(),
         role: "ceo",
         adapterType,
-        adapterConfig: buildAdapterConfig(),
+        adapterConfig: { ...buildAdapterConfig(), ...(agentCwd ? { cwd: agentCwd } : {}) },
         runtimeConfig: {
           heartbeat: {
             enabled: true,
@@ -415,7 +470,13 @@ export function OnboardingWizard() {
       queryClient.invalidateQueries({
         queryKey: queryKeys.agents.list(createdCompanyId)
       });
-      setStep(3);
+
+      // Auto-create agent workspace dir
+      if (agentCwd) {
+        filesystemApi.mkdir(agentCwd).catch(() => {});
+      }
+
+      setStep(4);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create agent");
     } finally {
@@ -472,7 +533,7 @@ export function OnboardingWizard() {
     }
   }
 
-  async function handleStep3Next() {
+  async function handleStep4Next() {
     if (!createdCompanyId || !createdAgentId) return;
     setLoading(true);
     setError(null);
@@ -489,7 +550,7 @@ export function OnboardingWizard() {
       queryClient.invalidateQueries({
         queryKey: queryKeys.issues.list(createdCompanyId)
       });
-      setStep(4);
+      setStep(5);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create task");
     } finally {
@@ -519,10 +580,11 @@ export function OnboardingWizard() {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       if (step === 1 && companyName.trim()) handleStep1Next();
-      else if (step === 2 && agentName.trim()) handleStep2Next();
-      else if (step === 3 && taskTitle.trim()) handleStep3Next();
-      else if (step === 4) setStep(5);
-      else if (step === 5) handleLaunch();
+      else if (step === 2 && rootFolder.trim()) handleStep2Next();
+      else if (step === 3 && agentName.trim()) handleStep3Next();
+      else if (step === 4 && taskTitle.trim()) handleStep4Next();
+      else if (step === 5) setStep(6);
+      else if (step === 6) handleLaunch();
     }
   }
 
@@ -558,10 +620,10 @@ export function OnboardingWizard() {
                 <Sparkles className="h-4 w-4 text-muted-foreground" />
                 <span className="text-sm font-medium">Get Started</span>
                 <span className="text-sm text-muted-foreground/60">
-                  Step {step} of 5
+                  Step {step} of 6
                 </span>
                 <div className="flex items-center gap-1.5 ml-auto">
-                  {[1, 2, 3, 4, 5].map((s) => (
+                  {[1, 2, 3, 4, 5, 6].map((s) => (
                     <div
                       key={s}
                       className={cn(
@@ -618,6 +680,81 @@ export function OnboardingWizard() {
               )}
 
               {step === 2 && (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-3 mb-1">
+                    <div className="bg-muted/50 p-2">
+                      <FolderOpen className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium">Set up workspace root</h3>
+                      <p className="text-xs text-muted-foreground">
+                        This is where AoA stores department workspaces and agent files.
+                      </p>
+                    </div>
+                  </div>
+                  {suggestedRootFolder && (
+                    <div className="rounded-md border border-border p-3 space-y-2">
+                      <p className="text-xs text-muted-foreground">Suggested location:</p>
+                      <p className="font-mono text-xs bg-muted/50 px-2 py-1.5 rounded truncate">
+                        {suggestedRootFolder}
+                      </p>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant={rootFolder === suggestedRootFolder ? "default" : "secondary"}
+                          onClick={() => setRootFolder(suggestedRootFolder)}
+                          className="text-xs"
+                        >
+                          <Check className="h-3 w-3 mr-1" />
+                          Use this
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setFolderBrowserOpen(true)}
+                          className="text-xs"
+                        >
+                          <FolderOpen className="h-3 w-3 mr-1" />
+                          Browse...
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">
+                      Root folder path
+                    </label>
+                    <div className="flex gap-1.5">
+                      <input
+                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                        placeholder="/path/to/company/workspace"
+                        value={rootFolder}
+                        onChange={(e) => setRootFolder(e.target.value)}
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setFolderBrowserOpen(true)}
+                      >
+                        Browse
+                      </Button>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground mt-1.5">
+                      The folder will be created automatically if it doesn't exist.
+                    </p>
+                  </div>
+                  <FolderBrowserDialog
+                    open={folderBrowserOpen}
+                    onClose={() => setFolderBrowserOpen(false)}
+                    onSelect={(path) => setRootFolder(path)}
+                    title="Select Workspace Root"
+                    description="Choose where AoA should store company files"
+                    initialPath={rootFolder || suggestedRootFolder || undefined}
+                  />
+                </div>
+              )}
+
+              {step === 3 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -761,7 +898,7 @@ export function OnboardingWizard() {
                             className="w-full bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/50"
                             placeholder="/path/to/project"
                             value={cwd}
-                            onChange={(e) => setCwd(e.target.value)}
+                            onChange={(e) => { setCwd(e.target.value); setCwdManuallyEdited(true); }}
                           />
                           <ChoosePathButton />
                         </div>
@@ -994,7 +1131,7 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {step === 3 && (
+              {step === 4 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -1035,7 +1172,7 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {step === 4 && (
+              {step === 5 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -1094,7 +1231,7 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {step === 5 && (
+              {step === 6 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -1185,9 +1322,7 @@ export function OnboardingWizard() {
                   {step === 2 && (
                     <Button
                       size="sm"
-                      disabled={
-                        !agentName.trim() || loading || adapterEnvLoading
-                      }
+                      disabled={!rootFolder.trim() || loading}
                       onClick={handleStep2Next}
                     >
                       {loading ? (
@@ -1195,13 +1330,15 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
+                      {loading ? "Setting up..." : "Next"}
                     </Button>
                   )}
                   {step === 3 && (
                     <Button
                       size="sm"
-                      disabled={!taskTitle.trim() || loading}
+                      disabled={
+                        !agentName.trim() || loading || adapterEnvLoading
+                      }
                       onClick={handleStep3Next}
                     >
                       {loading ? (
@@ -1213,12 +1350,26 @@ export function OnboardingWizard() {
                     </Button>
                   )}
                   {step === 4 && (
-                    <Button size="sm" onClick={() => setStep(5)}>
+                    <Button
+                      size="sm"
+                      disabled={!taskTitle.trim() || loading}
+                      onClick={handleStep4Next}
+                    >
+                      {loading ? (
+                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                      ) : (
+                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                      )}
+                      {loading ? "Creating..." : "Next"}
+                    </Button>
+                  )}
+                  {step === 5 && (
+                    <Button size="sm" onClick={() => setStep(6)}>
                       <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       Next
                     </Button>
                   )}
-                  {step === 5 && (
+                  {step === 6 && (
                     <Button size="sm" disabled={loading} onClick={handleLaunch}>
                       {loading ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />

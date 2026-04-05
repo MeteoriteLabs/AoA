@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -31,7 +31,8 @@ import { PROJECT_COLORS } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
-import { ChoosePathButton } from "./PathInstructionsModal";
+import { FolderBrowserDialog } from "./FolderBrowserDialog";
+import { filesystemApi } from "../api/filesystem";
 
 const projectStatuses = [
   { value: "backlog", label: "Backlog" },
@@ -73,13 +74,73 @@ export function NewProjectDialog() {
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [functionType, setFunctionType] = useState<string | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<"isolated" | "shared">("isolated");
+  const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
 
   const projectType = newProjectDefaults.type ?? "project";
   const typeLabel = projectType === "department" ? "department" : "project";
 
   const [statusOpen, setStatusOpen] = useState(false);
   const [goalOpen, setGoalOpen] = useState(false);
+  const [workspacePathManuallyEdited, setWorkspacePathManuallyEdited] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
+
+  // Reset workspace state when functionType changes
+  const prevFunctionTypeRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevFunctionTypeRef.current !== null && prevFunctionTypeRef.current !== functionType) {
+      // functionType actually changed — reset workspace fields
+      if (!workspacePathManuallyEdited) {
+        setWorkspaceLocalPath("");
+      }
+      setWorkspaceSetup("none");
+      setWorkspaceRepoUrl("");
+      setWorkspaceError(null);
+    }
+    prevFunctionTypeRef.current = functionType;
+  }, [functionType]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-suggest workspace path for non-software types when company has rootFolder
+  const rootFolder = selectedCompany?.rootFolder;
+  useEffect(() => {
+    if (workspacePathManuallyEdited) return;
+
+    // Clear path when name is emptied
+    if (!name.trim()) {
+      if (workspaceLocalPath && !workspacePathManuallyEdited) {
+        setWorkspaceLocalPath("");
+      }
+      return;
+    }
+
+    if (!functionType || functionType === "software_development" || !rootFolder) return;
+
+    const sep = rootFolder.includes("\\") ? "\\" : "/";
+    const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const basePath = `${rootFolder}${sep}${slug}`;
+
+    // Check if folder already exists and auto-increment suffix
+    let cancelled = false;
+    (async () => {
+      let candidate = basePath;
+      let suffix = 1;
+      while (suffix <= 20) {
+        try {
+          await filesystemApi.browse(candidate);
+          // Folder exists — try next suffix
+          suffix++;
+          candidate = `${basePath}-${suffix}`;
+        } catch {
+          // Folder doesn't exist — use this path
+          break;
+        }
+      }
+      if (!cancelled) {
+        setWorkspaceLocalPath(candidate);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [functionType, rootFolder, name, workspacePathManuallyEdited]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data: goals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -110,6 +171,7 @@ export function NewProjectDialog() {
     setWorkspaceLocalPath("");
     setWorkspaceRepoUrl("");
     setWorkspaceError(null);
+    setWorkspacePathManuallyEdited(false);
     setFunctionType(null);
     setWorkspaceMode("isolated");
   }
@@ -177,8 +239,8 @@ export function NewProjectDialog() {
         color: PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)],
         ...(goalIds.length > 0 ? { goalIds } : {}),
         ...(targetDate ? { targetDate } : {}),
-        ...(projectType === "department" && functionType ? { functionType } : {}),
-        ...(projectType === "department" && functionType ? { workspaceModeHint: workspaceMode } : {}),
+        ...(functionType ? { functionType } : {}),
+        ...(functionType ? { workspaceModeHint: workspaceMode } : {}),
       });
 
       const workspacePayloads: Array<Record<string, unknown>> = [];
@@ -206,15 +268,16 @@ export function NewProjectDialog() {
         });
       }
 
-      // For non-software departments: create workspace from optional working directory
+      // For non-software departments: create workspace from working directory
       if (
-        projectType === "department" &&
         functionType !== null &&
         functionType !== "software_development" &&
         workspaceLocalPath.trim() &&
         isAbsolutePath(workspaceLocalPath.trim())
       ) {
         const cwd = workspaceLocalPath.trim();
+        // Auto-create the folder if it doesn't exist
+        await filesystemApi.mkdir(cwd).catch(() => {});
         await projectsApi.createWorkspace(created.id, {
           name: deriveWorkspaceNameFromPath(cwd),
           cwd,
@@ -319,37 +382,35 @@ export function NewProjectDialog() {
           />
         </div>
 
-        {/* Function picker — departments only */}
-        {projectType === "department" && (
-          <div className="px-4 pb-3 space-y-3 border-t border-border">
-            <div className="pt-3">
-              <p className="text-sm font-medium">What does this department do?</p>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              {FUNCTION_TYPES.map((ft) => (
-                <button
-                  key={ft.value}
-                  type="button"
-                  className={cn(
-                    "rounded-lg border px-3 py-2.5 text-left transition-colors",
-                    functionType === ft.value
-                      ? "border-foreground bg-accent/40"
-                      : "border-border hover:bg-accent/30",
-                  )}
-                  onClick={() => setFunctionType(ft.value)}
-                >
-                  <div className="flex items-center gap-2 text-sm font-medium">
-                    <span>{ft.icon}</span>
-                    <span>{ft.label}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
+        {/* Function picker */}
+        <div className="px-4 pb-3 space-y-3 border-t border-border">
+          <div className="pt-3">
+            <p className="text-sm font-medium">What type of {typeLabel} is this?</p>
           </div>
-        )}
+          <div className="grid grid-cols-3 gap-2">
+            {FUNCTION_TYPES.map((ft) => (
+              <button
+                key={ft.value}
+                type="button"
+                className={cn(
+                  "rounded-lg border px-3 py-2.5 text-left transition-colors",
+                  functionType === ft.value
+                    ? "border-foreground bg-accent/40"
+                    : "border-border hover:bg-accent/30",
+                )}
+                onClick={() => setFunctionType(ft.value)}
+              >
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <span>{ft.icon}</span>
+                  <span>{ft.label}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
 
-        {/* Workspace setup */}
-        {(projectType === "project" || functionType === "software_development") && (
+        {/* Workspace setup — software development projects/departments */}
+        {functionType === "software_development" && (
         <div className="px-4 pb-3 space-y-3 border-t border-border">
           <div className="pt-3">
             <p className="text-sm font-medium">Where will work be done on this project?</p>
@@ -410,7 +471,9 @@ export function NewProjectDialog() {
                   onChange={(e) => setWorkspaceLocalPath(e.target.value)}
                   placeholder="/absolute/path/to/workspace"
                 />
-                <ChoosePathButton />
+                <Button size="sm" variant="outline" className="text-xs shrink-0" onClick={() => setFolderBrowserOpen(true)}>
+                  Browse
+                </Button>
               </div>
             </div>
           )}
@@ -431,11 +494,12 @@ export function NewProjectDialog() {
         </div>
         )}
 
-        {/* Working directory for non-software departments */}
-        {projectType === "department" && functionType !== null && functionType !== "software_development" && (
+        {/* Working directory for non-software departments/projects */}
+        {functionType !== null && functionType !== "software_development" && (
           <div className="px-4 pb-3 space-y-3 border-t border-border">
             <div className="pt-3">
-              <p className="text-sm font-medium">Working directory <span className="text-muted-foreground font-normal">(optional)</span></p>
+              <p className="text-sm font-medium">Working directory</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Auto-created inside your company root folder</p>
             </div>
             <div className="rounded-md border border-border p-2">
               <label className="mb-1 block text-xs text-muted-foreground">Local folder (full path)</label>
@@ -443,17 +507,19 @@ export function NewProjectDialog() {
                 <input
                   className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
                   value={workspaceLocalPath}
-                  onChange={(e) => setWorkspaceLocalPath(e.target.value)}
+                  onChange={(e) => { setWorkspaceLocalPath(e.target.value); setWorkspacePathManuallyEdited(true); }}
                   placeholder="/absolute/path/to/workspace"
                 />
-                <ChoosePathButton />
+                <Button size="sm" variant="outline" className="text-xs shrink-0" onClick={() => setFolderBrowserOpen(true)}>
+                  Browse
+                </Button>
               </div>
             </div>
           </div>
         )}
 
-        {/* Workspace mode toggle — departments with a function type selected */}
-        {projectType === "department" && functionType !== null && (
+        {/* Workspace mode toggle */}
+        {functionType !== null && (
           <div className="px-4 pb-3 border-t border-border">
             <div className="pt-3 mb-2">
               <p className="text-sm font-medium">Workspace mode</p>
@@ -486,6 +552,17 @@ export function NewProjectDialog() {
             </div>
           </div>
         )}
+
+        {/* Shared folder browser dialog — used by both software and non-software workspace sections */}
+        <FolderBrowserDialog
+          open={folderBrowserOpen}
+          onClose={() => setFolderBrowserOpen(false)}
+          onSelect={(p) => { setWorkspaceLocalPath(p); setFolderBrowserOpen(false); }}
+          title={functionType === "software_development" ? "Select Git Repository" : "Select Folder"}
+          description={functionType === "software_development" ? "Choose an existing repository from your file system" : "Choose a folder for this workspace"}
+          gitAware={functionType === "software_development"}
+          initialPath={rootFolder || workspaceLocalPath || undefined}
+        />
 
         {/* Property chips */}
         <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap">

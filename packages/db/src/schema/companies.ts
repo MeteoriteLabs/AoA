@@ -18,6 +18,7 @@ export const companies = pgTable(
     mission: text("mission"),
     values: text("values"),
     brandColor: text("brand_color"),
+    rootFolder: text("root_folder"),
     mcpEnabled: boolean("mcp_enabled").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

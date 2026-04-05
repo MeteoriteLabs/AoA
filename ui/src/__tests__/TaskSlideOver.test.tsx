@@ -402,12 +402,12 @@ describe("TaskSlideOver", () => {
   });
 
   describe("workspace section", () => {
-    it("renders 'No workspace yet' when issue has no executionWorkspaceId", () => {
-      // mockIssue has no executionWorkspaceId (undefined/null by default)
+    it("renders contextual empty state when issue has no executionWorkspaceId", () => {
+      // mockIssue has no executionWorkspaceId and no projectId
       renderSlideOver({ issueId: "issue-1", open: true });
       expect(screen.getByTestId("workspace-section")).toBeInTheDocument();
       expect(screen.getByTestId("workspace-empty-state")).toBeInTheDocument();
-      expect(screen.getByText(/No workspace yet/)).toBeInTheDocument();
+      expect(screen.getByText(/No project assigned/)).toBeInTheDocument();
     });
   });
 });

@@ -89,8 +89,8 @@ export function projectRoutes(db: Db) {
 
     const { workspace, ...projectData } = req.body as CreateProjectPayload;
 
-    // Auto-configure executionWorkspacePolicy for departments
-    if (projectData.type === "department" && !projectData.executionWorkspacePolicy) {
+    // Auto-configure executionWorkspacePolicy for departments and projects with a functionType
+    if (!projectData.executionWorkspacePolicy && projectData.functionType) {
       const functionType = projectData.functionType as string | undefined;
       if (functionType === "software_development") {
         projectData.executionWorkspacePolicy = {

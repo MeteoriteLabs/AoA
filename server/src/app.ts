@@ -48,6 +48,7 @@ import { companySkillRoutes } from "./routes/company-skills.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { cliAuthRoutes } from "./routes/cli-auth.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
+import { filesystemRoutes } from "./routes/filesystem.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -157,6 +158,7 @@ export async function createApp(
   api.use(instanceSettingsRoutes(db));
   api.use(cliAuthRoutes(db));
   api.use(executionWorkspaceRoutes(db));
+  api.use(filesystemRoutes());
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));

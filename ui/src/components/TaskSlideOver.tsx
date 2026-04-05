@@ -47,6 +47,7 @@ import {
 
   Link2,
   ListTree,
+  Loader2,
   MessageSquare,
   MoreHorizontal,
   FileBox,
@@ -995,7 +996,18 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                   </h3>
                   {!issue.executionWorkspaceId ? (
                     <p className="text-xs text-muted-foreground" data-testid="workspace-empty-state">
-                      No workspace yet — will be created when agent starts work
+                      {issue.executionLockedAt ? (
+                        <span className="flex items-center gap-1.5">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Provisioning workspace...
+                        </span>
+                      ) : !issue.projectId ? (
+                        "No project assigned — assign a project with workspace policy to enable"
+                      ) : !issue.project?.executionWorkspacePolicy ? (
+                        "Project has no workspace policy configured"
+                      ) : (
+                        "No workspace yet — will be created when agent starts work"
+                      )}
                     </p>
                   ) : workspace ? (
                     <button
