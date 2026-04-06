@@ -166,6 +166,7 @@ export function WorkspaceTimeline({
     mutationFn: async ({ text, agentId, modelOvr }: { text: string; agentId: string | null; modelOvr: string | null }) => {
       await issuesApi.addComment(issueId, text);
       if (agentId) {
+        // TODO: server-side does not yet consume payload.modelOverride — wiring needed in heartbeat service
         const payload = modelOvr ? { modelOverride: modelOvr } : null;
         await agentsApi.wakeup(agentId, { source: "on_demand", reason: text, payload });
       }
@@ -336,11 +337,12 @@ export function WorkspaceTimeline({
           </div>
           <div className="border-t border-border/50">
             <textarea
+              ref={textareaRef}
               className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
               placeholder="Add a comment..."
               rows={1}
               value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
+              onChange={handleTextareaChange}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                   e.preventDefault();

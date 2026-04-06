@@ -61,6 +61,7 @@ export function ChatbarControls({
           disabled={!onAttach}
           className="p-1 hover:bg-muted/50 rounded transition-colors text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
           title="Attach file"
+          aria-label="Attach file"
         >
           <Paperclip className="h-3.5 w-3.5" />
         </button>

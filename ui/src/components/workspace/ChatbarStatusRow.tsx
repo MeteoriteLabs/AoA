@@ -75,12 +75,9 @@ export function ChatbarStatusRow({
           <TooltipProvider delayDuration={200}>
             <Tooltip>
               <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  className="p-0.5 hover:bg-muted/50 rounded transition-colors"
-                >
+                <span className="p-0.5 rounded inline-flex">
                   <ContextDonutIcon ratio={contextRatio} className="h-4 w-4" />
-                </button>
+                </span>
               </TooltipTrigger>
               <TooltipContent side="top" className="text-xs">
                 {formatTokens(tokensUsed!)} / {formatTokens(contextLimit!)} tokens
@@ -97,6 +94,7 @@ export function ChatbarStatusRow({
                 <button
                   type="button"
                   onClick={onTodoClick}
+                  aria-label="Task progress"
                   className="p-0.5 hover:bg-muted/50 rounded transition-colors flex items-center gap-1"
                 >
                   <ListChecks className="h-3.5 w-3.5" />
