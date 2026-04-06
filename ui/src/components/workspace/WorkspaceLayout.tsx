@@ -42,7 +42,7 @@ export function WorkspaceLayout({
   const [mobileTab, setMobileTab] = useState<"tasks" | "timeline" | "preview" | "context">("timeline");
 
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-    id: "aoa:workspace:panel-sizes",
+    id: `aoa:workspace:panel-sizes:${workspace.id}`,
     storage: localStorage,
     panelIds: ["center-left", "center-right"],
   });
@@ -52,6 +52,7 @@ export function WorkspaceLayout({
     artifact: ArtifactWithVersions;
     version: ArtifactVersion;
   } | null>(null);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
   const handlePreviewArtifact = useCallback(
     (artifact: ArtifactWithVersions, version: ArtifactVersion) => {
@@ -63,8 +64,19 @@ export function WorkspaceLayout({
 
   const handleModeChange = useCallback((mode: PreviewMode | null) => {
     setPreviewMode(mode);
-    if (!mode) setPreviewArtifact(null);
+    if (!mode) {
+      setPreviewArtifact(null);
+      setSelectedFile(null);
+    }
   }, []);
+
+  const handleSelectFile = useCallback((path: string) => {
+    setSelectedFile(path);
+    // Auto-open changes panel if not already open
+    if (previewMode !== "changes") {
+      setPreviewMode("changes");
+    }
+  }, [previewMode]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden" data-testid="workspace-layout">
@@ -161,6 +173,9 @@ export function WorkspaceLayout({
                   companyPrefix={companyPrefix}
                   workspace={workspace}
                   functionType={project?.functionType ?? null}
+                  previewMode={previewMode}
+                  selectedFile={selectedFile}
+                  onSelectFile={handleSelectFile}
                   onPreviewArtifact={handlePreviewArtifact}
                 />
               ) : (
@@ -244,6 +259,7 @@ export function WorkspaceLayout({
                       previewArtifact={previewArtifact}
                       functionType={project?.functionType ?? null}
                       workspaceId={workspace.id}
+                      selectedFile={selectedFile}
                     />
                   )}
                 </Panel>
@@ -260,6 +276,9 @@ export function WorkspaceLayout({
                 companyPrefix={companyPrefix}
                 workspace={workspace}
                 functionType={project?.functionType ?? null}
+                previewMode={previewMode}
+                selectedFile={selectedFile}
+                onSelectFile={handleSelectFile}
                 onPreviewArtifact={handlePreviewArtifact}
               />
             ) : (

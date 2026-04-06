@@ -98,14 +98,14 @@ export function StructuredRunBlock({
     <div className={cn("space-y-1 py-2", className)}>
       {displayBlocks.map((block, i) => (
         <div key={i}>
-          {renderBlock(block, departmentType, agentName)}
+          {renderBlock(block, departmentType)}
         </div>
       ))}
     </div>
   );
 }
 
-function renderBlock(block: DisplayBlock, departmentType: DepartmentType, agentName: string) {
+function renderBlock(block: DisplayBlock, departmentType: DepartmentType) {
   // Aggregated groups
   if (isAggregatedGroup(block)) {
     return renderAggregatedGroup(block as AggregatedGroup, departmentType);
@@ -115,7 +115,7 @@ function renderBlock(block: DisplayBlock, departmentType: DepartmentType, agentN
 
   switch (b.type) {
     case "message":
-      return <TranscriptMessageBlock role={b.role} text={b.text} streaming={b.streaming} agentName={agentName} ts={b.ts} />;
+      return <TranscriptMessageBlock role={b.role} text={b.text} streaming={b.streaming} ts={b.ts} />;
 
     case "thinking":
       return <TranscriptThinkingBlock text={b.text} streaming={b.streaming} />;

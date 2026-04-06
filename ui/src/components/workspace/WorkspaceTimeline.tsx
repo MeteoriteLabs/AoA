@@ -14,7 +14,7 @@ import { LiveRunWidget } from "../LiveRunWidget";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useToast } from "../../context/ToastContext";
-import { Send, CheckCircle2, FileCode } from "lucide-react";
+import { Send, CheckCircle2, FileCode, Activity } from "lucide-react";
 import { formatBytes, summarizeOutputs } from "./workspace-utils";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 
@@ -218,17 +218,54 @@ export function WorkspaceTimeline({
               />
             );
           }
-          // Comment — rendered as chat bubble
+          // Comment — rendered as chat bubble or system row
           const comment = item.data;
+          const isSystemComment = !comment.authorAgentId && !comment.authorUserId;
+
+          if (isSystemComment) {
+            // System-generated comment — render as subtle centered metadata row
+            const body = comment.body ?? "";
+            const isRunSummary = body.includes("**Run Summary**");
+            let displayText = "System";
+
+            if (isRunSummary) {
+              // Format: "🤖 **Run Summary** — Agent\nDuration: Xs | Tokens: N in / N out | Cost: $X\nOutcome: ✅ Completed"
+              const lines = body.split("\n").filter(Boolean);
+              const statsLine = lines[1] ?? "";
+              const outcomeLine = lines[2] ?? "";
+              const outcome = outcomeLine.replace(/^Outcome:\s*/, "").replace(/[✅❌⏱️⛔]\s*/g, "").trim();
+              displayText = [statsLine, outcome].filter(Boolean).join(" · ") || "System";
+            } else {
+              // Generic system comment — show first line of body
+              displayText = body.replace(/\*\*/g, "").trim().split("\n").filter(Boolean)[0] ?? "System";
+            }
+
+            return (
+              <div key={`comment-${comment.id}`} className="flex items-center gap-3 px-2 py-1.5 overflow-hidden" data-testid={`timeline-comment-${comment.id}`}>
+                <div className="flex-1 h-px bg-border shrink-0 min-w-[20px]" />
+                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground min-w-0">
+                  <Activity className="h-3 w-3 shrink-0" />
+                  <span className="truncate" title={displayText}>{displayText}</span>
+                </div>
+                <div className="flex-1 h-px bg-border shrink-0 min-w-[20px]" />
+              </div>
+            );
+          }
+
+          // Resolve author name — agent or user
           const authorAgent = comment.authorAgentId
             ? agentMap.get(comment.authorAgentId)
             : null;
-          const authorName = authorAgent?.name ?? (comment.authorUserId ? "You" : "Unknown");
+          const authorName = comment.authorAgentId
+            ? (authorAgent?.name ?? "Agent")
+            : (comment.authorUserId ? "You" : "System");
+          const isAgentComment = !!comment.authorAgentId;
           return (
             <TimelineUserMessage
               key={`comment-${comment.id}`}
               comment={comment}
               authorName={authorName}
+              isAgent={isAgentComment}
             />
           );
         })}
