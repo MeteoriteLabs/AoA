@@ -33,4 +33,14 @@ export const companiesApi = {
     api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),
   importBundle: (data: CompanyPortabilityImportRequest) =>
     api.post<CompanyPortabilityImportResult>("/companies/import", data),
+  uploadLogo: (companyId: string, file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return api.postForm<{ logoAssetId: string; logoUrl: string }>(
+      `/companies/${companyId}/logo`,
+      formData,
+    );
+  },
+  removeLogo: (companyId: string) =>
+    api.delete<{ ok: true }>(`/companies/${companyId}/logo`),
 };

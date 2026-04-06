@@ -33,11 +33,19 @@ export function LobbyCompanyCard({ company, stats, statsLoading, onClick }: Lobb
       )}
 
       <div className="flex items-center gap-3 w-full">
-        <CompanyPatternIcon
-          companyName={company.name}
-          brandColor={company.brandColor}
-          className="rounded-lg shrink-0"
-        />
+        {company.logoAssetId ? (
+          <img
+            src={`/api/assets/${company.logoAssetId}/content`}
+            alt={company.name}
+            className="w-10 h-10 rounded-lg shrink-0 object-cover"
+          />
+        ) : (
+          <CompanyPatternIcon
+            companyName={company.name}
+            brandColor={company.brandColor}
+            className="rounded-lg shrink-0"
+          />
+        )}
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-semibold text-foreground truncate">
             {company.name}

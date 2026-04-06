@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
@@ -35,6 +35,8 @@ import {
   DollarSign,
   History,
   Puzzle,
+  Upload,
+  X,
 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
@@ -256,6 +258,22 @@ function GeneralSection() {
     },
   });
 
+  const logoInputRef = useRef<HTMLInputElement>(null);
+  const logoUploadMutation = useMutation({
+    mutationFn: (file: File) => companiesApi.uploadLogo(selectedCompanyId!, file),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.detail(selectedCompanyId!) });
+    },
+  });
+  const logoRemoveMutation = useMutation({
+    mutationFn: () => companiesApi.removeLogo(selectedCompanyId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.detail(selectedCompanyId!) });
+    },
+  });
+
   const settingsMutation = useMutation({
     mutationFn: (requireApproval: boolean) =>
       companiesApi.update(selectedCompanyId!, {
@@ -402,6 +420,67 @@ function GeneralSection() {
           Appearance
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          {/* Logo */}
+          <Field label="Company logo" hint="Displayed in sidebar and lobby. Recommended: square image, at least 128x128.">
+            <div className="flex items-center gap-3">
+              {selectedCompany.logoAssetId ? (
+                <img
+                  src={`/api/assets/${selectedCompany.logoAssetId}/content`}
+                  alt={selectedCompany.name}
+                  className="w-16 h-16 rounded-lg object-cover border border-border"
+                />
+              ) : (
+                <CompanyPatternIcon
+                  companyName={companyName || selectedCompany.name}
+                  brandColor={brandColor || null}
+                  className="rounded-lg"
+                />
+              )}
+              <div className="flex flex-col gap-1.5">
+                <input
+                  ref={logoInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) logoUploadMutation.mutate(file);
+                    e.target.value = "";
+                  }}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => logoInputRef.current?.click()}
+                  disabled={logoUploadMutation.isPending}
+                >
+                  <Upload className="h-3.5 w-3.5 mr-1.5" />
+                  {logoUploadMutation.isPending ? "Uploading..." : "Upload logo"}
+                </Button>
+                {selectedCompany.logoAssetId && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-xs text-muted-foreground"
+                    onClick={() => logoRemoveMutation.mutate()}
+                    disabled={logoRemoveMutation.isPending}
+                  >
+                    <X className="h-3 w-3 mr-1" />
+                    Remove
+                  </Button>
+                )}
+                {logoUploadMutation.isError && (
+                  <span className="text-xs text-destructive">
+                    {logoUploadMutation.error instanceof Error
+                      ? logoUploadMutation.error.message
+                      : "Upload failed"}
+                  </span>
+                )}
+              </div>
+            </div>
+          </Field>
+
+          {/* Brand color + icon preview */}
           <div className="flex items-start gap-4">
             <div className="shrink-0">
               <CompanyPatternIcon

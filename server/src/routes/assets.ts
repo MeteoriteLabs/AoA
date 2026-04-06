@@ -1,6 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import type { Db } from "@paperclipai/db";
+import { companies } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { createAssetImageMetadataSchema, createAssetFileMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
@@ -229,6 +231,90 @@ export function assetRoutes(db: Db, storage: StorageService) {
       updatedAt: asset.updatedAt,
       contentPath: `/api/assets/${asset.id}/content`,
     });
+  });
+
+  // ── Logo upload ─────────────────────────────────────────────────────
+  router.post("/companies/:companyId/logo", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    try {
+      await runSingleFileUpload(req, res);
+    } catch (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          res.status(422).json({ error: `Logo exceeds ${MAX_ASSET_IMAGE_BYTES} bytes` });
+          return;
+        }
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+
+    const file = (req as Request & { file?: { mimetype: string; buffer: Buffer; originalname: string } }).file;
+    if (!file) {
+      res.status(400).json({ error: "Missing file field 'file'" });
+      return;
+    }
+
+    const contentType = (file.mimetype || "").toLowerCase();
+    if (!ALLOWED_IMAGE_CONTENT_TYPES.has(contentType)) {
+      res.status(422).json({ error: `Unsupported image type: ${contentType || "unknown"}` });
+      return;
+    }
+    if (file.buffer.length <= 0) {
+      res.status(422).json({ error: "Image is empty" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const stored = await storage.putFile({
+      companyId,
+      namespace: "assets/logos",
+      originalFilename: file.originalname || null,
+      contentType,
+      body: file.buffer,
+    });
+
+    const asset = await svc.create(companyId, {
+      provider: stored.provider,
+      objectKey: stored.objectKey,
+      contentType: stored.contentType,
+      byteSize: stored.byteSize,
+      sha256: stored.sha256,
+      originalFilename: stored.originalFilename,
+      createdByAgentId: actor.agentId,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    await db.update(companies).set({ logoAssetId: asset.id }).where(eq(companies.id, companyId));
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.logo_updated",
+      entityType: "company",
+      entityId: companyId,
+      details: { assetId: asset.id, originalFilename: asset.originalFilename },
+    });
+
+    res.status(200).json({
+      logoAssetId: asset.id,
+      logoUrl: `/api/assets/${asset.id}/content`,
+    });
+  });
+
+  router.delete("/companies/:companyId/logo", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    await db.update(companies).set({ logoAssetId: null }).where(eq(companies.id, companyId));
+
+    res.status(200).json({ ok: true });
   });
 
   router.get("/assets/:assetId/content", async (req, res, next) => {
