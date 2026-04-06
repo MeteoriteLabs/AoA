@@ -28,6 +28,10 @@ export function useLatestTodos(
   const isRunning = activeRun?.status === "running" || activeRun?.status === "in_progress";
   const runId = activeRun?.id ?? latestRun?.runId ?? null;
 
+  // Determine if the run we're showing completed successfully
+  const runStatus = activeRun?.status ?? latestRun?.status ?? null;
+  const runSucceeded = runStatus === "succeeded" || runStatus === "completed";
+
   const { data: logData } = useQuery({
     queryKey: ["run-log-todos", runId],
     queryFn: () => heartbeatsApi.log(runId!),
@@ -43,8 +47,19 @@ export function useLatestTodos(
     const adapter = getUIAdapter(adapterType);
     const entries = buildTranscript(chunks, adapter.parseStdoutLine);
 
-    return extractTodosFromEntries(entries);
-  }, [logData?.content, adapterType]);
+    const result = extractTodosFromEntries(entries);
+
+    // If the run succeeded, promote any remaining in_progress/pending to completed
+    if (runSucceeded && result.total > 0 && result.completed < result.total) {
+      const promoted = result.todos.map((t) => ({
+        ...t,
+        status: "completed" as const,
+      }));
+      return { todos: promoted, completed: result.total, total: result.total };
+    }
+
+    return result;
+  }, [logData?.content, adapterType, runSucceeded]);
 }
 
 /** Exported for testing */
