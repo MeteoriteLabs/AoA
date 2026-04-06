@@ -5,10 +5,11 @@ import { activityApi } from "../../../api/activity";
 import { heartbeatsApi } from "../../../api/heartbeats";
 import { issuesApi } from "../../../api/issues";
 import { dependenciesApi } from "../../../api/dependencies";
+import { artifactsApi } from "../../../api/artifacts";
 import { queryKeys } from "../../../lib/queryKeys";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Bot, ExternalLink, AlertTriangle } from "lucide-react";
+import { Bot, ExternalLink, AlertTriangle, ArrowDown } from "lucide-react";
 import type { Agent, Issue } from "@paperclipai/shared";
 
 interface ProcessSectionProps {
@@ -44,7 +45,6 @@ export function ProcessSection({ issueId, companyId, companyPrefix }: ProcessSec
   const { data: deps } = useQuery({
     queryKey: queryKeys.issues.dependencies(issueId),
     queryFn: () => dependenciesApi.list(companyId, issueId),
-    enabled: issue?.status === "blocked",
   });
 
   const assignedAgent = agents?.find((a: Agent) => a.id === issue?.assigneeAgentId);
@@ -55,6 +55,10 @@ export function ProcessSection({ issueId, companyId, companyPrefix }: ProcessSec
   const blockingTasks = isBlocked
     ? (deps?.upstream ?? []).filter((d) => d.status !== "done" && d.status !== "completed")
     : [];
+
+  const completedUpstream = (deps?.upstream ?? []).filter(
+    (d) => d.status === "done" || d.status === "completed",
+  );
 
   if (issueLoading) {
     return (
@@ -114,6 +118,41 @@ export function ProcessSection({ issueId, companyId, companyPrefix }: ProcessSec
             </div>
           ))}
         </div>
+      )}
+
+      {/* Upstream dependency outputs (absorbed from ContextSection) */}
+      {completedUpstream.length > 0 && (
+        <div className="space-y-1" data-testid="upstream-deps">
+          <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+            Dependency Outputs
+          </div>
+          {completedUpstream.map((dep) => (
+            <UpstreamDep
+              key={dep.dependencyIssueId ?? dep.id}
+              issueId={dep.dependencyIssueId ?? dep.id}
+              title={dep.title}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UpstreamDep({ issueId, title }: { issueId: string; title: string }) {
+  const { data: artifact } = useQuery({
+    queryKey: queryKeys.artifacts.byIssue(issueId),
+    queryFn: () => artifactsApi.getByIssueId(issueId),
+  });
+
+  return (
+    <div className="flex items-center gap-2 text-xs py-0.5" data-testid="upstream-dep">
+      <ArrowDown className="h-3 w-3 text-muted-foreground shrink-0" />
+      <span className="truncate">{title}</span>
+      {artifact && (
+        <span className="text-muted-foreground shrink-0">
+          ({artifact.title} v{artifact.versions[0]?.versionNumber ?? 0})
+        </span>
       )}
     </div>
   );

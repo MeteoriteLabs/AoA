@@ -172,6 +172,10 @@ const issuesApiMock = {
   get: vi.fn().mockResolvedValue(mockIssue),
 };
 
+const executionWorkspacesApiMock = {
+  runtimeServices: vi.fn().mockResolvedValue([]),
+};
+
 vi.mock("../api/artifacts", () => ({
   artifactsApi: new Proxy({}, { get: (_t, prop) => (artifactsApiMock as any)[prop] }),
 }));
@@ -194,6 +198,10 @@ vi.mock("../api/heartbeats", () => ({
 
 vi.mock("../api/issues", () => ({
   issuesApi: new Proxy({}, { get: (_t, prop) => (issuesApiMock as any)[prop] }),
+}));
+
+vi.mock("../api/execution-workspaces", () => ({
+  executionWorkspacesApi: new Proxy({}, { get: (_t, prop) => (executionWorkspacesApiMock as any)[prop] }),
 }));
 
 // Mock xterm modules to avoid DOM issues in jsdom
@@ -242,6 +250,7 @@ function renderRightPanel(props: Partial<React.ComponentProps<typeof WorkspaceRi
           companyPrefix="TC"
           workspace={mockWorkspace}
           functionType="software_development"
+          previewMode={null}
           {...props}
         />
       </MemoryRouter>
@@ -261,30 +270,73 @@ afterEach(() => {
 });
 
 describe("WorkspaceRightPanel — section rendering", () => {
-  it("renders all 5 sections in collapsible containers", async () => {
-    renderRightPanel();
+  it("renders permanent sections (artifacts, process, terminal, notes) when no previewMode", async () => {
+    renderRightPanel({ previewMode: null });
 
     await waitFor(() => {
       expect(screen.getByTestId("section-artifacts")).toBeInTheDocument();
     });
 
-    expect(screen.getByTestId("section-context")).toBeInTheDocument();
     expect(screen.getByTestId("section-process")).toBeInTheDocument();
-    expect(screen.getByTestId("section-tools")).toBeInTheDocument();
+    expect(screen.getByTestId("section-terminal")).toBeInTheDocument();
     expect(screen.getByTestId("section-notes")).toBeInTheDocument();
+
+    // No contextual section when previewMode is null
+    expect(screen.queryByTestId("section-contextual")).not.toBeInTheDocument();
   });
 
   it("renders section labels", async () => {
-    renderRightPanel();
+    renderRightPanel({ previewMode: null });
 
     await waitFor(() => {
       expect(screen.getByText("Artifacts")).toBeInTheDocument();
     });
 
-    expect(screen.getByText("Context")).toBeInTheDocument();
     expect(screen.getByText("Process")).toBeInTheDocument();
-    expect(screen.getByText("Tools")).toBeInTheDocument();
+    expect(screen.getByText("Terminal")).toBeInTheDocument();
     expect(screen.getByText("Notes")).toBeInTheDocument();
+  });
+
+  it("hides terminal section for non-software departments", async () => {
+    renderRightPanel({ functionType: "marketing", previewMode: null });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("section-artifacts")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByTestId("section-terminal")).not.toBeInTheDocument();
+  });
+});
+
+describe("WorkspaceRightPanel — contextual top section", () => {
+  it("shows Changes contextual section when previewMode is 'changes'", async () => {
+    renderRightPanel({ previewMode: "changes" });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("section-contextual")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Changes")).toBeInTheDocument();
+  });
+
+  it("shows Runs contextual section when previewMode is 'logs'", async () => {
+    renderRightPanel({ previewMode: "logs" });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("section-contextual")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Runs")).toBeInTheDocument();
+  });
+
+  it("shows Preview contextual section when previewMode is 'preview'", async () => {
+    renderRightPanel({ previewMode: "preview" });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("section-contextual")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Preview")).toBeInTheDocument();
   });
 });
 
@@ -305,7 +357,7 @@ describe("WorkspaceRightPanel — expand/collapse persistence", () => {
 
   it("loads expand state from localStorage on mount", async () => {
     localStorage.setItem("aoa:workspace:section:artifacts", "false");
-    localStorage.setItem("aoa:workspace:section:tools", "true");
+    localStorage.setItem("aoa:workspace:section:terminal", "true");
 
     renderRightPanel();
 
@@ -313,11 +365,8 @@ describe("WorkspaceRightPanel — expand/collapse persistence", () => {
       expect(screen.getByTestId("section-artifacts")).toBeInTheDocument();
     });
 
-    // Artifacts collapsed → artifacts-list/artifacts-empty not visible
-    // Tools open → tools-dev should be visible
-    await waitFor(() => {
-      expect(screen.getByTestId("tools-dev")).toBeInTheDocument();
-    });
+    // Terminal section should be expanded
+    expect(screen.getByTestId("section-terminal")).toBeInTheDocument();
   });
 });
 
@@ -358,47 +407,6 @@ describe("ArtifactsSection", () => {
   });
 });
 
-describe("ContextSection", () => {
-  it("shows memory placeholder", async () => {
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("memory-placeholder")).toBeInTheDocument();
-    });
-
-    expect(screen.getByText(/Memory integration coming soon/)).toBeInTheDocument();
-  });
-
-  it("shows 'no completed upstream' when no deps", async () => {
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("context-no-deps")).toBeInTheDocument();
-    });
-  });
-
-  it("shows upstream dependency outputs when deps are completed", async () => {
-    dependenciesApiMock.list.mockResolvedValueOnce({
-      upstream: [
-        {
-          id: "dep-1",
-          dependencyIssueId: "issue-upstream",
-          title: "Write API Spec",
-          status: "done",
-          createdAt: "2026-04-01",
-        },
-      ],
-      downstream: [],
-    });
-
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByText("Write API Spec")).toBeInTheDocument();
-    });
-  });
-});
-
 describe("ProcessSection", () => {
   it("shows agent info with name and adapter type", async () => {
     renderRightPanel();
@@ -436,33 +444,26 @@ describe("ProcessSection", () => {
       expect(screen.getByTestId("no-agent")).toBeInTheDocument();
     });
   });
-});
 
-describe("ToolsSection", () => {
-  it("shows Git and Terminal sub-sections for software_development", async () => {
-    // Tools section defaults to collapsed; open it
-    localStorage.setItem("aoa:workspace:section:tools", "true");
-
-    renderRightPanel({ functionType: "software_development" });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("tools-dev")).toBeInTheDocument();
+  it("shows upstream dependency outputs when deps are completed", async () => {
+    dependenciesApiMock.list.mockResolvedValueOnce({
+      upstream: [
+        {
+          id: "dep-1",
+          dependencyIssueId: "issue-upstream",
+          title: "Write API Spec",
+          status: "done",
+          createdAt: "2026-04-01",
+        },
+      ],
+      downstream: [],
     });
 
-    expect(screen.getByTestId("git-toggle")).toBeInTheDocument();
-    expect(screen.getByTestId("terminal-toggle")).toBeInTheDocument();
-  });
-
-  it("shows empty message for non-software departments", async () => {
-    localStorage.setItem("aoa:workspace:section:tools", "true");
-
-    renderRightPanel({ functionType: "marketing" });
+    renderRightPanel();
 
     await waitFor(() => {
-      expect(screen.getByTestId("tools-empty")).toBeInTheDocument();
+      expect(screen.getByText("Write API Spec")).toBeInTheDocument();
     });
-
-    expect(screen.getByText("No tools configured for this department type")).toBeInTheDocument();
   });
 });
 

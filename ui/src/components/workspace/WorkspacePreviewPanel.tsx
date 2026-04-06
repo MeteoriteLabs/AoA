@@ -8,7 +8,8 @@ import { queryKeys } from "../../lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { GitCompareArrows, Eye, Terminal, X, FileText, FileCode, FileImage, File, RefreshCw, Globe } from "lucide-react";
+import { GitCompareArrows, Eye, Terminal, X, RefreshCw, Globe } from "lucide-react";
+import { formatBytes, sourceLabel, fileIcon } from "./workspace-utils";
 import type { ArtifactWithVersions, ArtifactVersion, DetectedOutput } from "@paperclipai/shared";
 
 export type PreviewMode = "changes" | "preview" | "logs";
@@ -24,6 +25,8 @@ interface WorkspacePreviewPanelProps {
   functionType?: string | null;
   /** Execution workspace ID — used for dev server preview */
   workspaceId?: string | null;
+  /** Currently selected file path from FileTree in right sidebar */
+  selectedFile?: string | null;
 }
 
 export function WorkspacePreviewPanel({
@@ -34,6 +37,7 @@ export function WorkspacePreviewPanel({
   previewArtifact,
   functionType,
   workspaceId,
+  selectedFile,
 }: WorkspacePreviewPanelProps) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
@@ -80,7 +84,7 @@ export function WorkspacePreviewPanel({
       </div>
 
       <ScrollArea className="flex-1">
-        {activeMode === "changes" && <ChangesView issueId={issueId} functionType={functionType ?? null} />}
+        {activeMode === "changes" && <ChangesView issueId={issueId} functionType={functionType ?? null} selectedFile={selectedFile ?? null} />}
         {activeMode === "preview" && (
           <PreviewView
             artifact={previewArtifact?.artifact ?? artifact ?? null}
@@ -140,34 +144,7 @@ export function PreviewModeToolbar({
 
 // ── Sub-views ──────────────────────────────────────────────────────────────────
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function sourceLabel(source: string): { text: string; className: string } {
-  switch (source) {
-    case "git_diff":
-      return { text: "Modified", className: "bg-green-500/10 text-green-600" };
-    case "workspace_scan":
-      return { text: "Detected", className: "bg-blue-500/10 text-blue-600" };
-    case "adapter_provided":
-      return { text: "Provided", className: "bg-purple-500/10 text-purple-600" };
-    default:
-      return { text: source, className: "bg-muted text-muted-foreground" };
-  }
-}
-
-function fileIcon(contentType: string): typeof FileText {
-  if (contentType.startsWith("image/")) return FileImage;
-  if (contentType.includes("javascript") || contentType.includes("typescript") || contentType.includes("json"))
-    return FileCode;
-  if (contentType.startsWith("text/")) return FileText;
-  return File;
-}
-
-function ChangesView({ issueId, functionType }: { issueId: string; functionType: string | null }) {
+function ChangesView({ issueId, functionType, selectedFile }: { issueId: string; functionType: string | null; selectedFile: string | null }) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
   const { data: runs } = useQuery({
@@ -217,7 +194,58 @@ function ChangesView({ issueId, functionType }: { issueId: string; functionType:
         <div className="flex items-center justify-center h-48 text-sm text-muted-foreground" data-testid="changes-empty-run">
           No changes detected in this run
         </div>
+      ) : selectedFile ? (
+        // File detail card when a file is selected from the sidebar FileTree
+        (() => {
+          const output = outputs.find((o) => o.path === selectedFile);
+          if (!output) return (
+            <div className="p-4 text-sm text-muted-foreground">File not found in this run</div>
+          );
+          const Icon = fileIcon(output.contentType);
+          const badge = sourceLabel(output.source);
+          return (
+            <div className="p-4 space-y-3" data-testid="changes-file-detail">
+              <div className="flex items-center gap-2">
+                <Icon className="h-5 w-5 text-muted-foreground shrink-0" />
+                <span className="text-sm font-mono font-medium truncate">{output.filename}</span>
+              </div>
+              <div className="space-y-1.5 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground w-20 shrink-0">Path</span>
+                  <code className="font-mono text-[11px] truncate">{output.path}</code>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground w-20 shrink-0">Type</span>
+                  <span>{output.contentType}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground w-20 shrink-0">Size</span>
+                  <span>{formatBytes(output.byteSize)}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground w-20 shrink-0">Source</span>
+                  <span className={cn("text-[10px] px-1.5 py-0.5 rounded font-medium", badge.className)}>
+                    {badge.text}
+                  </span>
+                </div>
+                {output.sha256 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-20 shrink-0">SHA-256</span>
+                    <code className="font-mono text-[10px] truncate">{output.sha256}</code>
+                  </div>
+                )}
+                {output.status && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-20 shrink-0">Status</span>
+                    <span>{output.status}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()
       ) : (
+        // Summary view: flat file list (default when no file selected)
         <div className="flex flex-col">
           {outputs.map((output, idx) => {
             const Icon = fileIcon(output.contentType);
@@ -227,6 +255,7 @@ function ChangesView({ issueId, functionType }: { issueId: string; functionType:
                 key={`${output.path}-${idx}`}
                 className="flex items-center gap-2 px-3 py-2 border-b border-border last:border-b-0 hover:bg-muted/50"
                 data-testid="changes-file-row"
+                data-file-path={output.path}
               >
                 <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
                 <span className="flex-1 text-xs font-mono truncate" title={output.path}>

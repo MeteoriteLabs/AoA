@@ -179,9 +179,9 @@ describe("WorkspaceTimeline — rendering", () => {
     renderTimeline();
 
     await waitFor(() => {
-      // Both runs should render as RunBlocks
-      expect(screen.getByTestId("run-block-run-001")).toBeInTheDocument();
-      expect(screen.getByTestId("run-block-run-002")).toBeInTheDocument();
+      // Both runs should render as TimelineAgentMessages
+      expect(screen.getByTestId("timeline-agent-msg-run-001")).toBeInTheDocument();
+      expect(screen.getByTestId("timeline-agent-msg-run-002")).toBeInTheDocument();
     });
 
     // Both comments should render
@@ -204,13 +204,12 @@ describe("WorkspaceTimeline — rendering", () => {
     renderTimeline();
 
     await waitFor(() => {
-      expect(screen.getByTestId("run-block-run-001")).toBeInTheDocument();
-      expect(screen.getByTestId("run-block-run-002")).toBeInTheDocument();
+      expect(screen.getByTestId("timeline-agent-msg-run-001")).toBeInTheDocument();
+      expect(screen.getByTestId("timeline-agent-msg-run-002")).toBeInTheDocument();
     });
 
-    // run-002 is the latest run (after all other items)
-    // run-001 should be collapsed (no output visible)
-    expect(screen.queryByTestId("run-block-output-run-001")).not.toBeInTheDocument();
+    // run-002 is the latest run — run-001 log should be collapsed (not expanded)
+    expect(screen.queryByTestId("agent-msg-log-run-001")).not.toBeInTheDocument();
   });
 });
 
@@ -272,12 +271,12 @@ describe("WorkspaceTimeline — comment display", () => {
     });
   });
 
-  it("shows Board for user comments", async () => {
+  it("shows You for user comments", async () => {
     renderTimeline();
 
     await waitFor(() => {
-      // Board appears in Identity + in the font-medium span
-      expect(screen.getAllByText("Board").length).toBeGreaterThanOrEqual(1);
+      // "You" appears in Identity + in the font-medium span
+      expect(screen.getAllByText("You").length).toBeGreaterThanOrEqual(1);
     });
   });
 });
