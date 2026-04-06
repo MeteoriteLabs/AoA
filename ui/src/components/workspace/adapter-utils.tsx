@@ -29,6 +29,35 @@ export function isApiAdapter(adapterType: string): boolean {
   return API_ADAPTERS.has(adapterType);
 }
 
+const MODEL_CONTEXT_LIMITS: Array<[string, number]> = [
+  // Anthropic
+  ["opus", 200_000],
+  ["sonnet", 200_000],
+  ["haiku", 200_000],
+  // OpenAI — order matters: mini before non-mini
+  ["gpt-4o-mini", 128_000],
+  ["gpt-4o", 128_000],
+  ["gpt-4", 128_000],
+  ["o1-mini", 128_000],
+  ["o1", 200_000],
+  ["o3-mini", 200_000],
+  ["o3", 200_000],
+  ["o4-mini", 200_000],
+  // Google
+  ["2.5-pro", 1_000_000],
+  ["2.5-flash", 1_000_000],
+  ["2.0-flash", 1_000_000],
+];
+
+export function getContextLimit(modelId: string | null): number | null {
+  if (!modelId) return null;
+  const lower = modelId.toLowerCase();
+  for (const [pattern, limit] of MODEL_CONTEXT_LIMITS) {
+    if (lower.includes(pattern)) return limit;
+  }
+  return null;
+}
+
 /** Extract short model display name from full model ID. e.g. "claude-sonnet-4-20250514" → "Sonnet" */
 export function shortModelName(modelId: string): string {
   const lower = modelId.toLowerCase();
