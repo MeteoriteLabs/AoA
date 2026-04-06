@@ -4,7 +4,7 @@ import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { FileEdit, ChevronRight, ChevronDown } from "lucide-react";
 import type { AggregatedGroup } from "./types";
-import { parseEditStats } from "./aggregate-blocks";
+import { parseEditStats, extractFilePath } from "./aggregate-blocks";
 
 interface TranscriptEditGroupProps {
   group: Extract<AggregatedGroup, { type: "edit_group" | "multi_edit_group" }>;
@@ -70,13 +70,4 @@ export function TranscriptEditGroup({ group, className }: TranscriptEditGroupPro
       )}
     </div>
   );
-}
-
-function extractFilePath(input: unknown): string | null {
-  if (typeof input !== "object" || input === null) return null;
-  const record = input as Record<string, unknown>;
-  for (const key of ["file_path", "filePath", "path"]) {
-    if (typeof record[key] === "string") return record[key] as string;
-  }
-  return null;
 }

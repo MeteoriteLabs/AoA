@@ -26,7 +26,6 @@ function renderComponent(props: Partial<React.ComponentProps<typeof StructuredRu
           adapterType="claude_local"
           departmentType="software_development"
           isRunning={false}
-          agentName="Claude Code"
           {...props}
         />
       </MemoryRouter>

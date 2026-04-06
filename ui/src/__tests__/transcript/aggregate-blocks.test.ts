@@ -78,4 +78,47 @@ describe("aggregateBlocks", () => {
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ type: "search_group", count: 2 });
   });
+
+  // Thinking group tests
+  const thinking = (text: string): Extract<TranscriptBlock, { type: "thinking" }> => ({
+    type: "thinking", ts: "2026-01-01T00:00:00Z", text, streaming: false,
+  });
+
+  it("groups 3 consecutive thinking blocks into thinking_group", () => {
+    const blocks: TranscriptBlock[] = [
+      thinking("step 1"),
+      thinking("step 2"),
+      thinking("step 3"),
+    ];
+    const result = aggregateBlocks(blocks, "general");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ type: "thinking_group", isPreviousTurn: false });
+    if (result[0].type === "thinking_group") {
+      expect(result[0].items).toHaveLength(3);
+    }
+  });
+
+  it("does NOT group a single thinking block", () => {
+    const blocks: TranscriptBlock[] = [thinking("just one")];
+    const result = aggregateBlocks(blocks, "general");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ type: "thinking" });
+  });
+
+  it("marks earlier thinking_groups as isPreviousTurn", () => {
+    const blocks: TranscriptBlock[] = [
+      thinking("early 1"),
+      thinking("early 2"),
+      tool("Read", { path: "a.ts" }),
+      thinking("late 1"),
+      thinking("late 2"),
+    ];
+    const result = aggregateBlocks(blocks, "general");
+    const groups = result.filter((b) => b.type === "thinking_group");
+    expect(groups).toHaveLength(2);
+    // First group = previous turn
+    expect(groups[0]).toMatchObject({ type: "thinking_group", isPreviousTurn: true });
+    // Last group = current turn
+    expect(groups[1]).toMatchObject({ type: "thinking_group", isPreviousTurn: false });
+  });
 });

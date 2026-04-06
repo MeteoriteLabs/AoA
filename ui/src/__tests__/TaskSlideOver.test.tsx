@@ -143,7 +143,7 @@ vi.mock("../lib/queryKeys", () => ({
       documents: (id: string) => ["issues", "documents", id],
     },
     agents: { list: (id: string) => ["agents", "list", id] },
-    projects: { list: (id: string) => ["projects", "list", id] },
+    projects: { list: (id: string) => ["projects", "list", id], detail: (id: string) => ["projects", "detail", id] },
     goals: { list: (id: string) => ["goals", "list", id] },
     artifacts: {
       byIssue: (id: string) => ["artifacts", "issue", id],
@@ -192,7 +192,7 @@ vi.mock("../api/auth", () => ({
 }));
 
 vi.mock("../api/projects", () => ({
-  projectsApi: { list: vi.fn().mockResolvedValue([]) },
+  projectsApi: { list: vi.fn().mockResolvedValue([]), get: vi.fn().mockResolvedValue({ functionType: "general" }) },
 }));
 
 vi.mock("../api/artifacts", () => ({

@@ -9,11 +9,11 @@ import { classifyToolEntry } from "./classify-entry";
 import { summarizeToolInput, displayToolName } from "./normalize-transcript";
 
 const GROUP_CONFIG: Record<string, { icon: LucideIcon; label: (n: number) => string }> = {
-  read_group: { icon: FileText, label: (n) => `Read · ${n} files` },
-  search_group: { icon: Search, label: (n) => `Search · ${n} queries` },
-  web_group: { icon: Globe, label: (n) => `Web · ${n} requests` },
-  command_group_agg: { icon: Terminal, label: (n) => `Ran · ${n} commands` },
-  generic_group: { icon: Wrench, label: (n) => `Tool · ${n} calls` },
+  read_group: { icon: FileText, label: (n) => `Read · ${n} file${n !== 1 ? "s" : ""}` },
+  search_group: { icon: Search, label: (n) => `Search · ${n} quer${n !== 1 ? "ies" : "y"}` },
+  web_group: { icon: Globe, label: (n) => `Web · ${n} request${n !== 1 ? "s" : ""}` },
+  command_group_agg: { icon: Terminal, label: (n) => `Ran · ${n} command${n !== 1 ? "s" : ""}` },
+  generic_group: { icon: Wrench, label: (n) => `Tool · ${n} call${n !== 1 ? "s" : ""}` },
 };
 
 interface TranscriptAggregatedGroupProps {

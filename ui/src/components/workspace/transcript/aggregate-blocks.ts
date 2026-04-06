@@ -11,7 +11,7 @@ import { AGGREGATABLE_CATEGORIES } from "./types";
 import { classifyToolEntry } from "./classify-entry";
 
 /** Extract file path from tool input for edit grouping */
-function extractFilePath(input: unknown): string | null {
+export function extractFilePath(input: unknown): string | null {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
   const record = input as Record<string, unknown>;
   for (const key of ["file_path", "filePath", "path", "filename"]) {
@@ -32,6 +32,7 @@ export function parseEditStats(result: string | undefined): { additions: number;
 }
 
 type ToolBlock = Extract<TranscriptBlock, { type: "tool" }>;
+type ThinkingBlock = Extract<TranscriptBlock, { type: "thinking" }>;
 
 interface PendingGroup {
   category: EntryCategory;
@@ -40,7 +41,7 @@ interface PendingGroup {
   filePaths: Set<string>;
 }
 
-function flushGroup(pending: PendingGroup): DisplayBlock[] {
+function flushToolGroup(pending: PendingGroup): DisplayBlock[] {
   const { category, items, filePaths } = pending;
   if (items.length < 2) return items;
 
@@ -77,19 +78,53 @@ function flushGroup(pending: PendingGroup): DisplayBlock[] {
   }
 }
 
+function flushThinkingGroup(items: ThinkingBlock[]): DisplayBlock[] {
+  if (items.length < 2) return items;
+  return [{ type: "thinking_group", items, isPreviousTurn: false }];
+}
+
 export function aggregateBlocks(
   blocks: TranscriptBlock[],
   departmentType: DepartmentType,
 ): DisplayBlock[] {
   const result: DisplayBlock[] = [];
-  let pending: PendingGroup | null = null;
+  let pendingTool: PendingGroup | null = null;
+  let pendingThinking: ThinkingBlock[] = [];
+
+  const flushAllPending = () => {
+    if (pendingThinking.length > 0) {
+      result.push(...flushThinkingGroup(pendingThinking));
+      pendingThinking = [];
+    }
+    if (pendingTool) {
+      result.push(...flushToolGroup(pendingTool));
+      pendingTool = null;
+    }
+  };
 
   for (const block of blocks) {
-    // Only aggregate tool blocks
+    // Thinking blocks — accumulate separately
+    if (block.type === "thinking") {
+      // Flush any pending tool group first
+      if (pendingTool) {
+        result.push(...flushToolGroup(pendingTool));
+        pendingTool = null;
+      }
+      pendingThinking.push(block);
+      continue;
+    }
+
+    // Non-thinking block — flush any pending thinking
+    if (pendingThinking.length > 0) {
+      result.push(...flushThinkingGroup(pendingThinking));
+      pendingThinking = [];
+    }
+
+    // Non-tool blocks pass through
     if (block.type !== "tool") {
-      if (pending) {
-        result.push(...flushGroup(pending));
-        pending = null;
+      if (pendingTool) {
+        result.push(...flushToolGroup(pendingTool));
+        pendingTool = null;
       }
       result.push(block);
       continue;
@@ -99,36 +134,50 @@ export function aggregateBlocks(
 
     // Only aggregate categories in the AGGREGATABLE set
     if (!AGGREGATABLE_CATEGORIES.has(category)) {
-      if (pending) {
-        result.push(...flushGroup(pending));
-        pending = null;
+      if (pendingTool) {
+        result.push(...flushToolGroup(pendingTool));
+        pendingTool = null;
       }
       result.push(block);
       continue;
     }
 
-    // Start or continue a group
-    if (pending && pending.category === category) {
-      pending.items.push(block);
+    // Start or continue a tool group
+    if (pendingTool && pendingTool.category === category) {
+      pendingTool.items.push(block);
       if (category === "file_edit") {
         const fp = extractFilePath(block.input);
-        if (fp) pending.filePaths.add(fp);
+        if (fp) pendingTool.filePaths.add(fp);
       }
     } else {
-      if (pending) {
-        result.push(...flushGroup(pending));
+      if (pendingTool) {
+        result.push(...flushToolGroup(pendingTool));
       }
       const filePaths = new Set<string>();
       if (category === "file_edit") {
         const fp = extractFilePath(block.input);
         if (fp) filePaths.add(fp);
       }
-      pending = { category, items: [block], filePaths };
+      pendingTool = { category, items: [block], filePaths };
     }
   }
 
-  if (pending) {
-    result.push(...flushGroup(pending));
+  // Flush remaining
+  flushAllPending();
+
+  // Post-pass: mark all thinking_groups as isPreviousTurn except the last one
+  let lastThinkingGroupFound = false;
+  for (let i = result.length - 1; i >= 0; i--) {
+    const block = result[i];
+    if (block.type === "thinking_group") {
+      if (!lastThinkingGroupFound) {
+        lastThinkingGroupFound = true;
+        // Last thinking_group stays isPreviousTurn: false (current turn)
+      } else {
+        // Earlier thinking_groups are previous turns
+        (block as Extract<AggregatedGroup, { type: "thinking_group" }>).isPreviousTurn = true;
+      }
+    }
   }
 
   return result;

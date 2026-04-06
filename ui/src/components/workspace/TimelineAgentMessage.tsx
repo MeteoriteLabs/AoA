@@ -67,7 +67,6 @@ export function TimelineAgentMessage({
           isRunning={isRunning}
           isLatest={isLatest}
           compact={compact}
-          agentName={agentName}
         />
       </div>
     </div>

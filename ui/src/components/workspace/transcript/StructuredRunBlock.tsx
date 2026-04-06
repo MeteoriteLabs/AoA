@@ -32,7 +32,6 @@ interface StructuredRunBlockProps {
   isRunning: boolean;
   isLatest?: boolean;
   compact?: boolean;
-  agentName?: string;
   className?: string;
 }
 
@@ -43,7 +42,6 @@ export function StructuredRunBlock({
   isRunning,
   isLatest = false,
   compact = false,
-  agentName = "Agent",
   className,
 }: StructuredRunBlockProps) {
   const { data: logData, isLoading } = useQuery({
