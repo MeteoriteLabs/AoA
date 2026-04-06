@@ -12,6 +12,7 @@ import { TimelineUserMessage } from "./TimelineUserMessage";
 import { TimelineAgentMessage } from "./TimelineAgentMessage";
 import { LiveRunWidget } from "../LiveRunWidget";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { useToast } from "../../context/ToastContext";
 import { Activity } from "lucide-react";
 import { summarizeOutputs } from "./workspace-utils";
@@ -184,7 +185,7 @@ export function WorkspaceTimeline({
   };
 
   return (
-    <div className={cn("flex flex-col h-full", className)} data-testid="workspace-timeline">
+    <div className={cn("flex flex-col h-full min-h-0", className)} data-testid="workspace-timeline">
       {/* Scrollable timeline */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3" data-testid="timeline-scroll">
         {(commentsLoading || runsLoading) && (
@@ -323,6 +324,40 @@ export function WorkspaceTimeline({
               sendDisabled={!chatInput.trim() || sendMessage.isPending}
               sendPending={sendMessage.isPending}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Fallback when no agent assigned */}
+      {!assignedAgent && (
+        <div className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar-fallback">
+          <div className="px-3 py-1.5 text-xs text-muted-foreground">
+            No agent assigned
+          </div>
+          <div className="border-t border-border/50">
+            <textarea
+              className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
+              placeholder="Add a comment..."
+              rows={1}
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+            />
+          </div>
+          <div className="border-t border-border/50 px-3 py-1.5 flex justify-end">
+            <Button
+              size="sm"
+              className="h-7 text-xs px-3"
+              disabled={!chatInput.trim() || sendMessage.isPending}
+              onClick={handleSend}
+            >
+              Comment
+            </Button>
           </div>
         </div>
       )}
