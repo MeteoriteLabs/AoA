@@ -134,7 +134,7 @@ export function TranscriptToolPill({
       </button>
       {expanded && (result || input) && (
         <div className="ml-6 mt-1 mb-2 p-2 rounded-md bg-muted/20 text-xs font-mono max-h-[300px] overflow-auto whitespace-pre-wrap text-foreground/70">
-          {result ?? (typeof input === "string" ? input : JSON.stringify(input, null, 2))}
+          {result ?? (typeof input === "string" ? input : (input != null ? JSON.stringify(input, null, 2) : ""))}
         </div>
       )}
     </div>

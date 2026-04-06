@@ -42,7 +42,7 @@ export function TranscriptMessageBlock({
         {streaming && <span className="text-xs text-blue-500 animate-pulse">typing...</span>}
       </div>
       <div className="text-sm">
-        <MarkdownBody content={displayText} />
+        <MarkdownBody>{displayText}</MarkdownBody>
       </div>
       {truncated && (
         <button

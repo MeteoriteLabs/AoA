@@ -3,9 +3,10 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { FileText, Search, Globe, Terminal, Wrench, ChevronRight, ChevronDown, type LucideIcon } from "lucide-react";
-import type { AggregatedGroup } from "./types";
+import type { AggregatedGroup, DepartmentType } from "./types";
 import { TranscriptToolPill } from "./TranscriptToolPill";
 import { classifyToolEntry } from "./classify-entry";
+import { summarizeToolInput, displayToolName } from "./normalize-transcript";
 
 const GROUP_CONFIG: Record<string, { icon: LucideIcon; label: (n: number) => string }> = {
   read_group: { icon: FileText, label: (n) => `Read · ${n} files` },
@@ -17,7 +18,7 @@ const GROUP_CONFIG: Record<string, { icon: LucideIcon; label: (n: number) => str
 
 interface TranscriptAggregatedGroupProps {
   group: Extract<AggregatedGroup, { type: "read_group" | "search_group" | "web_group" | "command_group_agg" | "generic_group" }>;
-  departmentType: string;
+  departmentType: DepartmentType;
   className?: string;
 }
 
@@ -40,12 +41,12 @@ export function TranscriptAggregatedGroup({ group, departmentType, className }: 
       {expanded && (
         <div className="ml-4 mt-1 space-y-1">
           {group.items.map((item, i) => {
-            const category = classifyToolEntry(item.name, item.input, departmentType as any);
-            const summary = extractSummary(item);
+            const category = classifyToolEntry(item.name, item.input, departmentType);
+            const summary = summarizeToolInput(item.name, item.input);
             return (
               <TranscriptToolPill
                 key={i}
-                name={item.name}
+                name={displayToolName(item.name, item.input)}
                 summary={summary}
                 category={category}
                 status={item.status}
@@ -57,20 +58,5 @@ export function TranscriptAggregatedGroup({ group, departmentType, className }: 
         </div>
       )}
     </div>
-  );
-}
-
-function extractSummary(item: { name: string; input: unknown }): string {
-  if (typeof item.input === "string") return item.input;
-  const record = item.input as Record<string, unknown> | null;
-  if (!record) return item.name;
-  return (
-    (typeof record.path === "string" && record.path) ||
-    (typeof record.file_path === "string" && record.file_path) ||
-    (typeof record.query === "string" && record.query) ||
-    (typeof record.pattern === "string" && record.pattern) ||
-    (typeof record.url === "string" && record.url) ||
-    (typeof record.command === "string" && record.command) ||
-    item.name
   );
 }

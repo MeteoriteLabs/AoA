@@ -10,6 +10,7 @@ import { isAggregatedGroup, RICH_CARD_CATEGORIES } from "./types";
 import { normalizeTranscript } from "./normalize-transcript";
 import { aggregateBlocks } from "./aggregate-blocks";
 import { classifyToolEntry } from "./classify-entry";
+import { summarizeToolInput, displayToolName } from "./normalize-transcript";
 import { TranscriptToolPill } from "./TranscriptToolPill";
 import { TranscriptToolCard } from "./TranscriptToolCard";
 import { TranscriptMessageBlock } from "./TranscriptMessageBlock";
@@ -121,7 +122,8 @@ function renderBlock(block: DisplayBlock, departmentType: DepartmentType, agentN
 
     case "tool": {
       const category = classifyToolEntry(b.name, b.input, departmentType);
-      const summary = extractToolSummary(b);
+      const name = displayToolName(b.name, b.input);
+      const summary = summarizeToolInput(b.name, b.input);
 
       // Progress update (TodoWrite)
       if (category === "progress_update") {
@@ -131,12 +133,12 @@ function renderBlock(block: DisplayBlock, departmentType: DepartmentType, agentN
 
       // Rich card
       if (RICH_CARD_CATEGORIES.has(category)) {
-        return <TranscriptToolCard name={b.name} summary={summary} category={category} status={b.status} result={b.result} input={b.input} />;
+        return <TranscriptToolCard name={name} summary={summary} category={category} status={b.status} result={b.result} input={b.input} />;
       }
 
       // Default pill
       const editStats = category === "file_edit" ? parseEditStats(b.result) : undefined;
-      return <TranscriptToolPill name={b.name} summary={summary} category={category} status={b.status} editStats={editStats} result={b.result} input={b.input} />;
+      return <TranscriptToolPill name={name} summary={summary} category={category} status={b.status} editStats={editStats} result={b.result} input={b.input} />;
     }
 
     case "command_group":
@@ -180,23 +182,7 @@ function renderAggregatedGroup(group: AggregatedGroup, departmentType: Departmen
     return <TranscriptThinkingBlock text={group.items.map((i) => i.text).join("\n")} streaming={false} isPreviousTurn={group.isPreviousTurn} />;
   }
   // read_group, search_group, web_group, command_group_agg, generic_group
-  return <TranscriptAggregatedGroup group={group as any} departmentType={departmentType} />;
-}
-
-function extractToolSummary(block: Extract<TranscriptBlock, { type: "tool" }>): string {
-  if (typeof block.input === "string") return block.input;
-  const record = block.input as Record<string, unknown> | null;
-  if (!record) return block.name;
-  return (
-    (typeof record.path === "string" && record.path) ||
-    (typeof record.file_path === "string" && record.file_path) ||
-    (typeof record.filePath === "string" && record.filePath) ||
-    (typeof record.query === "string" && record.query) ||
-    (typeof record.pattern === "string" && record.pattern) ||
-    (typeof record.url === "string" && record.url) ||
-    (typeof record.command === "string" && record.command) ||
-    block.name
-  ) as string;
+  return <TranscriptAggregatedGroup group={group as Extract<AggregatedGroup, { type: "read_group" | "search_group" | "web_group" | "command_group_agg" | "generic_group" }>} departmentType={departmentType} />;
 }
 
 function extractTodos(block: Extract<TranscriptBlock, { type: "tool" }>): Array<{ content: string; status: "pending" | "in_progress" | "completed" }> | null {

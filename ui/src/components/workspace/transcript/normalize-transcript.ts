@@ -379,10 +379,11 @@ export function normalizeTranscript(
 
     if (entry.kind === "tool_call") {
       // AoA: tool_call has NO toolUseId field — use extractToolUseId(input) only
+      // Store raw entry.name (not displayToolName) so classify-entry works on original tool names
       const toolBlock: Extract<TranscriptBlock, { type: "tool" }> = {
         type: "tool",
         ts: entry.ts,
-        name: displayToolName(entry.name, entry.input),
+        name: entry.name,
         toolUseId: extractToolUseId(entry.input),
         input: entry.input,
         status: "running",
