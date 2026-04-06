@@ -4,16 +4,18 @@ import { issuesApi } from "../../api/issues";
 import { activityApi, type RunForIssue } from "../../api/activity";
 import { heartbeatsApi } from "../../api/heartbeats";
 import { agentsApi } from "../../api/agents";
+import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { queryKeys } from "../../lib/queryKeys";
-import { cn, relativeTime } from "@/lib/utils";
-import { RunBlock } from "./RunBlock";
+import { cn } from "@/lib/utils";
+import { TimelineUserMessage } from "./TimelineUserMessage";
+import { TimelineAgentMessage } from "./TimelineAgentMessage";
 import { LiveRunWidget } from "../LiveRunWidget";
-import { Identity } from "../Identity";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useToast } from "../../context/ToastContext";
-import { Send, CheckCircle2 } from "lucide-react";
+import { Send, CheckCircle2, FileCode } from "lucide-react";
+import { formatBytes, summarizeOutputs } from "./workspace-utils";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 
 export type TimelineItem =
@@ -84,6 +86,14 @@ export function WorkspaceTimeline({
     enabled: !!selectedCompanyId,
   });
 
+  const { data: project } = useQuery({
+    queryKey: queryKeys.projects.detail(issue?.projectId ?? ""),
+    queryFn: () => projectsApi.get(issue!.projectId!),
+    enabled: !!issue?.projectId,
+  });
+
+  const departmentType = project?.functionType ?? "general";
+
   const { pushToast } = useToast();
 
   useEffect(() => {
@@ -135,6 +145,12 @@ export function WorkspaceTimeline({
 
   // Default send agent to current assignee
   const effectiveSendAgentId = sendAgentId ?? issue?.assigneeAgentId ?? null;
+  const selectedAgent = effectiveSendAgentId ? agentMap.get(effectiveSendAgentId) : null;
+
+  // Diff stats from latest run
+  const latestRun = linkedRuns?.[0] ?? null;
+  const latestOutputs = latestRun?.detectedOutputs ?? [];
+  const { fileCount: latestFileCount, totalBytes: latestTotalBytes } = summarizeOutputs(latestOutputs);
 
   // --- Mutations ---
 
@@ -182,48 +198,38 @@ export function WorkspaceTimeline({
           </p>
         )}
 
-        {/* Timeline items */}
+        {/* Timeline items — structured conversation */}
         {mergedTimeline.map((item, idx) => {
           if (item.kind === "run") {
             const run = item.data;
             const agent = agentMap.get(run.agentId);
             const isLatest = idx === mergedTimeline.length - 1 ||
               mergedTimeline.slice(idx + 1).every((i) => i.kind !== "run");
+            const agentAdapterType = agent?.adapterType ?? "process";
             return (
-              <RunBlock
+              <TimelineAgentMessage
                 key={`run-${run.runId}`}
                 run={run}
                 agentName={agent?.name ?? run.agentId.slice(0, 8)}
                 isLatest={isLatest}
                 compact={compact}
+                adapterType={agentAdapterType}
+                departmentType={departmentType}
               />
             );
           }
-          // Comment
+          // Comment — rendered as chat bubble
           const comment = item.data;
           const authorAgent = comment.authorAgentId
             ? agentMap.get(comment.authorAgentId)
             : null;
+          const authorName = authorAgent?.name ?? (comment.authorUserId ? "You" : "Unknown");
           return (
-            <div key={`comment-${comment.id}`} className="flex gap-2.5" data-testid={`timeline-comment-${comment.id}`}>
-              <div className="shrink-0 mt-0.5">
-                <Identity
-                  name={authorAgent?.name ?? (comment.authorUserId ? "Board" : "Unknown")}
-                  size="sm"
-                />
-              </div>
-              <div className="flex-1 space-y-0.5">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="font-medium">
-                    {authorAgent?.name ?? (comment.authorUserId ? "Board" : "Unknown")}
-                  </span>
-                  <span className="text-muted-foreground ml-auto">
-                    {relativeTime(comment.createdAt)}
-                  </span>
-                </div>
-                <p className="text-sm">{comment.body}</p>
-              </div>
-            </div>
+            <TimelineUserMessage
+              key={`comment-${comment.id}`}
+              comment={comment}
+              authorName={authorName}
+            />
           );
         })}
       </div>
@@ -244,8 +250,19 @@ export function WorkspaceTimeline({
           }}
         />
         <div className="flex items-center gap-2">
+          {/* Diff stats badge */}
+          {latestFileCount > 0 && (
+            <div className="flex items-center gap-1 text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5 shrink-0" data-testid="diff-stats-badge">
+              <FileCode className="h-3 w-3" />
+              <span>{latestFileCount} file{latestFileCount !== 1 ? "s" : ""}</span>
+              <span className="text-muted-foreground/60">·</span>
+              <span>{formatBytes(latestTotalBytes)}</span>
+            </div>
+          )}
+
+          {/* Agent selector */}
           <select
-            className="flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+            className="flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
             value={effectiveSendAgentId ?? ""}
             onChange={(e) => setSendAgentId(e.target.value || null)}
           >
@@ -258,6 +275,7 @@ export function WorkspaceTimeline({
                 </option>
               ))}
           </select>
+
           {showMarkComplete && onMarkComplete && (
             <Button variant="outline" size="sm" onClick={onMarkComplete}>
               <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
