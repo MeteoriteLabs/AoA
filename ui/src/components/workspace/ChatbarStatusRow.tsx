@@ -68,47 +68,49 @@ export function ChatbarStatusRow({
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Right: context donut + todo icon */}
+      {/* Right: context donut + todo icon — always visible */}
       <div className="flex items-center gap-1.5 shrink-0">
-        {/* Context donut — only show when we have data */}
-        {contextRatio != null && (
-          <TooltipProvider delayDuration={200}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="p-0.5 rounded inline-flex">
-                  <ContextDonutIcon ratio={contextRatio} className="h-4 w-4" />
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="text-xs">
-                {formatTokens(tokensUsed!)} / {formatTokens(contextLimit!)} tokens
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        )}
+        {/* Context donut */}
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="p-0.5 rounded inline-flex">
+                <ContextDonutIcon ratio={contextRatio ?? 0} className="h-4 w-4" empty={contextRatio == null} />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-xs">
+              {contextRatio != null
+                ? `${formatTokens(tokensUsed!)} / ${formatTokens(contextLimit!)} tokens`
+                : "Context usage unavailable"}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
 
         {/* Todo icon */}
-        {todoProgress != null && (
-          <TooltipProvider delayDuration={200}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={onTodoClick}
-                  aria-label="Task progress"
-                  className="p-0.5 hover:bg-muted/50 rounded transition-colors flex items-center gap-1"
-                >
-                  <ListChecks className="h-3.5 w-3.5" />
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onTodoClick}
+                aria-label="Task progress"
+                className="p-0.5 hover:bg-muted/50 rounded transition-colors flex items-center gap-1"
+              >
+                <ListChecks className="h-3.5 w-3.5" />
+                {todoProgress != null && (
                   <span className="text-[10px]">
                     {todoProgress.completed}/{todoProgress.total}
                   </span>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="text-xs">
-                Tasks: {todoProgress.completed} of {todoProgress.total} completed
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        )}
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-xs">
+              {todoProgress != null
+                ? `Tasks: ${todoProgress.completed} of ${todoProgress.total} completed`
+                : "Task progress unavailable"}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
     </div>
   );
@@ -119,18 +121,23 @@ export function ChatbarStatusRow({
 function ContextDonutIcon({
   ratio,
   className,
+  empty = false,
 }: {
   ratio: number;
   className?: string;
+  empty?: boolean;
 }) {
   const radius = 7;
   const circumference = 2 * Math.PI * radius;
-  const filled = circumference * ratio;
+  const filled = empty ? 0 : circumference * ratio;
 
-  // Color based on usage
-  let strokeColor = "stroke-green-500";
-  if (ratio > 0.8) strokeColor = "stroke-red-500";
-  else if (ratio > 0.6) strokeColor = "stroke-yellow-500";
+  // Color based on usage — muted when empty
+  let strokeColor = "stroke-muted-foreground/40";
+  if (!empty) {
+    strokeColor = "stroke-green-500";
+    if (ratio > 0.8) strokeColor = "stroke-red-500";
+    else if (ratio > 0.6) strokeColor = "stroke-yellow-500";
+  }
 
   return (
     <svg viewBox="0 0 20 20" className={className}>
