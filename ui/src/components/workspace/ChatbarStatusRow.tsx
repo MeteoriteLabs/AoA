@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { FileCode, ListChecks } from "lucide-react";
 import { getAdapterInfo } from "./adapter-utils";
 import { formatBytes } from "./workspace-utils";
@@ -7,6 +8,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { TranscriptProgressBlock } from "./transcript/TranscriptProgressBlock";
 
 interface ChatbarStatusRowProps {
   agentName: string;
@@ -21,7 +28,8 @@ interface ChatbarStatusRowProps {
   contextLimit: number | null;
   /** Todo progress — null if unavailable */
   todoProgress: { completed: number; total: number } | null;
-  onTodoClick?: () => void;
+  /** Full todo items for the popover — null if unavailable */
+  todoItems: Array<{ content: string; status: "pending" | "in_progress" | "completed" }> | null;
 }
 
 export function ChatbarStatusRow({
@@ -32,10 +40,11 @@ export function ChatbarStatusRow({
   tokensUsed,
   contextLimit,
   todoProgress,
-  onTodoClick,
+  todoItems,
 }: ChatbarStatusRowProps) {
   const adapter = getAdapterInfo(adapterType);
   const AdapterIcon = adapter.icon;
+  const [todoOpen, setTodoOpen] = useState(false);
 
   // Context donut calculation
   const contextRatio =
@@ -86,31 +95,43 @@ export function ChatbarStatusRow({
           </Tooltip>
         </TooltipProvider>
 
-        {/* Todo icon */}
-        <TooltipProvider delayDuration={200}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onTodoClick}
-                aria-label="Task progress"
-                className="p-0.5 hover:bg-muted/50 rounded transition-colors flex items-center gap-1"
-              >
-                <ListChecks className="h-3.5 w-3.5" />
-                {todoProgress != null && (
-                  <span className="text-[10px]">
-                    {todoProgress.completed}/{todoProgress.total}
-                  </span>
-                )}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="text-xs">
-              {todoProgress != null
-                ? `Tasks: ${todoProgress.completed} of ${todoProgress.total} completed`
-                : "Task progress unavailable"}
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        {/* Todo icon with popover */}
+        <Popover open={todoOpen} onOpenChange={setTodoOpen}>
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <PopoverTrigger asChild>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Task progress"
+                    className="p-0.5 hover:bg-muted/50 rounded transition-colors flex items-center gap-1"
+                  >
+                    <ListChecks className="h-3.5 w-3.5" />
+                    {todoProgress != null && (
+                      <span className="text-[10px]">
+                        {todoProgress.completed}/{todoProgress.total}
+                      </span>
+                    )}
+                  </button>
+                </TooltipTrigger>
+              </PopoverTrigger>
+              <TooltipContent side="top" className="text-xs">
+                {todoProgress != null
+                  ? `Tasks: ${todoProgress.completed} of ${todoProgress.total} completed`
+                  : "Task progress unavailable"}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <PopoverContent side="top" align="end" className="w-80 p-0">
+            {todoItems && todoItems.length > 0 ? (
+              <TranscriptProgressBlock todos={todoItems} />
+            ) : (
+              <div className="px-3 py-4 text-xs text-muted-foreground text-center">
+                No tasks tracked yet
+              </div>
+            )}
+          </PopoverContent>
+        </Popover>
       </div>
     </div>
   );

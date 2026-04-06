@@ -19,6 +19,9 @@ import { summarizeOutputs } from "./workspace-utils";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 import { ChatbarStatusRow } from "./ChatbarStatusRow";
 import { ChatbarControls } from "./ChatbarControls";
+import { useRunTokens } from "./useRunTokens";
+import { useLatestTodos } from "./useLatestTodos";
+import { getContextLimit } from "./adapter-utils";
 
 export type TimelineItem =
   | { kind: "run"; ts: string; data: RunForIssue }
@@ -160,6 +163,12 @@ export function WorkspaceTimeline({
   const latestOutputs = latestRun?.detectedOutputs ?? [];
   const { fileCount: latestFileCount, totalBytes: latestTotalBytes } = summarizeOutputs(latestOutputs);
 
+  // Token usage across all runs
+  const tokenSummary = useRunTokens(linkedRuns);
+
+  // Todo progress from latest run
+  const todoData = useLatestTodos(latestRun, activeRun ?? null, agentAdapterType);
+
   // --- Mutations ---
 
   const sendMessage = useMutation({
@@ -291,9 +300,10 @@ export function WorkspaceTimeline({
             adapterType={agentAdapterType}
             fileCount={latestFileCount}
             totalBytes={latestTotalBytes}
-            tokensUsed={null}
-            contextLimit={null}
-            todoProgress={null}
+            tokensUsed={tokenSummary.totalTokens > 0 ? tokenSummary.totalTokens : null}
+            contextLimit={getContextLimit(agentDefaultModel)}
+            todoProgress={todoData.total > 0 ? { completed: todoData.completed, total: todoData.total } : null}
+            todoItems={todoData.total > 0 ? todoData.todos : null}
           />
 
           {/* Textarea */}

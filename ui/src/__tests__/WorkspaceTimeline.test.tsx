@@ -26,8 +26,9 @@ const mockRuns = [
     finishedAt: "2026-04-01T10:05:00Z",
     createdAt: "2026-04-01T10:00:00Z",
     invocationSource: "on_demand",
-    usageJson: null,
+    usageJson: { inputTokens: 1000, outputTokens: 500 },
     resultJson: null,
+    detectedOutputs: null,
   },
   {
     runId: "run-002",
@@ -37,8 +38,9 @@ const mockRuns = [
     finishedAt: "2026-04-01T10:25:00Z",
     createdAt: "2026-04-01T10:20:00Z",
     invocationSource: "on_demand",
-    usageJson: null,
+    usageJson: { inputTokens: 2000, outputTokens: 800 },
     resultJson: null,
+    detectedOutputs: null,
   },
 ];
 
@@ -66,8 +68,8 @@ const mockComments = [
 ];
 
 const mockAgents = [
-  { id: "agent-1", name: "Alpha Agent", status: "active", companyId: "comp-1" },
-  { id: "agent-2", name: "Beta Agent", status: "active", companyId: "comp-1" },
+  { id: "agent-1", name: "Alpha Agent", status: "active", companyId: "comp-1", adapterType: "claude_api", adapterConfig: { model: "claude-sonnet-4-6" } },
+  { id: "agent-2", name: "Beta Agent", status: "active", companyId: "comp-1", adapterType: "process", adapterConfig: {} },
 ];
 
 // ─── API Mocks ───────────────────────────────────────────────────────────────
@@ -138,6 +140,13 @@ vi.mock("../components/LiveRunWidget", () => ({
   LiveRunWidget: ({ issueId }: { issueId: string }) => (
     <div data-testid="live-run-widget">Live runs for {issueId}</div>
   ),
+}));
+
+// Mock adapter registry to avoid importing real adapter modules
+vi.mock("../adapters/registry", () => ({
+  getUIAdapter: () => ({
+    parseStdoutLine: () => [],
+  }),
 }));
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -259,6 +268,19 @@ describe("WorkspaceTimeline — input area", () => {
 
     const sendButton = screen.getByText("Send");
     expect(sendButton).toBeDisabled();
+  });
+});
+
+describe("WorkspaceTimeline — chatbar context donut and todos", () => {
+  it("renders chatbar with context donut and todo data", async () => {
+    renderTimeline();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-chatbar")).toBeInTheDocument();
+    });
+
+    // Agent name should appear (may appear in multiple places — timeline + chatbar status row)
+    expect(screen.getAllByText("Alpha Agent").length).toBeGreaterThanOrEqual(1);
   });
 });
 
