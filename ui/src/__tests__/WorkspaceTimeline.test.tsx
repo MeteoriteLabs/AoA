@@ -214,14 +214,14 @@ describe("WorkspaceTimeline — rendering", () => {
 });
 
 describe("WorkspaceTimeline — input area", () => {
-  it("renders the input area with textarea and send button", async () => {
+  it("renders the chatbar with textarea and send button", async () => {
     renderTimeline();
 
     await waitFor(() => {
-      expect(screen.getByTestId("workspace-input-area")).toBeInTheDocument();
+      expect(screen.getByTestId("workspace-chatbar")).toBeInTheDocument();
     });
 
-    expect(screen.getByPlaceholderText("Continue working on this task...")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Message Alpha Agent...")).toBeInTheDocument();
     expect(screen.getByText("Send")).toBeInTheDocument();
   });
 
@@ -229,10 +229,10 @@ describe("WorkspaceTimeline — input area", () => {
     renderTimeline();
 
     await waitFor(() => {
-      expect(screen.getByTestId("workspace-input-area")).toBeInTheDocument();
+      expect(screen.getByTestId("workspace-chatbar")).toBeInTheDocument();
     });
 
-    const textarea = screen.getByPlaceholderText("Continue working on this task...");
+    const textarea = screen.getByPlaceholderText("Message Alpha Agent...");
     fireEvent.change(textarea, { target: { value: "Please review the changes" } });
 
     const sendButton = screen.getByText("Send");
@@ -242,10 +242,11 @@ describe("WorkspaceTimeline — input area", () => {
       expect(issuesApiMock.addComment).toHaveBeenCalledWith("issue-1", "Please review the changes");
     });
 
-    // Default send agent = assigneeAgentId from issue
+    // Wakeup always goes to assignedAgentId from issue, with null payload (no model override)
     expect(agentsApiMock.wakeup).toHaveBeenCalledWith("agent-1", {
       source: "on_demand",
       reason: "Please review the changes",
+      payload: null,
     });
   });
 
@@ -281,23 +282,3 @@ describe("WorkspaceTimeline — comment display", () => {
   });
 });
 
-describe("WorkspaceTimeline — Mark Complete", () => {
-  it("shows Mark Complete button when showMarkComplete is true", async () => {
-    const onMarkComplete = vi.fn();
-    renderTimeline({ showMarkComplete: true, onMarkComplete });
-
-    await waitFor(() => {
-      expect(screen.getByText("Mark Complete")).toBeInTheDocument();
-    });
-  });
-
-  it("does not show Mark Complete button by default", async () => {
-    renderTimeline();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("workspace-input-area")).toBeInTheDocument();
-    });
-
-    expect(screen.queryByText("Mark Complete")).not.toBeInTheDocument();
-  });
-});

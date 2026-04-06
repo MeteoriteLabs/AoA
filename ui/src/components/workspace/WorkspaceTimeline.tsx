@@ -12,11 +12,12 @@ import { TimelineUserMessage } from "./TimelineUserMessage";
 import { TimelineAgentMessage } from "./TimelineAgentMessage";
 import { LiveRunWidget } from "../LiveRunWidget";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Button } from "@/components/ui/button";
 import { useToast } from "../../context/ToastContext";
-import { Send, CheckCircle2, FileCode, Activity } from "lucide-react";
-import { formatBytes, summarizeOutputs } from "./workspace-utils";
+import { Activity } from "lucide-react";
+import { summarizeOutputs } from "./workspace-utils";
 import type { IssueComment, Agent } from "@paperclipai/shared";
+import { ChatbarStatusRow } from "./ChatbarStatusRow";
+import { ChatbarControls } from "./ChatbarControls";
 
 export type TimelineItem =
   | { kind: "run"; ts: string; data: RunForIssue }
@@ -27,23 +28,27 @@ interface WorkspaceTimelineProps {
   /** When true, renders in compact mode for TaskSlideOver */
   compact?: boolean;
   className?: string;
-  /** If true, show Mark Complete button (for human-assigned tasks) */
-  showMarkComplete?: boolean;
-  onMarkComplete?: () => void;
 }
 
 export function WorkspaceTimeline({
   issueId,
   compact = false,
   className,
-  showMarkComplete = false,
-  onMarkComplete,
 }: WorkspaceTimelineProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [chatInput, setChatInput] = useState("");
-  const [sendAgentId, setSendAgentId] = useState<string | null>(null);
+  const [modelOverride, setModelOverride] = useState<string | null>(null);
+
+  const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setChatInput(e.target.value);
+    // Auto-grow: reset to 1 row then expand to content, max 4 rows
+    const ta = e.target;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 96)}px`; // 96px ≈ 4 rows at text-sm
+  };
 
   // --- Data fetching ---
 
@@ -143,9 +148,11 @@ export function WorkspaceTimeline({
     }
   }, [mergedTimeline.length, hasLiveRuns]);
 
-  // Default send agent to current assignee
-  const effectiveSendAgentId = sendAgentId ?? issue?.assigneeAgentId ?? null;
-  const selectedAgent = effectiveSendAgentId ? agentMap.get(effectiveSendAgentId) : null;
+  // Agent resolution — always use the task's assigned agent
+  const assignedAgentId = issue?.assigneeAgentId ?? null;
+  const assignedAgent = assignedAgentId ? agentMap.get(assignedAgentId) : null;
+  const agentAdapterType = assignedAgent?.adapterType ?? "process";
+  const agentDefaultModel = (assignedAgent?.adapterConfig as Record<string, unknown>)?.model as string | null ?? null;
 
   // Diff stats from latest run
   const latestRun = linkedRuns?.[0] ?? null;
@@ -155,22 +162,24 @@ export function WorkspaceTimeline({
   // --- Mutations ---
 
   const sendMessage = useMutation({
-    mutationFn: async ({ text, agentId }: { text: string; agentId: string | null }) => {
+    mutationFn: async ({ text, agentId, modelOvr }: { text: string; agentId: string | null; modelOvr: string | null }) => {
       await issuesApi.addComment(issueId, text);
       if (agentId) {
-        await agentsApi.wakeup(agentId, { source: "on_demand", reason: text });
+        const payload = modelOvr ? { modelOverride: modelOvr } : null;
+        await agentsApi.wakeup(agentId, { source: "on_demand", reason: text, payload });
       }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId) });
       setChatInput("");
+      setModelOverride(null); // Reset model override after send
     },
   });
 
   const handleSend = () => {
     if (chatInput.trim()) {
-      sendMessage.mutate({ text: chatInput.trim(), agentId: effectiveSendAgentId });
+      sendMessage.mutate({ text: chatInput.trim(), agentId: assignedAgentId, modelOvr: modelOverride });
     }
   };
 
@@ -271,64 +280,52 @@ export function WorkspaceTimeline({
         })}
       </div>
 
-      {/* Input area — fixed at bottom */}
-      <div className="p-4 border-t border-border shrink-0 space-y-2" data-testid="workspace-input-area">
-        <textarea
-          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
-          placeholder="Continue working on this task..."
-          rows={compact ? 2 : 3}
-          value={chatInput}
-          onChange={(e) => setChatInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
-        />
-        <div className="flex items-center gap-2">
-          {/* Diff stats badge */}
-          {latestFileCount > 0 && (
-            <div className="flex items-center gap-1 text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5 shrink-0" data-testid="diff-stats-badge">
-              <FileCode className="h-3 w-3" />
-              <span>{latestFileCount} file{latestFileCount !== 1 ? "s" : ""}</span>
-              <span className="text-muted-foreground/60">·</span>
-              <span>{formatBytes(latestTotalBytes)}</span>
-            </div>
-          )}
+      {/* Chatbar — unified 3-row widget fixed at bottom */}
+      {assignedAgent && (
+        <div className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar">
+          {/* Status row */}
+          <ChatbarStatusRow
+            agentName={assignedAgent.name}
+            adapterType={agentAdapterType}
+            fileCount={latestFileCount}
+            totalBytes={latestTotalBytes}
+            tokensUsed={null}
+            contextLimit={null}
+            todoProgress={null}
+          />
 
-          {/* Agent selector */}
-          <select
-            className="flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
-            value={effectiveSendAgentId ?? ""}
-            onChange={(e) => setSendAgentId(e.target.value || null)}
-          >
-            <option value="">No agent</option>
-            {(agents ?? [])
-              .filter((a) => a.status !== "terminated")
-              .map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-          </select>
+          {/* Textarea */}
+          <div className="border-t border-border/50">
+            <textarea
+              ref={textareaRef}
+              className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
+              placeholder={`Message ${assignedAgent.name}...`}
+              rows={1}
+              value={chatInput}
+              onChange={handleTextareaChange}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+            />
+          </div>
 
-          {showMarkComplete && onMarkComplete && (
-            <Button variant="outline" size="sm" onClick={onMarkComplete}>
-              <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-              Mark Complete
-            </Button>
-          )}
-          <Button
-            size="sm"
-            disabled={!chatInput.trim() || sendMessage.isPending}
-            onClick={handleSend}
-          >
-            <Send className="h-3.5 w-3.5 mr-1" />
-            {sendMessage.isPending ? "Sending..." : "Send"}
-          </Button>
+          {/* Controls row */}
+          <div className="border-t border-border/50">
+            <ChatbarControls
+              adapterType={agentAdapterType}
+              defaultModel={agentDefaultModel}
+              selectedModel={modelOverride}
+              onModelChange={setModelOverride}
+              onSend={handleSend}
+              sendDisabled={!chatInput.trim() || sendMessage.isPending}
+              sendPending={sendMessage.isPending}
+            />
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

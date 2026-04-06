@@ -793,8 +793,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
             <WorkspaceTimeline
               issueId={issueId!}
               compact
-              showMarkComplete={!!issue.assigneeUserId && !issue.assigneeAgentId}
-              onMarkComplete={() => updateIssue.mutate({ status: "done" })}
               className="flex-1 min-h-0"
             />
           </>

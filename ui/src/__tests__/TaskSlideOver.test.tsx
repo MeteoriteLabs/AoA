@@ -482,7 +482,7 @@ describe("TaskSlideOver — workspace with executionWorkspaceId", () => {
     await user.click(screen.getByTestId("workspace-row"));
 
     expect(screen.getByTestId("workspace-breadcrumb-back")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-input-area")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-timeline")).toBeInTheDocument();
   });
 
   it("breadcrumb back button returns to Mode 1 (task properties)", async () => {
@@ -497,7 +497,7 @@ describe("TaskSlideOver — workspace with executionWorkspaceId", () => {
     await user.click(screen.getByTestId("workspace-breadcrumb-back"));
 
     expect(screen.getByTestId("workspace-section")).toBeInTheDocument();
-    expect(screen.queryByTestId("workspace-input-area")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("workspace-chatbar")).not.toBeInTheDocument();
   });
 
   it("'Open Workspace' button navigates to workspace view and closes sheet", async () => {
