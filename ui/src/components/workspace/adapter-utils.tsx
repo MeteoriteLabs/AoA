@@ -71,6 +71,8 @@ export function shortModelName(modelId: string): string {
   if (lower.includes("o1")) return "o1";
   if (lower.includes("o3-mini")) return "o3 Mini";
   if (lower.includes("o3")) return "o3";
+  if (lower.includes("o4-mini")) return "o4 Mini";
+  if (lower.includes("o4")) return "o4";
   if (lower.includes("2.5-pro")) return "2.5 Pro";
   if (lower.includes("2.5-flash")) return "2.5 Flash";
   if (lower.includes("2.0-flash")) return "2.0 Flash";

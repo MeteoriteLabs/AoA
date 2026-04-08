@@ -39,4 +39,18 @@ describe("shortModelName ordering", () => {
   it("o1-mini returns o1 Mini, not o1", () => {
     expect(shortModelName("o1-mini")).toBe("o1 Mini");
   });
+
+  it("o4-mini returns o4 Mini, not o4", () => {
+    expect(shortModelName("o4-mini-2025-04-16")).toBe("o4 Mini");
+  });
+
+  it("o4 returns o4", () => {
+    expect(shortModelName("o4-2025-04-16")).toBe("o4");
+  });
+});
+
+describe("getContextLimit additional", () => {
+  it("returns 200K for o4-mini", () => {
+    expect(getContextLimit("o4-mini-2025-04-16")).toBe(200_000);
+  });
 });
