@@ -124,6 +124,10 @@ import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
 import { UserMenu } from "@/components/UserMenu";
+import {
+  ReportsToSelect,
+  type UnifiedOrgNode,
+} from "@/components/team/ReportsToSelect";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -1325,6 +1329,11 @@ export function DesignGuide() {
       </Section>
 
       {/* ============================================================ */}
+      {/*  REPORTS-TO SELECT                                            */}
+      {/* ============================================================ */}
+      <ReportsToSelectShowcase />
+
+      {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
       <Section title="Keyboard Shortcuts">
@@ -1347,5 +1356,121 @@ export function DesignGuide() {
         </div>
       </Section>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  ReportsToSelect showcase                                           */
+/* ------------------------------------------------------------------ */
+
+function ReportsToSelectShowcase() {
+  const showcaseTree: UnifiedOrgNode[] = [
+    {
+      id: "agent-ceo",
+      name: "Claude CEO",
+      role: "ceo",
+      status: "active",
+      nodeType: "agent",
+      adapterType: "claude_api",
+      children: [],
+    },
+    {
+      id: "agent-old",
+      name: "Retired Agent",
+      role: "engineer",
+      status: "terminated",
+      nodeType: "agent",
+      adapterType: "openai_api",
+      children: [],
+    },
+    {
+      id: "user-alice",
+      name: "Alice",
+      role: "founder",
+      status: "active",
+      nodeType: "user",
+      userRole: "founder",
+      children: [],
+    },
+  ];
+
+  const [normalValue, setNormalValue] = useState("agent:agent-ceo");
+  const [terminatedValue, setTerminatedValue] = useState("agent:agent-old");
+  const [staleValue, setStaleValue] = useState("user:ghost-id");
+  const [customValue, setCustomValue] = useState("");
+
+  return (
+    <Section title="Reports-To Select">
+      <SubSection title="Normal (active manager selected)">
+        <div className="max-w-sm">
+          <ReportsToSelect
+            orgTree={showcaseTree}
+            currentEntityId="user-alice"
+            currentEntityType="user"
+            value={normalValue}
+            onChange={setNormalValue}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Terminated (selected manager is terminated)">
+        <div className="max-w-sm">
+          <ReportsToSelect
+            orgTree={showcaseTree}
+            currentEntityId="user-alice"
+            currentEntityType="user"
+            value={terminatedValue}
+            onChange={setTerminatedValue}
+          />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Amber chip warns the founder that the saved reporting chain points at
+          a terminated agent. User can pick a replacement or clear.
+        </p>
+      </SubSection>
+
+      <SubSection title="Stale ID (saved value not in current tree)">
+        <div className="max-w-sm">
+          <ReportsToSelect
+            orgTree={showcaseTree}
+            currentEntityId="user-alice"
+            currentEntityType="user"
+            value={staleValue}
+            onChange={setStaleValue}
+          />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Value references an id that no longer exists in the org (e.g. deleted
+          agent). Friendly fallback invites the user to re-pick.
+        </p>
+      </SubSection>
+
+      <SubSection title="Custom chooseLabel (empty value)">
+        <div className="max-w-sm">
+          <ReportsToSelect
+            orgTree={showcaseTree}
+            currentEntityId="user-alice"
+            currentEntityType="user"
+            value={customValue}
+            onChange={setCustomValue}
+            chooseLabel="Pick a manager…"
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Disabled + empty tree (custom disabledEmptyLabel)">
+        <div className="max-w-sm">
+          <ReportsToSelect
+            orgTree={[]}
+            currentEntityId="agent-solo"
+            currentEntityType="agent"
+            value=""
+            onChange={() => {}}
+            disabled
+            disabledEmptyLabel="No managers yet (CEO)"
+          />
+        </div>
+      </SubSection>
+    </Section>
   );
 }
