@@ -57,6 +57,8 @@ import { httpAdapter } from "./http/index.js";
 import { claudeApiAdapter } from "./claude-api/index.js";
 import { openaiApiAdapter } from "./openai-api/index.js";
 import { geminiApiAdapter } from "./gemini-api/index.js";
+import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
+import { getDisabledAdapterTypes, isAdapterDisabled } from "../services/adapter-plugin-store.js";
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
@@ -135,6 +137,16 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
   [claudeLocalAdapter, codexLocalAdapter, openCodeLocalAdapter, cursorLocalAdapter, openclawAdapter, geminiLocalAdapter, hermesLocalAdapter, processAdapter, httpAdapter, claudeApiAdapter, openaiApiAdapter, geminiApiAdapter].map((a) => [a.type, a]),
 );
 
+// Builtin adapters that have been replaced by an external adapter of the same
+// type are stashed here so they can be restored when the override is paused or
+// removed.
+const builtinFallbacks = new Map<string, ServerAdapterModule>();
+
+// Tracks which override types are currently paused. When paused,
+// findActiveServerAdapter() returns the builtin fallback instead of the
+// external adapter.
+const pausedOverrides = new Set<string>();
+
 export function getServerAdapter(type: string): ServerAdapterModule {
   const adapter = adaptersByType.get(type);
   if (!adapter) {
@@ -161,3 +173,84 @@ export function listServerAdapters(): ServerAdapterModule[] {
 export function findServerAdapter(type: string): ServerAdapterModule | null {
   return adaptersByType.get(type) ?? null;
 }
+
+/**
+ * Like findServerAdapter but respects paused overrides — if an external
+ * adapter's override is currently paused, returns the original builtin.
+ */
+export function findActiveServerAdapter(type: string): ServerAdapterModule | null {
+  if (pausedOverrides.has(type)) {
+    return builtinFallbacks.get(type) ?? null;
+  }
+  return adaptersByType.get(type) ?? null;
+}
+
+/**
+ * List adapters that are not currently disabled in the plugin store. Used for
+ * agent-creation menus that should hide disabled adapters.
+ */
+export function listEnabledServerAdapters(): ServerAdapterModule[] {
+  const disabled = new Set(getDisabledAdapterTypes());
+  return listServerAdapters().filter((a) => !disabled.has(a.type));
+}
+
+/**
+ * Register a (possibly external) adapter at runtime. If the adapter type
+ * matches a builtin, the existing builtin is stashed in builtinFallbacks so
+ * it can be restored when the override is paused or the external adapter is
+ * unregistered.
+ */
+export function registerServerAdapter(adapter: ServerAdapterModule): void {
+  if (BUILTIN_ADAPTER_TYPES.has(adapter.type) && !builtinFallbacks.has(adapter.type)) {
+    const existing = adaptersByType.get(adapter.type);
+    if (existing) {
+      builtinFallbacks.set(adapter.type, existing);
+    }
+  }
+  adaptersByType.set(adapter.type, adapter);
+}
+
+/**
+ * Unregister an adapter. If it was overriding a builtin, the builtin is
+ * restored. process and http adapters cannot be unregistered. Pure builtins
+ * (no override) are also left in place.
+ */
+export function unregisterServerAdapter(type: string): void {
+  if (type === processAdapter.type || type === httpAdapter.type) return;
+  if (builtinFallbacks.has(type)) {
+    pausedOverrides.delete(type);
+    const fallback = builtinFallbacks.get(type);
+    if (fallback) {
+      adaptersByType.set(type, fallback);
+    }
+    builtinFallbacks.delete(type);
+    return;
+  }
+  if (BUILTIN_ADAPTER_TYPES.has(type)) {
+    return;
+  }
+  adaptersByType.delete(type);
+}
+
+export function isOverridePaused(type: string): boolean {
+  return pausedOverrides.has(type);
+}
+
+/**
+ * Pause or resume an external adapter's override of a builtin type. Returns
+ * true if the state changed.
+ */
+export function setOverridePaused(type: string, paused: boolean): boolean {
+  if (!BUILTIN_ADAPTER_TYPES.has(type)) return false;
+  if (paused) {
+    if (pausedOverrides.has(type)) return false;
+    pausedOverrides.add(type);
+    return true;
+  }
+  return pausedOverrides.delete(type);
+}
+
+// Surface disabled-state check so the route doesn't have to import the store
+// directly — registry becomes the single source of truth for "is this adapter
+// usable right now?".
+export { isAdapterDisabled as isServerAdapterDisabled };
