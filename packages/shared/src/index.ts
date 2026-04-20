@@ -155,6 +155,7 @@ export {
   ROUTINE_TRIGGER_SIGNING_MODES,
   ROUTINE_RUN_STATUSES,
   ROUTINE_RUN_SOURCES,
+  ROUTINE_VARIABLE_TYPES,
   type IssueOriginKind,
   type RoutineStatus,
   type RoutineConcurrencyPolicy,
@@ -163,6 +164,7 @@ export {
   type RoutineTriggerSigningMode,
   type RoutineRunStatus,
   type RoutineRunSource,
+  type RoutineVariableType,
   // Plugin system
   PLUGIN_API_VERSION,
   PLUGIN_STATUSES,
@@ -335,6 +337,8 @@ export type {
   RoutineDetail,
   RoutineRunSummary,
   RoutineListItem,
+  RoutineVariable,
+  RoutineVariableDefaultValue,
   InstanceGeneralSettings,
   InstanceExperimentalSettings,
   InstanceSettings,
@@ -588,6 +592,7 @@ export {
   type AddMember,
   type TransferAdmin,
   type ReassignAndRemove,
+  routineVariableSchema,
   createRoutineSchema,
   updateRoutineSchema,
   createRoutineTriggerSchema,
@@ -626,6 +631,16 @@ export {
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
+export {
+  BUILTIN_ROUTINE_VARIABLE_NAMES,
+  isBuiltinRoutineVariable,
+  getBuiltinRoutineVariableValues,
+  isValidRoutineVariableName,
+  extractRoutineVariableNames,
+  syncRoutineVariablesWithTemplate,
+  stringifyRoutineVariableValue,
+  interpolateRoutineTemplate,
+} from "./routine-variables.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey } from "./project-url-key.js";
 export {

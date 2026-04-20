@@ -281,6 +281,7 @@ export {
 } from "./company-skill.js";
 
 export {
+  routineVariableSchema,
   createRoutineSchema,
   updateRoutineSchema,
   createRoutineTriggerSchema,

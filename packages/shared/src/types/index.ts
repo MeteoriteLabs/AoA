@@ -151,6 +151,8 @@ export type {
   RoutineDetail,
   RoutineRunSummary,
   RoutineListItem,
+  RoutineVariable,
+  RoutineVariableDefaultValue,
 } from "./routine.js";
 export type {
   InstanceGeneralSettings,

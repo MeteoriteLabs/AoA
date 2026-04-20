@@ -1,4 +1,15 @@
-import type { RoutineStatus, RoutineConcurrencyPolicy, RoutineCatchUpPolicy, RoutineTriggerKind, RoutineTriggerSigningMode, RoutineRunStatus, RoutineRunSource } from "../constants.js";
+import type { RoutineStatus, RoutineConcurrencyPolicy, RoutineCatchUpPolicy, RoutineTriggerKind, RoutineTriggerSigningMode, RoutineRunStatus, RoutineRunSource, RoutineVariableType } from "../constants.js";
+
+export type RoutineVariableDefaultValue = string | number | boolean | null;
+
+export interface RoutineVariable {
+  name: string;
+  label: string | null;
+  type: RoutineVariableType;
+  defaultValue: RoutineVariableDefaultValue;
+  required: boolean;
+  options: string[];
+}
 
 export interface Routine {
   id: string;
@@ -13,6 +24,7 @@ export interface Routine {
   status: RoutineStatus;
   concurrencyPolicy: RoutineConcurrencyPolicy;
   catchUpPolicy: RoutineCatchUpPolicy;
+  variables: RoutineVariable[];
   createdByAgentId: string | null;
   createdByUserId: string | null;
   updatedByAgentId: string | null;

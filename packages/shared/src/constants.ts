@@ -591,6 +591,9 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
+export const ROUTINE_VARIABLE_TYPES = ["text", "textarea", "number", "boolean", "select"] as const;
+export type RoutineVariableType = (typeof ROUTINE_VARIABLE_TYPES)[number];
+
 // ---------------------------------------------------------------------------
 // Plugin system constants
 // ---------------------------------------------------------------------------
