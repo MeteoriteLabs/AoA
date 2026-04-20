@@ -511,3 +511,101 @@ describe("NotesSection", () => {
     });
   });
 });
+
+describe("WorkspaceRightPanel — collapsed icon rail", () => {
+  it("renders icon rail instead of sections when collapsed", () => {
+    renderRightPanel({ collapsed: true });
+
+    expect(screen.getByTestId("workspace-right-panel-collapsed")).toBeInTheDocument();
+    expect(screen.queryByTestId("section-artifacts")).not.toBeInTheDocument();
+    expect(screen.getByTestId("workspace-right-panel-expand")).toBeInTheDocument();
+  });
+
+  it("shows all permanent section icons for software_development", () => {
+    renderRightPanel({ collapsed: true, functionType: "software_development" });
+
+    expect(screen.getByTestId("workspace-rail-section-artifacts")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-rail-section-process")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-rail-section-memory")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-rail-section-git")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-rail-section-terminal")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-rail-section-notes")).toBeInTheDocument();
+  });
+
+  it("hides git + terminal icons for non-software functionType", () => {
+    renderRightPanel({ collapsed: true, functionType: "marketing" });
+
+    expect(screen.getByTestId("workspace-rail-section-artifacts")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-rail-section-process")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-rail-section-memory")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-rail-section-notes")).toBeInTheDocument();
+    expect(screen.queryByTestId("workspace-rail-section-git")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("workspace-rail-section-terminal")).not.toBeInTheDocument();
+  });
+
+  it("clicking a section icon calls onExpandAndShowSection with section name", () => {
+    const onExpandAndShowSection = vi.fn();
+    renderRightPanel({
+      collapsed: true,
+      onExpandAndShowSection,
+    });
+
+    fireEvent.click(screen.getByTestId("workspace-rail-section-memory"));
+    expect(onExpandAndShowSection).toHaveBeenCalledWith("memory");
+  });
+
+  it("expand toggle calls onToggleCollapse", () => {
+    const onToggleCollapse = vi.fn();
+    renderRightPanel({ collapsed: true, onToggleCollapse });
+
+    fireEvent.click(screen.getByTestId("workspace-right-panel-expand"));
+    expect(onToggleCollapse).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows collapse button in expanded header", () => {
+    const onToggleCollapse = vi.fn();
+    renderRightPanel({ collapsed: false, onToggleCollapse });
+
+    expect(screen.getByTestId("workspace-right-panel-collapse")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("workspace-right-panel-collapse"));
+    expect(onToggleCollapse).toHaveBeenCalledTimes(1);
+  });
+
+  it("openSection prop force-opens the named section when expanded", async () => {
+    // Memory section starts closed by setting localStorage to "false"
+    localStorage.setItem("aoa:workspace:section:memory", "false");
+
+    const { rerender } = renderRightPanel({
+      collapsed: false,
+      openSection: null,
+    });
+
+    // memory section should be rendered but collapsed (no memory-placeholder visible)
+    await waitFor(() => {
+      expect(screen.getByTestId("section-memory")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("memory-placeholder")).not.toBeInTheDocument();
+
+    // Now re-render with an openSection request
+    rerender(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })}>
+        <MemoryRouter>
+          <WorkspaceRightPanel
+            issueId="issue-1"
+            companyId="comp-1"
+            companyPrefix="TC"
+            workspace={mockWorkspace}
+            functionType="software_development"
+            previewMode={null}
+            collapsed={false}
+            openSection={{ section: "memory", nonce: 123 }}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("memory-placeholder")).toBeInTheDocument();
+    });
+  });
+});

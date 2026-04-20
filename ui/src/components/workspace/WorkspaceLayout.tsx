@@ -9,6 +9,7 @@ import { WorkspaceTimeline } from "./WorkspaceTimeline";
 import { WorkspacePreviewPanel, PreviewModeToolbar, type PreviewMode } from "./WorkspacePreviewPanel";
 import { WorkspaceRightPanel } from "./WorkspaceRightPanel";
 import { useSidebar } from "../../context/SidebarContext";
+import { useSidebarCollapsed } from "./useSidebarCollapsed";
 import { ListTodo, MessageSquare, Eye, Layers, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -53,6 +54,28 @@ export function WorkspaceLayout({
     version: ArtifactVersion;
   } | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+
+  // Sidebar collapse state (desktop only; persisted per workspace)
+  const [leftCollapsed, setLeftCollapsed] = useSidebarCollapsed(workspace.id, "left");
+  const [rightCollapsed, setRightCollapsed] = useSidebarCollapsed(workspace.id, "right");
+  const [scrollToGroup, setScrollToGroup] = useState<{ group: string; nonce: number } | null>(null);
+  const [openSectionRequest, setOpenSectionRequest] = useState<{ section: string; nonce: number } | null>(null);
+
+  const handleExpandAndShowGroup = useCallback(
+    (group: string) => {
+      setLeftCollapsed(false);
+      setScrollToGroup({ group, nonce: Date.now() });
+    },
+    [setLeftCollapsed],
+  );
+
+  const handleExpandAndShowSection = useCallback(
+    (section: string) => {
+      setRightCollapsed(false);
+      setOpenSectionRequest({ section, nonce: Date.now() });
+    },
+    [setRightCollapsed],
+  );
 
   const handlePreviewArtifact = useCallback(
     (artifact: ArtifactWithVersions, version: ArtifactVersion) => {
@@ -190,7 +213,14 @@ export function WorkspaceLayout({
         /* Desktop layout — existing code */
         <div className="flex flex-1 min-h-0 overflow-hidden">
           {/* Left panel */}
-          <div className="w-[250px] shrink-0 h-full overflow-hidden border-r border-border" data-testid="workspace-left-panel">
+          <div
+            className={cn(
+              "shrink-0 h-full overflow-hidden border-r border-border transition-[width] duration-200",
+              leftCollapsed ? "w-[48px]" : "w-[250px]",
+            )}
+            data-testid="workspace-left-panel"
+            data-collapsed={leftCollapsed ? "true" : "false"}
+          >
             <WorkspaceTaskNav
               companyId={companyId}
               companyPrefix={companyPrefix}
@@ -199,6 +229,10 @@ export function WorkspaceLayout({
               onSelectIssue={onSelectIssue}
               onBack={onBack}
               departmentName={project?.name ?? "Department"}
+              collapsed={leftCollapsed}
+              onToggleCollapse={() => setLeftCollapsed(!leftCollapsed)}
+              onExpandAndShowGroup={handleExpandAndShowGroup}
+              scrollToGroup={scrollToGroup}
             />
           </div>
 
@@ -268,7 +302,14 @@ export function WorkspaceLayout({
           </Group>
 
           {/* Right panel */}
-          <div className="w-[280px] shrink-0 h-full overflow-hidden border-l border-border" data-testid="workspace-right-panel">
+          <div
+            className={cn(
+              "shrink-0 h-full overflow-hidden border-l border-border transition-[width] duration-200",
+              rightCollapsed ? "w-[48px]" : "w-[280px]",
+            )}
+            data-testid="workspace-right-panel"
+            data-collapsed={rightCollapsed ? "true" : "false"}
+          >
             {selectedIssueId ? (
               <WorkspaceRightPanel
                 issueId={selectedIssueId}
@@ -280,6 +321,10 @@ export function WorkspaceLayout({
                 selectedFile={selectedFile}
                 onSelectFile={handleSelectFile}
                 onPreviewArtifact={handlePreviewArtifact}
+                collapsed={rightCollapsed}
+                onToggleCollapse={() => setRightCollapsed(!rightCollapsed)}
+                onExpandAndShowSection={handleExpandAndShowSection}
+                openSection={openSectionRequest}
               />
             ) : (
               <div className="flex items-center justify-center h-full text-sm text-muted-foreground p-4 text-center">

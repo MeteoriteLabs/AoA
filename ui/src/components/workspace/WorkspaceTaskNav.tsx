@@ -1,6 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronDown, ChevronRight, Search } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle,
+  ChevronLeft,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  PanelLeft,
+  PanelLeftClose,
+  Search,
+  Zap,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { issuesApi } from "../../api/issues";
 import { queryKeys } from "../../lib/queryKeys";
 import { StatusIcon } from "../StatusIcon";
@@ -17,18 +29,23 @@ interface WorkspaceTaskNavProps {
   onSelectIssue: (issueId: string) => void;
   onBack: () => void;
   departmentName: string;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onExpandAndShowGroup?: (groupLabel: string) => void;
+  scrollToGroup?: { group: string; nonce: number } | null;
 }
 
 type TaskGroup = {
   label: string;
   statuses: string[];
+  icon: LucideIcon;
 };
 
 const TASK_GROUPS: TaskGroup[] = [
-  { label: "Needs Attention", statuses: ["blocked", "in_review"] },
-  { label: "Running", statuses: ["in_progress"] },
-  { label: "Idle", statuses: ["backlog", "todo"] },
-  { label: "Completed", statuses: ["done", "cancelled"] },
+  { label: "Needs Attention", statuses: ["blocked", "in_review"], icon: AlertTriangle },
+  { label: "Running", statuses: ["in_progress"], icon: Zap },
+  { label: "Idle", statuses: ["backlog", "todo"], icon: Clock },
+  { label: "Completed", statuses: ["done", "cancelled"], icon: CheckCircle },
 ];
 
 export function WorkspaceTaskNav({
@@ -39,9 +56,14 @@ export function WorkspaceTaskNav({
   onSelectIssue,
   onBack,
   departmentName,
+  collapsed = false,
+  onToggleCollapse,
+  onExpandAndShowGroup,
+  scrollToGroup,
 }: WorkspaceTaskNavProps) {
   const [search, setSearch] = useState("");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set(["Completed"]));
+  const groupRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const { data: allIssues = [], isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listByProject(companyId, projectId),
@@ -82,18 +104,102 @@ export function WorkspaceTaskNav({
     });
   };
 
+  // Scroll to the requested group when the nonce changes (from parent when user clicks a collapsed-rail icon)
+  useEffect(() => {
+    if (!scrollToGroup || collapsed) return;
+    const el = groupRefs.current[scrollToGroup.group];
+    if (!el) return;
+    // Ensure the group is not collapsed
+    setCollapsedGroups((prev) => {
+      if (!prev.has(scrollToGroup.group)) return prev;
+      const next = new Set(prev);
+      next.delete(scrollToGroup.group);
+      return next;
+    });
+    // Scroll after next paint so the group content is visible
+    requestAnimationFrame(() => {
+      if (typeof el.scrollIntoView === "function") {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+  }, [scrollToGroup, collapsed]);
+
+  // ── Collapsed icon rail ──
+  if (collapsed) {
+    return (
+      <div
+        className="flex flex-col h-full items-start py-2 gap-1"
+        data-testid="workspace-task-nav-collapsed"
+      >
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          title="Expand tasks"
+          className="flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+          data-testid="workspace-task-nav-expand"
+          aria-label="Expand task list"
+        >
+          <PanelLeft className="h-4 w-4" />
+        </button>
+
+        <div className="w-6 h-px bg-border my-1" />
+
+        {TASK_GROUPS.map((group) => {
+          const count = filtered.filter((i) => group.statuses.includes(i.status)).length;
+          if (count === 0) return null;
+          const Icon = group.icon;
+          const groupSlug = group.label.toLowerCase().replace(/\s+/g, "-");
+          return (
+            <button
+              key={group.label}
+              type="button"
+              onClick={() => onExpandAndShowGroup?.(group.label)}
+              title={`${group.label} (${count})`}
+              className="relative flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+              data-testid={`workspace-rail-group-${groupSlug}`}
+              aria-label={`${group.label} (${count})`}
+            >
+              <Icon className="h-4 w-4" />
+              <span
+                className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-accent text-accent-foreground text-[10px] font-medium flex items-center justify-center"
+                data-testid={`workspace-rail-badge-${groupSlug}`}
+              >
+                {count > 99 ? "99+" : count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // ── Expanded (existing behavior) ──
   return (
     <div className="flex flex-col h-full" data-testid="workspace-task-nav">
-      {/* Back button */}
-      <button
-        type="button"
-        onClick={onBack}
-        className="flex items-center gap-1.5 px-3 py-3 text-sm text-muted-foreground hover:text-foreground transition-colors border-b border-border shrink-0"
-        data-testid="workspace-back-btn"
-      >
-        <ChevronLeft className="h-4 w-4" />
-        <span>Back to Department</span>
-      </button>
+      {/* Back button + collapse chevron */}
+      <div className="flex items-center border-b border-border shrink-0">
+        <button
+          type="button"
+          onClick={onBack}
+          className="flex-1 flex items-center gap-1.5 px-3 py-3 text-sm text-muted-foreground hover:text-foreground transition-colors min-w-0"
+          data-testid="workspace-back-btn"
+        >
+          <ChevronLeft className="h-4 w-4 shrink-0" />
+          <span className="truncate">Back to Department</span>
+        </button>
+        {onToggleCollapse && (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            title="Collapse tasks"
+            className="flex items-center justify-center w-9 h-9 mr-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            data-testid="workspace-task-nav-collapse"
+            aria-label="Collapse task list"
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </button>
+        )}
+      </div>
 
       {/* Department name */}
       <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground border-b border-border shrink-0">
@@ -128,14 +234,20 @@ export function WorkspaceTaskNav({
             const groupIssues = filtered.filter((i) => group.statuses.includes(i.status));
             if (groupIssues.length === 0) return null;
             const isCollapsed = collapsedGroups.has(group.label);
+            const groupSlug = group.label.toLowerCase().replace(/\s+/g, "-");
 
             return (
-              <div key={group.label}>
+              <div
+                key={group.label}
+                ref={(el) => {
+                  groupRefs.current[group.label] = el;
+                }}
+              >
                 <button
                   type="button"
                   onClick={() => toggleGroup(group.label)}
                   className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-                  data-testid={`workspace-group-${group.label.toLowerCase().replace(/\s+/g, "-")}`}
+                  data-testid={`workspace-group-${groupSlug}`}
                 >
                   {isCollapsed ? (
                     <ChevronRight className="h-3 w-3 shrink-0" />
