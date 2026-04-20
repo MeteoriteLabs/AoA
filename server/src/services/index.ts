@@ -49,6 +49,7 @@ export { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 export { instanceSettingsService } from "./instance-settings.js";
 
 export { boardAuthService } from "./board-auth.js";
+export { userProfileService } from "./user-profile.js";
 
 export { executionWorkspaceService, toExecutionWorkspace } from "./execution-workspaces.js";
 export {

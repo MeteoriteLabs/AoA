@@ -47,6 +47,7 @@ import { workflowTemplateRoutes } from "./routes/workflow-templates.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { cliAuthRoutes } from "./routes/cli-auth.js";
+import { authProfileRoutes } from "./routes/auth-profile.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
 import { adapterRoutes } from "./routes/adapters.js";
@@ -138,23 +139,9 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
-  app.get("/api/auth/get-session", (req, res) => {
-    if (req.actor.type !== "board" || !req.actor.userId) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    res.json({
-      session: {
-        id: `paperclip:${req.actor.source}:${req.actor.userId}`,
-        userId: req.actor.userId,
-      },
-      user: {
-        id: req.actor.userId,
-        email: null,
-        name: req.actor.source === "local_implicit" ? "Local Board" : null,
-      },
-    });
-  });
+  // Mount profile-aware auth routes (get-session with DB-loaded user, profile GET/PATCH)
+  // before the betterAuthHandler catch-all so specific routes win.
+  app.use("/api", authProfileRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/*authPath", opts.betterAuthHandler);
   }

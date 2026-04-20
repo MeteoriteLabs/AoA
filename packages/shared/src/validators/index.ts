@@ -212,6 +212,13 @@ export {
 } from "./team.js";
 
 export {
+  currentUserProfileSchema,
+  updateCurrentUserProfileSchema,
+  type CurrentUserProfile,
+  type UpdateCurrentUserProfile,
+} from "./auth-profile.js";
+
+export {
   workflowStepSchema,
   workflowDependencySchema,
   createWorkflowTemplateSchema,

@@ -610,6 +610,10 @@ export {
   type UpdateExecutionWorkspace,
   pluginManifestV1Schema,
   type PluginManifestV1Input,
+  currentUserProfileSchema,
+  updateCurrentUserProfileSchema,
+  type CurrentUserProfile,
+  type UpdateCurrentUserProfile,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
