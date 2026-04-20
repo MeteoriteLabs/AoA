@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
@@ -60,7 +60,33 @@ import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
+import { buildHostServices } from "./services/plugin-host-services.js";
+import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
+import { resolvePaperclipInstanceId } from "./home-paths.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+
+// Host version reported to plugin workers during initialize. Read from
+// server package.json at import time; falls back to "0.0.0" if unreadable.
+const SERVER_VERSION = (() => {
+  try {
+    const __dirname = path.dirname(fileURLToPath(import.meta.url));
+    // Try dist location (server/dist/app.js -> server/package.json) and source
+    // location (server/src/app.ts -> server/package.json)
+    const candidates = [
+      path.resolve(__dirname, "../package.json"),
+      path.resolve(__dirname, "../../package.json"),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) {
+        const pkg = JSON.parse(fs.readFileSync(p, "utf-8")) as { version?: string };
+        if (pkg.version) return pkg.version;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return "0.0.0";
+})();
 
 type UiMode = "none" | "static" | "vite-dev";
 
@@ -81,7 +107,16 @@ export async function createApp(
 ) {
   const app = express();
 
-  app.use(express.json());
+  // Capture raw request body bytes so plugin webhook handlers can verify HMAC
+  // signatures against the exact bytes the provider signed. Without this,
+  // (req as any).rawBody is undefined and signature verification breaks.
+  app.use(express.json({
+    verify: (req, _res, buf) => {
+      if (buf && buf.length > 0) {
+        (req as unknown as { rawBody?: Buffer }).rawBody = buf;
+      }
+    },
+  }));
   app.use(httpLogger);
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
@@ -205,9 +240,31 @@ export async function createApp(
     scheduler: jobSchedulerInst,
     jobStore: jobStoreInst,
   });
-  // Loader is created without runtimeServices initially — loadAll() is called
-  // from index.ts after full runtime wiring.
-  const loaderInst = pluginLoader(db);
+  // Compose PluginRuntimeServices from existing subsystems + host services
+  // factory. Without this, pluginLoader.loadAll() throws at startup and no
+  // plugins activate. The loader.loadAll() call happens in index.ts after
+  // the server is listening.
+  const pluginRuntimeServices = {
+    workerManager: workerMgr,
+    eventBus,
+    jobScheduler: jobSchedulerInst,
+    jobStore: jobStoreInst,
+    toolDispatcher: toolDispatcherInst,
+    lifecycleManager: lifecycleMgr,
+    buildHostHandlers: (pluginId: string, manifest: PaperclipPluginManifestV1) => {
+      const services = buildHostServices(db, pluginId, manifest.id, eventBus);
+      return createHostClientHandlers({
+        pluginId,
+        capabilities: manifest.capabilities ?? [],
+        services,
+      });
+    },
+    instanceInfo: {
+      instanceId: resolvePaperclipInstanceId(),
+      hostVersion: SERVER_VERSION,
+    },
+  };
+  const loaderInst = pluginLoader(db, {}, pluginRuntimeServices);
 
   api.use(pluginRoutes(db, loaderInst, {
     scheduler: jobSchedulerInst,
