@@ -13,6 +13,7 @@ export { heartbeatService } from "./heartbeat.js";
 export { dependencyService } from "./dependencies.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
+export { sidebarPreferencesService } from "./sidebar-preferences.js";
 export { accessService } from "./access.js";
 export { teamService } from "./team.js";
 export { orgHierarchyService } from "./org-hierarchy.js";

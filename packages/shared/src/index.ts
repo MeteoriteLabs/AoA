@@ -614,6 +614,10 @@ export {
   updateCurrentUserProfileSchema,
   type CurrentUserProfile,
   type UpdateCurrentUserProfile,
+  sidebarPreferencesSchema,
+  updateSidebarPreferencesSchema,
+  type SidebarPreferences,
+  type UpdateSidebarPreferences,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

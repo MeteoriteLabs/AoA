@@ -313,3 +313,10 @@ export {
   pluginManifestV1Schema,
   type PluginManifestV1Input,
 } from "./plugin.js";
+
+export {
+  sidebarPreferencesSchema,
+  updateSidebarPreferencesSchema,
+  type SidebarPreferences,
+  type UpdateSidebarPreferences,
+} from "./sidebar-preferences.js";
