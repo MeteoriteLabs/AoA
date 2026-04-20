@@ -238,16 +238,21 @@ export function isOverridePaused(type: string): boolean {
 
 /**
  * Pause or resume an external adapter's override of a builtin type. Returns
- * true if the state changed.
+ * true if the state changed. No-op (returns false) when the type has no
+ * active external override — there's nothing to pause.
  */
 export function setOverridePaused(type: string, paused: boolean): boolean {
-  if (!BUILTIN_ADAPTER_TYPES.has(type)) return false;
-  if (paused) {
-    if (pausedOverrides.has(type)) return false;
+  if (!builtinFallbacks.has(type)) return false;
+  const wasPaused = pausedOverrides.has(type);
+  if (paused && !wasPaused) {
     pausedOverrides.add(type);
     return true;
   }
-  return pausedOverrides.delete(type);
+  if (!paused && wasPaused) {
+    pausedOverrides.delete(type);
+    return true;
+  }
+  return false;
 }
 
 // Surface disabled-state check so the route doesn't have to import the store

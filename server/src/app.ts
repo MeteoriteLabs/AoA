@@ -49,6 +49,7 @@ import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { cliAuthRoutes } from "./routes/cli-auth.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
+import { adapterRoutes } from "./routes/adapters.js";
 import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { pluginLoader } from "./services/plugin-loader.js";
@@ -205,6 +206,7 @@ export async function createApp(
   api.use(cliAuthRoutes(db));
   api.use(executionWorkspaceRoutes(db));
   api.use(filesystemRoutes());
+  api.use(adapterRoutes());
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
