@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity as ActivityIcon,
+  Braces,
   Clock3,
   Copy,
   Play,
@@ -51,10 +52,11 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import type { RoutineTrigger } from "@paperclipai/shared";
+import { RoutineVariablesEditor } from "@/components/routines/RoutineVariablesEditor";
 
 const triggerKinds = ["schedule", "webhook"];
 const signingModes = ["bearer", "hmac_sha256"];
-const routineTabs = ["triggers", "runs", "activity"] as const;
+const routineTabs = ["triggers", "runs", "variables", "activity"] as const;
 
 type RoutineTab = (typeof routineTabs)[number];
 
@@ -963,6 +965,15 @@ export function RoutineDetail() {
             )}
             {hasLiveRun && <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />}
           </TabsTrigger>
+          <TabsTrigger value="variables" className="gap-1.5">
+            <Braces className="h-3.5 w-3.5" />
+            Variables
+            {routine.variables.length > 0 && (
+              <span className="ml-0.5 rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                {routine.variables.length}
+              </span>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
@@ -1114,6 +1125,15 @@ export function RoutineDetail() {
               ))}
             </div>
           )}
+        </TabsContent>
+
+        <TabsContent value="variables">
+          <RoutineVariablesEditor
+            routineId={routine.id}
+            title={routine.title}
+            description={routine.description}
+            initialVariables={routine.variables}
+          />
         </TabsContent>
 
         <TabsContent value="activity">

@@ -128,6 +128,7 @@ import {
   ReportsToSelect,
   type UnifiedOrgNode,
 } from "@/components/team/ReportsToSelect";
+import { RoutineVariablesEditor } from "@/components/routines/RoutineVariablesEditor";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -1334,6 +1335,11 @@ export function DesignGuide() {
       <ReportsToSelectShowcase />
 
       {/* ============================================================ */}
+      {/*  ROUTINE VARIABLES EDITOR                                     */}
+      {/* ============================================================ */}
+      <RoutineVariablesEditorShowcase />
+
+      {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
       <Section title="Keyboard Shortcuts">
@@ -1468,6 +1474,83 @@ function ReportsToSelectShowcase() {
             onChange={() => {}}
             disabled
             disabledEmptyLabel="No managers yet (CEO)"
+          />
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  RoutineVariablesEditor showcase                                    */
+/* ------------------------------------------------------------------ */
+
+function RoutineVariablesEditorShowcase() {
+  const routineId = "00000000-0000-0000-0000-000000000000";
+  return (
+    <Section title="Routine Variables Editor">
+      <SubSection title="Empty state (no placeholders in title/description)">
+        <div className="max-w-2xl">
+          <RoutineVariablesEditor
+            routineId={routineId}
+            title="Daily standup"
+            description="Post a summary to the team"
+            initialVariables={[]}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Single detected variable (default metadata)">
+        <div className="max-w-2xl">
+          <RoutineVariablesEditor
+            routineId={routineId}
+            title="Review {{topic}}"
+            description="Read all notes related to the given topic and summarise."
+            initialVariables={[]}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Multiple variables with configured metadata">
+        <div className="max-w-2xl">
+          <RoutineVariablesEditor
+            routineId={routineId}
+            title="Send {{tone}} digest about {{topic}}"
+            description="Depth: {{depth}}. Include charts: {{include_charts}}"
+            initialVariables={[
+              {
+                name: "tone",
+                label: "Tone",
+                type: "select",
+                defaultValue: "neutral",
+                required: true,
+                options: ["friendly", "neutral", "formal"],
+              },
+              {
+                name: "topic",
+                label: "Topic",
+                type: "text",
+                defaultValue: "weekly wins",
+                required: true,
+                options: [],
+              },
+              {
+                name: "depth",
+                label: "Depth (sentences)",
+                type: "number",
+                defaultValue: 5,
+                required: false,
+                options: [],
+              },
+              {
+                name: "include_charts",
+                label: "Include charts",
+                type: "boolean",
+                defaultValue: false,
+                required: false,
+                options: [],
+              },
+            ]}
           />
         </div>
       </SubSection>
