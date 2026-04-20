@@ -9,6 +9,7 @@ import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
 import { PrivacyTab } from "@/components/settings/PrivacyTab";
 import { BackupsTab } from "@/components/settings/BackupsTab";
+import { HeartbeatsTab } from "@/components/settings/HeartbeatsTab";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -17,6 +18,7 @@ const TABS = [
   { value: "general", label: "General" },
   { value: "privacy", label: "Privacy" },
   { value: "backups", label: "Backups" },
+  { value: "heartbeats", label: "Heartbeats" },
   { value: "experimental", label: "Experimental" },
   { value: "plugins", label: "Plugins" },
 ];
@@ -170,6 +172,11 @@ export function InstanceSettingsPage() {
                 isSaving={generalMutation.isPending}
                 onChange={(patch) => generalMutation.mutate(patch)}
               />
+            </TabsContent>
+
+            {/* ── Heartbeats tab ───────────────────────────────────────── */}
+            <TabsContent value="heartbeats" className="mt-6">
+              <HeartbeatsTab />
             </TabsContent>
 
             {/* ── Experimental tab ─────────────────────────────────────── */}

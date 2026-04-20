@@ -159,6 +159,7 @@ export const queryKeys = {
   instanceSettings: {
     general: ["instance-settings", "general"] as const,
     experimental: ["instance-settings", "experimental"] as const,
+    schedulerHeartbeats: ["instance-settings", "scheduler-heartbeats"] as const,
   },
   executionWorkspaces: {
     list: (companyId: string) => ["executionWorkspaces", companyId] as const,

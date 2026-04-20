@@ -132,6 +132,7 @@ import { RoutineVariablesEditor } from "@/components/routines/RoutineVariablesEd
 import { RoutineRunDialog } from "@/components/routines/RoutineRunDialog";
 import { PrivacyTab } from "@/components/settings/PrivacyTab";
 import { BackupsTab } from "@/components/settings/BackupsTab";
+import { HeartbeatsTabView } from "@/components/settings/HeartbeatsTab";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -1745,6 +1746,95 @@ function SettingsTabsShowcase() {
             error={null}
             isSaving={false}
             onChange={() => {}}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Heartbeats Tab — empty (no scheduler agents)">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <HeartbeatsTabView
+            agents={[]}
+            actionError={null}
+            isTogglingId={null}
+            isDisablingAll={false}
+            onToggle={() => {}}
+            onDisableAll={() => {}}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Heartbeats Tab — mixed (some active, some disabled)">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <HeartbeatsTabView
+            agents={[
+              {
+                id: "a-1",
+                companyId: "comp-1",
+                companyName: "Acme",
+                companyIssuePrefix: "ACM",
+                agentName: "Alpha",
+                agentUrlKey: "alpha",
+                role: "engineer",
+                title: "Senior Engineer",
+                status: "active",
+                adapterType: "claude_local",
+                intervalSec: 60,
+                heartbeatEnabled: true,
+                schedulerActive: true,
+                lastHeartbeatAt: new Date(Date.now() - 2 * 60 * 1000),
+              },
+              {
+                id: "a-2",
+                companyId: "comp-1",
+                companyName: "Acme",
+                companyIssuePrefix: "ACM",
+                agentName: "Bravo",
+                agentUrlKey: "bravo",
+                role: "pm",
+                title: "Product Lead",
+                status: "active",
+                adapterType: "openai_api",
+                intervalSec: 300,
+                heartbeatEnabled: false,
+                schedulerActive: false,
+                lastHeartbeatAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+              },
+            ]}
+            actionError={null}
+            isTogglingId={null}
+            isDisablingAll={false}
+            onToggle={() => {}}
+            onDisableAll={() => {}}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Heartbeats Tab — all disabled (Disable All hidden)">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <HeartbeatsTabView
+            agents={[
+              {
+                id: "a-1",
+                companyId: "comp-1",
+                companyName: "Acme",
+                companyIssuePrefix: "ACM",
+                agentName: "Alpha",
+                agentUrlKey: "alpha",
+                role: "engineer",
+                title: "Senior Engineer",
+                status: "active",
+                adapterType: "claude_local",
+                intervalSec: 60,
+                heartbeatEnabled: false,
+                schedulerActive: false,
+                lastHeartbeatAt: null,
+              },
+            ]}
+            actionError={null}
+            isTogglingId={null}
+            isDisablingAll={false}
+            onToggle={() => {}}
+            onDisableAll={() => {}}
           />
         </div>
       </SubSection>
