@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import { LogOut, User as UserIcon } from "lucide-react";
+import { LogOut, RotateCcw, User as UserIcon } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -12,6 +12,8 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { profileApi } from "../api/profile";
 import { authApi } from "../api/auth";
+import { useCompany } from "../context/CompanyContext";
+import { useSidebarOrder } from "../hooks/useSidebarOrder";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 
@@ -32,6 +34,8 @@ interface UserMenuProps {
 export function UserMenu({ collapsed, className }: UserMenuProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { selectedCompanyId } = useCompany();
+  const { resetToDefault: resetSidebarOrder } = useSidebarOrder(selectedCompanyId);
 
   const { data: profile } = useQuery({
     queryKey: queryKeys.auth.profile,
@@ -109,6 +113,13 @@ export function UserMenu({ collapsed, className }: UserMenuProps) {
         <DropdownMenuItem onSelect={() => navigate("/me")}>
           <UserIcon />
           Profile
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={resetSidebarOrder}
+          disabled={!selectedCompanyId}
+        >
+          <RotateCcw />
+          Reset sidebar to default
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={handleSignOut}>

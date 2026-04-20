@@ -29,6 +29,20 @@ vi.mock("@/api/auth", () => ({
   authApi: { signOut: (...args: unknown[]) => signOut(...args) },
 }));
 
+const resetSidebar = vi.fn();
+vi.mock("@/hooks/useSidebarOrder", () => ({
+  useSidebarOrder: () => ({
+    departmentOrder: [],
+    projectOrder: [],
+    orderFor: () => [],
+    setOrder: vi.fn(),
+    flushPending: vi.fn(),
+    resetToDefault: resetSidebar,
+    isSyncing: false,
+    isLoading: false,
+  }),
+}));
+
 describe("UserMenu", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -80,5 +94,21 @@ describe("UserMenu", () => {
     await user.click(await screen.findByRole("menuitem", { name: /sign out/i }));
     await waitFor(() => expect(signOut).toHaveBeenCalled());
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/auth", undefined));
+  });
+
+  it("calls sidebar resetToDefault when 'Reset sidebar to default' is selected", async () => {
+    const previous = mockCompanyContext.selectedCompanyId;
+    mockCompanyContext.selectedCompanyId = "11111111-1111-1111-1111-111111111111";
+    try {
+      const user = userEvent.setup();
+      renderWithProviders(<UserMenu />);
+      await user.click(await screen.findByRole("button", { name: /account menu/i }));
+      await user.click(
+        await screen.findByRole("menuitem", { name: /reset sidebar to default/i }),
+      );
+      expect(resetSidebar).toHaveBeenCalledTimes(1);
+    } finally {
+      mockCompanyContext.selectedCompanyId = previous;
+    }
   });
 });
