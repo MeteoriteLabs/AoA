@@ -130,6 +130,8 @@ import {
 } from "@/components/team/ReportsToSelect";
 import { RoutineVariablesEditor } from "@/components/routines/RoutineVariablesEditor";
 import { RoutineRunDialog } from "@/components/routines/RoutineRunDialog";
+import { PrivacyTab } from "@/components/settings/PrivacyTab";
+import { BackupsTab } from "@/components/settings/BackupsTab";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -1670,6 +1672,82 @@ function RoutineRunDialogShowcase() {
           ]}
         />
       </SubSection>
+
+      <SettingsTabsShowcase />
     </Section>
+  );
+}
+
+function SettingsTabsShowcase() {
+  return (
+    <>
+      <SubSection title="Privacy Tab — default (privacy-first: not_allowed)">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <PrivacyTab
+            settings={{
+              censorUsernameInLogs: false,
+              keyboardShortcuts: false,
+              feedbackDataSharingPreference: "not_allowed",
+              backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            }}
+            isLoading={false}
+            error={null}
+            isSaving={false}
+            onChange={() => {}}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Privacy Tab — feedback sharing enabled">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <PrivacyTab
+            settings={{
+              censorUsernameInLogs: false,
+              keyboardShortcuts: false,
+              feedbackDataSharingPreference: "allowed",
+              backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            }}
+            isLoading={false}
+            error={null}
+            isSaving={false}
+            onChange={() => {}}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Backups Tab — default retention (7d / 4w / 1m)">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <BackupsTab
+            settings={{
+              censorUsernameInLogs: false,
+              keyboardShortcuts: false,
+              feedbackDataSharingPreference: "not_allowed",
+              backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            }}
+            isLoading={false}
+            error={null}
+            isSaving={false}
+            onChange={() => {}}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Backups Tab — maximum retention (14d / 4w / 6m)">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <BackupsTab
+            settings={{
+              censorUsernameInLogs: false,
+              keyboardShortcuts: false,
+              feedbackDataSharingPreference: "not_allowed",
+              backupRetention: { dailyDays: 14, weeklyWeeks: 4, monthlyMonths: 6 },
+            }}
+            isLoading={false}
+            error={null}
+            isSaving={false}
+            onChange={() => {}}
+          />
+        </div>
+      </SubSection>
+    </>
   );
 }

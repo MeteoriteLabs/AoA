@@ -3,15 +3,20 @@ import { useNavigate } from "@/lib/router";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Settings } from "lucide-react";
+import type { PatchInstanceGeneralSettings } from "@paperclipai/shared";
 import { PluginManager } from "./PluginManager";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
+import { PrivacyTab } from "@/components/settings/PrivacyTab";
+import { BackupsTab } from "@/components/settings/BackupsTab";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 
 const TABS = [
   { value: "general", label: "General" },
+  { value: "privacy", label: "Privacy" },
+  { value: "backups", label: "Backups" },
   { value: "experimental", label: "Experimental" },
   { value: "plugins", label: "Plugins" },
 ];
@@ -42,8 +47,8 @@ export function InstanceSettingsPage() {
   });
 
   const generalMutation = useMutation({
-    mutationFn: async (enabled: boolean) =>
-      instanceSettingsApi.updateGeneral({ censorUsernameInLogs: enabled }),
+    mutationFn: async (patch: PatchInstanceGeneralSettings) =>
+      instanceSettingsApi.updateGeneral(patch),
     onSuccess: async () => {
       setActionError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.instanceSettings.general });
@@ -73,6 +78,7 @@ export function InstanceSettingsPage() {
   });
 
   const censorUsernameInLogs = generalQuery.data?.censorUsernameInLogs === true;
+  const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
 
@@ -111,7 +117,8 @@ export function InstanceSettingsPage() {
               <div className="space-y-1">
                 <h2 className="text-base font-semibold">General</h2>
                 <p className="text-sm text-muted-foreground">
-                  Instance-wide defaults that affect how operator-visible logs are displayed.
+                  Instance-wide defaults that affect how operator-visible logs are displayed and how
+                  teammates interact with the app.
                 </p>
               </div>
 
@@ -120,14 +127,49 @@ export function InstanceSettingsPage() {
               ) : generalQuery.error ? (
                 <div className="text-sm text-destructive">Failed to load general settings.</div>
               ) : (
-                <ToggleCard
-                  title="Censor username in logs"
-                  description="Hide the username segment in home-directory paths and similar operator-visible log output. Standalone username mentions outside of paths are not yet masked in the live transcript view."
-                  checked={censorUsernameInLogs}
-                  disabled={generalMutation.isPending}
-                  onToggle={() => generalMutation.mutate(!censorUsernameInLogs)}
-                />
+                <>
+                  <ToggleCard
+                    title="Censor username in logs"
+                    description="Hide the username segment in home-directory paths and similar operator-visible log output. Standalone username mentions outside of paths are not yet masked in the live transcript view."
+                    checked={censorUsernameInLogs}
+                    disabled={generalMutation.isPending}
+                    onToggle={() =>
+                      generalMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })
+                    }
+                  />
+                  <ToggleCard
+                    title="Keyboard shortcuts"
+                    description="Enable app-wide keyboard shortcuts, including inbox navigation and global shortcuts like creating a task or toggling panels. Off by default. Individual key bindings are read-only for now."
+                    checked={keyboardShortcuts}
+                    disabled={generalMutation.isPending}
+                    onToggle={() =>
+                      generalMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })
+                    }
+                  />
+                </>
               )}
+            </TabsContent>
+
+            {/* ── Privacy tab ──────────────────────────────────────────── */}
+            <TabsContent value="privacy" className="mt-6">
+              <PrivacyTab
+                settings={generalQuery.data}
+                isLoading={generalQuery.isLoading}
+                error={generalQuery.error}
+                isSaving={generalMutation.isPending}
+                onChange={(patch) => generalMutation.mutate(patch)}
+              />
+            </TabsContent>
+
+            {/* ── Backups tab ──────────────────────────────────────────── */}
+            <TabsContent value="backups" className="mt-6">
+              <BackupsTab
+                settings={generalQuery.data}
+                isLoading={generalQuery.isLoading}
+                error={generalQuery.error}
+                isSaving={generalMutation.isPending}
+                onChange={(patch) => generalMutation.mutate(patch)}
+              />
             </TabsContent>
 
             {/* ── Experimental tab ─────────────────────────────────────── */}
