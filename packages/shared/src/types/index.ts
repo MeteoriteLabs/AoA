@@ -158,7 +158,19 @@ export type {
   InstanceGeneralSettings,
   InstanceExperimentalSettings,
   InstanceSettings,
+  BackupRetentionPolicy,
 } from "./instance.js";
+export {
+  DAILY_RETENTION_PRESETS,
+  WEEKLY_RETENTION_PRESETS,
+  MONTHLY_RETENTION_PRESETS,
+  DEFAULT_BACKUP_RETENTION,
+} from "./instance.js";
+export type { FeedbackDataSharingPreference } from "./feedback.js";
+export {
+  FEEDBACK_DATA_SHARING_PREFERENCES,
+  DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
+} from "./feedback.js";
 export type {
   ExecutionWorkspaceStrategyType,
   ProjectExecutionWorkspaceDefaultMode,

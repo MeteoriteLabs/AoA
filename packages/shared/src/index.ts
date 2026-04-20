@@ -342,6 +342,8 @@ export type {
   InstanceGeneralSettings,
   InstanceExperimentalSettings,
   InstanceSettings,
+  BackupRetentionPolicy,
+  FeedbackDataSharingPreference,
   ExecutionWorkspaceStrategyType,
   ProjectExecutionWorkspaceDefaultMode,
   ExecutionWorkspaceMode,
@@ -382,6 +384,15 @@ export type {
   PatchPluginConfig,
   SetPluginState,
   ListPluginState,
+} from "./types/index.js";
+
+export {
+  DAILY_RETENTION_PRESETS,
+  WEEKLY_RETENTION_PRESETS,
+  MONTHLY_RETENTION_PRESETS,
+  DEFAULT_BACKUP_RETENTION,
+  FEEDBACK_DATA_SHARING_PREFERENCES,
+  DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
 } from "./types/index.js";
 
 export {
@@ -608,6 +619,8 @@ export {
   patchInstanceGeneralSettingsSchema,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  backupRetentionPolicySchema,
+  feedbackDataSharingPreferenceSchema,
   type PatchInstanceGeneralSettings,
   type PatchInstanceExperimentalSettings,
   executionWorkspaceStatusSchema,

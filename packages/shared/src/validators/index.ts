@@ -300,6 +300,8 @@ export {
   patchInstanceGeneralSettingsSchema,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  backupRetentionPolicySchema,
+  feedbackDataSharingPreferenceSchema,
   type PatchInstanceGeneralSettings,
   type PatchInstanceExperimentalSettings,
 } from "./instance.js";
