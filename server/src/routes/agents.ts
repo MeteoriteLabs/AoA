@@ -8,6 +8,7 @@ import {
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
+  deriveAgentUrlKey,
   isUuidLike,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
@@ -17,6 +18,7 @@ import {
   upsertAgentInstructionsFileSchema,
   wakeAgentSchema,
   updateAgentSchema,
+  type InstanceSchedulerHeartbeatAgent,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
@@ -189,6 +191,37 @@ export function agentRoutes(db: Db) {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
+  }
+
+  function parseBooleanLike(value: unknown): boolean | null {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      const trimmed = value.trim().toLowerCase();
+      if (trimmed === "true" || trimmed === "1") return true;
+      if (trimmed === "false" || trimmed === "0") return false;
+    }
+    if (typeof value === "number") {
+      if (value === 1) return true;
+      if (value === 0) return false;
+    }
+    return null;
+  }
+
+  function parseNumberLike(value: unknown): number | null {
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value === "string") {
+      const parsed = Number(value.trim());
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  function parseSchedulerHeartbeatPolicy(runtimeConfig: unknown) {
+    const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat) ?? {};
+    return {
+      enabled: parseBooleanLike(heartbeat.enabled) ?? false,
+      intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 0),
+    };
   }
 
   function applyCreateDefaultsByAdapterType(
@@ -410,6 +443,71 @@ export function agentRoutes(db: Db) {
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+  });
+
+  router.get("/instance/scheduler-heartbeats", async (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.isInstanceAdmin) {
+      throw forbidden("Instance admin required");
+    }
+
+    const rows = await db
+      .select({
+        id: agentsTable.id,
+        companyId: agentsTable.companyId,
+        agentName: agentsTable.name,
+        role: agentsTable.role,
+        title: agentsTable.title,
+        status: agentsTable.status,
+        adapterType: agentsTable.adapterType,
+        runtimeConfig: agentsTable.runtimeConfig,
+        lastHeartbeatAt: agentsTable.lastHeartbeatAt,
+        companyName: companies.name,
+        companyIssuePrefix: companies.issuePrefix,
+      })
+      .from(agentsTable)
+      .innerJoin(companies, eq(agentsTable.companyId, companies.id))
+      .orderBy(companies.name, agentsTable.name);
+
+    const items: InstanceSchedulerHeartbeatAgent[] = rows
+      .map((row) => {
+        const policy = parseSchedulerHeartbeatPolicy(row.runtimeConfig);
+        const statusEligible =
+          row.status !== "paused" &&
+          row.status !== "terminated" &&
+          row.status !== "pending_approval";
+
+        return {
+          id: row.id,
+          companyId: row.companyId,
+          companyName: row.companyName,
+          companyIssuePrefix: row.companyIssuePrefix,
+          agentName: row.agentName,
+          agentUrlKey: deriveAgentUrlKey(row.agentName, row.id),
+          role: row.role as InstanceSchedulerHeartbeatAgent["role"],
+          title: row.title,
+          status: row.status as InstanceSchedulerHeartbeatAgent["status"],
+          adapterType: row.adapterType,
+          intervalSec: policy.intervalSec,
+          heartbeatEnabled: policy.enabled,
+          schedulerActive: statusEligible && policy.enabled && policy.intervalSec > 0,
+          lastHeartbeatAt: row.lastHeartbeatAt,
+        };
+      })
+      .filter((item) =>
+        item.status !== "paused" &&
+        item.status !== "terminated" &&
+        item.status !== "pending_approval",
+      )
+      .sort((left, right) => {
+        if (left.schedulerActive !== right.schedulerActive) {
+          return left.schedulerActive ? -1 : 1;
+        }
+        const companyOrder = left.companyName.localeCompare(right.companyName);
+        if (companyOrder !== 0) return companyOrder;
+        return left.agentName.localeCompare(right.agentName);
+      });
+
+    res.json(items);
   });
 
   router.get("/companies/:companyId/org", async (req, res) => {

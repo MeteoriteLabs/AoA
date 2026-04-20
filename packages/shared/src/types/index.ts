@@ -52,6 +52,7 @@ export type {
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
+  InstanceSchedulerHeartbeatAgent,
   DetectedOutput,
   DetectedOutputForUI,
 } from "./heartbeat.js";
