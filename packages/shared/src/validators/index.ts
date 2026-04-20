@@ -320,3 +320,11 @@ export {
   type SidebarPreferences,
   type UpdateSidebarPreferences,
 } from "./sidebar-preferences.js";
+
+export {
+  INBOX_DISMISSAL_ITEM_KEY_REGEX,
+  inboxDismissalSchema,
+  createInboxDismissalSchema,
+  type InboxDismissal,
+  type CreateInboxDismissal,
+} from "./inbox-dismissals.js";

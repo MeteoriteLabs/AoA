@@ -15,6 +15,7 @@ export { projects } from "./projects.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { projectGoals } from "./project_goals.js";
 export { sidebarPreferences } from "./sidebar_preferences.js";
+export { inboxDismissals } from "./inbox_dismissals.js";
 export { goals } from "./goals.js";
 export { issues } from "./issues.js";
 export { labels } from "./labels.js";

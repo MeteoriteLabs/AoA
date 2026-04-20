@@ -618,6 +618,11 @@ export {
   updateSidebarPreferencesSchema,
   type SidebarPreferences,
   type UpdateSidebarPreferences,
+  INBOX_DISMISSAL_ITEM_KEY_REGEX,
+  inboxDismissalSchema,
+  createInboxDismissalSchema,
+  type InboxDismissal,
+  type CreateInboxDismissal,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
