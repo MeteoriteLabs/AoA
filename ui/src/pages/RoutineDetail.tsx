@@ -256,7 +256,9 @@ function TriggerCard({
                   <Label className="text-xs">Signing mode</Label>
                   <Select
                     value={draft.signingMode}
-                    onValueChange={(signingMode) => setDraft((c) => ({ ...c, signingMode }))}
+                    onValueChange={(signingMode) =>
+                      setDraft((c) => ({ ...c, signingMode: signingMode as typeof c.signingMode }))
+                    }
                   >
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -388,11 +390,11 @@ export function RoutineDetail() {
         ? {
             title: routine.title,
             description: routine.description ?? "",
-            projectId: routine.projectId,
-            assigneeAgentId: routine.assigneeAgentId,
+            projectId: routine.projectId ?? "",
+            assigneeAgentId: routine.assigneeAgentId ?? "",
             priority: routine.priority,
-            concurrencyPolicy: routine.concurrencyPolicy,
-            catchUpPolicy: routine.catchUpPolicy,
+            concurrencyPolicy: routine.concurrencyPolicy as string,
+            catchUpPolicy: routine.catchUpPolicy as string,
           }
         : null,
     [routine],

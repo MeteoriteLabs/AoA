@@ -54,7 +54,7 @@ export const queryKeys = {
     list: (companyId: string) => ["routines", companyId] as const,
     detail: (id: string) => ["routines", "detail", id] as const,
     runs: (id: string) => ["routines", id, "runs"] as const,
-    activity: (id: string) => ["routines", id, "activity"] as const,
+    activity: (companyId: string, id: string) => ["routines", companyId, id, "activity"] as const,
   },
   approvals: {
     list: (companyId: string, status?: string) =>
