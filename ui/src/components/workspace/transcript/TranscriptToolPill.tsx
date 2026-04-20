@@ -132,7 +132,7 @@ export function TranscriptToolPill({
             : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
         )}
       </button>
-      {expanded && (result || input) && (
+      {expanded && hasExpandable && (
         <div className="ml-6 mt-1 mb-2 p-2 rounded-md bg-muted/20 text-xs font-mono max-h-[300px] overflow-auto whitespace-pre-wrap text-foreground/70">
           {result ?? (typeof input === "string" ? input : (input != null ? JSON.stringify(input, null, 2) : ""))}
         </div>
