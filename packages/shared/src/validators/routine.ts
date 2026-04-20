@@ -68,9 +68,12 @@ export const updateRoutineTriggerSchema = z.object({
   replayWindowSec: z.number().int().min(0).max(86400).optional(),
 });
 
+const routineVariableValueSchema = z.union([z.string(), z.number().finite(), z.boolean()]);
+
 export const runRoutineSchema = z.object({
   triggerId: z.string().uuid().optional(),
   payload: z.record(z.unknown()).optional(),
+  variables: z.record(routineVariableValueSchema).optional(),
   idempotencyKey: z.string().max(200).optional(),
   source: z.enum(ROUTINE_RUN_SOURCES).optional(),
 });

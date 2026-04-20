@@ -25,6 +25,10 @@ import type {
   UpdateRoutine,
   UpdateRoutineTrigger,
 } from "@paperclipai/shared";
+import {
+  getBuiltinRoutineVariableValues,
+  interpolateRoutineTemplate,
+} from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { issueService } from "./issues.js";
@@ -33,6 +37,10 @@ import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
+import {
+  mergeRoutineRunPayload,
+  resolveRoutineVariableValues,
+} from "./routine-variable-runtime.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
@@ -515,8 +523,23 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     trigger: typeof routineTriggers.$inferSelect | null;
     source: "schedule" | "manual" | "api" | "webhook";
     payload?: Record<string, unknown> | null;
+    variables?: Record<string, unknown> | null;
     idempotencyKey?: string | null;
   }) {
+    const routineVariables = input.routine.variables ?? [];
+    const resolvedVariables = resolveRoutineVariableValues(routineVariables, {
+      source: input.source,
+      payload: input.payload,
+      variables: input.variables,
+    });
+    const interpolationContext = { ...getBuiltinRoutineVariableValues(), ...resolvedVariables };
+    const interpolatedTitle =
+      interpolateRoutineTemplate(input.routine.title, interpolationContext) ?? input.routine.title;
+    const interpolatedDescription = interpolateRoutineTemplate(
+      input.routine.description,
+      interpolationContext,
+    );
+    const mergedPayload = mergeRoutineRunPayload(input.payload ?? null, resolvedVariables);
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
@@ -553,7 +576,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           status: "received",
           triggeredAt,
           idempotencyKey: input.idempotencyKey ?? null,
-          triggerPayload: input.payload ?? null,
+          triggerPayload: mergedPayload,
         })
         .returning();
 
@@ -588,8 +611,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             projectId: input.routine.projectId,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
-            title: input.routine.title,
-            description: input.routine.description,
+            title: interpolatedTitle,
+            description: interpolatedDescription,
             status: "todo",
             priority: input.routine.priority,
             assigneeAgentId: input.routine.assigneeAgentId,
@@ -1036,6 +1059,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         trigger,
         source: input.source,
         payload: input.payload as Record<string, unknown> | null | undefined,
+        variables: input.variables as Record<string, unknown> | null | undefined,
         idempotencyKey: input.idempotencyKey,
       });
     },

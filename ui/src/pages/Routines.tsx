@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { ChevronDown, ChevronRight, LayoutGrid, List, MoreHorizontal, Plus, Repeat } from "lucide-react";
+import type { RoutineListItem } from "@paperclipai/shared";
 import { routinesApi } from "../api/routines";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { RoutineRunDialog } from "../components/routines/RoutineRunDialog";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
@@ -59,7 +61,7 @@ export function Routines() {
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
-  const [runningRoutineId, setRunningRoutineId] = useState<string | null>(null);
+  const [runDialogRoutine, setRunDialogRoutine] = useState<RoutineListItem | null>(null);
   const [statusMutationRoutineId, setStatusMutationRoutineId] = useState<string | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -150,28 +152,12 @@ export function Routines() {
     },
   });
 
-  const runRoutine = useMutation({
-    mutationFn: (id: string) => routinesApi.run(id, { source: "manual" }),
-    onMutate: (id) => {
-      setRunningRoutineId(id);
-    },
-    onSuccess: async (_, id) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(id) }),
-      ]);
-    },
-    onSettled: () => {
-      setRunningRoutineId(null);
-    },
-    onError: (mutationError) => {
-      pushToast({
-        title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "AoA could not start the routine run.",
-        tone: "error",
-      });
-    },
-  });
+  const handleRunComplete = async (id: string) => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(id) }),
+    ]);
+  };
 
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [composerOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
@@ -559,10 +545,10 @@ export function Routines() {
               routine={routine}
               agentById={agentById}
               projectById={projectById}
-              isRunning={runningRoutineId === routine.id}
+              isRunning={runDialogRoutine?.id === routine.id}
               isStatusPending={statusMutationRoutineId === routine.id}
               onNavigate={() => navigate(`/routines/${routine.id}`)}
-              onRun={() => runRoutine.mutate(routine.id)}
+              onRun={() => setRunDialogRoutine(routine)}
               onToggleStatus={() =>
                 updateRoutineStatus.mutate({
                   id: routine.id,
@@ -689,10 +675,10 @@ export function Routines() {
                             Edit
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                            disabled={runningRoutineId === routine.id || isArchived}
-                            onClick={() => runRoutine.mutate(routine.id)}
+                            disabled={isArchived}
+                            onClick={() => setRunDialogRoutine(routine)}
                           >
-                            {runningRoutineId === routine.id ? "Running..." : "Run now"}
+                            Run now
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
@@ -727,6 +713,18 @@ export function Routines() {
           </table>
         </div>
       )}
+      {runDialogRoutine ? (
+        <RoutineRunDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) setRunDialogRoutine(null);
+          }}
+          routineId={runDialogRoutine.id}
+          routineTitle={runDialogRoutine.title}
+          variables={runDialogRoutine.variables}
+          onRunComplete={() => handleRunComplete(runDialogRoutine.id)}
+        />
+      ) : null}
     </div>
   );
 }

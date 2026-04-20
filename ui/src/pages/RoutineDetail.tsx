@@ -53,6 +53,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import type { RoutineTrigger } from "@paperclipai/shared";
 import { RoutineVariablesEditor } from "@/components/routines/RoutineVariablesEditor";
+import { RoutineRunDialog } from "@/components/routines/RoutineRunDialog";
 
 const triggerKinds = ["schedule", "webhook"];
 const signingModes = ["bearer", "hmac_sha256"];
@@ -479,26 +480,16 @@ export function RoutineDetail() {
     },
   });
 
-  const runRoutine = useMutation({
-    mutationFn: () => routinesApi.run(routineId!, { source: "manual" }),
-    onSuccess: async () => {
-      pushToast({ title: "Routine run started", tone: "success" });
-      setActiveTab("runs");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.runs(routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
-      ]);
-    },
-    onError: (error) => {
-      pushToast({
-        title: "Routine run failed",
-        body: error instanceof Error ? error.message : "AoA could not start the routine run.",
-        tone: "error",
-      });
-    },
-  });
+  const [runDialogOpen, setRunDialogOpen] = useState(false);
+  const handleRunComplete = async () => {
+    setActiveTab("runs");
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.routines.runs(routineId!) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
+    ]);
+  };
 
   const updateRoutineStatus = useMutation({
     mutationFn: (status: string) => routinesApi.update(routineId!, { status }),
@@ -717,7 +708,7 @@ export function RoutineDetail() {
             }}
           />
           <div className="flex shrink-0 items-center gap-3 pt-1">
-            <Button size="sm" variant="outline" onClick={() => runRoutine.mutate()} disabled={runRoutine.isPending}>
+            <Button size="sm" variant="outline" onClick={() => setRunDialogOpen(true)}>
               <Play className="mr-1.5 h-3.5 w-3.5" /> Run now
             </Button>
             <button
@@ -1164,6 +1155,16 @@ export function RoutineDetail() {
           )}
         </TabsContent>
       </Tabs>
+      {routine ? (
+        <RoutineRunDialog
+          open={runDialogOpen}
+          onOpenChange={setRunDialogOpen}
+          routineId={routine.id}
+          routineTitle={routine.title}
+          variables={routine.variables}
+          onRunComplete={handleRunComplete}
+        />
+      ) : null}
     </div>
   );
 }

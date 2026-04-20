@@ -129,6 +129,7 @@ import {
   type UnifiedOrgNode,
 } from "@/components/team/ReportsToSelect";
 import { RoutineVariablesEditor } from "@/components/routines/RoutineVariablesEditor";
+import { RoutineRunDialog } from "@/components/routines/RoutineRunDialog";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -1340,6 +1341,11 @@ export function DesignGuide() {
       <RoutineVariablesEditorShowcase />
 
       {/* ============================================================ */}
+      {/*  ROUTINE RUN DIALOG                                           */}
+      {/* ============================================================ */}
+      <RoutineRunDialogShowcase />
+
+      {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
       <Section title="Keyboard Shortcuts">
@@ -1553,6 +1559,116 @@ function RoutineVariablesEditorShowcase() {
             ]}
           />
         </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  RoutineRunDialog showcase                                          */
+/* ------------------------------------------------------------------ */
+
+function RoutineRunDialogShowcase() {
+  const routineId = "00000000-0000-0000-0000-000000000000";
+  const [zeroOpen, setZeroOpen] = useState(false);
+  const [mixedOpen, setMixedOpen] = useState(false);
+  const [requiredOpen, setRequiredOpen] = useState(false);
+  return (
+    <Section title="Routine Run Dialog">
+      <SubSection title="Zero-variable confirmation">
+        <div className="flex items-center gap-3">
+          <Button size="sm" onClick={() => setZeroOpen(true)}>
+            Open dialog
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            Confirmation only — no form fields.
+          </span>
+        </div>
+        <RoutineRunDialog
+          open={zeroOpen}
+          onOpenChange={setZeroOpen}
+          routineId={routineId}
+          routineTitle="Daily standup"
+          variables={[]}
+        />
+      </SubSection>
+
+      <SubSection title="Multi-variable form (mixed types)">
+        <div className="flex items-center gap-3">
+          <Button size="sm" onClick={() => setMixedOpen(true)}>
+            Open dialog
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            Text + number + boolean + select inputs with prefilled defaults.
+          </span>
+        </div>
+        <RoutineRunDialog
+          open={mixedOpen}
+          onOpenChange={setMixedOpen}
+          routineId={routineId}
+          routineTitle="Send {{tone}} digest about {{topic}}"
+          variables={[
+            {
+              name: "tone",
+              label: "Tone",
+              type: "select",
+              defaultValue: "neutral",
+              required: true,
+              options: ["friendly", "neutral", "formal"],
+            },
+            {
+              name: "topic",
+              label: "Topic",
+              type: "text",
+              defaultValue: "weekly wins",
+              required: true,
+              options: [],
+            },
+            {
+              name: "depth",
+              label: "Depth (sentences)",
+              type: "number",
+              defaultValue: 5,
+              required: false,
+              options: [],
+            },
+            {
+              name: "include_charts",
+              label: "Include charts",
+              type: "boolean",
+              defaultValue: false,
+              required: false,
+              options: [],
+            },
+          ]}
+        />
+      </SubSection>
+
+      <SubSection title="Submit disabled (required field empty)">
+        <div className="flex items-center gap-3">
+          <Button size="sm" onClick={() => setRequiredOpen(true)}>
+            Open dialog
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            Missing list surfaces the required field; Run button is disabled.
+          </span>
+        </div>
+        <RoutineRunDialog
+          open={requiredOpen}
+          onOpenChange={setRequiredOpen}
+          routineId={routineId}
+          routineTitle="Review {{topic}}"
+          variables={[
+            {
+              name: "topic",
+              label: "Review topic",
+              type: "text",
+              defaultValue: null,
+              required: true,
+              options: [],
+            },
+          ]}
+        />
       </SubSection>
     </Section>
   );
