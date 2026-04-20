@@ -166,6 +166,8 @@ export function secretService(db: Db) {
       return resolveSecretValue(companyId, secret.id, "latest");
     },
 
+    resolveSecretValue,
+
     create: async (
       companyId: string,
       input: {
