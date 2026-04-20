@@ -19,6 +19,7 @@ import { useNavigate } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjectsByType } from "./SidebarProjectsByType";
+import { UserMenu } from "./UserMenu";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
@@ -174,6 +175,11 @@ export function Sidebar() {
           </SidebarSection>
         )}
       </nav>
+
+      {/* User account menu pinned to the bottom of the sidebar. */}
+      <div className={cn("shrink-0 border-t border-border", collapsed ? "py-2" : "p-2")}>
+        <UserMenu collapsed={collapsed} />
+      </div>
     </aside>
   );
 }

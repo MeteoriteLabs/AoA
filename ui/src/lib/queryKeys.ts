@@ -79,6 +79,7 @@ export const queryKeys = {
   },
   auth: {
     session: ["auth", "session"] as const,
+    profile: ["auth", "profile"] as const,
   },
   health: ["health"] as const,
   secrets: {

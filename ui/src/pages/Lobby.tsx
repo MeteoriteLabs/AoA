@@ -7,6 +7,7 @@ import { useDialog } from "@/context/DialogContext";
 import { companiesApi, type CompanyStats } from "@/api/companies";
 import { queryKeys } from "@/lib/queryKeys";
 import { LobbyCompanyCard } from "@/components/LobbyCompanyCard";
+import { UserMenu } from "@/components/UserMenu";
 import { cn } from "@/lib/utils";
 
 export function Lobby() {
@@ -49,19 +50,22 @@ export function Lobby() {
       {/* Minimal header */}
       <header className="flex items-center justify-between px-6 h-14 shrink-0 border-b border-border">
         <span className="text-sm font-bold tracking-tight text-foreground">AoA</span>
-        <button
-          type="button"
-          onClick={() => {
-            navigate("/instance/settings");
-          }}
-          className={cn(
-            "flex items-center justify-center h-8 w-8 rounded-md text-muted-foreground",
-            "hover:bg-accent hover:text-foreground transition-colors",
-          )}
-          aria-label="Settings"
-        >
-          <Settings className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => {
+              navigate("/instance/settings");
+            }}
+            className={cn(
+              "flex items-center justify-center h-8 w-8 rounded-md text-muted-foreground",
+              "hover:bg-accent hover:text-foreground transition-colors",
+            )}
+            aria-label="Settings"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+          <UserMenu collapsed />
+        </div>
       </header>
 
       {/* Main content */}

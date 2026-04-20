@@ -123,6 +123,7 @@ import { FilterBar, type FilterValue } from "@/components/FilterBar";
 import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
+import { UserMenu } from "@/components/UserMenu";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -223,7 +224,7 @@ export function DesignGuide() {
             <div className="flex flex-wrap gap-2">
               {[
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
-                "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
+                "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "UserMenu", "CommentThread", "MarkdownEditor",
                 "PropertiesPanel", "Sidebar", "CommandPalette",
               ].map((name) => (
                 <Badge key={name} variant="ghost" className="font-mono text-[10px]">
@@ -1301,6 +1302,26 @@ export function DesignGuide() {
             );
           })}
         </div>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  USER MENU                                                    */}
+      {/* ============================================================ */}
+      <Section title="UserMenu">
+        <p className="text-sm text-muted-foreground">
+          Avatar dropdown shown at the bottom of the sidebar and in the Lobby header.
+          Reads the current profile from <code className="font-mono text-xs">/auth/profile</code>.
+        </p>
+        <SubSection title="Expanded (sidebar open)">
+          <div className="max-w-60 rounded-lg border border-border p-2 bg-background">
+            <UserMenu />
+          </div>
+        </SubSection>
+        <SubSection title="Collapsed (sidebar collapsed / Lobby header)">
+          <div className="w-12 rounded-lg border border-border py-2 bg-background">
+            <UserMenu collapsed />
+          </div>
+        </SubSection>
       </Section>
 
       {/* ============================================================ */}
