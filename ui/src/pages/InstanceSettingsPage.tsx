@@ -3,6 +3,7 @@ import { useNavigate } from "@/lib/router";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Settings } from "lucide-react";
+import { PluginManager } from "./PluginManager";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -12,6 +13,7 @@ import { cn } from "@/lib/utils";
 const TABS = [
   { value: "general", label: "General" },
   { value: "experimental", label: "Experimental" },
+  { value: "plugins", label: "Plugins" },
 ];
 
 export function InstanceSettingsPage() {
@@ -159,6 +161,11 @@ export function InstanceSettingsPage() {
                   />
                 </>
               )}
+            </TabsContent>
+
+            {/* ── Plugins tab ─────────────────────────────────────────── */}
+            <TabsContent value="plugins" className="mt-6">
+              <PluginManager />
             </TabsContent>
           </Tabs>
         </div>

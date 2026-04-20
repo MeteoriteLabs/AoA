@@ -50,7 +50,7 @@ import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
 import { MarkdownEditor } from "./MarkdownEditor";
-import { ChoosePathButton } from "./PathInstructionsModal";
+import { FolderBrowserDialog } from "./FolderBrowserDialog";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 
 /* ---- Create mode values ---- */
@@ -173,6 +173,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const cards = props.sectionLayout === "cards";
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
+  const [cwdBrowserOpen, setCwdBrowserOpen] = useState(false);
 
   const { data: availableSecrets = [] } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
@@ -662,7 +663,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className="w-full bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40"
                   placeholder="/path/to/project"
                 />
-                <ChoosePathButton />
+                <button
+                  type="button"
+                  className="shrink-0 text-xs text-muted-foreground hover:text-foreground transition-colors px-1.5 py-0.5 rounded border border-border"
+                  onClick={() => setCwdBrowserOpen(true)}
+                >
+                  Browse
+                </button>
+                <FolderBrowserDialog
+                  open={cwdBrowserOpen}
+                  onClose={() => setCwdBrowserOpen(false)}
+                  onSelect={(p) => {
+                    if (isCreate) {
+                      set!({ cwd: p });
+                    } else {
+                      mark("adapterConfig", "cwd", p);
+                    }
+                    setCwdBrowserOpen(false);
+                  }}
+                  title="Select Working Directory"
+                  description="Choose a folder for this agent to work in"
+                  initialPath={(isCreate ? val?.cwd : String(config.cwd ?? "")) || undefined}
+                />
               </div>
             </Field>
           )}

@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { Router, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import { updateExecutionWorkspaceSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { executionWorkspaceService, instanceSettingsService, logActivity, workspaceOperationService } from "../services/index.js";
@@ -188,6 +188,27 @@ export function executionWorkspaceRoutes(db: Db) {
       },
     });
     res.json(workspace);
+  });
+
+  router.get("/execution-workspaces/:id/runtime-services", async (req, res) => {
+    if (!(await assertIsolatedWorkspacesEnabled(res))) return;
+    const id = req.params.id as string;
+    const workspace = await svc.getById(id);
+    if (!workspace) {
+      res.status(404).json({ error: "Execution workspace not found" });
+      return;
+    }
+    assertCompanyAccess(req, workspace.companyId);
+    const services = await db
+      .select()
+      .from(workspaceRuntimeServices)
+      .where(
+        and(
+          eq(workspaceRuntimeServices.companyId, workspace.companyId),
+          eq(workspaceRuntimeServices.executionWorkspaceId, id),
+        ),
+      );
+    res.json(services);
   });
 
   return router;

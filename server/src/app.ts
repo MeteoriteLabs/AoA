@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
@@ -48,7 +48,45 @@ import { companySkillRoutes } from "./routes/company-skills.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { cliAuthRoutes } from "./routes/cli-auth.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
+import { filesystemRoutes } from "./routes/filesystem.js";
+import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
+import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { pluginLoader } from "./services/plugin-loader.js";
+import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { createPluginEventBus } from "./services/plugin-event-bus.js";
+import { createPluginStreamBus } from "./services/plugin-stream-bus.js";
+import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
+import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
+import { pluginJobStore } from "./services/plugin-job-store.js";
+import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
+import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
+import { buildHostServices } from "./services/plugin-host-services.js";
+import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
+import { resolvePaperclipInstanceId } from "./home-paths.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+
+// Host version reported to plugin workers during initialize. Read from
+// server package.json at import time; falls back to "0.0.0" if unreadable.
+const SERVER_VERSION = (() => {
+  try {
+    const __dirname = path.dirname(fileURLToPath(import.meta.url));
+    // Try dist location (server/dist/app.js -> server/package.json) and source
+    // location (server/src/app.ts -> server/package.json)
+    const candidates = [
+      path.resolve(__dirname, "../package.json"),
+      path.resolve(__dirname, "../../package.json"),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) {
+        const pkg = JSON.parse(fs.readFileSync(p, "utf-8")) as { version?: string };
+        if (pkg.version) return pkg.version;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return "0.0.0";
+})();
 
 type UiMode = "none" | "static" | "vite-dev";
 
@@ -69,7 +107,16 @@ export async function createApp(
 ) {
   const app = express();
 
-  app.use(express.json());
+  // Capture raw request body bytes so plugin webhook handlers can verify HMAC
+  // signatures against the exact bytes the provider signed. Without this,
+  // (req as any).rawBody is undefined and signature verification breaks.
+  app.use(express.json({
+    verify: (req, _res, buf) => {
+      if (buf && buf.length > 0) {
+        (req as unknown as { rawBody?: Buffer }).rawBody = buf;
+      }
+    },
+  }));
   app.use(httpLogger);
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
@@ -157,6 +204,7 @@ export async function createApp(
   api.use(instanceSettingsRoutes(db));
   api.use(cliAuthRoutes(db));
   api.use(executionWorkspaceRoutes(db));
+  api.use(filesystemRoutes());
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
@@ -168,7 +216,92 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
+
+  // Plugin subsystem initialization
+  const workerMgr = createPluginWorkerManager();
+  const eventBus = createPluginEventBus();
+  const streamBus = createPluginStreamBus();
+  const jobStoreInst = pluginJobStore(db);
+  const toolDispatcherInst = createPluginToolDispatcher({
+    workerManager: workerMgr,
+    db,
+  });
+  const jobSchedulerInst = createPluginJobScheduler({
+    db,
+    jobStore: jobStoreInst,
+    workerManager: workerMgr,
+  });
+  const lifecycleMgr = pluginLifecycleManager(db, {
+    workerManager: workerMgr,
+  });
+  const jobCoordinatorInst = createPluginJobCoordinator({
+    db,
+    lifecycle: lifecycleMgr,
+    scheduler: jobSchedulerInst,
+    jobStore: jobStoreInst,
+  });
+  // Compose PluginRuntimeServices from existing subsystems + host services
+  // factory. Without this, pluginLoader.loadAll() throws at startup and no
+  // plugins activate. The loader.loadAll() call happens in index.ts after
+  // the server is listening.
+  const pluginRuntimeServices = {
+    workerManager: workerMgr,
+    eventBus,
+    jobScheduler: jobSchedulerInst,
+    jobStore: jobStoreInst,
+    toolDispatcher: toolDispatcherInst,
+    lifecycleManager: lifecycleMgr,
+    buildHostHandlers: (pluginId: string, manifest: PaperclipPluginManifestV1) => {
+      const services = buildHostServices(db, pluginId, manifest.id, eventBus);
+      return createHostClientHandlers({
+        pluginId,
+        capabilities: manifest.capabilities ?? [],
+        services,
+      });
+    },
+    instanceInfo: {
+      instanceId: resolvePaperclipInstanceId(),
+      hostVersion: SERVER_VERSION,
+    },
+  };
+  const loaderInst = pluginLoader(db, {}, pluginRuntimeServices);
+
+  api.use(pluginRoutes(db, loaderInst, {
+    scheduler: jobSchedulerInst,
+    jobStore: jobStoreInst,
+  }, {
+    workerManager: workerMgr,
+  }, {
+    toolDispatcher: toolDispatcherInst,
+  }, {
+    workerManager: workerMgr,
+    streamBus,
+  }));
+  api.use(pluginCompanySettingsRoutes(db));
+
   app.use("/api", api);
+
+  // Plugin UI static assets (outside /api prefix)
+  const pluginDir = path.resolve(
+    process.env.PAPERCLIP_PLUGIN_DIR ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".paperclip", "plugins"),
+  );
+  app.use("/_plugins", pluginUiStaticRoutes(db, { localPluginDir: pluginDir }));
+
+  // Expose tool dispatcher globally so heartbeat can inject plugin tools into agent context
+  (globalThis as any).__paperclipPluginToolDispatcher = toolDispatcherInst;
+
+  // Expose plugin subsystem for startup/shutdown in index.ts
+  (app as any).__pluginSubsystem = {
+    workerManager: workerMgr,
+    eventBus,
+    streamBus,
+    jobStore: jobStoreInst,
+    toolDispatcher: toolDispatcherInst,
+    jobScheduler: jobSchedulerInst,
+    jobCoordinator: jobCoordinatorInst,
+    lifecycle: lifecycleMgr,
+    loader: loaderInst,
+  };
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {

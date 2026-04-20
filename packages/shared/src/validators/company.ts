@@ -5,6 +5,7 @@ export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
+  rootFolder: z.string().min(1).optional().nullable(),
 });
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;
@@ -16,6 +17,7 @@ export const updateCompanySchema = createCompanySchema
     spentMonthlyCents: z.number().int().nonnegative().optional(),
     requireBoardApprovalForNewAgents: z.boolean().optional(),
     brandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
+    logoAssetId: z.string().uuid().nullable().optional(),
     vision: z.string().nullable().optional(),
     mission: z.string().nullable().optional(),
     values: z.string().nullable().optional(),

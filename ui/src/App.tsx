@@ -34,12 +34,15 @@ import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
 import { Discussions } from "./pages/Discussions";
 import { DiscussionDetail } from "./pages/DiscussionDetail";
 import { Skills } from "./pages/Skills";
+import { WorkspaceView } from "./pages/WorkspaceView";
 import { Routines } from "./pages/Routines";
 import { RoutineDetail } from "./pages/RoutineDetail";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
+import { PluginPage } from "./pages/PluginPage";
+import { PluginSettings } from "./pages/PluginSettings";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -134,6 +137,7 @@ function boardRoutes() {
       <Route path="projects/:projectId/team" element={<ProjectDetail />} />
       <Route path="projects/:projectId/budget" element={<ProjectDetail />} />
       <Route path="projects/:projectId/discussions" element={<ProjectDetail />} />
+      <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
       <Route path="issues" element={<Issues />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
       <Route path="issues/active" element={<Navigate to="/issues" replace />} />
@@ -163,6 +167,8 @@ function boardRoutes() {
       <Route path="inbox/new" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />
       <Route path="design-guide" element={<DesignGuide />} />
+      <Route path="workspaces/:workspaceId" element={<WorkspaceView />} />
+      <Route path="plugins/:pluginId" element={<PluginPage />} />
     </>
   );
 }
@@ -247,6 +253,7 @@ export function App() {
         <Route element={<CloudAccessGate />}>
           <Route index element={<Lobby />} />
           <Route path="instance/settings" element={<InstanceSettingsPage />} />
+          <Route path="instance/settings/plugins/:pluginId" element={<PluginSettings />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />

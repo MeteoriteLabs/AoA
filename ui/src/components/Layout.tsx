@@ -25,7 +25,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { AgentPanelProvider } from "../context/AgentPanelContext";
 
 export function Layout() {
-  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, collapsed, toggleCollapse } = useSidebar();
+  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, collapsed, setCollapsed, toggleCollapse } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { companies, loading: companiesLoading, selectedCompanyId, selectionSource, setSelectedCompanyId } = useCompany();
 
@@ -111,6 +111,13 @@ export function Layout() {
     },
     [companies, setSelectedCompanyId],
   );
+
+  // Auto-collapse sidebar on workspace routes
+  useEffect(() => {
+    if (!isMobile && location.pathname.includes("/workspaces/")) {
+      setCollapsed(true);
+    }
+  }, [location.pathname, isMobile, setCollapsed]);
 
   useCompanyPageMemory();
 
@@ -246,7 +253,11 @@ export function Layout() {
         <main
           id="main-content"
           tabIndex={-1}
-          className={cn("flex-1 overflow-auto p-4 md:p-6", isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]")}
+          className={cn(
+            "flex-1 overflow-auto",
+            !location.pathname.includes("/workspaces/") && "p-4 md:p-6",
+            isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]",
+          )}
           onScroll={handleMainScroll}
         >
           <Outlet />

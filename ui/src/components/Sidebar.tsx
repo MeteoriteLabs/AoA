@@ -12,6 +12,7 @@ import {
   Repeat,
   ChevronsLeft,
   Shield,
+  Puzzle,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
@@ -21,6 +22,7 @@ import { SidebarProjectsByType } from "./SidebarProjectsByType";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
+import { pluginsApi } from "../api/plugins";
 import { queryKeys } from "../lib/queryKeys";
 import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
 import { Button } from "@/components/ui/button";
@@ -37,41 +39,62 @@ export function Sidebar() {
     enabled: !!selectedCompanyId,
   });
   const liveRunCount = useLiveAgentCount();
+  const { data: pluginContributions } = useQuery({
+    queryKey: queryKeys.plugins.uiContributions,
+    queryFn: () => pluginsApi.listUiContributions(),
+    enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+  });
+  const pluginsWithPages = (pluginContributions ?? []).filter(
+    (c) => c.slots.some((s) => s.type === "page"),
+  );
 
   return (
     <aside className={cn("h-full min-h-0 border-r border-border bg-background flex flex-col", collapsed ? "w-12" : "w-60")}>
       {/* Top bar: Brand dot (collapsed) or Company name + collapse toggle (expanded) */}
       <div className={cn("flex items-center shrink-0 h-12 border-b border-border", collapsed ? "justify-center px-0" : "gap-1.5 px-3")}>
         {collapsed ? (
-          /* Collapsed: brand dot only, centered */
-          selectedCompany?.brandColor ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <a
-                  href="/"
-                  onClick={(e) => { e.preventDefault(); navigate("/"); }}
-                  className="flex items-center justify-center w-8 h-8 rounded-md hover:bg-accent/50 transition-colors"
-                >
+          /* Collapsed: logo or brand dot, centered */
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                href="/"
+                onClick={(e) => { e.preventDefault(); navigate("/"); }}
+                className="flex items-center justify-center w-8 h-8 rounded-md hover:bg-accent/50 transition-colors"
+              >
+                {selectedCompany?.logoAssetId ? (
+                  <img
+                    src={`/api/assets/${selectedCompany.logoAssetId}/content`}
+                    alt={selectedCompany.name}
+                    className="w-6 h-6 rounded object-cover"
+                  />
+                ) : selectedCompany?.brandColor ? (
                   <div
                     className="w-4 h-4 rounded-sm shrink-0"
                     style={{ backgroundColor: selectedCompany.brandColor }}
                   />
-                </a>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>{selectedCompany?.name ?? "Home"}</TooltipContent>
-            </Tooltip>
-          ) : (
-            <div className="w-4 h-4 rounded-sm bg-muted shrink-0" />
-          )
+                ) : (
+                  <div className="w-4 h-4 rounded-sm bg-muted shrink-0" />
+                )}
+              </a>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8}>{selectedCompany?.name ?? "Home"}</TooltipContent>
+          </Tooltip>
         ) : (
-          /* Expanded: brand dot + company name + collapse toggle */
+          /* Expanded: logo/brand dot + company name + collapse toggle */
           <>
-            {selectedCompany?.brandColor && (
+            {selectedCompany?.logoAssetId ? (
+              <img
+                src={`/api/assets/${selectedCompany.logoAssetId}/content`}
+                alt={selectedCompany.name}
+                className="w-5 h-5 rounded object-cover shrink-0"
+              />
+            ) : selectedCompany?.brandColor ? (
               <div
                 className="w-4 h-4 rounded-sm shrink-0"
                 style={{ backgroundColor: selectedCompany.brandColor }}
               />
-            )}
+            ) : null}
             <a
               href="/"
               onClick={(e) => {
@@ -135,6 +158,21 @@ export function Sidebar() {
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} collapsed={collapsed} />
           <SidebarNavItem to="/settings" label="Settings" icon={Settings} collapsed={collapsed} />
         </SidebarSection>
+
+        {/* PLUGINS section — only shown when plugins with page slots are installed */}
+        {pluginsWithPages.length > 0 && (
+          <SidebarSection label="Plugins" collapsed={collapsed}>
+            {pluginsWithPages.map((contribution) => (
+              <SidebarNavItem
+                key={contribution.pluginId}
+                to={`/plugins/${contribution.pluginId}`}
+                label={contribution.displayName}
+                icon={Puzzle}
+                collapsed={collapsed}
+              />
+            ))}
+          </SidebarSection>
+        )}
       </nav>
     </aside>
   );

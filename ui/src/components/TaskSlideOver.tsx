@@ -11,6 +11,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -22,6 +23,7 @@ import { CommentThread } from "./CommentThread";
 import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { IssueProperties } from "./IssueProperties";
 import { LiveRunWidget } from "./LiveRunWidget";
+import { WorkspaceTimeline } from "./workspace/WorkspaceTimeline";
 import type { MentionOption } from "./MarkdownEditor";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
@@ -31,22 +33,27 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Activity as ActivityIcon,
+  ArrowLeft,
   ChevronDown,
   ChevronRight,
   EyeOff,
-  Hexagon,
+  GitBranch,
+
   Link2,
   ListTree,
+  Loader2,
   MessageSquare,
   MoreHorizontal,
   FileBox,
   FileCode,
   GitPullRequestArrow,
+  MonitorPlay,
   Paperclip,
   Plus,
   Search,
@@ -199,7 +206,7 @@ interface TaskSlideOverProps {
 /* ── Component ── */
 
 export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -218,6 +225,9 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
   const [llmMenuOpen, setLlmMenuOpen] = useState(false);
   const [contextLoading, setContextLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Two-mode sidebar state
+  const [sidebarMode, setSidebarMode] = useState<"task" | "workspace">("task");
 
   /* ── Data fetching ── */
 
@@ -290,6 +300,13 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     queryKey: queryKeys.detectedOutputs.byIssue(issueId!),
     queryFn: () => outputDetectionApi.listForIssue(issueId!),
     enabled: !!issueId && open,
+  });
+
+  // Execution workspace linked to this task (if any)
+  const { data: workspace } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.detail(issue?.executionWorkspaceId ?? ""),
+    queryFn: () => executionWorkspacesApi.get(issue!.executionWorkspaceId!),
+    enabled: !!issue?.executionWorkspaceId && open,
   });
 
   const pendingOutputs = useMemo(
@@ -643,6 +660,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     },
   });
 
+
   /* ── Derived data ── */
 
   const upstreamDeps = deps?.upstream ?? [];
@@ -690,15 +708,17 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     return results;
   }, [depArtifactQueries, upstreamDeps]);
 
+
   /* ── Side effects ── */
 
-  // Reset tab when issue changes
+  // Reset tab and mode when issue changes
   useEffect(() => {
     if (issueId) {
       setDetailTab("comments");
       setSecondaryOpen({ approvals: false, cost: false });
       setShowAddVersion(false);
       setShowAllVersions(false);
+      setSidebarMode("task");
     }
   }, [issueId]);
 
@@ -718,11 +738,12 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
   /* ── Render ── */
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent
+    <Sheet open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <SheetContent
+        side="right"
         showCloseButton={false}
         aria-describedby={undefined}
-        className="sm:max-w-4xl max-h-[calc(100dvh-2rem)] p-0 gap-0 overflow-hidden flex flex-col"
+        className="w-[560px] sm:w-[600px] sm:max-w-[600px] p-0 gap-0 overflow-hidden flex flex-col"
         onPointerDownOutside={(event) => {
           const target = event.detail.originalEvent.target as HTMLElement | null;
           if (target?.closest("[data-radix-popper-content-wrapper]")) {
@@ -730,6 +751,56 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
           }
         }}
       >
+        {/* Mode 2: Workspace Chat */}
+        {sidebarMode === "workspace" && issue && (
+          <>
+            {/* Workspace breadcrumb header */}
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
+              <button
+                type="button"
+                className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setSidebarMode("task")}
+                data-testid="workspace-breadcrumb-back"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                <span className="font-mono">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+              </button>
+              <span className="text-muted-foreground">/</span>
+              <span className="text-sm truncate text-foreground">
+                {workspace?.branchName ?? workspace?.name ?? "Workspace"}
+              </span>
+              <div className="ml-auto flex items-center gap-1 shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1.5 text-xs"
+                  data-testid="open-workspace-button"
+                  onClick={() => {
+                    onClose();
+                    navigate(`/${selectedCompany?.issuePrefix ?? ''}/workspaces/${workspace!.id}`);
+                  }}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Open Workspace
+                </Button>
+                <Button variant="ghost" size="icon-xs" onClick={onClose}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+
+            {/* Shared workspace timeline + input */}
+            <WorkspaceTimeline
+              issueId={issueId!}
+              compact
+              className="flex-1 min-h-0"
+            />
+          </>
+        )}
+
+        {/* Mode 1: Task Properties (default) */}
+        {sidebarMode === "task" && (
+          <>
         {/* Custom header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
           <div className="flex items-center gap-2 min-w-0">
@@ -824,7 +895,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                 </Popover>
               </>
             )}
-            <Button variant="ghost" size="icon-xs" onClick={onClose} className="shrink-0">
+            <Button variant="ghost" size="icon-xs" onClick={onClose} className="shrink-0" data-testid="close-button">
               <X className="h-4 w-4" />
             </Button>
           </div>
@@ -914,6 +985,80 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                     return attachment.contentPath;
                   }}
                 />
+
+                {/* Workspace Section */}
+                <div className="space-y-2" data-testid="workspace-section">
+                  <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                    <MonitorPlay className="h-3.5 w-3.5" />
+                    Workspace
+                  </h3>
+                  {!issue.executionWorkspaceId ? (
+                    <p className="text-xs text-muted-foreground" data-testid="workspace-empty-state">
+                      {issue.executionLockedAt ? (
+                        <span className="flex items-center gap-1.5">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Provisioning workspace...
+                        </span>
+                      ) : !issue.projectId ? (
+                        "No project assigned — assign a project with workspace policy to enable"
+                      ) : !issue.project?.executionWorkspacePolicy ? (
+                        "Project has no workspace policy configured"
+                      ) : (
+                        "No workspace yet — will be created when agent starts work"
+                      )}
+                    </p>
+                  ) : workspace ? (
+                    <button
+                      type="button"
+                      data-testid="workspace-row"
+                      className="w-full flex items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-sm hover:bg-accent/30 transition-colors text-left"
+                      onClick={() => setSidebarMode("workspace")}
+                    >
+                      <span
+                        className={cn(
+                          "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0",
+                          workspace.status === "active"
+                            ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400"
+                            : workspace.status === "idle"
+                              ? "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
+                              : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+                        )}
+                      >
+                        {workspace.status}
+                      </span>
+                      {workspace.branchName && (
+                        <span className="flex items-center gap-1 min-w-0">
+                          <GitBranch className="h-3 w-3 text-muted-foreground shrink-0" />
+                          <span className="font-mono text-xs text-muted-foreground truncate">
+                            {workspace.branchName}
+                          </span>
+                          <button
+                            type="button"
+                            className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                            title="Copy branch name"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void navigator.clipboard.writeText(workspace.branchName!);
+                            }}
+                          >
+                            <Copy className="h-3 w-3" />
+                          </button>
+                        </span>
+                      )}
+                      {!workspace.branchName && (
+                        <span className="text-xs text-muted-foreground truncate min-w-0">
+                          {workspace.name}
+                        </span>
+                      )}
+                      <span className="ml-auto text-xs text-muted-foreground shrink-0">
+                        {relativeTime(workspace.lastUsedAt)}
+                      </span>
+                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    </button>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Loading workspace...</p>
+                  )}
+                </div>
 
                 {/* Dependencies */}
                 <div className="space-y-3">
@@ -1603,7 +1748,9 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
             )}
           </div>
         </ScrollArea>
-      </DialogContent>
-    </Dialog>
+          </>
+        )}
+      </SheetContent>
+    </Sheet>
   );
 }

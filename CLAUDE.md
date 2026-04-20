@@ -135,6 +135,17 @@ V2.5 replaces the Debrief/Brief pipeline with **Discussions** and adds the **Int
 - `briefs` — @deprecated V2.5 (kept for rollback safety). New code uses `discussions`.
 - `brief_items` — @deprecated V2.5. Replaced by `discussion_extracted_items`.
 
+## Workspace System
+
+- **Route:** `/:companyPrefix/workspace/:workspaceId` renders `WorkspaceView` page
+- **Layout:** `WorkspaceLayout` with 3-panel resizable layout (task nav | timeline+preview | context)
+- **Mobile:** Tab-based navigation [Tasks][Timeline][Preview][Context] using CSS hidden (not conditional render)
+- **functionType:** Project field (`software_development` | `design` | `marketing` | etc.) controls workspace tool visibility
+- **executionWorkspacePolicy:** Project field (`per_task` | `shared` | `none`) controls workspace creation
+- **TaskSlideOver:** Right-side Sheet with two modes — standard (task detail) and workspace (embedded timeline)
+- **Lifecycle:** Workspaces can be archived via status update. Archived workspaces shown in collapsed section.
+- **Key files:** `ui/src/components/workspace/`, `server/src/services/workspace-runtime.ts`, `packages/db/src/schema/execution_workspaces.ts`
+
 ## V3 Architecture
 
 V3 adds five pillars: **Autonomy**, **Workflows**, **Connectors**, **Blueprints**, **Hosted**.

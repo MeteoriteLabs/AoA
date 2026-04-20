@@ -1,7 +1,8 @@
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { workflowTemplates, issues, taskDependencies } from "@paperclipai/db";
 import { notFound, conflict } from "../errors.js";
+import { executionWorkspaceService } from "./execution-workspaces.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +40,7 @@ export interface InstantiateResult {
   templateId: string;
   tasksCreated: { stepOrder: number; taskId: string; title: string }[];
   dependenciesCreated: number;
+  sharedWorkspaceId?: string;
 }
 
 // ── Service ──────────────────────────────────────────────────────────────────
@@ -165,8 +167,9 @@ export function workflowTemplateService(db: Db) {
 
       const steps = template.steps as WorkflowStep[];
       const deps = template.dependencies as WorkflowDependency[];
+      const workspaceMode = (template.workspaceMode ?? "department_default") as string;
 
-      return db.transaction(async (tx) => {
+      const txResult = await db.transaction(async (tx) => {
         // Map step order → created task id
         const stepTaskMap = new Map<number, string>();
         const tasksCreated: InstantiateResult["tasksCreated"] = [];
@@ -234,6 +237,32 @@ export function workflowTemplateService(db: Db) {
           dependenciesCreated,
         };
       });
+
+      // Shared workspace: create one workspace and link all tasks
+      if (workspaceMode === "shared" && txResult.tasksCreated.length > 0) {
+        const ewSvc = executionWorkspaceService(db);
+        const firstTaskId = txResult.tasksCreated[0]!.taskId;
+        const workspace = await ewSvc.create({
+          companyId,
+          projectId,
+          sourceIssueId: firstTaskId,
+          mode: "shared_workspace",
+          strategyType: "project_primary",
+          status: "active",
+          name: template.name,
+        });
+        if (!workspace) {
+          throw new Error("Failed to create shared execution workspace for workflow instantiation");
+        }
+        const taskIds = txResult.tasksCreated.map((t) => t.taskId);
+        await db
+          .update(issues)
+          .set({ executionWorkspaceId: workspace.id })
+          .where(inArray(issues.id, taskIds));
+        return { ...txResult, sharedWorkspaceId: workspace.id };
+      }
+
+      return txResult;
     },
   };
 }

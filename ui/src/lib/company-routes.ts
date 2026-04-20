@@ -22,6 +22,11 @@ const BOARD_ROUTE_ROOTS = new Set([
   "skills",
   "routines",
   "team",
+  "plugins",
+  "workspaces",
+  "objectives",
+  "debriefs",
+  "commander",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "docs", "instance"]);

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 
 // Mock @mdxeditor/editor before any imports to avoid CSS-in-ESM cycle
 vi.mock("@mdxeditor/editor", () => ({
@@ -45,18 +45,19 @@ const mockIssue = {
 };
 
 // Mock all heavy dependencies
+const mockNavigate = vi.fn();
 vi.mock("@/lib/router", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
   return {
     ...actual,
-    useNavigate: () => vi.fn(),
+    useNavigate: () => mockNavigate,
     Link: actual.Link,
     NavLink: actual.NavLink,
   };
 });
 
 vi.mock("../context/CompanyContext", () => ({
-  useCompany: () => ({ selectedCompanyId: "comp-1" }),
+  useCompany: () => ({ selectedCompanyId: "comp-1", selectedCompany: { id: "comp-1", issuePrefix: "TC" } }),
 }));
 
 vi.mock("../context/ToastContext", () => ({
@@ -104,6 +105,10 @@ vi.mock("@tanstack/react-query", async () => {
       if (key.includes("detected-outputs")) {
         return { data: [], isLoading: false, error: null };
       }
+      // Execution workspaces — return null by default (no workspace)
+      if (key.includes("executionWorkspaces")) {
+        return { data: null, isLoading: false, error: null };
+      }
       return { data: undefined, isLoading: false, error: null };
     }),
     useQueries: ({ queries }: any) =>
@@ -138,7 +143,7 @@ vi.mock("../lib/queryKeys", () => ({
       documents: (id: string) => ["issues", "documents", id],
     },
     agents: { list: (id: string) => ["agents", "list", id] },
-    projects: { list: (id: string) => ["projects", "list", id] },
+    projects: { list: (id: string) => ["projects", "list", id], detail: (id: string) => ["projects", "detail", id] },
     goals: { list: (id: string) => ["goals", "list", id] },
     artifacts: {
       byIssue: (id: string) => ["artifacts", "issue", id],
@@ -150,6 +155,11 @@ vi.mock("../lib/queryKeys", () => ({
     },
     activity: (id: string) => ["activity", id],
     auth: { session: "auth.session" },
+    executionWorkspaces: {
+      detail: (id: string) => ["executionWorkspaces", "detail", id],
+      list: (id: string) => ["executionWorkspaces", id],
+      listForProject: (cId: string, pId: string) => ["executionWorkspaces", cId, pId],
+    },
   },
 }));
 
@@ -182,7 +192,7 @@ vi.mock("../api/auth", () => ({
 }));
 
 vi.mock("../api/projects", () => ({
-  projectsApi: { list: vi.fn().mockResolvedValue([]) },
+  projectsApi: { list: vi.fn().mockResolvedValue([]), get: vi.fn().mockResolvedValue({ functionType: "general" }) },
 }));
 
 vi.mock("../api/artifacts", () => ({
@@ -196,6 +206,14 @@ vi.mock("../api/output-detection", () => ({
 vi.mock("../api/context-packaging", () => ({
   contextPackagingApi: {
     getContextPackage: vi.fn().mockResolvedValue({ markdown: "# Test context", tokenEstimate: 100 }),
+  },
+}));
+
+vi.mock("../api/execution-workspaces", () => ({
+  executionWorkspacesApi: {
+    get: vi.fn().mockResolvedValue(null),
+    list: vi.fn().mockResolvedValue([]),
+    update: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -246,13 +264,19 @@ vi.mock("../components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: any) => <div data-testid="markdown-body">{children}</div>,
 }));
 
-// Mock the Dialog component to just render children when open
-vi.mock("@/components/ui/dialog", () => ({
-  Dialog: ({ open, children, onOpenChange }: any) =>
-    open ? <div data-testid="dialog" data-open={open}>{children}</div> : null,
-  DialogContent: ({ children }: any) => <div data-testid="dialog-content">{children}</div>,
-  DialogHeader: ({ children }: any) => <div>{children}</div>,
-  DialogTitle: ({ children }: any) => <div>{children}</div>,
+vi.mock("../components/IssueDocumentsSection", () => ({
+  IssueDocumentsSection: () => <div data-testid="issue-documents" />,
+}));
+
+// Mock the Sheet component to just render children when open
+vi.mock("@/components/ui/sheet", () => ({
+  Sheet: ({ open, children, onOpenChange }: any) =>
+    open ? <div data-testid="sheet" data-open={open}>{children}</div> : null,
+  SheetContent: ({ children, side }: any) => (
+    <div data-testid="sheet-content" data-side={side ?? "right"}>{children}</div>
+  ),
+  SheetHeader: ({ children }: any) => <div>{children}</div>,
+  SheetTitle: ({ children }: any) => <div>{children}</div>,
 }));
 
 vi.mock("@/components/ui/scroll-area", () => ({
@@ -312,12 +336,13 @@ describe("TaskSlideOver", () => {
 
   it("renders nothing when open=false", () => {
     const { container } = renderSlideOver({ issueId: "issue-1", open: false });
-    expect(container.querySelector("[data-testid='dialog']")).not.toBeInTheDocument();
+    expect(container.querySelector("[data-testid='sheet']")).not.toBeInTheDocument();
   });
 
-  it("opens when issueId is set and open=true", () => {
+  it("opens as right-side Sheet when issueId is set and open=true", () => {
     renderSlideOver({ issueId: "issue-1", open: true });
-    expect(screen.getByTestId("dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("sheet")).toBeInTheDocument();
+    expect(screen.getByTestId("sheet-content")).toHaveAttribute("data-side", "right");
   });
 
   it("renders task title when issue data is loaded", () => {
@@ -345,5 +370,149 @@ describe("TaskSlideOver", () => {
     expect(screen.getByText("Copy context to clipboard")).toBeInTheDocument();
     expect(screen.getByText("Open in Claude")).toBeInTheDocument();
     expect(screen.getByText("Open in ChatGPT")).toBeInTheDocument();
+  });
+
+  it("calls onClose when X button is clicked", async () => {
+    const user = userEvent.setup();
+    renderSlideOver({ issueId: "issue-1", open: true });
+
+    await user.click(screen.getByTestId("close-button"));
+    expect(mockOnClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders all four tab triggers inside Sheet", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+    expect(screen.getByTestId("tab-comments")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-subissues")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-activity")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-artifacts")).toBeInTheDocument();
+  });
+
+  it("renders StatusIcon and PriorityIcon in Sheet header", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+    expect(screen.getByTestId("status-icon")).toBeInTheDocument();
+    expect(screen.getByTestId("priority-icon")).toBeInTheDocument();
+  });
+
+  it("renders popovers (LLM and more-menu) within Sheet without crashing", () => {
+    // Popovers are mocked to render inline — verifies they don't break in Sheet context
+    renderSlideOver({ issueId: "issue-1", open: true });
+    expect(screen.getByText("Copy context to clipboard")).toBeInTheDocument();
+    expect(screen.getByText("Hide this Task")).toBeInTheDocument();
+  });
+
+  describe("workspace section", () => {
+    it("renders contextual empty state when issue has no executionWorkspaceId", () => {
+      // mockIssue has no executionWorkspaceId and no projectId
+      renderSlideOver({ issueId: "issue-1", open: true });
+      expect(screen.getByTestId("workspace-section")).toBeInTheDocument();
+      expect(screen.getByTestId("workspace-empty-state")).toBeInTheDocument();
+      expect(screen.getByText(/No project assigned/)).toBeInTheDocument();
+    });
+  });
+});
+
+// ── Workspace mode tests (require custom useQuery setup) ──────────────────────
+
+const mockIssueWithWorkspace = {
+  id: "issue-1",
+  title: "Fix login bug",
+  description: "The login page has a bug",
+  status: "in_progress",
+  priority: "high",
+  identifier: "TC-1",
+  assigneeAgentId: "agent-1",
+  assigneeUserId: null,
+  projectId: null,
+  parentId: null,
+  goalId: null,
+  labels: ["bug"],
+  executionWorkspaceId: "ws-123",
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
+
+const mockWorkspaceData = {
+  id: "ws-123",
+  status: "active",
+  branchName: "ENG-42-fix-auth",
+  name: "eng-42-fix-auth",
+  lastUsedAt: new Date("2026-04-04T10:00:00Z"),
+};
+
+function renderSlideOverWithWorkspace() {
+  vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+    const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+    if (key.includes("executionWorkspaces")) return { data: mockWorkspaceData, isLoading: false, error: null } as any;
+    if (key.includes("detail")) return { data: mockIssueWithWorkspace, isLoading: false, error: null } as any;
+    if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+        key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+        key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+        key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+    if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+    if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+    if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+    return { data: undefined, isLoading: false, error: null } as any;
+  });
+
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <TaskSlideOver issueId="issue-1" open={true} onClose={mockOnClose} />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe("TaskSlideOver — workspace with executionWorkspaceId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders workspace row when executionWorkspaceId is set", () => {
+    renderSlideOverWithWorkspace();
+    expect(screen.getByTestId("workspace-row")).toBeInTheDocument();
+  });
+
+  it("switches to Mode 2 (workspace chat) when workspace row is clicked", async () => {
+    const user = userEvent.setup();
+    renderSlideOverWithWorkspace();
+
+    await user.click(screen.getByTestId("workspace-row"));
+
+    expect(screen.getByTestId("workspace-breadcrumb-back")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-timeline")).toBeInTheDocument();
+  });
+
+  it("breadcrumb back button returns to Mode 1 (task properties)", async () => {
+    const user = userEvent.setup();
+    renderSlideOverWithWorkspace();
+
+    // Enter Mode 2
+    await user.click(screen.getByTestId("workspace-row"));
+    expect(screen.getByTestId("workspace-breadcrumb-back")).toBeInTheDocument();
+
+    // Go back to Mode 1
+    await user.click(screen.getByTestId("workspace-breadcrumb-back"));
+
+    expect(screen.getByTestId("workspace-section")).toBeInTheDocument();
+    expect(screen.queryByTestId("workspace-chatbar")).not.toBeInTheDocument();
+  });
+
+  it("'Open Workspace' button navigates to workspace view and closes sheet", async () => {
+    const user = userEvent.setup();
+    renderSlideOverWithWorkspace();
+
+    // Enter Mode 2
+    await user.click(screen.getByTestId("workspace-row"));
+
+    // Click "Open Workspace"
+    const openBtn = screen.getByTestId("open-workspace-button");
+    expect(openBtn).toBeInTheDocument();
+    await user.click(openBtn);
+
+    expect(mockOnClose).toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith("/TC/workspaces/ws-123");
   });
 });

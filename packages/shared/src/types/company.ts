@@ -14,6 +14,8 @@ export interface Company {
   mission: string | null;
   values: string | null;
   brandColor: string | null;
+  logoAssetId: string | null;
+  rootFolder: string | null;
   mcpEnabled: boolean;
   createdAt: Date;
   updatedAt: Date;

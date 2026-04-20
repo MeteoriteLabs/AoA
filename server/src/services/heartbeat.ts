@@ -30,6 +30,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { companySkillService } from "./company-skills.js";
+import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 
 /** Strip non-Latin1 characters that crash WIN1252-encoded embedded Postgres on Windows. */
 function sanitizeForDb(text: string): string {
@@ -1986,6 +1987,27 @@ export function heartbeatService(db: Db) {
         logger.warn(
           { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
           "Failed to fetch company skills for agent run; continuing without skill injection",
+        );
+      }
+
+      // Inject available plugin tools into context
+      try {
+        const pluginToolDispatcher: PluginToolDispatcher | undefined =
+          (globalThis as any).__paperclipPluginToolDispatcher;
+        if (pluginToolDispatcher) {
+          const pluginTools = pluginToolDispatcher.listToolsForAgent();
+          if (pluginTools.length > 0) {
+            context.pluginTools = pluginTools.map((t: { name: string; displayName: string; description: string }) => ({
+              name: t.name,
+              displayName: t.displayName,
+              description: t.description,
+            }));
+          }
+        }
+      } catch (err) {
+        logger.warn(
+          { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
+          "Failed to fetch plugin tools for agent run; continuing without plugin tool injection",
         );
       }
 

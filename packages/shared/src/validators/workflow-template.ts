@@ -23,6 +23,7 @@ export const workflowDependencySchema = z
 export const createWorkflowTemplateSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
+  workspaceMode: z.enum(["department_default", "shared", "isolated"]).optional(),
   steps: z.array(workflowStepSchema).min(1),
   dependencies: z.array(workflowDependencySchema).optional(),
 });
@@ -32,6 +33,7 @@ export type CreateWorkflowTemplate = z.infer<typeof createWorkflowTemplateSchema
 export const updateWorkflowTemplateSchema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().optional().nullable(),
+  workspaceMode: z.enum(["department_default", "shared", "isolated"]).optional(),
   steps: z.array(workflowStepSchema).min(1).optional(),
   dependencies: z.array(workflowDependencySchema).optional(),
 });

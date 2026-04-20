@@ -28,6 +28,7 @@ import { roleLabels } from "./agent-config-primitives";
 import { AgentConfigForm, type CreateConfigValues } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
+import { filesystemApi } from "../api/filesystem";
 import { ReportsToSelect } from "./team/ReportsToSelect";
 
 export function NewAgentDialog() {
@@ -88,6 +89,21 @@ export function NewAgentDialog() {
     }
   }, [newAgentOpen, isFirstAgent]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-suggest cwd from company rootFolder when name changes
+  const [cwdManuallyEdited, setCwdManuallyEdited] = useState(false);
+  const rootFolder = selectedCompany?.rootFolder;
+  useEffect(() => {
+    if (!rootFolder || !name.trim() || cwdManuallyEdited) return;
+    const isLocal = ["claude_local", "codex_local", "opencode_local", "cursor", "hermes_local", "gemini_local"].includes(configValues.adapterType);
+    if (!isLocal) return;
+    const sep = rootFolder.includes("\\") ? "\\" : "/";
+    const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const suggestedCwd = `${rootFolder}${sep}agents${sep}${slug}`;
+    if (!configValues.cwd) {
+      setConfigValues((prev) => ({ ...prev, cwd: suggestedCwd }));
+    }
+  }, [rootFolder, name, configValues.adapterType, cwdManuallyEdited]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       agentsApi.hire(selectedCompanyId!, data),
@@ -111,6 +127,7 @@ export function NewAgentDialog() {
     setParentValue("");
     setBudgetDollars("");
     setConfigValues(defaultCreateValues);
+    setCwdManuallyEdited(false);
     setExpanded(true);
     setFormError(null);
   }
@@ -165,6 +182,12 @@ export function NewAgentDialog() {
 
     // Parse budget
     const budgetCents = budgetDollars ? Math.round(parseFloat(budgetDollars) * 100) : 0;
+
+    // Auto-create agent workspace folder if cwd is set
+    const agentCwd = configValues.cwd?.trim();
+    if (agentCwd) {
+      filesystemApi.mkdir(agentCwd).catch(() => {});
+    }
 
     createAgent.mutate({
       name: name.trim(),
@@ -315,7 +338,10 @@ export function NewAgentDialog() {
           <AgentConfigForm
             mode="create"
             values={configValues}
-            onChange={(patch) => setConfigValues((prev) => ({ ...prev, ...patch }))}
+            onChange={(patch) => {
+              if ("cwd" in patch) setCwdManuallyEdited(true);
+              setConfigValues((prev) => ({ ...prev, ...patch }));
+            }}
             adapterModels={adapterModels}
           />
         </div>

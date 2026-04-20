@@ -22,6 +22,7 @@ export const workflowTemplates = pgTable(
 
     name: text("name").notNull(),
     description: text("description"),
+    workspaceMode: text("workspace_mode").default("department_default"),
 
     // Ordered steps with role assignments
     // Array of: { order, title, description, role, suggestedAssigneeType, suggestedDepartmentId, estimatedDurationHours, priority }

@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PROJECT_COLORS, isUuidLike } from "@paperclipai/shared";
 import { projectsApi } from "../api/projects";
 import type { ProjectAgentAssignment, ProjectBudget } from "../api/projects";
+import { TaskSlideOver } from "../components/TaskSlideOver";
 import { issuesApi } from "../api/issues";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
@@ -21,13 +22,19 @@ import { GoalTree } from "../components/GoalTree";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { projectRouteRef, cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
-import { Plus, Bot, X, DollarSign, AlertTriangle, MessageSquare, ClipboardPen, PenLine, Mic, Plug } from "lucide-react";
+import { Plus, Bot, X, DollarSign, AlertTriangle, MessageSquare, ClipboardPen, PenLine, Mic, Plug, ChevronDown, ChevronRight } from "lucide-react";
 import { discussionsApi, type DiscussionListItem } from "../api/discussions";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { useToast } from "../context/ToastContext";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { EmptyState } from "../components/EmptyState";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 
 /* ── Top-level tab types ── */
 
-type ProjectTab = "overview" | "list" | "goals" | "team" | "budget" | "discussions";
+type ProjectTab = "overview" | "list" | "goals" | "team" | "budget" | "discussions" | "workspaces";
 
 function resolveProjectTab(pathname: string, projectId: string): ProjectTab | null {
   const segments = pathname.split("/").filter(Boolean);
@@ -40,6 +47,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "team") return "team";
   if (tab === "budget") return "budget";
   if (tab === "discussions") return "discussions";
+  if (tab === "workspaces") return "workspaces";
   return null;
 }
 
@@ -136,7 +144,15 @@ function ColorPicker({
 
 /* ── List (issues) tab content ── */
 
-function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
+function ProjectIssuesList({
+  projectId,
+  companyId,
+  onSelectIssue,
+}: {
+  projectId: string;
+  companyId: string;
+  onSelectIssue?: (issueIdentifier: string) => void;
+}) {
   const queryClient = useQueryClient();
 
   const { data: agents } = useQuery({
@@ -185,6 +201,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       projectId={projectId}
       viewStateKey={`paperclip:project-view:${projectId}`}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+      onSelectIssue={onSelectIssue}
     />
   );
 }
@@ -448,6 +465,219 @@ function ProjectBudgetTab({ projectId, companyId, projectType }: { projectId: st
   );
 }
 
+/* ── Workspaces tab content ── */
+
+const STATUS_BADGE_CLASSES: Record<string, string> = {
+  active: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  idle: "bg-muted text-muted-foreground",
+  in_review: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
+  archived: "bg-muted text-muted-foreground",
+  cleanup_failed: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
+};
+
+function formatRelativeTime(date: Date): string {
+  const now = Date.now();
+  const diffMs = now - new Date(date).getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (diffDays === 0) return "today";
+  if (diffDays === 1) return "yesterday";
+  if (diffDays < 30) return `${diffDays}d ago`;
+  const diffMonths = Math.floor(diffDays / 30);
+  return `${diffMonths}mo ago`;
+}
+
+function WorkspaceRow({
+  workspace,
+  companyPrefix,
+  onArchive,
+}: {
+  workspace: ExecutionWorkspace;
+  companyPrefix: string;
+  onArchive?: (id: string) => void;
+}) {
+  const navigate = useNavigate();
+  const displayName = workspace.branchName ?? workspace.name;
+  const statusClass = STATUS_BADGE_CLASSES[workspace.status] ?? "bg-muted text-muted-foreground";
+  const isIsolated = workspace.mode === "isolated_workspace";
+
+  return (
+    <div
+      className="flex items-center gap-3 px-4 py-3 text-sm hover:bg-accent/30 transition-colors cursor-pointer"
+      data-testid={`workspace-row-${workspace.id}`}
+      onClick={() => navigate(`/${companyPrefix}/workspaces/${workspace.id}`)}
+    >
+      <span className="font-mono text-xs font-medium truncate flex-1">{displayName}</span>
+      <span
+        className={cn(
+          "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium capitalize shrink-0",
+          statusClass,
+        )}
+      >
+        {workspace.status}
+      </span>
+      <span className="text-xs text-muted-foreground shrink-0">
+        {formatRelativeTime(workspace.lastUsedAt)}
+      </span>
+      <span
+        className={cn(
+          "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0",
+          isIsolated
+            ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+            : "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300",
+        )}
+      >
+        {isIsolated ? "Isolated" : "Shared"}
+      </span>
+      {onArchive && workspace.status !== "archived" && (
+        <button
+          type="button"
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors shrink-0"
+          data-testid={`archive-workspace-${workspace.id}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onArchive(workspace.id);
+          }}
+        >
+          Archive
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ProjectWorkspaces({
+  projectId,
+  companyId,
+  companyPrefix,
+}: {
+  projectId: string;
+  companyId: string;
+  companyPrefix: string;
+}) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<string | null>(null);
+
+  const { data: workspaces, isLoading } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
+    queryFn: () => executionWorkspacesApi.list(companyId, { projectId }),
+    enabled: !!companyId && !!projectId,
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: (id: string) => executionWorkspacesApi.update(id, { status: "archived" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
+      });
+      pushToast({ tone: "success", title: "Workspace archived" });
+      setArchiveTarget(null);
+    },
+    onError: () => {
+      pushToast({ tone: "error", title: "Failed to archive workspace" });
+      setArchiveTarget(null);
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2" data-testid="workspaces-loading">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+      </div>
+    );
+  }
+
+  if (!workspaces || workspaces.length === 0) {
+    return (
+      <EmptyState
+        icon={Bot}
+        message="No workspaces yet"
+        description="Workspaces are automatically created when agents start working on tasks."
+        entityColor="var(--entity-agent)"
+      />
+    );
+  }
+
+  const activeWorkspaces = workspaces.filter((w) => w.status !== "archived");
+  const archivedWorkspaces = workspaces.filter((w) => w.status === "archived");
+
+  return (
+    <div className="space-y-4">
+      {activeWorkspaces.length > 0 ? (
+        <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
+          <div
+            className="grid px-4 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wide bg-muted/30"
+            style={{ gridTemplateColumns: "1fr auto auto auto auto" }}
+          >
+            <span>Name</span>
+            <span>Status</span>
+            <span>Last used</span>
+            <span>Mode</span>
+            <span />
+          </div>
+          {activeWorkspaces.map((ws) => (
+            <WorkspaceRow
+              key={ws.id}
+              workspace={ws}
+              companyPrefix={companyPrefix}
+              onArchive={(id) => setArchiveTarget(id)}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">All workspaces are archived.</p>
+      )}
+
+      {archivedWorkspaces.length > 0 && (
+        <Collapsible open={archivedOpen} onOpenChange={setArchivedOpen}>
+          <CollapsibleTrigger className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors" data-testid="archived-workspaces-trigger">
+            {archivedOpen ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+            Archived ({archivedWorkspaces.length})
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="mt-2 border border-border divide-y divide-border rounded-md overflow-hidden" data-testid="archived-workspaces-list">
+              {archivedWorkspaces.map((ws) => (
+                <WorkspaceRow key={ws.id} workspace={ws} companyPrefix={companyPrefix} />
+              ))}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+
+      {/* Archive confirmation dialog */}
+      <Dialog open={!!archiveTarget} onOpenChange={(open) => { if (!open) setArchiveTarget(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Archive workspace?</DialogTitle>
+            <DialogDescription>
+              This workspace will be moved to the archived section. You can still view it but agents will no longer use it.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={() => setArchiveTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => { if (archiveTarget) archiveMutation.mutate(archiveTarget); }}
+              data-testid="confirm-archive-workspace"
+            >
+              Archive
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 /* ── Discussions tab content ── */
 
 const SOURCE_BADGES: Record<string, { label: string; class: string; icon: typeof ClipboardPen }> = {
@@ -621,6 +851,7 @@ export function ProjectDetail() {
   const canFetchProject = routeProjectRef.length > 0 && (isUuidLike(routeProjectRef) || Boolean(lookupCompanyId));
 
   const activeTab = routeProjectRef ? resolveProjectTab(location.pathname, routeProjectRef) : null;
+  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
 
   const { data: project, isLoading, error } = useQuery({
     queryKey: [...queryKeys.projects.detail(routeProjectRef), lookupCompanyId ?? null],
@@ -630,6 +861,7 @@ export function ProjectDetail() {
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
+  const resolvedPrefix = companyPrefix ?? companies.find((c) => c.id === resolvedCompanyId)?.issuePrefix ?? "";
 
   useEffect(() => {
     if (!project?.companyId || project.companyId === selectedCompanyId) return;
@@ -678,6 +910,7 @@ export function ProjectDetail() {
       team: "team",
       budget: "budget",
       discussions: "discussions",
+      workspaces: "workspaces",
     };
     if (activeTab) {
       navigate(`/projects/${canonicalProjectRef}/${tabPaths[activeTab]}`, { replace: true });
@@ -696,6 +929,7 @@ export function ProjectDetail() {
   if (!project) return null;
 
   const handleTabChange = (tab: ProjectTab) => {
+    if (tab !== "list") setSelectedIssueId(null);
     const tabPaths: Record<ProjectTab, string> = {
       overview: "overview",
       list: "issues",
@@ -703,6 +937,7 @@ export function ProjectDetail() {
       team: "team",
       budget: "budget",
       discussions: "discussions",
+      workspaces: "workspaces",
     };
     navigate(`/projects/${canonicalProjectRef}/${tabPaths[tab]}`);
   };
@@ -775,6 +1010,16 @@ export function ProjectDetail() {
         >
           Discussions
         </button>
+        <button
+          className={`px-3 py-2 text-sm font-medium transition-colors border-b-2 ${
+            activeTab === "workspaces"
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+          onClick={() => handleTabChange("workspaces")}
+        >
+          Workspaces
+        </button>
       </div>
 
       {/* Tab content */}
@@ -791,7 +1036,11 @@ export function ProjectDetail() {
       )}
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
-        <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
+        <ProjectIssuesList
+          projectId={project.id}
+          companyId={resolvedCompanyId}
+          onSelectIssue={setSelectedIssueId}
+        />
       )}
 
       {activeTab === "goals" && project?.id && resolvedCompanyId && (
@@ -808,6 +1057,10 @@ export function ProjectDetail() {
 
       {activeTab === "discussions" && project?.id && resolvedCompanyId && (
         <ProjectDiscussions projectId={project.id} companyId={resolvedCompanyId} projectType={project.type} />
+      )}
+
+      {activeTab === "workspaces" && project?.id && resolvedCompanyId && (
+        <ProjectWorkspaces projectId={project.id} companyId={resolvedCompanyId} companyPrefix={resolvedPrefix} />
       )}
     </>
   );
@@ -833,6 +1086,11 @@ export function ProjectDetail() {
     <div className="space-y-6">
       {headerContent}
       {tabContent}
+      <TaskSlideOver
+        issueId={selectedIssueId}
+        open={!!selectedIssueId}
+        onClose={() => setSelectedIssueId(null)}
+      />
     </div>
   );
 }
