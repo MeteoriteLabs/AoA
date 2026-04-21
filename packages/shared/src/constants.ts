@@ -637,6 +637,7 @@ export const PLUGIN_CAPABILITIES = [
   "issue.documents.write",
   "activity.log.write",
   "metrics.write",
+  "telemetry.track",
   // Plugin state
   "plugin.state.read",
   "plugin.state.write",

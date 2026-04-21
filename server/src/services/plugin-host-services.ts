@@ -49,6 +49,13 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 
 /**
+ * Validation for plugin telemetry event names (F.D4 infra port, Task F.5).
+ * Matches Paperclip parity: lowercase slug of letters, numbers, `_` or `-`,
+ * leading char must be alphanumeric.
+ */
+const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
+
+/**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
  * link-local, etc.) that plugins should never be able to reach.
  *
@@ -633,6 +640,23 @@ export function buildHostServices(
             console.error("[plugin-host-services] Triggered metric flush failed:", err);
           });
         }
+      },
+    },
+
+    telemetry: {
+      async track(params) {
+        const eventName = String(params.eventName ?? "").trim();
+        if (!TELEMETRY_EVENT_NAME_REGEX.test(eventName)) {
+          throw new Error(
+            'Plugin telemetry event names must be lowercase slugs using letters, numbers, "_" or "-".',
+          );
+        }
+        // F.D4: infrastructure-only — log at debug level and discard.
+        // Phase I will decide whether to route into the feedback pipeline.
+        logger.debug(
+          { pluginId, pluginKey, eventName, dimensions: params.dimensions },
+          "Plugin telemetry event (log-and-discard; phase-I routes)",
+        );
       },
     },
 
