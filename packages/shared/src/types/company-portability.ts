@@ -5,6 +5,7 @@ export interface CompanyPortabilityInclude {
   issues: boolean;
   skills: boolean;
   routines: boolean;
+  envInputs: boolean;
 }
 
 export interface CompanyPortabilitySecretRequirement {
@@ -115,6 +116,21 @@ export interface CompanyPortabilityRoutineManifestEntry {
   metadata?: Record<string, unknown> | null;
 }
 
+export type CompanyPortabilityEnvInputKind = "plain" | "secret";
+export type CompanyPortabilityEnvInputRequirement = "required" | "optional";
+export type CompanyPortabilityEnvInputPortability = "portable" | "system_dependent";
+
+export interface CompanyPortabilityEnvInputManifestEntry {
+  key: string;
+  description: string | null;
+  agentSlug: string | null;
+  projectSlug: string | null;
+  kind: CompanyPortabilityEnvInputKind;
+  requirement: CompanyPortabilityEnvInputRequirement;
+  defaultValue: string | null;
+  portability: CompanyPortabilityEnvInputPortability;
+}
+
 export interface CompanyPortabilityIssueManifestEntry {
   slug: string;
   title: string;
@@ -148,6 +164,7 @@ export interface CompanyPortabilityManifest {
   issues?: CompanyPortabilityIssueManifestEntry[];
   skills?: CompanyPortabilitySkillManifestEntry[];
   routines?: CompanyPortabilityRoutineManifestEntry[];
+  envInputs?: CompanyPortabilityEnvInputManifestEntry[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];
 }
 

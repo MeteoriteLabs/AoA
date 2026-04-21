@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityCollisionStrategy,
+  CompanyPortabilityEnvInputManifestEntry,
   CompanyPortabilityExport,
   CompanyPortabilityExportResult,
   CompanyPortabilityImport,
@@ -45,6 +46,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   issues: false,
   skills: false,
   routines: false,
+  envInputs: false,
 };
 
 const ISSUE_STATUSES = new Set([
@@ -69,12 +71,12 @@ const MANIFEST_WRAPPER_KEYS: ReadonlySet<string> = new Set([
   "requiredSecrets",
 ]);
 
-const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines"]);
+const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines", "envInputs"]);
 
 const MAX_SUPPORTED_SCHEMA_VERSION = 2;
 
 const SENSITIVE_ENV_KEY_RE =
-  /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+  /(api[-_]?key|access[-_]?token|auth(?:[-_]?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|(?:^|[_-])token(?:$|[_-]))/i;
 
 type ResolvedSource = {
   manifest: CompanyPortabilityManifest;
@@ -243,6 +245,7 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     issues: input?.issues ?? DEFAULT_INCLUDE.issues,
     skills: input?.skills ?? DEFAULT_INCLUDE.skills,
     routines: input?.routines ?? DEFAULT_INCLUDE.routines,
+    envInputs: input?.envInputs ?? DEFAULT_INCLUDE.envInputs,
   };
 }
 
@@ -276,6 +279,83 @@ function normalizePortableEnv(
     next[key] = binding;
   }
   return next;
+}
+
+function isAbsoluteEnvPath(value: string) {
+  return path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value);
+}
+
+function extractPortableEnvInputs(
+  agentSlug: string,
+  envValue: unknown,
+  warnings: string[],
+): CompanyPortabilityEnvInputManifestEntry[] {
+  if (typeof envValue !== "object" || envValue === null || Array.isArray(envValue)) return [];
+  const env = envValue as Record<string, unknown>;
+  const inputs: CompanyPortabilityEnvInputManifestEntry[] = [];
+
+  for (const [key, binding] of Object.entries(env)) {
+    if (key.toUpperCase() === "PATH") {
+      warnings.push(`Agent ${agentSlug} PATH override was omitted from envInputs export because it is system-dependent.`);
+      continue;
+    }
+
+    const sensitive = SENSITIVE_ENV_KEY_RE.test(key);
+
+    if (isPlainRecord(binding) && binding.type === "secret_ref") {
+      inputs.push({
+        key,
+        description: `Provide ${key} for agent ${agentSlug}`,
+        agentSlug,
+        projectSlug: null,
+        kind: "secret",
+        requirement: "optional",
+        defaultValue: "",
+        portability: "portable",
+      });
+      continue;
+    }
+
+    let rawValue: string | null = null;
+    if (typeof binding === "string") {
+      rawValue = binding;
+    } else if (isPlainRecord(binding) && binding.type === "plain" && typeof binding.value === "string") {
+      rawValue = binding.value;
+    }
+
+    const portability: "portable" | "system_dependent" =
+      rawValue !== null && !sensitive && isAbsoluteEnvPath(rawValue) ? "system_dependent" : "portable";
+    if (portability === "system_dependent") {
+      warnings.push(`Agent ${agentSlug} env ${key} default was exported as system-dependent and may need manual adjustment after import.`);
+    }
+
+    inputs.push({
+      key,
+      description: sensitive
+        ? `Provide ${key} for agent ${agentSlug}`
+        : `Optional default for ${key} on agent ${agentSlug}`,
+      agentSlug,
+      projectSlug: null,
+      kind: sensitive ? "secret" : "plain",
+      requirement: "optional",
+      defaultValue: sensitive ? "" : (rawValue ?? ""),
+      portability,
+    });
+  }
+
+  return inputs;
+}
+
+function dedupeEnvInputs(values: CompanyPortabilityEnvInputManifestEntry[]): CompanyPortabilityEnvInputManifestEntry[] {
+  const seen = new Set<string>();
+  const out: CompanyPortabilityEnvInputManifestEntry[] = [];
+  for (const value of values) {
+    const dedupeKey = `${value.agentSlug ?? ""}:${value.projectSlug ?? ""}:${value.key.toUpperCase()}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push(value);
+  }
+  return out;
 }
 
 function normalizePortableConfig(
@@ -671,7 +751,7 @@ export function companyPortabilityService(db: Db) {
     const generatedAt = new Date().toISOString();
 
     const manifest: CompanyPortabilityManifest = {
-      schemaVersion: include.projects || include.issues || include.skills || include.routines ? 2 : 1,
+      schemaVersion: include.projects || include.issues || include.skills || include.routines || include.envInputs ? 2 : 1,
       generatedAt,
       source: {
         companyId: company.id,
@@ -683,7 +763,9 @@ export function companyPortabilityService(db: Db) {
       requiredSecrets: [],
     };
 
-    const needAgentSlugs = include.agents || include.issues || include.routines;
+    const envInputs: CompanyPortabilityEnvInputManifestEntry[] = [];
+
+    const needAgentSlugs = include.agents || include.issues || include.routines || include.envInputs;
     const needSkills = include.skills;
     const skillRows = needSkills ? await skills.listFull(companyId) : [];
     const validSkillKeys = new Set(skillRows.map((skill) => skill.key));
@@ -971,6 +1053,15 @@ export function companyPortabilityService(db: Db) {
         });
       }
       manifest.routines = routineManifest;
+    }
+
+    if (include.envInputs) {
+      for (const agent of agentRows) {
+        const slug = idToSlug.get(agent.id)!;
+        const agentEnv = (agent.adapterConfig as Record<string, unknown> | null | undefined)?.env;
+        envInputs.push(...extractPortableEnvInputs(slug, agentEnv, warnings));
+      }
+      manifest.envInputs = dedupeEnvInputs(envInputs);
     }
 
     manifest.requiredSecrets = dedupeRequiredSecrets(requiredSecrets);
@@ -1416,6 +1507,16 @@ export function companyPortabilityService(db: Db) {
       existingSlugToAgentId.set(normalizeAgentUrlKey(existing.name) ?? existing.id, existing.id);
     }
 
+    const manifestEnvInputs: CompanyPortabilityEnvInputManifestEntry[] =
+      include.envInputs && Array.isArray(sourceManifest.envInputs) ? sourceManifest.envInputs : [];
+    const envInputsByAgentSlug = new Map<string, CompanyPortabilityEnvInputManifestEntry[]>();
+    for (const envInput of manifestEnvInputs) {
+      if (!envInput.agentSlug) continue;
+      const existing = envInputsByAgentSlug.get(envInput.agentSlug) ?? [];
+      existing.push(envInput);
+      envInputsByAgentSlug.set(envInput.agentSlug, existing);
+    }
+
     if (include.agents) {
       for (const planAgent of plan.preview.plan.agentPlans) {
         const manifestAgent = plan.selectedAgents.find((agent) => agent.slug === planAgent.slug);
@@ -1444,6 +1545,20 @@ export function companyPortabilityService(db: Db) {
           promptTemplate: markdown.body || asString((manifestAgent.adapterConfig as Record<string, unknown>).promptTemplate) || "",
         } as Record<string, unknown>;
         delete adapterConfig.instructionsFilePath;
+
+        const envInputsForAgent = envInputsByAgentSlug.get(manifestAgent.slug) ?? [];
+        if (envInputsForAgent.length > 0) {
+          const envRecord = isPlainRecord(adapterConfig.env) ? { ...adapterConfig.env } : {};
+          for (const envInput of envInputsForAgent) {
+            if (envInput.kind !== "plain") continue;
+            if (envInput.defaultValue === null || envInput.defaultValue === "") continue;
+            if (envRecord[envInput.key] !== undefined) continue;
+            envRecord[envInput.key] = { type: "plain", value: envInput.defaultValue };
+          }
+          if (Object.keys(envRecord).length > 0) {
+            adapterConfig.env = envRecord;
+          }
+        }
         const patch = {
           name: planAgent.plannedName,
           role: manifestAgent.role,
@@ -2016,6 +2131,39 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
+    const envSecretRequirements: CompanyPortabilityManifest["requiredSecrets"] = [];
+    if (manifestEnvInputs.length > 0) {
+      for (const envInput of manifestEnvInputs) {
+        if (envInput.portability === "system_dependent") {
+          warnings.push({
+            kind: "deprecated_field",
+            message: `Env input ${envInput.key}${envInput.agentSlug ? ` for agent ${envInput.agentSlug}` : ""} is system-dependent and may need manual adjustment after import.`,
+          });
+        }
+        const slug = envInput.agentSlug;
+        if (slug && !importedSlugToAgentId.has(slug) && !existingSlugToAgentId.has(slug)) {
+          warnings.push({
+            kind: "link_failed",
+            message: `Env input ${envInput.key} references unresolved agent slug "${slug}" — skipped.`,
+          });
+          continue;
+        }
+        if (envInput.kind === "secret") {
+          envSecretRequirements.push({
+            key: envInput.key,
+            description: envInput.description ?? `Provide ${envInput.key}${slug ? ` for agent ${slug}` : ""}`,
+            agentSlug: slug,
+            providerHint: null,
+          });
+        }
+      }
+    }
+
+    const mergedRequiredSecrets = dedupeRequiredSecrets([
+      ...(sourceManifest.requiredSecrets ?? []),
+      ...envSecretRequirements,
+    ]);
+
     return {
       company: {
         id: targetCompany.id,
@@ -2027,7 +2175,7 @@ export function companyPortabilityService(db: Db) {
       issues: resultIssues,
       skills: resultSkills,
       routines: resultRoutines,
-      requiredSecrets: sourceManifest.requiredSecrets ?? [],
+      requiredSecrets: mergedRequiredSecrets,
       warnings,
     };
   }

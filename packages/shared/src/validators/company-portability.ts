@@ -8,6 +8,7 @@ export const portabilityIncludeSchema = z
     issues: z.boolean().optional(),
     skills: z.boolean().optional(),
     routines: z.boolean().optional(),
+    envInputs: z.boolean().optional(),
   })
   .partial();
 
@@ -121,6 +122,17 @@ export const portabilityRoutineVariableManifestEntrySchema = z.object({
   options: z.array(z.string()),
 });
 
+export const portabilityEnvInputManifestEntrySchema = z.object({
+  key: z.string().min(1),
+  description: z.string().nullable(),
+  agentSlug: z.string().min(1).nullable(),
+  projectSlug: z.string().min(1).nullable(),
+  kind: z.enum(["plain", "secret"]),
+  requirement: z.enum(["required", "optional"]),
+  defaultValue: z.string().nullable(),
+  portability: z.enum(["portable", "system_dependent"]),
+});
+
 export const portabilityRoutineManifestEntrySchema = z.object({
   slug: z.string().min(1),
   title: z.string().min(1),
@@ -154,6 +166,7 @@ export const portabilityManifestSchema = z
         issues: z.boolean().optional(),
         skills: z.boolean().optional(),
         routines: z.boolean().optional(),
+        envInputs: z.boolean().optional(),
       })
       .passthrough(),
     company: portabilityCompanyManifestEntrySchema.nullable(),
@@ -162,6 +175,7 @@ export const portabilityManifestSchema = z
     issues: z.array(portabilityIssueManifestEntrySchema).optional(),
     skills: z.array(portabilitySkillManifestEntrySchema).optional(),
     routines: z.array(portabilityRoutineManifestEntrySchema).optional(),
+    envInputs: z.array(portabilityEnvInputManifestEntrySchema).optional(),
     requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
   })
   .passthrough();

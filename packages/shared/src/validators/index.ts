@@ -15,6 +15,7 @@ export {
   portabilityRoutineManifestEntrySchema,
   portabilityRoutineTriggerManifestEntrySchema,
   portabilityRoutineVariableManifestEntrySchema,
+  portabilityEnvInputManifestEntrySchema,
   portabilityManifestSchema,
   portabilitySourceSchema,
   portabilityTargetSchema,
