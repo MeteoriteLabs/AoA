@@ -309,7 +309,8 @@ require_npm_publish_auth() {
 # ---------- self-test ----------
 # Run with: ./scripts/release-lib.sh --self-test
 # Only triggers when invoked directly; does nothing when sourced as a library.
-if [[ "${1:-}" == "--self-test" ]]; then
+# BASH_SOURCE[0] == $0 when invoked directly; they differ when sourced.
+if [[ "${BASH_SOURCE[0]}" == "${0}" && "${1:-}" == "--self-test" ]]; then
   set -e
 
   assert_eq() {
