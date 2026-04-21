@@ -113,6 +113,8 @@ export type {
   CompanyPortabilityImportRequest,
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
+  ImportWarning,
+  ImportWarningKind,
 } from "./company-portability.js";
 export type {
   BudgetPolicy,

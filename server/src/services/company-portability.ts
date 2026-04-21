@@ -13,6 +13,7 @@ import type {
   CompanyPortabilityPreview,
   CompanyPortabilityPreviewAgentPlan,
   CompanyPortabilityPreviewResult,
+  ImportWarning,
 } from "@paperclipai/shared";
 import { normalizeAgentUrlKey, portabilityManifestSchema } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
@@ -27,14 +28,53 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
 
+const MANIFEST_WRAPPER_KEYS: ReadonlySet<string> = new Set([
+  "schemaVersion",
+  "generatedAt",
+  "source",
+  "includes",
+  "requiredSecrets",
+]);
+
+const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents"]);
+
+const MAX_SUPPORTED_SCHEMA_VERSION = 2;
+
 const SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 
 type ResolvedSource = {
   manifest: CompanyPortabilityManifest;
   files: Record<string, string>;
-  warnings: string[];
+  warnings: ImportWarning[];
 };
+
+function collectManifestWarnings(manifest: CompanyPortabilityManifest): ImportWarning[] {
+  const warnings: ImportWarning[] = [];
+  if (manifest.schemaVersion > MAX_SUPPORTED_SCHEMA_VERSION) {
+    warnings.push({
+      kind: "unsupported_version",
+      message: `Bundle schemaVersion ${manifest.schemaVersion} is newer than supported (max ${MAX_SUPPORTED_SCHEMA_VERSION}). Unknown fields will be ignored.`,
+    });
+  }
+  const manifestRecord = manifest as unknown as Record<string, unknown>;
+  for (const key of Object.keys(manifestRecord)) {
+    if (MANIFEST_WRAPPER_KEYS.has(key)) continue;
+    if (KNOWN_SECTIONS.has(key)) continue;
+    const value = manifestRecord[key];
+    const count = Array.isArray(value) ? value.length : undefined;
+    warnings.push({
+      kind: "unknown_section",
+      section: key,
+      count,
+      message:
+        count !== undefined
+          ? `Bundle section "${key}" (${count} item${count === 1 ? "" : "s"}) is not supported by this version and will be ignored.`
+          : `Bundle section "${key}" is not supported by this version and will be ignored.`,
+    });
+  }
+  return warnings;
+}
 
 type MarkdownDoc = {
   frontmatter: Record<string, unknown>;
@@ -477,19 +517,20 @@ export function companyPortabilityService(db: Db) {
 
   async function resolveSource(source: CompanyPortabilityPreview["source"]): Promise<ResolvedSource> {
     if (source.type === "inline") {
+      const manifest = portabilityManifestSchema.parse(source.manifest) as CompanyPortabilityManifest;
       return {
-        manifest: portabilityManifestSchema.parse(source.manifest),
+        manifest,
         files: source.files,
-        warnings: [],
+        warnings: collectManifestWarnings(manifest),
       };
     }
 
     if (source.type === "url") {
       const manifestJson = await fetchJson(source.url);
-      const manifest = portabilityManifestSchema.parse(manifestJson);
+      const manifest = portabilityManifestSchema.parse(manifestJson) as CompanyPortabilityManifest;
       const base = new URL(".", source.url);
       const files: Record<string, string> = {};
-      const warnings: string[] = [];
+      const warnings: ImportWarning[] = collectManifestWarnings(manifest);
 
       if (manifest.company?.path) {
         const companyPath = ensureMarkdownPath(manifest.company.path);
@@ -507,18 +548,21 @@ export function companyPortabilityService(db: Db) {
     let ref = parsed.ref;
     const manifestRelativePath = [parsed.basePath, "paperclip.manifest.json"].filter(Boolean).join("/");
     let manifest: CompanyPortabilityManifest | null = null;
-    const warnings: string[] = [];
+    const warnings: ImportWarning[] = [];
     try {
       manifest = portabilityManifestSchema.parse(
         await fetchJson(resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, manifestRelativePath)),
-      );
+      ) as CompanyPortabilityManifest;
     } catch (err) {
       if (ref === "main") {
         ref = "master";
-        warnings.push("GitHub ref main not found; falling back to master.");
+        warnings.push({
+          kind: "deprecated_field",
+          message: "GitHub ref main not found; falling back to master.",
+        });
         manifest = portabilityManifestSchema.parse(
           await fetchJson(resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, manifestRelativePath)),
-        );
+        ) as CompanyPortabilityManifest;
       } else {
         throw err;
       }
@@ -526,6 +570,7 @@ export function companyPortabilityService(db: Db) {
 
     // manifest is guaranteed non-null: if both parse attempts fail, the catch rethrows
     const resolvedManifest = manifest!;
+    warnings.push(...collectManifestWarnings(resolvedManifest));
     const files: Record<string, string> = {};
     if (resolvedManifest.company?.path) {
       files[resolvedManifest.company.path] = await fetchText(
@@ -715,7 +760,10 @@ export function companyPortabilityService(db: Db) {
     }
 
     if (include.agents && selectedAgents.length === 0) {
-      warnings.push("No agents selected for import.");
+      warnings.push({
+        kind: "empty_selection",
+        message: "No agents selected for import.",
+      });
     }
 
     for (const agent of selectedAgents) {
@@ -727,7 +775,10 @@ export function companyPortabilityService(db: Db) {
       }
       const parsed = parseFrontmatterMarkdown(markdown);
       if (parsed.frontmatter.kind !== "agent") {
-        warnings.push(`Agent markdown ${filePath} does not declare kind: agent in frontmatter.`);
+        warnings.push({
+          kind: "invalid_frontmatter",
+          message: `Agent markdown ${filePath} does not declare kind: agent in frontmatter.`,
+        });
       }
     }
 
@@ -908,7 +959,10 @@ export function companyPortabilityService(db: Db) {
 
         const markdownRaw = plan.source.files[manifestAgent.path];
         if (!markdownRaw) {
-          warnings.push(`Missing AGENTS markdown for ${manifestAgent.slug}; imported without prompt template.`);
+          warnings.push({
+            kind: "missing_file",
+            message: `Missing AGENTS markdown for ${manifestAgent.slug}; imported without prompt template.`,
+          });
         }
         const markdown = markdownRaw ? parseFrontmatterMarkdown(markdownRaw) : { frontmatter: {}, body: "" };
         const adapterConfig = {
@@ -936,7 +990,10 @@ export function companyPortabilityService(db: Db) {
         if (planAgent.action === "update" && planAgent.existingAgentId) {
           const updated = await agents.update(planAgent.existingAgentId, patch);
           if (!updated) {
-            warnings.push(`Skipped update for missing agent ${planAgent.existingAgentId}.`);
+            warnings.push({
+              kind: "skipped_update",
+              message: `Skipped update for missing agent ${planAgent.existingAgentId}.`,
+            });
             resultAgents.push({
               slug: planAgent.slug,
               id: null,
@@ -988,7 +1045,10 @@ export function companyPortabilityService(db: Db) {
               reportsTo: null,
             });
           } catch {
-            warnings.push(`Could not assign user parent ${mParentIdRef} for imported agent ${manifestAgent.slug}.`);
+            warnings.push({
+              kind: "link_failed",
+              message: `Could not assign user parent ${mParentIdRef} for imported agent ${manifestAgent.slug}.`,
+            });
           }
           continue;
         }
@@ -1005,7 +1065,10 @@ export function companyPortabilityService(db: Db) {
             parentId: managerId,
           });
         } catch {
-          warnings.push(`Could not assign manager ${managerSlug} for imported agent ${manifestAgent.slug}.`);
+          warnings.push({
+            kind: "link_failed",
+            message: `Could not assign manager ${managerSlug} for imported agent ${manifestAgent.slug}.`,
+          });
         }
       }
     }

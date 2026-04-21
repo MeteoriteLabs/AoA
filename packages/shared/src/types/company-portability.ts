@@ -56,6 +56,23 @@ export interface CompanyPortabilityExportResult {
   warnings: string[];
 }
 
+export type ImportWarningKind =
+  | "unknown_section"
+  | "unsupported_version"
+  | "deprecated_field"
+  | "missing_file"
+  | "invalid_frontmatter"
+  | "empty_selection"
+  | "link_failed"
+  | "skipped_update";
+
+export interface ImportWarning {
+  kind: ImportWarningKind;
+  section?: string;
+  message: string;
+  count?: number;
+}
+
 export type CompanyPortabilitySource =
   | {
       type: "inline";
@@ -112,7 +129,7 @@ export interface CompanyPortabilityPreviewResult {
     agentPlans: CompanyPortabilityPreviewAgentPlan[];
   };
   requiredSecrets: CompanyPortabilitySecretRequirement[];
-  warnings: string[];
+  warnings: ImportWarning[];
   errors: string[];
 }
 
@@ -132,7 +149,7 @@ export interface CompanyPortabilityImportResult {
     reason: string | null;
   }[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];
-  warnings: string[];
+  warnings: ImportWarning[];
 }
 
 export interface CompanyPortabilityExportRequest {

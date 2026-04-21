@@ -297,6 +297,8 @@ export type {
   CompanyPortabilityImportRequest,
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
+  ImportWarning,
+  ImportWarningKind,
   EnvBinding,
   AgentEnvConfig,
   CompanySecret,

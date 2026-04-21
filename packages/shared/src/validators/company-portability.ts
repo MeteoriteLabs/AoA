@@ -41,23 +41,25 @@ export const portabilityAgentManifestEntrySchema = z.object({
   metadata: z.record(z.unknown()).nullable(),
 });
 
-export const portabilityManifestSchema = z.object({
-  schemaVersion: z.number().int().positive(),
-  generatedAt: z.string().datetime(),
-  source: z
-    .object({
-      companyId: z.string().uuid(),
-      companyName: z.string().min(1),
-    })
-    .nullable(),
-  includes: z.object({
-    company: z.boolean(),
-    agents: z.boolean(),
-  }),
-  company: portabilityCompanyManifestEntrySchema.nullable(),
-  agents: z.array(portabilityAgentManifestEntrySchema),
-  requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
-});
+export const portabilityManifestSchema = z
+  .object({
+    schemaVersion: z.number().int().positive(),
+    generatedAt: z.string().datetime(),
+    source: z
+      .object({
+        companyId: z.string().uuid(),
+        companyName: z.string().min(1),
+      })
+      .nullable(),
+    includes: z.object({
+      company: z.boolean(),
+      agents: z.boolean(),
+    }),
+    company: portabilityCompanyManifestEntrySchema.nullable(),
+    agents: z.array(portabilityAgentManifestEntrySchema),
+    requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
+  })
+  .passthrough();
 
 export const portabilitySourceSchema = z.discriminatedUnion("type", [
   z.object({
