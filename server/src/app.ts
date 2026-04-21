@@ -18,6 +18,7 @@ import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { costRoutes } from "./routes/costs.js";
+import { quotaRoutes } from "./routes/quotas.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
@@ -189,6 +190,7 @@ export async function createApp(
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
   api.use(costRoutes(db));
+  api.use(quotaRoutes(db));
   api.use(companySkillRoutes(db));
   api.use(routineRoutes(db));
   api.use(instanceSettingsRoutes(db));

@@ -30,6 +30,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { companySkillService } from "./company-skills.js";
+import { quotaWindowsService } from "./quota-windows.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 
 /** Strip non-Latin1 characters that crash WIN1252-encoded embedded Postgres on Windows. */
@@ -2238,6 +2239,15 @@ export function heartbeatService(db: Db) {
           detectedFiles,
         });
       }
+
+      // ── Phase B.2: Refresh provider quota snapshots (fire-and-forget) ─
+      // Adapters that expose getQuotaWindows() report fresh rate-limit
+      // windows to the DB so the Costs UI reads recent snapshots without
+      // blocking on live provider polls. Errors are swallowed — stale quota
+      // data is strictly better than a failed heartbeat completion.
+      quotaWindowsService(db)
+        .refresh(agent.companyId, agent.adapterType)
+        .catch((err) => logger.warn({ err, adapterType: agent.adapterType }, "quota refresh after heartbeat failed"));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown adapter failure";
       logger.error({ err, runId }, "heartbeat execution failed");
