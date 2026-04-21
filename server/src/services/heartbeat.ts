@@ -3182,6 +3182,60 @@ export function heartbeatService(db: Db) {
       return runs.length;
     },
 
+    cancelBudgetScopeWork: async (scope: { companyId: string; scopeType: "company" | "agent"; scopeId: string }) => {
+      // Agent scope: kill all queued/running runs for that agent.
+      if (scope.scopeType === "agent") {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.agentId, scope.scopeId), inArray(heartbeatRuns.status, ["queued", "running"])));
+
+        for (const run of runs) {
+          await setRunStatus(run.id, "cancelled", {
+            finishedAt: new Date(),
+            error: "Cancelled due to budget hard-stop",
+            errorCode: "cancelled",
+          });
+          await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+            finishedAt: new Date(),
+            error: "Cancelled due to budget hard-stop",
+          });
+          const running = runningProcesses.get(run.id);
+          if (running) {
+            running.child.kill("SIGTERM");
+            runningProcesses.delete(run.id);
+          }
+          await releaseIssueExecutionAndPromote(run);
+        }
+        return runs.length;
+      }
+
+      // Company scope: kill all queued/running runs in the company.
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, scope.companyId), inArray(heartbeatRuns.status, ["queued", "running"])));
+
+      for (const run of runs) {
+        await setRunStatus(run.id, "cancelled", {
+          finishedAt: new Date(),
+          error: "Cancelled due to company budget hard-stop",
+          errorCode: "cancelled",
+        });
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: "Cancelled due to company budget hard-stop",
+        });
+        const running = runningProcesses.get(run.id);
+        if (running) {
+          running.child.kill("SIGTERM");
+          runningProcesses.delete(run.id);
+        }
+        await releaseIssueExecutionAndPromote(run);
+      }
+      return runs.length;
+    },
+
     getActiveRunForAgent: async (agentId: string) => {
       const [run] = await db
         .select()

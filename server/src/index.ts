@@ -25,6 +25,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService, routineService } from "./services/index.js";
+import { onBudgetExhausted } from "./services/budget-hooks.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -486,6 +487,18 @@ setupLiveEventsWebSocketServer(server, db as any, {
 
 if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
+
+  // Subscribe heartbeat's scope-cancellation to budget-exhausted signals so
+  // hard-stop breaches interrupt in-flight work, not just preflight-block.
+  onBudgetExhausted(async (scope) => {
+    const cancelled = await heartbeat.cancelBudgetScopeWork(scope);
+    if (cancelled > 0) {
+      logger.warn(
+        { scope, cancelled },
+        "cancelled in-flight runs due to budget hard-stop",
+      );
+    }
+  });
 
   // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
   void heartbeat.reapOrphanedRuns().catch((err) => {
