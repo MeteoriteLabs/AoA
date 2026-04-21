@@ -36,6 +36,7 @@ import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { companyService } from "./companies.js";
 import { companySkillService } from "./company-skills.js";
+import { generateReadme } from "./company-export-readme.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
@@ -1066,6 +1067,12 @@ export function companyPortabilityService(db: Db) {
     }
 
     manifest.requiredSecrets = dedupeRequiredSecrets(requiredSecrets);
+
+    files["README.md"] = generateReadme(manifest, {
+      companyName: company.name,
+      companyDescription: company.description ?? null,
+    });
+
     return {
       manifest,
       files,

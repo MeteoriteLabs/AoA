@@ -360,6 +360,13 @@ describe("company-portability previewExport (service)", () => {
     expect(preview.counts.envInputs).toBe(2);
   });
 
+  it("includes README.md in the file inventory", async () => {
+    resetState();
+    sourceAgents = [makeAgent({ id: "a1", name: "Ada" })];
+    const preview = await svc.previewExport(SRC_CO_ID, {});
+    expect(preview.files).toContain("README.md");
+  });
+
   it("does NOT return the manifest or file bodies (only summary fields)", async () => {
     resetState();
     sourceAgents = [makeAgent({ id: "a1", name: "Ada" })];
