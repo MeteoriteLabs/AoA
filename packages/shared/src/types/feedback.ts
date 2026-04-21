@@ -55,3 +55,17 @@ export type FeedbackRedactionSummary = {
   notes: string[];
   counts: Record<string, number>;
 };
+
+// Persisted into feedback_exports.target_summary (jsonb, NOT NULL). Matches
+// Paperclip's FeedbackTraceTargetSummary shape so future transmission endpoints
+// can consume AoA bundles without per-source schema adapters.
+export interface FeedbackTraceTargetSummary {
+  label: string;
+  excerpt: string | null;
+  authorAgentId: string | null;
+  authorUserId: string | null;
+  createdAt: Date | null;
+  documentKey: string | null;
+  documentTitle: string | null;
+  revisionNumber: number | null;
+}

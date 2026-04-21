@@ -201,6 +201,7 @@ export type {
   FeedbackRedactionState,
   FeedbackRedactionSummary,
   FeedbackTargetType,
+  FeedbackTraceTargetSummary,
   FeedbackVoteValue,
   FeedbackVote,
   FeedbackVoteSummary,

@@ -375,6 +375,7 @@ export type {
   BackupRetentionPolicy,
   FeedbackDataSharingPreference,
   FeedbackTargetType,
+  FeedbackTraceTargetSummary,
   FeedbackVoteValue,
   FeedbackVote,
   FeedbackVoteSummary,
