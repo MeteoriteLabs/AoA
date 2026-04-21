@@ -4,7 +4,7 @@ import { DollarSign } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { costsApi } from "../api/costs";
+import { costsApi, type CostByBillerRow } from "../api/costs";
 import { budgetsApi } from "../api/budgets";
 import { quotasApi, type ProviderQuotaWindow } from "../api/quotas";
 import { financeApi } from "../api/finance";
@@ -14,6 +14,15 @@ import { EmptyState } from "../components/EmptyState";
 import { BudgetPolicyCard } from "../components/finance/BudgetPolicyCard";
 import { BudgetIncidentCard } from "../components/finance/BudgetIncidentCard";
 import { ProviderQuotaCard } from "../components/finance/ProviderQuotaCard";
+import { FinanceBillerCard } from "../components/finance/FinanceBillerCard";
+import { FinanceKindCard } from "../components/finance/FinanceKindCard";
+import { FinanceTimelineCard } from "../components/finance/FinanceTimelineCard";
+import { AccountingModelCard } from "../components/finance/AccountingModelCard";
+import {
+  ClaudeSubscriptionPanel,
+  type SubscriptionRollup,
+} from "../components/finance/ClaudeSubscriptionPanel";
+import { CodexSubscriptionPanel } from "../components/finance/CodexSubscriptionPanel";
 import { formatCents } from "../lib/utils";
 
 // ─── Date range helpers ────────────────────────────────────────────────
@@ -109,6 +118,40 @@ export function Costs() {
     queryKey: ["finance", "summary", selectedCompanyId, from, to],
     queryFn: () =>
       financeApi.summary(selectedCompanyId!, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId,
+  });
+  const costsByModelQuery = useQuery({
+    queryKey: ["costs", "by-model", selectedCompanyId, from, to],
+    queryFn: () =>
+      costsApi.byModel(selectedCompanyId!, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId,
+  });
+  const costsByBillerQuery = useQuery({
+    queryKey: ["costs", "by-biller", selectedCompanyId, from, to],
+    queryFn: () =>
+      costsApi.byBiller(selectedCompanyId!, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId,
+  });
+  const financeByBillerQuery = useQuery({
+    queryKey: ["finance", "by-biller", selectedCompanyId, from, to],
+    queryFn: () =>
+      financeApi.byBiller(selectedCompanyId!, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId,
+  });
+  const financeByKindQuery = useQuery({
+    queryKey: ["finance", "by-kind", selectedCompanyId, from, to],
+    queryFn: () =>
+      financeApi.byKind(selectedCompanyId!, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId,
+  });
+  const financeListQuery = useQuery({
+    queryKey: ["finance", "list", selectedCompanyId, from, to],
+    queryFn: () =>
+      financeApi.list(selectedCompanyId!, {
+        from: from || undefined,
+        to: to || undefined,
+        limit: 25,
+      }),
     enabled: !!selectedCompanyId,
   });
 
@@ -217,16 +260,116 @@ export function Costs() {
         windows={quotasQuery.data}
       />
 
-      {/* Remaining sections */}
-      <div className="grid gap-4 md:grid-cols-2">
-        <SectionPlaceholder
-          title="Breakdown"
-          description="Accounting model + Claude and Codex subscription utilization load here."
-        />
-        <SectionPlaceholder
-          title="Ledger"
-          description="Finance events by biller, by kind, and over time load here."
-        />
+      {/* Breakdown — model + subscription panels */}
+      <BreakdownSection
+        modelRows={costsByModelQuery.data ?? []}
+        billerRows={costsByBillerQuery.data ?? []}
+        settingsHref={`/${selectedCompanyId}/settings`}
+      />
+
+      {/* Ledger — biller + kind + timeline */}
+      <LedgerSection
+        billerRows={financeByBillerQuery.data ?? []}
+        kindRows={financeByKindQuery.data ?? []}
+        events={financeListQuery.data ?? []}
+      />
+    </div>
+  );
+}
+
+// ─── Breakdown section ─────────────────────────────────────────────────
+function BreakdownSection({
+  modelRows,
+  billerRows,
+  settingsHref,
+}: {
+  modelRows: import("../api/costs").CostByModelRow[];
+  billerRows: CostByBillerRow[];
+  settingsHref: string;
+}) {
+  const claudeRollup = rollupBiller(billerRows, ["claude_local"]);
+  const codexRollup = rollupBiller(billerRows, ["codex_local"]);
+
+  const hasAny =
+    modelRows.length > 0 || claudeRollup != null || codexRollup != null;
+
+  if (!hasAny) {
+    return (
+      <SectionPlaceholder
+        title="Breakdown"
+        description="Per-model spend and subscription utilization appear here once cost events are recorded."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold">Breakdown</h3>
+      <div className="grid gap-3 md:grid-cols-2">
+        <AccountingModelCard rows={modelRows} />
+        <div className="space-y-3">
+          <ClaudeSubscriptionPanel rollup={claudeRollup} settingsHref={settingsHref} />
+          <CodexSubscriptionPanel rollup={codexRollup} settingsHref={settingsHref} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function rollupBiller(
+  rows: CostByBillerRow[],
+  billerKeys: string[],
+): SubscriptionRollup | null {
+  const matches = rows.filter(
+    (r) => r.biller != null && billerKeys.includes(r.biller.toLowerCase()),
+  );
+  if (matches.length === 0) return null;
+  return matches.reduce<SubscriptionRollup>(
+    (acc, r) => ({
+      spendCents: acc.spendCents + r.totalCostCents,
+      eventCount: acc.eventCount + r.eventCount,
+      inputTokens: acc.inputTokens + r.totalInputTokens,
+      cachedInputTokens: acc.cachedInputTokens + r.totalCachedInputTokens,
+      outputTokens: acc.outputTokens + r.totalOutputTokens,
+    }),
+    { spendCents: 0, eventCount: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+  );
+}
+
+// ─── Ledger section ────────────────────────────────────────────────────
+function LedgerSection({
+  billerRows,
+  kindRows,
+  events,
+}: {
+  billerRows: import("../api/finance").FinanceBillerRow[];
+  kindRows: import("../api/finance").FinanceKindRow[];
+  events: import("../api/finance").FinanceEvent[];
+}) {
+  const hasAny = billerRows.length > 0 || kindRows.length > 0 || events.length > 0;
+
+  if (!hasAny) {
+    return (
+      <SectionPlaceholder
+        title="Ledger"
+        description="Finance events by biller, by kind, and over time load here once any finance event is recorded."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold">Ledger</h3>
+      {billerRows.length > 0 && (
+        <div className="grid gap-3 md:grid-cols-2">
+          {billerRows.map((row) => (
+            <FinanceBillerCard key={row.biller ?? "__unknown"} row={row} />
+          ))}
+        </div>
+      )}
+      <div className="grid gap-3 md:grid-cols-2">
+        <FinanceKindCard rows={kindRows} />
+        <FinanceTimelineCard rows={events} />
       </div>
     </div>
   );

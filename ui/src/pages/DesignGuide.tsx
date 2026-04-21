@@ -137,7 +137,22 @@ import { BudgetPolicyCard } from "@/components/finance/BudgetPolicyCard";
 import { BudgetIncidentCard } from "@/components/finance/BudgetIncidentCard";
 import { QuotaBar } from "@/components/finance/QuotaBar";
 import { ProviderQuotaCard } from "@/components/finance/ProviderQuotaCard";
+import { FinanceBillerCard } from "@/components/finance/FinanceBillerCard";
+import { FinanceKindCard } from "@/components/finance/FinanceKindCard";
+import { FinanceTimelineCard } from "@/components/finance/FinanceTimelineCard";
+import { AccountingModelCard } from "@/components/finance/AccountingModelCard";
+import {
+  ClaudeSubscriptionPanel,
+  type SubscriptionRollup,
+} from "@/components/finance/ClaudeSubscriptionPanel";
+import { CodexSubscriptionPanel } from "@/components/finance/CodexSubscriptionPanel";
 import type { ProviderQuotaWindow } from "@/api/quotas";
+import type {
+  FinanceBillerRow,
+  FinanceKindRow,
+  FinanceEvent,
+} from "@/api/finance";
+import type { CostByModelRow } from "@/api/costs";
 import type { BudgetPolicySummary, BudgetIncident } from "@paperclipai/shared";
 
 /* ------------------------------------------------------------------ */
@@ -1370,6 +1385,16 @@ export function DesignGuide() {
       <QuotaComponentsShowcase />
 
       {/* ============================================================ */}
+      {/*  FINANCE LEDGER COMPONENTS                                    */}
+      {/* ============================================================ */}
+      <FinanceLedgerShowcase />
+
+      {/* ============================================================ */}
+      {/*  BREAKDOWN COMPONENTS                                         */}
+      {/* ============================================================ */}
+      <BreakdownComponentsShowcase />
+
+      {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
       <Section title="Keyboard Shortcuts">
@@ -2153,6 +2178,239 @@ function QuotaComponentsShowcase() {
             lastUpdatedAt={null}
             onRefresh={() => {}}
           />
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Finance ledger showcase                                           */
+/* ------------------------------------------------------------------ */
+
+function makeDemoBillerRow(overrides: Partial<FinanceBillerRow> = {}): FinanceBillerRow {
+  return {
+    biller: "anthropic",
+    debitCents: 5_000,
+    creditCents: 1_000,
+    estimatedDebitCents: 0,
+    eventCount: 4,
+    kindCount: 2,
+    netCents: 4_000,
+    ...overrides,
+  };
+}
+
+function makeDemoKindRow(overrides: Partial<FinanceKindRow> = {}): FinanceKindRow {
+  return {
+    eventKind: "top_up",
+    debitCents: 10_000,
+    creditCents: 0,
+    estimatedDebitCents: 0,
+    eventCount: 1,
+    billerCount: 1,
+    netCents: 10_000,
+    ...overrides,
+  };
+}
+
+function makeDemoFinanceEvent(overrides: Partial<FinanceEvent> = {}): FinanceEvent {
+  return {
+    id: "fe-demo-1",
+    companyId: "comp-demo",
+    agentId: null,
+    issueId: null,
+    projectId: null,
+    goalId: null,
+    heartbeatRunId: null,
+    costEventId: null,
+    billingCode: null,
+    description: "Monthly subscription top-up",
+    eventKind: "top_up",
+    direction: "credit",
+    biller: "anthropic",
+    provider: null,
+    executionAdapterType: null,
+    pricingTier: null,
+    region: null,
+    model: null,
+    quantity: null,
+    unit: null,
+    amountCents: 10_000,
+    currency: "USD",
+    estimated: false,
+    externalInvoiceId: "INV-2026-001",
+    metadataJson: null,
+    occurredAt: new Date("2026-04-15T12:00:00Z").toISOString(),
+    createdAt: new Date("2026-04-15T12:00:00Z").toISOString(),
+    ...overrides,
+  };
+}
+
+function FinanceLedgerShowcase() {
+  return (
+    <Section title="Finance Ledger Components">
+      <p className="text-sm text-muted-foreground">
+        Three complementary views of the finance_events ledger. Biller cards
+        give a per-source roll-up; the Kind card groups across billers by
+        event type; the Timeline renders recent events chronologically. Used
+        on the Budget page's Ledger section.
+      </p>
+
+      <SubSection title="FinanceBillerCard">
+        <div className="grid gap-3 md:grid-cols-2">
+          <FinanceBillerCard row={makeDemoBillerRow()} />
+          <FinanceBillerCard
+            row={makeDemoBillerRow({
+              biller: "openai",
+              debitCents: 12_500,
+              creditCents: 0,
+              estimatedDebitCents: 2_500,
+              netCents: 12_500,
+              eventCount: 18,
+              kindCount: 3,
+            })}
+          />
+          <FinanceBillerCard
+            row={makeDemoBillerRow({
+              biller: null,
+              debitCents: 250,
+              creditCents: 0,
+              estimatedDebitCents: 0,
+              netCents: 250,
+              eventCount: 1,
+              kindCount: 1,
+            })}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="FinanceKindCard">
+        <div className="grid gap-3 md:grid-cols-2">
+          <FinanceKindCard rows={[]} />
+          <FinanceKindCard
+            rows={[
+              makeDemoKindRow({ eventKind: "top_up", netCents: 10_000, debitCents: 10_000 }),
+              makeDemoKindRow({
+                eventKind: "fee",
+                netCents: 500,
+                debitCents: 500,
+                eventCount: 2,
+                billerCount: 1,
+              }),
+              makeDemoKindRow({
+                eventKind: "refund",
+                netCents: -250,
+                debitCents: 0,
+                creditCents: 250,
+                eventCount: 1,
+                billerCount: 1,
+              }),
+            ]}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="FinanceTimelineCard">
+        <div className="grid gap-3 md:grid-cols-2">
+          <FinanceTimelineCard rows={[]} />
+          <FinanceTimelineCard
+            rows={[
+              makeDemoFinanceEvent(),
+              makeDemoFinanceEvent({
+                id: "fe-demo-2",
+                eventKind: "fee",
+                direction: "debit",
+                amountCents: 500,
+                biller: "openai",
+                provider: "openai",
+                model: "gpt-4o",
+                description: "Overage processing fee",
+                estimated: true,
+                occurredAt: new Date("2026-04-18T09:30:00Z").toISOString(),
+              }),
+              makeDemoFinanceEvent({
+                id: "fe-demo-3",
+                eventKind: "refund",
+                direction: "credit",
+                amountCents: 1_200,
+                biller: "anthropic",
+                description: "Credit for duplicated charge",
+                occurredAt: new Date("2026-04-20T14:00:00Z").toISOString(),
+              }),
+            ]}
+          />
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Breakdown showcase                                                */
+/* ------------------------------------------------------------------ */
+
+function makeDemoModelRow(overrides: Partial<CostByModelRow> = {}): CostByModelRow {
+  return {
+    model: "claude-3-5-sonnet",
+    totalCostCents: 1_200,
+    totalInputTokens: 50_000,
+    totalCachedInputTokens: 10_000,
+    totalOutputTokens: 5_000,
+    eventCount: 3,
+    ...overrides,
+  };
+}
+
+function BreakdownComponentsShowcase() {
+  const claudeRollup: SubscriptionRollup = {
+    spendCents: 3_500,
+    eventCount: 12,
+    inputTokens: 100_000,
+    cachedInputTokens: 25_000,
+    outputTokens: 15_000,
+  };
+  const codexRollup: SubscriptionRollup = {
+    spendCents: 1_800,
+    eventCount: 6,
+    inputTokens: 40_000,
+    cachedInputTokens: 0,
+    outputTokens: 8_000,
+  };
+
+  return (
+    <Section title="Breakdown Components">
+      <p className="text-sm text-muted-foreground">
+        Per-model cost breakdown + subscription utilization panels. These
+        populate the Budget page's Breakdown section alongside the ledger
+        views.
+      </p>
+
+      <SubSection title="AccountingModelCard">
+        <div className="grid gap-3 md:grid-cols-2">
+          <AccountingModelCard rows={[]} />
+          <AccountingModelCard
+            rows={[
+              makeDemoModelRow({ model: "gpt-4o", totalCostCents: 500, totalInputTokens: 20_000, totalOutputTokens: 2_000, totalCachedInputTokens: 0, eventCount: 2 }),
+              makeDemoModelRow({ model: "claude-3-5-sonnet", totalCostCents: 2_500, totalInputTokens: 80_000, totalOutputTokens: 10_000, totalCachedInputTokens: 15_000, eventCount: 7 }),
+              makeDemoModelRow({ model: "gemini-1.5-pro", totalCostCents: 100, totalInputTokens: 5_000, totalOutputTokens: 800, totalCachedInputTokens: 0, eventCount: 1 }),
+              makeDemoModelRow({ model: null, totalCostCents: 50, totalInputTokens: 1_000, totalOutputTokens: 200, totalCachedInputTokens: 0, eventCount: 1 }),
+            ]}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="ClaudeSubscriptionPanel">
+        <div className="grid gap-3 md:grid-cols-2">
+          <ClaudeSubscriptionPanel rollup={null} />
+          <ClaudeSubscriptionPanel rollup={claudeRollup} />
+        </div>
+      </SubSection>
+
+      <SubSection title="CodexSubscriptionPanel">
+        <div className="grid gap-3 md:grid-cols-2">
+          <CodexSubscriptionPanel rollup={null} />
+          <CodexSubscriptionPanel rollup={codexRollup} />
         </div>
       </SubSection>
     </Section>
