@@ -5,11 +5,13 @@ import { z } from "zod";
 import { forbidden, unauthorized } from "../errors.js";
 import {
   agentService,
+  approvalService,
   artifactService,
   companyService,
   debriefService,
   extractionService,
   goalService,
+  issueApprovalService,
   issueService,
   logActivity,
   mcpService,
@@ -95,6 +97,8 @@ interface McpRouteDeps {
   permissionsSvc?: ReturnType<typeof permissionService>;
   agentsSvc?: ReturnType<typeof agentService>;
   projectsSvc?: ReturnType<typeof projectService>;
+  approvalsSvc?: ReturnType<typeof approvalService>;
+  issueApprovalsSvc?: ReturnType<typeof issueApprovalService>;
   resolveScope?: (companyId: string, userId: string) => Promise<McpUserScope>;
   resolveRole?: (companyId: string, userId: string) => Promise<string>;
   resolveScopedAgentIds?: (companyId: string, scope: McpUserScope) => Promise<Set<string> | null>;
@@ -207,6 +211,8 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   const permissionsSvc = deps.permissionsSvc ?? permissionService(db);
   const agentsSvc = deps.agentsSvc ?? agentService(db);
   const projectsSvc = deps.projectsSvc ?? projectService(db);
+  const approvalsSvc = deps.approvalsSvc ?? approvalService(db);
+  const issueApprovalsSvc = deps.issueApprovalsSvc ?? issueApprovalService(db);
   const resolveRole =
     deps.resolveRole ??
     ((companyId: string, userId: string) => resolveUserRole(db, companyId, userId));
@@ -227,6 +233,8 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
     permissionsSvc,
     agentsSvc,
     projectsSvc,
+    approvalsSvc,
+    issueApprovalsSvc,
   };
 
   router.get("/companies/:companyId/mcp/status", async (req, res) => {

@@ -1,11 +1,13 @@
 import type { Db } from "@paperclipai/db";
 import type {
   agentService,
+  approvalService,
   artifactService,
   companyService,
   debriefService,
   extractionService,
   goalService,
+  issueApprovalService,
   issueService,
   mcpService,
   memoryService,
@@ -37,6 +39,8 @@ export interface ToolServices {
   permissionsSvc: ReturnType<typeof permissionService>;
   agentsSvc: ReturnType<typeof agentService>;
   projectsSvc: ReturnType<typeof projectService>;
+  approvalsSvc: ReturnType<typeof approvalService>;
+  issueApprovalsSvc: ReturnType<typeof issueApprovalService>;
 }
 
 export interface ToolContext {

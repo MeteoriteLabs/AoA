@@ -1,16 +1,23 @@
-import { ISSUE_STATUSES } from "@paperclipai/shared";
+import { APPROVAL_STATUSES, APPROVAL_TYPES, ISSUE_STATUSES } from "@paperclipai/shared";
 import { readToolHandlers } from "./read-tools.js";
 import { writeToolHandlers } from "./write-tools.js";
 import { documentToolHandlers } from "./document-tools.js";
+import { approvalToolHandlers } from "./approval-tools.js";
 import type { ToolHandler } from "./types.js";
 
-export { readToolHandlers, writeToolHandlers, documentToolHandlers };
+export {
+  readToolHandlers,
+  writeToolHandlers,
+  documentToolHandlers,
+  approvalToolHandlers,
+};
 export * from "./types.js";
 
 export const toolHandlers: Record<string, ToolHandler> = {
   ...readToolHandlers,
   ...writeToolHandlers,
   ...documentToolHandlers,
+  ...approvalToolHandlers,
 };
 
 export const TOOL_DEFINITIONS = [
@@ -274,6 +281,127 @@ export const TOOL_DEFINITIONS = [
         revisionId: { type: "string" },
       },
       required: ["taskId", "revisionId"],
+    },
+  },
+  {
+    name: "list-approvals",
+    description:
+      "List approvals in the caller's company. Scoped users see only approvals linked to tasks in their projects. Filterable by status and type.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: [...APPROVAL_STATUSES] },
+        type: { type: "string", enum: [...APPROVAL_TYPES] },
+      },
+    },
+  },
+  {
+    name: "get-approval",
+    description: "Get an approval by id (RBAC scoped; cross-company 404)",
+    inputSchema: {
+      type: "object",
+      properties: { approvalId: { type: "string" } },
+      required: ["approvalId"],
+    },
+  },
+  {
+    name: "get-approval-tasks",
+    description:
+      "List tasks linked to an approval. Scoped users see only tasks in their projects.",
+    inputSchema: {
+      type: "object",
+      properties: { approvalId: { type: "string" } },
+      required: ["approvalId"],
+    },
+  },
+  {
+    name: "list-approval-comments",
+    description: "List comments on an approval (RBAC scoped)",
+    inputSchema: {
+      type: "object",
+      properties: { approvalId: { type: "string" } },
+      required: ["approvalId"],
+    },
+  },
+  {
+    name: "list-task-approvals",
+    description: "List approvals linked to a task (RBAC scoped via the task)",
+    inputSchema: {
+      type: "object",
+      properties: { taskId: { type: "string" } },
+      required: ["taskId"],
+    },
+  },
+  {
+    name: "create-approval",
+    description:
+      "Create a new approval request. Founders + team leads only. Team leads must link at least one task from their scope.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: [...APPROVAL_TYPES] },
+        requestedByAgentId: { type: "string" },
+        payload: { type: "object" },
+        issueIds: { type: "array", items: { type: "string" } },
+      },
+      required: ["type", "payload"],
+    },
+  },
+  {
+    name: "approval-decision",
+    description:
+      "Approve, reject, request revision, or resubmit an approval. Founders + team leads only. Team leads limited to approvals with at least one task in their scope.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        approvalId: { type: "string" },
+        action: {
+          type: "string",
+          enum: ["approve", "reject", "requestRevision", "resubmit"],
+        },
+        decisionNote: { type: "string" },
+        payloadJson: { type: "string" },
+      },
+      required: ["approvalId", "action"],
+    },
+  },
+  {
+    name: "add-approval-comment",
+    description:
+      "Add a comment to an approval. Any role may comment on approvals they can see.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        approvalId: { type: "string" },
+        body: { type: "string" },
+      },
+      required: ["approvalId", "body"],
+    },
+  },
+  {
+    name: "link-task-approval",
+    description:
+      "Link an existing approval to an existing task. Founders + team leads only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: { type: "string" },
+        approvalId: { type: "string" },
+      },
+      required: ["taskId", "approvalId"],
+    },
+  },
+  {
+    name: "unlink-task-approval",
+    description:
+      "Unlink an approval from a task. Founders + team leads only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: { type: "string" },
+        approvalId: { type: "string" },
+      },
+      required: ["taskId", "approvalId"],
     },
   },
 ];
