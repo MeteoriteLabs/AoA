@@ -153,6 +153,15 @@ export {
 } from "./cost.js";
 
 export {
+  financeDirectionSchema,
+  createFinanceEventSchema,
+  financeDateRangeQuerySchema,
+  financeListQuerySchema,
+  type CreateFinanceEvent,
+  type FinanceListQuery,
+} from "./finance.js";
+
+export {
   createAssetImageMetadataSchema,
   createAssetFileMetadataSchema,
   type CreateAssetImageMetadata,

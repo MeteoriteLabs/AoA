@@ -9,6 +9,7 @@ export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { secretService } from "./secrets.js";
 export { costService } from "./costs.js";
+export { financeService } from "./finance.js";
 export { quotaWindowsService, providerSlugForAdapterType } from "./quota-windows.js";
 export { heartbeatService } from "./heartbeat.js";
 export { dependencyService } from "./dependencies.js";
