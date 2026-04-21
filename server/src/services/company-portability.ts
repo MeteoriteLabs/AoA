@@ -1,12 +1,14 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq, gte, lte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { budgetPolicies, internalAgentConfig } from "@paperclipai/db";
+import { budgetPolicies, costEvents, internalAgentConfig } from "@paperclipai/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityBudgetPolicyManifestEntry,
   CompanyPortabilityCollisionStrategy,
+  CompanyPortabilityCostEventManifestEntry,
+  CompanyPortabilityCostEventsInclude,
   CompanyPortabilityEnvInputManifestEntry,
   CompanyPortabilityExport,
   CompanyPortabilityExportPreviewResult,
@@ -55,7 +57,11 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   envInputs: false,
   internalAgentConfig: true,
   budgetPolicies: false,
+  costEvents: false,
 };
+
+const COST_EVENT_VOLUME_THRESHOLD = 10000;
+const COST_EVENT_INSERT_BATCH_SIZE = 1000;
 
 const ISSUE_STATUSES = new Set([
   "backlog",
@@ -79,7 +85,7 @@ const MANIFEST_WRAPPER_KEYS: ReadonlySet<string> = new Set([
   "requiredSecrets",
 ]);
 
-const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines", "envInputs", "internalAgentConfig", "budgetPolicies"]);
+const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines", "envInputs", "internalAgentConfig", "budgetPolicies", "costEvents"]);
 
 const MAX_SUPPORTED_SCHEMA_VERSION = 2;
 
@@ -256,7 +262,26 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     envInputs: input?.envInputs ?? DEFAULT_INCLUDE.envInputs,
     internalAgentConfig: input?.internalAgentConfig ?? DEFAULT_INCLUDE.internalAgentConfig,
     budgetPolicies: input?.budgetPolicies ?? DEFAULT_INCLUDE.budgetPolicies,
+    costEvents: input?.costEvents ?? DEFAULT_INCLUDE.costEvents,
   };
+}
+
+function isCostEventsEnabled(value: CompanyPortabilityCostEventsInclude | undefined): boolean {
+  if (value === undefined) return false;
+  if (typeof value === "boolean") return value;
+  return true;
+}
+
+function costEventsDateRange(
+  value: CompanyPortabilityCostEventsInclude | undefined,
+): { from: Date | null; to: Date | null } {
+  if (!value || typeof value === "boolean") return { from: null, to: null };
+  const parseMaybe = (raw: string | undefined): Date | null => {
+    if (!raw) return null;
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  return { from: parseMaybe(value.from), to: parseMaybe(value.to) };
 }
 
 function serializeInternalAgentConfigRow(row: Record<string, unknown>): CompanyPortabilityInternalAgentConfigManifestEntry {
@@ -312,6 +337,41 @@ function serializeBudgetPolicyRow(
     hardStopEnabled: row.hardStopEnabled !== false,
     notifyEnabled: row.notifyEnabled !== false,
     isActive: row.isActive !== false,
+    metadata: null,
+  };
+}
+
+function serializeCostEventRow(
+  row: Record<string, unknown>,
+  slugs: {
+    agentSlug: string | null;
+    issueSlug: string | null;
+    projectSlug: string | null;
+  },
+): CompanyPortabilityCostEventManifestEntry {
+  const occurredAt = row.occurredAt instanceof Date
+    ? row.occurredAt.toISOString()
+    : typeof row.occurredAt === "string"
+      ? row.occurredAt
+      : new Date().toISOString();
+  const id = typeof row.id === "string" ? row.id : null;
+  const slug = id ?? `${occurredAt}-${slugs.agentSlug ?? "orphan"}`;
+  return {
+    slug,
+    agentSlug: slugs.agentSlug,
+    issueSlug: slugs.issueSlug,
+    projectSlug: slugs.projectSlug,
+    goalSlug: null,
+    occurredAt,
+    provider: typeof row.provider === "string" ? row.provider : "unknown",
+    model: typeof row.model === "string" ? row.model : null,
+    biller: typeof row.biller === "string" ? row.biller : null,
+    billingType: typeof row.billingType === "string" ? row.billingType : null,
+    billingCode: typeof row.billingCode === "string" ? row.billingCode : null,
+    inputTokens: typeof row.inputTokens === "number" ? row.inputTokens : 0,
+    outputTokens: typeof row.outputTokens === "number" ? row.outputTokens : 0,
+    cachedInputTokens: typeof row.cachedInputTokens === "number" ? row.cachedInputTokens : 0,
+    costCents: typeof row.costCents === "number" ? row.costCents : 0,
     metadata: null,
   };
 }
@@ -832,7 +892,8 @@ export function companyPortabilityService(db: Db) {
 
     const envInputs: CompanyPortabilityEnvInputManifestEntry[] = [];
 
-    const needAgentSlugs = include.agents || include.issues || include.routines || include.envInputs || include.budgetPolicies;
+    const costEventsEnabled = isCostEventsEnabled(include.costEvents);
+    const needAgentSlugs = include.agents || include.issues || include.routines || include.envInputs || include.budgetPolicies || costEventsEnabled;
     const needSkills = include.skills;
     const skillRows = needSkills ? await skills.listFull(companyId) : [];
     const validSkillKeys = new Set(skillRows.map((skill) => skill.key));
@@ -962,7 +1023,7 @@ export function companyPortabilityService(db: Db) {
     }
 
     const projectIdToSlug = new Map<string, string>();
-    const needProjectSlugs = include.projects || include.issues || include.routines;
+    const needProjectSlugs = include.projects || include.issues || include.routines || costEventsEnabled;
     if (needProjectSlugs) {
       const projectRows = await projects.list(companyId);
       const liveProjects = projectRows.filter((project) => !project.archivedAt);
@@ -996,7 +1057,9 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
-    if (include.issues) {
+    const issueIdToSlug = new Map<string, string>();
+    const needIssueSlugs = include.issues || costEventsEnabled;
+    if (needIssueSlugs) {
       const issueRows = await issues.list(companyId);
       const usedIssueSlugs = new Set<string>();
       const issueManifest: CompanyPortabilityIssueManifestEntry[] = [];
@@ -1006,6 +1069,8 @@ export function companyPortabilityService(db: Db) {
           `issue-${issueManifest.length + 1}`,
         );
         const slug = uniqueSlug(baseSlug, usedIssueSlugs);
+        issueIdToSlug.set(issue.id, slug);
+        if (!include.issues) continue;
         const projectSlug = issue.projectId ? (projectIdToSlug.get(issue.projectId) ?? null) : null;
         const assigneeAgentSlug = issue.assigneeAgentId
           ? (idToSlug.get(issue.assigneeAgentId) ?? null)
@@ -1034,7 +1099,9 @@ export function companyPortabilityService(db: Db) {
           metadata: null,
         });
       }
-      manifest.issues = issueManifest;
+      if (include.issues) {
+        manifest.issues = issueManifest;
+      }
     }
 
     if (include.skills) {
@@ -1166,6 +1233,34 @@ export function companyPortabilityService(db: Db) {
       manifest.budgetPolicies = serialized;
     }
 
+    if (costEventsEnabled) {
+      const { from, to } = costEventsDateRange(include.costEvents);
+      const conditions = [eq(costEvents.companyId, companyId)];
+      if (from) conditions.push(gte(costEvents.occurredAt, from));
+      if (to) conditions.push(lte(costEvents.occurredAt, to));
+      const whereClause = conditions.length === 1 ? conditions[0] : and(...conditions);
+      const rows = (await db
+        .select()
+        .from(costEvents)
+        .where(whereClause)) as Record<string, unknown>[];
+      const serialized: CompanyPortabilityCostEventManifestEntry[] = [];
+      for (const row of rows) {
+        const agentId = typeof row.agentId === "string" ? row.agentId : null;
+        const issueId = typeof row.issueId === "string" ? row.issueId : null;
+        const projectId = typeof row.projectId === "string" ? row.projectId : null;
+        const agentSlug = agentId ? (idToSlug.get(agentId) ?? null) : null;
+        const issueSlug = issueId ? (issueIdToSlug.get(issueId) ?? null) : null;
+        const projectSlug = projectId ? (projectIdToSlug.get(projectId) ?? null) : null;
+        serialized.push(serializeCostEventRow(row, { agentSlug, issueSlug, projectSlug }));
+      }
+      manifest.costEvents = serialized;
+      if (serialized.length > COST_EVENT_VOLUME_THRESHOLD) {
+        warnings.push(
+          `Large bundle: ${serialized.length} cost events exported (exceeds ${COST_EVENT_VOLUME_THRESHOLD} threshold). Consider using a date range filter.`,
+        );
+      }
+    }
+
     manifest.requiredSecrets = dedupeRequiredSecrets(requiredSecrets);
 
     files["README.md"] = generateReadme(manifest, {
@@ -1201,6 +1296,7 @@ export function companyPortabilityService(db: Db) {
         envInputs: bundle.manifest.envInputs?.length ?? 0,
         internalAgentConfig: bundle.manifest.internalAgentConfig ? 1 : 0,
         budgetPolicies: bundle.manifest.budgetPolicies?.length ?? 0,
+        costEvents: bundle.manifest.costEvents?.length ?? 0,
       },
       files: filePaths,
       estimatedBytes: manifestBytes + fileBytes,
@@ -2374,6 +2470,85 @@ export function companyPortabilityService(db: Db) {
           createdByUserId: actorUserId ?? null,
           updatedByUserId: actorUserId ?? null,
         });
+      }
+    }
+
+    if (isCostEventsEnabled(include.costEvents) && Array.isArray(sourceManifest.costEvents)) {
+      const manifestCostEvents = sourceManifest.costEvents;
+      if (manifestCostEvents.length > COST_EVENT_VOLUME_THRESHOLD) {
+        warnings.push({
+          kind: "large_volume",
+          section: "costEvents",
+          count: manifestCostEvents.length,
+          message: `Bundle contains ${manifestCostEvents.length} cost events (exceeds ${COST_EVENT_VOLUME_THRESHOLD} threshold); import may take longer than usual.`,
+        });
+      }
+
+      const existingProjectSlugToIdForCostEvents = new Map<string, string>();
+      const existingIssueSlugToId = new Map<string, string>();
+      let needProjectLookup = manifestCostEvents.some((e) => e.projectSlug);
+      let needIssueLookup = manifestCostEvents.some((e) => e.issueSlug);
+      if (needProjectLookup) {
+        const projectRows = await projects.list(targetCompany.id);
+        for (const p of projectRows) {
+          const slug = normalizeProjectUrlKey(p.name) ?? p.id;
+          existingProjectSlugToIdForCostEvents.set(slug, p.id);
+        }
+        for (const [slug, id] of importedSlugToProjectId.entries()) {
+          existingProjectSlugToIdForCostEvents.set(slug, id);
+        }
+      }
+      if (needIssueLookup) {
+        for (const r of resultIssues) {
+          if (r.id) existingIssueSlugToId.set(r.slug, r.id);
+        }
+      }
+
+      const pendingInserts: Record<string, unknown>[] = [];
+      let linkFailedAgentWarned = false;
+      for (const event of manifestCostEvents) {
+        const agentId = event.agentSlug
+          ? (importedSlugToAgentId.get(event.agentSlug) ?? existingSlugToAgentId.get(event.agentSlug) ?? null)
+          : null;
+        if (!agentId) {
+          if (!linkFailedAgentWarned) {
+            warnings.push({
+              kind: "link_failed",
+              message: `Skipped cost event(s) with unresolvable agent slug "${event.agentSlug ?? "<null>"}" — agentId is required.`,
+            });
+            linkFailedAgentWarned = true;
+          }
+          continue;
+        }
+        const issueId = event.issueSlug ? (existingIssueSlugToId.get(event.issueSlug) ?? null) : null;
+        const projectId = event.projectSlug
+          ? (existingProjectSlugToIdForCostEvents.get(event.projectSlug) ?? null)
+          : null;
+        const occurredAt = new Date(event.occurredAt);
+        pendingInserts.push({
+          companyId: targetCompany.id,
+          agentId,
+          issueId,
+          projectId,
+          goalId: null,
+          heartbeatRunId: null,
+          billingCode: event.billingCode ?? null,
+          provider: event.provider,
+          biller: event.biller ?? "unknown",
+          billingType: event.billingType ?? "unknown",
+          model: event.model ?? "unknown",
+          inputTokens: event.inputTokens,
+          cachedInputTokens: event.cachedInputTokens ?? 0,
+          outputTokens: event.outputTokens,
+          costCents: event.costCents,
+          occurredAt,
+        });
+      }
+
+      for (let i = 0; i < pendingInserts.length; i += COST_EVENT_INSERT_BATCH_SIZE) {
+        const batch = pendingInserts.slice(i, i + COST_EVENT_INSERT_BATCH_SIZE);
+        if (batch.length === 0) continue;
+        await db.insert(costEvents).values(batch as never);
       }
     }
 

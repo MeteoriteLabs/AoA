@@ -1,3 +1,12 @@
+export interface CompanyPortabilityCostEventsDateRange {
+  from?: string;
+  to?: string;
+}
+
+export type CompanyPortabilityCostEventsInclude =
+  | boolean
+  | CompanyPortabilityCostEventsDateRange;
+
 export interface CompanyPortabilityInclude {
   company: boolean;
   agents: boolean;
@@ -8,6 +17,7 @@ export interface CompanyPortabilityInclude {
   envInputs: boolean;
   internalAgentConfig?: boolean;
   budgetPolicies?: boolean;
+  costEvents?: CompanyPortabilityCostEventsInclude;
 }
 
 export interface CompanyPortabilitySecretRequirement {
@@ -168,6 +178,25 @@ export interface CompanyPortabilityBudgetPolicyManifestEntry {
   metadata?: Record<string, unknown> | null;
 }
 
+export interface CompanyPortabilityCostEventManifestEntry {
+  slug: string;
+  agentSlug: string | null;
+  issueSlug: string | null;
+  projectSlug: string | null;
+  goalSlug: string | null;
+  occurredAt: string;
+  provider: string;
+  model: string | null;
+  biller: string | null;
+  billingType: string | null;
+  billingCode: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens?: number;
+  costCents: number;
+  metadata?: Record<string, unknown> | null;
+}
+
 export interface CompanyPortabilityInternalAgentConfigManifestEntry {
   executionMode: string;
   provider?: string | null;
@@ -199,6 +228,7 @@ export interface CompanyPortabilityManifest {
   envInputs?: CompanyPortabilityEnvInputManifestEntry[];
   internalAgentConfig?: CompanyPortabilityInternalAgentConfigManifestEntry | null;
   budgetPolicies?: CompanyPortabilityBudgetPolicyManifestEntry[];
+  costEvents?: CompanyPortabilityCostEventManifestEntry[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];
 }
 
@@ -217,6 +247,7 @@ export interface CompanyPortabilityExportPreviewCounts {
   envInputs: number;
   internalAgentConfig?: 0 | 1;
   budgetPolicies?: number;
+  costEvents?: number;
 }
 
 export interface CompanyPortabilityExportPreviewResult {
@@ -234,7 +265,8 @@ export type ImportWarningKind =
   | "invalid_frontmatter"
   | "empty_selection"
   | "link_failed"
-  | "skipped_update";
+  | "skipped_update"
+  | "large_volume";
 
 export interface ImportWarning {
   kind: ImportWarningKind;

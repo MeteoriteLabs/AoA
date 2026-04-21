@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+export const portabilityCostEventsDateRangeSchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+});
+
+export const portabilityCostEventsIncludeSchema = z.union([
+  z.boolean(),
+  portabilityCostEventsDateRangeSchema,
+]);
+
 export const portabilityIncludeSchema = z
   .object({
     company: z.boolean().optional(),
@@ -11,6 +21,7 @@ export const portabilityIncludeSchema = z
     envInputs: z.boolean().optional(),
     internalAgentConfig: z.boolean().optional(),
     budgetPolicies: z.boolean().optional(),
+    costEvents: portabilityCostEventsIncludeSchema.optional(),
   })
   .partial();
 
@@ -166,6 +177,27 @@ export const portabilityBudgetPolicyManifestSchema = z
   })
   .passthrough();
 
+export const portabilityCostEventManifestSchema = z
+  .object({
+    slug: z.string().min(1),
+    agentSlug: z.string().min(1).nullable(),
+    issueSlug: z.string().min(1).nullable(),
+    projectSlug: z.string().min(1).nullable(),
+    goalSlug: z.string().min(1).nullable(),
+    occurredAt: z.string().min(1),
+    provider: z.string().min(1),
+    model: z.string().nullable(),
+    biller: z.string().nullable(),
+    billingType: z.string().nullable(),
+    billingCode: z.string().nullable(),
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    cachedInputTokens: z.number().int().nonnegative().optional(),
+    costCents: z.number().int().nonnegative(),
+    metadata: z.record(z.unknown()).nullable().optional(),
+  })
+  .passthrough();
+
 export const portabilityInternalAgentConfigManifestSchema = z
   .object({
     executionMode: z.string().min(1),
@@ -203,6 +235,7 @@ export const portabilityManifestSchema = z
         envInputs: z.boolean().optional(),
         internalAgentConfig: z.boolean().optional(),
         budgetPolicies: z.boolean().optional(),
+        costEvents: portabilityCostEventsIncludeSchema.optional(),
       })
       .passthrough(),
     company: portabilityCompanyManifestEntrySchema.nullable(),
@@ -214,6 +247,7 @@ export const portabilityManifestSchema = z
     envInputs: z.array(portabilityEnvInputManifestEntrySchema).optional(),
     internalAgentConfig: portabilityInternalAgentConfigManifestSchema.nullable().optional(),
     budgetPolicies: z.array(portabilityBudgetPolicyManifestSchema).optional(),
+    costEvents: z.array(portabilityCostEventManifestSchema).optional(),
     requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
   })
   .passthrough();
