@@ -272,6 +272,136 @@ describe("feedbackVotesService — dismissVote", () => {
   });
 });
 
+describe("feedbackVotesService — preference-gated post-vote bundle hook (F.4)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("fires onVoteShared when preference='allowed'", async () => {
+    const { db } = createUpsertCaptureDb({
+      returning: [{ id: voteId, companyId, issueId, authorUserId, vote: "up", targetType: "issue_comment", targetId }],
+    });
+    const getFeedbackSharingPreference = vi.fn().mockResolvedValue("allowed");
+    const onVoteShared = vi.fn().mockResolvedValue(undefined);
+    const svc = feedbackVotesService(db as any, { getFeedbackSharingPreference, onVoteShared });
+
+    await svc.recordVote({ ...baseInput, vote: "up" });
+    // Fire-and-forget: drain microtasks so the chained .then/.catch settle.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(getFeedbackSharingPreference).toHaveBeenCalledTimes(1);
+    expect(onVoteShared).toHaveBeenCalledTimes(1);
+    expect(onVoteShared).toHaveBeenCalledWith(voteId);
+  });
+
+  it("does NOT fire onVoteShared when preference='not_allowed'", async () => {
+    const { db } = createUpsertCaptureDb({
+      returning: [{ id: voteId, companyId, issueId, authorUserId, vote: "up", targetType: "issue_comment", targetId }],
+    });
+    const getFeedbackSharingPreference = vi.fn().mockResolvedValue("not_allowed");
+    const onVoteShared = vi.fn();
+    const svc = feedbackVotesService(db as any, { getFeedbackSharingPreference, onVoteShared });
+
+    await svc.recordVote({ ...baseInput, vote: "up" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(getFeedbackSharingPreference).toHaveBeenCalledTimes(1);
+    expect(onVoteShared).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire onVoteShared when preference='prompt' (frontend handles the transition)", async () => {
+    const { db } = createUpsertCaptureDb({
+      returning: [{ id: voteId, companyId, issueId, authorUserId, vote: "down", targetType: "issue_comment", targetId }],
+    });
+    const getFeedbackSharingPreference = vi.fn().mockResolvedValue("prompt");
+    const onVoteShared = vi.fn();
+    const svc = feedbackVotesService(db as any, { getFeedbackSharingPreference, onVoteShared });
+
+    await svc.recordVote({ ...baseInput, vote: "down" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(onVoteShared).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when deps are omitted (backward compat)", async () => {
+    const { db } = createUpsertCaptureDb({
+      returning: [{ id: voteId, companyId, issueId, authorUserId, vote: "up", targetType: "issue_comment", targetId }],
+    });
+    const svc = feedbackVotesService(db as any);
+
+    // If the service tried to resolve a preference, db would error because no mock is wired.
+    // The fact that this resolves cleanly means deps were properly optional.
+    const result = await svc.recordVote({ ...baseInput, vote: "up" });
+    expect(result.id).toBe(voteId);
+  });
+
+  it("does NOT block recordVote response on bundle build (fire-and-forget timing)", async () => {
+    const { db } = createUpsertCaptureDb({
+      returning: [{ id: voteId, companyId, issueId, authorUserId, vote: "up", targetType: "issue_comment", targetId }],
+    });
+    let resolveShare: (() => void) | null = null;
+    const onVoteShared = vi.fn(
+      () => new Promise<void>((r) => { resolveShare = () => r(); }),
+    );
+    const svc = feedbackVotesService(db as any, {
+      getFeedbackSharingPreference: () => Promise.resolve("allowed"),
+      onVoteShared,
+    });
+
+    // recordVote should resolve even though onVoteShared's promise is still pending.
+    const result = await svc.recordVote({ ...baseInput, vote: "up" });
+    expect(result.id).toBe(voteId);
+
+    // Drain microtasks so the fire-and-forget chain enters onVoteShared.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onVoteShared).toHaveBeenCalledTimes(1);
+
+    // Cleanup.
+    resolveShare?.();
+  });
+
+  it("swallows onVoteShared rejections via logger.warn (does not propagate)", async () => {
+    const { db } = createUpsertCaptureDb({
+      returning: [{ id: voteId, companyId, issueId, authorUserId, vote: "up", targetType: "issue_comment", targetId }],
+    });
+    const boom = new Error("bundle boom");
+    const onVoteShared = vi.fn().mockRejectedValue(boom);
+    const warn = vi.fn();
+    const svc = feedbackVotesService(db as any, {
+      getFeedbackSharingPreference: () => Promise.resolve("allowed"),
+      onVoteShared,
+      logger: { warn },
+    });
+
+    const result = await svc.recordVote({ ...baseInput, vote: "up" });
+    expect(result.id).toBe(voteId);
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(warn).toHaveBeenCalled();
+    const call = warn.mock.calls[0];
+    expect(String(call[0])).toMatch(/feedback bundle/i);
+    expect(call[1]).toMatchObject({ voteId });
+  });
+
+  it("swallows preference-lookup failures via logger.warn", async () => {
+    const { db } = createUpsertCaptureDb({
+      returning: [{ id: voteId, companyId, issueId, authorUserId, vote: "up", targetType: "issue_comment", targetId }],
+    });
+    const onVoteShared = vi.fn();
+    const warn = vi.fn();
+    const svc = feedbackVotesService(db as any, {
+      getFeedbackSharingPreference: () => Promise.reject(new Error("settings unavailable")),
+      onVoteShared,
+      logger: { warn },
+    });
+
+    const result = await svc.recordVote({ ...baseInput, vote: "up" });
+    expect(result.id).toBe(voteId);
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onVoteShared).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+  });
+});
+
 describe("feedbackVotesService — voteSummaryForTarget", () => {
   beforeEach(() => vi.clearAllMocks());
 

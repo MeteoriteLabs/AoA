@@ -198,6 +198,7 @@ export {
 } from "./instance.js";
 export type {
   FeedbackDataSharingPreference,
+  FeedbackExportSummary,
   FeedbackRedactionState,
   FeedbackRedactionSummary,
   FeedbackTargetType,

@@ -374,6 +374,7 @@ export type {
   InstanceSettings,
   BackupRetentionPolicy,
   FeedbackDataSharingPreference,
+  FeedbackExportSummary,
   FeedbackTargetType,
   FeedbackTraceTargetSummary,
   FeedbackVoteValue,

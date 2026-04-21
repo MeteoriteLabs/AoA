@@ -1,15 +1,52 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { feedbackTargetTypeSchema, upsertIssueFeedbackVoteSchema } from "@paperclipai/shared";
+import { buildBundle, listExports } from "../services/feedback-bundles.js";
+import { writeBundleLocally } from "../services/feedback-share-client.js";
 import { feedbackVotesService } from "../services/feedback-votes.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { logActivity } from "../services/activity-log.js";
+import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { forbidden } from "../errors.js";
+
+// Mirror of instance-settings.ts's `assertCanManageInstanceSettings`. Bundle
+// history is an admin view — it exposes metadata across every company on this
+// instance (timestamps, sizes, vote direction), matching the scope of the
+// PrivacyTab toggle that triggers the bundles in the first place.
+function assertCanManageInstanceSettings(req: import("express").Request) {
+  if (req.actor.type !== "board") throw forbidden("Board access required");
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+  throw forbidden("Instance admin access required");
+}
 
 export function feedbackRoutes(db: Db) {
   const router = Router();
-  const votes = feedbackVotesService(db);
+  const settings = instanceSettingsService(db);
+  const votes = feedbackVotesService(db, {
+    // F.4: gate bundle-build on the instance sharing preference. "allowed" →
+    // build + write locally. "not_allowed" or "prompt" → skip (the UI will
+    // trigger the consent modal and transition preference before re-submitting
+    // the vote with a resolved preference).
+    getFeedbackSharingPreference: async () =>
+      (await settings.getGeneral()).feedbackDataSharingPreference,
+    onVoteShared: async (voteId) => {
+      const now = new Date();
+      const bundle = await buildBundle(db, { voteId, now });
+      await writeBundleLocally({
+        id: bundle.feedbackExportId,
+        exportId: bundle.exportId,
+        createdAt: now,
+        payloadSnapshot: bundle.payloadSnapshot,
+      });
+    },
+    logger: {
+      // pino's convention is (obj, msg); service calls (msg, meta). Swap here.
+      warn: (message, meta) => logger.warn(meta as Record<string, unknown> | undefined, message),
+    },
+  });
   const issues = issueService(db);
 
   // POST /issues/:id/feedback-votes — upsert current user's vote on an issue target.
@@ -116,6 +153,19 @@ export function feedbackRoutes(db: Db) {
       targetId,
     });
     res.json(summary);
+  });
+
+  // GET /feedback/exports — admin-only: recent feedback bundles (across all
+  // companies on this instance). Powers the PrivacyTab "Recent shared bundles"
+  // section. Caller can pass ?limit=N (clamped to [1, 50], default 10).
+  router.get("/feedback/exports", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+
+    const limitRaw = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
+    const limit = Number.isFinite(limitRaw) ? (limitRaw as number) : undefined;
+
+    const rows = await listExports(db, { limit });
+    res.json(rows);
   });
 
   // DELETE /feedback-votes/:voteId — author-only dismissal.

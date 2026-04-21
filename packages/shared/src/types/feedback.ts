@@ -69,3 +69,21 @@ export interface FeedbackTraceTargetSummary {
   documentTitle: string | null;
   revisionNumber: number | null;
 }
+
+// F.4 bundle history row returned by `GET /feedback/exports`. Compact shape —
+// omits payloadSnapshot + redactionSummary since those can contain redacted
+// identifiers and internal structure the PrivacyTab list view doesn't need.
+// sizeBytes is a JSON-byte estimate, not a gzipped-file size.
+export interface FeedbackExportSummary {
+  id: string;
+  exportId: string | null;
+  companyId: string;
+  issueId: string;
+  projectId: string | null;
+  authorUserId: string;
+  vote: FeedbackVoteValue;
+  status: string;
+  destination: string | null;
+  createdAt: string;
+  sizeBytes: number;
+}

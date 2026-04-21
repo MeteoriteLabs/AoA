@@ -157,6 +157,7 @@ import type { BudgetPolicySummary, BudgetIncident } from "@paperclipai/shared";
 import { CompanyExport as CompanyExportPage } from "@/pages/CompanyExport";
 import { CompanyImport as CompanyImportPage } from "@/pages/CompanyImport";
 import { FeedbackThumbs } from "@/components/FeedbackThumbs";
+import { FeedbackConsentModal } from "@/components/FeedbackConsentModal";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -258,7 +259,7 @@ export function DesignGuide() {
               {[
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "UserMenu", "CommentThread", "MarkdownEditor",
-                "PropertiesPanel", "Sidebar", "CommandPalette", "FeedbackThumbs",
+                "PropertiesPanel", "Sidebar", "CommandPalette", "FeedbackThumbs", "FeedbackConsentModal",
               ].map((name) => (
                 <Badge key={name} variant="ghost" className="font-mono text-[10px]">
                   {name}
@@ -1323,6 +1324,20 @@ export function DesignGuide() {
       </Section>
 
       {/* ============================================================ */}
+      {/*  FEEDBACK CONSENT MODAL (F.4)                                 */}
+      {/* ============================================================ */}
+      <Section title="Feedback Consent Modal (F.4)">
+        <p className="text-sm text-muted-foreground max-w-2xl">
+          First-vote prompt shown when the sharing preference is{" "}
+          <code className="font-mono text-xs">prompt</code>. MVP has two durable
+          options (Always / Never) plus Cancel to discard the click. Once
+          decided, the preference is persisted and the modal won't reappear for
+          that user. Per-vote "just this time" is deferred to Phase I.
+        </p>
+        <FeedbackConsentModalShowcase />
+      </Section>
+
+      {/* ============================================================ */}
       {/*  COST TABLE PATTERN                                           */}
       {/* ============================================================ */}
       <Section title="Cost Table Pattern">
@@ -1832,10 +1847,31 @@ function RoutineRunDialogShowcase() {
   );
 }
 
+function FeedbackConsentModalShowcase() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="default" onClick={() => setOpen(true)}>
+          Open consent modal
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          (Decide to dismiss — showcase only; no side effects.)
+        </span>
+      </div>
+      <FeedbackConsentModal
+        open={open}
+        onOpenChange={setOpen}
+        onDecide={() => setOpen(false)}
+      />
+    </div>
+  );
+}
+
 function SettingsTabsShowcase() {
   return (
     <>
-      <SubSection title="Privacy Tab — default (privacy-first: not_allowed)">
+      <SubSection title="Privacy Tab — default (privacy-first: not_allowed, no bundles yet)">
         <div className="rounded-xl border border-border bg-background p-5">
           <PrivacyTab
             settings={{
@@ -1848,11 +1884,12 @@ function SettingsTabsShowcase() {
             error={null}
             isSaving={false}
             onChange={() => {}}
+            bundleHistory={[]}
           />
         </div>
       </SubSection>
 
-      <SubSection title="Privacy Tab — feedback sharing enabled">
+      <SubSection title="Privacy Tab — feedback sharing enabled, 3 recent bundles">
         <div className="rounded-xl border border-border bg-background p-5">
           <PrivacyTab
             settings={{
@@ -1865,6 +1902,47 @@ function SettingsTabsShowcase() {
             error={null}
             isSaving={false}
             onChange={() => {}}
+            bundleHistory={[
+              {
+                id: "row-1",
+                exportId: "fbexp_0123456789abcdef01234567",
+                companyId: "company-1",
+                issueId: "issue-1",
+                projectId: null,
+                authorUserId: "user-1",
+                vote: "down",
+                status: "local_only",
+                destination: null,
+                createdAt: "2026-04-22T10:23:00Z",
+                sizeBytes: 4200,
+              },
+              {
+                id: "row-2",
+                exportId: "fbexp_abcdef0123456789abcdef01",
+                companyId: "company-1",
+                issueId: "issue-2",
+                projectId: null,
+                authorUserId: "user-1",
+                vote: "up",
+                status: "local_only",
+                destination: null,
+                createdAt: "2026-04-21T16:15:00Z",
+                sizeBytes: 2800,
+              },
+              {
+                id: "row-3",
+                exportId: "fbexp_ffffffffffffffff11111111",
+                companyId: "company-1",
+                issueId: "issue-3",
+                projectId: null,
+                authorUserId: "user-1",
+                vote: "down",
+                status: "local_only",
+                destination: null,
+                createdAt: "2026-04-19T16:42:00Z",
+                sizeBytes: 7100,
+              },
+            ]}
           />
         </div>
       </SubSection>

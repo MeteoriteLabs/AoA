@@ -1,4 +1,5 @@
 import type {
+  FeedbackExportSummary,
   FeedbackTargetType,
   FeedbackVote,
   FeedbackVoteSummary,
@@ -27,4 +28,7 @@ export const feedbackApi = {
 
   dismissVote: (voteId: string) =>
     api.delete<void>(`/feedback-votes/${voteId}`),
+
+  listExports: (limit = 3) =>
+    api.get<FeedbackExportSummary[]>(`/feedback/exports?limit=${limit}`),
 };

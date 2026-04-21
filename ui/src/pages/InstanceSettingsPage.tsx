@@ -11,6 +11,7 @@ import { PrivacyTab } from "@/components/settings/PrivacyTab";
 import { BackupsTab } from "@/components/settings/BackupsTab";
 import { HeartbeatsTab } from "@/components/settings/HeartbeatsTab";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { feedbackApi } from "@/api/feedback";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 
@@ -154,12 +155,11 @@ export function InstanceSettingsPage() {
 
             {/* ── Privacy tab ──────────────────────────────────────────── */}
             <TabsContent value="privacy" className="mt-6">
-              <PrivacyTab
-                settings={generalQuery.data}
-                isLoading={generalQuery.isLoading}
-                error={generalQuery.error}
-                isSaving={generalMutation.isPending}
+              <PrivacyPanel
+                generalQuery={generalQuery}
                 onChange={(patch) => generalMutation.mutate(patch)}
+                isSaving={generalMutation.isPending}
+                isPrivacyActive={activeTab === "privacy"}
               />
             </TabsContent>
 
@@ -220,6 +220,43 @@ export function InstanceSettingsPage() {
         </div>
       </main>
     </div>
+  );
+}
+
+// ── Privacy panel (wraps PrivacyTab + bundle-history fetch) ─────────────────
+
+const BUNDLE_HISTORY_LIMIT = 3;
+
+function PrivacyPanel({
+  generalQuery,
+  onChange,
+  isSaving,
+  isPrivacyActive,
+}: {
+  generalQuery: ReturnType<typeof useQuery<Awaited<ReturnType<typeof instanceSettingsApi.getGeneral>>>>;
+  onChange: (patch: PatchInstanceGeneralSettings) => void;
+  isSaving: boolean;
+  isPrivacyActive: boolean;
+}) {
+  // Fetch bundle history only when the Privacy tab is actually being viewed —
+  // avoids a request when the user lands on General and never visits Privacy.
+  const exportsQuery = useQuery({
+    queryKey: queryKeys.feedback.exports(BUNDLE_HISTORY_LIMIT),
+    queryFn: () => feedbackApi.listExports(BUNDLE_HISTORY_LIMIT),
+    enabled: isPrivacyActive,
+  });
+
+  return (
+    <PrivacyTab
+      settings={generalQuery.data}
+      isLoading={generalQuery.isLoading}
+      error={generalQuery.error}
+      isSaving={isSaving}
+      onChange={onChange}
+      bundleHistory={exportsQuery.data}
+      bundleHistoryLoading={exportsQuery.isLoading}
+      bundleHistoryError={exportsQuery.error}
+    />
   );
 }
 

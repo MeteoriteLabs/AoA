@@ -1,11 +1,21 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ThumbsDown, ThumbsUp } from "lucide-react";
-import type { FeedbackTargetType, FeedbackVote } from "@paperclipai/shared";
+import type {
+  FeedbackTargetType,
+  FeedbackVote,
+  FeedbackVoteValue,
+} from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { feedbackApi } from "../api/feedback";
+import { instanceSettingsApi } from "../api/instanceSettings";
+import { queryKeys } from "../lib/queryKeys";
+import {
+  FeedbackConsentModal,
+  type FeedbackConsentDecision,
+} from "./FeedbackConsentModal";
 
 interface FeedbackThumbsProps {
   /** Required per schema — every vote is task-contextualized. */
@@ -27,12 +37,26 @@ export function FeedbackThumbs({
   onChange,
   className,
 }: FeedbackThumbsProps) {
+  const queryClient = useQueryClient();
   const [vote, setVote] = useState<FeedbackVote | null>(initialVote);
   const [reasonOpen, setReasonOpen] = useState(false);
   const [reason, setReason] = useState("");
+  const [consentPending, setConsentPending] = useState<FeedbackVoteValue | null>(null);
+
+  // F.4: preference controls whether a vote triggers a bundle build (server
+  // side) and whether the consent modal is shown (client side). "prompt" means
+  // "ask before the first vote, then remember". Fetched here so every thumbs
+  // instance benefits from react-query's cache — settings are small and rarely
+  // change during a session.
+  const settingsQuery = useQuery({
+    queryKey: queryKeys.instanceSettings.general,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+    staleTime: 60_000,
+  });
+  const preference = settingsQuery.data?.feedbackDataSharingPreference;
 
   const recordMutation = useMutation({
-    mutationFn: (args: { value: "up" | "down"; reason?: string }) =>
+    mutationFn: (args: { value: FeedbackVoteValue; reason?: string }) =>
       feedbackApi.recordVote(issueId, {
         targetType,
         targetId,
@@ -55,19 +79,20 @@ export function FeedbackThumbs({
     },
   });
 
+  const preferenceMutation = useMutation({
+    mutationFn: (next: FeedbackConsentDecision) =>
+      instanceSettingsApi.updateGeneral({ feedbackDataSharingPreference: next }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.instanceSettings.general }),
+  });
+
   const isUp = vote?.vote === "up";
   const isDown = vote?.vote === "down";
-  const busy = recordMutation.isPending || dismissMutation.isPending;
+  const busy =
+    recordMutation.isPending || dismissMutation.isPending || preferenceMutation.isPending;
 
-  async function handleClick(value: "up" | "down") {
-    // Toggle off when clicking the currently-selected thumb.
-    if (vote && vote.vote === value) {
-      dismissMutation.mutate(vote.id);
-      return;
-    }
+  function submitVote(value: FeedbackVoteValue) {
     if (value === "down") {
-      // Show reason input immediately; send first vote without reason so the
-      // capture is not blocked on the optional explanation.
       setReasonOpen(true);
       setReason(vote?.reason ?? "");
     } else {
@@ -75,6 +100,40 @@ export function FeedbackThumbs({
       setReason("");
     }
     recordMutation.mutate({ value });
+  }
+
+  async function handleClick(value: FeedbackVoteValue) {
+    // Toggle off when clicking the currently-selected thumb.
+    if (vote && vote.vote === value) {
+      dismissMutation.mutate(vote.id);
+      return;
+    }
+    if (preference === "prompt") {
+      // Stash the click; the modal resolves it after the user decides. If they
+      // cancel, the vote is not recorded (per session spec).
+      setConsentPending(value);
+      return;
+    }
+    submitVote(value);
+  }
+
+  async function handleConsent(decision: FeedbackConsentDecision) {
+    const pendingValue = consentPending;
+    if (!pendingValue) return;
+    // Persist the preference first so server-side gating (bundle build) sees
+    // the new value by the time the vote route handler runs. Fire-and-forget
+    // order would race; awaiting here is the right call even though the user
+    // pays ~1 RTT.
+    await preferenceMutation.mutateAsync(decision);
+    setConsentPending(null);
+    submitVote(pendingValue);
+  }
+
+  function handleConsentOpenChange(open: boolean) {
+    if (!open) {
+      // Dismiss = discard the click (no vote recorded).
+      setConsentPending(null);
+    }
   }
 
   function handleReasonSubmit() {
@@ -128,6 +187,13 @@ export function FeedbackThumbs({
           </button>
         ) : null}
       </div>
+
+      <FeedbackConsentModal
+        open={consentPending !== null}
+        onOpenChange={handleConsentOpenChange}
+        onDecide={handleConsent}
+        isSaving={preferenceMutation.isPending}
+      />
 
       {reasonOpen ? (
         <div className="space-y-2 rounded-md border border-border bg-muted/20 p-2">

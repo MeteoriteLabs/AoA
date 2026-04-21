@@ -7,7 +7,11 @@ import { stableStringify } from "./feedback-redaction.js";
 
 const gzipAsync = promisify(gzip);
 
-export const FEEDBACK_LOCAL_EXPORT_DIR_NAME = path.join(".aoa", "feedback-exports");
+// AoA's home-dir convention is `~/.paperclip/` (see cli/src/config/home.ts's
+// `resolvePaperclipHomeDir` + docs/deploy/*). F.3 initially used `~/.aoa/`; F.4
+// migrates this to `~/.paperclip/feedback-exports/` for convention parity so
+// operators don't have to know a second home dir for a sibling subsystem.
+export const FEEDBACK_LOCAL_EXPORT_DIR_NAME = path.join(".paperclip", "feedback-exports");
 
 // Minimal shape the share client actually touches. Keeping this a structural
 // type (not imported from the bundles service) avoids a cycle and lets the
@@ -34,7 +38,7 @@ function resolveCreatedAtStamp(createdAt: Date | string | null | undefined): str
 }
 
 // F.3 stub. Writes the bundle as gzipped stableStringified JSON under
-// ~/.aoa/feedback-exports/. Filename = <bundle.id>-<createdAt stamp>.json.gz.
+// ~/.paperclip/feedback-exports/. Filename = <bundle.id>-<createdAt stamp>.json.gz.
 // stableStringify ensures byte-identical output across runs (deterministic
 // field ordering — lets ops diff historical bundles + lets future dedupe logic
 // hash contents without re-serializing).

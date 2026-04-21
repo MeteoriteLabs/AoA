@@ -1,5 +1,6 @@
 import type {
   FeedbackDataSharingPreference,
+  FeedbackExportSummary,
   InstanceGeneralSettings,
   PatchInstanceGeneralSettings,
 } from "@paperclipai/shared";
@@ -12,6 +13,30 @@ interface PrivacyTabProps {
   error: unknown;
   isSaving: boolean;
   onChange: (patch: PatchInstanceGeneralSettings) => void;
+  bundleHistory?: FeedbackExportSummary[];
+  bundleHistoryLoading?: boolean;
+  bundleHistoryError?: unknown;
+}
+
+function formatBundleTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatBundleSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+function truncateExportId(exportId: string | null): string {
+  if (!exportId) return "—";
+  if (exportId.length <= 20) return exportId;
+  return `${exportId.slice(0, 18)}…`;
 }
 
 const OPTIONS: ReadonlyArray<{
@@ -36,7 +61,16 @@ const OPTIONS: ReadonlyArray<{
   },
 ];
 
-export function PrivacyTab({ settings, isLoading, error, isSaving, onChange }: PrivacyTabProps) {
+export function PrivacyTab({
+  settings,
+  isLoading,
+  error,
+  isSaving,
+  onChange,
+  bundleHistory,
+  bundleHistoryLoading = false,
+  bundleHistoryError,
+}: PrivacyTabProps) {
   if (isLoading) {
     return <div className="text-sm text-muted-foreground">Loading privacy settings...</div>;
   }
@@ -63,14 +97,10 @@ export function PrivacyTab({ settings, isLoading, error, isSaving, onChange }: P
             <h3 className="text-sm font-semibold">AI feedback sharing</h3>
             <p className="max-w-2xl text-sm text-muted-foreground">
               When a teammate gives a thumbs up or down on an agent's output, this setting decides
-              whether the voted output is sent to AoA Labs. Votes are always saved locally.
-            </p>
-            <p
-              className="max-w-2xl rounded-md border border-amber-600/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
-              role="note"
-            >
-              The feedback sharing subsystem is not yet wired in this build — this toggle records
-              your preference but has no effect until Phase F delivers redaction and transport.
+              whether the voted output is shared. Votes are always saved locally; bundles are
+              written to <code className="font-mono text-xs">~/.paperclip/feedback-exports/</code>
+              {" "}
+              when sharing is allowed (transmission to AoA Labs is pending a destination decision).
             </p>
           </div>
 
@@ -104,6 +134,55 @@ export function PrivacyTab({ settings, isLoading, error, isSaving, onChange }: P
               );
             })}
           </div>
+        </div>
+      </section>
+
+      <section
+        aria-labelledby="recent-shared-bundles-heading"
+        className="rounded-xl border border-border bg-card p-5"
+      >
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <h3
+              id="recent-shared-bundles-heading"
+              className="text-sm font-semibold"
+            >
+              Recent shared bundles
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Most recent feedback bundles written locally. Bundle files include
+              redacted content; transmission is deferred.
+            </p>
+          </div>
+
+          {bundleHistoryLoading ? (
+            <p className="text-sm text-muted-foreground">Loading bundle history…</p>
+          ) : bundleHistoryError ? (
+            <p className="text-sm text-destructive">Failed to load bundle history.</p>
+          ) : !bundleHistory || bundleHistory.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No bundles shared yet.</p>
+          ) : (
+            <ul className="divide-y divide-border rounded-md border border-border">
+              {bundleHistory.map((row) => (
+                <li
+                  key={row.id}
+                  className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+                >
+                  <div className="flex items-center gap-3 truncate">
+                    <span className="text-xs font-mono text-muted-foreground">
+                      {formatBundleTimestamp(row.createdAt)}
+                    </span>
+                    <span className="truncate text-xs font-mono">
+                      {truncateExportId(row.exportId)}
+                    </span>
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    {formatBundleSize(row.sizeBytes)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </section>
     </div>

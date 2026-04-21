@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -593,6 +593,89 @@ async function buildAgentContext(
     "bundle.agentContext",
     400,
   ) as Record<string, unknown>;
+}
+
+// ── listExports (F.4) ─────────────────────────────────────────────────────────
+
+// Compact shape returned to the UI (PrivacyTab "Recent shared bundles" section
+// + any admin listing). Deliberately omits payloadSnapshot — it can contain
+// redacted identifiers and internal structure that the UI doesn't need and that
+// shouldn't leak via list endpoints. sizeBytes is a rough proxy for "how much
+// content left this instance" (computed from payload JSON, not gzipped bytes —
+// gzipped file size lives on disk and isn't cheap to aggregate).
+export interface FeedbackExportSummary {
+  id: string;
+  exportId: string | null;
+  companyId: string;
+  issueId: string;
+  projectId: string | null;
+  authorUserId: string;
+  vote: FeedbackVoteValue;
+  status: string;
+  destination: string | null;
+  createdAt: Date;
+  sizeBytes: number;
+}
+
+export interface ListExportsOptions {
+  companyId?: string;
+  limit?: number;
+}
+
+const DEFAULT_LIST_LIMIT = 10;
+const MAX_LIST_LIMIT = 50;
+
+function estimateSnapshotSize(snapshot: unknown): number {
+  if (snapshot == null) return 0;
+  try {
+    return Buffer.byteLength(JSON.stringify(snapshot), "utf8");
+  } catch {
+    return 0;
+  }
+}
+
+export async function listExports(
+  db: Pick<Db, "select">,
+  options: ListExportsOptions = {},
+): Promise<FeedbackExportSummary[]> {
+  const requested = options.limit ?? DEFAULT_LIST_LIMIT;
+  const limit = Math.min(Math.max(requested, 1), MAX_LIST_LIMIT);
+  const conditions = options.companyId
+    ? [eq(feedbackExports.companyId, options.companyId)]
+    : [];
+
+  const query = db
+    .select({
+      id: feedbackExports.id,
+      exportId: feedbackExports.exportId,
+      companyId: feedbackExports.companyId,
+      issueId: feedbackExports.issueId,
+      projectId: feedbackExports.projectId,
+      authorUserId: feedbackExports.authorUserId,
+      vote: feedbackExports.vote,
+      status: feedbackExports.status,
+      destination: feedbackExports.destination,
+      createdAt: feedbackExports.createdAt,
+      payloadSnapshot: feedbackExports.payloadSnapshot,
+    })
+    .from(feedbackExports);
+
+  const filtered = conditions.length > 0 ? query.where(and(...conditions)) : query;
+  const rows = await filtered.orderBy(desc(feedbackExports.createdAt)).limit(limit);
+
+  return (rows as Array<Record<string, unknown>>).map((row) => ({
+    id: row.id as string,
+    exportId: (row.exportId as string | null) ?? null,
+    companyId: row.companyId as string,
+    issueId: row.issueId as string,
+    projectId: (row.projectId as string | null) ?? null,
+    authorUserId: row.authorUserId as string,
+    vote: row.vote as FeedbackVoteValue,
+    status: row.status as string,
+    destination: (row.destination as string | null) ?? null,
+    createdAt: row.createdAt as Date,
+    sizeBytes: estimateSnapshotSize(row.payloadSnapshot),
+  }));
 }
 
 // ── Anonymization (pure) ──────────────────────────────────────────────────────

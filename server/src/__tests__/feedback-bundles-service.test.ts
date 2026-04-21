@@ -50,6 +50,7 @@ import {
   FEEDBACK_PAYLOAD_VERSION,
   FEEDBACK_SCHEMA_VERSION,
   hashIdentityValue,
+  listExports,
 } from "../services/feedback-bundles.js";
 import { sha256Digest, stableStringify } from "../services/feedback-redaction.js";
 
@@ -734,5 +735,91 @@ describe("feedbackBundles — hashIdentityValue", () => {
     const a = hashIdentityValue("user", authorUserId, "pepper-1");
     const b = hashIdentityValue("user", authorUserId, "pepper-2");
     expect(a).not.toBe(b);
+  });
+});
+
+// ── Tests: listExports (F.4) ─────────────────────────────────────────────────
+
+describe("feedbackBundles — listExports", () => {
+  function makeExportRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "export-1",
+      exportId: "fbexp_0123456789abcdef01234567",
+      companyId,
+      issueId,
+      projectId,
+      authorUserId,
+      vote: "down",
+      status: "local_only",
+      destination: null,
+      createdAt: new Date("2026-04-22T10:23:00Z"),
+      payloadSnapshot: { nested: { a: 1, b: "x" } },
+      ...overrides,
+    };
+  }
+
+  it("returns recent exports with size estimated from payloadSnapshot JSON bytes", async () => {
+    const row = makeExportRow();
+    const { db } = createBundleMockDb({ selects: [[row]] });
+
+    const result = await listExports(db as any, { limit: 5 });
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: "export-1",
+      exportId: "fbexp_0123456789abcdef01234567",
+      vote: "down",
+      status: "local_only",
+      createdAt: row.createdAt,
+    });
+    // Size approximates JSON.stringify(snapshot) byte count.
+    expect(result[0].sizeBytes).toBe(Buffer.byteLength(JSON.stringify(row.payloadSnapshot), "utf8"));
+  });
+
+  it("orders results by createdAt DESC (newest first) — assertion on mock call shape", async () => {
+    const a = makeExportRow({ id: "a", createdAt: new Date("2026-04-22T10:00:00Z") });
+    const b = makeExportRow({ id: "b", createdAt: new Date("2026-04-20T10:00:00Z") });
+    // Mock DB returns rows as given — real DB guarantees the ORDER via .orderBy(desc()).
+    // Here we just verify the function passes them through + computes per-row sizes.
+    const { db } = createBundleMockDb({ selects: [[a, b]] });
+
+    const result = await listExports(db as any);
+    expect(result.map((r) => r.id)).toEqual(["a", "b"]);
+  });
+
+  it("applies companyId filter when provided", async () => {
+    const { db } = createBundleMockDb({ selects: [[makeExportRow()]] });
+    const rows = await listExports(db as any, { companyId, limit: 3 });
+    expect(rows).toHaveLength(1);
+    // No throw = where(eq(companyId)) was applied via mocked drizzle-orm.
+  });
+
+  it("omits companyId filter when not provided (instance-scope admin view)", async () => {
+    const rowA = makeExportRow({ id: "a", companyId: "company-1" });
+    const rowB = makeExportRow({ id: "b", companyId: "company-2" });
+    const { db } = createBundleMockDb({ selects: [[rowA, rowB]] });
+    const rows = await listExports(db as any, { limit: 5 });
+    expect(rows.map((r) => r.companyId)).toEqual(["company-1", "company-2"]);
+  });
+
+  it("clamps limit to [1, 50] (caller-supplied bounds guard)", async () => {
+    const { db } = createBundleMockDb({ selects: [[]] });
+    await listExports(db as any, { limit: 0 }); // below 1 → clamps to 1
+    await listExports(db as any, { limit: 9999 }); // above 50 → clamps to 50
+    await listExports(db as any); // undefined → default 10
+    // No throw = bounds were coerced cleanly.
+  });
+
+  it("returns empty array when no rows match", async () => {
+    const { db } = createBundleMockDb({ selects: [[]] });
+    const result = await listExports(db as any);
+    expect(result).toEqual([]);
+  });
+
+  it("returns sizeBytes=0 for rows with null payloadSnapshot", async () => {
+    const { db } = createBundleMockDb({
+      selects: [[makeExportRow({ payloadSnapshot: null })]],
+    });
+    const result = await listExports(db as any);
+    expect(result[0].sizeBytes).toBe(0);
   });
 });

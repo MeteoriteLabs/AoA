@@ -2,6 +2,7 @@ import { and, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { feedbackVotes } from "@paperclipai/db";
 import type {
+  FeedbackDataSharingPreference,
   FeedbackTargetType,
   FeedbackVote,
   FeedbackVoteSummary,
@@ -45,7 +46,36 @@ export interface VoteSummaryInput {
   targetId: string;
 }
 
-export function feedbackVotesService(db: Db) {
+// F.4 preference-gating hook. The route layer supplies these so the service
+// stays composable: getFeedbackSharingPreference reads instance settings;
+// onVoteShared runs the bundle build + local share write. Both optional —
+// omitting them preserves F.2 behavior (capture-only) for older call sites.
+// Fire-and-forget: recordVote never awaits onVoteShared; failures go to
+// logger.warn so operators see them but the API response is never blocked.
+export interface FeedbackVotesServiceDeps {
+  getFeedbackSharingPreference?: () => Promise<FeedbackDataSharingPreference>;
+  onVoteShared?: (voteId: string) => Promise<unknown>;
+  logger?: { warn: (message: string, meta?: unknown) => void };
+}
+
+export function feedbackVotesService(db: Db, deps: FeedbackVotesServiceDeps = {}) {
+  const { getFeedbackSharingPreference, onVoteShared, logger } = deps;
+  const hookEnabled = Boolean(getFeedbackSharingPreference && onVoteShared);
+
+  function scheduleShareIfAllowed(voteId: string): void {
+    if (!hookEnabled) return;
+    void getFeedbackSharingPreference!()
+      .then((preference) => {
+        if (preference === "allowed") {
+          return onVoteShared!(voteId);
+        }
+        return null;
+      })
+      .catch((err: unknown) => {
+        logger?.warn("feedback bundle build failed", { voteId, err });
+      });
+  }
+
   return {
     recordVote: async (input: RecordVoteInput): Promise<FeedbackVote> => {
       const now = new Date();
@@ -81,7 +111,9 @@ export function feedbackVotesService(db: Db) {
           },
         })
         .returning();
-      return saved as FeedbackVote;
+      const vote = saved as FeedbackVote;
+      scheduleShareIfAllowed(vote.id);
+      return vote;
     },
 
     listVotes: async (filters: ListVotesFilters): Promise<FeedbackVote[]> => {

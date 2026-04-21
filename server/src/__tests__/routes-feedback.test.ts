@@ -17,6 +17,9 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockListExports = vi.hoisted(() => vi.fn().mockResolvedValue([]));
+const mockBuildBundle = vi.hoisted(() => vi.fn());
+const mockWriteBundleLocally = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/feedback-votes.js", () => ({
   feedbackVotesService: () => mockVotesService,
@@ -28,6 +31,31 @@ vi.mock("../services/issues.js", () => ({
 
 vi.mock("../services/activity-log.js", () => ({
   logActivity: mockLogActivity,
+}));
+
+vi.mock("../services/feedback-bundles.js", () => ({
+  buildBundle: mockBuildBundle,
+  listExports: mockListExports,
+}));
+
+vi.mock("../services/feedback-share-client.js", () => ({
+  writeBundleLocally: mockWriteBundleLocally,
+  FEEDBACK_LOCAL_EXPORT_DIR_NAME: ".paperclip/feedback-exports",
+}));
+
+// InstanceSettingsService is a real call in feedback.ts; stub it out so route
+// setup doesn't try to touch drizzle at import time.
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: () => ({
+    getGeneral: async () => ({ feedbackDataSharingPreference: "not_allowed" }),
+  }),
+}));
+
+// Silence pino during tests — middleware/logger loads fs.mkdirSync which is
+// fine, but this keeps the test output quiet.
+vi.mock("../middleware/logger.js", () => ({
+  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  httpLogger: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 
 const COMPANY_A = "11111111-1111-1111-1111-111111111111";
@@ -311,5 +339,81 @@ describe("feedback routes — DELETE /feedback-votes/:voteId", () => {
     const res = await request(app).delete(`/api/feedback-votes/${VOTE_ID}`);
     expect(res.status).toBe(403);
     expect(mockVotesService.dismissVote).not.toHaveBeenCalled();
+  });
+});
+
+// ── GET /feedback/exports (F.4 — admin bundle history) ───────────────────────
+
+describe("feedback routes — GET /feedback/exports", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const sampleRow = {
+    id: "export-1",
+    exportId: "fbexp_0123456789abcdef01234567",
+    companyId: COMPANY_A,
+    issueId: ISSUE_ID,
+    projectId: null,
+    authorUserId: USER_A,
+    vote: "down",
+    status: "local_only",
+    destination: null,
+    createdAt: new Date("2026-04-22T10:23:00Z"),
+    sizeBytes: 4200,
+  };
+
+  it("returns the list for local_implicit actors (single-user local mode)", async () => {
+    mockListExports.mockResolvedValue([sampleRow]);
+    const app = createApp(boardActor({ source: "local_implicit" }));
+    const res = await request(app).get("/api/feedback/exports");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0]).toMatchObject({
+      id: "export-1",
+      exportId: "fbexp_0123456789abcdef01234567",
+      vote: "down",
+      status: "local_only",
+      sizeBytes: 4200,
+    });
+  });
+
+  it("returns the list for instance admin actors", async () => {
+    mockListExports.mockResolvedValue([]);
+    const app = createApp(boardActor({ source: "session", isInstanceAdmin: true }));
+    const res = await request(app).get("/api/feedback/exports");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it("passes ?limit=3 through to listExports", async () => {
+    mockListExports.mockResolvedValue([]);
+    const app = createApp(boardActor({ source: "local_implicit" }));
+    await request(app).get("/api/feedback/exports?limit=3");
+    expect(mockListExports).toHaveBeenCalledWith(expect.anything(), { limit: 3 });
+  });
+
+  it("omits limit when not provided (service falls back to default)", async () => {
+    mockListExports.mockResolvedValue([]);
+    const app = createApp(boardActor({ source: "local_implicit" }));
+    await request(app).get("/api/feedback/exports");
+    expect(mockListExports).toHaveBeenCalledWith(expect.anything(), { limit: undefined });
+  });
+
+  it("rejects non-admin board users with 403", async () => {
+    const app = createApp(boardActor({ source: "session", isInstanceAdmin: false }));
+    const res = await request(app).get("/api/feedback/exports");
+    expect(res.status).toBe(403);
+    expect(mockListExports).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent actors with 403 (instance admin scope only)", async () => {
+    const app = createApp({
+      type: "agent" as const,
+      source: "agent-key",
+      agentId: "some-agent",
+      companyId: COMPANY_A,
+    });
+    const res = await request(app).get("/api/feedback/exports");
+    expect(res.status).toBe(403);
+    expect(mockListExports).not.toHaveBeenCalled();
   });
 });

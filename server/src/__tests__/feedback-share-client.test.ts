@@ -10,7 +10,7 @@ import {
 import { stableStringify } from "../services/feedback-redaction.js";
 
 // The share client writes under HOME by default. Tests isolate HOME to a tmp
-// directory per-case so we never write into the real ~/.aoa/feedback-exports.
+// directory per-case so we never write into the real ~/.paperclip/feedback-exports.
 let tempHome: string;
 let originalHome: string | undefined;
 let originalUserProfile: string | undefined;
@@ -51,7 +51,7 @@ function makeBundle(overrides: Record<string, unknown> = {}) {
 }
 
 describe("feedbackShareClient — writeBundleLocally", () => {
-  it("writes a gzipped file under ~/.aoa/feedback-exports/", async () => {
+  it("writes a gzipped file under ~/.paperclip/feedback-exports/", async () => {
     const bundle = makeBundle();
     const result = await writeBundleLocally(bundle);
 
@@ -61,12 +61,12 @@ describe("feedbackShareClient — writeBundleLocally", () => {
     expect(result.size).toBeGreaterThan(0);
   });
 
-  it("creates the ~/.aoa/feedback-exports directory if missing", async () => {
+  it("creates the ~/.paperclip/feedback-exports directory if missing", async () => {
     const bundle = makeBundle();
     const result = await writeBundleLocally(bundle);
     const dir = path.dirname(result.path);
     expect(existsSync(dir)).toBe(true);
-    expect(path.basename(path.dirname(dir))).toBe(".aoa");
+    expect(path.basename(path.dirname(dir))).toBe(".paperclip");
   });
 
   it("file is valid gzip that decompresses back to stableStringify(bundle)", async () => {
