@@ -1,8 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { and, eq, gte, lte } from "drizzle-orm";
+import { and, eq, gte, isNull, lte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { budgetPolicies, costEvents, financeEvents, internalAgentConfig } from "@paperclipai/db";
+import { budgetPolicies, costEvents, financeEvents, internalAgentConfig, providerQuotaWindows } from "@paperclipai/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityBudgetPolicyManifestEntry,
@@ -28,6 +28,7 @@ import type {
   CompanyPortabilityPreviewRoutinePlan,
   CompanyPortabilityPreviewSkillPlan,
   CompanyPortabilityProjectManifestEntry,
+  CompanyPortabilityQuotaWindowManifestEntry,
   CompanyPortabilityRoutineManifestEntry,
   CompanyPortabilitySkillManifestEntry,
   ImportWarning,
@@ -60,6 +61,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   budgetPolicies: false,
   costEvents: false,
   financeEvents: false,
+  quotaWindows: false,
 };
 
 const COST_EVENT_VOLUME_THRESHOLD = 10000;
@@ -88,7 +90,7 @@ const MANIFEST_WRAPPER_KEYS: ReadonlySet<string> = new Set([
   "requiredSecrets",
 ]);
 
-const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines", "envInputs", "internalAgentConfig", "budgetPolicies", "costEvents", "financeEvents"]);
+const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines", "envInputs", "internalAgentConfig", "budgetPolicies", "costEvents", "financeEvents", "quotaWindows"]);
 
 const MAX_SUPPORTED_SCHEMA_VERSION = 2;
 
@@ -267,6 +269,7 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     budgetPolicies: input?.budgetPolicies ?? DEFAULT_INCLUDE.budgetPolicies,
     costEvents: input?.costEvents ?? DEFAULT_INCLUDE.costEvents,
     financeEvents: input?.financeEvents ?? DEFAULT_INCLUDE.financeEvents,
+    quotaWindows: input?.quotaWindows ?? DEFAULT_INCLUDE.quotaWindows,
   };
 }
 
@@ -423,6 +426,38 @@ function serializeFinanceEventRow(
     billingCode: typeof row.billingCode === "string" ? row.billingCode : null,
     description: typeof row.description === "string" ? row.description : null,
     metadata: metadata ?? null,
+  };
+}
+
+function serializeQuotaWindowRow(row: Record<string, unknown>): CompanyPortabilityQuotaWindowManifestEntry {
+  const provider = typeof row.provider === "string" ? row.provider : "unknown";
+  const model = typeof row.model === "string" ? row.model : null;
+  const windowKind = typeof row.windowKind === "string" ? row.windowKind : "unknown";
+  const resetAt = row.resetAt instanceof Date
+    ? row.resetAt.toISOString()
+    : typeof row.resetAt === "string"
+      ? row.resetAt
+      : null;
+  const lastUpdatedAt = row.lastUpdatedAt instanceof Date
+    ? row.lastUpdatedAt.toISOString()
+    : typeof row.lastUpdatedAt === "string"
+      ? row.lastUpdatedAt
+      : new Date().toISOString();
+  const id = typeof row.id === "string" ? row.id : null;
+  const slug = id ?? `${provider}-${model ?? "any"}-${windowKind}`;
+  return {
+    slug,
+    provider,
+    model,
+    windowKind,
+    label: typeof row.label === "string" ? row.label : null,
+    limitValue: typeof row.limitValue === "number" ? row.limitValue : null,
+    usedValue: typeof row.usedValue === "number" ? row.usedValue : null,
+    usedPercent: typeof row.usedPercent === "number" ? row.usedPercent : null,
+    valueLabel: typeof row.valueLabel === "string" ? row.valueLabel : null,
+    resetAt,
+    lastUpdatedAt,
+    metadata: null,
   };
 }
 
@@ -1334,6 +1369,14 @@ export function companyPortabilityService(db: Db) {
       manifest.financeEvents = serialized;
     }
 
+    if (include.quotaWindows) {
+      const rows = (await db
+        .select()
+        .from(providerQuotaWindows)
+        .where(eq(providerQuotaWindows.companyId, companyId))) as Record<string, unknown>[];
+      manifest.quotaWindows = rows.map((row) => serializeQuotaWindowRow(row));
+    }
+
     manifest.requiredSecrets = dedupeRequiredSecrets(requiredSecrets);
 
     files["README.md"] = generateReadme(manifest, {
@@ -1371,6 +1414,7 @@ export function companyPortabilityService(db: Db) {
         budgetPolicies: bundle.manifest.budgetPolicies?.length ?? 0,
         costEvents: bundle.manifest.costEvents?.length ?? 0,
         financeEvents: bundle.manifest.financeEvents?.length ?? 0,
+        quotaWindows: bundle.manifest.quotaWindows?.length ?? 0,
       },
       files: filePaths,
       estimatedBytes: manifestBytes + fileBytes,
@@ -2745,6 +2789,64 @@ export function companyPortabilityService(db: Db) {
         const batch = pendingInserts.slice(i, i + FINANCE_EVENT_INSERT_BATCH_SIZE);
         if (batch.length === 0) continue;
         await db.insert(financeEvents).values(batch as never);
+      }
+    }
+
+    if (include.quotaWindows === true && Array.isArray(sourceManifest.quotaWindows)) {
+      const manifestQuotaWindows = sourceManifest.quotaWindows;
+      let importedAny = false;
+      for (const qw of manifestQuotaWindows) {
+        const existing = (await db
+          .select()
+          .from(providerQuotaWindows)
+          .where(
+            and(
+              eq(providerQuotaWindows.companyId, targetCompany.id),
+              eq(providerQuotaWindows.provider, qw.provider),
+              qw.model === null
+                ? isNull(providerQuotaWindows.model)
+                : eq(providerQuotaWindows.model, qw.model),
+              eq(providerQuotaWindows.windowKind, qw.windowKind),
+            ),
+          )) as { id: string }[];
+        const lastUpdatedAt = new Date(qw.lastUpdatedAt);
+        const resetAt = qw.resetAt ? new Date(qw.resetAt) : null;
+        if (existing.length > 0 && typeof existing[0]?.id === "string") {
+          await db
+            .update(providerQuotaWindows)
+            .set({
+              label: qw.label,
+              limitValue: qw.limitValue,
+              usedValue: qw.usedValue,
+              usedPercent: qw.usedPercent,
+              valueLabel: qw.valueLabel,
+              resetAt,
+              lastUpdatedAt,
+            })
+            .where(eq(providerQuotaWindows.id, existing[0]!.id));
+        } else {
+          await db.insert(providerQuotaWindows).values({
+            companyId: targetCompany.id,
+            provider: qw.provider,
+            model: qw.model,
+            windowKind: qw.windowKind,
+            label: qw.label,
+            limitValue: qw.limitValue,
+            usedValue: qw.usedValue,
+            usedPercent: qw.usedPercent,
+            valueLabel: qw.valueLabel,
+            resetAt,
+            lastUpdatedAt,
+          } as never);
+        }
+        importedAny = true;
+      }
+      if (importedAny) {
+        warnings.push({
+          kind: "deprecated_field",
+          section: "quotaWindows",
+          message: "Quota windows imported as point-in-time snapshots; refresh via adapter poll for current values.",
+        });
       }
     }
 

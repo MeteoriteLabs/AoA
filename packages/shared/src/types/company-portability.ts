@@ -19,6 +19,7 @@ export interface CompanyPortabilityInclude {
   budgetPolicies?: boolean;
   costEvents?: CompanyPortabilityCostEventsInclude;
   financeEvents?: boolean;
+  quotaWindows?: boolean;
 }
 
 export interface CompanyPortabilitySecretRequirement {
@@ -227,6 +228,21 @@ export interface CompanyPortabilityFinanceEventManifestEntry {
   metadata?: Record<string, unknown> | null;
 }
 
+export interface CompanyPortabilityQuotaWindowManifestEntry {
+  slug: string;
+  provider: string;
+  model: string | null;
+  windowKind: string;
+  label: string | null;
+  limitValue: number | null;
+  usedValue: number | null;
+  usedPercent: number | null;
+  valueLabel: string | null;
+  resetAt: string | null;
+  lastUpdatedAt: string;
+  metadata?: Record<string, unknown> | null;
+}
+
 export interface CompanyPortabilityInternalAgentConfigManifestEntry {
   executionMode: string;
   provider?: string | null;
@@ -260,6 +276,7 @@ export interface CompanyPortabilityManifest {
   budgetPolicies?: CompanyPortabilityBudgetPolicyManifestEntry[];
   costEvents?: CompanyPortabilityCostEventManifestEntry[];
   financeEvents?: CompanyPortabilityFinanceEventManifestEntry[];
+  quotaWindows?: CompanyPortabilityQuotaWindowManifestEntry[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];
 }
 
@@ -280,6 +297,7 @@ export interface CompanyPortabilityExportPreviewCounts {
   budgetPolicies?: number;
   costEvents?: number;
   financeEvents?: number;
+  quotaWindows?: number;
 }
 
 export interface CompanyPortabilityExportPreviewResult {

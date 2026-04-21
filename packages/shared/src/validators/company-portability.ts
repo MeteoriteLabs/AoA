@@ -23,6 +23,7 @@ export const portabilityIncludeSchema = z
     budgetPolicies: z.boolean().optional(),
     costEvents: portabilityCostEventsIncludeSchema.optional(),
     financeEvents: z.boolean().optional(),
+    quotaWindows: z.boolean().optional(),
   })
   .partial();
 
@@ -228,6 +229,23 @@ export const portabilityFinanceEventManifestSchema = z
   })
   .passthrough();
 
+export const portabilityQuotaWindowManifestSchema = z
+  .object({
+    slug: z.string().min(1),
+    provider: z.string().min(1),
+    model: z.string().nullable(),
+    windowKind: z.string().min(1),
+    label: z.string().nullable(),
+    limitValue: z.number().int().nullable(),
+    usedValue: z.number().int().nullable(),
+    usedPercent: z.number().int().nullable(),
+    valueLabel: z.string().nullable(),
+    resetAt: z.string().nullable(),
+    lastUpdatedAt: z.string().min(1),
+    metadata: z.record(z.unknown()).nullable().optional(),
+  })
+  .passthrough();
+
 export const portabilityInternalAgentConfigManifestSchema = z
   .object({
     executionMode: z.string().min(1),
@@ -267,6 +285,7 @@ export const portabilityManifestSchema = z
         budgetPolicies: z.boolean().optional(),
         costEvents: portabilityCostEventsIncludeSchema.optional(),
         financeEvents: z.boolean().optional(),
+        quotaWindows: z.boolean().optional(),
       })
       .passthrough(),
     company: portabilityCompanyManifestEntrySchema.nullable(),
@@ -280,6 +299,7 @@ export const portabilityManifestSchema = z
     budgetPolicies: z.array(portabilityBudgetPolicyManifestSchema).optional(),
     costEvents: z.array(portabilityCostEventManifestSchema).optional(),
     financeEvents: z.array(portabilityFinanceEventManifestSchema).optional(),
+    quotaWindows: z.array(portabilityQuotaWindowManifestSchema).optional(),
     requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
   })
   .passthrough();

@@ -19,6 +19,7 @@ export {
   portabilityInternalAgentConfigManifestSchema,
   portabilityBudgetPolicyManifestSchema,
   portabilityFinanceEventManifestSchema,
+  portabilityQuotaWindowManifestSchema,
   portabilityManifestSchema,
   portabilitySourceSchema,
   portabilityTargetSchema,
