@@ -22,6 +22,7 @@ export const portabilityIncludeSchema = z
     internalAgentConfig: z.boolean().optional(),
     budgetPolicies: z.boolean().optional(),
     costEvents: portabilityCostEventsIncludeSchema.optional(),
+    financeEvents: z.boolean().optional(),
   })
   .partial();
 
@@ -198,6 +199,35 @@ export const portabilityCostEventManifestSchema = z
   })
   .passthrough();
 
+export const portabilityFinanceEventManifestSchema = z
+  .object({
+    slug: z.string().min(1),
+    agentSlug: z.string().min(1).nullable(),
+    issueSlug: z.string().min(1).nullable(),
+    projectSlug: z.string().min(1).nullable(),
+    goalSlug: z.string().min(1).nullable(),
+    costEventSlug: z.string().min(1).nullable(),
+    occurredAt: z.string().min(1),
+    eventKind: z.string().min(1),
+    direction: z.enum(["debit", "credit"]),
+    biller: z.string().min(1),
+    provider: z.string().nullable(),
+    executionAdapterType: z.string().nullable(),
+    pricingTier: z.string().nullable(),
+    region: z.string().nullable(),
+    model: z.string().nullable(),
+    quantity: z.number().int().nullable(),
+    unit: z.string().nullable(),
+    amountCents: z.number().int(),
+    currency: z.string().min(1),
+    estimated: z.boolean(),
+    externalInvoiceId: z.string().nullable(),
+    billingCode: z.string().nullable(),
+    description: z.string().nullable(),
+    metadata: z.record(z.unknown()).nullable().optional(),
+  })
+  .passthrough();
+
 export const portabilityInternalAgentConfigManifestSchema = z
   .object({
     executionMode: z.string().min(1),
@@ -236,6 +266,7 @@ export const portabilityManifestSchema = z
         internalAgentConfig: z.boolean().optional(),
         budgetPolicies: z.boolean().optional(),
         costEvents: portabilityCostEventsIncludeSchema.optional(),
+        financeEvents: z.boolean().optional(),
       })
       .passthrough(),
     company: portabilityCompanyManifestEntrySchema.nullable(),
@@ -248,6 +279,7 @@ export const portabilityManifestSchema = z
     internalAgentConfig: portabilityInternalAgentConfigManifestSchema.nullable().optional(),
     budgetPolicies: z.array(portabilityBudgetPolicyManifestSchema).optional(),
     costEvents: z.array(portabilityCostEventManifestSchema).optional(),
+    financeEvents: z.array(portabilityFinanceEventManifestSchema).optional(),
     requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
   })
   .passthrough();

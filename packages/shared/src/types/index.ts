@@ -132,6 +132,8 @@ export type {
   CompanyPortabilityCostEventManifestEntry,
   CompanyPortabilityCostEventsInclude,
   CompanyPortabilityCostEventsDateRange,
+  CompanyPortabilityFinanceEventManifestEntry,
+  CompanyPortabilityFinanceEventDirection,
   CompanyPortabilityPreviewRoutinePlan,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportRequest,

@@ -18,6 +18,7 @@ export interface CompanyPortabilityInclude {
   internalAgentConfig?: boolean;
   budgetPolicies?: boolean;
   costEvents?: CompanyPortabilityCostEventsInclude;
+  financeEvents?: boolean;
 }
 
 export interface CompanyPortabilitySecretRequirement {
@@ -197,6 +198,35 @@ export interface CompanyPortabilityCostEventManifestEntry {
   metadata?: Record<string, unknown> | null;
 }
 
+export type CompanyPortabilityFinanceEventDirection = "debit" | "credit";
+
+export interface CompanyPortabilityFinanceEventManifestEntry {
+  slug: string;
+  agentSlug: string | null;
+  issueSlug: string | null;
+  projectSlug: string | null;
+  goalSlug: string | null;
+  costEventSlug: string | null;
+  occurredAt: string;
+  eventKind: string;
+  direction: CompanyPortabilityFinanceEventDirection;
+  biller: string;
+  provider: string | null;
+  executionAdapterType: string | null;
+  pricingTier: string | null;
+  region: string | null;
+  model: string | null;
+  quantity: number | null;
+  unit: string | null;
+  amountCents: number;
+  currency: string;
+  estimated: boolean;
+  externalInvoiceId: string | null;
+  billingCode: string | null;
+  description: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
 export interface CompanyPortabilityInternalAgentConfigManifestEntry {
   executionMode: string;
   provider?: string | null;
@@ -229,6 +259,7 @@ export interface CompanyPortabilityManifest {
   internalAgentConfig?: CompanyPortabilityInternalAgentConfigManifestEntry | null;
   budgetPolicies?: CompanyPortabilityBudgetPolicyManifestEntry[];
   costEvents?: CompanyPortabilityCostEventManifestEntry[];
+  financeEvents?: CompanyPortabilityFinanceEventManifestEntry[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];
 }
 
@@ -248,6 +279,7 @@ export interface CompanyPortabilityExportPreviewCounts {
   internalAgentConfig?: 0 | 1;
   budgetPolicies?: number;
   costEvents?: number;
+  financeEvents?: number;
 }
 
 export interface CompanyPortabilityExportPreviewResult {
