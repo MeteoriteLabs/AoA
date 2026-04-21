@@ -65,6 +65,8 @@ export { notifications } from "./notifications.js";
 export { companySkills } from "./company_skills.js";
 export { budgetPolicies } from "./budget_policies.js";
 export { budgetIncidents } from "./budget_incidents.js";
+export { financeEvents } from "./finance_events.js";
+export { providerQuotaWindows } from "./provider_quota_windows.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
 export { issueDocuments } from "./issue_documents.js";
