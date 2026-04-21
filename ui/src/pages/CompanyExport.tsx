@@ -24,6 +24,11 @@ type IncludeFlags = {
   skills: boolean;
   routines: boolean;
   envInputs: boolean;
+  internalAgentConfig: boolean;
+  budgetPolicies: boolean;
+  costEvents: boolean;
+  financeEvents: boolean;
+  quotaWindows: boolean;
 };
 
 const DEFAULT_FLAGS: IncludeFlags = {
@@ -34,6 +39,11 @@ const DEFAULT_FLAGS: IncludeFlags = {
   skills: false,
   routines: false,
   envInputs: false,
+  internalAgentConfig: true,
+  budgetPolicies: false,
+  costEvents: false,
+  financeEvents: false,
+  quotaWindows: false,
 };
 
 type EntityRow = {
@@ -42,13 +52,21 @@ type EntityRow = {
   description: string;
 };
 
-const ENTITY_ROWS: EntityRow[] = [
+const CORE_ENTITY_ROWS: EntityRow[] = [
   { key: "agents", label: "Agents", description: "Agent configs, adapter types, roles, and reporting structure." },
+  { key: "internalAgentConfig", label: "Internal Agent Config", description: "Always-on assistant config: provider, model, autonomy, capabilities." },
   { key: "projects", label: "Projects", description: "Departments and projects including parent hierarchy." },
   { key: "issues", label: "Tasks", description: "All tasks with status, priority, assignees, and labels." },
   { key: "skills", label: "Skills", description: "Company-scoped skills with source tracking and file inventory." },
   { key: "routines", label: "Routines", description: "Routines with triggers (schedule/webhook/api) and variables." },
   { key: "envInputs", label: "Environment Inputs", description: "Agent env bindings with secret/plain classification." },
+];
+
+const FINANCE_ENTITY_ROWS: EntityRow[] = [
+  { key: "budgetPolicies", label: "Budget Policies", description: "Spend limits per company/agent with windows and thresholds." },
+  { key: "costEvents", label: "Cost Events", description: "Per-run LLM spend records. Historical operational data." },
+  { key: "financeEvents", label: "Finance Events", description: "General ledger entries (debit/credit) with provider metadata." },
+  { key: "quotaWindows", label: "Quota Windows", description: "Provider rate-limit snapshots (point-in-time; refresh recommended)." },
 ];
 
 function formatBytes(bytes: number): string {
@@ -159,7 +177,7 @@ export function CompanyExport({ initialPreview = null, showcase = false }: Compa
               </div>
             </label>
 
-            {ENTITY_ROWS.map((row) => (
+            {CORE_ENTITY_ROWS.map((row) => (
               <label key={row.key} className="flex items-start gap-3">
                 <Checkbox
                   id={`include-${row.key}`}
@@ -174,6 +192,51 @@ export function CompanyExport({ initialPreview = null, showcase = false }: Compa
                   <p className="text-xs text-muted-foreground">{row.description}</p>
                 </div>
               </label>
+            ))}
+          </div>
+
+          <Separator />
+
+          <div>
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+              Budget &amp; Finance
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Opt-in spend configuration and operational history. All default off.
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            {FINANCE_ENTITY_ROWS.map((row) => (
+              <div key={row.key} className="space-y-2">
+                <label className="flex items-start gap-3">
+                  <Checkbox
+                    id={`include-${row.key}`}
+                    aria-label={row.label}
+                    checked={flags[row.key]}
+                    onCheckedChange={() => toggleFlag(row.key)}
+                  />
+                  <div className="-mt-[2px]">
+                    <Label htmlFor={`include-${row.key}`} className="font-medium">
+                      {row.label}
+                    </Label>
+                    <p className="text-xs text-muted-foreground">{row.description}</p>
+                  </div>
+                </label>
+                {row.key === "costEvents" && flags.costEvents && (
+                  <div
+                    role="alert"
+                    className="ml-8 rounded-md border border-amber-400/50 bg-amber-50 p-2.5 dark:bg-amber-950/20"
+                  >
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="mt-[1px] h-3.5 w-3.5 shrink-0 text-amber-600" />
+                      <p className="text-xs text-amber-800 dark:text-amber-200">
+                        Cost events are high-volume operational data. Bundles with many events can be large. Enable only if you need operational spend history.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         </CardContent>
@@ -233,6 +296,21 @@ function PreviewSummary({ preview }: { preview: CompanyPortabilityExportPreviewR
     { label: "Routines", value: preview.counts.routines },
     { label: "Env inputs", value: preview.counts.envInputs },
   ];
+  if (preview.counts.internalAgentConfig !== undefined) {
+    countRows.push({ label: "Internal agent", value: preview.counts.internalAgentConfig });
+  }
+  if (preview.counts.budgetPolicies !== undefined) {
+    countRows.push({ label: "Budget policies", value: preview.counts.budgetPolicies });
+  }
+  if (preview.counts.costEvents !== undefined) {
+    countRows.push({ label: "Cost events", value: preview.counts.costEvents });
+  }
+  if (preview.counts.financeEvents !== undefined) {
+    countRows.push({ label: "Finance events", value: preview.counts.financeEvents });
+  }
+  if (preview.counts.quotaWindows !== undefined) {
+    countRows.push({ label: "Quota windows", value: preview.counts.quotaWindows });
+  }
   return (
     <Card>
       <CardContent className="space-y-4 p-6">

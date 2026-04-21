@@ -2435,10 +2435,39 @@ function BreakdownComponentsShowcase() {
 
 function CompanyExportShowcase() {
   const cleanPreview = {
-    counts: { agents: 5, projects: 2, issues: 18, skills: 3, routines: 1, envInputs: 4 },
+    counts: {
+      agents: 5,
+      projects: 2,
+      issues: 18,
+      skills: 3,
+      routines: 1,
+      envInputs: 4,
+      internalAgentConfig: 1 as const,
+    },
     files: ["README.md", "agents/ceo.md", "agents/eng-lead.md", "skills/readme-gen/SKILL.md"],
     estimatedBytes: 12_800,
     warnings: [],
+  };
+  const financePreview = {
+    counts: {
+      agents: 5,
+      projects: 2,
+      issues: 18,
+      skills: 3,
+      routines: 1,
+      envInputs: 4,
+      internalAgentConfig: 1 as const,
+      budgetPolicies: 6,
+      costEvents: 1284,
+      financeEvents: 12,
+      quotaWindows: 4,
+    },
+    files: ["README.md", "agents/ceo.md"],
+    estimatedBytes: 512_000,
+    warnings: [
+      "Large bundle: 1284 cost events included.",
+      "Quota windows are point-in-time snapshots; consider refresh post-import.",
+    ],
   };
   const warningPreview = {
     counts: { agents: 5, projects: 2, issues: 18, skills: 3, routines: 1, envInputs: 4 },
@@ -2466,6 +2495,12 @@ function CompanyExportShowcase() {
       <SubSection title="Preview shown (no warnings)">
         <div className="rounded-md border border-border p-4">
           <CompanyExportPage showcase initialPreview={cleanPreview} />
+        </div>
+      </SubSection>
+
+      <SubSection title="Preview with Budget & Finance entities (E.2)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyExportPage showcase initialPreview={financePreview} />
         </div>
       </SubSection>
 
@@ -2567,6 +2602,26 @@ function CompanyImportShowcase() {
     ],
   };
 
+  const financeBundle = {
+    manifest: {
+      ...sampleBundle.manifest,
+      internalAgentConfig: {
+        executionMode: "api",
+        provider: "anthropic",
+        model: "claude-opus-4-7",
+        autonomyLevel: 2,
+        notificationPreference: "mentions",
+        contextTokenBudget: 8000,
+        proactiveIntervalMinutes: 240,
+      },
+      budgetPolicies: new Array(6).fill(null).map((_, i) => ({ slug: `policy-${i}` })),
+      costEvents: new Array(1284).fill(null).map((_, i) => ({ slug: `ce-${i}` })),
+      financeEvents: new Array(12).fill(null).map((_, i) => ({ slug: `fe-${i}` })),
+      quotaWindows: new Array(4).fill(null).map((_, i) => ({ slug: `qw-${i}` })),
+    } as unknown as typeof sampleBundle.manifest,
+    files: sampleBundle.files,
+  };
+
   return (
     <Section title="Company Import">
       <p className="text-sm text-muted-foreground">
@@ -2602,6 +2657,16 @@ function CompanyImportShowcase() {
             showcase="preview-warnings"
             initialBundle={sampleBundle}
             initialPreview={warningPreview}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Preview with Budget & Finance entity counts (E.2)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyImportPage
+            showcase="preview"
+            initialBundle={financeBundle}
+            initialPreview={cleanPreview}
           />
         </div>
       </SubSection>

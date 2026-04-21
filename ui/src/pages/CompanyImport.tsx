@@ -327,7 +327,7 @@ export function CompanyImport({
         </Card>
       )}
 
-      {preview && <PreviewCard preview={preview} />}
+      {preview && <PreviewCard preview={preview} bundle={bundle} />}
 
       {importResult && (
         <Card>
@@ -350,7 +350,13 @@ export function CompanyImport({
   );
 }
 
-function PreviewCard({ preview }: { preview: CompanyPortabilityPreviewResult }) {
+function PreviewCard({
+  preview,
+  bundle,
+}: {
+  preview: CompanyPortabilityPreviewResult;
+  bundle: ParsedBundle | null;
+}) {
   const planRows = useMemo(() => {
     return [
       { label: "Agents", plans: preview.plan.agentPlans.map((p) => ({ slug: p.slug, action: p.action, name: p.plannedName })) },
@@ -360,6 +366,28 @@ function PreviewCard({ preview }: { preview: CompanyPortabilityPreviewResult }) 
       { label: "Routines", plans: preview.plan.routinePlans.map((p) => ({ slug: p.slug, action: p.action, name: p.plannedTitle })) },
     ].filter((row) => row.plans.length > 0);
   }, [preview]);
+
+  const bundleCountRows = useMemo(() => {
+    const manifest = bundle?.manifest;
+    if (!manifest) return [] as Array<{ label: string; value: number }>;
+    const rows: Array<{ label: string; value: number }> = [];
+    if (manifest.internalAgentConfig !== undefined) {
+      rows.push({ label: "Internal agent", value: manifest.internalAgentConfig ? 1 : 0 });
+    }
+    if (manifest.budgetPolicies !== undefined) {
+      rows.push({ label: "Budget policies", value: manifest.budgetPolicies.length });
+    }
+    if (manifest.costEvents !== undefined) {
+      rows.push({ label: "Cost events", value: manifest.costEvents.length });
+    }
+    if (manifest.financeEvents !== undefined) {
+      rows.push({ label: "Finance events", value: manifest.financeEvents.length });
+    }
+    if (manifest.quotaWindows !== undefined) {
+      rows.push({ label: "Quota windows", value: manifest.quotaWindows.length });
+    }
+    return rows;
+  }, [bundle]);
 
   return (
     <Card>
@@ -390,6 +418,28 @@ function PreviewCard({ preview }: { preview: CompanyPortabilityPreviewResult }) 
             {planRows.map((row) => (
               <PlanSection key={row.label} label={row.label} plans={row.plans} />
             ))}
+          </div>
+        )}
+
+        {bundleCountRows.length > 0 && (
+          <div>
+            <div className="mb-1 flex items-center gap-2">
+              <span className="text-sm font-medium">Budget &amp; Internal Agent</span>
+              <span className="text-xs text-muted-foreground">from bundle manifest</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+              {bundleCountRows.map((row) => (
+                <div
+                  key={row.label}
+                  className="rounded-md border border-border bg-muted/20 px-2 py-1.5"
+                >
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    {row.label}
+                  </p>
+                  <p className="text-base font-semibold">{row.value}</p>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

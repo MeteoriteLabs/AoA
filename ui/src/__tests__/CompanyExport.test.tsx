@@ -74,7 +74,7 @@ describe("CompanyExport page", () => {
   it("checkbox defaults match DEFAULT_INCLUDE (agents ON, projects/issues/skills/routines/envInputs OFF, company locked ON)", () => {
     renderWithProviders(<CompanyExport />);
     const company = screen.getByRole("checkbox", { name: /^company$/i });
-    const agents = screen.getByRole("checkbox", { name: /agents/i });
+    const agents = screen.getByRole("checkbox", { name: /^agents$/i });
     const projects = screen.getByRole("checkbox", { name: /projects/i });
     const tasks = screen.getByRole("checkbox", { name: /tasks/i });
     const skills = screen.getByRole("checkbox", { name: /skills/i });
@@ -89,6 +89,52 @@ describe("CompanyExport page", () => {
     expect(skills).not.toBeChecked();
     expect(routines).not.toBeChecked();
     expect(envInputs).not.toBeChecked();
+  });
+
+  it("E.2 checkbox defaults: internal agent ON, budget/cost/finance/quota OFF", () => {
+    renderWithProviders(<CompanyExport />);
+    const internalAgent = screen.getByRole("checkbox", { name: /internal agent config/i });
+    const budgetPolicies = screen.getByRole("checkbox", { name: /budget policies/i });
+    const costEvents = screen.getByRole("checkbox", { name: /cost events/i });
+    const financeEvents = screen.getByRole("checkbox", { name: /finance events/i });
+    const quotaWindows = screen.getByRole("checkbox", { name: /quota windows/i });
+
+    expect(internalAgent).toBeChecked();
+    expect(budgetPolicies).not.toBeChecked();
+    expect(costEvents).not.toBeChecked();
+    expect(financeEvents).not.toBeChecked();
+    expect(quotaWindows).not.toBeChecked();
+  });
+
+  it("volume warning appears inline when Cost Events is checked", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<CompanyExport />);
+    expect(screen.queryByText(/high-volume operational data/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: /cost events/i }));
+    await screen.findByText(/high-volume operational data/i);
+  });
+
+  it("toggling E.2 checkboxes propagates flags to previewExport call", async () => {
+    const user = userEvent.setup();
+    previewExport.mockResolvedValue(makePreview());
+    renderWithProviders(<CompanyExport />);
+    await user.click(screen.getByRole("checkbox", { name: /budget policies/i }));
+    await user.click(screen.getByRole("checkbox", { name: /finance events/i }));
+    await user.click(screen.getByRole("button", { name: /preview/i }));
+
+    await waitFor(() => {
+      expect(previewExport).toHaveBeenCalledWith(
+        "comp-1",
+        expect.objectContaining({
+          internalAgentConfig: true,
+          budgetPolicies: true,
+          costEvents: false,
+          financeEvents: true,
+          quotaWindows: false,
+        }),
+      );
+    });
   });
 
   it("clicking Preview calls previewExport with selected include flags", async () => {

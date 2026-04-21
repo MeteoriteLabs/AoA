@@ -160,6 +160,48 @@ describe("CompanyImport page", () => {
     expect(arg.source.type).toBe("inline");
   });
 
+  it("surfaces E.2 entity counts from bundle manifest in preview pane", async () => {
+    const user = userEvent.setup();
+    previewImport.mockResolvedValue(makePreviewResult());
+    renderWithProviders(<CompanyImport />);
+
+    const bundle = makeValidBundle();
+    // Add E.2 entity sections to the manifest
+    (bundle.manifest as Record<string, unknown>).internalAgentConfig = {
+      executionMode: "api",
+      autonomyLevel: 2,
+      notificationPreference: "mentions",
+      contextTokenBudget: 8000,
+      proactiveIntervalMinutes: 240,
+    };
+    (bundle.manifest as Record<string, unknown>).budgetPolicies = [
+      { slug: "b1" },
+      { slug: "b2" },
+      { slug: "b3" },
+    ];
+    (bundle.manifest as Record<string, unknown>).costEvents = new Array(42).fill({
+      slug: "ce",
+    });
+    (bundle.manifest as Record<string, unknown>).financeEvents = [{ slug: "f1" }];
+    (bundle.manifest as Record<string, unknown>).quotaWindows = [
+      { slug: "q1" },
+      { slug: "q2" },
+    ];
+
+    await uploadBundle(user, bundle);
+    await user.click(screen.getByRole("button", { name: /preview/i }));
+
+    await screen.findByText(/Budget & Internal Agent/i);
+    expect(screen.getByText(/^Internal agent$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Budget policies$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Cost events$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Finance events$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Quota windows$/i)).toBeInTheDocument();
+    // Counts rendered
+    expect(screen.getByText(/^42$/)).toBeInTheDocument();
+    expect(screen.getByText(/^3$/)).toBeInTheDocument();
+  });
+
   it("renders preview plan actions and counts after previewImport succeeds", async () => {
     const user = userEvent.setup();
     previewImport.mockResolvedValue(
