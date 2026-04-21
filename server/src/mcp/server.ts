@@ -667,6 +667,58 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
                 },
               },
               {
+                name: "list-tasks",
+                description:
+                  "List tasks in the caller's company with RBAC scoping. Supports filters: status, projectId, assigneeAgentId, assigneeUserId, touchedByUserId, unreadForUserId, labelId, q",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    status: { type: "string" },
+                    projectId: { type: "string" },
+                    assigneeAgentId: { type: "string" },
+                    assigneeUserId: { type: "string" },
+                    touchedByUserId: { type: "string" },
+                    unreadForUserId: { type: "string" },
+                    labelId: { type: "string" },
+                    q: { type: "string" },
+                  },
+                },
+              },
+              {
+                name: "get-heartbeat-context",
+                description:
+                  "Return a compact { task, recentComments } payload for a task (last 10 comments)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    taskId: { type: "string" },
+                  },
+                  required: ["taskId"],
+                },
+              },
+              {
+                name: "list-task-comments",
+                description: "List comments on a task (RBAC scoped)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    taskId: { type: "string" },
+                  },
+                  required: ["taskId"],
+                },
+              },
+              {
+                name: "get-task-comment",
+                description: "Get a single task comment by id (RBAC scoped via its task)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    commentId: { type: "string" },
+                  },
+                  required: ["commentId"],
+                },
+              },
+              {
                 name: "debrief-push",
                 description: "Push content into the Debrief pipeline",
                 inputSchema: {
@@ -811,6 +863,86 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
             return;
           }
           res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(project)));
+          return;
+        }
+
+        if (params.name === "list-tasks") {
+          const parsed = z
+            .object({
+              status: z.string().optional(),
+              projectId: z.string().optional(),
+              assigneeAgentId: z.string().optional(),
+              assigneeUserId: z.string().optional(),
+              touchedByUserId: z.string().optional(),
+              unreadForUserId: z.string().optional(),
+              labelId: z.string().optional(),
+              q: z.string().optional(),
+            })
+            .parse(args);
+          if (parsed.projectId) {
+            assertScopedProjectAccess(scope, parsed.projectId, "Project");
+          }
+          const rows = await issuesSvc.list(companyId, parsed);
+          const filtered = rows.filter((row) => canAccessProjectScopedEntity(scope, row.projectId));
+          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(filtered)));
+          return;
+        }
+
+        if (params.name === "get-heartbeat-context") {
+          const parsed = z.object({ taskId: z.string().min(1) }).parse(args);
+          const task = await issuesSvc.getById(parsed.taskId);
+          if (
+            !task ||
+            task.companyId !== companyId ||
+            !canAccessProjectScopedEntity(scope, task.projectId)
+          ) {
+            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Task not found"));
+            return;
+          }
+          const comments = await issuesSvc.listComments(parsed.taskId);
+          const recentComments = comments.slice(0, 10);
+          res.json(
+            jsonRpcResult(
+              requestBody.id ?? null,
+              asToolContent({ task, recentComments }),
+            ),
+          );
+          return;
+        }
+
+        if (params.name === "list-task-comments") {
+          const parsed = z.object({ taskId: z.string().min(1) }).parse(args);
+          const task = await issuesSvc.getById(parsed.taskId);
+          if (
+            !task ||
+            task.companyId !== companyId ||
+            !canAccessProjectScopedEntity(scope, task.projectId)
+          ) {
+            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Task not found"));
+            return;
+          }
+          const comments = await issuesSvc.listComments(parsed.taskId);
+          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(comments)));
+          return;
+        }
+
+        if (params.name === "get-task-comment") {
+          const parsed = z.object({ commentId: z.string().min(1) }).parse(args);
+          const comment = await issuesSvc.getComment(parsed.commentId);
+          if (!comment || comment.companyId !== companyId) {
+            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Comment not found"));
+            return;
+          }
+          const task = await issuesSvc.getById(comment.issueId);
+          if (
+            !task ||
+            task.companyId !== companyId ||
+            !canAccessProjectScopedEntity(scope, task.projectId)
+          ) {
+            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Comment not found"));
+            return;
+          }
+          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(comment)));
           return;
         }
 
