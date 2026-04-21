@@ -174,6 +174,22 @@ export interface CompanyPortabilityExportResult {
   warnings: string[];
 }
 
+export interface CompanyPortabilityExportPreviewCounts {
+  agents: number;
+  projects: number;
+  issues: number;
+  skills: number;
+  routines: number;
+  envInputs: number;
+}
+
+export interface CompanyPortabilityExportPreviewResult {
+  counts: CompanyPortabilityExportPreviewCounts;
+  files: string[];
+  estimatedBytes: number;
+  warnings: string[];
+}
+
 export type ImportWarningKind =
   | "unknown_section"
   | "unsupported_version"

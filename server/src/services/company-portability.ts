@@ -6,6 +6,7 @@ import type {
   CompanyPortabilityCollisionStrategy,
   CompanyPortabilityEnvInputManifestEntry,
   CompanyPortabilityExport,
+  CompanyPortabilityExportPreviewResult,
   CompanyPortabilityExportResult,
   CompanyPortabilityImport,
   CompanyPortabilityImportResult,
@@ -1069,6 +1070,32 @@ export function companyPortabilityService(db: Db) {
       manifest,
       files,
       warnings,
+    };
+  }
+
+  async function previewExport(
+    companyId: string,
+    input: CompanyPortabilityExport,
+  ): Promise<CompanyPortabilityExportPreviewResult> {
+    const bundle = await exportBundle(companyId, input);
+    const filePaths = Object.keys(bundle.files).sort((a, b) => a.localeCompare(b));
+    const manifestBytes = JSON.stringify(bundle.manifest).length;
+    let fileBytes = 0;
+    for (const body of Object.values(bundle.files)) {
+      fileBytes += body.length;
+    }
+    return {
+      counts: {
+        agents: bundle.manifest.agents.length,
+        projects: bundle.manifest.projects?.length ?? 0,
+        issues: bundle.manifest.issues?.length ?? 0,
+        skills: bundle.manifest.skills?.length ?? 0,
+        routines: bundle.manifest.routines?.length ?? 0,
+        envInputs: bundle.manifest.envInputs?.length ?? 0,
+      },
+      files: filePaths,
+      estimatedBytes: manifestBytes + fileBytes,
+      warnings: bundle.warnings,
     };
   }
 
@@ -2182,6 +2209,7 @@ export function companyPortabilityService(db: Db) {
 
   return {
     exportBundle,
+    previewExport,
     previewImport,
     importBundle,
   };

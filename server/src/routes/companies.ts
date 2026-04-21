@@ -69,6 +69,13 @@ export function companyRoutes(db: Db) {
     res.json(result);
   });
 
+  router.post("/:companyId/export/preview", validate(companyPortabilityExportSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await portability.previewExport(companyId, req.body);
+    res.json(result);
+  });
+
   router.post("/import/preview", validate(companyPortabilityPreviewSchema), async (req, res) => {
     if (req.body.target.mode === "existing_company") {
       assertCompanyAccess(req, req.body.target.companyId);

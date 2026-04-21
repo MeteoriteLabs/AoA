@@ -287,6 +287,8 @@ export type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityExportResult,
+  CompanyPortabilityExportPreviewCounts,
+  CompanyPortabilityExportPreviewResult,
   CompanyPortabilitySource,
   CompanyPortabilityImportTarget,
   CompanyPortabilityAgentSelection,
