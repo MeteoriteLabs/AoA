@@ -154,6 +154,7 @@ import type {
 } from "@/api/finance";
 import type { CostByModelRow } from "@/api/costs";
 import type { BudgetPolicySummary, BudgetIncident } from "@paperclipai/shared";
+import { CompanyExport as CompanyExportPage } from "@/pages/CompanyExport";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -1395,6 +1396,11 @@ export function DesignGuide() {
       <BreakdownComponentsShowcase />
 
       {/* ============================================================ */}
+      {/*  COMPANY EXPORT                                               */}
+      {/* ============================================================ */}
+      <CompanyExportShowcase />
+
+      {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
       <Section title="Keyboard Shortcuts">
@@ -2411,6 +2417,55 @@ function BreakdownComponentsShowcase() {
         <div className="grid gap-3 md:grid-cols-2">
           <CodexSubscriptionPanel rollup={null} />
           <CodexSubscriptionPanel rollup={codexRollup} />
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  CompanyExport showcase                                             */
+/* ------------------------------------------------------------------ */
+
+function CompanyExportShowcase() {
+  const cleanPreview = {
+    counts: { agents: 5, projects: 2, issues: 18, skills: 3, routines: 1, envInputs: 4 },
+    files: ["README.md", "agents/ceo.md", "agents/eng-lead.md", "skills/readme-gen/SKILL.md"],
+    estimatedBytes: 12_800,
+    warnings: [],
+  };
+  const warningPreview = {
+    counts: { agents: 5, projects: 2, issues: 18, skills: 3, routines: 1, envInputs: 4 },
+    files: ["README.md", "agents/ceo.md"],
+    estimatedBytes: 8_192,
+    warnings: [
+      "Agent eng-lead env PATH was omitted because it is system-dependent.",
+      "Skill custom-tool missing source metadata; exported markdown only.",
+    ],
+  };
+
+  return (
+    <Section title="Company Export">
+      <p className="text-sm text-muted-foreground">
+        Standalone export page at <code>/export</code>. Entity inclusion toggles,
+        preview summary, and download action. Warnings render with amber tone.
+      </p>
+
+      <SubSection title="Initial state (no preview)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyExportPage showcase />
+        </div>
+      </SubSection>
+
+      <SubSection title="Preview shown (no warnings)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyExportPage showcase initialPreview={cleanPreview} />
+        </div>
+      </SubSection>
+
+      <SubSection title="Preview with warnings">
+        <div className="rounded-md border border-border p-4">
+          <CompanyExportPage showcase initialPreview={warningPreview} />
         </div>
       </SubSection>
     </Section>

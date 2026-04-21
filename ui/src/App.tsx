@@ -40,6 +40,7 @@ import { Routines } from "./pages/Routines";
 import { RoutineDetail } from "./pages/RoutineDetail";
 import { AuthPage } from "./pages/Auth";
 import { Me } from "./pages/Me";
+import { CompanyExport } from "./pages/CompanyExport";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
@@ -256,6 +257,9 @@ export function App() {
         <Route element={<CloudAccessGate />}>
           <Route index element={<Lobby />} />
           <Route path="me" element={<Me />} />
+          <Route path="export" element={<Layout />}>
+            <Route index element={<CompanyExport />} />
+          </Route>
           <Route path="instance/settings" element={<InstanceSettingsPage />} />
           <Route path="instance/settings/plugins/:pluginId" element={<PluginSettings />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />

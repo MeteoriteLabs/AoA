@@ -641,6 +641,25 @@ function GeneralSection() {
         </div>
       </div>
 
+      {/* Company Data */}
+      <div className="space-y-3">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Company Data
+        </div>
+        <Link
+          to="/export"
+          className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-muted/50 transition-colors"
+        >
+          <div>
+            <p className="text-sm font-medium">Export Company</p>
+            <p className="text-xs text-muted-foreground">
+              Package this company into a portable bundle.
+            </p>
+          </div>
+          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+        </Link>
+      </div>
+
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
