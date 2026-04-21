@@ -7,6 +7,7 @@ export const portabilityIncludeSchema = z
     projects: z.boolean().optional(),
     issues: z.boolean().optional(),
     skills: z.boolean().optional(),
+    routines: z.boolean().optional(),
   })
   .partial();
 
@@ -100,6 +101,41 @@ export const portabilityIssueManifestEntrySchema = z.object({
   metadata: z.record(z.unknown()).nullable().optional(),
 });
 
+export const portabilityRoutineTriggerManifestEntrySchema = z.object({
+  kind: z.enum(["schedule", "webhook", "api"]),
+  label: z.string().nullable(),
+  enabled: z.boolean(),
+  cronExpression: z.string().nullable().optional(),
+  timezone: z.string().nullable().optional(),
+  signingMode: z.enum(["bearer", "hmac_sha256"]).nullable().optional(),
+  replayWindowSec: z.number().int().nonnegative().nullable().optional(),
+  publicId: z.string().nullable().optional(),
+});
+
+export const portabilityRoutineVariableManifestEntrySchema = z.object({
+  name: z.string().min(1),
+  label: z.string().nullable(),
+  type: z.enum(["text", "textarea", "number", "boolean", "select"]),
+  defaultValue: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+  required: z.boolean(),
+  options: z.array(z.string()),
+});
+
+export const portabilityRoutineManifestEntrySchema = z.object({
+  slug: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().nullable().optional(),
+  status: z.enum(["active", "paused", "archived"]),
+  priority: z.string().min(1),
+  concurrencyPolicy: z.enum(["coalesce_if_active", "always_enqueue", "skip_if_active"]),
+  catchUpPolicy: z.enum(["skip_missed", "enqueue_missed_with_cap"]),
+  projectSlug: z.string().min(1),
+  assigneeAgentSlug: z.string().min(1),
+  variables: z.array(portabilityRoutineVariableManifestEntrySchema),
+  triggers: z.array(portabilityRoutineTriggerManifestEntrySchema),
+  metadata: z.record(z.unknown()).nullable().optional(),
+});
+
 export const portabilityManifestSchema = z
   .object({
     schemaVersion: z.number().int().positive(),
@@ -117,6 +153,7 @@ export const portabilityManifestSchema = z
         projects: z.boolean().optional(),
         issues: z.boolean().optional(),
         skills: z.boolean().optional(),
+        routines: z.boolean().optional(),
       })
       .passthrough(),
     company: portabilityCompanyManifestEntrySchema.nullable(),
@@ -124,6 +161,7 @@ export const portabilityManifestSchema = z
     projects: z.array(portabilityProjectManifestEntrySchema).optional(),
     issues: z.array(portabilityIssueManifestEntrySchema).optional(),
     skills: z.array(portabilitySkillManifestEntrySchema).optional(),
+    routines: z.array(portabilityRoutineManifestEntrySchema).optional(),
     requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
   })
   .passthrough();

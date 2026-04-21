@@ -56,7 +56,7 @@ function normalizeSelector(input: string): string {
 
 function parseInclude(input: string | undefined): CompanyPortabilityInclude {
   if (!input || !input.trim()) {
-    return { company: true, agents: true, projects: false, issues: false, skills: false };
+    return { company: true, agents: true, projects: false, issues: false, skills: false, routines: false };
   }
   const values = input.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean);
   const include = {
@@ -65,9 +65,10 @@ function parseInclude(input: string | undefined): CompanyPortabilityInclude {
     projects: values.includes("projects"),
     issues: values.includes("issues"),
     skills: values.includes("skills"),
+    routines: values.includes("routines"),
   };
-  if (!include.company && !include.agents && !include.projects && !include.issues && !include.skills) {
-    throw new Error("Invalid --include value. Use one or more of: company,agents,projects,issues,skills");
+  if (!include.company && !include.agents && !include.projects && !include.issues && !include.skills && !include.routines) {
+    throw new Error("Invalid --include value. Use one or more of: company,agents,projects,issues,skills,routines");
   }
   return include;
 }

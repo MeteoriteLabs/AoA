@@ -805,6 +805,22 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       }));
     },
 
+    listForExport: async (
+      companyId: string,
+    ): Promise<Array<{ routine: Routine; triggers: RoutineTrigger[] }>> => {
+      const rows = await db
+        .select()
+        .from(routines)
+        .where(eq(routines.companyId, companyId))
+        .orderBy(asc(routines.createdAt), asc(routines.id));
+      const routineIds = rows.map((row) => row.id);
+      const triggersByRoutine = await listTriggersForRoutineIds(companyId, routineIds);
+      return rows.map((row) => ({
+        routine: toRoutine(row),
+        triggers: triggersByRoutine.get(row.id) ?? [],
+      }));
+    },
+
     getDetail: async (id: string): Promise<RoutineDetail | null> => {
       const row = await getRoutineById(id);
       if (!row) return null;

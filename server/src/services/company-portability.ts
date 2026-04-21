@@ -16,8 +16,10 @@ import type {
   CompanyPortabilityPreviewIssuePlan,
   CompanyPortabilityPreviewProjectPlan,
   CompanyPortabilityPreviewResult,
+  CompanyPortabilityPreviewRoutinePlan,
   CompanyPortabilityPreviewSkillPlan,
   CompanyPortabilityProjectManifestEntry,
+  CompanyPortabilityRoutineManifestEntry,
   CompanyPortabilitySkillManifestEntry,
   ImportWarning,
 } from "@paperclipai/shared";
@@ -34,6 +36,7 @@ import { companyService } from "./companies.js";
 import { companySkillService } from "./company-skills.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
+import { routineService } from "./routines.js";
 
 const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   company: true,
@@ -41,6 +44,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   projects: false,
   issues: false,
   skills: false,
+  routines: false,
 };
 
 const ISSUE_STATUSES = new Set([
@@ -65,7 +69,7 @@ const MANIFEST_WRAPPER_KEYS: ReadonlySet<string> = new Set([
   "requiredSecrets",
 ]);
 
-const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills"]);
+const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines"]);
 
 const MAX_SUPPORTED_SCHEMA_VERSION = 2;
 
@@ -119,6 +123,7 @@ type ImportPlanInternal = {
   selectedProjects: CompanyPortabilityProjectManifestEntry[];
   selectedIssues: CompanyPortabilityIssueManifestEntry[];
   selectedSkills: CompanyPortabilitySkillManifestEntry[];
+  selectedRoutines: CompanyPortabilityRoutineManifestEntry[];
 };
 
 function sortProjectsTopologically(
@@ -237,6 +242,7 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     projects: input?.projects ?? DEFAULT_INCLUDE.projects,
     issues: input?.issues ?? DEFAULT_INCLUDE.issues,
     skills: input?.skills ?? DEFAULT_INCLUDE.skills,
+    routines: input?.routines ?? DEFAULT_INCLUDE.routines,
   };
 }
 
@@ -579,6 +585,7 @@ export function companyPortabilityService(db: Db) {
   const projects = projectService(db);
   const issues = issueService(db);
   const skills = companySkillService(db);
+  const routines = routineService(db);
 
   async function resolveSource(source: CompanyPortabilityPreview["source"]): Promise<ResolvedSource> {
     if (source.type === "inline") {
@@ -664,7 +671,7 @@ export function companyPortabilityService(db: Db) {
     const generatedAt = new Date().toISOString();
 
     const manifest: CompanyPortabilityManifest = {
-      schemaVersion: include.projects || include.issues || include.skills ? 2 : 1,
+      schemaVersion: include.projects || include.issues || include.skills || include.routines ? 2 : 1,
       generatedAt,
       source: {
         companyId: company.id,
@@ -676,7 +683,7 @@ export function companyPortabilityService(db: Db) {
       requiredSecrets: [],
     };
 
-    const needAgentSlugs = include.agents || include.issues;
+    const needAgentSlugs = include.agents || include.issues || include.routines;
     const needSkills = include.skills;
     const skillRows = needSkills ? await skills.listFull(companyId) : [];
     const validSkillKeys = new Set(skillRows.map((skill) => skill.key));
@@ -806,7 +813,7 @@ export function companyPortabilityService(db: Db) {
     }
 
     const projectIdToSlug = new Map<string, string>();
-    const needProjectSlugs = include.projects || include.issues;
+    const needProjectSlugs = include.projects || include.issues || include.routines;
     if (needProjectSlugs) {
       const projectRows = await projects.list(companyId);
       const liveProjects = projectRows.filter((project) => !project.archivedAt);
@@ -908,6 +915,62 @@ export function companyPortabilityService(db: Db) {
         });
       }
       manifest.skills = skillManifest;
+    }
+
+    if (include.routines) {
+      const routineRows = await routines.listForExport(companyId);
+      const usedRoutineSlugs = new Set<string>();
+      const routineManifest: CompanyPortabilityRoutineManifestEntry[] = [];
+      for (const { routine, triggers } of routineRows) {
+        const projectSlug = routine.projectId ? projectIdToSlug.get(routine.projectId) : undefined;
+        const assigneeAgentSlug = routine.assigneeAgentId
+          ? idToSlug.get(routine.assigneeAgentId)
+          : undefined;
+        if (!projectSlug) {
+          warnings.push(
+            `Skipped routine "${routine.title}" because its project was not resolvable in the export scope.`,
+          );
+          continue;
+        }
+        if (!assigneeAgentSlug) {
+          warnings.push(
+            `Skipped routine "${routine.title}" because its assignee agent was not resolvable in the export scope.`,
+          );
+          continue;
+        }
+        const baseSlug = toSafeSlug(routine.title, `routine-${routineManifest.length + 1}`);
+        const slug = uniqueSlug(baseSlug, usedRoutineSlugs);
+        routineManifest.push({
+          slug,
+          title: routine.title,
+          description: routine.description ?? null,
+          status: routine.status,
+          priority: routine.priority,
+          concurrencyPolicy: routine.concurrencyPolicy,
+          catchUpPolicy: routine.catchUpPolicy,
+          projectSlug,
+          assigneeAgentSlug,
+          variables: routine.variables.map((variable) => ({
+            name: variable.name,
+            label: variable.label,
+            type: variable.type,
+            defaultValue: variable.defaultValue,
+            required: variable.required,
+            options: variable.options,
+          })),
+          triggers: triggers.map((trigger) => ({
+            kind: trigger.kind,
+            label: trigger.label,
+            enabled: trigger.enabled,
+            cronExpression: trigger.kind === "schedule" ? (trigger.cronExpression ?? null) : null,
+            timezone: trigger.kind === "schedule" ? (trigger.timezone ?? null) : null,
+            signingMode: trigger.kind === "webhook" ? (trigger.signingMode ?? null) : null,
+            replayWindowSec: trigger.kind === "webhook" ? (trigger.replayWindowSec ?? null) : null,
+            publicId: trigger.publicId && trigger.publicId.length > 0 ? trigger.publicId : null,
+          })),
+        });
+      }
+      manifest.routines = routineManifest;
     }
 
     manifest.requiredSecrets = dedupeRequiredSecrets(requiredSecrets);
@@ -1179,6 +1242,81 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
+    const manifestRoutines = manifest.routines ?? [];
+    const selectedRoutines: CompanyPortabilityRoutineManifestEntry[] = include.routines ? manifestRoutines : [];
+    const routinePlans: CompanyPortabilityPreviewRoutinePlan[] = [];
+    const existingRoutineByProjectTitle = new Map<string, { id: string; title: string }>();
+    const existingTitlesByProject = new Map<string, Set<string>>();
+    if (include.routines && input.target.mode === "existing_company") {
+      const existingProjectRows = await projects.list(input.target.companyId);
+      const projectIdToSlugTarget = new Map<string, string>();
+      for (const project of existingProjectRows) {
+        projectIdToSlugTarget.set(project.id, normalizeProjectUrlKey(project.name) ?? project.id);
+      }
+      const existingRoutineRows = await routines.list(input.target.companyId);
+      for (const existing of existingRoutineRows) {
+        const projectSlug = existing.projectId ? (projectIdToSlugTarget.get(existing.projectId) ?? "") : "";
+        const key = `${projectSlug}::${existing.title}`;
+        existingRoutineByProjectTitle.set(key, { id: existing.id, title: existing.title });
+        const titles = existingTitlesByProject.get(projectSlug) ?? new Set<string>();
+        titles.add(existing.title);
+        existingTitlesByProject.set(projectSlug, titles);
+      }
+    }
+    if (include.routines) {
+      for (const manifestRoutine of selectedRoutines) {
+        const key = `${manifestRoutine.projectSlug}::${manifestRoutine.title}`;
+        const existing = existingRoutineByProjectTitle.get(key) ?? null;
+        if (!existing) {
+          routinePlans.push({
+            slug: manifestRoutine.slug,
+            action: "create",
+            plannedTitle: manifestRoutine.title,
+            existingRoutineId: null,
+            reason: null,
+          });
+          continue;
+        }
+        if (collisionStrategy === "replace") {
+          routinePlans.push({
+            slug: manifestRoutine.slug,
+            action: "update",
+            plannedTitle: manifestRoutine.title,
+            existingRoutineId: existing.id,
+            reason: "Existing routine title matched in project; replace strategy.",
+          });
+          continue;
+        }
+        if (collisionStrategy === "skip") {
+          routinePlans.push({
+            slug: manifestRoutine.slug,
+            action: "skip",
+            plannedTitle: existing.title,
+            existingRoutineId: existing.id,
+            reason: "Existing routine title matched in project; skip strategy.",
+          });
+          continue;
+        }
+        // rename
+        const titles = existingTitlesByProject.get(manifestRoutine.projectSlug) ?? new Set<string>();
+        let renamed = manifestRoutine.title;
+        let idx = 2;
+        while (titles.has(renamed)) {
+          renamed = `${manifestRoutine.title} ${idx}`;
+          idx += 1;
+        }
+        titles.add(renamed);
+        existingTitlesByProject.set(manifestRoutine.projectSlug, titles);
+        routinePlans.push({
+          slug: manifestRoutine.slug,
+          action: "create",
+          plannedTitle: renamed,
+          existingRoutineId: existing.id,
+          reason: "Existing routine title matched in project; rename strategy.",
+        });
+      }
+    }
+
     const preview: CompanyPortabilityPreviewResult = {
       include,
       targetCompanyId,
@@ -1195,6 +1333,7 @@ export function companyPortabilityService(db: Db) {
         projectPlans,
         issuePlans,
         skillPlans,
+        routinePlans,
       },
       requiredSecrets: manifest.requiredSecrets ?? [],
       warnings,
@@ -1210,6 +1349,7 @@ export function companyPortabilityService(db: Db) {
       selectedProjects,
       selectedIssues,
       selectedSkills,
+      selectedRoutines,
     };
   }
 
@@ -1710,6 +1850,172 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
+    const resultRoutines: CompanyPortabilityImportResult["routines"] = [];
+    if (include.routines) {
+      const routineProjectSlugToId = new Map<string, string>();
+      const existingProjectRows = await projects.list(targetCompany.id);
+      for (const existing of existingProjectRows) {
+        routineProjectSlugToId.set(normalizeProjectUrlKey(existing.name) ?? existing.id, existing.id);
+      }
+      for (const [slug, id] of importedSlugToProjectId.entries()) {
+        routineProjectSlugToId.set(slug, id);
+      }
+
+      const routineAgentSlugToId = new Map<string, string>();
+      for (const [slug, id] of existingSlugToAgentId.entries()) routineAgentSlugToId.set(slug, id);
+      for (const [slug, id] of importedSlugToAgentId.entries()) routineAgentSlugToId.set(slug, id);
+
+      const actor = { userId: actorUserId ?? null };
+
+      for (const planRoutine of plan.preview.plan.routinePlans) {
+        const manifestRoutine = plan.selectedRoutines.find((r) => r.slug === planRoutine.slug);
+        if (!manifestRoutine) continue;
+        if (planRoutine.action === "skip") {
+          resultRoutines.push({
+            slug: planRoutine.slug,
+            id: planRoutine.existingRoutineId,
+            action: "skipped",
+            title: planRoutine.plannedTitle,
+            reason: planRoutine.reason,
+          });
+          continue;
+        }
+
+        const projectId = routineProjectSlugToId.get(manifestRoutine.projectSlug) ?? null;
+        if (!projectId) {
+          warnings.push({
+            kind: "skipped_update",
+            message: `Routine "${manifestRoutine.slug}" references project slug "${manifestRoutine.projectSlug}", but that project was not found; skipping.`,
+          });
+          resultRoutines.push({
+            slug: planRoutine.slug,
+            id: null,
+            action: "skipped",
+            title: planRoutine.plannedTitle,
+            reason: "Missing project.",
+          });
+          continue;
+        }
+
+        const assigneeAgentId = routineAgentSlugToId.get(manifestRoutine.assigneeAgentSlug) ?? null;
+        if (!assigneeAgentId) {
+          warnings.push({
+            kind: "skipped_update",
+            message: `Routine "${manifestRoutine.slug}" references agent slug "${manifestRoutine.assigneeAgentSlug}", but that agent was not found; skipping.`,
+          });
+          resultRoutines.push({
+            slug: planRoutine.slug,
+            id: null,
+            action: "skipped",
+            title: planRoutine.plannedTitle,
+            reason: "Missing assignee agent.",
+          });
+          continue;
+        }
+
+        const routinePatch = {
+          projectId,
+          title: planRoutine.plannedTitle,
+          description: manifestRoutine.description ?? null,
+          assigneeAgentId,
+          priority: manifestRoutine.priority,
+          status: manifestRoutine.status,
+          concurrencyPolicy: manifestRoutine.concurrencyPolicy,
+          catchUpPolicy: manifestRoutine.catchUpPolicy,
+          variables: manifestRoutine.variables,
+        };
+
+        let routineId: string | null = null;
+        let action: "created" | "updated" = "created";
+        if (planRoutine.action === "update" && planRoutine.existingRoutineId) {
+          const updated = await routines.update(
+            planRoutine.existingRoutineId,
+            routinePatch as Parameters<typeof routines.update>[1],
+            actor,
+          );
+          if (updated) {
+            routineId = updated.id;
+            action = "updated";
+          }
+        } else {
+          const created = await routines.create(
+            targetCompany.id,
+            routinePatch as Parameters<typeof routines.create>[1],
+            actor,
+          );
+          routineId = created.id;
+          action = "created";
+        }
+
+        if (!routineId) {
+          warnings.push({
+            kind: "skipped_update",
+            message: `Skipped routine "${manifestRoutine.slug}" \u2014 update target not found.`,
+          });
+          resultRoutines.push({
+            slug: planRoutine.slug,
+            id: null,
+            action: "skipped",
+            title: planRoutine.plannedTitle,
+            reason: "Existing target routine not found.",
+          });
+          continue;
+        }
+
+        for (const trigger of manifestRoutine.triggers) {
+          try {
+            if (trigger.kind === "schedule") {
+              await routines.createTrigger(
+                routineId,
+                {
+                  kind: "schedule",
+                  label: trigger.label ?? null,
+                  cronExpression: trigger.cronExpression ?? "",
+                  timezone: trigger.timezone ?? "UTC",
+                },
+                actor,
+              );
+            } else if (trigger.kind === "webhook") {
+              await routines.createTrigger(
+                routineId,
+                {
+                  kind: "webhook",
+                  label: trigger.label ?? null,
+                  ...(trigger.signingMode ? { signingMode: trigger.signingMode } : {}),
+                  ...(typeof trigger.replayWindowSec === "number"
+                    ? { replayWindowSec: trigger.replayWindowSec }
+                    : {}),
+                },
+                actor,
+              );
+            } else {
+              await routines.createTrigger(
+                routineId,
+                {
+                  kind: "api",
+                  label: trigger.label ?? null,
+                },
+                actor,
+              );
+            }
+          } catch (err) {
+            warnings.push({
+              kind: "link_failed",
+              message: `Failed to create ${trigger.kind} trigger for routine "${manifestRoutine.slug}": ${(err as Error).message}`,
+            });
+          }
+        }
+
+        resultRoutines.push({
+          slug: planRoutine.slug,
+          id: routineId,
+          action,
+          title: planRoutine.plannedTitle,
+          reason: planRoutine.reason,
+        });
+      }
+    }
+
     return {
       company: {
         id: targetCompany.id,
@@ -1720,6 +2026,7 @@ export function companyPortabilityService(db: Db) {
       projects: resultProjects,
       issues: resultIssues,
       skills: resultSkills,
+      routines: resultRoutines,
       requiredSecrets: sourceManifest.requiredSecrets ?? [],
       warnings,
     };

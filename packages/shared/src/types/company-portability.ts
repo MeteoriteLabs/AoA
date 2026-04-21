@@ -4,6 +4,7 @@ export interface CompanyPortabilityInclude {
   projects: boolean;
   issues: boolean;
   skills: boolean;
+  routines: boolean;
 }
 
 export interface CompanyPortabilitySecretRequirement {
@@ -79,6 +80,41 @@ export interface CompanyPortabilityProjectManifestEntry {
   metadata?: Record<string, unknown> | null;
 }
 
+export interface CompanyPortabilityRoutineTriggerManifestEntry {
+  kind: "schedule" | "webhook" | "api";
+  label: string | null;
+  enabled: boolean;
+  cronExpression?: string | null;
+  timezone?: string | null;
+  signingMode?: "bearer" | "hmac_sha256" | null;
+  replayWindowSec?: number | null;
+  publicId?: string | null;
+}
+
+export interface CompanyPortabilityRoutineVariableManifestEntry {
+  name: string;
+  label: string | null;
+  type: "text" | "textarea" | "number" | "boolean" | "select";
+  defaultValue: string | number | boolean | null;
+  required: boolean;
+  options: string[];
+}
+
+export interface CompanyPortabilityRoutineManifestEntry {
+  slug: string;
+  title: string;
+  description?: string | null;
+  status: "active" | "paused" | "archived";
+  priority: string;
+  concurrencyPolicy: "coalesce_if_active" | "always_enqueue" | "skip_if_active";
+  catchUpPolicy: "skip_missed" | "enqueue_missed_with_cap";
+  projectSlug: string;
+  assigneeAgentSlug: string;
+  variables: CompanyPortabilityRoutineVariableManifestEntry[];
+  triggers: CompanyPortabilityRoutineTriggerManifestEntry[];
+  metadata?: Record<string, unknown> | null;
+}
+
 export interface CompanyPortabilityIssueManifestEntry {
   slug: string;
   title: string;
@@ -111,6 +147,7 @@ export interface CompanyPortabilityManifest {
   projects?: CompanyPortabilityProjectManifestEntry[];
   issues?: CompanyPortabilityIssueManifestEntry[];
   skills?: CompanyPortabilitySkillManifestEntry[];
+  routines?: CompanyPortabilityRoutineManifestEntry[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];
 }
 
@@ -197,6 +234,14 @@ export interface CompanyPortabilityPreviewIssuePlan {
   reason: string | null;
 }
 
+export interface CompanyPortabilityPreviewRoutinePlan {
+  slug: string;
+  action: "create" | "update" | "skip";
+  plannedTitle: string;
+  existingRoutineId: string | null;
+  reason: string | null;
+}
+
 export interface CompanyPortabilityPreviewSkillPlan {
   key: string;
   slug: string;
@@ -219,6 +264,7 @@ export interface CompanyPortabilityPreviewResult {
     projectPlans: CompanyPortabilityPreviewProjectPlan[];
     issuePlans: CompanyPortabilityPreviewIssuePlan[];
     skillPlans: CompanyPortabilityPreviewSkillPlan[];
+    routinePlans: CompanyPortabilityPreviewRoutinePlan[];
   };
   requiredSecrets: CompanyPortabilitySecretRequirement[];
   warnings: ImportWarning[];
@@ -261,6 +307,13 @@ export interface CompanyPortabilityImportResult {
     id: string | null;
     action: "created" | "updated" | "skipped";
     name: string;
+    reason: string | null;
+  }[];
+  routines: {
+    slug: string;
+    id: string | null;
+    action: "created" | "updated" | "skipped";
+    title: string;
     reason: string | null;
   }[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];

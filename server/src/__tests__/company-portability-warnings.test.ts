@@ -58,13 +58,13 @@ describe("company-portability warnings", () => {
   it("returns warning for unknown top-level section in manifest", async () => {
     const manifest = {
       ...baseManifest(),
-      routines: [{ key: "eng" }],
+      legacyBriefs: [{ key: "eng" }],
     };
     const preview = await svc.previewImport(buildInlineSource(manifest));
     expect(preview.warnings).toContainEqual(
       expect.objectContaining({
         kind: "unknown_section",
-        section: "routines",
+        section: "legacyBriefs",
         count: 1,
       }),
     );
@@ -98,11 +98,11 @@ describe("company-portability warnings", () => {
   it("importBundle propagates warnings from preview step", async () => {
     const manifest = {
       ...baseManifest(),
-      routines: [{ key: "some-routine" }],
+      legacyBriefs: [{ key: "some-brief" }],
     };
     const result = await svc.importBundle(buildInlineSource(manifest), "user-1");
     expect(result.warnings.length).toBeGreaterThan(0);
-    expect(result.warnings.some((w) => w.kind === "unknown_section" && w.section === "routines")).toBe(true);
+    expect(result.warnings.some((w) => w.kind === "unknown_section" && w.section === "legacyBriefs")).toBe(true);
   });
 
   it("no warnings for clean v1 bundle with only company + agents", async () => {
