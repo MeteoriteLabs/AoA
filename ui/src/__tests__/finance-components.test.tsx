@@ -9,6 +9,9 @@ import type {
 import { BudgetPolicyCard } from "../components/finance/BudgetPolicyCard";
 import { BudgetIncidentCard } from "../components/finance/BudgetIncidentCard";
 import { BudgetSidebarMarker } from "../components/finance/BudgetSidebarMarker";
+import { QuotaBar } from "../components/finance/QuotaBar";
+import { ProviderQuotaCard } from "../components/finance/ProviderQuotaCard";
+import type { ProviderQuotaWindow } from "../api/quotas";
 
 const budgetsOverviewMock = vi.fn();
 const resolveIncidentMock = vi.fn();
@@ -207,5 +210,155 @@ describe("BudgetSidebarMarker", () => {
     renderWithProviders(<BudgetSidebarMarker />);
     const marker = await screen.findByTestId("budget-sidebar-marker");
     expect(marker).toHaveAttribute("data-tone", "hard");
+  });
+});
+
+describe("QuotaBar", () => {
+  it("renders label, valueLabel, and percentage", () => {
+    renderWithProviders(
+      <QuotaBar label="5h window" used={50} limit={100} valueLabel="50 / 100 msgs" />,
+    );
+    expect(screen.getByText("5h window")).toBeInTheDocument();
+    expect(screen.getByText("50 / 100 msgs")).toBeInTheDocument();
+    expect(screen.getByText("50%")).toBeInTheDocument();
+  });
+
+  it("derives default value label from used/limit when not provided", () => {
+    renderWithProviders(<QuotaBar label="24h" used={3} limit={10} />);
+    expect(screen.getByText("3 / 10")).toBeInTheDocument();
+    expect(screen.getByText("30%")).toBeInTheDocument();
+  });
+
+  it("uses healthy tone when percent < 70", () => {
+    renderWithProviders(<QuotaBar label="5h" used={50} limit={100} />);
+    const fill = screen.getByTestId("quota-bar-fill");
+    expect(fill).toHaveAttribute("data-tone", "healthy");
+    expect(fill.className).toMatch(/green/);
+    expect(fill).toHaveStyle({ width: "50%" });
+  });
+
+  it("uses warn tone when percent >= 70 and < 90", () => {
+    renderWithProviders(<QuotaBar label="5h" used={80} limit={100} />);
+    const fill = screen.getByTestId("quota-bar-fill");
+    expect(fill).toHaveAttribute("data-tone", "warn");
+    expect(fill.className).toMatch(/amber|yellow/);
+  });
+
+  it("uses hard tone when percent >= 90", () => {
+    renderWithProviders(<QuotaBar label="5h" used={95} limit={100} />);
+    const fill = screen.getByTestId("quota-bar-fill");
+    expect(fill).toHaveAttribute("data-tone", "hard");
+    expect(fill.className).toMatch(/red/);
+  });
+
+  it("visually clamps fill width to 100% when over-limit", () => {
+    renderWithProviders(<QuotaBar label="5h" used={150} limit={100} />);
+    const fill = screen.getByTestId("quota-bar-fill");
+    expect(fill).toHaveStyle({ width: "100%" });
+    expect(fill).toHaveAttribute("data-tone", "hard");
+    expect(screen.getByText("150%")).toBeInTheDocument();
+  });
+
+  it("shows 0% without crashing when limit is 0", () => {
+    renderWithProviders(<QuotaBar label="5h" used={0} limit={0} />);
+    expect(screen.getByText("0%")).toBeInTheDocument();
+    const fill = screen.getByTestId("quota-bar-fill");
+    expect(fill).toHaveStyle({ width: "0%" });
+  });
+});
+
+describe("ProviderQuotaCard", () => {
+  function makeWindow(overrides: Partial<ProviderQuotaWindow> = {}): ProviderQuotaWindow {
+    return {
+      id: "qw-1",
+      companyId: "comp-1",
+      provider: "anthropic",
+      model: null,
+      windowKind: "5h",
+      label: "5h",
+      limitValue: 100,
+      usedValue: 30,
+      usedPercent: 30,
+      valueLabel: "30 / 100 msgs",
+      resetAt: null,
+      lastUpdatedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      ...overrides,
+    };
+  }
+
+  it("renders provider name capitalized and one bar per window", () => {
+    renderWithProviders(
+      <ProviderQuotaCard
+        provider="anthropic"
+        windows={[
+          makeWindow({ windowKind: "5h", label: "5h" }),
+          makeWindow({ id: "qw-2", windowKind: "24h", label: "24h", usedPercent: 85 }),
+          makeWindow({ id: "qw-3", windowKind: "7d", label: "7d", usedPercent: 12 }),
+        ]}
+        lastUpdatedAt={new Date().toISOString()}
+      />,
+    );
+    expect(screen.getByText(/anthropic/i)).toBeInTheDocument();
+    expect(screen.getAllByTestId("quota-bar-fill")).toHaveLength(3);
+  });
+
+  it("shows relative last-updated time", () => {
+    const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+    renderWithProviders(
+      <ProviderQuotaCard
+        provider="anthropic"
+        windows={[makeWindow()]}
+        lastUpdatedAt={fiveMinAgo}
+      />,
+    );
+    expect(screen.getByText(/5m ago/i)).toBeInTheDocument();
+  });
+
+  it("marks data as stale when older than 10 minutes", () => {
+    const stale = new Date(Date.now() - 15 * 60_000).toISOString();
+    renderWithProviders(
+      <ProviderQuotaCard
+        provider="anthropic"
+        windows={[makeWindow()]}
+        lastUpdatedAt={stale}
+      />,
+    );
+    const freshness = screen.getByTestId("quota-freshness");
+    expect(freshness).toHaveAttribute("data-stale", "true");
+  });
+
+  it("fires onRefresh when Refresh button clicked", () => {
+    const onRefresh = vi.fn();
+    renderWithProviders(
+      <ProviderQuotaCard
+        provider="anthropic"
+        windows={[makeWindow()]}
+        lastUpdatedAt={new Date().toISOString()}
+        onRefresh={onRefresh}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables Refresh button while isRefreshing", () => {
+    renderWithProviders(
+      <ProviderQuotaCard
+        provider="anthropic"
+        windows={[makeWindow()]}
+        lastUpdatedAt={new Date().toISOString()}
+        onRefresh={() => {}}
+        isRefreshing
+      />,
+    );
+    expect(screen.getByRole("button", { name: /refresh/i })).toBeDisabled();
+  });
+
+  it("renders empty state when no windows and never refreshed", () => {
+    renderWithProviders(
+      <ProviderQuotaCard provider="anthropic" windows={[]} lastUpdatedAt={null} />,
+    );
+    expect(screen.getByText(/no quota data/i)).toBeInTheDocument();
   });
 });

@@ -135,6 +135,9 @@ import { BackupsTab } from "@/components/settings/BackupsTab";
 import { HeartbeatsTabView } from "@/components/settings/HeartbeatsTab";
 import { BudgetPolicyCard } from "@/components/finance/BudgetPolicyCard";
 import { BudgetIncidentCard } from "@/components/finance/BudgetIncidentCard";
+import { QuotaBar } from "@/components/finance/QuotaBar";
+import { ProviderQuotaCard } from "@/components/finance/ProviderQuotaCard";
+import type { ProviderQuotaWindow } from "@/api/quotas";
 import type { BudgetPolicySummary, BudgetIncident } from "@paperclipai/shared";
 
 /* ------------------------------------------------------------------ */
@@ -1362,6 +1365,11 @@ export function DesignGuide() {
       <BudgetComponentsShowcase />
 
       {/* ============================================================ */}
+      {/*  QUOTA COMPONENTS                                             */}
+      {/* ============================================================ */}
+      <QuotaComponentsShowcase />
+
+      {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
       <Section title="Keyboard Shortcuts">
@@ -2065,6 +2073,86 @@ function BudgetComponentsShowcase() {
               Over · Budget 112% used
             </div>
           </div>
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Quota Components showcase                                          */
+/* ------------------------------------------------------------------ */
+
+function makeDemoQuotaWindow(
+  overrides: Partial<ProviderQuotaWindow> = {},
+): ProviderQuotaWindow {
+  return {
+    id: "qw-demo-1",
+    companyId: "comp-demo",
+    provider: "anthropic",
+    model: null,
+    windowKind: "5h",
+    label: "5h",
+    limitValue: 100,
+    usedValue: 20,
+    usedPercent: 20,
+    valueLabel: "20 / 100 msgs",
+    resetAt: null,
+    lastUpdatedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function QuotaComponentsShowcase() {
+  const freshTs = new Date().toISOString();
+  const staleTs = new Date(Date.now() - 42 * 60_000).toISOString();
+
+  return (
+    <Section title="Quota Components">
+      <p className="text-sm text-muted-foreground">
+        QuotaBar shows a single provider window's utilization with a
+        threshold-tinted fill. ProviderQuotaCard groups the 5h / 24h / 7d
+        windows for one provider and surfaces last-refreshed freshness. Used
+        on the Budget page's Quotas section.
+      </p>
+
+      <SubSection title="QuotaBar">
+        <div className="space-y-3 max-w-md">
+          <QuotaBar label="Healthy (5h)" used={20} limit={100} valueLabel="20 / 100 msgs" />
+          <QuotaBar label="Near-limit (24h)" used={75} limit={100} valueLabel="75 / 100 msgs" />
+          <QuotaBar label="Over-limit (7d)" used={95} limit={100} valueLabel="95 / 100 msgs" />
+          <QuotaBar label="Clamped at 100%+" used={150} limit={100} />
+        </div>
+      </SubSection>
+
+      <SubSection title="ProviderQuotaCard">
+        <div className="grid gap-4 md:grid-cols-2">
+          <ProviderQuotaCard
+            provider="anthropic"
+            windows={[
+              makeDemoQuotaWindow({ id: "q-5h", windowKind: "5h", label: "5h", usedValue: 20, usedPercent: 20, valueLabel: "20 / 100 msgs" }),
+              makeDemoQuotaWindow({ id: "q-24h", windowKind: "24h", label: "24h", usedValue: 180, limitValue: 300, usedPercent: 60, valueLabel: "180 / 300 msgs" }),
+              makeDemoQuotaWindow({ id: "q-7d", windowKind: "7d", label: "7d", usedValue: 600, limitValue: 2000, usedPercent: 30, valueLabel: "600 / 2000 msgs" }),
+            ]}
+            lastUpdatedAt={freshTs}
+            onRefresh={() => {}}
+          />
+          <ProviderQuotaCard
+            provider="openai"
+            windows={[
+              makeDemoQuotaWindow({ id: "q-o-5h", provider: "openai", windowKind: "5h", label: "5h", usedValue: 90, limitValue: 100, usedPercent: 90, valueLabel: "90 / 100 msgs" }),
+              makeDemoQuotaWindow({ id: "q-o-24h", provider: "openai", windowKind: "24h", label: "24h", usedValue: 240, limitValue: 300, usedPercent: 80, valueLabel: "240 / 300 msgs" }),
+            ]}
+            lastUpdatedAt={staleTs}
+            onRefresh={() => {}}
+          />
+          <ProviderQuotaCard
+            provider="google"
+            windows={[]}
+            lastUpdatedAt={null}
+            onRefresh={() => {}}
+          />
         </div>
       </SubSection>
     </Section>

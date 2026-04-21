@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DollarSign } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { costsApi } from "../api/costs";
 import { budgetsApi } from "../api/budgets";
-import { quotasApi } from "../api/quotas";
+import { quotasApi, type ProviderQuotaWindow } from "../api/quotas";
 import { financeApi } from "../api/finance";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "../components/EmptyState";
 import { BudgetPolicyCard } from "../components/finance/BudgetPolicyCard";
 import { BudgetIncidentCard } from "../components/finance/BudgetIncidentCard";
+import { ProviderQuotaCard } from "../components/finance/ProviderQuotaCard";
 import { formatCents } from "../lib/utils";
 
 // ─── Date range helpers ────────────────────────────────────────────────
@@ -99,7 +100,7 @@ export function Costs() {
     queryFn: () => budgetsApi.overview(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  useQuery({
+  const quotasQuery = useQuery({
     queryKey: ["quotas", selectedCompanyId],
     queryFn: () => quotasApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -210,6 +211,12 @@ export function Costs() {
       {/* Budgets (full-width when populated) */}
       <BudgetsSection overview={budgetOverviewQuery.data} />
 
+      {/* Quotas (full-width when populated) */}
+      <QuotasSection
+        companyId={selectedCompanyId}
+        windows={quotasQuery.data}
+      />
+
       {/* Remaining sections */}
       <div className="grid gap-4 md:grid-cols-2">
         <SectionPlaceholder
@@ -217,13 +224,82 @@ export function Costs() {
           description="Accounting model + Claude and Codex subscription utilization load here."
         />
         <SectionPlaceholder
-          title="Quotas"
-          description="Provider rate-limit windows load here."
-        />
-        <SectionPlaceholder
           title="Ledger"
           description="Finance events by biller, by kind, and over time load here."
         />
+      </div>
+    </div>
+  );
+}
+
+// ─── Quotas section ────────────────────────────────────────────────────
+function QuotasSection({
+  companyId,
+  windows,
+}: {
+  companyId: string;
+  windows: ProviderQuotaWindow[] | undefined;
+}) {
+  const queryClient = useQueryClient();
+  const refreshMutation = useMutation({
+    mutationFn: (provider: string) =>
+      // Map provider → adapterType. Built-in AoA adapters all support either
+      // anthropic or openai; unknown providers still trigger a full refresh.
+      quotasApi.refresh(companyId, {
+        adapterType:
+          provider === "anthropic"
+            ? "claude_api"
+            : provider === "openai"
+              ? "openai_api"
+              : undefined,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quotas", companyId] });
+    },
+  });
+
+  const grouped = useMemo(() => {
+    if (!windows) return [] as Array<{ provider: string; rows: ProviderQuotaWindow[]; lastUpdatedAt: string | null }>;
+    const byProvider = new Map<string, ProviderQuotaWindow[]>();
+    for (const w of windows) {
+      const bucket = byProvider.get(w.provider);
+      if (bucket) bucket.push(w);
+      else byProvider.set(w.provider, [w]);
+    }
+    return Array.from(byProvider.entries()).map(([provider, rows]) => {
+      const lastUpdatedAt = rows.reduce<string | null>((acc, r) => {
+        if (!acc) return r.lastUpdatedAt;
+        return new Date(r.lastUpdatedAt) > new Date(acc) ? r.lastUpdatedAt : acc;
+      }, null);
+      return { provider, rows, lastUpdatedAt };
+    });
+  }, [windows]);
+
+  if (!windows || grouped.length === 0) {
+    return (
+      <SectionPlaceholder
+        title="Quotas"
+        description="Provider rate-limit windows will appear here once an adapter reports quota usage."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold">Quotas</h3>
+      <div className="grid gap-3 md:grid-cols-2">
+        {grouped.map((g) => (
+          <ProviderQuotaCard
+            key={g.provider}
+            provider={g.provider}
+            windows={g.rows}
+            lastUpdatedAt={g.lastUpdatedAt}
+            onRefresh={() => refreshMutation.mutate(g.provider)}
+            isRefreshing={
+              refreshMutation.isPending && refreshMutation.variables === g.provider
+            }
+          />
+        ))}
       </div>
     </div>
   );
