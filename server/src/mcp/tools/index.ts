@@ -1,14 +1,16 @@
 import { ISSUE_STATUSES } from "@paperclipai/shared";
 import { readToolHandlers } from "./read-tools.js";
 import { writeToolHandlers } from "./write-tools.js";
+import { documentToolHandlers } from "./document-tools.js";
 import type { ToolHandler } from "./types.js";
 
-export { readToolHandlers, writeToolHandlers };
+export { readToolHandlers, writeToolHandlers, documentToolHandlers };
 export * from "./types.js";
 
 export const toolHandlers: Record<string, ToolHandler> = {
   ...readToolHandlers,
   ...writeToolHandlers,
+  ...documentToolHandlers,
 };
 
 export const TOOL_DEFINITIONS = [
@@ -214,6 +216,64 @@ export const TOOL_DEFINITIONS = [
         fileUrl: { type: "string" },
       },
       required: ["artifactId", "sourceDetail"],
+    },
+  },
+  {
+    name: "upsert-task-document",
+    description:
+      "Create or update the task's document (markdown). If the task already has a document artifact, appends a new immutable version; otherwise creates an artifact of type 'document' and links it to the task. Maps Paperclip's upsert-issue-document to AoA's artifact subsystem.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: { type: "string" },
+        title: { type: "string" },
+        body: { type: "string" },
+        changeSummary: { type: "string" },
+        baseRevisionId: { type: "string" },
+      },
+      required: ["taskId", "body"],
+    },
+  },
+  {
+    name: "list-task-documents",
+    description:
+      "List document artifacts attached to a task (0 or 1 — AoA has 1:1 task↔artifact)",
+    inputSchema: {
+      type: "object",
+      properties: { taskId: { type: "string" } },
+      required: ["taskId"],
+    },
+  },
+  {
+    name: "get-task-document",
+    description: "Return the task's document artifact with its latest version (content + metadata)",
+    inputSchema: {
+      type: "object",
+      properties: { taskId: { type: "string" } },
+      required: ["taskId"],
+    },
+  },
+  {
+    name: "list-task-document-revisions",
+    description:
+      "List all immutable revisions of the task's document artifact, ordered ascending by version number",
+    inputSchema: {
+      type: "object",
+      properties: { taskId: { type: "string" } },
+      required: ["taskId"],
+    },
+  },
+  {
+    name: "restore-task-document-revision",
+    description:
+      "Create a NEW document artifact version whose content is copied from the specified older revision. The older revision is never mutated (preserves Decisions #43/#45 — artifact versions are immutable).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: { type: "string" },
+        revisionId: { type: "string" },
+      },
+      required: ["taskId", "revisionId"],
     },
   },
 ];

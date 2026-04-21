@@ -449,3 +449,19 @@ New table: `internal_agent_runs` with triggerType (conversation / proactive / ev
 - Callers with write-permission role can bypass Discussion for direct task creation
 
 **Original wording (for reference):** "MCP inbound always routes through Discussion pipeline — never create raw tasks from MCP input."
+
+---
+
+## Decision (annotation, 2026-04-21): MCP `upsert-task-document` ≡ artifact operations
+
+Paperclip's `paperclipUpsertIssueDocument` tool wraps a markdown body (identified by a `key`) attached to an issue, with an append-only revision history. AoA's equivalent substrate is the existing `artifacts` + `artifact_versions` subsystem, with a 1:1 link from task to artifact via `issues.artifactId`. Phase C (Task C.4) maps Paperclip's document tool surface onto AoA's artifact subsystem:
+
+- `upsert-task-document` → if the task's artifact exists and is of type `document`, add a new immutable version; else create a new artifact of type `document` and link it via `issues.artifactId`
+- `list-task-documents` → return the task's document artifact (0 or 1 item — AoA has a single artifact per task, unlike Paperclip's per-key multiplicity)
+- `get-task-document` → return the artifact + its latest version (content + metadata)
+- `list-task-document-revisions` → return all artifact versions ordered ascending by `versionNumber` (immutable history)
+- `restore-task-document-revision` → create a **new** artifact version whose content is copied from the specified older version; the old version is **never mutated** (preserves Decisions #43 / #45 — artifact versions are immutable)
+
+**Surface divergence from Paperclip:** AoA does not accept Paperclip's `key` parameter because its data model is 1:1 task↔artifact. If Paperclip-style per-key multiplicity is ever needed, it would require a schema change (e.g., a `task_documents` junction table), not a tool-surface change.
+
+**RBAC:** All five tools enforce company isolation (cross-company access returns 404) and — for scoped users — project-scope membership via the task's `projectId`. Writes additionally require `permissionsSvc.canAccessEntity("artifact", "update", { departmentId: task.projectId })`.
