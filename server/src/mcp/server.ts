@@ -1,14 +1,6 @@
 import { Router, type Request } from "express";
-import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues, userRoles, projectGoals, agentProjects } from "@paperclipai/db";
-import {
-  createMcpApiKeySchema,
-  ISSUE_STATUSES,
-  mcpArtifactVersionSchema,
-  mcpDebriefSchema,
-  updateMcpSettingsSchema,
-} from "@paperclipai/shared";
+import { createMcpApiKeySchema, updateMcpSettingsSchema } from "@paperclipai/shared";
 import { z } from "zod";
 import { forbidden, unauthorized } from "../errors.js";
 import {
@@ -26,6 +18,22 @@ import {
   projectService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../routes/authz.js";
+import {
+  TOOL_DEFINITIONS,
+  toolHandlers,
+  type McpUserScope,
+  type ToolContext,
+  type ToolServices,
+} from "./tools/index.js";
+import {
+  canAccessProjectScopedEntity,
+  filterArtifactsForScope,
+  filterGoalsForScope,
+  filterMemoryForScope,
+  resolveScopedAgentIdsDefault,
+  resolveUserRole,
+  resolveUserScope,
+} from "./tools/scope.js";
 
 const JSON_RPC_VERSION = "2.0";
 const MCP_PROTOCOL_VERSION = "2024-11-05";
@@ -51,10 +59,6 @@ const callToolSchema = z.object({
   name: z.string().min(1),
   arguments: z.record(z.unknown()).optional(),
 });
-
-type McpUserScope =
-  | { kind: "founder"; userId: string }
-  | { kind: "scoped"; userId: string; projectIds: Set<string> };
 
 type RateWindow = { count: number; resetAt: number };
 
@@ -155,136 +159,6 @@ function protocolAuthActor(req: Request) {
   return null;
 }
 
-async function resolveUserScope(db: Db, companyId: string, userId: string): Promise<McpUserScope> {
-  const roles = await db
-    .select()
-    .from(userRoles)
-    .where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
-
-  if (roles.length === 0 || roles.some((role) => role.role === "founder")) {
-    return { kind: "founder", userId };
-  }
-
-  const projectIds = new Set(roles.map((role) => role.projectId).filter((id): id is string => Boolean(id)));
-  return { kind: "scoped", userId, projectIds };
-}
-
-async function resolveUserRole(db: Db, companyId: string, userId: string): Promise<string> {
-  const roles = await db
-    .select()
-    .from(userRoles)
-    .where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
-  if (roles.length === 0) return "team_member";
-  if (roles.some((role) => role.role === "founder")) return "founder";
-  if (roles.some((role) => role.role === "team_lead")) return "team_lead";
-  return "team_member";
-}
-
-async function resolveScopedAgentIdsDefault(
-  db: Db,
-  companyId: string,
-  scope: McpUserScope,
-): Promise<Set<string> | null> {
-  if (scope.kind === "founder") return null;
-  if (scope.projectIds.size === 0) return new Set();
-  const rows = await db
-    .select({ agentId: agentProjects.agentId })
-    .from(agentProjects)
-    .where(
-      and(
-        eq(agentProjects.companyId, companyId),
-        inArray(agentProjects.projectId, [...scope.projectIds]),
-      ),
-    );
-  return new Set(rows.map((row) => row.agentId));
-}
-
-function canAccessProjectScopedEntity(scope: McpUserScope, projectId: string | null | undefined) {
-  if (scope.kind === "founder") return true;
-  return Boolean(projectId && scope.projectIds.has(projectId));
-}
-
-async function goalProjectMap(db: Db, goalIds: string[]) {
-  if (goalIds.length === 0) return new Map<string, string[]>();
-  const rows = await db
-    .select({
-      goalId: projectGoals.goalId,
-      projectId: projectGoals.projectId,
-    })
-    .from(projectGoals)
-    .where(inArray(projectGoals.goalId, goalIds));
-  const map = new Map<string, string[]>();
-  for (const row of rows) {
-    const current = map.get(row.goalId) ?? [];
-    current.push(row.projectId);
-    map.set(row.goalId, current);
-  }
-  return map;
-}
-
-async function artifactProjectMap(db: Db, artifactIds: string[]) {
-  if (artifactIds.length === 0) return new Map<string, string | null>();
-  const rows = await db
-    .select({
-      artifactId: issues.artifactId,
-      projectId: issues.projectId,
-    })
-    .from(issues)
-    .where(inArray(issues.artifactId, artifactIds));
-  const map = new Map<string, string | null>();
-  for (const row of rows) {
-    if (row.artifactId) {
-      map.set(row.artifactId, row.projectId ?? null);
-    }
-  }
-  return map;
-}
-
-async function memoryTaskProjectMap(db: Db, taskIds: string[]) {
-  if (taskIds.length === 0) return new Map<string, string | null>();
-  const rows = await db
-    .select({
-      id: issues.id,
-      projectId: issues.projectId,
-    })
-    .from(issues)
-    .where(inArray(issues.id, taskIds));
-  return new Map(rows.map((row) => [row.id, row.projectId ?? null]));
-}
-
-async function filterGoalsForScope(db: Db, scope: McpUserScope, rows: Array<Record<string, any>>) {
-  if (scope.kind === "founder") return rows;
-  const projectMap = await goalProjectMap(db, rows.map((row) => row.id));
-  return rows.filter((row) => (projectMap.get(row.id) ?? []).some((projectId) => scope.projectIds.has(projectId)));
-}
-
-async function filterMemoryForScope(db: Db, scope: McpUserScope, rows: Array<Record<string, any>>) {
-  if (scope.kind === "founder") return rows;
-  const goalIds = rows.map((row) => row.goalId).filter((id): id is string => Boolean(id));
-  const taskIds = rows.map((row) => row.taskId).filter((id): id is string => Boolean(id));
-  const [goalProjects, taskProjects] = await Promise.all([
-    goalProjectMap(db, [...new Set(goalIds)]),
-    memoryTaskProjectMap(db, [...new Set(taskIds)]),
-  ]);
-  return rows.filter((row) => {
-    if (canAccessProjectScopedEntity(scope, row.departmentId)) return true;
-    if (canAccessProjectScopedEntity(scope, row.projectId)) return true;
-    if (row.goalId && (goalProjects.get(row.goalId) ?? []).some((projectId) => scope.projectIds.has(projectId))) {
-      return true;
-    }
-    if (row.taskId && canAccessProjectScopedEntity(scope, taskProjects.get(row.taskId) ?? null)) {
-      return true;
-    }
-    return false;
-  });
-}
-
-async function filterArtifactsForScope(db: Db, scope: McpUserScope, rows: Array<Record<string, any>>) {
-  if (scope.kind === "founder") return rows;
-  const projectMap = await artifactProjectMap(db, rows.map((row) => row.id));
-  return rows.filter((row) => canAccessProjectScopedEntity(scope, projectMap.get(row.id) ?? null));
-}
-
 function parseResourceUri(uri: string) {
   const normalized = uri.replace(/^aoa:\/\//, "");
   const parts = normalized.split("/").filter(Boolean);
@@ -320,26 +194,6 @@ async function ensureProtocolAccess(
   };
 }
 
-function assertScopedProjectAccess(scope: McpUserScope, projectId: string | null | undefined, label: string) {
-  if (scope.kind === "founder") return;
-  if (!projectId) return;
-  if (!scope.projectIds.has(projectId)) {
-    throw forbidden(`${label} is outside your scope`);
-  }
-}
-
-async function assertScopedGoalAccess(
-  db: Db,
-  scope: McpUserScope,
-  goalId: string | null | undefined,
-) {
-  if (!goalId || scope.kind === "founder") return;
-  const projects = (await goalProjectMap(db, [goalId])).get(goalId) ?? [];
-  if (projects.length === 0 || !projects.some((projectId) => scope.projectIds.has(projectId))) {
-    throw forbidden("Goal is outside your scope");
-  }
-}
-
 export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   const router = Router();
   const issuesSvc = deps.issuesSvc ?? issueService(db);
@@ -353,9 +207,27 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   const permissionsSvc = deps.permissionsSvc ?? permissionService(db);
   const agentsSvc = deps.agentsSvc ?? agentService(db);
   const projectsSvc = deps.projectsSvc ?? projectService(db);
-  const resolveRole = deps.resolveRole ?? ((companyId: string, userId: string) => resolveUserRole(db, companyId, userId));
+  const resolveRole =
+    deps.resolveRole ??
+    ((companyId: string, userId: string) => resolveUserRole(db, companyId, userId));
   const resolveScopedAgentIds =
-    deps.resolveScopedAgentIds ?? ((companyId: string, scope: McpUserScope) => resolveScopedAgentIdsDefault(db, companyId, scope));
+    deps.resolveScopedAgentIds ??
+    ((companyId: string, scope: McpUserScope) =>
+      resolveScopedAgentIdsDefault(db, companyId, scope));
+
+  const services: ToolServices = {
+    issuesSvc,
+    goalsSvc,
+    memorySvc,
+    artifactsSvc,
+    debriefsSvc,
+    extractionSvc,
+    companiesSvc,
+    mcpSvc,
+    permissionsSvc,
+    agentsSvc,
+    projectsSvc,
+  };
 
   router.get("/companies/:companyId/mcp/status", async (req, res) => {
     assertBoard(req);
@@ -614,229 +486,7 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
 
       if (method === "tools/list") {
         res.json(
-          jsonRpcResult(requestBody.id ?? null, {
-            tools: [
-              {
-                name: "me",
-                description: "Return the authenticated caller's identity and role",
-                inputSchema: {
-                  type: "object",
-                  properties: {},
-                },
-              },
-              {
-                name: "list-agents",
-                description: "List agents in the caller's company, scoped by RBAC",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    status: { type: "string" },
-                  },
-                },
-              },
-              {
-                name: "get-agent",
-                description: "Get a single agent by id (RBAC scoped)",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    agentId: { type: "string" },
-                  },
-                  required: ["agentId"],
-                },
-              },
-              {
-                name: "list-projects",
-                description: "List projects (departments + projects) in the caller's company",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    type: { type: "string", enum: ["department", "project"] },
-                  },
-                },
-              },
-              {
-                name: "get-project",
-                description: "Get a single project by id (RBAC scoped)",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    projectId: { type: "string" },
-                  },
-                  required: ["projectId"],
-                },
-              },
-              {
-                name: "list-tasks",
-                description:
-                  "List tasks in the caller's company with RBAC scoping. Supports filters: status, projectId, assigneeAgentId, assigneeUserId, touchedByUserId, unreadForUserId, labelId, q",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    status: { type: "string" },
-                    projectId: { type: "string" },
-                    assigneeAgentId: { type: "string" },
-                    assigneeUserId: { type: "string" },
-                    touchedByUserId: { type: "string" },
-                    unreadForUserId: { type: "string" },
-                    labelId: { type: "string" },
-                    q: { type: "string" },
-                  },
-                },
-              },
-              {
-                name: "get-heartbeat-context",
-                description:
-                  "Return a compact { task, recentComments } payload for a task (last 10 comments)",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    taskId: { type: "string" },
-                  },
-                  required: ["taskId"],
-                },
-              },
-              {
-                name: "list-task-comments",
-                description: "List comments on a task (RBAC scoped)",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    taskId: { type: "string" },
-                  },
-                  required: ["taskId"],
-                },
-              },
-              {
-                name: "get-task-comment",
-                description: "Get a single task comment by id (RBAC scoped via its task)",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    commentId: { type: "string" },
-                  },
-                  required: ["commentId"],
-                },
-              },
-              {
-                name: "debrief-push",
-                description: "Push content into the Debrief pipeline",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    content: { type: "string" },
-                    title: { type: "string" },
-                    departmentId: { type: "string" },
-                    projectId: { type: "string" },
-                    source: { type: "object" },
-                  },
-                  required: ["content"],
-                },
-              },
-              {
-                name: "suggest-memory",
-                description: "Create a pending memory suggestion",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    title: { type: "string" },
-                    content: { type: "string" },
-                    category: { type: "string" },
-                    tags: { type: "array", items: { type: "string" } },
-                    departmentId: { type: "string" },
-                    projectId: { type: "string" },
-                    layer: { type: "string" },
-                    priority: { type: "number" },
-                    goalId: { type: "string" },
-                    taskId: { type: "string" },
-                  },
-                  required: ["title", "content", "category"],
-                },
-              },
-              {
-                name: "update-task-status",
-                description: "Update a task status with permission checks",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    taskId: { type: "string" },
-                    status: { type: "string", enum: [...ISSUE_STATUSES] },
-                  },
-                  required: ["taskId", "status"],
-                },
-              },
-              {
-                name: "create-task",
-                description:
-                  "Create a task directly in the caller's company (RBAC scoped). Does NOT route through Discussion; use debrief-push for unstructured content extraction (Decision #14 revised)",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    title: { type: "string" },
-                    description: { type: "string" },
-                    projectId: { type: "string" },
-                    goalId: { type: "string" },
-                    parentId: { type: "string" },
-                    status: { type: "string", enum: [...ISSUE_STATUSES] },
-                    priority: { type: "string" },
-                    assigneeAgentId: { type: "string" },
-                    assigneeUserId: { type: "string" },
-                    labelIds: { type: "array", items: { type: "string" } },
-                  },
-                  required: ["title"],
-                },
-              },
-              {
-                name: "update-task",
-                description:
-                  "Update a task's fields (title, description, status, priority, assignee, etc.) with RBAC checks",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    taskId: { type: "string" },
-                    title: { type: "string" },
-                    description: { type: "string" },
-                    projectId: { type: "string" },
-                    goalId: { type: "string" },
-                    status: { type: "string", enum: [...ISSUE_STATUSES] },
-                    priority: { type: "string" },
-                    assigneeAgentId: { type: "string" },
-                    assigneeUserId: { type: "string" },
-                    labelIds: { type: "array", items: { type: "string" } },
-                  },
-                  required: ["taskId"],
-                },
-              },
-              {
-                name: "add-task-comment",
-                description: "Add a comment to a task the caller can access",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    taskId: { type: "string" },
-                    body: { type: "string" },
-                  },
-                  required: ["taskId", "body"],
-                },
-              },
-              {
-                name: "attach-artifact-version",
-                description: "Add a new immutable version to an artifact",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    artifactId: { type: "string" },
-                    sourceDetail: { type: "string" },
-                    changelog: { type: "string" },
-                    parentVersionId: { type: "string" },
-                    content: { type: "string" },
-                    fileUrl: { type: "string" },
-                  },
-                  required: ["artifactId", "sourceDetail"],
-                },
-              },
-            ],
-          }),
+          jsonRpcResult(requestBody.id ?? null, { tools: TOOL_DEFINITIONS }),
         );
         return;
       }
@@ -844,497 +494,29 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
       if (method === "tools/call") {
         const params = callToolSchema.parse(requestBody.params);
         const args = params.arguments ?? {};
-
-        if (params.name === "me") {
-          const role = await resolveRole(companyId, protocolActor.userId);
-          res.json(
-            jsonRpcResult(
-              requestBody.id ?? null,
-              asToolContent({
-                userId: protocolActor.userId,
-                companyId,
-                role,
-              }),
-            ),
-          );
+        const handler = toolHandlers[params.name];
+        if (!handler) {
+          res.status(400).json(jsonRpcError(requestBody.id ?? null, -32601, "Tool not found"));
           return;
         }
-
-        if (params.name === "list-agents") {
-          const parsed = z.object({ status: z.string().optional() }).parse(args);
-          const allowedIds = await resolveScopedAgentIds(companyId, scope);
-          let rows = await agentsSvc.list(companyId, { includeTerminated: true });
-          if (allowedIds !== null) {
-            rows = rows.filter((row) => allowedIds.has(row.id));
-          }
-          if (parsed.status) {
-            rows = rows.filter((row) => row.status === parsed.status);
-          }
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(rows)));
-          return;
+        const ctx: ToolContext = {
+          db,
+          companyId,
+          actor: protocolActor,
+          scope,
+          services,
+          actorInfo: getActorInfo(req),
+          resolveRole,
+          resolveScopedAgentIds,
+        };
+        const result = await handler(ctx, args);
+        if (result.ok) {
+          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(result.data)));
+        } else {
+          res
+            .status(result.status)
+            .json(jsonRpcError(requestBody.id ?? null, result.code, result.message));
         }
-
-        if (params.name === "get-agent") {
-          const parsed = z.object({ agentId: z.string().min(1) }).parse(args);
-          const agent = await agentsSvc.getById(parsed.agentId);
-          if (!agent || agent.companyId !== companyId) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Agent not found"));
-            return;
-          }
-          const allowedIds = await resolveScopedAgentIds(companyId, scope);
-          if (allowedIds !== null && !allowedIds.has(agent.id)) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Agent not found"));
-            return;
-          }
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(agent)));
-          return;
-        }
-
-        if (params.name === "list-projects") {
-          const parsed = z
-            .object({ type: z.enum(["department", "project"]).optional() })
-            .parse(args);
-          let rows = await projectsSvc.list(
-            companyId,
-            parsed.type ? { type: parsed.type } : undefined,
-          );
-          if (scope.kind === "scoped") {
-            rows = rows.filter((row) => scope.projectIds.has(row.id));
-          }
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(rows)));
-          return;
-        }
-
-        if (params.name === "get-project") {
-          const parsed = z.object({ projectId: z.string().min(1) }).parse(args);
-          const project = await projectsSvc.getById(parsed.projectId);
-          if (!project || project.companyId !== companyId) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Project not found"));
-            return;
-          }
-          if (!canAccessProjectScopedEntity(scope, project.id)) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Project not found"));
-            return;
-          }
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(project)));
-          return;
-        }
-
-        if (params.name === "list-tasks") {
-          const parsed = z
-            .object({
-              status: z.string().optional(),
-              projectId: z.string().optional(),
-              assigneeAgentId: z.string().optional(),
-              assigneeUserId: z.string().optional(),
-              touchedByUserId: z.string().optional(),
-              unreadForUserId: z.string().optional(),
-              labelId: z.string().optional(),
-              q: z.string().optional(),
-            })
-            .parse(args);
-          if (parsed.projectId) {
-            assertScopedProjectAccess(scope, parsed.projectId, "Project");
-          }
-          const rows = await issuesSvc.list(companyId, parsed);
-          const filtered = rows.filter((row) => canAccessProjectScopedEntity(scope, row.projectId));
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(filtered)));
-          return;
-        }
-
-        if (params.name === "get-heartbeat-context") {
-          const parsed = z.object({ taskId: z.string().min(1) }).parse(args);
-          const task = await issuesSvc.getById(parsed.taskId);
-          if (
-            !task ||
-            task.companyId !== companyId ||
-            !canAccessProjectScopedEntity(scope, task.projectId)
-          ) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Task not found"));
-            return;
-          }
-          const comments = await issuesSvc.listComments(parsed.taskId);
-          const recentComments = comments.slice(0, 10);
-          res.json(
-            jsonRpcResult(
-              requestBody.id ?? null,
-              asToolContent({ task, recentComments }),
-            ),
-          );
-          return;
-        }
-
-        if (params.name === "list-task-comments") {
-          const parsed = z.object({ taskId: z.string().min(1) }).parse(args);
-          const task = await issuesSvc.getById(parsed.taskId);
-          if (
-            !task ||
-            task.companyId !== companyId ||
-            !canAccessProjectScopedEntity(scope, task.projectId)
-          ) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Task not found"));
-            return;
-          }
-          const comments = await issuesSvc.listComments(parsed.taskId);
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(comments)));
-          return;
-        }
-
-        if (params.name === "get-task-comment") {
-          const parsed = z.object({ commentId: z.string().min(1) }).parse(args);
-          const comment = await issuesSvc.getComment(parsed.commentId);
-          if (!comment || comment.companyId !== companyId) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Comment not found"));
-            return;
-          }
-          const task = await issuesSvc.getById(comment.issueId);
-          if (
-            !task ||
-            task.companyId !== companyId ||
-            !canAccessProjectScopedEntity(scope, task.projectId)
-          ) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Comment not found"));
-            return;
-          }
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(comment)));
-          return;
-        }
-
-        if (params.name === "debrief-push") {
-          const parsed = mcpDebriefSchema.parse(args);
-          assertScopedProjectAccess(scope, parsed.departmentId ?? null, "Department");
-          assertScopedProjectAccess(scope, parsed.projectId ?? null, "Project");
-          const actorInfo = getActorInfo(req);
-          const debrief = await debriefsSvc.create(companyId, {
-            title: parsed.title ?? null,
-            inputType: "mcp",
-            rawContent: parsed.content,
-            departmentId: parsed.departmentId ?? null,
-            projectId: parsed.projectId ?? null,
-            sourceInfo: parsed.source ?? null,
-            createdBy: actorInfo.actorId,
-          });
-          await logActivity(db, {
-            companyId,
-            actorType: actorInfo.actorType,
-            actorId: actorInfo.actorId,
-            agentId: actorInfo.agentId,
-            runId: actorInfo.runId,
-            action: "debrief.created",
-            entityType: "debrief",
-            entityId: debrief.id,
-            details: { title: debrief.title, inputType: "mcp" },
-          });
-          void extractionSvc.extractFromDebrief(companyId, debrief.id).catch(() => {});
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent({ debriefId: debrief.id, status: "processing" })));
-          return;
-        }
-
-        if (params.name === "suggest-memory") {
-          const parsed = z
-            .object({
-              title: z.string().min(1),
-              content: z.string().min(1),
-              category: z.string().min(1),
-              tags: z.array(z.string()).optional(),
-              departmentId: z.string().uuid().nullable().optional(),
-              projectId: z.string().uuid().nullable().optional(),
-              layer: z.string().nullable().optional(),
-              priority: z.number().int().optional(),
-              goalId: z.string().uuid().nullable().optional(),
-              taskId: z.string().uuid().nullable().optional(),
-            })
-            .parse(args);
-
-          assertScopedProjectAccess(scope, parsed.departmentId ?? null, "Department");
-          assertScopedProjectAccess(scope, parsed.projectId ?? null, "Project");
-          await assertScopedGoalAccess(db, scope, parsed.goalId ?? null);
-
-          let linkedTask: Awaited<ReturnType<typeof issuesSvc.getById>> | null = null;
-          if (parsed.taskId) {
-            linkedTask = await issuesSvc.getById(parsed.taskId);
-            if (!linkedTask || linkedTask.companyId !== companyId) {
-              res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Task not found"));
-              return;
-            }
-            assertScopedProjectAccess(scope, linkedTask.projectId, "Task");
-          }
-
-          const memoryDepartmentId =
-            parsed.departmentId ??
-            parsed.projectId ??
-            linkedTask?.projectId ??
-            null;
-          const canCreateMemory = await permissionsSvc.canAccessMemory(
-            companyId,
-            protocolActor.userId,
-            "create",
-            {
-              layer: parsed.layer ?? null,
-              departmentId: memoryDepartmentId,
-              visibility: "scoped",
-            },
-          );
-          if (!canCreateMemory) {
-            res.status(403).json(jsonRpcError(requestBody.id ?? null, -32003, "Insufficient permissions for memory create"));
-            return;
-          }
-
-          const item = await memorySvc.create(companyId, {
-            ...parsed,
-            source: "mcp",
-            createdBy: protocolActor.userId,
-            status: "pending",
-            visibility: "scoped",
-            priority: parsed.priority ?? 0,
-            tags: parsed.tags ?? null,
-            departmentId: parsed.departmentId ?? null,
-            projectId: parsed.projectId ?? null,
-            layer: parsed.layer ?? null,
-            goalId: parsed.goalId ?? null,
-            taskId: parsed.taskId ?? null,
-          });
-          await logActivity(db, {
-            companyId,
-            actorType: "user",
-            actorId: protocolActor.userId,
-            action: "memory.created",
-            entityType: "memory_item",
-            entityId: item.id,
-            details: { title: item.title, source: item.source, status: item.status },
-          });
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent({ id: item.id, status: item.status })));
-          return;
-        }
-
-        if (params.name === "update-task-status") {
-          const parsed = z.object({ taskId: z.string(), status: z.enum(ISSUE_STATUSES) }).parse(args);
-          const issue = await issuesSvc.getById(parsed.taskId);
-          if (!issue || issue.companyId !== companyId || !canAccessProjectScopedEntity(scope, issue.projectId)) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Task not found"));
-            return;
-          }
-          const canUpdateTask = await permissionsSvc.canAccessEntity(companyId, protocolActor.userId, "task", "update", {
-            departmentId: issue.projectId ?? null,
-            assigneeUserId: issue.assigneeUserId ?? null,
-          });
-          if (!canUpdateTask) {
-            res.status(403).json(jsonRpcError(requestBody.id ?? null, -32003, "Insufficient permissions for task update"));
-            return;
-          }
-          const updated = await issuesSvc.update(parsed.taskId, { status: parsed.status });
-          await logActivity(db, {
-            companyId,
-            actorType: "user",
-            actorId: protocolActor.userId,
-            action: "issue.updated",
-            entityType: "issue",
-            entityId: parsed.taskId,
-            details: { status: parsed.status, source: "mcp" },
-          });
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(updated)));
-          return;
-        }
-
-        if (params.name === "create-task") {
-          const parsed = z
-            .object({
-              title: z.string().min(1),
-              description: z.string().nullable().optional(),
-              projectId: z.string().min(1).nullable().optional(),
-              goalId: z.string().min(1).nullable().optional(),
-              parentId: z.string().min(1).nullable().optional(),
-              status: z.enum(ISSUE_STATUSES).optional(),
-              priority: z.string().optional(),
-              assigneeAgentId: z.string().min(1).nullable().optional(),
-              assigneeUserId: z.string().min(1).nullable().optional(),
-              labelIds: z.array(z.string().min(1)).optional(),
-            })
-            .parse(args);
-
-          if (parsed.projectId) {
-            const project = await projectsSvc.getById(parsed.projectId);
-            if (!project || project.companyId !== companyId) {
-              res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Project not found"));
-              return;
-            }
-            assertScopedProjectAccess(scope, parsed.projectId, "Project");
-          }
-          const canCreate = await permissionsSvc.canAccessEntity(
-            companyId,
-            protocolActor.userId,
-            "task",
-            "create",
-            { departmentId: parsed.projectId ?? null },
-          );
-          if (!canCreate) {
-            res.status(403).json(jsonRpcError(requestBody.id ?? null, -32003, "Insufficient permissions for task create"));
-            return;
-          }
-          const actorInfo = getActorInfo(req);
-          const created = await issuesSvc.create(companyId, {
-            ...parsed,
-            createdByUserId: actorInfo.actorType === "user" ? actorInfo.actorId : null,
-            createdByAgentId: actorInfo.agentId ?? null,
-          } as any);
-          await logActivity(db, {
-            companyId,
-            actorType: actorInfo.actorType,
-            actorId: actorInfo.actorId,
-            agentId: actorInfo.agentId,
-            runId: actorInfo.runId,
-            action: "issue.created",
-            entityType: "issue",
-            entityId: created.id,
-            details: { title: created.title, source: "mcp" },
-          });
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(created)));
-          return;
-        }
-
-        if (params.name === "update-task") {
-          const parsed = z
-            .object({
-              taskId: z.string().min(1),
-              title: z.string().min(1).optional(),
-              description: z.string().nullable().optional(),
-              projectId: z.string().min(1).nullable().optional(),
-              goalId: z.string().min(1).nullable().optional(),
-              status: z.enum(ISSUE_STATUSES).optional(),
-              priority: z.string().optional(),
-              assigneeAgentId: z.string().min(1).nullable().optional(),
-              assigneeUserId: z.string().min(1).nullable().optional(),
-              labelIds: z.array(z.string().min(1)).optional(),
-            })
-            .parse(args);
-
-          const existing = await issuesSvc.getById(parsed.taskId);
-          if (
-            !existing ||
-            existing.companyId !== companyId ||
-            !canAccessProjectScopedEntity(scope, existing.projectId)
-          ) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Task not found"));
-            return;
-          }
-          if (parsed.projectId) {
-            assertScopedProjectAccess(scope, parsed.projectId, "Project");
-          }
-          const canUpdate = await permissionsSvc.canAccessEntity(
-            companyId,
-            protocolActor.userId,
-            "task",
-            "update",
-            {
-              departmentId: existing.projectId ?? null,
-              assigneeUserId: existing.assigneeUserId ?? null,
-            },
-          );
-          if (!canUpdate) {
-            res.status(403).json(jsonRpcError(requestBody.id ?? null, -32003, "Insufficient permissions for task update"));
-            return;
-          }
-          const { taskId, ...patch } = parsed;
-          const updated = await issuesSvc.update(taskId, patch as any);
-          await logActivity(db, {
-            companyId,
-            actorType: "user",
-            actorId: protocolActor.userId,
-            action: "issue.updated",
-            entityType: "issue",
-            entityId: taskId,
-            details: { fields: Object.keys(patch), source: "mcp" },
-          });
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(updated)));
-          return;
-        }
-
-        if (params.name === "add-task-comment") {
-          const parsed = z
-            .object({
-              taskId: z.string().min(1),
-              body: z.string().min(1),
-            })
-            .parse(args);
-
-          const task = await issuesSvc.getById(parsed.taskId);
-          if (
-            !task ||
-            task.companyId !== companyId ||
-            !canAccessProjectScopedEntity(scope, task.projectId)
-          ) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Task not found"));
-            return;
-          }
-          const actorInfo = getActorInfo(req);
-          const comment = await issuesSvc.addComment(parsed.taskId, parsed.body, {
-            userId: actorInfo.actorType === "user" ? actorInfo.actorId : undefined,
-            agentId: actorInfo.agentId ?? undefined,
-          });
-          await logActivity(db, {
-            companyId,
-            actorType: actorInfo.actorType,
-            actorId: actorInfo.actorId,
-            agentId: actorInfo.agentId,
-            runId: actorInfo.runId,
-            action: "issue.commented",
-            entityType: "issue",
-            entityId: parsed.taskId,
-            details: { commentId: comment.id, source: "mcp" },
-          });
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(comment)));
-          return;
-        }
-
-        if (params.name === "attach-artifact-version") {
-          const parsed = z
-            .object({
-              artifactId: z.string().uuid(),
-              sourceDetail: mcpArtifactVersionSchema.shape.sourceDetail,
-              changelog: mcpArtifactVersionSchema.shape.changelog,
-              parentVersionId: mcpArtifactVersionSchema.shape.parentVersionId,
-              content: mcpArtifactVersionSchema.shape.content,
-              fileUrl: mcpArtifactVersionSchema.shape.fileUrl,
-            })
-            .parse(args);
-
-          const artifact = await artifactsSvc.getById(parsed.artifactId);
-          const filtered = artifact ? await filterArtifactsForScope(db, scope, [artifact]) : [];
-          if (filtered.length === 0) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Artifact not found"));
-            return;
-          }
-          const linkedProjectId = (await artifactProjectMap(db, [parsed.artifactId])).get(parsed.artifactId) ?? null;
-          const canUpdateArtifact = await permissionsSvc.canAccessEntity(companyId, protocolActor.userId, "artifact", "update", {
-            departmentId: linkedProjectId,
-          });
-          if (!canUpdateArtifact) {
-            res.status(403).json(jsonRpcError(requestBody.id ?? null, -32003, "Insufficient permissions for artifact update"));
-            return;
-          }
-
-          const version = await artifactsSvc.addVersion(parsed.artifactId, {
-            source: "mcp",
-            sourceDetail: parsed.sourceDetail,
-            changelog: parsed.changelog ?? null,
-            parentVersionId: parsed.parentVersionId ?? null,
-            content: parsed.content ?? null,
-            fileUrl: parsed.fileUrl ?? null,
-          });
-          await logActivity(db, {
-            companyId,
-            actorType: "user",
-            actorId: protocolActor.userId,
-            action: "artifact.version_added",
-            entityType: "artifact",
-            entityId: parsed.artifactId,
-            details: { versionId: version.id, versionNumber: version.versionNumber, source: "mcp" },
-          });
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(version)));
-          return;
-        }
-
-        res.status(400).json(jsonRpcError(requestBody.id ?? null, -32601, "Tool not found"));
         return;
       }
 
