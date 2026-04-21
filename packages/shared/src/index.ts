@@ -374,6 +374,10 @@ export type {
   InstanceSettings,
   BackupRetentionPolicy,
   FeedbackDataSharingPreference,
+  FeedbackTargetType,
+  FeedbackVoteValue,
+  FeedbackVote,
+  FeedbackVoteSummary,
   ExecutionWorkspaceStrategyType,
   ProjectExecutionWorkspaceDefaultMode,
   ExecutionWorkspaceMode,
@@ -423,6 +427,8 @@ export {
   DEFAULT_BACKUP_RETENTION,
   FEEDBACK_DATA_SHARING_PREFERENCES,
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
+  FEEDBACK_TARGET_TYPES,
+  FEEDBACK_VOTE_VALUES,
 } from "./types/index.js";
 
 export {
@@ -664,6 +670,10 @@ export {
   patchInstanceExperimentalSettingsSchema,
   backupRetentionPolicySchema,
   feedbackDataSharingPreferenceSchema,
+  feedbackTargetTypeSchema,
+  feedbackVoteValueSchema,
+  upsertIssueFeedbackVoteSchema,
+  type UpsertIssueFeedbackVote,
   type PatchInstanceGeneralSettings,
   type PatchInstanceExperimentalSettings,
   executionWorkspaceStatusSchema,

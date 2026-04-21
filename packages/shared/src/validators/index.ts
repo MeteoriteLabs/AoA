@@ -333,6 +333,13 @@ export {
 } from "./execution-workspace.js";
 
 export {
+  feedbackTargetTypeSchema,
+  feedbackVoteValueSchema,
+  upsertIssueFeedbackVoteSchema,
+  type UpsertIssueFeedbackVote,
+} from "./feedback.js";
+
+export {
   pluginManifestV1Schema,
   type PluginManifestV1Input,
 } from "./plugin.js";

@@ -156,6 +156,7 @@ import type { CostByModelRow } from "@/api/costs";
 import type { BudgetPolicySummary, BudgetIncident } from "@paperclipai/shared";
 import { CompanyExport as CompanyExportPage } from "@/pages/CompanyExport";
 import { CompanyImport as CompanyImportPage } from "@/pages/CompanyImport";
+import { FeedbackThumbs } from "@/components/FeedbackThumbs";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -257,7 +258,7 @@ export function DesignGuide() {
               {[
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "UserMenu", "CommentThread", "MarkdownEditor",
-                "PropertiesPanel", "Sidebar", "CommandPalette",
+                "PropertiesPanel", "Sidebar", "CommandPalette", "FeedbackThumbs",
               ].map((name) => (
                 <Badge key={name} variant="ghost" className="font-mono text-[10px]">
                   {name}
@@ -1224,6 +1225,100 @@ export function DesignGuide() {
             <Textarea placeholder="Leave a comment..." rows={3} />
             <Button size="sm">Comment</Button>
           </div>
+        </div>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  FEEDBACK THUMBS                                              */}
+      {/* ============================================================ */}
+      <Section title="Feedback Thumbs (F.2)">
+        <p className="text-sm text-muted-foreground max-w-2xl">
+          Per-user thumbs up/down on agent output. Mounts under agent-authored
+          task comments on TaskSlideOver. Reason textarea opens on thumbs-down
+          only (matches Paperclip's normalizeReason — upvote reasons are
+          discarded). Click an already-selected thumb to dismiss.
+        </p>
+        <div className="grid gap-6 md:grid-cols-2 max-w-3xl">
+          <SubSection title="No vote (idle)">
+            <div className="rounded-md border border-border bg-card p-3">
+              <FeedbackThumbs
+                issueId="design-guide-issue"
+                targetType="issue_comment"
+                targetId="00000000-0000-0000-0000-000000000001"
+              />
+            </div>
+          </SubSection>
+          <SubSection title="Thumbs-up selected">
+            <div className="rounded-md border border-border bg-card p-3">
+              <FeedbackThumbs
+                issueId="design-guide-issue"
+                targetType="issue_comment"
+                targetId="00000000-0000-0000-0000-000000000002"
+                initialVote={{
+                  id: "vote-up",
+                  companyId: "company-1",
+                  issueId: "design-guide-issue",
+                  targetType: "issue_comment",
+                  targetId: "00000000-0000-0000-0000-000000000002",
+                  authorUserId: "user-1",
+                  vote: "up",
+                  reason: null,
+                  sharedWithLabs: false,
+                  sharedAt: null,
+                  consentVersion: null,
+                  redactionSummary: null,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                }}
+              />
+            </div>
+          </SubSection>
+          <SubSection title="Thumbs-down with saved reason">
+            <div className="rounded-md border border-border bg-card p-3">
+              <FeedbackThumbs
+                issueId="design-guide-issue"
+                targetType="issue_comment"
+                targetId="00000000-0000-0000-0000-000000000003"
+                initialVote={{
+                  id: "vote-down",
+                  companyId: "company-1",
+                  issueId: "design-guide-issue",
+                  targetType: "issue_comment",
+                  targetId: "00000000-0000-0000-0000-000000000003",
+                  authorUserId: "user-1",
+                  vote: "down",
+                  reason: "Missed the test case for cancellations",
+                  sharedWithLabs: false,
+                  sharedAt: null,
+                  consentVersion: null,
+                  redactionSummary: null,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                }}
+              />
+            </div>
+          </SubSection>
+          <SubSection title="Inline in a comment card">
+            <div className="rounded-md border border-border bg-card p-3 space-y-3">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-medium text-muted-foreground">Claude Agent</span>
+                  <span className="text-xs text-muted-foreground">Apr 21</span>
+                </div>
+                <p className="text-sm">
+                  Built the scaffolded handler and wired it through to the
+                  routing table. Smoke tests pass.
+                </p>
+              </div>
+              <div className="pt-2 border-t border-border/60">
+                <FeedbackThumbs
+                  issueId="design-guide-issue"
+                  targetType="issue_comment"
+                  targetId="00000000-0000-0000-0000-000000000004"
+                />
+              </div>
+            </div>
+          </SubSection>
         </div>
       </Section>
 

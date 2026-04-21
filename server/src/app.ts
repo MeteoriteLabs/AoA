@@ -39,6 +39,7 @@ import { outputDetectionRoutes } from "./routes/output-detection.js";
 import { trustScoreRoutes } from "./routes/trust-scores.js";
 import { transcriptionRoutes } from "./routes/transcription.js";
 import { memoryFeedbackRoutes } from "./routes/memory-feedback.js";
+import { feedbackRoutes } from "./routes/feedback.js";
 import { memoryLifecycleRoutes } from "./routes/memory-lifecycle.js";
 import { suggestionRoutes } from "./routes/suggestions.js";
 import { contextPackagingRoutes } from "./routes/context-packaging.js";
@@ -179,6 +180,7 @@ export async function createApp(
   api.use(trustScoreRoutes(db));
   api.use(transcriptionRoutes(db));
   api.use(memoryFeedbackRoutes(db));
+  api.use(feedbackRoutes(db));
   api.use(memoryLifecycleRoutes(db));
   api.use(teamRoutes(db));
   api.use(suggestionRoutes(db));

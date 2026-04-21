@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import { feedbackApi } from "../api/feedback";
 import { contextPackagingApi } from "../api/context-packaging";
 import { artifactsApi } from "../api/artifacts";
 import { outputDetectionApi, type DetectedOutputForUI } from "../api/output-detection";
@@ -242,6 +243,20 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     queryFn: () => issuesApi.listComments(issueId!),
     enabled: !!issueId && open,
   });
+
+  const { data: feedbackVotes, refetch: refetchFeedbackVotes } = useQuery({
+    queryKey: ["feedback-votes", issueId],
+    queryFn: () => feedbackApi.listVotes(issueId!),
+    enabled: !!issueId && open,
+  });
+
+  const votesByCommentId = useMemo(() => {
+    const map = new Map<string, NonNullable<typeof feedbackVotes>[number]>();
+    for (const v of feedbackVotes ?? []) {
+      if (v.targetType === "issue_comment") map.set(v.targetId, v);
+    }
+    return map;
+  }, [feedbackVotes]);
 
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId!),
@@ -1331,6 +1346,9 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                       reassignOptions={commentReassignOptions}
                       currentAssigneeValue={currentAssigneeValue}
                       mentions={mentionOptions}
+                      feedbackIssueId={issue.id}
+                      existingVotesByCommentId={votesByCommentId}
+                      onVoteChange={() => { void refetchFeedbackVotes(); }}
                       onAdd={async (body, reopen, reassignment) => {
                         if (reassignment) {
                           await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });

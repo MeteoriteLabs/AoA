@@ -200,10 +200,16 @@ export type {
   FeedbackDataSharingPreference,
   FeedbackRedactionState,
   FeedbackRedactionSummary,
+  FeedbackTargetType,
+  FeedbackVoteValue,
+  FeedbackVote,
+  FeedbackVoteSummary,
 } from "./feedback.js";
 export {
   FEEDBACK_DATA_SHARING_PREFERENCES,
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
+  FEEDBACK_TARGET_TYPES,
+  FEEDBACK_VOTE_VALUES,
 } from "./feedback.js";
 export type {
   ExecutionWorkspaceStrategyType,
