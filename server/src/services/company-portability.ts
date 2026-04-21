@@ -16,7 +16,9 @@ import type {
   CompanyPortabilityPreviewIssuePlan,
   CompanyPortabilityPreviewProjectPlan,
   CompanyPortabilityPreviewResult,
+  CompanyPortabilityPreviewSkillPlan,
   CompanyPortabilityProjectManifestEntry,
+  CompanyPortabilitySkillManifestEntry,
   ImportWarning,
 } from "@paperclipai/shared";
 import {
@@ -29,6 +31,7 @@ import { notFound, unprocessable } from "../errors.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { companyService } from "./companies.js";
+import { companySkillService } from "./company-skills.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 
@@ -37,6 +40,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   agents: true,
   projects: false,
   issues: false,
+  skills: false,
 };
 
 const ISSUE_STATUSES = new Set([
@@ -61,7 +65,7 @@ const MANIFEST_WRAPPER_KEYS: ReadonlySet<string> = new Set([
   "requiredSecrets",
 ]);
 
-const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues"]);
+const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills"]);
 
 const MAX_SUPPORTED_SCHEMA_VERSION = 2;
 
@@ -114,6 +118,7 @@ type ImportPlanInternal = {
   selectedAgents: CompanyPortabilityAgentManifestEntry[];
   selectedProjects: CompanyPortabilityProjectManifestEntry[];
   selectedIssues: CompanyPortabilityIssueManifestEntry[];
+  selectedSkills: CompanyPortabilitySkillManifestEntry[];
 };
 
 function sortProjectsTopologically(
@@ -231,6 +236,7 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     agents: input?.agents ?? DEFAULT_INCLUDE.agents,
     projects: input?.projects ?? DEFAULT_INCLUDE.projects,
     issues: input?.issues ?? DEFAULT_INCLUDE.issues,
+    skills: input?.skills ?? DEFAULT_INCLUDE.skills,
   };
 }
 
@@ -572,6 +578,7 @@ export function companyPortabilityService(db: Db) {
   const access = accessService(db);
   const projects = projectService(db);
   const issues = issueService(db);
+  const skills = companySkillService(db);
 
   async function resolveSource(source: CompanyPortabilityPreview["source"]): Promise<ResolvedSource> {
     if (source.type === "inline") {
@@ -657,7 +664,7 @@ export function companyPortabilityService(db: Db) {
     const generatedAt = new Date().toISOString();
 
     const manifest: CompanyPortabilityManifest = {
-      schemaVersion: include.projects || include.issues ? 2 : 1,
+      schemaVersion: include.projects || include.issues || include.skills ? 2 : 1,
       generatedAt,
       source: {
         companyId: company.id,
@@ -670,6 +677,9 @@ export function companyPortabilityService(db: Db) {
     };
 
     const needAgentSlugs = include.agents || include.issues;
+    const needSkills = include.skills;
+    const skillRows = needSkills ? await skills.listFull(companyId) : [];
+    const validSkillKeys = new Set(skillRows.map((skill) => skill.key));
     const allAgentRows = needAgentSlugs ? await agents.list(companyId, { includeTerminated: true }) : [];
     const agentRows = allAgentRows.filter((agent) => agent.status !== "terminated");
     if (include.agents) {
@@ -767,6 +777,12 @@ export function companyPortabilityService(db: Db) {
           instructions.body,
         );
 
+        const agentSkillKeys = Array.isArray((agent as { skillKeys?: unknown }).skillKeys)
+          ? ((agent as { skillKeys: unknown[] }).skillKeys.filter((k): k is string => typeof k === "string"))
+          : [];
+        const portableSkillKeys = needSkills
+          ? agentSkillKeys.filter((key) => validSkillKeys.has(key))
+          : agentSkillKeys;
         manifest.agents.push({
           slug,
           name: agent.name,
@@ -784,6 +800,7 @@ export function companyPortabilityService(db: Db) {
           permissions: portablePermissions,
           budgetMonthlyCents: agent.budgetMonthlyCents ?? 0,
           metadata: (agent.metadata as Record<string, unknown> | null) ?? null,
+          ...(portableSkillKeys.length > 0 ? { skillKeys: portableSkillKeys } : {}),
         });
       }
     }
@@ -862,6 +879,35 @@ export function companyPortabilityService(db: Db) {
         });
       }
       manifest.issues = issueManifest;
+    }
+
+    if (include.skills) {
+      const skillManifest: CompanyPortabilitySkillManifestEntry[] = [];
+      for (const skill of skillRows) {
+        const skillPath = `skills/${skill.slug}/SKILL.md`;
+        files[skillPath] = skill.markdown ?? "";
+        skillManifest.push({
+          key: skill.key,
+          slug: skill.slug,
+          name: skill.name,
+          path: skillPath,
+          description: skill.description ?? null,
+          markdown: skill.markdown ?? "",
+          sourceType: skill.sourceType,
+          sourceLocator: skill.sourceLocator ?? null,
+          sourceRef: skill.sourceRef ?? null,
+          trustLevel: skill.trustLevel ?? null,
+          compatibility: skill.compatibility ?? null,
+          fileInventory: Array.isArray(skill.fileInventory)
+            ? skill.fileInventory.map((entry) => ({
+                path: String((entry as { path?: unknown }).path ?? ""),
+                kind: String((entry as { kind?: unknown }).kind ?? "other"),
+              })).filter((entry) => entry.path.length > 0)
+            : [],
+          metadata: (skill.metadata as Record<string, unknown> | null) ?? null,
+        });
+      }
+      manifest.skills = skillManifest;
     }
 
     manifest.requiredSecrets = dedupeRequiredSecrets(requiredSecrets);
@@ -1068,6 +1114,71 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
+    const manifestSkills = manifest.skills ?? [];
+    const selectedSkills: CompanyPortabilitySkillManifestEntry[] = include.skills ? manifestSkills : [];
+    const skillPlans: CompanyPortabilityPreviewSkillPlan[] = [];
+    const existingSkillKeyToRow = new Map<string, { id: string; name: string; key: string }>();
+    const existingSkillKeys = new Set<string>();
+    if (include.skills && input.target.mode === "existing_company") {
+      const existingSkills = await skills.listFull(input.target.companyId);
+      for (const existing of existingSkills) {
+        existingSkillKeyToRow.set(existing.key, { id: existing.id, name: existing.name, key: existing.key });
+        existingSkillKeys.add(existing.key);
+      }
+    }
+    if (include.skills) {
+      for (const manifestSkill of selectedSkills) {
+        const existing = existingSkillKeyToRow.get(manifestSkill.key) ?? null;
+        if (!existing) {
+          skillPlans.push({
+            key: manifestSkill.key,
+            slug: manifestSkill.slug,
+            action: "create",
+            plannedName: manifestSkill.name,
+            plannedKey: manifestSkill.key,
+            existingSkillId: null,
+            reason: null,
+          });
+          continue;
+        }
+        if (collisionStrategy === "replace") {
+          skillPlans.push({
+            key: manifestSkill.key,
+            slug: manifestSkill.slug,
+            action: "update",
+            plannedName: manifestSkill.name,
+            plannedKey: existing.key,
+            existingSkillId: existing.id,
+            reason: "Existing key matched; replace strategy.",
+          });
+          continue;
+        }
+        if (collisionStrategy === "skip") {
+          skillPlans.push({
+            key: manifestSkill.key,
+            slug: manifestSkill.slug,
+            action: "skip",
+            plannedName: existing.name,
+            plannedKey: existing.key,
+            existingSkillId: existing.id,
+            reason: "Existing key matched; skip strategy.",
+          });
+          continue;
+        }
+        // rename: generate unique key
+        const renamedKey = uniqueSlug(manifestSkill.key, existingSkillKeys);
+        skillPlans.push({
+          key: manifestSkill.key,
+          slug: manifestSkill.slug,
+          action: "create",
+          plannedName: manifestSkill.name,
+          plannedKey: renamedKey,
+          existingSkillId: existing.id,
+          reason: "Existing key matched; rename strategy.",
+        });
+      }
+    }
+
     const preview: CompanyPortabilityPreviewResult = {
       include,
       targetCompanyId,
@@ -1083,6 +1194,7 @@ export function companyPortabilityService(db: Db) {
         agentPlans,
         projectPlans,
         issuePlans,
+        skillPlans,
       },
       requiredSecrets: manifest.requiredSecrets ?? [],
       warnings,
@@ -1097,6 +1209,7 @@ export function companyPortabilityService(db: Db) {
       selectedAgents,
       selectedProjects,
       selectedIssues,
+      selectedSkills,
     };
   }
 
@@ -1480,6 +1593,123 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
+    const resultSkills: CompanyPortabilityImportResult["skills"] = [];
+    const skillKeyMap = new Map<string, string>();
+    if (include.skills) {
+      const skillsToUpsert: Array<{
+        plan: CompanyPortabilityPreviewSkillPlan;
+        manifestSkill: CompanyPortabilitySkillManifestEntry;
+        markdown: string;
+      }> = [];
+
+      for (const planSkill of plan.preview.plan.skillPlans) {
+        const manifestSkill = plan.selectedSkills.find((s) => s.key === planSkill.key);
+        if (!manifestSkill) continue;
+        if (planSkill.action === "skip") {
+          resultSkills.push({
+            key: planSkill.key,
+            slug: planSkill.slug,
+            id: planSkill.existingSkillId,
+            action: "skipped",
+            name: planSkill.plannedName,
+            reason: planSkill.reason,
+          });
+          if (planSkill.existingSkillId) {
+            skillKeyMap.set(planSkill.key, planSkill.plannedKey);
+          }
+          continue;
+        }
+
+        const rawMarkdown = plan.source.files[manifestSkill.path];
+        let markdown = typeof rawMarkdown === "string" ? rawMarkdown : "";
+        if (!markdown && typeof manifestSkill.markdown === "string") {
+          markdown = manifestSkill.markdown;
+        }
+        if (typeof rawMarkdown !== "string") {
+          warnings.push({
+            kind: "missing_file",
+            message: `Missing skill markdown for ${manifestSkill.slug} at ${manifestSkill.path}; imported with inline fallback.`,
+          });
+        }
+
+        skillsToUpsert.push({ plan: planSkill, manifestSkill, markdown });
+      }
+
+      if (skillsToUpsert.length > 0) {
+        const imports = skillsToUpsert.map(({ plan: planSkill, manifestSkill, markdown }) => ({
+          slug: manifestSkill.slug,
+          key: planSkill.plannedKey,
+          name: planSkill.plannedName,
+          description: manifestSkill.description ?? null,
+          markdown,
+          sourceType: (manifestSkill.sourceType ?? "local_path") as
+            | "local_path"
+            | "github"
+            | "url"
+            | "catalog"
+            | "skills_sh",
+          sourceLocator: manifestSkill.sourceLocator ?? null,
+          sourceRef: manifestSkill.sourceRef ?? null,
+          trustLevel: (manifestSkill.trustLevel ?? "markdown_only") as
+            | "markdown_only"
+            | "assets"
+            | "scripts_executables",
+          compatibility: (manifestSkill.compatibility ?? "compatible") as
+            | "compatible"
+            | "unknown"
+            | "invalid",
+          fileInventory: Array.isArray(manifestSkill.fileInventory)
+            ? manifestSkill.fileInventory.map((entry) => ({
+                path: String(entry.path),
+                kind: (entry.kind ?? "other") as
+                  | "skill"
+                  | "markdown"
+                  | "reference"
+                  | "script"
+                  | "asset"
+                  | "other",
+              }))
+            : [],
+          metadata: manifestSkill.metadata ?? null,
+        }));
+        const upserted = await skills.upsertImportedSkills(targetCompany.id, imports);
+        for (let i = 0; i < skillsToUpsert.length; i++) {
+          const entry = skillsToUpsert[i]!;
+          const created = upserted[i] ?? null;
+          skillKeyMap.set(entry.manifestSkill.key, entry.plan.plannedKey);
+          resultSkills.push({
+            key: entry.manifestSkill.key,
+            slug: entry.manifestSkill.slug,
+            id: created?.id ?? null,
+            action: entry.plan.action === "update" ? "updated" : "created",
+            name: entry.plan.plannedName,
+            reason: entry.plan.reason,
+          });
+        }
+      }
+    }
+
+    // Remap agent.skillKeys using the skillKeyMap built from skill imports.
+    // We only remap imported agents (created/updated this run); existing agents
+    // in the target are left alone.
+    if (include.agents && skillKeyMap.size > 0) {
+      for (const manifestAgent of plan.selectedAgents) {
+        const agentId = importedSlugToAgentId.get(manifestAgent.slug);
+        if (!agentId) continue;
+        const sourceKeys = Array.isArray(manifestAgent.skillKeys) ? manifestAgent.skillKeys : [];
+        if (sourceKeys.length === 0) continue;
+        const mappedKeys = sourceKeys.map((key) => skillKeyMap.get(key) ?? key);
+        try {
+          await agents.update(agentId, { skillKeys: mappedKeys } as Record<string, unknown>);
+        } catch {
+          warnings.push({
+            kind: "link_failed",
+            message: `Could not set skillKeys for imported agent ${manifestAgent.slug}.`,
+          });
+        }
+      }
+    }
+
     return {
       company: {
         id: targetCompany.id,
@@ -1489,6 +1719,7 @@ export function companyPortabilityService(db: Db) {
       agents: resultAgents,
       projects: resultProjects,
       issues: resultIssues,
+      skills: resultSkills,
       requiredSecrets: sourceManifest.requiredSecrets ?? [],
       warnings,
     };

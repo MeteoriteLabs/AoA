@@ -6,6 +6,7 @@ export const portabilityIncludeSchema = z
     agents: z.boolean().optional(),
     projects: z.boolean().optional(),
     issues: z.boolean().optional(),
+    skills: z.boolean().optional(),
   })
   .partial();
 
@@ -41,6 +42,28 @@ export const portabilityAgentManifestEntrySchema = z.object({
   permissions: z.record(z.unknown()),
   budgetMonthlyCents: z.number().int().nonnegative(),
   metadata: z.record(z.unknown()).nullable(),
+  skillKeys: z.array(z.string().min(1)).optional(),
+});
+
+export const portabilitySkillFileInventoryEntrySchema = z.object({
+  path: z.string().min(1),
+  kind: z.string().min(1),
+});
+
+export const portabilitySkillManifestEntrySchema = z.object({
+  key: z.string().min(1),
+  slug: z.string().min(1),
+  name: z.string().min(1),
+  path: z.string().min(1),
+  description: z.string().nullable().optional(),
+  markdown: z.string().optional(),
+  sourceType: z.string().min(1),
+  sourceLocator: z.string().nullable().optional(),
+  sourceRef: z.string().nullable().optional(),
+  trustLevel: z.string().nullable().optional(),
+  compatibility: z.string().nullable().optional(),
+  fileInventory: z.array(portabilitySkillFileInventoryEntrySchema).optional(),
+  metadata: z.record(z.unknown()).nullable().optional(),
 });
 
 export const portabilityProjectManifestEntrySchema = z.object({
@@ -93,12 +116,14 @@ export const portabilityManifestSchema = z
         agents: z.boolean(),
         projects: z.boolean().optional(),
         issues: z.boolean().optional(),
+        skills: z.boolean().optional(),
       })
       .passthrough(),
     company: portabilityCompanyManifestEntrySchema.nullable(),
     agents: z.array(portabilityAgentManifestEntrySchema),
     projects: z.array(portabilityProjectManifestEntrySchema).optional(),
     issues: z.array(portabilityIssueManifestEntrySchema).optional(),
+    skills: z.array(portabilitySkillManifestEntrySchema).optional(),
     requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
   })
   .passthrough();

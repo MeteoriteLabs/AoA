@@ -3,6 +3,7 @@ export interface CompanyPortabilityInclude {
   agents: boolean;
   projects: boolean;
   issues: boolean;
+  skills: boolean;
 }
 
 export interface CompanyPortabilitySecretRequirement {
@@ -37,6 +38,28 @@ export interface CompanyPortabilityAgentManifestEntry {
   permissions: Record<string, unknown>;
   budgetMonthlyCents: number;
   metadata: Record<string, unknown> | null;
+  skillKeys?: string[];
+}
+
+export interface CompanyPortabilitySkillFileInventoryEntry {
+  path: string;
+  kind: string;
+}
+
+export interface CompanyPortabilitySkillManifestEntry {
+  key: string;
+  slug: string;
+  name: string;
+  path: string;
+  description?: string | null;
+  markdown?: string;
+  sourceType: string;
+  sourceLocator?: string | null;
+  sourceRef?: string | null;
+  trustLevel?: string | null;
+  compatibility?: string | null;
+  fileInventory?: CompanyPortabilitySkillFileInventoryEntry[];
+  metadata?: Record<string, unknown> | null;
 }
 
 export type CompanyPortabilityProjectType = "department" | "project";
@@ -87,6 +110,7 @@ export interface CompanyPortabilityManifest {
   agents: CompanyPortabilityAgentManifestEntry[];
   projects?: CompanyPortabilityProjectManifestEntry[];
   issues?: CompanyPortabilityIssueManifestEntry[];
+  skills?: CompanyPortabilitySkillManifestEntry[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];
 }
 
@@ -173,6 +197,16 @@ export interface CompanyPortabilityPreviewIssuePlan {
   reason: string | null;
 }
 
+export interface CompanyPortabilityPreviewSkillPlan {
+  key: string;
+  slug: string;
+  action: "create" | "update" | "skip";
+  plannedName: string;
+  plannedKey: string;
+  existingSkillId: string | null;
+  reason: string | null;
+}
+
 export interface CompanyPortabilityPreviewResult {
   include: CompanyPortabilityInclude;
   targetCompanyId: string | null;
@@ -184,6 +218,7 @@ export interface CompanyPortabilityPreviewResult {
     agentPlans: CompanyPortabilityPreviewAgentPlan[];
     projectPlans: CompanyPortabilityPreviewProjectPlan[];
     issuePlans: CompanyPortabilityPreviewIssuePlan[];
+    skillPlans: CompanyPortabilityPreviewSkillPlan[];
   };
   requiredSecrets: CompanyPortabilitySecretRequirement[];
   warnings: ImportWarning[];
@@ -218,6 +253,14 @@ export interface CompanyPortabilityImportResult {
     id: string | null;
     action: "created" | "skipped";
     title: string;
+    reason: string | null;
+  }[];
+  skills: {
+    key: string;
+    slug: string;
+    id: string | null;
+    action: "created" | "updated" | "skipped";
+    name: string;
     reason: string | null;
   }[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];

@@ -10,6 +10,8 @@ export {
   portabilityCompanyManifestEntrySchema,
   portabilityAgentManifestEntrySchema,
   portabilityProjectManifestEntrySchema,
+  portabilitySkillManifestEntrySchema,
+  portabilitySkillFileInventoryEntrySchema,
   portabilityManifestSchema,
   portabilitySourceSchema,
   portabilityTargetSchema,

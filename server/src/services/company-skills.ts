@@ -2326,5 +2326,6 @@ export function companySkillService(db: Db) {
     installUpdate,
     listRuntimeSkillEntries,
     resolveSkillKeys,
+    upsertImportedSkills,
   };
 }
