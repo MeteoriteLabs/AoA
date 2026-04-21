@@ -1,7 +1,7 @@
 import { Router, type Request } from "express";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues, userRoles, projectGoals } from "@paperclipai/db";
+import { issues, userRoles, projectGoals, agentProjects } from "@paperclipai/db";
 import {
   createMcpApiKeySchema,
   ISSUE_STATUSES,
@@ -12,6 +12,7 @@ import {
 import { z } from "zod";
 import { forbidden, unauthorized } from "../errors.js";
 import {
+  agentService,
   artifactService,
   companyService,
   debriefService,
@@ -22,6 +23,7 @@ import {
   mcpService,
   memoryService,
   permissionService,
+  projectService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../routes/authz.js";
 
@@ -87,7 +89,11 @@ interface McpRouteDeps {
   companiesSvc?: ReturnType<typeof companyService>;
   mcpSvc?: ReturnType<typeof mcpService>;
   permissionsSvc?: ReturnType<typeof permissionService>;
+  agentsSvc?: ReturnType<typeof agentService>;
+  projectsSvc?: ReturnType<typeof projectService>;
   resolveScope?: (companyId: string, userId: string) => Promise<McpUserScope>;
+  resolveRole?: (companyId: string, userId: string) => Promise<string>;
+  resolveScopedAgentIds?: (companyId: string, scope: McpUserScope) => Promise<Set<string> | null>;
 }
 
 function jsonRpcResult(id: unknown, result: unknown) {
@@ -161,6 +167,36 @@ async function resolveUserScope(db: Db, companyId: string, userId: string): Prom
 
   const projectIds = new Set(roles.map((role) => role.projectId).filter((id): id is string => Boolean(id)));
   return { kind: "scoped", userId, projectIds };
+}
+
+async function resolveUserRole(db: Db, companyId: string, userId: string): Promise<string> {
+  const roles = await db
+    .select()
+    .from(userRoles)
+    .where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
+  if (roles.length === 0) return "team_member";
+  if (roles.some((role) => role.role === "founder")) return "founder";
+  if (roles.some((role) => role.role === "team_lead")) return "team_lead";
+  return "team_member";
+}
+
+async function resolveScopedAgentIdsDefault(
+  db: Db,
+  companyId: string,
+  scope: McpUserScope,
+): Promise<Set<string> | null> {
+  if (scope.kind === "founder") return null;
+  if (scope.projectIds.size === 0) return new Set();
+  const rows = await db
+    .select({ agentId: agentProjects.agentId })
+    .from(agentProjects)
+    .where(
+      and(
+        eq(agentProjects.companyId, companyId),
+        inArray(agentProjects.projectId, [...scope.projectIds]),
+      ),
+    );
+  return new Set(rows.map((row) => row.agentId));
 }
 
 function canAccessProjectScopedEntity(scope: McpUserScope, projectId: string | null | undefined) {
@@ -315,6 +351,11 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   const companiesSvc = deps.companiesSvc ?? companyService(db);
   const mcpSvc = deps.mcpSvc ?? mcpService(db);
   const permissionsSvc = deps.permissionsSvc ?? permissionService(db);
+  const agentsSvc = deps.agentsSvc ?? agentService(db);
+  const projectsSvc = deps.projectsSvc ?? projectService(db);
+  const resolveRole = deps.resolveRole ?? ((companyId: string, userId: string) => resolveUserRole(db, companyId, userId));
+  const resolveScopedAgentIds =
+    deps.resolveScopedAgentIds ?? ((companyId: string, scope: McpUserScope) => resolveScopedAgentIdsDefault(db, companyId, scope));
 
   router.get("/companies/:companyId/mcp/status", async (req, res) => {
     assertBoard(req);
@@ -576,6 +617,56 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
           jsonRpcResult(requestBody.id ?? null, {
             tools: [
               {
+                name: "me",
+                description: "Return the authenticated caller's identity and role",
+                inputSchema: {
+                  type: "object",
+                  properties: {},
+                },
+              },
+              {
+                name: "list-agents",
+                description: "List agents in the caller's company, scoped by RBAC",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    status: { type: "string" },
+                  },
+                },
+              },
+              {
+                name: "get-agent",
+                description: "Get a single agent by id (RBAC scoped)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    agentId: { type: "string" },
+                  },
+                  required: ["agentId"],
+                },
+              },
+              {
+                name: "list-projects",
+                description: "List projects (departments + projects) in the caller's company",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    type: { type: "string", enum: ["department", "project"] },
+                  },
+                },
+              },
+              {
+                name: "get-project",
+                description: "Get a single project by id (RBAC scoped)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    projectId: { type: "string" },
+                  },
+                  required: ["projectId"],
+                },
+              },
+              {
                 name: "debrief-push",
                 description: "Push content into the Debrief pipeline",
                 inputSchema: {
@@ -647,6 +738,81 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
       if (method === "tools/call") {
         const params = callToolSchema.parse(requestBody.params);
         const args = params.arguments ?? {};
+
+        if (params.name === "me") {
+          const role = await resolveRole(companyId, protocolActor.userId);
+          res.json(
+            jsonRpcResult(
+              requestBody.id ?? null,
+              asToolContent({
+                userId: protocolActor.userId,
+                companyId,
+                role,
+              }),
+            ),
+          );
+          return;
+        }
+
+        if (params.name === "list-agents") {
+          const parsed = z.object({ status: z.string().optional() }).parse(args);
+          const allowedIds = await resolveScopedAgentIds(companyId, scope);
+          let rows = await agentsSvc.list(companyId, { includeTerminated: true });
+          if (allowedIds !== null) {
+            rows = rows.filter((row) => allowedIds.has(row.id));
+          }
+          if (parsed.status) {
+            rows = rows.filter((row) => row.status === parsed.status);
+          }
+          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(rows)));
+          return;
+        }
+
+        if (params.name === "get-agent") {
+          const parsed = z.object({ agentId: z.string().min(1) }).parse(args);
+          const agent = await agentsSvc.getById(parsed.agentId);
+          if (!agent || agent.companyId !== companyId) {
+            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Agent not found"));
+            return;
+          }
+          const allowedIds = await resolveScopedAgentIds(companyId, scope);
+          if (allowedIds !== null && !allowedIds.has(agent.id)) {
+            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Agent not found"));
+            return;
+          }
+          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(agent)));
+          return;
+        }
+
+        if (params.name === "list-projects") {
+          const parsed = z
+            .object({ type: z.enum(["department", "project"]).optional() })
+            .parse(args);
+          let rows = await projectsSvc.list(
+            companyId,
+            parsed.type ? { type: parsed.type } : undefined,
+          );
+          if (scope.kind === "scoped") {
+            rows = rows.filter((row) => scope.projectIds.has(row.id));
+          }
+          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(rows)));
+          return;
+        }
+
+        if (params.name === "get-project") {
+          const parsed = z.object({ projectId: z.string().min(1) }).parse(args);
+          const project = await projectsSvc.getById(parsed.projectId);
+          if (!project || project.companyId !== companyId) {
+            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Project not found"));
+            return;
+          }
+          if (!canAccessProjectScopedEntity(scope, project.id)) {
+            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Project not found"));
+            return;
+          }
+          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(project)));
+          return;
+        }
 
         if (params.name === "debrief-push") {
           const parsed = mcpDebriefSchema.parse(args);

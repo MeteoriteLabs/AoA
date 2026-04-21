@@ -18,6 +18,7 @@ vi.mock("@paperclipai/db", () => {
     issues: makeTable(),
     userRoles: makeTable(),
     projectGoals: makeTable(),
+    agentProjects: makeTable(),
   };
 });
 
@@ -30,6 +31,7 @@ vi.mock("drizzle-orm", () => ({
 vi.mock("../services/index.js", () => {
   const noopFactory = () => ({});
   return {
+    agentService: noopFactory,
     artifactService: noopFactory,
     companyService: noopFactory,
     debriefService: noopFactory,
@@ -38,6 +40,8 @@ vi.mock("../services/index.js", () => {
     issueService: noopFactory,
     memoryService: noopFactory,
     mcpService: noopFactory,
+    permissionService: noopFactory,
+    projectService: noopFactory,
     logActivity: vi.fn().mockResolvedValue(undefined),
   };
 });
