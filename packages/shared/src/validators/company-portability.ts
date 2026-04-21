@@ -5,6 +5,7 @@ export const portabilityIncludeSchema = z
     company: z.boolean().optional(),
     agents: z.boolean().optional(),
     projects: z.boolean().optional(),
+    issues: z.boolean().optional(),
   })
   .partial();
 
@@ -57,6 +58,25 @@ export const portabilityProjectManifestEntrySchema = z.object({
   metadata: z.record(z.unknown()).nullable().optional(),
 });
 
+export const portabilityIssueManifestEntrySchema = z.object({
+  slug: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+  priority: z.string().nullable().optional(),
+  projectSlug: z.string().min(1).nullable().optional(),
+  assigneeAgentSlug: z.string().min(1).nullable().optional(),
+  assigneeUserEmail: z.string().email().nullable().optional(),
+  labelNames: z.array(z.string().min(1)).optional(),
+  billingCode: z.string().nullable().optional(),
+  dueDate: z.string().nullable().optional(),
+  identifier: z.string().nullable().optional(),
+  recurring: z.boolean().nullable().optional(),
+  assigneeAdapterOverrides: z.record(z.unknown()).nullable().optional(),
+  executionWorkspaceSettings: z.record(z.unknown()).nullable().optional(),
+  metadata: z.record(z.unknown()).nullable().optional(),
+});
+
 export const portabilityManifestSchema = z
   .object({
     schemaVersion: z.number().int().positive(),
@@ -72,11 +92,13 @@ export const portabilityManifestSchema = z
         company: z.boolean(),
         agents: z.boolean(),
         projects: z.boolean().optional(),
+        issues: z.boolean().optional(),
       })
       .passthrough(),
     company: portabilityCompanyManifestEntrySchema.nullable(),
     agents: z.array(portabilityAgentManifestEntrySchema),
     projects: z.array(portabilityProjectManifestEntrySchema).optional(),
+    issues: z.array(portabilityIssueManifestEntrySchema).optional(),
     requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
   })
   .passthrough();

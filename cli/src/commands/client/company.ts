@@ -55,15 +55,16 @@ function normalizeSelector(input: string): string {
 }
 
 function parseInclude(input: string | undefined): CompanyPortabilityInclude {
-  if (!input || !input.trim()) return { company: true, agents: true, projects: false };
+  if (!input || !input.trim()) return { company: true, agents: true, projects: false, issues: false };
   const values = input.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean);
   const include = {
     company: values.includes("company"),
     agents: values.includes("agents"),
     projects: values.includes("projects"),
+    issues: values.includes("issues"),
   };
-  if (!include.company && !include.agents && !include.projects) {
-    throw new Error("Invalid --include value. Use one or more of: company,agents,projects");
+  if (!include.company && !include.agents && !include.projects && !include.issues) {
+    throw new Error("Invalid --include value. Use one or more of: company,agents,projects,issues");
   }
   return include;
 }

@@ -9,9 +9,11 @@ import type {
   CompanyPortabilityImport,
   CompanyPortabilityImportResult,
   CompanyPortabilityInclude,
+  CompanyPortabilityIssueManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityPreview,
   CompanyPortabilityPreviewAgentPlan,
+  CompanyPortabilityPreviewIssuePlan,
   CompanyPortabilityPreviewProjectPlan,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityProjectManifestEntry,
@@ -27,13 +29,27 @@ import { notFound, unprocessable } from "../errors.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { companyService } from "./companies.js";
+import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 
 const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   company: true,
   agents: true,
   projects: false,
+  issues: false,
 };
+
+const ISSUE_STATUSES = new Set([
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "blocked",
+  "done",
+  "cancelled",
+]);
+
+const ISSUE_PRIORITIES = new Set(["critical", "high", "medium", "low"]);
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
 
@@ -45,7 +61,7 @@ const MANIFEST_WRAPPER_KEYS: ReadonlySet<string> = new Set([
   "requiredSecrets",
 ]);
 
-const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects"]);
+const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues"]);
 
 const MAX_SUPPORTED_SCHEMA_VERSION = 2;
 
@@ -97,6 +113,7 @@ type ImportPlanInternal = {
   collisionStrategy: CompanyPortabilityCollisionStrategy;
   selectedAgents: CompanyPortabilityAgentManifestEntry[];
   selectedProjects: CompanyPortabilityProjectManifestEntry[];
+  selectedIssues: CompanyPortabilityIssueManifestEntry[];
 };
 
 function sortProjectsTopologically(
@@ -213,6 +230,7 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     company: input?.company ?? DEFAULT_INCLUDE.company,
     agents: input?.agents ?? DEFAULT_INCLUDE.agents,
     projects: input?.projects ?? DEFAULT_INCLUDE.projects,
+    issues: input?.issues ?? DEFAULT_INCLUDE.issues,
   };
 }
 
@@ -553,6 +571,7 @@ export function companyPortabilityService(db: Db) {
   const agents = agentService(db);
   const access = accessService(db);
   const projects = projectService(db);
+  const issues = issueService(db);
 
   async function resolveSource(source: CompanyPortabilityPreview["source"]): Promise<ResolvedSource> {
     if (source.type === "inline") {
@@ -638,7 +657,7 @@ export function companyPortabilityService(db: Db) {
     const generatedAt = new Date().toISOString();
 
     const manifest: CompanyPortabilityManifest = {
-      schemaVersion: include.projects ? 2 : 1,
+      schemaVersion: include.projects || include.issues ? 2 : 1,
       generatedAt,
       source: {
         companyId: company.id,
@@ -650,7 +669,8 @@ export function companyPortabilityService(db: Db) {
       requiredSecrets: [],
     };
 
-    const allAgentRows = include.agents ? await agents.list(companyId, { includeTerminated: true }) : [];
+    const needAgentSlugs = include.agents || include.issues;
+    const allAgentRows = needAgentSlugs ? await agents.list(companyId, { includeTerminated: true }) : [];
     const agentRows = allAgentRows.filter((agent) => agent.status !== "terminated");
     if (include.agents) {
       const skipped = allAgentRows.length - agentRows.length;
@@ -768,7 +788,9 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
-    if (include.projects) {
+    const projectIdToSlug = new Map<string, string>();
+    const needProjectSlugs = include.projects || include.issues;
+    if (needProjectSlugs) {
       const projectRows = await projects.list(companyId);
       const liveProjects = projectRows.filter((project) => !project.archivedAt);
       const usedProjectSlugs = new Set<string>();
@@ -776,6 +798,8 @@ export function companyPortabilityService(db: Db) {
       for (const project of liveProjects) {
         const baseSlug = deriveProjectUrlKey(project.name, project.id);
         const slug = uniqueSlug(baseSlug, usedProjectSlugs);
+        projectIdToSlug.set(project.id, slug);
+        if (!include.projects) continue;
         const leadAgentSlug = project.leadAgentId ? (idToSlug.get(project.leadAgentId) ?? null) : null;
         const type: CompanyPortabilityProjectManifestEntry["type"] =
           project.type === "project" ? "project" : "department";
@@ -794,7 +818,50 @@ export function companyPortabilityService(db: Db) {
             (project.executionWorkspacePolicy as Record<string, unknown> | null) ?? null,
         });
       }
-      manifest.projects = sortProjectsTopologically(projectManifest);
+      if (include.projects) {
+        manifest.projects = sortProjectsTopologically(projectManifest);
+      }
+    }
+
+    if (include.issues) {
+      const issueRows = await issues.list(companyId);
+      const usedIssueSlugs = new Set<string>();
+      const issueManifest: CompanyPortabilityIssueManifestEntry[] = [];
+      for (const issue of issueRows) {
+        const baseSlug = toSafeSlug(
+          issue.identifier ?? issue.title,
+          `issue-${issueManifest.length + 1}`,
+        );
+        const slug = uniqueSlug(baseSlug, usedIssueSlugs);
+        const projectSlug = issue.projectId ? (projectIdToSlug.get(issue.projectId) ?? null) : null;
+        const assigneeAgentSlug = issue.assigneeAgentId
+          ? (idToSlug.get(issue.assigneeAgentId) ?? null)
+          : null;
+        const labelNames = Array.isArray((issue as { labels?: Array<{ name: string }> }).labels)
+          ? ((issue as { labels: Array<{ name: string }> }).labels.map((label) => label.name))
+          : [];
+        issueManifest.push({
+          slug,
+          title: issue.title,
+          description: issue.description ?? null,
+          status: issue.status ?? null,
+          priority: issue.priority ?? null,
+          projectSlug,
+          assigneeAgentSlug,
+          assigneeUserEmail: null,
+          labelNames,
+          billingCode: issue.billingCode ?? null,
+          dueDate: issue.dueDate ? new Date(issue.dueDate).toISOString() : null,
+          identifier: issue.identifier ?? null,
+          recurring: false,
+          assigneeAdapterOverrides:
+            (issue.assigneeAdapterOverrides as Record<string, unknown> | null) ?? null,
+          executionWorkspaceSettings:
+            (issue.executionWorkspaceSettings as Record<string, unknown> | null) ?? null,
+          metadata: null,
+        });
+      }
+      manifest.issues = issueManifest;
     }
 
     manifest.requiredSecrets = dedupeRequiredSecrets(requiredSecrets);
@@ -983,6 +1050,24 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
+    const manifestIssues = manifest.issues ?? [];
+    const selectedIssues: CompanyPortabilityIssueManifestEntry[] = include.issues
+      ? manifestIssues
+      : [];
+    const issuePlans: CompanyPortabilityPreviewIssuePlan[] = [];
+    if (include.issues) {
+      for (const manifestIssue of selectedIssues) {
+        issuePlans.push({
+          slug: manifestIssue.slug,
+          action: "create",
+          plannedTitle: manifestIssue.title,
+          reason: manifestIssue.recurring
+            ? "Recurring task — will be handled by routines port (E.1.4)."
+            : null,
+        });
+      }
+    }
+
     const preview: CompanyPortabilityPreviewResult = {
       include,
       targetCompanyId,
@@ -997,6 +1082,7 @@ export function companyPortabilityService(db: Db) {
             : "none",
         agentPlans,
         projectPlans,
+        issuePlans,
       },
       requiredSecrets: manifest.requiredSecrets ?? [],
       warnings,
@@ -1010,6 +1096,7 @@ export function companyPortabilityService(db: Db) {
       collisionStrategy,
       selectedAgents,
       selectedProjects,
+      selectedIssues,
     };
   }
 
@@ -1295,6 +1382,104 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
+    const resultIssues: CompanyPortabilityImportResult["issues"] = [];
+    if (include.issues) {
+      const existingProjectRows = await projects.list(targetCompany.id);
+      const existingProjectSlugToId = new Map<string, string>();
+      for (const existing of existingProjectRows) {
+        existingProjectSlugToId.set(normalizeProjectUrlKey(existing.name) ?? existing.id, existing.id);
+      }
+      let labelWarningEmitted = false;
+
+      for (const manifestIssue of plan.selectedIssues) {
+        if (manifestIssue.recurring) {
+          warnings.push({
+            kind: "deprecated_field",
+            message: `Issue "${manifestIssue.slug}" is marked recurring; recurring tasks are imported by the routines port (E.1.4) and were skipped here.`,
+          });
+          resultIssues.push({
+            slug: manifestIssue.slug,
+            id: null,
+            action: "skipped",
+            title: manifestIssue.title,
+            reason: "Recurring task deferred to routines port.",
+          });
+          continue;
+        }
+
+        if (manifestIssue.labelNames && manifestIssue.labelNames.length > 0 && !labelWarningEmitted) {
+          warnings.push({
+            kind: "deprecated_field",
+            message: "Issue labelNames are present in the bundle but label import is not yet supported; labels were not applied.",
+          });
+          labelWarningEmitted = true;
+        }
+
+        const projectId = manifestIssue.projectSlug
+          ? (importedSlugToProjectId.get(manifestIssue.projectSlug)
+            ?? existingProjectSlugToId.get(manifestIssue.projectSlug)
+            ?? null)
+          : null;
+
+        let assigneeAgentId: string | null = null;
+        if (manifestIssue.assigneeAgentSlug) {
+          assigneeAgentId =
+            importedSlugToAgentId.get(manifestIssue.assigneeAgentSlug)
+            ?? existingSlugToAgentId.get(manifestIssue.assigneeAgentSlug)
+            ?? null;
+          if (!assigneeAgentId) {
+            warnings.push({
+              kind: "skipped_update",
+              message: `Issue "${manifestIssue.slug}" references agent slug "${manifestIssue.assigneeAgentSlug}", but that agent was not found; leaving unassigned.`,
+            });
+          }
+        }
+
+        if (manifestIssue.assigneeUserEmail) {
+          warnings.push({
+            kind: "skipped_update",
+            message: `Issue "${manifestIssue.slug}" references user email "${manifestIssue.assigneeUserEmail}", but user remapping by email is not yet supported; leaving unassigned.`,
+          });
+        }
+
+        const status = manifestIssue.status && ISSUE_STATUSES.has(manifestIssue.status)
+          ? manifestIssue.status
+          : "backlog";
+        const priority = manifestIssue.priority && ISSUE_PRIORITIES.has(manifestIssue.priority)
+          ? manifestIssue.priority
+          : "medium";
+        const effectiveStatus = status === "in_progress" && !assigneeAgentId ? "todo" : status;
+        if (effectiveStatus !== status) {
+          warnings.push({
+            kind: "skipped_update",
+            message: `Issue "${manifestIssue.slug}" status downgraded from in_progress to todo because it has no assignee.`,
+          });
+        }
+
+        const created = await issues.create(targetCompany.id, {
+          projectId,
+          title: manifestIssue.title,
+          description: manifestIssue.description ?? null,
+          status: effectiveStatus,
+          priority,
+          assigneeAgentId,
+          assigneeUserId: null,
+          billingCode: manifestIssue.billingCode ?? null,
+          assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides ?? null,
+          executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings ?? null,
+          dueDate: manifestIssue.dueDate ? new Date(manifestIssue.dueDate) : null,
+        });
+
+        resultIssues.push({
+          slug: manifestIssue.slug,
+          id: created.id,
+          action: "created",
+          title: created.title ?? manifestIssue.title,
+          reason: null,
+        });
+      }
+    }
+
     return {
       company: {
         id: targetCompany.id,
@@ -1303,6 +1488,7 @@ export function companyPortabilityService(db: Db) {
       },
       agents: resultAgents,
       projects: resultProjects,
+      issues: resultIssues,
       requiredSecrets: sourceManifest.requiredSecrets ?? [],
       warnings,
     };
