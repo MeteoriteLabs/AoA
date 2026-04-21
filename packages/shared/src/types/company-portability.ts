@@ -7,6 +7,7 @@ export interface CompanyPortabilityInclude {
   routines: boolean;
   envInputs: boolean;
   internalAgentConfig?: boolean;
+  budgetPolicies?: boolean;
 }
 
 export interface CompanyPortabilitySecretRequirement {
@@ -151,6 +152,22 @@ export interface CompanyPortabilityIssueManifestEntry {
   metadata?: Record<string, unknown> | null;
 }
 
+export type CompanyPortabilityBudgetPolicyScopeType = "company" | "agent";
+
+export interface CompanyPortabilityBudgetPolicyManifestEntry {
+  slug: string;
+  scopeType: CompanyPortabilityBudgetPolicyScopeType;
+  scopeAgentSlug?: string | null;
+  metric: string;
+  windowKind: string;
+  amountCents: number;
+  warnPercent: number;
+  hardStopEnabled: boolean;
+  notifyEnabled: boolean;
+  isActive: boolean;
+  metadata?: Record<string, unknown> | null;
+}
+
 export interface CompanyPortabilityInternalAgentConfigManifestEntry {
   executionMode: string;
   provider?: string | null;
@@ -181,6 +198,7 @@ export interface CompanyPortabilityManifest {
   routines?: CompanyPortabilityRoutineManifestEntry[];
   envInputs?: CompanyPortabilityEnvInputManifestEntry[];
   internalAgentConfig?: CompanyPortabilityInternalAgentConfigManifestEntry | null;
+  budgetPolicies?: CompanyPortabilityBudgetPolicyManifestEntry[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];
 }
 
@@ -198,6 +216,7 @@ export interface CompanyPortabilityExportPreviewCounts {
   routines: number;
   envInputs: number;
   internalAgentConfig?: 0 | 1;
+  budgetPolicies?: number;
 }
 
 export interface CompanyPortabilityExportPreviewResult {

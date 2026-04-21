@@ -127,6 +127,8 @@ export type {
   CompanyPortabilityEnvInputRequirement,
   CompanyPortabilityEnvInputPortability,
   CompanyPortabilityInternalAgentConfigManifestEntry,
+  CompanyPortabilityBudgetPolicyManifestEntry,
+  CompanyPortabilityBudgetPolicyScopeType,
   CompanyPortabilityPreviewRoutinePlan,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportRequest,

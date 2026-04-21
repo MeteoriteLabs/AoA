@@ -2,9 +2,10 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { internalAgentConfig } from "@paperclipai/db";
+import { budgetPolicies, internalAgentConfig } from "@paperclipai/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
+  CompanyPortabilityBudgetPolicyManifestEntry,
   CompanyPortabilityCollisionStrategy,
   CompanyPortabilityEnvInputManifestEntry,
   CompanyPortabilityExport,
@@ -53,6 +54,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   routines: false,
   envInputs: false,
   internalAgentConfig: true,
+  budgetPolicies: false,
 };
 
 const ISSUE_STATUSES = new Set([
@@ -77,7 +79,7 @@ const MANIFEST_WRAPPER_KEYS: ReadonlySet<string> = new Set([
   "requiredSecrets",
 ]);
 
-const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines", "envInputs", "internalAgentConfig"]);
+const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines", "envInputs", "internalAgentConfig", "budgetPolicies"]);
 
 const MAX_SUPPORTED_SCHEMA_VERSION = 2;
 
@@ -253,6 +255,7 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     routines: input?.routines ?? DEFAULT_INCLUDE.routines,
     envInputs: input?.envInputs ?? DEFAULT_INCLUDE.envInputs,
     internalAgentConfig: input?.internalAgentConfig ?? DEFAULT_INCLUDE.internalAgentConfig,
+    budgetPolicies: input?.budgetPolicies ?? DEFAULT_INCLUDE.budgetPolicies,
   };
 }
 
@@ -276,6 +279,40 @@ function serializeInternalAgentConfigRow(row: Record<string, unknown>): CompanyP
     proactiveIntervalMinutes:
       typeof row.proactiveIntervalMinutes === "number" ? row.proactiveIntervalMinutes : 240,
     metadata: (row.metadata as Record<string, unknown> | null | undefined) ?? null,
+  };
+}
+
+function synthesizeBudgetPolicySlug(params: {
+  scopeType: "company" | "agent";
+  scopeAgentSlug: string | null;
+  metric: string;
+  windowKind: string;
+}): string {
+  const parts = params.scopeType === "agent"
+    ? ["agent", params.scopeAgentSlug ?? "unknown-agent", params.metric, params.windowKind]
+    : ["company", params.metric, params.windowKind];
+  return parts.join("-");
+}
+
+function serializeBudgetPolicyRow(
+  row: Record<string, unknown>,
+  scopeAgentSlug: string | null,
+): CompanyPortabilityBudgetPolicyManifestEntry {
+  const scopeType = row.scopeType === "agent" ? "agent" : "company";
+  const metric = typeof row.metric === "string" ? row.metric : "cost_cents";
+  const windowKind = typeof row.windowKind === "string" ? row.windowKind : "calendar_month_utc";
+  return {
+    slug: synthesizeBudgetPolicySlug({ scopeType, scopeAgentSlug, metric, windowKind }),
+    scopeType,
+    scopeAgentSlug: scopeType === "agent" ? scopeAgentSlug : null,
+    metric,
+    windowKind,
+    amountCents: typeof row.amountCents === "number" ? row.amountCents : 0,
+    warnPercent: typeof row.warnPercent === "number" ? row.warnPercent : 80,
+    hardStopEnabled: row.hardStopEnabled !== false,
+    notifyEnabled: row.notifyEnabled !== false,
+    isActive: row.isActive !== false,
+    metadata: null,
   };
 }
 
@@ -795,7 +832,7 @@ export function companyPortabilityService(db: Db) {
 
     const envInputs: CompanyPortabilityEnvInputManifestEntry[] = [];
 
-    const needAgentSlugs = include.agents || include.issues || include.routines || include.envInputs;
+    const needAgentSlugs = include.agents || include.issues || include.routines || include.envInputs || include.budgetPolicies;
     const needSkills = include.skills;
     const skillRows = needSkills ? await skills.listFull(companyId) : [];
     const validSkillKeys = new Set(skillRows.map((skill) => skill.key));
@@ -1105,6 +1142,30 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
+    if (include.budgetPolicies) {
+      const rows = (await db
+        .select()
+        .from(budgetPolicies)
+        .where(eq(budgetPolicies.companyId, companyId))) as Record<string, unknown>[];
+      const serialized: CompanyPortabilityBudgetPolicyManifestEntry[] = [];
+      for (const row of rows) {
+        if (row.scopeType === "agent") {
+          const scopeAgentId = typeof row.scopeId === "string" ? row.scopeId : null;
+          const scopeAgentSlug = scopeAgentId ? (idToSlug.get(scopeAgentId) ?? null) : null;
+          if (!scopeAgentSlug) {
+            warnings.push(
+              `Skipped agent-scoped budget policy ${String(row.id ?? "")}: agent not in export scope.`,
+            );
+            continue;
+          }
+          serialized.push(serializeBudgetPolicyRow(row, scopeAgentSlug));
+        } else {
+          serialized.push(serializeBudgetPolicyRow(row, null));
+        }
+      }
+      manifest.budgetPolicies = serialized;
+    }
+
     manifest.requiredSecrets = dedupeRequiredSecrets(requiredSecrets);
 
     files["README.md"] = generateReadme(manifest, {
@@ -1139,6 +1200,7 @@ export function companyPortabilityService(db: Db) {
         routines: bundle.manifest.routines?.length ?? 0,
         envInputs: bundle.manifest.envInputs?.length ?? 0,
         internalAgentConfig: bundle.manifest.internalAgentConfig ? 1 : 0,
+        budgetPolicies: bundle.manifest.budgetPolicies?.length ?? 0,
       },
       files: filePaths,
       estimatedBytes: manifestBytes + fileBytes,
@@ -2233,6 +2295,84 @@ export function companyPortabilityService(db: Db) {
         await db.insert(internalAgentConfig).values({
           companyId: targetCompany.id,
           ...values,
+        });
+      }
+    }
+
+    if (include.budgetPolicies && Array.isArray(sourceManifest.budgetPolicies)) {
+      const budgetCollisionStrategy = plan.collisionStrategy;
+      for (const policy of sourceManifest.budgetPolicies) {
+        let scopeId: string;
+        if (policy.scopeType === "agent") {
+          const slug = policy.scopeAgentSlug ?? null;
+          const resolved = slug
+            ? (importedSlugToAgentId.get(slug) ?? existingSlugToAgentId.get(slug) ?? null)
+            : null;
+          if (!resolved) {
+            warnings.push({
+              kind: "link_failed",
+              message: `Skipped budget policy "${policy.slug}": agent slug "${slug ?? "<missing>"}" not found in target company.`,
+            });
+            continue;
+          }
+          scopeId = resolved;
+        } else {
+          scopeId = targetCompany.id;
+        }
+
+        const existingRows = (await db
+          .select()
+          .from(budgetPolicies)
+          .where(eq(budgetPolicies.companyId, targetCompany.id))) as Record<string, unknown>[];
+        const collision = existingRows.find(
+          (row) =>
+            row.scopeType === policy.scopeType
+            && row.scopeId === scopeId
+            && row.metric === policy.metric
+            && row.windowKind === policy.windowKind,
+        );
+
+        if (collision) {
+          if (budgetCollisionStrategy === "skip" || budgetCollisionStrategy === "rename") {
+            // budget policies have no renameable identifier; rename behaves as skip
+            continue;
+          }
+          if (budgetCollisionStrategy === "replace") {
+            const existingId = typeof collision.id === "string" ? collision.id : null;
+            if (existingId) {
+              await db
+                .update(budgetPolicies)
+                .set({
+                  scopeType: policy.scopeType,
+                  scopeId,
+                  metric: policy.metric,
+                  windowKind: policy.windowKind,
+                  amountCents: policy.amountCents,
+                  warnPercent: policy.warnPercent,
+                  hardStopEnabled: policy.hardStopEnabled,
+                  notifyEnabled: policy.notifyEnabled,
+                  isActive: policy.isActive,
+                  updatedByUserId: actorUserId ?? null,
+                })
+                .where(eq(budgetPolicies.id, existingId));
+            }
+            continue;
+          }
+        }
+
+        await db.insert(budgetPolicies).values({
+          companyId: targetCompany.id,
+          scopeType: policy.scopeType,
+          scopeId,
+          metric: policy.metric,
+          windowKind: policy.windowKind,
+          amountCents: policy.amountCents,
+          warnPercent: policy.warnPercent,
+          hardStopEnabled: policy.hardStopEnabled,
+          notifyEnabled: policy.notifyEnabled,
+          isActive: policy.isActive,
+          createdByUserId: actorUserId ?? null,
+          updatedByUserId: actorUserId ?? null,
         });
       }
     }

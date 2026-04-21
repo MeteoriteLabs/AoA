@@ -10,6 +10,7 @@ export const portabilityIncludeSchema = z
     routines: z.boolean().optional(),
     envInputs: z.boolean().optional(),
     internalAgentConfig: z.boolean().optional(),
+    budgetPolicies: z.boolean().optional(),
   })
   .partial();
 
@@ -149,6 +150,22 @@ export const portabilityRoutineManifestEntrySchema = z.object({
   metadata: z.record(z.unknown()).nullable().optional(),
 });
 
+export const portabilityBudgetPolicyManifestSchema = z
+  .object({
+    slug: z.string().min(1),
+    scopeType: z.enum(["company", "agent"]),
+    scopeAgentSlug: z.string().min(1).nullable().optional(),
+    metric: z.string().min(1),
+    windowKind: z.string().min(1),
+    amountCents: z.number().int().nonnegative(),
+    warnPercent: z.number().int().min(0).max(100),
+    hardStopEnabled: z.boolean(),
+    notifyEnabled: z.boolean(),
+    isActive: z.boolean(),
+    metadata: z.record(z.unknown()).nullable().optional(),
+  })
+  .passthrough();
+
 export const portabilityInternalAgentConfigManifestSchema = z
   .object({
     executionMode: z.string().min(1),
@@ -185,6 +202,7 @@ export const portabilityManifestSchema = z
         routines: z.boolean().optional(),
         envInputs: z.boolean().optional(),
         internalAgentConfig: z.boolean().optional(),
+        budgetPolicies: z.boolean().optional(),
       })
       .passthrough(),
     company: portabilityCompanyManifestEntrySchema.nullable(),
@@ -195,6 +213,7 @@ export const portabilityManifestSchema = z
     routines: z.array(portabilityRoutineManifestEntrySchema).optional(),
     envInputs: z.array(portabilityEnvInputManifestEntrySchema).optional(),
     internalAgentConfig: portabilityInternalAgentConfigManifestSchema.nullable().optional(),
+    budgetPolicies: z.array(portabilityBudgetPolicyManifestSchema).optional(),
     requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
   })
   .passthrough();
