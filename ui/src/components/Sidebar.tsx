@@ -20,6 +20,7 @@ import { useNavigate } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjectsByType } from "./SidebarProjectsByType";
+import { BudgetSidebarMarker } from "./finance/BudgetSidebarMarker";
 import { UserMenu } from "./UserMenu";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -159,6 +160,7 @@ export function Sidebar() {
           <SidebarNavItem to="/org" label="Team" icon={Users} collapsed={collapsed} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} collapsed={collapsed} />
           <SidebarNavItem to="/budget" label="Budget" icon={DollarSign} collapsed={collapsed} />
+          <BudgetSidebarMarker collapsed={collapsed} />
           <SidebarNavItem to="/settings" label="Settings" icon={Settings} collapsed={collapsed} />
         </SidebarSection>
 

@@ -11,6 +11,8 @@ import { financeApi } from "../api/finance";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "../components/EmptyState";
+import { BudgetPolicyCard } from "../components/finance/BudgetPolicyCard";
+import { BudgetIncidentCard } from "../components/finance/BudgetIncidentCard";
 import { formatCents } from "../lib/utils";
 
 // ─── Date range helpers ────────────────────────────────────────────────
@@ -92,8 +94,7 @@ export function Costs() {
     enabled: !!selectedCompanyId,
   });
 
-  // Prefetched so B.6/B.7/B.8 mounts can share the React Query cache.
-  useQuery({
+  const budgetOverviewQuery = useQuery({
     queryKey: ["budgets", "overview", selectedCompanyId],
     queryFn: () => budgetsApi.overview(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -206,15 +207,14 @@ export function Costs() {
         </Card>
       )}
 
-      {/* Sections */}
+      {/* Budgets (full-width when populated) */}
+      <BudgetsSection overview={budgetOverviewQuery.data} />
+
+      {/* Remaining sections */}
       <div className="grid gap-4 md:grid-cols-2">
         <SectionPlaceholder
           title="Breakdown"
           description="Accounting model + Claude and Codex subscription utilization load here."
-        />
-        <SectionPlaceholder
-          title="Budgets"
-          description="Budget policies and open incidents load here."
         />
         <SectionPlaceholder
           title="Quotas"
@@ -225,6 +225,46 @@ export function Costs() {
           description="Finance events by biller, by kind, and over time load here."
         />
       </div>
+    </div>
+  );
+}
+
+// ─── Budgets section ───────────────────────────────────────────────────
+function BudgetsSection({
+  overview,
+}: {
+  overview: { policies: import("@paperclipai/shared").BudgetPolicySummary[]; openIncidents: import("@paperclipai/shared").BudgetIncident[] } | undefined;
+}) {
+  const policies = overview?.policies ?? [];
+  const incidents = overview?.openIncidents ?? [];
+  const hasAny = policies.length > 0 || incidents.length > 0;
+
+  if (!hasAny) {
+    return (
+      <SectionPlaceholder
+        title="Budgets"
+        description="No budget policies configured yet. Create one in Settings → Budget."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold">Budgets</h3>
+      {incidents.length > 0 && (
+        <div className="grid gap-3 md:grid-cols-2">
+          {incidents.map((incident) => (
+            <BudgetIncidentCard key={incident.id} incident={incident} />
+          ))}
+        </div>
+      )}
+      {policies.length > 0 && (
+        <div className="grid gap-3 md:grid-cols-2">
+          {policies.map((policy) => (
+            <BudgetPolicyCard key={policy.id} policy={policy} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

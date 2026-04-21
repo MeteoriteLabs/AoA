@@ -133,6 +133,9 @@ import { RoutineRunDialog } from "@/components/routines/RoutineRunDialog";
 import { PrivacyTab } from "@/components/settings/PrivacyTab";
 import { BackupsTab } from "@/components/settings/BackupsTab";
 import { HeartbeatsTabView } from "@/components/settings/HeartbeatsTab";
+import { BudgetPolicyCard } from "@/components/finance/BudgetPolicyCard";
+import { BudgetIncidentCard } from "@/components/finance/BudgetIncidentCard";
+import type { BudgetPolicySummary, BudgetIncident } from "@paperclipai/shared";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -1354,6 +1357,11 @@ export function DesignGuide() {
       <BudgetPageShowcase />
 
       {/* ============================================================ */}
+      {/*  BUDGET COMPONENTS                                            */}
+      {/* ============================================================ */}
+      <BudgetComponentsShowcase />
+
+      {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
       <Section title="Keyboard Shortcuts">
@@ -1938,6 +1946,126 @@ function BudgetPageShowcase() {
       </SubSection>
       <SubSection title="Loaded state">
         <BudgetPagePreview variant="loaded" />
+      </SubSection>
+    </Section>
+  );
+}
+
+function makeDemoPolicy(overrides: Partial<BudgetPolicySummary> = {}): BudgetPolicySummary {
+  return {
+    id: "demo-policy",
+    companyId: "demo",
+    scopeType: "company",
+    scopeId: "demo",
+    scopeName: "Acme Inc",
+    metric: "cost_usd",
+    windowKind: "month_utc",
+    amountCents: 10_000,
+    warnPercent: 80,
+    hardStopEnabled: true,
+    isActive: true,
+    observedCents: 2_500,
+    utilizationPercent: 25,
+    status: "ok",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+function makeDemoIncident(overrides: Partial<BudgetIncident> = {}): BudgetIncident {
+  return {
+    id: "demo-incident",
+    companyId: "demo",
+    policyId: "demo-policy",
+    scopeType: "company",
+    scopeId: "demo",
+    scopeName: "Acme Inc",
+    windowStart: new Date(),
+    windowEnd: new Date(),
+    thresholdType: "hard_stop",
+    amountLimitCents: 10_000,
+    amountObservedCents: 11_250,
+    status: "open",
+    approvalId: null,
+    resolvedAt: null,
+    createdAt: new Date(),
+    ...overrides,
+  };
+}
+
+function BudgetComponentsShowcase() {
+  return (
+    <Section title="Budget Components">
+      <p className="text-sm text-muted-foreground">
+        Policy cards and incident cards used on the Budget page. The sidebar
+        marker is a compact warning chip shown under the sidebar Budget nav when
+        any active policy crosses its warn or hard-stop threshold.
+      </p>
+
+      <SubSection title="BudgetPolicyCard">
+        <div className="grid gap-4 md:grid-cols-2">
+          <BudgetPolicyCard
+            policy={makeDemoPolicy()}
+            onEdit={() => {}}
+          />
+          <BudgetPolicyCard
+            policy={makeDemoPolicy({
+              status: "warning",
+              utilizationPercent: 85,
+              observedCents: 8_500,
+            })}
+            onEdit={() => {}}
+          />
+          <BudgetPolicyCard
+            policy={makeDemoPolicy({
+              status: "hard_stop",
+              utilizationPercent: 112,
+              observedCents: 11_200,
+            })}
+            onEdit={() => {}}
+          />
+          <BudgetPolicyCard
+            policy={makeDemoPolicy({ isActive: false, scopeName: "Legacy agent" })}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="BudgetIncidentCard">
+        <div className="grid gap-4 md:grid-cols-2">
+          <BudgetIncidentCard incident={makeDemoIncident({ thresholdType: "warning", amountObservedCents: 8_500 })} />
+          <BudgetIncidentCard incident={makeDemoIncident()} />
+        </div>
+      </SubSection>
+
+      <SubSection title="BudgetSidebarMarker">
+        <p className="text-sm text-muted-foreground">
+          Rendered inline in the sidebar beneath the Budget nav item. Hidden when
+          all active policies are healthy; amber when any policy is in warning
+          state; red when any policy has hit hard stop. Sample appearance:
+        </p>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="rounded-md border border-border p-3 space-y-2">
+            <p className="text-xs text-muted-foreground">Warning (expanded sidebar)</p>
+            <div
+              data-tone="warning"
+              className="flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-700 dark:text-amber-300 w-fit"
+            >
+              <span aria-hidden>⚠</span>
+              Warn · Budget 85% used
+            </div>
+          </div>
+          <div className="rounded-md border border-border p-3 space-y-2">
+            <p className="text-xs text-muted-foreground">Hard stop (expanded sidebar)</p>
+            <div
+              data-tone="hard"
+              className="flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] font-medium text-red-600 dark:text-red-400 w-fit"
+            >
+              <span aria-hidden>⚠</span>
+              Over · Budget 112% used
+            </div>
+          </div>
+        </div>
       </SubSection>
     </Section>
   );
