@@ -277,7 +277,7 @@ function buildInlineSource(
 }
 
 describe("company-portability skills", () => {
-  const svc = companyPortabilityService({} as any);
+  const svc = companyPortabilityService({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any);
 
   it("exportBundle with include.skills=true serializes all skills with slugs + keys", async () => {
     resetState();

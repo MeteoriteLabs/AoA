@@ -6,6 +6,7 @@ export interface CompanyPortabilityInclude {
   skills: boolean;
   routines: boolean;
   envInputs: boolean;
+  internalAgentConfig?: boolean;
 }
 
 export interface CompanyPortabilitySecretRequirement {
@@ -150,6 +151,20 @@ export interface CompanyPortabilityIssueManifestEntry {
   metadata?: Record<string, unknown> | null;
 }
 
+export interface CompanyPortabilityInternalAgentConfigManifestEntry {
+  executionMode: string;
+  provider?: string | null;
+  model?: string | null;
+  cliTool?: string | null;
+  autonomyLevel: number;
+  enabledCapabilities?: string[];
+  notificationPreference: string;
+  contextTokenBudget: number;
+  budgetMonthlyCents?: number | null;
+  proactiveIntervalMinutes: number;
+  metadata?: Record<string, unknown> | null;
+}
+
 export interface CompanyPortabilityManifest {
   schemaVersion: number;
   generatedAt: string;
@@ -165,6 +180,7 @@ export interface CompanyPortabilityManifest {
   skills?: CompanyPortabilitySkillManifestEntry[];
   routines?: CompanyPortabilityRoutineManifestEntry[];
   envInputs?: CompanyPortabilityEnvInputManifestEntry[];
+  internalAgentConfig?: CompanyPortabilityInternalAgentConfigManifestEntry | null;
   requiredSecrets: CompanyPortabilitySecretRequirement[];
 }
 
@@ -181,6 +197,7 @@ export interface CompanyPortabilityExportPreviewCounts {
   skills: number;
   routines: number;
   envInputs: number;
+  internalAgentConfig?: 0 | 1;
 }
 
 export interface CompanyPortabilityExportPreviewResult {

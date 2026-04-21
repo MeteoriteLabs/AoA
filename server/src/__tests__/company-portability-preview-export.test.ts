@@ -275,7 +275,7 @@ function resetState() {
 }
 
 describe("company-portability previewExport (service)", () => {
-  const svc = companyPortabilityService({} as any);
+  const svc = companyPortabilityService({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any);
 
   it("returns agent count with DEFAULT_INCLUDE (company + agents only)", async () => {
     resetState();
@@ -398,7 +398,7 @@ describe("company-portability previewExport (route)", () => {
       };
       next();
     });
-    app.use("/api/companies", companyRoutes({} as any));
+    app.use("/api/companies", companyRoutes({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any));
     app.use(errorHandler);
     return app;
   }

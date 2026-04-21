@@ -187,7 +187,7 @@ function resetState() {
 }
 
 describe("company-portability envInputs", () => {
-  const svc = companyPortabilityService({} as any);
+  const svc = companyPortabilityService({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any);
 
   it("exportBundle with include.envInputs=true emits envInputs array from agent env", async () => {
     resetState();

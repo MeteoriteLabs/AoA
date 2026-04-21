@@ -284,7 +284,7 @@ function buildInlineSource(
 }
 
 describe("company-portability issues", () => {
-  const svc = companyPortabilityService({} as any);
+  const svc = companyPortabilityService({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any);
 
   it("exportBundle with include.issues=true serializes all issues with slugs", async () => {
     resetState();

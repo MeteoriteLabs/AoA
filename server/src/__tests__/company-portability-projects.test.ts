@@ -133,7 +133,7 @@ function baseManifest(projects?: any[]): CompanyPortabilityManifest {
 }
 
 describe("company-portability projects", () => {
-  const svc = companyPortabilityService({} as any);
+  const svc = companyPortabilityService({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any);
 
   function resetState() {
     sourceProjects = [];

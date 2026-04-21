@@ -1,6 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { internalAgentConfig } from "@paperclipai/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityCollisionStrategy,
@@ -11,6 +13,7 @@ import type {
   CompanyPortabilityImport,
   CompanyPortabilityImportResult,
   CompanyPortabilityInclude,
+  CompanyPortabilityInternalAgentConfigManifestEntry,
   CompanyPortabilityIssueManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityPreview,
@@ -49,6 +52,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   skills: false,
   routines: false,
   envInputs: false,
+  internalAgentConfig: true,
 };
 
 const ISSUE_STATUSES = new Set([
@@ -73,7 +77,7 @@ const MANIFEST_WRAPPER_KEYS: ReadonlySet<string> = new Set([
   "requiredSecrets",
 ]);
 
-const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines", "envInputs"]);
+const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines", "envInputs", "internalAgentConfig"]);
 
 const MAX_SUPPORTED_SCHEMA_VERSION = 2;
 
@@ -248,6 +252,30 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     skills: input?.skills ?? DEFAULT_INCLUDE.skills,
     routines: input?.routines ?? DEFAULT_INCLUDE.routines,
     envInputs: input?.envInputs ?? DEFAULT_INCLUDE.envInputs,
+    internalAgentConfig: input?.internalAgentConfig ?? DEFAULT_INCLUDE.internalAgentConfig,
+  };
+}
+
+function serializeInternalAgentConfigRow(row: Record<string, unknown>): CompanyPortabilityInternalAgentConfigManifestEntry {
+  const capabilitiesRaw = row.enabledCapabilities;
+  const enabledCapabilities = Array.isArray(capabilitiesRaw)
+    ? capabilitiesRaw.filter((item): item is string => typeof item === "string")
+    : undefined;
+  return {
+    executionMode: typeof row.executionMode === "string" ? row.executionMode : "api",
+    provider: (row.provider as string | null | undefined) ?? null,
+    model: (row.model as string | null | undefined) ?? null,
+    cliTool: (row.cliTool as string | null | undefined) ?? null,
+    autonomyLevel: typeof row.autonomyLevel === "number" ? row.autonomyLevel : 0,
+    ...(enabledCapabilities ? { enabledCapabilities } : {}),
+    notificationPreference:
+      typeof row.notificationPreference === "string" ? row.notificationPreference : "realtime",
+    contextTokenBudget: typeof row.contextTokenBudget === "number" ? row.contextTokenBudget : 8000,
+    budgetMonthlyCents:
+      typeof row.budgetMonthlyCents === "number" ? row.budgetMonthlyCents : null,
+    proactiveIntervalMinutes:
+      typeof row.proactiveIntervalMinutes === "number" ? row.proactiveIntervalMinutes : 240,
+    metadata: (row.metadata as Record<string, unknown> | null | undefined) ?? null,
   };
 }
 
@@ -1066,6 +1094,17 @@ export function companyPortabilityService(db: Db) {
       manifest.envInputs = dedupeEnvInputs(envInputs);
     }
 
+    if (include.internalAgentConfig) {
+      const rows = (await db
+        .select()
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId))) as Record<string, unknown>[];
+      const row = rows[0];
+      if (row) {
+        manifest.internalAgentConfig = serializeInternalAgentConfigRow(row);
+      }
+    }
+
     manifest.requiredSecrets = dedupeRequiredSecrets(requiredSecrets);
 
     files["README.md"] = generateReadme(manifest, {
@@ -1099,6 +1138,7 @@ export function companyPortabilityService(db: Db) {
         skills: bundle.manifest.skills?.length ?? 0,
         routines: bundle.manifest.routines?.length ?? 0,
         envInputs: bundle.manifest.envInputs?.length ?? 0,
+        internalAgentConfig: bundle.manifest.internalAgentConfig ? 1 : 0,
       },
       files: filePaths,
       estimatedBytes: manifestBytes + fileBytes,
@@ -2161,6 +2201,38 @@ export function companyPortabilityService(db: Db) {
           action,
           title: planRoutine.plannedTitle,
           reason: planRoutine.reason,
+        });
+      }
+    }
+
+    if (include.internalAgentConfig && sourceManifest.internalAgentConfig) {
+      const cfg = sourceManifest.internalAgentConfig;
+      const existingRows = (await db
+        .select()
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, targetCompany.id))) as Record<string, unknown>[];
+      const values: Record<string, unknown> = {
+        executionMode: cfg.executionMode,
+        provider: cfg.provider ?? null,
+        model: cfg.model ?? null,
+        cliTool: cfg.cliTool ?? null,
+        autonomyLevel: cfg.autonomyLevel,
+        enabledCapabilities: cfg.enabledCapabilities ?? [],
+        notificationPreference: cfg.notificationPreference,
+        contextTokenBudget: cfg.contextTokenBudget,
+        budgetMonthlyCents: cfg.budgetMonthlyCents ?? null,
+        proactiveIntervalMinutes: cfg.proactiveIntervalMinutes,
+        metadata: cfg.metadata ?? {},
+      };
+      if (existingRows.length > 0) {
+        await db
+          .update(internalAgentConfig)
+          .set(values)
+          .where(eq(internalAgentConfig.companyId, targetCompany.id));
+      } else {
+        await db.insert(internalAgentConfig).values({
+          companyId: targetCompany.id,
+          ...values,
         });
       }
     }

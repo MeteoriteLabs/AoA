@@ -342,7 +342,7 @@ function resetState() {
 }
 
 describe("company-portability routines", () => {
-  const svc = companyPortabilityService({} as any);
+  const svc = companyPortabilityService({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any);
 
   it("exportBundle with include.routines=true serializes routines with triggers + variables", async () => {
     resetState();

@@ -53,7 +53,7 @@ function buildInlineSource(manifest: unknown, files: Record<string, string> = { 
 }
 
 describe("company-portability warnings", () => {
-  const svc = companyPortabilityService({} as any);
+  const svc = companyPortabilityService({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any);
 
   it("returns warning for unknown top-level section in manifest", async () => {
     const manifest = {
