@@ -9,6 +9,7 @@ export {
   portabilitySecretRequirementSchema,
   portabilityCompanyManifestEntrySchema,
   portabilityAgentManifestEntrySchema,
+  portabilityProjectManifestEntrySchema,
   portabilityManifestSchema,
   portabilitySourceSchema,
   portabilityTargetSchema,

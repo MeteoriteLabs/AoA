@@ -58,13 +58,13 @@ describe("company-portability warnings", () => {
   it("returns warning for unknown top-level section in manifest", async () => {
     const manifest = {
       ...baseManifest(),
-      projects: [{ slug: "eng", name: "Engineering" }],
+      skills: [{ key: "eng" }],
     };
     const preview = await svc.previewImport(buildInlineSource(manifest));
     expect(preview.warnings).toContainEqual(
       expect.objectContaining({
         kind: "unknown_section",
-        section: "projects",
+        section: "skills",
         count: 1,
       }),
     );

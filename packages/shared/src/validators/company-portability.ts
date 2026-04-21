@@ -4,6 +4,7 @@ export const portabilityIncludeSchema = z
   .object({
     company: z.boolean().optional(),
     agents: z.boolean().optional(),
+    projects: z.boolean().optional(),
   })
   .partial();
 
@@ -41,6 +42,21 @@ export const portabilityAgentManifestEntrySchema = z.object({
   metadata: z.record(z.unknown()).nullable(),
 });
 
+export const portabilityProjectManifestEntrySchema = z.object({
+  slug: z.string().min(1),
+  name: z.string().min(1),
+  type: z.enum(["department", "project"]),
+  description: z.string().nullable().optional(),
+  parentSlug: z.string().min(1).nullable().optional(),
+  status: z.string().nullable().optional(),
+  color: z.string().nullable().optional(),
+  targetDate: z.string().nullable().optional(),
+  leadAgentSlug: z.string().min(1).nullable().optional(),
+  functionType: z.string().nullable().optional(),
+  executionWorkspacePolicy: z.record(z.unknown()).nullable().optional(),
+  metadata: z.record(z.unknown()).nullable().optional(),
+});
+
 export const portabilityManifestSchema = z
   .object({
     schemaVersion: z.number().int().positive(),
@@ -51,12 +67,16 @@ export const portabilityManifestSchema = z
         companyName: z.string().min(1),
       })
       .nullable(),
-    includes: z.object({
-      company: z.boolean(),
-      agents: z.boolean(),
-    }),
+    includes: z
+      .object({
+        company: z.boolean(),
+        agents: z.boolean(),
+        projects: z.boolean().optional(),
+      })
+      .passthrough(),
     company: portabilityCompanyManifestEntrySchema.nullable(),
     agents: z.array(portabilityAgentManifestEntrySchema),
+    projects: z.array(portabilityProjectManifestEntrySchema).optional(),
     requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
   })
   .passthrough();

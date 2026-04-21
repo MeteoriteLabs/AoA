@@ -1,6 +1,7 @@
 export interface CompanyPortabilityInclude {
   company: boolean;
   agents: boolean;
+  projects: boolean;
 }
 
 export interface CompanyPortabilitySecretRequirement {
@@ -37,6 +38,23 @@ export interface CompanyPortabilityAgentManifestEntry {
   metadata: Record<string, unknown> | null;
 }
 
+export type CompanyPortabilityProjectType = "department" | "project";
+
+export interface CompanyPortabilityProjectManifestEntry {
+  slug: string;
+  name: string;
+  type: CompanyPortabilityProjectType;
+  description?: string | null;
+  parentSlug?: string | null;
+  status?: string | null;
+  color?: string | null;
+  targetDate?: string | null;
+  leadAgentSlug?: string | null;
+  functionType?: string | null;
+  executionWorkspacePolicy?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
+}
+
 export interface CompanyPortabilityManifest {
   schemaVersion: number;
   generatedAt: string;
@@ -47,6 +65,7 @@ export interface CompanyPortabilityManifest {
   includes: CompanyPortabilityInclude;
   company: CompanyPortabilityCompanyManifestEntry | null;
   agents: CompanyPortabilityAgentManifestEntry[];
+  projects?: CompanyPortabilityProjectManifestEntry[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];
 }
 
@@ -118,6 +137,14 @@ export interface CompanyPortabilityPreviewAgentPlan {
   reason: string | null;
 }
 
+export interface CompanyPortabilityPreviewProjectPlan {
+  slug: string;
+  action: "create" | "update" | "skip";
+  plannedName: string;
+  existingProjectId: string | null;
+  reason: string | null;
+}
+
 export interface CompanyPortabilityPreviewResult {
   include: CompanyPortabilityInclude;
   targetCompanyId: string | null;
@@ -127,6 +154,7 @@ export interface CompanyPortabilityPreviewResult {
   plan: {
     companyAction: "none" | "create" | "update";
     agentPlans: CompanyPortabilityPreviewAgentPlan[];
+    projectPlans: CompanyPortabilityPreviewProjectPlan[];
   };
   requiredSecrets: CompanyPortabilitySecretRequirement[];
   warnings: ImportWarning[];
@@ -146,6 +174,14 @@ export interface CompanyPortabilityImportResult {
     id: string | null;
     action: "created" | "updated" | "skipped";
     name: string;
+    reason: string | null;
+  }[];
+  projects: {
+    slug: string;
+    id: string | null;
+    action: "created" | "updated" | "skipped";
+    name: string;
+    type: CompanyPortabilityProjectType;
     reason: string | null;
   }[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];
