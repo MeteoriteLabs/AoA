@@ -780,18 +780,18 @@ function BudgetSection() {
 
   return (
     <div className="space-y-6">
-      {/* Cross-link to full Budget page */}
+      {/* Cross-link to full Budget page (primary entry point for finance analytics) */}
       <Link
         to="../budget"
-        className="group flex items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-4 py-3 hover:bg-accent/50 transition-colors"
+        className="group flex items-center justify-between gap-3 rounded-md border border-primary/40 bg-primary/5 px-4 py-3 hover:bg-primary/10 hover:border-primary/60 transition-colors"
       >
         <div className="min-w-0">
-          <p className="text-sm font-medium">View full Budget page</p>
+          <p className="text-sm font-medium">Open full Budget page</p>
           <p className="text-xs text-muted-foreground">
-            Breakdown, budgets, quotas, and the finance ledger in one place.
+            Breakdown, budgets, quotas, and the finance ledger in one place. This tab shows a quick summary.
           </p>
         </div>
-        <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-foreground shrink-0" />
+        <ArrowRight className="h-4 w-4 text-primary group-hover:translate-x-0.5 transition-transform shrink-0" />
       </Link>
 
       {/* Date range selector */}
