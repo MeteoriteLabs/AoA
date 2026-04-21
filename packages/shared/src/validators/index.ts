@@ -20,6 +20,7 @@ export {
   portabilityBudgetPolicyManifestSchema,
   portabilityFinanceEventManifestSchema,
   portabilityQuotaWindowManifestSchema,
+  portabilityWorkflowTemplateManifestSchema,
   portabilityManifestSchema,
   portabilitySourceSchema,
   portabilityTargetSchema,

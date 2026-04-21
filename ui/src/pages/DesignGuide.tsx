@@ -2634,6 +2634,7 @@ function CompanyExportShowcase() {
       costEvents: 1284,
       financeEvents: 12,
       quotaWindows: 4,
+      workflowTemplates: 3,
     },
     files: ["README.md", "agents/ceo.md"],
     estimatedBytes: 512_000,
@@ -2791,6 +2792,7 @@ function CompanyImportShowcase() {
       costEvents: new Array(1284).fill(null).map((_, i) => ({ slug: `ce-${i}` })),
       financeEvents: new Array(12).fill(null).map((_, i) => ({ slug: `fe-${i}` })),
       quotaWindows: new Array(4).fill(null).map((_, i) => ({ slug: `qw-${i}` })),
+      workflowTemplates: new Array(3).fill(null).map((_, i) => ({ slug: `wt-${i}` })),
     } as unknown as typeof sampleBundle.manifest,
     files: sampleBundle.files,
   };

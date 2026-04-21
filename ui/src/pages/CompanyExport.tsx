@@ -29,6 +29,7 @@ type IncludeFlags = {
   costEvents: boolean;
   financeEvents: boolean;
   quotaWindows: boolean;
+  workflowTemplates: boolean;
 };
 
 const DEFAULT_FLAGS: IncludeFlags = {
@@ -44,6 +45,7 @@ const DEFAULT_FLAGS: IncludeFlags = {
   costEvents: false,
   financeEvents: false,
   quotaWindows: false,
+  workflowTemplates: false,
 };
 
 type EntityRow = {
@@ -59,6 +61,7 @@ const CORE_ENTITY_ROWS: EntityRow[] = [
   { key: "issues", label: "Tasks", description: "All tasks with status, priority, assignees, and labels." },
   { key: "skills", label: "Skills", description: "Company-scoped skills with source tracking and file inventory." },
   { key: "routines", label: "Routines", description: "Routines with triggers (schedule/webhook/api) and variables." },
+  { key: "workflowTemplates", label: "Workflow Templates", description: "Reusable task-chain patterns: ordered steps and dependencies." },
   { key: "envInputs", label: "Environment Inputs", description: "Agent env bindings with secret/plain classification." },
 ];
 
@@ -310,6 +313,9 @@ function PreviewSummary({ preview }: { preview: CompanyPortabilityExportPreviewR
   }
   if (preview.counts.quotaWindows !== undefined) {
     countRows.push({ label: "Quota windows", value: preview.counts.quotaWindows });
+  }
+  if (preview.counts.workflowTemplates !== undefined) {
+    countRows.push({ label: "Workflow templates", value: preview.counts.workflowTemplates });
   }
   return (
     <Card>

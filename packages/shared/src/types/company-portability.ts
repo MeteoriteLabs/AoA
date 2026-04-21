@@ -20,6 +20,7 @@ export interface CompanyPortabilityInclude {
   costEvents?: CompanyPortabilityCostEventsInclude;
   financeEvents?: boolean;
   quotaWindows?: boolean;
+  workflowTemplates?: boolean;
 }
 
 export interface CompanyPortabilitySecretRequirement {
@@ -243,6 +244,16 @@ export interface CompanyPortabilityQuotaWindowManifestEntry {
   metadata?: Record<string, unknown> | null;
 }
 
+export interface CompanyPortabilityWorkflowTemplateManifestEntry {
+  slug: string;
+  name: string;
+  description: string | null;
+  workspaceMode: string;
+  steps: unknown[];
+  dependencies: unknown[];
+  metadata?: Record<string, unknown> | null;
+}
+
 export interface CompanyPortabilityInternalAgentConfigManifestEntry {
   executionMode: string;
   provider?: string | null;
@@ -277,6 +288,7 @@ export interface CompanyPortabilityManifest {
   costEvents?: CompanyPortabilityCostEventManifestEntry[];
   financeEvents?: CompanyPortabilityFinanceEventManifestEntry[];
   quotaWindows?: CompanyPortabilityQuotaWindowManifestEntry[];
+  workflowTemplates?: CompanyPortabilityWorkflowTemplateManifestEntry[];
   requiredSecrets: CompanyPortabilitySecretRequirement[];
 }
 
@@ -298,6 +310,7 @@ export interface CompanyPortabilityExportPreviewCounts {
   costEvents?: number;
   financeEvents?: number;
   quotaWindows?: number;
+  workflowTemplates?: number;
 }
 
 export interface CompanyPortabilityExportPreviewResult {

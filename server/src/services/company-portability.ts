@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { and, eq, gte, isNull, lte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { budgetPolicies, costEvents, financeEvents, internalAgentConfig, providerQuotaWindows } from "@paperclipai/db";
+import { budgetPolicies, costEvents, financeEvents, internalAgentConfig, providerQuotaWindows, workflowTemplates } from "@paperclipai/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityBudgetPolicyManifestEntry,
@@ -31,6 +31,7 @@ import type {
   CompanyPortabilityQuotaWindowManifestEntry,
   CompanyPortabilityRoutineManifestEntry,
   CompanyPortabilitySkillManifestEntry,
+  CompanyPortabilityWorkflowTemplateManifestEntry,
   ImportWarning,
 } from "@paperclipai/shared";
 import {
@@ -62,6 +63,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   costEvents: false,
   financeEvents: false,
   quotaWindows: false,
+  workflowTemplates: false,
 };
 
 const COST_EVENT_VOLUME_THRESHOLD = 10000;
@@ -90,7 +92,7 @@ const MANIFEST_WRAPPER_KEYS: ReadonlySet<string> = new Set([
   "requiredSecrets",
 ]);
 
-const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines", "envInputs", "internalAgentConfig", "budgetPolicies", "costEvents", "financeEvents", "quotaWindows"]);
+const KNOWN_SECTIONS: ReadonlySet<string> = new Set(["company", "agents", "projects", "issues", "skills", "routines", "envInputs", "internalAgentConfig", "budgetPolicies", "costEvents", "financeEvents", "quotaWindows", "workflowTemplates"]);
 
 const MAX_SUPPORTED_SCHEMA_VERSION = 2;
 
@@ -270,6 +272,7 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     costEvents: input?.costEvents ?? DEFAULT_INCLUDE.costEvents,
     financeEvents: input?.financeEvents ?? DEFAULT_INCLUDE.financeEvents,
     quotaWindows: input?.quotaWindows ?? DEFAULT_INCLUDE.quotaWindows,
+    workflowTemplates: input?.workflowTemplates ?? DEFAULT_INCLUDE.workflowTemplates,
   };
 }
 
@@ -311,6 +314,31 @@ function serializeInternalAgentConfigRow(row: Record<string, unknown>): CompanyP
     proactiveIntervalMinutes:
       typeof row.proactiveIntervalMinutes === "number" ? row.proactiveIntervalMinutes : 240,
     metadata: (row.metadata as Record<string, unknown> | null | undefined) ?? null,
+  };
+}
+
+function synthesizeWorkflowTemplateSlug(name: string): string {
+  const normalized = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60)
+    .replace(/-+$/g, "");
+  return normalized.length > 0 ? normalized : "workflow-template";
+}
+
+function serializeWorkflowTemplateRow(
+  row: Record<string, unknown>,
+): CompanyPortabilityWorkflowTemplateManifestEntry {
+  const name = typeof row.name === "string" ? row.name : "Untitled";
+  return {
+    slug: synthesizeWorkflowTemplateSlug(name),
+    name,
+    description: typeof row.description === "string" ? row.description : null,
+    workspaceMode:
+      typeof row.workspaceMode === "string" ? row.workspaceMode : "department_default",
+    steps: Array.isArray(row.steps) ? (row.steps as unknown[]) : [],
+    dependencies: Array.isArray(row.dependencies) ? (row.dependencies as unknown[]) : [],
   };
 }
 
@@ -1377,6 +1405,14 @@ export function companyPortabilityService(db: Db) {
       manifest.quotaWindows = rows.map((row) => serializeQuotaWindowRow(row));
     }
 
+    if (include.workflowTemplates) {
+      const rows = (await db
+        .select()
+        .from(workflowTemplates)
+        .where(eq(workflowTemplates.companyId, companyId))) as Record<string, unknown>[];
+      manifest.workflowTemplates = rows.map((row) => serializeWorkflowTemplateRow(row));
+    }
+
     manifest.requiredSecrets = dedupeRequiredSecrets(requiredSecrets);
 
     files["README.md"] = generateReadme(manifest, {
@@ -1415,6 +1451,7 @@ export function companyPortabilityService(db: Db) {
         costEvents: bundle.manifest.costEvents?.length ?? 0,
         financeEvents: bundle.manifest.financeEvents?.length ?? 0,
         quotaWindows: bundle.manifest.quotaWindows?.length ?? 0,
+        workflowTemplates: bundle.manifest.workflowTemplates?.length ?? 0,
       },
       files: filePaths,
       estimatedBytes: manifestBytes + fileBytes,
@@ -2847,6 +2884,87 @@ export function companyPortabilityService(db: Db) {
           section: "quotaWindows",
           message: "Quota windows imported as point-in-time snapshots; refresh via adapter poll for current values.",
         });
+      }
+    }
+
+    if (include.workflowTemplates === true && Array.isArray(sourceManifest.workflowTemplates)) {
+      const manifestWorkflowTemplates = sourceManifest.workflowTemplates;
+      const existingRows = (await db
+        .select()
+        .from(workflowTemplates)
+        .where(eq(workflowTemplates.companyId, targetCompany.id))) as Record<string, unknown>[];
+      const existingBySlug = new Map<string, Record<string, unknown>>();
+      const usedSlugs = new Set<string>();
+      for (const row of existingRows) {
+        const name = typeof row.name === "string" ? row.name : "";
+        const slug = synthesizeWorkflowTemplateSlug(name);
+        existingBySlug.set(slug, row);
+        usedSlugs.add(slug);
+      }
+
+      for (const tpl of manifestWorkflowTemplates) {
+        const bundleSlug = typeof tpl.slug === "string" && tpl.slug.length > 0
+          ? tpl.slug
+          : synthesizeWorkflowTemplateSlug(tpl.name);
+        const collision = existingBySlug.get(bundleSlug);
+
+        if (collision) {
+          if (plan.collisionStrategy === "skip") {
+            continue;
+          }
+          if (plan.collisionStrategy === "replace") {
+            const existingId = typeof collision.id === "string" ? collision.id : null;
+            if (existingId) {
+              await db
+                .update(workflowTemplates)
+                .set({
+                  name: tpl.name,
+                  description: tpl.description ?? null,
+                  workspaceMode: tpl.workspaceMode,
+                  steps: tpl.steps as unknown,
+                  dependencies: tpl.dependencies as unknown,
+                  updatedAt: new Date(),
+                })
+                .where(eq(workflowTemplates.id, existingId));
+            }
+            continue;
+          }
+          // rename: derive a unique name + slug
+          let renameIdx = 2;
+          let candidateName = `${tpl.name} ${renameIdx}`;
+          let candidateSlug = synthesizeWorkflowTemplateSlug(candidateName);
+          while (usedSlugs.has(candidateSlug)) {
+            renameIdx += 1;
+            candidateName = `${tpl.name} ${renameIdx}`;
+            candidateSlug = synthesizeWorkflowTemplateSlug(candidateName);
+          }
+          usedSlugs.add(candidateSlug);
+          await db.insert(workflowTemplates).values({
+            companyId: targetCompany.id,
+            name: candidateName,
+            description: tpl.description ?? null,
+            workspaceMode: tpl.workspaceMode,
+            steps: tpl.steps as unknown,
+            dependencies: tpl.dependencies as unknown,
+            instantiationCount: 0,
+            lastInstantiatedAt: null,
+            createdBy: actorUserId ?? "importer",
+          } as never);
+          continue;
+        }
+
+        usedSlugs.add(bundleSlug);
+        await db.insert(workflowTemplates).values({
+          companyId: targetCompany.id,
+          name: tpl.name,
+          description: tpl.description ?? null,
+          workspaceMode: tpl.workspaceMode,
+          steps: tpl.steps as unknown,
+          dependencies: tpl.dependencies as unknown,
+          instantiationCount: 0,
+          lastInstantiatedAt: null,
+          createdBy: actorUserId ?? "importer",
+        } as never);
       }
     }
 

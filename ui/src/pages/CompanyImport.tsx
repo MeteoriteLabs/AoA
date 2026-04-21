@@ -386,6 +386,9 @@ function PreviewCard({
     if (manifest.quotaWindows !== undefined) {
       rows.push({ label: "Quota windows", value: manifest.quotaWindows.length });
     }
+    if (manifest.workflowTemplates !== undefined) {
+      rows.push({ label: "Workflow templates", value: manifest.workflowTemplates.length });
+    }
     return rows;
   }, [bundle]);
 

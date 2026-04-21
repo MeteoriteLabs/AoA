@@ -135,6 +135,7 @@ export type {
   CompanyPortabilityFinanceEventManifestEntry,
   CompanyPortabilityFinanceEventDirection,
   CompanyPortabilityQuotaWindowManifestEntry,
+  CompanyPortabilityWorkflowTemplateManifestEntry,
   CompanyPortabilityPreviewRoutinePlan,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportRequest,

@@ -24,6 +24,7 @@ export const portabilityIncludeSchema = z
     costEvents: portabilityCostEventsIncludeSchema.optional(),
     financeEvents: z.boolean().optional(),
     quotaWindows: z.boolean().optional(),
+    workflowTemplates: z.boolean().optional(),
   })
   .partial();
 
@@ -246,6 +247,18 @@ export const portabilityQuotaWindowManifestSchema = z
   })
   .passthrough();
 
+export const portabilityWorkflowTemplateManifestSchema = z
+  .object({
+    slug: z.string().min(1),
+    name: z.string().min(1),
+    description: z.string().nullable(),
+    workspaceMode: z.string().min(1),
+    steps: z.array(z.unknown()),
+    dependencies: z.array(z.unknown()),
+    metadata: z.record(z.unknown()).nullable().optional(),
+  })
+  .passthrough();
+
 export const portabilityInternalAgentConfigManifestSchema = z
   .object({
     executionMode: z.string().min(1),
@@ -286,6 +299,7 @@ export const portabilityManifestSchema = z
         costEvents: portabilityCostEventsIncludeSchema.optional(),
         financeEvents: z.boolean().optional(),
         quotaWindows: z.boolean().optional(),
+        workflowTemplates: z.boolean().optional(),
       })
       .passthrough(),
     company: portabilityCompanyManifestEntrySchema.nullable(),
@@ -300,6 +314,7 @@ export const portabilityManifestSchema = z
     costEvents: z.array(portabilityCostEventManifestSchema).optional(),
     financeEvents: z.array(portabilityFinanceEventManifestSchema).optional(),
     quotaWindows: z.array(portabilityQuotaWindowManifestSchema).optional(),
+    workflowTemplates: z.array(portabilityWorkflowTemplateManifestSchema).optional(),
     requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
   })
   .passthrough();
