@@ -155,6 +155,7 @@ import type {
 import type { CostByModelRow } from "@/api/costs";
 import type { BudgetPolicySummary, BudgetIncident } from "@paperclipai/shared";
 import { CompanyExport as CompanyExportPage } from "@/pages/CompanyExport";
+import { CompanyImport as CompanyImportPage } from "@/pages/CompanyImport";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -1401,6 +1402,11 @@ export function DesignGuide() {
       <CompanyExportShowcase />
 
       {/* ============================================================ */}
+      {/*  COMPANY IMPORT                                               */}
+      {/* ============================================================ */}
+      <CompanyImportShowcase />
+
+      {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
       <Section title="Keyboard Shortcuts">
@@ -2466,6 +2472,137 @@ function CompanyExportShowcase() {
       <SubSection title="Preview with warnings">
         <div className="rounded-md border border-border p-4">
           <CompanyExportPage showcase initialPreview={warningPreview} />
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  CompanyImport showcase                                             */
+/* ------------------------------------------------------------------ */
+
+function CompanyImportShowcase() {
+  const sampleBundle = {
+    manifest: {
+      schemaVersion: 2,
+      generatedAt: "2026-04-21T00:00:00Z",
+      source: { companyId: "comp-sample", companyName: "Acme Portable" },
+      includes: {
+        company: true,
+        agents: true,
+        projects: true,
+        issues: true,
+        skills: false,
+        routines: false,
+        envInputs: false,
+      },
+      company: {
+        path: "company.md",
+        name: "Acme Portable",
+        description: "Sample bundle for the design guide",
+        brandColor: null,
+        requireBoardApprovalForNewAgents: false,
+      },
+      agents: [],
+      requiredSecrets: [],
+    },
+    files: { "company.md": "# Acme Portable" },
+  };
+
+  const cleanPreview = {
+    include: {
+      company: true,
+      agents: true,
+      projects: true,
+      issues: true,
+      skills: false,
+      routines: false,
+      envInputs: false,
+    },
+    targetCompanyId: null,
+    targetCompanyName: "Acme Portable",
+    collisionStrategy: "rename" as const,
+    selectedAgentSlugs: ["ceo", "cto"],
+    plan: {
+      companyAction: "create" as const,
+      agentPlans: [
+        { slug: "ceo", action: "create" as const, plannedName: "CEO", existingAgentId: null, reason: null },
+        { slug: "cto", action: "create" as const, plannedName: "CTO", existingAgentId: null, reason: null },
+      ],
+      projectPlans: [
+        { slug: "eng", action: "create" as const, plannedName: "Engineering", existingProjectId: null, reason: null },
+      ],
+      issuePlans: [
+        { slug: "launch", action: "create" as const, plannedTitle: "Ship MVP", reason: null },
+      ],
+      skillPlans: [],
+      routinePlans: [],
+    },
+    requiredSecrets: [],
+    warnings: [],
+    errors: [],
+  };
+
+  const warningPreview = {
+    ...cleanPreview,
+    plan: {
+      ...cleanPreview.plan,
+      agentPlans: [
+        { slug: "ceo", action: "create" as const, plannedName: "CEO", existingAgentId: null, reason: null },
+        { slug: "cto", action: "skip" as const, plannedName: "CTO", existingAgentId: "a-1", reason: "Slug already exists" },
+      ],
+    },
+    warnings: [
+      { kind: "unknown_section" as const, section: "memory", message: "Unknown section: memory (12 items skipped)" },
+      { kind: "deprecated_field" as const, message: "PATH env var was omitted on agent ceo" },
+    ],
+    requiredSecrets: [
+      {
+        key: "GITHUB_TOKEN",
+        description: "Required for git operations",
+        agentSlug: "ceo",
+        providerHint: null,
+      },
+    ],
+  };
+
+  return (
+    <Section title="Company Import">
+      <p className="text-sm text-muted-foreground">
+        Standalone import page at <code>/import</code>. File upload, collision strategy,
+        preview with plan summary, warnings, and required secrets.
+      </p>
+
+      <SubSection title="Initial state (no file)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyImportPage showcase="initial" />
+        </div>
+      </SubSection>
+
+      <SubSection title="Bundle parsed (ready to preview)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyImportPage showcase="parsed" initialBundle={sampleBundle} />
+        </div>
+      </SubSection>
+
+      <SubSection title="Preview shown (clean)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyImportPage
+            showcase="preview"
+            initialBundle={sampleBundle}
+            initialPreview={cleanPreview}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Preview with warnings + secrets">
+        <div className="rounded-md border border-border p-4">
+          <CompanyImportPage
+            showcase="preview-warnings"
+            initialBundle={sampleBundle}
+            initialPreview={warningPreview}
+          />
         </div>
       </SubSection>
     </Section>

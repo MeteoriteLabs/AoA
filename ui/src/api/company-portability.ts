@@ -1,7 +1,11 @@
 import type {
   CompanyPortabilityExportPreviewResult,
   CompanyPortabilityExportResult,
+  CompanyPortabilityImportRequest,
+  CompanyPortabilityImportResult,
   CompanyPortabilityInclude,
+  CompanyPortabilityPreviewRequest,
+  CompanyPortabilityPreviewResult,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -15,5 +19,15 @@ export const companyPortabilityApi = {
     api.post<CompanyPortabilityExportResult>(
       `/companies/${companyId}/export`,
       { include },
+    ),
+  previewImport: (request: CompanyPortabilityPreviewRequest) =>
+    api.post<CompanyPortabilityPreviewResult>(
+      `/companies/import/preview`,
+      request,
+    ),
+  importBundle: (request: CompanyPortabilityImportRequest) =>
+    api.post<CompanyPortabilityImportResult>(
+      `/companies/import`,
+      request,
     ),
 };

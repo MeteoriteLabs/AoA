@@ -37,6 +37,7 @@ const GLOBAL_ROUTE_ROOTS = new Set([
   "instance",
   "me",
   "export",
+  "import",
 ]);
 
 export function normalizeCompanyPrefix(prefix: string): string {

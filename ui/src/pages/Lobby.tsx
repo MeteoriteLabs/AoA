@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { Plus, Settings } from "lucide-react";
+import { Plus, Settings, Upload } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialog } from "@/context/DialogContext";
 import { companiesApi, type CompanyStats } from "@/api/companies";
@@ -104,6 +104,22 @@ export function Lobby() {
             >
               <Plus className="h-5 w-5" />
               <span className="text-sm font-medium">Create Company</span>
+            </button>
+
+            {/* Import Company card */}
+            <button
+              type="button"
+              onClick={() => navigate("/import")}
+              className={cn(
+                "flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border p-5",
+                "text-muted-foreground transition-all duration-150",
+                "hover:border-foreground/20 hover:text-foreground",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                "min-h-[120px]",
+              )}
+            >
+              <Upload className="h-5 w-5" />
+              <span className="text-sm font-medium">Import Company</span>
             </button>
           </div>
         </div>

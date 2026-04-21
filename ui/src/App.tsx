@@ -41,6 +41,7 @@ import { RoutineDetail } from "./pages/RoutineDetail";
 import { AuthPage } from "./pages/Auth";
 import { Me } from "./pages/Me";
 import { CompanyExport } from "./pages/CompanyExport";
+import { CompanyImport } from "./pages/CompanyImport";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
@@ -259,6 +260,9 @@ export function App() {
           <Route path="me" element={<Me />} />
           <Route path="export" element={<Layout />}>
             <Route index element={<CompanyExport />} />
+          </Route>
+          <Route path="import" element={<Layout />}>
+            <Route index element={<CompanyImport />} />
           </Route>
           <Route path="instance/settings" element={<InstanceSettingsPage />} />
           <Route path="instance/settings/plugins/:pluginId" element={<PluginSettings />} />
