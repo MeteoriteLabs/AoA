@@ -196,7 +196,11 @@ export {
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
 } from "./instance.js";
-export type { FeedbackDataSharingPreference } from "./feedback.js";
+export type {
+  FeedbackDataSharingPreference,
+  FeedbackRedactionState,
+  FeedbackRedactionSummary,
+} from "./feedback.js";
 export {
   FEEDBACK_DATA_SHARING_PREFERENCES,
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,

@@ -407,6 +407,13 @@
       "when": 1776756291230,
       "tag": "0057_puzzling_jubilee",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1776793374219,
+      "tag": "0058_broken_major_mapleleaf",
+      "breakpoints": true
     }
   ]
 }

@@ -77,6 +77,8 @@ export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { workspaceOperations } from "./workspace_operations.js";
+export { feedbackVotes } from "./feedback_votes.js";
+export { feedbackExports } from "./feedback_exports.js";
 
 // Plugin system
 export { plugins } from "./plugins.js";
