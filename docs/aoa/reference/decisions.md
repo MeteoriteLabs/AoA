@@ -34,7 +34,7 @@ Decisions made during product design and development. Do not relitigate unless e
 | 11 | Departments + Projects coexist (same table, type field) | Departments are permanent orgs, Projects are temporary. Same mechanics, different lifespan. |
 | 12 | Vision & Mission are company-level text fields | Not goals, not memory items. Strategic anchors stored on companies table. |
 | 13 | Goals must belong to at least one department or project via `project_goals` join table | No floating company-level goals. Use existing many-to-many join table, NOT a new projectId column on goals. A goal CAN span multiple departments/projects. |
-| 14 | MCP always routes through Debrief pipeline | Prevents dirty data from external LLM conversations. Quality gate. **[Updated V2.5: "Debrief pipeline" → "Discussion pipeline." MCP input creates discussion entries, never raw tasks. See DA-3.]** |
+| 14 | MCP inbound with authenticated write permission may create tasks directly; `debrief-push` remains for unstructured content | RBAC + per-user keys provide the quality gate that originally lived in the Discussion pipeline. **[Revised 2026-04-21 — see "Decision #14 (revised 2026-04-21)" entry below for full wording. Original V2.5 wording: "Debrief pipeline" → "Discussion pipeline." See DA-3.]** |
 | 15 | Memory is approval-gated | Founder is sole gatekeeper. Agents suggest, founder approves. **[Extended V2.5: see #52 for team lead extension]** |
 | 16 | Agents have read-only Memory access | Receive context at execution time, cannot write directly. |
 | 17 | Tasks don't care who does them | Same task model for humans and agents. Experience adapts. |
@@ -428,3 +428,24 @@ New table: `internal_agent_runs` with triggerType (conversation / proactive / ev
 **Why separate from worker heartbeat:** Different execution model (conversational + event-driven vs. task-based), no queue, no atomic checkout, no adapter abstraction, no wakeup/assignment lifecycle.
 
 **Background processing:** Event triggers fire even when founder is not in app. Results queued as Inbox notifications. Greeting on next login: "I processed 2 new discussions while you were away."
+
+---
+
+## Decision #14 (revised 2026-04-21)
+
+**Status:** Revised. Original locked version superseded.
+
+**Rule:** MCP inbound with authenticated per-user write permission may create tasks, update tasks, and add comments directly. `debrief-push` remains the alternative tool for unstructured content that should pass through AoA's extraction pipeline (meeting notes, emails, paste-dumps). Anonymous / unauthenticated MCP input (if ever exposed) still routes through Discussion pipeline.
+
+**Reasoning:** The original Decision #14 was locked before AoA had per-user MCP keys with RBAC. Discussion-extraction served as the quality gate for external input. With authenticated per-user keys bound to company + user role, the quality gate is now the RBAC layer plus the caller's explicit tool choice. Teammates using external MCP clients (Claude Code, Cursor, etc.) should not need a two-step extraction for tasks they know they want to create.
+
+**What stays the same:**
+- `debrief-push` continues to route through Discussion pipeline
+- Extraction-approval workflow for Discussion items unchanged
+- RBAC scoping (founder / team_lead / team_member) enforced on all MCP writes
+
+**What changes:**
+- `create-task`, `update-task`, `add-comment` tools become first-class MCP writes
+- Callers with write-permission role can bypass Discussion for direct task creation
+
+**Original wording (for reference):** "MCP inbound always routes through Discussion pipeline — never create raw tasks from MCP input."
