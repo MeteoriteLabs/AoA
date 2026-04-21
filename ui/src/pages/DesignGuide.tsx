@@ -1349,6 +1349,11 @@ export function DesignGuide() {
       <RoutineRunDialogShowcase />
 
       {/* ============================================================ */}
+      {/*  BUDGET PAGE                                                  */}
+      {/* ============================================================ */}
+      <BudgetPageShowcase />
+
+      {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
       <Section title="Keyboard Shortcuts">
@@ -1839,5 +1844,101 @@ function SettingsTabsShowcase() {
         </div>
       </SubSection>
     </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Budget page showcase                                               */
+/* ------------------------------------------------------------------ */
+
+function BudgetPagePreview({ variant }: { variant: "empty" | "loaded" }) {
+  const presets = ["Month to Date", "Last 7 Days", "Last 30 Days", "Custom"];
+  return (
+    <div className="space-y-6 rounded-xl border border-border bg-background p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold">Budget</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Spend, budgets, quotas, and the finance ledger across the company.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {presets.map((label, i) => (
+            <Button
+              key={label}
+              variant={i === 0 ? "secondary" : "ghost"}
+              size="sm"
+              disabled
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {variant === "empty" ? (
+        <Card>
+          <CardContent className="p-6 text-center text-sm text-muted-foreground">
+            No cost events in this range yet.
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">Month to Date</p>
+              <p className="text-sm text-muted-foreground">32% utilized</p>
+            </div>
+            <p className="text-2xl font-bold">
+              $32.50{" "}
+              <span className="text-base font-normal text-muted-foreground">
+                / $100.00
+              </span>
+            </p>
+            <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full bg-green-400"
+                style={{ width: "32%" }}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        {[
+          ["Breakdown", "Accounting model + Claude and Codex subscription utilization."],
+          ["Budgets", "Budget policies and open incidents."],
+          ["Quotas", "Provider rate-limit windows."],
+          ["Ledger", "Finance events by biller, by kind, and over time."],
+        ].map(([title, desc]) => (
+          <Card key={title}>
+            <CardContent className="p-4 space-y-1.5">
+              <h3 className="text-sm font-semibold">{title}</h3>
+              <p className="text-xs text-muted-foreground">{desc}</p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BudgetPageShowcase() {
+  return (
+    <Section title="Budget Page">
+      <p className="text-sm text-muted-foreground">
+        Standalone Budget page at <code className="font-mono text-xs">/:companyPrefix/budget</code>.
+        Shell renders a header + date range picker + summary card + four section
+        placeholders. Breakdown / Budgets / Quotas / Ledger content lands in
+        follow-up tasks (B.6–B.8).
+      </p>
+      <SubSection title="Empty state">
+        <BudgetPagePreview variant="empty" />
+      </SubSection>
+      <SubSection title="Loaded state">
+        <BudgetPagePreview variant="loaded" />
+      </SubSection>
+    </Section>
   );
 }

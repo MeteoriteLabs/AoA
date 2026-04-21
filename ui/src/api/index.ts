@@ -11,6 +11,8 @@ export { memoryApi } from "./memory";
 export { searchApi } from "./search";
 export { approvalsApi } from "./approvals";
 export { costsApi } from "./costs";
+export { financeApi } from "./finance";
+export { quotasApi } from "./quotas";
 export { activityApi } from "./activity";
 export { dashboardApi } from "./dashboard";
 export { heartbeatsApi } from "./heartbeats";

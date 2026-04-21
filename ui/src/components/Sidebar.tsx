@@ -13,6 +13,7 @@ import {
   ChevronsLeft,
   Shield,
   Puzzle,
+  DollarSign,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
@@ -157,6 +158,7 @@ export function Sidebar() {
           <SidebarNavItem to="/memory" label="Memory" icon={Brain} entityColor="var(--entity-memory)" collapsed={collapsed} />
           <SidebarNavItem to="/org" label="Team" icon={Users} collapsed={collapsed} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} collapsed={collapsed} />
+          <SidebarNavItem to="/budget" label="Budget" icon={DollarSign} collapsed={collapsed} />
           <SidebarNavItem to="/settings" label="Settings" icon={Settings} collapsed={collapsed} />
         </SidebarSection>
 

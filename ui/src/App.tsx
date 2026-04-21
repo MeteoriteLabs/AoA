@@ -27,6 +27,7 @@ import { VisionMission } from "./pages/VisionMission";
 import { Objectives } from "./pages/Objectives";
 import { Commander } from "./pages/Commander";
 import { DesignGuide } from "./pages/DesignGuide";
+import { Costs } from "./pages/Costs";
 import { TeamPage } from "./pages/TeamPage";
 import { HumanDetail } from "./pages/HumanDetail";
 import { ActiveAgents } from "./pages/ActiveAgents";
@@ -162,7 +163,8 @@ function boardRoutes() {
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
-      <Route path="costs" element={<Navigate to="../settings" replace />} />
+      <Route path="budget" element={<Costs />} />
+      <Route path="costs" element={<Navigate to="../budget" replace />} />
       <Route path="activity" element={<Navigate to="../settings" replace />} />
       <Route path="inbox" element={<Navigate to="/inbox/new" replace />} />
       <Route path="inbox/new" element={<Inbox />} />
@@ -271,6 +273,7 @@ export function App() {
           <Route path="objectives" element={<UnprefixedBoardRedirect />} />
           <Route path="commander" element={<UnprefixedBoardRedirect />} />
           <Route path="memory" element={<UnprefixedBoardRedirect />} />
+          <Route path="budget" element={<UnprefixedBoardRedirect />} />
           <Route path="projects" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />

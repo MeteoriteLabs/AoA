@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/select";
 import {
   Settings,
+  ArrowRight,
   Check,
   ChevronRight,
   DollarSign,
@@ -779,6 +780,20 @@ function BudgetSection() {
 
   return (
     <div className="space-y-6">
+      {/* Cross-link to full Budget page */}
+      <Link
+        to="../budget"
+        className="group flex items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-4 py-3 hover:bg-accent/50 transition-colors"
+      >
+        <div className="min-w-0">
+          <p className="text-sm font-medium">View full Budget page</p>
+          <p className="text-xs text-muted-foreground">
+            Breakdown, budgets, quotas, and the finance ledger in one place.
+          </p>
+        </div>
+        <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-foreground shrink-0" />
+      </Link>
+
       {/* Date range selector */}
       <div className="flex flex-wrap items-center gap-2">
         {presetKeys.map((p) => (
