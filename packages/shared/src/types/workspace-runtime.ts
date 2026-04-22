@@ -48,6 +48,18 @@ export type ExecutionWorkspaceCloseActionKind =
 export type WorkspaceRuntimeDesiredState = "running" | "stopped";
 export type WorkspaceRuntimeServiceStateMap = Record<string, WorkspaceRuntimeDesiredState>;
 
+export interface ProjectWorkspaceRuntimeConfig {
+  workspaceRuntime: Record<string, unknown> | null;
+  desiredState: WorkspaceRuntimeDesiredState | null;
+  serviceStates: WorkspaceRuntimeServiceStateMap | null;
+}
+
+export interface WorkspaceRuntimeControlTarget {
+  workspaceCommandId?: string | null;
+  runtimeServiceId?: string | null;
+  serviceIndex?: number | null;
+}
+
 export interface ExecutionWorkspaceConfig {
   provisionCommand: string | null;
   teardownCommand: string | null;

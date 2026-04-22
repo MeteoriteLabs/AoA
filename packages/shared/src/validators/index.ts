@@ -330,6 +330,7 @@ export {
 export {
   executionWorkspaceStatusSchema,
   executionWorkspaceConfigSchema,
+  workspaceRuntimeControlTargetSchema,
   executionWorkspaceCloseReadinessStateSchema,
   executionWorkspaceCloseActionKindSchema,
   executionWorkspaceCloseActionSchema,

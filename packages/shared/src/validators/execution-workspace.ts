@@ -17,6 +17,12 @@ export const executionWorkspaceConfigSchema = z.object({
   serviceStates: z.record(z.enum(["running", "stopped"])).optional().nullable(),
 }).strict();
 
+export const workspaceRuntimeControlTargetSchema = z.object({
+  workspaceCommandId: z.string().min(1).optional().nullable(),
+  runtimeServiceId: z.string().uuid().optional().nullable(),
+  serviceIndex: z.number().int().nonnegative().optional().nullable(),
+}).strict();
+
 export const executionWorkspaceCloseReadinessStateSchema = z.enum([
   "ready",
   "ready_with_warnings",

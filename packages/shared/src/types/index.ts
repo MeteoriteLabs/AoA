@@ -235,6 +235,8 @@ export type {
   ExecutionWorkspaceConfig,
   WorkspaceRuntimeDesiredState,
   WorkspaceRuntimeServiceStateMap,
+  ProjectWorkspaceRuntimeConfig,
+  WorkspaceRuntimeControlTarget,
 } from "./workspace-runtime.js";
 
 export type {

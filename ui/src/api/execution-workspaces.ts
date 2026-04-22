@@ -2,8 +2,16 @@ import type {
   ExecutionWorkspace,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceSummary,
+  WorkspaceRuntimeControlTarget,
 } from "@paperclipai/shared";
 import { api } from "./client";
+
+export interface WorkspaceRuntimeControlResult {
+  workspace: ExecutionWorkspace;
+  runtimeServiceCount: number;
+  stdout: string;
+  stderr: string;
+}
 
 export interface WorkspaceRuntimeService {
   id: string;
@@ -66,4 +74,22 @@ export const executionWorkspacesApi = {
     api.get<WorkspaceRuntimeService[]>(`/execution-workspaces/${workspaceId}/runtime-services`),
   getCloseReadiness: (id: string) =>
     api.get<ExecutionWorkspaceCloseReadiness>(`/execution-workspaces/${id}/close-readiness`),
+  controlRuntimeServices: (
+    id: string,
+    action: "start" | "stop" | "restart" | "run",
+    target: WorkspaceRuntimeControlTarget,
+  ) =>
+    api.post<WorkspaceRuntimeControlResult>(
+      `/execution-workspaces/${id}/runtime-services/${action}`,
+      target,
+    ),
+  controlRuntimeCommands: (
+    id: string,
+    action: "start" | "stop" | "restart" | "run",
+    target: WorkspaceRuntimeControlTarget,
+  ) =>
+    api.post<WorkspaceRuntimeControlResult>(
+      `/execution-workspaces/${id}/runtime-commands/${action}`,
+      target,
+    ),
 };

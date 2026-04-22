@@ -24,6 +24,10 @@ import type {
   WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import {
+  listCurrentRuntimeServicesForExecutionWorkspaces,
+  listCurrentRuntimeServicesForProjectWorkspaces,
+} from "./workspace-runtime-read-model.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -369,6 +373,41 @@ function toExecutionWorkspace(row: ExecutionWorkspaceRow): ExecutionWorkspace {
   };
 }
 
+export function usesInheritedProjectRuntimeServices(row: ExecutionWorkspaceRow) {
+  if (row.mode !== "shared_workspace" || !row.projectWorkspaceId) return false;
+  return !readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime;
+}
+
+export async function loadEffectiveRuntimeServicesByExecutionWorkspace(
+  db: Db,
+  companyId: string,
+  rows: ExecutionWorkspaceRow[],
+) {
+  const executionRuntimeServices = await listCurrentRuntimeServicesForExecutionWorkspaces(
+    db,
+    companyId,
+    rows.map((row) => row.id),
+  );
+  const projectWorkspaceIds = rows
+    .filter((row) => usesInheritedProjectRuntimeServices(row))
+    .map((row) => row.projectWorkspaceId)
+    .filter((value): value is string => Boolean(value));
+  const projectRuntimeServices = await listCurrentRuntimeServicesForProjectWorkspaces(
+    db,
+    companyId,
+    [...new Set(projectWorkspaceIds)],
+  );
+
+  return new Map(
+    rows.map((row) => [
+      row.id,
+      usesInheritedProjectRuntimeServices(row)
+        ? (projectRuntimeServices.get(row.projectWorkspaceId!) ?? [])
+        : (executionRuntimeServices.get(row.id) ?? []),
+    ]),
+  );
+}
+
 export function executionWorkspaceService(db: Db) {
   return {
     list: async (companyId: string, filters?: {
@@ -456,6 +495,27 @@ export function executionWorkspaceService(db: Db) {
         .where(eq(executionWorkspaces.id, id))
         .then((rows) => rows[0] ?? null);
       return row ? toExecutionWorkspace(row) : null;
+    },
+
+    loadEffectiveRuntimeServicesByExecutionWorkspace: async (id: string) => {
+      const row = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!row) return [];
+      const grouped = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
+      return (grouped.get(row.id) ?? []).map(toRuntimeService);
+    },
+
+    usesInheritedProjectRuntimeServices: async (id: string) => {
+      const row = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!row) return false;
+      return usesInheritedProjectRuntimeServices(row);
     },
 
     getCloseReadiness: async (id: string): Promise<ExecutionWorkspaceCloseReadiness | null> => {
