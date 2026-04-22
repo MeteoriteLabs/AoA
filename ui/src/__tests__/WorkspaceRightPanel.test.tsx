@@ -278,6 +278,7 @@ describe("WorkspaceRightPanel — section rendering", () => {
     });
 
     expect(screen.getByTestId("section-process")).toBeInTheDocument();
+    expect(screen.getByTestId("section-services")).toBeInTheDocument();
     expect(screen.getByTestId("section-terminal")).toBeInTheDocument();
     expect(screen.getByTestId("section-notes")).toBeInTheDocument();
 
@@ -305,6 +306,7 @@ describe("WorkspaceRightPanel — section rendering", () => {
     });
 
     expect(screen.queryByTestId("section-terminal")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("section-services")).not.toBeInTheDocument();
   });
 });
 
@@ -526,6 +528,7 @@ describe("WorkspaceRightPanel — collapsed icon rail", () => {
 
     expect(screen.getByTestId("workspace-rail-section-artifacts")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-rail-section-process")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-rail-section-services")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-rail-section-memory")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-rail-section-git")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-rail-section-terminal")).toBeInTheDocument();
@@ -539,6 +542,7 @@ describe("WorkspaceRightPanel — collapsed icon rail", () => {
     expect(screen.getByTestId("workspace-rail-section-process")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-rail-section-memory")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-rail-section-notes")).toBeInTheDocument();
+    expect(screen.queryByTestId("workspace-rail-section-services")).not.toBeInTheDocument();
     expect(screen.queryByTestId("workspace-rail-section-git")).not.toBeInTheDocument();
     expect(screen.queryByTestId("workspace-rail-section-terminal")).not.toBeInTheDocument();
   });

@@ -169,6 +169,8 @@ export const queryKeys = {
     listForProject: (companyId: string, projectId: string) =>
       ["executionWorkspaces", companyId, projectId] as const,
     detail: (id: string) => ["executionWorkspaces", "detail", id] as const,
+    runtimeServices: (id: string) =>
+      ["executionWorkspaces", "detail", id, "runtime-services"] as const,
   },
   plugins: {
     all: ["plugins"] as const,

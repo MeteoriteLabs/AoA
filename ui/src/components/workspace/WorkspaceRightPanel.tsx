@@ -8,6 +8,7 @@ import {
   GitBranch,
   PanelRight,
   PanelRightClose,
+  Server,
   StickyNote,
   Terminal as TerminalIcon,
   Workflow,
@@ -16,6 +17,7 @@ import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ArtifactsSection } from "./sections/ArtifactsSection";
 import { ProcessSection } from "./sections/ProcessSection";
+import { ServicesSection } from "./sections/ServicesSection";
 import { NotesSection } from "./sections/NotesSection";
 import { ChangesContextSection } from "./sections/ChangesContextSection";
 import { LogsContextSection } from "./sections/LogsContextSection";
@@ -67,14 +69,16 @@ interface SectionDef {
   label: string;
   defaultOpen: boolean;
   icon: LucideIcon;
+  requiresFunctionType?: string;
 }
 
 const PERMANENT_SECTIONS: SectionDef[] = [
   { name: "artifacts", label: "Artifacts", defaultOpen: true, icon: FileBox },
   { name: "process", label: "Process", defaultOpen: true, icon: Workflow },
+  { name: "services", label: "Services", defaultOpen: false, icon: Server, requiresFunctionType: "software_development" },
   { name: "memory", label: "Memory", defaultOpen: true, icon: Brain },
-  { name: "git", label: "Git", defaultOpen: true, icon: GitBranch },
-  { name: "terminal", label: "Terminal", defaultOpen: false, icon: TerminalIcon },
+  { name: "git", label: "Git", defaultOpen: true, icon: GitBranch, requiresFunctionType: "software_development" },
+  { name: "terminal", label: "Terminal", defaultOpen: false, icon: TerminalIcon, requiresFunctionType: "software_development" },
   { name: "notes", label: "Notes", defaultOpen: true, icon: StickyNote },
 ];
 
@@ -138,8 +142,6 @@ export function WorkspaceRightPanel({
     previewMode === "preview" ? "Preview" :
     null;
 
-  const showTerminal = functionType === "software_development";
-
   // ── Collapsed icon rail ──
   if (collapsed) {
     return (
@@ -161,7 +163,7 @@ export function WorkspaceRightPanel({
         <div className="w-6 h-px bg-border my-1" />
 
         {PERMANENT_SECTIONS.map((section) => {
-          if ((section.name === "terminal" || section.name === "git") && !showTerminal) return null;
+          if (section.requiresFunctionType && section.requiresFunctionType !== functionType) return null;
           const Icon = section.icon;
           return (
             <button
@@ -248,8 +250,8 @@ export function WorkspaceRightPanel({
           {/* ── Permanent sections (card style) ── */}
           <div className="px-2 space-y-2">
           {PERMANENT_SECTIONS.map((section) => {
-            // Skip git + terminal for non-software departments
-            if ((section.name === "terminal" || section.name === "git") && !showTerminal) return null;
+            // Skip sections that require a specific functionType
+            if (section.requiresFunctionType && section.requiresFunctionType !== functionType) return null;
 
             const SectionIcon = section.icon;
             const isOpen = expanded[section.name];
@@ -284,6 +286,9 @@ export function WorkspaceRightPanel({
                       )}
                       {section.name === "process" && (
                         <ProcessSection issueId={issueId} companyId={companyId} companyPrefix={companyPrefix} />
+                      )}
+                      {section.name === "services" && (
+                        <ServicesSection workspace={workspace} />
                       )}
                       {section.name === "git" && (
                         <div className="px-3">
