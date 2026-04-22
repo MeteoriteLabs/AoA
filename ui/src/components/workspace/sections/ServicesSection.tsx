@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Play, Square, RotateCw, Server, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -55,6 +55,24 @@ export function ServicesSection({ workspace }: ServicesSectionProps) {
     refetchInterval: 3000,
   });
 
+  // Clear stale errors when a service transitions to "running" (e.g., external
+  // fix or successful retry by another client). Without this the error would
+  // linger until the user clicks an action on the row.
+  useEffect(() => {
+    if (!services) return;
+    setErrorByService((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const s of services) {
+        if (s.status === "running" && next[s.id]) {
+          delete next[s.id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [services]);
+
   const invalidateAfterAction = () => {
     queryClient.invalidateQueries({
       queryKey: queryKeys.executionWorkspaces.runtimeServices(workspace.id),
@@ -64,23 +82,9 @@ export function ServicesSection({ workspace }: ServicesSectionProps) {
     });
   };
 
-  const startMutation = useMutation({
-    mutationFn: (serviceId: string) =>
-      executionWorkspacesApi.controlRuntimeServices(workspace.id, "start", {
-        runtimeServiceId: serviceId,
-      }),
-  });
-
-  const stopMutation = useMutation({
-    mutationFn: (serviceId: string) =>
-      executionWorkspacesApi.controlRuntimeServices(workspace.id, "stop", {
-        runtimeServiceId: serviceId,
-      }),
-  });
-
-  const restartMutation = useMutation({
-    mutationFn: (serviceId: string) =>
-      executionWorkspacesApi.controlRuntimeServices(workspace.id, "restart", {
+  const controlMutation = useMutation({
+    mutationFn: ({ serviceId, action }: { serviceId: string; action: ServiceAction }) =>
+      executionWorkspacesApi.controlRuntimeServices(workspace.id, action, {
         runtimeServiceId: serviceId,
       }),
   });
@@ -89,20 +93,20 @@ export function ServicesSection({ workspace }: ServicesSectionProps) {
     setPendingByService((prev) => ({ ...prev, [serviceId]: action }));
     setErrorByService((prev) => ({ ...prev, [serviceId]: null }));
 
-    const mutation =
-      action === "start" ? startMutation : action === "stop" ? stopMutation : restartMutation;
-
-    mutation.mutate(serviceId, {
-      onSuccess: () => {
-        setPendingByService((prev) => ({ ...prev, [serviceId]: null }));
-        invalidateAfterAction();
+    controlMutation.mutate(
+      { serviceId, action },
+      {
+        onSuccess: () => {
+          setPendingByService((prev) => ({ ...prev, [serviceId]: null }));
+          invalidateAfterAction();
+        },
+        onError: (err) => {
+          setPendingByService((prev) => ({ ...prev, [serviceId]: null }));
+          const message = err instanceof Error ? err.message : "Action failed";
+          setErrorByService((prev) => ({ ...prev, [serviceId]: message }));
+        },
       },
-      onError: (err) => {
-        setPendingByService((prev) => ({ ...prev, [serviceId]: null }));
-        const message = err instanceof Error ? err.message : "Action failed";
-        setErrorByService((prev) => ({ ...prev, [serviceId]: message }));
-      },
-    });
+    );
   };
 
   if (isLoading) {
