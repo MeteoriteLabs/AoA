@@ -22,7 +22,7 @@ import {
   User,
   Zap,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -48,6 +48,17 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogTrigger,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "@/components/ui/alert-dialog";
 import {
   Tooltip,
   TooltipTrigger,
@@ -1040,6 +1051,35 @@ export function DesignGuide() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  ALERT DIALOG                                                 */}
+      {/* ============================================================ */}
+      <Section title="Alert Dialog">
+        <p className="text-sm text-muted-foreground max-w-2xl">
+          Destructive confirms. Use when an action cannot be undone — delete, archive with side-effects, revoke credentials. Not a general-purpose dialog; prefer <code className="text-xs bg-muted px-1 py-0.5 rounded">Dialog</code> for forms and non-destructive flows.
+        </p>
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="destructive">Archive workspace</Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Archive this workspace?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Archiving closes the workspace and releases its runtime resources. Linked tasks remain,
+                but their runtime environment will be reset. This cannot be undone automatically.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction className={buttonVariants({ variant: "destructive" })}>
+                Archive
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </Section>
 
       {/* ============================================================ */}

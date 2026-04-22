@@ -10,8 +10,16 @@ import { WorkspacePreviewPanel, PreviewModeToolbar, type PreviewMode } from "./W
 import { WorkspaceRightPanel } from "./WorkspaceRightPanel";
 import { useSidebar } from "../../context/SidebarContext";
 import { useSidebarCollapsed } from "./useSidebarCollapsed";
-import { ListTodo, MessageSquare, Eye, Layers, AlertTriangle } from "lucide-react";
+import { ListTodo, MessageSquare, Eye, Layers, AlertTriangle, MoreHorizontal, Archive, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 
 const MOBILE_TABS = [
   { key: "tasks" as const, label: "Tasks", icon: ListTodo },
@@ -54,6 +62,11 @@ export function WorkspaceLayout({
     version: ArtifactVersion;
   } | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+
+  // Header action state — wired by later Phase I tasks (Settings → Task 10, Archive → Task 5).
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
 
   // Sidebar collapse state (desktop only; persisted per workspace)
   const [leftCollapsed, setLeftCollapsed] = useSidebarCollapsed(workspace.id, "left");
@@ -110,6 +123,65 @@ export function WorkspaceLayout({
           This workspace is archived
         </div>
       )}
+
+      {/* Header chrome — workspace title + actions kebab. Menu items are disabled pending later Phase I tasks. */}
+      <header
+        className="flex items-center justify-between gap-2 border-b border-border bg-background px-4 py-2 shrink-0"
+        data-testid="workspace-header"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <h1 className="text-sm font-medium truncate" data-testid="workspace-header-name">
+            {workspace.name}
+          </h1>
+          {workspace.branchName && (
+            <span
+              className="text-xs text-muted-foreground truncate"
+              data-testid="workspace-header-branch"
+            >
+              on {workspace.branchName}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          {/* Open in IDE button — wired in Task 6 */}
+          <DropdownMenu open={headerMenuOpen} onOpenChange={setHeaderMenuOpen}>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Workspace actions"
+                data-testid="workspace-header-menu-trigger"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            {headerMenuOpen && (
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={() => setSettingsOpen(true)}
+                  disabled
+                  data-testid="workspace-header-menu-settings"
+                >
+                  <Settings className="h-4 w-4 mr-2" />
+                  Settings
+                  <span className="ml-auto text-xs text-muted-foreground">Task 10</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setArchiveOpen(true)}
+                  variant="destructive"
+                  disabled
+                  data-testid="workspace-header-menu-archive"
+                >
+                  <Archive className="h-4 w-4 mr-2" />
+                  Archive
+                  <span className="ml-auto text-xs text-muted-foreground">Task 5</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            )}
+          </DropdownMenu>
+        </div>
+      </header>
 
       {isMobile ? (
         <>
