@@ -87,26 +87,21 @@ export function ServicesSection({ workspace }: ServicesSectionProps) {
       executionWorkspacesApi.controlRuntimeServices(workspace.id, action, {
         runtimeServiceId: serviceId,
       }),
+    onSuccess: (_data, { serviceId }) => {
+      setPendingByService((prev) => ({ ...prev, [serviceId]: null }));
+      invalidateAfterAction();
+    },
+    onError: (err, { serviceId }) => {
+      setPendingByService((prev) => ({ ...prev, [serviceId]: null }));
+      const message = err instanceof Error ? err.message : "Action failed";
+      setErrorByService((prev) => ({ ...prev, [serviceId]: message }));
+    },
   });
 
   const handleAction = (serviceId: string, action: ServiceAction) => {
     setPendingByService((prev) => ({ ...prev, [serviceId]: action }));
     setErrorByService((prev) => ({ ...prev, [serviceId]: null }));
-
-    controlMutation.mutate(
-      { serviceId, action },
-      {
-        onSuccess: () => {
-          setPendingByService((prev) => ({ ...prev, [serviceId]: null }));
-          invalidateAfterAction();
-        },
-        onError: (err) => {
-          setPendingByService((prev) => ({ ...prev, [serviceId]: null }));
-          const message = err instanceof Error ? err.message : "Action failed";
-          setErrorByService((prev) => ({ ...prev, [serviceId]: message }));
-        },
-      },
-    );
+    controlMutation.mutate({ serviceId, action });
   };
 
   if (isLoading) {

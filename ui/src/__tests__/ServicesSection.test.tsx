@@ -332,4 +332,48 @@ describe("ServicesSection", () => {
     expect(screen.queryByTestId("service-start-svc-4")).not.toBeInTheDocument();
     expect(screen.queryByTestId("service-restart-svc-4")).not.toBeInTheDocument();
   });
+
+  it("handles concurrent mutations on different services correctly", async () => {
+    const user = userEvent.setup();
+    const stoppedA = { ...stoppedService, id: "svc-A", serviceName: "api-A" };
+    const stoppedB = { ...stoppedService, id: "svc-B", serviceName: "api-B" };
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([stoppedA, stoppedB]);
+
+    let resolveA: (v: unknown) => void;
+    let resolveB: (v: unknown) => void;
+    const pA = new Promise((r) => {
+      resolveA = r;
+    });
+    const pB = new Promise((r) => {
+      resolveB = r;
+    });
+    executionWorkspacesApiMock.controlRuntimeServices
+      .mockImplementationOnce(() => pA)
+      .mockImplementationOnce(() => pB);
+
+    renderSection();
+
+    const startA = await screen.findByTestId("service-start-svc-A");
+    const startB = await screen.findByTestId("service-start-svc-B");
+
+    await user.click(startA);
+    await user.click(startB);
+
+    // Both start buttons should be disabled (pending)
+    expect(screen.getByTestId("service-start-svc-A")).toBeDisabled();
+    expect(screen.getByTestId("service-start-svc-B")).toBeDisabled();
+
+    // Resolve in reverse order — B first, then A
+    resolveB!({ workspace: mockWorkspace, runtimeServiceCount: 2, stdout: "", stderr: "" });
+    await waitFor(() => {
+      expect(screen.getByTestId("service-start-svc-B")).not.toBeDisabled();
+    });
+
+    resolveA!({ workspace: mockWorkspace, runtimeServiceCount: 2, stdout: "", stderr: "" });
+    await waitFor(() => {
+      expect(screen.getByTestId("service-start-svc-A")).not.toBeDisabled();
+    });
+
+    expect(executionWorkspacesApiMock.controlRuntimeServices).toHaveBeenCalledTimes(2);
+  });
 });
