@@ -12,8 +12,6 @@ import {
 } from "../services/workspace-runtime.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
-const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
-
 export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
   const svc = executionWorkspaceService(db);
@@ -78,20 +76,26 @@ export function executionWorkspaceRoutes(db: Db) {
     let cleanupWarnings: string[] = [];
 
     if (req.body.status === "archived" && existing.status !== "archived") {
-      const linkedIssues = await db
-        .select({
-          id: issues.id,
-          status: issues.status,
-        })
-        .from(issues)
-        .where(and(eq(issues.companyId, existing.companyId), eq(issues.executionWorkspaceId, existing.id)));
-      const activeLinkedIssues = linkedIssues.filter((issue) => !TERMINAL_ISSUE_STATUSES.has(issue.status));
-
-      if (activeLinkedIssues.length > 0) {
+      const readiness = await svc.getCloseReadiness(id);
+      if (readiness && readiness.state === "blocked") {
         res.status(409).json({
-          error: `Cannot archive execution workspace while ${activeLinkedIssues.length} linked issue(s) are still open`,
+          error:
+            readiness.blockingReasons[0] ?? "Workspace cannot be archived",
+          blockingReasons: readiness.blockingReasons,
         });
         return;
+      }
+
+      if (existing.mode === "shared_workspace") {
+        await db
+          .update(issues)
+          .set({ executionWorkspaceId: null })
+          .where(
+            and(
+              eq(issues.companyId, existing.companyId),
+              eq(issues.executionWorkspaceId, existing.id),
+            ),
+          );
       }
 
       const closedAt = new Date();

@@ -111,7 +111,7 @@ describe("WorkspaceLayout header", () => {
     expect(screen.getByTestId("workspace-header-branch")).toHaveTextContent("on feature-login");
   });
 
-  it("renders kebab menu with Settings + Archive items (disabled initially)", async () => {
+  it("renders kebab menu with Settings (disabled, Task 10) + Archive (enabled)", async () => {
     const user = userEvent.setup();
     renderLayout();
 
@@ -121,6 +121,35 @@ describe("WorkspaceLayout header", () => {
     const archiveItem = await screen.findByRole("menuitem", { name: /archive/i });
 
     expect(settingsItem).toHaveAttribute("aria-disabled", "true");
+    // Archive is now wired (Task 5). Only disabled when workspace is already archived.
+    expect(archiveItem).not.toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("disables Archive kebab item when workspace is already archived", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <WorkspaceLayout
+            workspace={{ ...mockWorkspace, status: "archived" } as any}
+            project={null}
+            selectedIssueId={"issue-1"}
+            onSelectIssue={vi.fn()}
+            companyId="comp-1"
+            companyPrefix="tc"
+            onBack={vi.fn()}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await user.click(screen.getByTestId("workspace-header-menu-trigger"));
+
+    const archiveItem = await screen.findByRole("menuitem", { name: /archive/i });
     expect(archiveItem).toHaveAttribute("aria-disabled", "true");
   });
 });

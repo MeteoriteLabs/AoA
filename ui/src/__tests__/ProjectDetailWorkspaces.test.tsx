@@ -80,6 +80,26 @@ const mockWorkspaces = [
 const executionWorkspacesApiMock = {
   list: vi.fn().mockResolvedValue(mockWorkspaces),
   update: vi.fn().mockResolvedValue({}),
+  getCloseReadiness: vi.fn().mockResolvedValue({
+    workspaceId: "ws-1",
+    state: "ready",
+    blockingReasons: [],
+    warnings: [],
+    linkedIssues: [],
+    plannedActions: [
+      {
+        kind: "archive_record",
+        label: "Archive workspace record",
+        description: "Keep the execution workspace history.",
+        command: null,
+      },
+    ],
+    isDestructiveCloseAllowed: true,
+    isSharedWorkspace: false,
+    isProjectPrimaryWorkspace: false,
+    git: null,
+    runtimeServices: [],
+  }),
 };
 
 const projectsApiMock = {
@@ -321,8 +341,15 @@ describe("ProjectDetail — Workspaces tab", () => {
 
     fireEvent.click(await screen.findByTestId("archive-workspace-ws-1"));
 
-    // Confirm via the dialog button
-    fireEvent.click(await screen.findByTestId("confirm-archive-workspace"));
+    // Readiness loads via getCloseReadiness mock; wait for the action button
+    // to be enabled before confirming. The AlertDialog action starts disabled
+    // while readiness is loading.
+    const confirmButton = await screen.findByTestId("confirm-archive-workspace");
+    await waitFor(() => {
+      expect(confirmButton).not.toBeDisabled();
+    });
+
+    fireEvent.click(confirmButton);
 
     await waitFor(() => {
       expect(executionWorkspacesApiMock.update).toHaveBeenCalledWith("ws-1", { status: "archived" });

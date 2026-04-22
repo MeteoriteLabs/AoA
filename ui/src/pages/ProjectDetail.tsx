@@ -25,10 +25,9 @@ import { Button } from "@/components/ui/button";
 import { Plus, Bot, X, DollarSign, AlertTriangle, MessageSquare, ClipboardPen, PenLine, Mic, Plug, ChevronDown, ChevronRight } from "lucide-react";
 import { discussionsApi, type DiscussionListItem } from "../api/discussions";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
-import { useToast } from "../context/ToastContext";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { ExecutionWorkspaceCloseDialog } from "../components/workspace/ExecutionWorkspaceCloseDialog";
 import { EmptyState } from "../components/EmptyState";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 
@@ -555,7 +554,6 @@ function ProjectWorkspaces({
   companyPrefix: string;
 }) {
   const queryClient = useQueryClient();
-  const { pushToast } = useToast();
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<string | null>(null);
 
@@ -563,21 +561,6 @@ function ProjectWorkspaces({
     queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
     queryFn: () => executionWorkspacesApi.list(companyId, { projectId }),
     enabled: !!companyId && !!projectId,
-  });
-
-  const archiveMutation = useMutation({
-    mutationFn: (id: string) => executionWorkspacesApi.update(id, { status: "archived" }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
-      });
-      pushToast({ tone: "success", title: "Workspace archived" });
-      setArchiveTarget(null);
-    },
-    onError: () => {
-      pushToast({ tone: "error", title: "Failed to archive workspace" });
-      setArchiveTarget(null);
-    },
   });
 
   if (isLoading) {
@@ -651,29 +634,19 @@ function ProjectWorkspaces({
         </Collapsible>
       )}
 
-      {/* Archive confirmation dialog */}
-      <Dialog open={!!archiveTarget} onOpenChange={(open) => { if (!open) setArchiveTarget(null); }}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Archive workspace?</DialogTitle>
-            <DialogDescription>
-              This workspace will be moved to the archived section. You can still view it but agents will no longer use it.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" size="sm" onClick={() => setArchiveTarget(null)}>
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => { if (archiveTarget) archiveMutation.mutate(archiveTarget); }}
-              data-testid="confirm-archive-workspace"
-            >
-              Archive
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {archiveTarget && (
+        <ExecutionWorkspaceCloseDialog
+          workspaceId={archiveTarget}
+          open={!!archiveTarget}
+          onOpenChange={(open) => { if (!open) setArchiveTarget(null); }}
+          onArchived={() => {
+            queryClient.invalidateQueries({
+              queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
+            });
+            setArchiveTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }
