@@ -1004,6 +1004,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     cwd: string | null;
     cleanupCommand: string | null;
   } | null;
+  cleanupCommand?: string | null;
   teardownCommand?: string | null;
   recorder?: WorkspaceOperationRecorder | null;
 }) {
@@ -1015,6 +1016,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   });
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
   const cleanupCommands = [
+    input.cleanupCommand ?? null,
     input.projectWorkspace?.cleanupCommand ?? null,
     input.teardownCommand ?? null,
   ]

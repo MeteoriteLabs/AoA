@@ -1,4 +1,8 @@
-import type { ExecutionWorkspace, ExecutionWorkspaceSummary } from "@paperclipai/shared";
+import type {
+  ExecutionWorkspace,
+  ExecutionWorkspaceCloseReadiness,
+  ExecutionWorkspaceSummary,
+} from "@paperclipai/shared";
 import { api } from "./client";
 
 export interface WorkspaceRuntimeService {
@@ -60,4 +64,6 @@ export const executionWorkspacesApi = {
     api.patch<ExecutionWorkspace>(`/execution-workspaces/${id}`, data),
   runtimeServices: (workspaceId: string) =>
     api.get<WorkspaceRuntimeService[]>(`/execution-workspaces/${workspaceId}/runtime-services`),
+  getCloseReadiness: (id: string) =>
+    api.get<ExecutionWorkspaceCloseReadiness>(`/execution-workspaces/${id}/close-readiness`),
 };

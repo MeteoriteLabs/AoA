@@ -140,7 +140,8 @@ export function executionWorkspaceRoutes(db: Db) {
         const cleanupResult = await cleanupExecutionWorkspaceArtifacts({
           workspace: existing,
           projectWorkspace,
-          teardownCommand: projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
+          cleanupCommand: existing.config?.cleanupCommand ?? null,
+          teardownCommand: existing.config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
           recorder: workspaceOperationsSvc.createRecorder({
             companyId: existing.companyId,
             executionWorkspaceId: existing.id,
@@ -215,6 +216,23 @@ export function executionWorkspaceRoutes(db: Db) {
         ),
       );
     res.json(services);
+  });
+
+  router.get("/execution-workspaces/:id/close-readiness", async (req, res) => {
+    if (!(await assertIsolatedWorkspacesEnabled(res))) return;
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Execution workspace not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const readiness = await svc.getCloseReadiness(id);
+    if (!readiness) {
+      res.status(404).json({ error: "Execution workspace not found" });
+      return;
+    }
+    res.json(readiness);
   });
 
   return router;

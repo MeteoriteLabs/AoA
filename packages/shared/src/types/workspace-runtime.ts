@@ -31,6 +31,62 @@ export type ExecutionWorkspaceStatus =
   | "archived"
   | "cleanup_failed";
 
+export type ExecutionWorkspaceCloseReadinessState =
+  | "ready"
+  | "ready_with_warnings"
+  | "blocked";
+
+export type ExecutionWorkspaceCloseActionKind =
+  | "archive_record"
+  | "stop_runtime_services"
+  | "cleanup_command"
+  | "teardown_command"
+  | "git_worktree_remove"
+  | "git_branch_delete"
+  | "remove_local_directory";
+
+export type WorkspaceRuntimeDesiredState = "running" | "stopped";
+export type WorkspaceRuntimeServiceStateMap = Record<string, WorkspaceRuntimeDesiredState>;
+
+export interface ExecutionWorkspaceConfig {
+  provisionCommand: string | null;
+  teardownCommand: string | null;
+  cleanupCommand: string | null;
+  workspaceRuntime: Record<string, unknown> | null;
+  desiredState: WorkspaceRuntimeDesiredState | null;
+  serviceStates?: WorkspaceRuntimeServiceStateMap | null;
+}
+
+export interface ExecutionWorkspaceCloseAction {
+  kind: ExecutionWorkspaceCloseActionKind;
+  label: string;
+  description: string;
+  command: string | null;
+}
+
+export interface ExecutionWorkspaceCloseLinkedIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  isTerminal: boolean;
+}
+
+export interface ExecutionWorkspaceCloseGitReadiness {
+  repoRoot: string | null;
+  workspacePath: string | null;
+  branchName: string | null;
+  baseRef: string | null;
+  hasDirtyTrackedFiles: boolean;
+  hasUntrackedFiles: boolean;
+  dirtyEntryCount: number;
+  untrackedEntryCount: number;
+  aheadCount: number | null;
+  behindCount: number | null;
+  isMergedIntoBase: boolean | null;
+  createdByRuntime: boolean;
+}
+
 export interface ExecutionWorkspaceStrategy {
   type: ExecutionWorkspaceStrategyType;
   baseRef?: string | null;
@@ -81,9 +137,25 @@ export interface ExecutionWorkspace {
   closedAt: Date | null;
   cleanupEligibleAt: Date | null;
   cleanupReason: string | null;
+  config: ExecutionWorkspaceConfig | null;
   metadata: Record<string, unknown> | null;
+  runtimeServices?: WorkspaceRuntimeService[];
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface ExecutionWorkspaceCloseReadiness {
+  workspaceId: string;
+  state: ExecutionWorkspaceCloseReadinessState;
+  blockingReasons: string[];
+  warnings: string[];
+  linkedIssues: ExecutionWorkspaceCloseLinkedIssue[];
+  plannedActions: ExecutionWorkspaceCloseAction[];
+  isDestructiveCloseAllowed: boolean;
+  isSharedWorkspace: boolean;
+  isProjectPrimaryWorkspace: boolean;
+  git: ExecutionWorkspaceCloseGitReadiness | null;
+  runtimeServices: WorkspaceRuntimeService[];
 }
 
 export interface ExecutionWorkspaceSummary {

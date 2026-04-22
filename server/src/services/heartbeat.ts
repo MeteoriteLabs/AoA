@@ -1529,9 +1529,8 @@ export function heartbeatService(db: Db) {
       const resolvedProjectWorkspaceId = resolvedWorkspace.workspaceId ?? null;
 
       // Snapshot the workspace config at creation so it survives across runs
-      // (provisionCommand / teardownCommand / workspaceRuntime). Runtime-service
-      // fields (cleanupCommand / desiredState / serviceStates) are included as
-      // null placeholders for forward compatibility with Task 7.
+      // (provisionCommand / teardownCommand / cleanupCommand / workspaceRuntime).
+      // desiredState / serviceStates remain null placeholders for Task 7.
       const workspaceStrategyObject = parseObject(workspaceManagedConfig.workspaceStrategy);
       const workspaceRuntimeObject = parseObject(workspaceManagedConfig.workspaceRuntime);
       const configSnapshot = {
@@ -1541,13 +1540,16 @@ export function heartbeatService(db: Db) {
         teardownCommand: typeof workspaceStrategyObject.teardownCommand === "string"
           ? workspaceStrategyObject.teardownCommand
           : null,
-        cleanupCommand: null as string | null,
+        cleanupCommand: typeof workspaceStrategyObject.cleanupCommand === "string"
+          ? workspaceStrategyObject.cleanupCommand
+          : null,
         workspaceRuntime: Object.keys(workspaceRuntimeObject).length > 0 ? workspaceRuntimeObject : null,
         desiredState: null as "running" | "stopped" | null,
         serviceStates: null as Record<string, "running" | "stopped"> | null,
       };
       const hasConfigSnapshot = configSnapshot.provisionCommand !== null
         || configSnapshot.teardownCommand !== null
+        || configSnapshot.cleanupCommand !== null
         || configSnapshot.workspaceRuntime !== null;
 
       // ── Persist execution workspace ─────────────────────────────────
@@ -1624,6 +1626,7 @@ export function heartbeatService(db: Db) {
                 cwd: resolvedWorkspace.cwd,
                 cleanupCommand: null,
               },
+              cleanupCommand: configSnapshot.cleanupCommand,
               teardownCommand: projectExecutionWorkspacePolicy?.workspaceStrategy?.teardownCommand ?? null,
               recorder: workspaceOperationRecorder,
             });

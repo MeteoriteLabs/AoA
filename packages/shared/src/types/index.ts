@@ -226,6 +226,15 @@ export type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
   WorkspaceRuntimeService,
+  ExecutionWorkspaceCloseReadinessState,
+  ExecutionWorkspaceCloseActionKind,
+  ExecutionWorkspaceCloseAction,
+  ExecutionWorkspaceCloseLinkedIssue,
+  ExecutionWorkspaceCloseGitReadiness,
+  ExecutionWorkspaceCloseReadiness,
+  ExecutionWorkspaceConfig,
+  WorkspaceRuntimeDesiredState,
+  WorkspaceRuntimeServiceStateMap,
 } from "./workspace-runtime.js";
 
 export type {
