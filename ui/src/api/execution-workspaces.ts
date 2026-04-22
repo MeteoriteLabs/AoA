@@ -2,6 +2,7 @@ import type {
   ExecutionWorkspace,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceSummary,
+  WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -92,4 +93,12 @@ export const executionWorkspacesApi = {
       `/execution-workspaces/${id}/runtime-commands/${action}`,
       target,
     ),
+  listWorkspaceOperations: (id: string, opts?: { limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.limit) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return api.get<WorkspaceOperation[]>(
+      `/execution-workspaces/${id}/workspace-operations${qs ? `?${qs}` : ""}`,
+    );
+  },
 };

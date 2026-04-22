@@ -21,6 +21,7 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCanControlWorkspace } from "../services/workspace-authz.js";
 
 export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
@@ -249,8 +250,23 @@ export function executionWorkspaceRoutes(db: Db) {
     res.json(readiness);
   });
 
+  router.get("/execution-workspaces/:id/workspace-operations", async (req, res) => {
+    if (!(await assertIsolatedWorkspacesEnabled(res))) return;
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Execution workspace not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
+    const operations = await workspaceOperationsSvc.listForExecutionWorkspace(id, { limit });
+    res.json(operations);
+  });
+
   async function handleExecutionWorkspaceRuntimeCommand(req: Request, res: Response) {
-    // TODO(Task 9): authz — workspace command mutation should require founder or team_lead role.
     if (!(await assertIsolatedWorkspacesEnabled(res))) return;
     const id = req.params.id as string;
     const action = String(req.params.action ?? "").trim().toLowerCase();
@@ -265,6 +281,10 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    await assertCanControlWorkspace(db, req, {
+      companyId: existing.companyId,
+      projectId: existing.projectId ?? null,
+    });
 
     const workspaceCwd = existing.cwd;
     if (!workspaceCwd) {

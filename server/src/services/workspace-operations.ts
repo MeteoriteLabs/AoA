@@ -223,12 +223,16 @@ export function workspaceOperationService(db: Db) {
       return rows.map(toWorkspaceOperation);
     },
 
-    listForExecutionWorkspace: async (executionWorkspaceId: string) => {
-      const rows = await db
+    listForExecutionWorkspace: async (
+      executionWorkspaceId: string,
+      opts?: { limit?: number },
+    ) => {
+      const query = db
         .select()
         .from(workspaceOperations)
         .where(eq(workspaceOperations.executionWorkspaceId, executionWorkspaceId))
         .orderBy(desc(workspaceOperations.startedAt), desc(workspaceOperations.createdAt));
+      const rows = opts?.limit && opts.limit > 0 ? await query.limit(opts.limit) : await query;
       return rows.map(toWorkspaceOperation);
     },
 
