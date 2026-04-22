@@ -1,30 +1,36 @@
 import { useState } from "react";
-import { GitBranch, Copy, Check, ExternalLink, GitPullRequest } from "lucide-react";
+import { GitBranch, Copy, Check, ExternalLink, GitPullRequest, Github } from "lucide-react";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { OpenInIdeButton } from "../OpenInIdeButton";
+import { CreatePrDialog } from "../CreatePrDialog";
 
 interface GitPanelProps {
   workspace: ExecutionWorkspace;
+  issueId?: string | null;
 }
 
 interface PrMetadata {
   url: string;
-  status: string;
   number: number;
+  state: "open" | "closed" | "merged";
+  createdAt?: string;
+  draft?: boolean;
 }
 
-const prStatusColor: Record<string, string> = {
+const prStateColor: Record<string, string> = {
   open: "bg-green-500/15 text-green-400",
   merged: "bg-purple-500/15 text-purple-400",
   closed: "bg-red-500/15 text-red-400",
 };
 
-export function GitPanel({ workspace }: GitPanelProps) {
+export function GitPanel({ workspace, issueId }: GitPanelProps) {
   const [copied, setCopied] = useState(false);
+  const [createPrOpen, setCreatePrOpen] = useState(false);
   const raw = (workspace.metadata as Record<string, unknown> | null)?.pr;
   const pr =
-    typeof raw === "object" && raw !== null && "url" in raw && "status" in raw && "number" in raw
+    typeof raw === "object" && raw !== null && "url" in raw && "number" in raw && "state" in raw
       ? (raw as PrMetadata)
       : undefined;
 
@@ -38,6 +44,8 @@ export function GitPanel({ workspace }: GitPanelProps) {
       // clipboard not available in this context
     }
   };
+
+  const canCreatePr = Boolean(issueId);
 
   return (
     <div className="space-y-2 text-sm" data-testid="git-panel">
@@ -95,7 +103,7 @@ export function GitPanel({ workspace }: GitPanelProps) {
         </div>
       )}
 
-      {/* PR status */}
+      {/* PR state */}
       <div className="flex items-center gap-2" data-testid="pr-row">
         <GitPullRequest className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
         {pr ? (
@@ -111,10 +119,10 @@ export function GitPanel({ workspace }: GitPanelProps) {
             <span
               className={cn(
                 "text-[10px] px-1.5 py-0.5 rounded-full font-medium",
-                prStatusColor[pr.status] ?? "bg-muted text-muted-foreground",
+                prStateColor[pr.state] ?? "bg-muted text-muted-foreground",
               )}
             >
-              {pr.status}
+              {pr.state}
             </span>
           </div>
         ) : (
@@ -122,14 +130,45 @@ export function GitPanel({ workspace }: GitPanelProps) {
         )}
       </div>
 
-      {/* Create PR — placeholder */}
-      <button
-        disabled
-        className="w-full mt-1 text-xs py-1.5 rounded-md border border-dashed border-muted-foreground/30 text-muted-foreground cursor-not-allowed"
-        title="Coming soon"
-      >
-        Create PR
-      </button>
+      {/* Create PR button (or link to existing PR) */}
+      {pr ? (
+        <a
+          href={pr.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground mt-1"
+          data-testid="pr-link"
+        >
+          <ExternalLink className="h-3 w-3" />
+          View PR #{pr.number}
+        </a>
+      ) : (
+        <Button
+          size="sm"
+          variant="outline"
+          className="w-full mt-1"
+          disabled={!canCreatePr}
+          title={
+            canCreatePr
+              ? "Open pull request on GitHub"
+              : "Link a task to this workspace to create a PR"
+          }
+          onClick={() => setCreatePrOpen(true)}
+          data-testid="create-pr-btn"
+        >
+          <Github className="h-4 w-4 mr-2" />
+          Create PR
+        </Button>
+      )}
+
+      {issueId && (
+        <CreatePrDialog
+          issueId={issueId}
+          workspace={workspace}
+          open={createPrOpen}
+          onOpenChange={setCreatePrOpen}
+        />
+      )}
     </div>
   );
 }

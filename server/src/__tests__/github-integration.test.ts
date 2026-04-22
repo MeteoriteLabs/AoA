@@ -21,7 +21,7 @@ vi.mock("../services/index.js", () => ({
 }));
 
 import { errorHandler } from "../middleware/index.js";
-import { githubRoutes } from "../routes/github.js";
+import { githubRoutes, GITHUB_PAT_SECRET_NAME } from "../routes/github.js";
 
 function createApp(actor: any) {
   const app = express();
@@ -148,30 +148,41 @@ describe("github integration routes", () => {
   });
 
   describe("DELETE /companies/:companyId/github/pat", () => {
-    it("returns configured=false, removed=true when row existed + logs activity", async () => {
+    it("returns configured=false, removed=true when row existed + logs activity with secret UUID", async () => {
+      mockSvc.getByName.mockResolvedValue({
+        id: "secret-row-uuid",
+        externalRef: "octocat",
+      });
       mockSvc.delete.mockResolvedValue(true);
       const app = createApp(boardActor);
       const res = await request(app).delete("/api/companies/company-1/github/pat");
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ configured: false, removed: true });
-      expect(mockSvc.delete).toHaveBeenCalledWith("company-1", "github_pat");
+      expect(mockSvc.delete).toHaveBeenCalledWith("company-1", GITHUB_PAT_SECRET_NAME);
       expect(mockLogActivity).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
           companyId: "company-1",
           action: "github.pat.disconnected",
+          entityType: "secret",
+          entityId: "secret-row-uuid",
+          details: { githubUser: "octocat" },
         }),
       );
+      // entityId is the UUID, NOT the literal secret name
+      const logCall = mockLogActivity.mock.calls[0]![1] as { entityId: string };
+      expect(logCall.entityId).not.toBe(GITHUB_PAT_SECRET_NAME);
     });
 
-    it("returns configured=false, removed=false when no row exists + does NOT log activity", async () => {
-      mockSvc.delete.mockResolvedValue(false);
+    it("returns configured=false, removed=false when no row exists + does NOT log activity + does NOT call delete", async () => {
+      mockSvc.getByName.mockResolvedValue(null);
       const app = createApp(boardActor);
       const res = await request(app).delete("/api/companies/company-1/github/pat");
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ configured: false, removed: false });
+      expect(mockSvc.delete).not.toHaveBeenCalled();
       expect(mockLogActivity).not.toHaveBeenCalled();
     });
   });

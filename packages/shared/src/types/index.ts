@@ -246,6 +246,12 @@ export type {
 } from "./workspace-operation.js";
 
 export type {
+  GitHubPrCreateRequest,
+  GitHubPrCreateResponse,
+  GitHubPrMetadata,
+} from "./github.js";
+
+export type {
   JsonSchema,
   PluginJobDeclaration,
   PluginWebhookDeclaration,

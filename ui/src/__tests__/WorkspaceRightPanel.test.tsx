@@ -231,6 +231,15 @@ vi.mock("../context/CompanyContext", () => ({
   }),
 }));
 
+vi.mock("../context/ToastContext", () => ({
+  useToast: () => ({
+    toasts: [],
+    pushToast: vi.fn(),
+    dismissToast: vi.fn(),
+    clearToasts: vi.fn(),
+  }),
+}));
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function renderRightPanel(props: Partial<React.ComponentProps<typeof WorkspaceRightPanel>> = {}) {

@@ -1,3 +1,7 @@
+import type {
+  GitHubPrCreateRequest,
+  GitHubPrCreateResponse,
+} from "@paperclipai/shared";
 import { api } from "./client";
 
 export interface GitHubPatStatus {
@@ -23,4 +27,6 @@ export const githubIntegrationApi = {
     api.delete<RemovePatResponse>(`/companies/${companyId}/github/pat`),
   status: (companyId: string) =>
     api.get<GitHubPatStatus>(`/companies/${companyId}/github/pat/status`),
+  createPR: (issueId: string, input: GitHubPrCreateRequest) =>
+    api.post<GitHubPrCreateResponse>(`/issues/${issueId}/github-pr`, input),
 };

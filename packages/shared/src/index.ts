@@ -406,6 +406,9 @@ export type {
   WorkspaceOperationPhase,
   WorkspaceOperationStatus,
   WorkspaceOperation,
+  GitHubPrCreateRequest,
+  GitHubPrCreateResponse,
+  GitHubPrMetadata,
   // Plugin system
   JsonSchema,
   PluginJobDeclaration,
