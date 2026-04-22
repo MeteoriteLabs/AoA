@@ -33,13 +33,19 @@ export function executionWorkspaceRoutes(db: Db) {
     if (!(await assertIsolatedWorkspacesEnabled(res))) return;
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const workspaces = await svc.list(companyId, {
+    const filters = {
       projectId: req.query.projectId as string | undefined,
       projectWorkspaceId: req.query.projectWorkspaceId as string | undefined,
       issueId: req.query.issueId as string | undefined,
       status: req.query.status as string | undefined,
       reuseEligible: req.query.reuseEligible === "true",
-    });
+    };
+    if (req.query.summary === "true") {
+      const summaries = await svc.listSummaries(companyId, filters);
+      res.json(summaries);
+      return;
+    }
+    const workspaces = await svc.list(companyId, filters);
     res.json(workspaces);
   });
 

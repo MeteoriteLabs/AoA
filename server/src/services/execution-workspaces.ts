@@ -1,7 +1,7 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces } from "@paperclipai/db";
-import type { ExecutionWorkspace } from "@paperclipai/shared";
+import type { ExecutionWorkspace, ExecutionWorkspaceSummary } from "@paperclipai/shared";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 
@@ -64,6 +64,54 @@ export function executionWorkspaceService(db: Db) {
         .where(and(...conditions))
         .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
       return rows.map(toExecutionWorkspace);
+    },
+
+    listSummaries: async (companyId: string, filters?: {
+      projectId?: string;
+      projectWorkspaceId?: string;
+      issueId?: string;
+      status?: string;
+      reuseEligible?: boolean;
+    }): Promise<ExecutionWorkspaceSummary[]> => {
+      const conditions = [eq(executionWorkspaces.companyId, companyId)];
+      if (filters?.projectId) conditions.push(eq(executionWorkspaces.projectId, filters.projectId));
+      if (filters?.projectWorkspaceId) {
+        conditions.push(eq(executionWorkspaces.projectWorkspaceId, filters.projectWorkspaceId));
+      }
+      if (filters?.issueId) conditions.push(eq(executionWorkspaces.sourceIssueId, filters.issueId));
+      if (filters?.status) {
+        const statuses = filters.status.split(",").map((value) => value.trim()).filter(Boolean);
+        if (statuses.length === 1) conditions.push(eq(executionWorkspaces.status, statuses[0]!));
+        else if (statuses.length > 1) conditions.push(inArray(executionWorkspaces.status, statuses));
+      }
+      if (filters?.reuseEligible) {
+        conditions.push(ne(executionWorkspaces.status, "archived"));
+        conditions.push(inArray(executionWorkspaces.mode, ["shared_workspace", "isolated_workspace"]));
+      }
+      const rows = await db
+        .select({
+          id: executionWorkspaces.id,
+          name: executionWorkspaces.name,
+          branchName: executionWorkspaces.branchName,
+          status: executionWorkspaces.status,
+          mode: executionWorkspaces.mode,
+          strategyType: executionWorkspaces.strategyType,
+          sourceIssueId: executionWorkspaces.sourceIssueId,
+          lastUsedAt: executionWorkspaces.lastUsedAt,
+        })
+        .from(executionWorkspaces)
+        .where(and(...conditions))
+        .orderBy(desc(executionWorkspaces.lastUsedAt));
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        branchName: row.branchName ?? null,
+        status: row.status as ExecutionWorkspaceSummary["status"],
+        mode: row.mode as ExecutionWorkspaceSummary["mode"],
+        strategyType: row.strategyType as ExecutionWorkspaceSummary["strategyType"],
+        sourceIssueId: row.sourceIssueId ?? null,
+        lastUsedAt: row.lastUsedAt,
+      }));
     },
 
     getById: async (id: string) => {

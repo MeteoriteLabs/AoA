@@ -224,6 +224,7 @@ export type {
   ProjectExecutionWorkspacePolicy,
   IssueExecutionWorkspaceSettings,
   ExecutionWorkspace,
+  ExecutionWorkspaceSummary,
   WorkspaceRuntimeService,
 } from "./workspace-runtime.js";
 

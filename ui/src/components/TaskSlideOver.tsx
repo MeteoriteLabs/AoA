@@ -25,6 +25,7 @@ import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { IssueProperties } from "./IssueProperties";
 import { LiveRunWidget } from "./LiveRunWidget";
 import { WorkspaceTimeline } from "./workspace/WorkspaceTimeline";
+import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
 import type { MentionOption } from "./MarkdownEditor";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
@@ -1074,6 +1075,15 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                     <p className="text-xs text-muted-foreground">Loading workspace...</p>
                   )}
                 </div>
+
+                {/* Issue-level workspace preference (gated by instance flag + software project) */}
+                <IssueWorkspaceCard
+                  issueId={issue.id}
+                  companyId={selectedCompanyId}
+                  projectId={issue.projectId}
+                  issueExecutionWorkspacePreference={issue.executionWorkspacePreference}
+                  issueExecutionWorkspaceSettings={issue.executionWorkspaceSettings}
+                />
 
                 {/* Dependencies */}
                 <div className="space-y-3">

@@ -86,6 +86,17 @@ export interface ExecutionWorkspace {
   updatedAt: Date;
 }
 
+export interface ExecutionWorkspaceSummary {
+  id: string;
+  name: string;
+  branchName: string | null;
+  status: ExecutionWorkspaceStatus;
+  mode: ExecutionWorkspace["mode"];
+  strategyType: ExecutionWorkspaceStrategyType;
+  sourceIssueId: string | null;
+  lastUsedAt: Date;
+}
+
 export interface WorkspaceRuntimeService {
   id: string;
   companyId: string;

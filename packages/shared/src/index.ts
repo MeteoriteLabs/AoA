@@ -390,6 +390,7 @@ export type {
   ProjectExecutionWorkspacePolicy,
   IssueExecutionWorkspaceSettings,
   ExecutionWorkspace,
+  ExecutionWorkspaceSummary,
   WorkspaceRuntimeService,
   WorkspaceOperationPhase,
   WorkspaceOperationStatus,

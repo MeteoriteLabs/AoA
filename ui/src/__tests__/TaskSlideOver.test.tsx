@@ -268,6 +268,10 @@ vi.mock("../components/IssueDocumentsSection", () => ({
   IssueDocumentsSection: () => <div data-testid="issue-documents" />,
 }));
 
+vi.mock("../components/IssueWorkspaceCard", () => ({
+  IssueWorkspaceCard: () => null,
+}));
+
 // Mock the Sheet component to just render children when open
 vi.mock("@/components/ui/sheet", () => ({
   Sheet: ({ open, children, onOpenChange }: any) =>

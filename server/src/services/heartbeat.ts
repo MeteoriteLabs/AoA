@@ -48,6 +48,7 @@ import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { outputDetectionService } from "./output-detection.js";
 import { formatRunSummary } from "./run-summary.js";
 import {
+  buildRealizedExecutionWorkspaceFromPersisted,
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
   ensureRuntimeServicesForRun,
@@ -1490,24 +1491,33 @@ export function heartbeatService(db: Db) {
         heartbeatRunId: run.id,
         executionWorkspaceId: existingExecutionWorkspace?.id ?? null,
       });
-      const executionWorkspace = await realizeExecutionWorkspace({
-        base: {
-          baseCwd: resolvedWorkspace.cwd,
-          source: resolvedWorkspace.source,
-          projectId: resolvedWorkspace.projectId,
-          workspaceId: resolvedWorkspace.workspaceId,
-          repoUrl: resolvedWorkspace.repoUrl,
-          repoRef: resolvedWorkspace.repoRef,
-        },
-        config: resolvedConfig,
-        issue: issueRef,
-        agent: {
-          id: agent.id,
-          name: agent.name,
-          companyId: agent.companyId,
-        },
-        recorder: workspaceOperationRecorder,
-      });
+      // Short-circuit: if issue prefers reusing an existing workspace, build the
+      // realized descriptor from the persisted row instead of re-provisioning.
+      const shouldReuseExisting =
+        issueRef?.executionWorkspacePreference === "reuse_existing" &&
+        existingExecutionWorkspace &&
+        existingExecutionWorkspace.status !== "archived";
+      const realizeBase = {
+        baseCwd: resolvedWorkspace.cwd,
+        source: resolvedWorkspace.source,
+        projectId: resolvedWorkspace.projectId,
+        workspaceId: resolvedWorkspace.workspaceId,
+        repoUrl: resolvedWorkspace.repoUrl,
+        repoRef: resolvedWorkspace.repoRef,
+      };
+      const executionWorkspace = shouldReuseExisting && existingExecutionWorkspace
+        ? buildRealizedExecutionWorkspaceFromPersisted(existingExecutionWorkspace, realizeBase)
+        : await realizeExecutionWorkspace({
+            base: realizeBase,
+            config: resolvedConfig,
+            issue: issueRef,
+            agent: {
+              id: agent.id,
+              name: agent.name,
+              companyId: agent.companyId,
+            },
+            recorder: workspaceOperationRecorder,
+          });
       effectiveCwd = executionWorkspace.cwd;
       executionWorkspaceWarnings = executionWorkspace.warnings;
       realizedWorkspace = executionWorkspace;
@@ -1515,10 +1525,6 @@ export function heartbeatService(db: Db) {
       const resolvedProjectWorkspaceId = resolvedWorkspace.workspaceId ?? null;
 
       // ── Persist execution workspace ─────────────────────────────────
-      const shouldReuseExisting =
-        issueRef?.executionWorkspacePreference === "reuse_existing" &&
-        existingExecutionWorkspace &&
-        existingExecutionWorkspace.status !== "archived";
       try {
         persistedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
           ? await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {

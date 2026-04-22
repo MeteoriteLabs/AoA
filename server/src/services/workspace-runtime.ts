@@ -11,6 +11,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
@@ -697,6 +698,27 @@ export async function realizeExecutionWorkspace(input: {
     worktreePath,
     warnings: [],
     created: true,
+  };
+}
+
+export function buildRealizedExecutionWorkspaceFromPersisted(
+  ws: ExecutionWorkspace,
+  base: ExecutionWorkspaceInput,
+): RealizedExecutionWorkspace {
+  const strategy = ws.strategyType === "git_worktree" ? "git_worktree" : "project_primary";
+  return {
+    baseCwd: base.baseCwd,
+    source: base.source,
+    projectId: ws.projectId ?? base.projectId,
+    workspaceId: ws.projectWorkspaceId ?? base.workspaceId,
+    repoUrl: ws.repoUrl ?? base.repoUrl,
+    repoRef: ws.baseRef ?? base.repoRef,
+    strategy,
+    cwd: ws.cwd ?? base.baseCwd,
+    branchName: ws.branchName,
+    worktreePath: strategy === "git_worktree" ? (ws.providerRef ?? ws.cwd ?? null) : null,
+    warnings: [],
+    created: false,
   };
 }
 
