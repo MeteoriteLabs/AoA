@@ -596,6 +596,36 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
                 Allow tasks to override workspace mode
               </label>
 
+              {/* TTL (days) — feeds the instance-level TTL sweeper (Experimental setting).
+                  Leave blank to disable. Sweep marks stale workspaces as cleanup-eligible only. */}
+              <div className="space-y-1">
+                <label htmlFor="project-ttl-days" className="text-xs text-muted-foreground">
+                  Workspace TTL (days)
+                </label>
+                <input
+                  id="project-ttl-days"
+                  data-testid="project-ttl-days-input"
+                  type="number"
+                  min={0}
+                  placeholder="Never expires"
+                  defaultValue={project.executionWorkspacePolicy.ttlDays ?? ""}
+                  onBlur={(e) => {
+                    const raw = e.target.value.trim();
+                    const next = raw === "" ? null : Number(raw);
+                    const current = project.executionWorkspacePolicy?.ttlDays ?? null;
+                    if (Number.isNaN(next as number)) return;
+                    if (next === current) return;
+                    updatePolicy({ ttlDays: next });
+                  }}
+                  disabled={!onUpdate}
+                  className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  After N days without activity, workspaces are marked for cleanup (requires the
+                  Workspace TTL Sweeper to be enabled in Instance Settings). Leave blank for no expiry.
+                </p>
+              </div>
+
               {/* Advanced — software_development only */}
               {project.functionType === "software_development" && (
                 <div className="border-t border-border/60 pt-2 space-y-2">

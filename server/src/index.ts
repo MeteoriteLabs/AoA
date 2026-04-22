@@ -26,6 +26,7 @@ import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService, routineService } from "./services/index.js";
 import { reconcilePersistedRuntimeServicesOnStartup } from "./services/workspace-runtime.js";
+import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { onBudgetExhausted } from "./services/budget-hooks.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -510,6 +511,10 @@ if (config.heartbeatSchedulerEnabled) {
   void reconcilePersistedRuntimeServicesOnStartup(db as any).catch((err) => {
     logger.error({ err }, "reconcilePersistedRuntimeServicesOnStartup failed");
   });
+
+  // Periodic sweep: mark stale workspaces as cleanup-eligible based on project TTL.
+  // Sweeper no-ops when the instance-level experimental flag is off.
+  scheduleTtlSweeper(db as any);
 
   setInterval(() => {
     void heartbeat

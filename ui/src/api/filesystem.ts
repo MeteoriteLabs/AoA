@@ -50,4 +50,8 @@ export const filesystemApi = {
   drives: async (): Promise<FsDrivesResult> => {
     return api.get("/filesystem/drives");
   },
+
+  reveal: async (dirPath: string): Promise<{ ok: boolean }> => {
+    return api.post("/filesystem/reveal", { path: dirPath });
+  },
 };

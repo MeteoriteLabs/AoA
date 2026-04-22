@@ -69,8 +69,11 @@ export function InstanceSettingsPage() {
   });
 
   const experimentalMutation = useMutation({
-    mutationFn: async (patch: { enableIsolatedWorkspaces?: boolean; autoRestartDevServerWhenIdle?: boolean }) =>
-      instanceSettingsApi.updateExperimental(patch),
+    mutationFn: async (patch: {
+      enableIsolatedWorkspaces?: boolean;
+      autoRestartDevServerWhenIdle?: boolean;
+      enableWorkspaceTtlSweeper?: boolean;
+    }) => instanceSettingsApi.updateExperimental(patch),
     onSuccess: async () => {
       setActionError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.instanceSettings.experimental });
@@ -84,6 +87,7 @@ export function InstanceSettingsPage() {
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
+  const enableWorkspaceTtlSweeper = experimentalQuery.data?.enableWorkspaceTtlSweeper === true;
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
@@ -207,6 +211,13 @@ export function InstanceSettingsPage() {
                     checked={autoRestartDevServerWhenIdle}
                     disabled={experimentalMutation.isPending}
                     onToggle={() => experimentalMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
+                  />
+                  <ToggleCard
+                    title="Workspace TTL Sweeper"
+                    description="Periodically mark inactive execution workspaces as cleanup-eligible once their project's TTL (days) expires. Does not archive automatically — it only stamps cleanupEligibleAt; the founder still confirms via the Archive dialog."
+                    checked={enableWorkspaceTtlSweeper}
+                    disabled={experimentalMutation.isPending}
+                    onToggle={() => experimentalMutation.mutate({ enableWorkspaceTtlSweeper: !enableWorkspaceTtlSweeper })}
                   />
                 </>
               )}

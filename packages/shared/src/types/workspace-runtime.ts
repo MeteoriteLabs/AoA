@@ -107,6 +107,7 @@ export interface ProjectExecutionWorkspacePolicy {
   pullRequestPolicy?: Record<string, unknown> | null;
   runtimePolicy?: Record<string, unknown> | null;
   cleanupPolicy?: Record<string, unknown> | null;
+  ttlDays?: number | null;
 }
 
 export interface IssueExecutionWorkspaceSettings {

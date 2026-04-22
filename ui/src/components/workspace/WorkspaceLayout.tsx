@@ -10,6 +10,7 @@ import { WorkspaceTimeline } from "./WorkspaceTimeline";
 import { WorkspacePreviewPanel, PreviewModeToolbar, type PreviewMode } from "./WorkspacePreviewPanel";
 import { WorkspaceRightPanel } from "./WorkspaceRightPanel";
 import { ExecutionWorkspaceCloseDialog } from "./ExecutionWorkspaceCloseDialog";
+import { OpenInIdeButton } from "./OpenInIdeButton";
 import { useSidebar } from "../../context/SidebarContext";
 import { useSidebarCollapsed } from "./useSidebarCollapsed";
 import { executionWorkspacesApi } from "../../api/execution-workspaces";
@@ -202,7 +203,7 @@ export function WorkspaceLayout({
           )}
         </div>
         <div className="flex items-center gap-1">
-          {/* Open in IDE button — wired in Task 6 */}
+          {workspace.cwd && <OpenInIdeButton cwd={workspace.cwd} />}
           <DropdownMenu open={headerMenuOpen} onOpenChange={setHeaderMenuOpen}>
             <DropdownMenuTrigger asChild>
               <Button

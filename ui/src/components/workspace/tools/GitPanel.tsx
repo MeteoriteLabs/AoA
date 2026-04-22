@@ -2,6 +2,7 @@ import { useState } from "react";
 import { GitBranch, Copy, Check, ExternalLink, GitPullRequest } from "lucide-react";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { OpenInIdeButton } from "../OpenInIdeButton";
 
 interface GitPanelProps {
   workspace: ExecutionWorkspace;
@@ -40,6 +41,13 @@ export function GitPanel({ workspace }: GitPanelProps) {
 
   return (
     <div className="space-y-2 text-sm" data-testid="git-panel">
+      {/* Open in IDE — launches VS Code / Cursor / Zed or reveals in file manager */}
+      {workspace.cwd && (
+        <div className="pb-2 border-b border-border" data-testid="git-panel-open-in-ide">
+          <OpenInIdeButton cwd={workspace.cwd} />
+        </div>
+      )}
+
       {/* Branch */}
       {workspace.branchName && (
         <div className="flex items-center gap-2" data-testid="branch-row">
