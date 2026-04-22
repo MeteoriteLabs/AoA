@@ -293,6 +293,18 @@ export function secretService(db: Db) {
       return secret;
     },
 
+    /**
+     * Convenience wrapper for deleting a secret by (companyId, name). Idempotent:
+     * returns `false` when no matching secret exists. Version rows cascade-delete
+     * via the FK on `company_secret_versions.secret_id`.
+     */
+    delete: async (companyId: string, name: string): Promise<boolean> => {
+      const existing = await getByName(companyId, name);
+      if (!existing) return false;
+      await db.delete(companySecrets).where(eq(companySecrets.id, existing.id));
+      return true;
+    },
+
     normalizeAdapterConfigForPersistence: async (
       companyId: string,
       adapterConfig: Record<string, unknown>,

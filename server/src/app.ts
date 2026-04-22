@@ -17,6 +17,7 @@ import { issueRoutes } from "./routes/issues.js";
 import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
+import { githubRoutes } from "./routes/github.js";
 import { costRoutes } from "./routes/costs.js";
 import { financeRoutes } from "./routes/finance.js";
 import { quotaRoutes } from "./routes/quotas.js";
@@ -192,6 +193,7 @@ export async function createApp(
   api.use(mcpServerRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
+  api.use(githubRoutes(db));
   api.use(costRoutes(db));
   api.use(financeRoutes(db));
   api.use(quotaRoutes(db));

@@ -46,6 +46,7 @@ import {
   HintIcon,
 } from "../components/agent-config-primitives";
 import { LLMProvidersSection } from "../components/LLMProvidersSection";
+import { GitHubIntegrationCard } from "../components/GitHubIntegrationCard";
 import { PageTabBar } from "../components/PageTabBar";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -1291,6 +1292,13 @@ function IntegrationsSection() {
             ))
           )}
         </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          GitHub
+        </div>
+        <GitHubIntegrationCard />
       </div>
     </div>
   );

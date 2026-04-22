@@ -33,6 +33,7 @@
     "@anthropic-ai/sdk": "^0.79.0",
     "@aws-sdk/client-s3": "^3.888.0",
     "@google/generative-ai": "^0.24.1",
+    "@octokit/rest": "^22.0.1",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",
