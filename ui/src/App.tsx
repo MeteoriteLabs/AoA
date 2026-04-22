@@ -36,6 +36,7 @@ import { Discussions } from "./pages/Discussions";
 import { DiscussionDetail } from "./pages/DiscussionDetail";
 import { Skills } from "./pages/Skills";
 import { WorkspaceView } from "./pages/WorkspaceView";
+import { WorkspacesList } from "./pages/WorkspacesList";
 import { Routines } from "./pages/Routines";
 import { RoutineDetail } from "./pages/RoutineDetail";
 import { AuthPage } from "./pages/Auth";
@@ -172,6 +173,7 @@ function boardRoutes() {
       <Route path="inbox/new" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />
       <Route path="design-guide" element={<DesignGuide />} />
+      <Route path="workspaces" element={<WorkspacesList />} />
       <Route path="workspaces/:workspaceId" element={<WorkspaceView />} />
       <Route path="plugins/:pluginId" element={<PluginPage />} />
     </>
@@ -291,6 +293,7 @@ export function App() {
           <Route path="projects/:projectId/team" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/budget" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
+          <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}
           </Route>

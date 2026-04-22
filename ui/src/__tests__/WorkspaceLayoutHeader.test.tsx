@@ -111,7 +111,7 @@ describe("WorkspaceLayout header", () => {
     expect(screen.getByTestId("workspace-header-branch")).toHaveTextContent("on feature-login");
   });
 
-  it("renders kebab menu with Settings (disabled, Task 10) + Archive (enabled)", async () => {
+  it("renders kebab menu with Settings (enabled, Task 10) + Archive (enabled)", async () => {
     const user = userEvent.setup();
     renderLayout();
 
@@ -120,8 +120,8 @@ describe("WorkspaceLayout header", () => {
     const settingsItem = await screen.findByRole("menuitem", { name: /settings/i });
     const archiveItem = await screen.findByRole("menuitem", { name: /archive/i });
 
-    expect(settingsItem).toHaveAttribute("aria-disabled", "true");
-    // Archive is now wired (Task 5). Only disabled when workspace is already archived.
+    // Settings is now wired (Task 10). Archive is wired (Task 5).
+    expect(settingsItem).not.toHaveAttribute("aria-disabled", "true");
     expect(archiveItem).not.toHaveAttribute("aria-disabled", "true");
   });
 

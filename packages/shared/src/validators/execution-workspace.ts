@@ -114,10 +114,17 @@ export const executionWorkspaceCloseReadinessSchema = z.object({
 }).strict();
 
 export const updateExecutionWorkspaceSchema = z.object({
+  name: z.string().min(1).optional(),
+  cwd: z.string().nullable().optional(),
+  repoUrl: z.string().nullable().optional(),
+  baseRef: z.string().nullable().optional(),
+  branchName: z.string().nullable().optional(),
+  providerRef: z.string().nullable().optional(),
   status: executionWorkspaceStatusSchema.optional(),
   cleanupEligibleAt: z.string().datetime().optional().nullable(),
   cleanupReason: z.string().optional().nullable(),
   metadata: z.record(z.unknown()).optional().nullable(),
+  config: executionWorkspaceConfigSchema.partial().optional(),
 }).strict();
 
 export type UpdateExecutionWorkspace = z.infer<typeof updateExecutionWorkspaceSchema>;

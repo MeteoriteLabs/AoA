@@ -10,6 +10,7 @@ import { WorkspaceTimeline } from "./WorkspaceTimeline";
 import { WorkspacePreviewPanel, PreviewModeToolbar, type PreviewMode } from "./WorkspacePreviewPanel";
 import { WorkspaceRightPanel } from "./WorkspaceRightPanel";
 import { ExecutionWorkspaceCloseDialog } from "./ExecutionWorkspaceCloseDialog";
+import { WorkspaceSettingsSheet } from "./WorkspaceSettingsSheet";
 import { OpenInIdeButton } from "./OpenInIdeButton";
 import { useSidebar } from "../../context/SidebarContext";
 import { useSidebarCollapsed } from "./useSidebarCollapsed";
@@ -76,7 +77,7 @@ export function WorkspaceLayout({
   } | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
-  // Header action state — Settings wired in Task 10; Archive + close report wired in Task 5.
+  // Header action state — Settings, Archive, and close report wire up the kebab actions.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [closeReportOpen, setCloseReportOpen] = useState(false);
@@ -219,12 +220,10 @@ export function WorkspaceLayout({
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
                   onClick={() => setSettingsOpen(true)}
-                  disabled
                   data-testid="workspace-header-menu-settings"
                 >
                   <Settings className="h-4 w-4 mr-2" />
                   Settings
-                  <span className="ml-auto text-xs text-muted-foreground">Task 10</span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
@@ -534,6 +533,15 @@ export function WorkspaceLayout({
         </SheetContent>
         )}
       </Sheet>
+
+      {settingsOpen && (
+        <WorkspaceSettingsSheet
+          workspaceId={workspace.id}
+          companyId={workspace.companyId}
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+        />
+      )}
     </div>
   );
 }

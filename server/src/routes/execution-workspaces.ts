@@ -79,10 +79,21 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    await assertCanControlWorkspace(db, req, {
+      companyId: existing.companyId,
+      projectId: existing.projectId ?? null,
+    });
+    const { config: configPatch, ...restBody } = req.body as Record<string, unknown>;
     const patch: Record<string, unknown> = {
-      ...req.body,
+      ...restBody,
       ...(req.body.cleanupEligibleAt ? { cleanupEligibleAt: new Date(req.body.cleanupEligibleAt) } : {}),
     };
+    if (configPatch !== undefined) {
+      patch.metadata = mergeExecutionWorkspaceConfig(
+        (req.body.metadata as Record<string, unknown> | null | undefined) ?? existing.metadata,
+        configPatch as Record<string, unknown>,
+      );
+    }
     let workspace = existing;
     let cleanupWarnings: string[] = [];
 
