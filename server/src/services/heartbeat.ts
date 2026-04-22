@@ -48,9 +48,9 @@ import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { outputDetectionService } from "./output-detection.js";
 import { formatRunSummary } from "./run-summary.js";
 import {
-  buildRealizedExecutionWorkspaceFromPersisted,
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
+  ensurePersistedExecutionWorkspaceAvailable,
   ensureRuntimeServicesForRun,
   persistAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
@@ -1506,7 +1506,11 @@ export function heartbeatService(db: Db) {
         repoRef: resolvedWorkspace.repoRef,
       };
       const executionWorkspace = shouldReuseExisting && existingExecutionWorkspace
-        ? buildRealizedExecutionWorkspaceFromPersisted(existingExecutionWorkspace, realizeBase)
+        ? await ensurePersistedExecutionWorkspaceAvailable(
+            existingExecutionWorkspace,
+            realizeBase,
+            workspaceOperationRecorder,
+          )
         : await realizeExecutionWorkspace({
             base: realizeBase,
             config: resolvedConfig,
@@ -1523,6 +1527,28 @@ export function heartbeatService(db: Db) {
       realizedWorkspace = executionWorkspace;
       const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
       const resolvedProjectWorkspaceId = resolvedWorkspace.workspaceId ?? null;
+
+      // Snapshot the workspace config at creation so it survives across runs
+      // (provisionCommand / teardownCommand / workspaceRuntime). Runtime-service
+      // fields (cleanupCommand / desiredState / serviceStates) are included as
+      // null placeholders for forward compatibility with Task 7.
+      const workspaceStrategyObject = parseObject(workspaceManagedConfig.workspaceStrategy);
+      const workspaceRuntimeObject = parseObject(workspaceManagedConfig.workspaceRuntime);
+      const configSnapshot = {
+        provisionCommand: typeof workspaceStrategyObject.provisionCommand === "string"
+          ? workspaceStrategyObject.provisionCommand
+          : null,
+        teardownCommand: typeof workspaceStrategyObject.teardownCommand === "string"
+          ? workspaceStrategyObject.teardownCommand
+          : null,
+        cleanupCommand: null as string | null,
+        workspaceRuntime: Object.keys(workspaceRuntimeObject).length > 0 ? workspaceRuntimeObject : null,
+        desiredState: null as "running" | "stopped" | null,
+        serviceStates: null as Record<string, "running" | "stopped"> | null,
+      };
+      const hasConfigSnapshot = configSnapshot.provisionCommand !== null
+        || configSnapshot.teardownCommand !== null
+        || configSnapshot.workspaceRuntime !== null;
 
       // ── Persist execution workspace ─────────────────────────────────
       try {
@@ -1570,6 +1596,7 @@ export function heartbeatService(db: Db) {
                 metadata: {
                   source: executionWorkspace.source,
                   createdByRuntime: executionWorkspace.created,
+                  ...(hasConfigSnapshot ? { config: configSnapshot } : {}),
                 },
               })
             : null;

@@ -25,6 +25,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService, routineService } from "./services/index.js";
+import { reconcilePersistedRuntimeServicesOnStartup } from "./services/workspace-runtime.js";
 import { onBudgetExhausted } from "./services/budget-hooks.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -503,6 +504,11 @@ if (config.heartbeatSchedulerEnabled) {
   // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
   void heartbeat.reapOrphanedRuns().catch((err) => {
     logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
+  });
+
+  // Reconcile stale runtime service states after server restart
+  void reconcilePersistedRuntimeServicesOnStartup(db as any).catch((err) => {
+    logger.error({ err }, "reconcilePersistedRuntimeServicesOnStartup failed");
   });
 
   setInterval(() => {

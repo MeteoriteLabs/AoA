@@ -276,6 +276,127 @@ async function directoryExists(value: string) {
   return fs.stat(value).then((stats) => stats.isDirectory()).catch(() => false);
 }
 
+interface GitWorktreePorcelainEntry {
+  worktree: string;
+  branch: string | null;
+}
+
+function parseGitWorktreeListPorcelain(raw: string): GitWorktreePorcelainEntry[] {
+  const entries: GitWorktreePorcelainEntry[] = [];
+  let current: Partial<GitWorktreePorcelainEntry> | null = null;
+  for (const rawLine of raw.split("\n")) {
+    const line = rawLine.trimEnd();
+    if (line.length === 0) {
+      if (current?.worktree) {
+        entries.push({ worktree: current.worktree, branch: current.branch ?? null });
+      }
+      current = null;
+      continue;
+    }
+    if (line.startsWith("worktree ")) {
+      current = { worktree: line.slice("worktree ".length), branch: null };
+    } else if (line.startsWith("branch ") && current) {
+      current.branch = line.slice("branch ".length);
+    }
+  }
+  if (current?.worktree) {
+    entries.push({ worktree: current.worktree, branch: current.branch ?? null });
+  }
+  return entries;
+}
+
+async function findRegisteredGitWorktreeByBranch(
+  repoRoot: string,
+  branchName: string,
+): Promise<string | null> {
+  const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
+  if (!raw) return null;
+  const expected = `refs/heads/${branchName}`;
+  for (const entry of parseGitWorktreeListPorcelain(raw)) {
+    if (entry.branch === expected) return path.resolve(entry.worktree);
+  }
+  return null;
+}
+
+async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
+  try {
+    const remoteHead = await runGit(
+      ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+      repoRoot,
+    );
+    const branch = remoteHead?.startsWith("origin/") ? remoteHead.slice("origin/".length) : remoteHead;
+    if (branch) return branch;
+  } catch {
+    // Fall through to remote-branch heuristic.
+  }
+
+  for (const candidate of ["main", "master"]) {
+    try {
+      await runGit(["rev-parse", "--verify", `refs/remotes/origin/${candidate}`], repoRoot);
+      return candidate;
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  for (const candidate of ["main", "master"]) {
+    try {
+      await runGit(["rev-parse", "--verify", `refs/heads/${candidate}`], repoRoot);
+      return candidate;
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  return null;
+}
+
+async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>> {
+  const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => "");
+  const paths = new Set<string>();
+  for (const entry of parseGitWorktreeListPorcelain(raw)) {
+    paths.add(path.resolve(entry.worktree));
+  }
+  return paths;
+}
+
+type ValidateLinkedGitWorktreeResult = { valid: true } | { valid: false; reason: string };
+
+async function validateLinkedGitWorktree(input: {
+  repoRoot: string;
+  worktreePath: string;
+  expectedBranchName: string | null;
+}): Promise<ValidateLinkedGitWorktreeResult> {
+  const resolvedWorktreePath = path.resolve(input.worktreePath);
+  const listed = await listLinkedGitWorktreePaths(input.repoRoot);
+  if (!listed.has(resolvedWorktreePath)) {
+    return { valid: false, reason: "path is not registered in `git worktree list`" };
+  }
+
+  const worktreeTopLevel = await runGit(
+    ["rev-parse", "--show-toplevel"],
+    resolvedWorktreePath,
+  ).catch(() => null);
+  if (!worktreeTopLevel || path.resolve(worktreeTopLevel) !== resolvedWorktreePath) {
+    return { valid: false, reason: "git resolves this path to a different repository root" };
+  }
+
+  if (input.expectedBranchName) {
+    const currentBranch = await runGit(
+      ["symbolic-ref", "--quiet", "--short", "HEAD"],
+      resolvedWorktreePath,
+    ).catch(() => null);
+    if (currentBranch !== input.expectedBranchName) {
+      return {
+        valid: false,
+        reason: `worktree HEAD is on "${currentBranch ?? "<detached>"}" instead of "${input.expectedBranchName}"`,
+      };
+    }
+  }
+
+  return { valid: true };
+}
+
 function terminateChildProcess(child: ChildProcess) {
   if (!child.pid) return;
   if (process.platform !== "win32") {
@@ -562,8 +683,8 @@ export async function realizeExecutionWorkspace(input: {
     };
   }
 
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd).catch(() => null);
-  if (!repoRoot) {
+  const repoRootOrNull = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd).catch(() => null);
+  if (!repoRootOrNull) {
     // baseCwd is not inside a git repository — cannot create a worktree.
     // Fall back to project_primary so the run still proceeds.
     return {
@@ -579,6 +700,7 @@ export async function realizeExecutionWorkspace(input: {
       created: false,
     };
   }
+  const repoRoot: string = repoRootOrNull;
   const branchTemplate = asString(rawStrategy.branchTemplate, "{{issue.identifier}}-{{slug}}");
   const renderedBranch = renderWorkspaceTemplate(branchTemplate, {
     issue: input.issue,
@@ -592,55 +714,86 @@ export async function realizeExecutionWorkspace(input: {
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
     : path.join(repoRoot, ".paperclip", "worktrees");
   const worktreePath = path.join(worktreeParentDir, branchName);
-  const baseRef = asString(rawStrategy.baseRef, input.base.repoRef ?? "HEAD");
+  const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
+    ? rawStrategy.baseRef
+    : input.base.repoRef ?? null;
+  const baseRef = configuredBaseRef ?? (await detectDefaultBranch(repoRoot)) ?? "HEAD";
 
   await fs.mkdir(worktreeParentDir, { recursive: true });
 
+  async function reuseExistingWorktreeAt(reusablePath: string): Promise<RealizedExecutionWorkspace> {
+    if (input.recorder) {
+      await input.recorder.recordOperation({
+        phase: "worktree_prepare",
+        cwd: repoRoot,
+        metadata: {
+          repoRoot,
+          worktreePath: reusablePath,
+          branchName,
+          baseRef,
+          created: false,
+          reused: true,
+        },
+        run: async () => ({
+          status: "succeeded",
+          exitCode: 0,
+          system: `Reused existing git worktree at ${reusablePath}\n`,
+        }),
+      });
+    }
+    await provisionExecutionWorktree({
+      strategy: rawStrategy,
+      base: input.base,
+      repoRoot,
+      worktreePath: reusablePath,
+      branchName,
+      issue: input.issue,
+      agent: input.agent,
+      created: false,
+      recorder: input.recorder ?? null,
+    });
+    return {
+      ...input.base,
+      strategy: "git_worktree",
+      cwd: reusablePath,
+      branchName,
+      worktreePath: reusablePath,
+      warnings: [],
+      created: false,
+    };
+  }
+
   const existingWorktree = await directoryExists(worktreePath);
   if (existingWorktree) {
+    const validation = await validateLinkedGitWorktree({
+      repoRoot,
+      worktreePath,
+      expectedBranchName: branchName,
+    });
+    if (validation.valid) {
+      return await reuseExistingWorktreeAt(worktreePath);
+    }
     const existingGitDir = await runGit(["rev-parse", "--git-dir"], worktreePath).catch(() => null);
     if (existingGitDir) {
-      if (input.recorder) {
-        await input.recorder.recordOperation({
-          phase: "worktree_prepare",
-          cwd: repoRoot,
-          metadata: {
-            repoRoot,
-            worktreePath,
-            branchName,
-            baseRef,
-            created: false,
-            reused: true,
-          },
-          run: async () => ({
-            status: "succeeded",
-            exitCode: 0,
-            system: `Reused existing git worktree at ${worktreePath}\n`,
-          }),
-        });
-      }
-      await provisionExecutionWorktree({
-        strategy: rawStrategy,
-        base: input.base,
-        repoRoot,
-        worktreePath,
-        branchName,
-        issue: input.issue,
-        agent: input.agent,
-        created: false,
-        recorder: input.recorder ?? null,
-      });
-      return {
-        ...input.base,
-        strategy: "git_worktree",
-        cwd: worktreePath,
-        branchName,
-        worktreePath,
-        warnings: [],
-        created: false,
-      };
+      // Directory is a git checkout but not registered as a worktree of repoRoot,
+      // or the branch doesn't match. Surface the specific reason from validation.
+      throw new Error(
+        `Configured worktree path "${worktreePath}" is not reusable: ${validation.reason}.`,
+      );
     }
     throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a git worktree.`);
+  }
+
+  const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
+  if (registeredBranchWorktree) {
+    const validation = await validateLinkedGitWorktree({
+      repoRoot,
+      worktreePath: registeredBranchWorktree,
+      expectedBranchName: branchName,
+    });
+    if (validation.valid) {
+      return await reuseExistingWorktreeAt(registeredBranchWorktree);
+    }
   }
 
   try {
@@ -662,21 +815,40 @@ export async function realizeExecutionWorkspace(input: {
     if (!gitErrorIncludes(error, "already exists")) {
       throw error;
     }
-    await recordGitOperation(input.recorder, {
-      phase: "worktree_prepare",
-      args: ["worktree", "add", worktreePath, branchName],
-      cwd: repoRoot,
-      metadata: {
+    try {
+      await recordGitOperation(input.recorder, {
+        phase: "worktree_prepare",
+        args: ["worktree", "add", worktreePath, branchName],
+        cwd: repoRoot,
+        metadata: {
+          repoRoot,
+          worktreePath,
+          branchName,
+          baseRef,
+          created: false,
+          reusedExistingBranch: true,
+        },
+        successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
+        failureLabel: `git worktree add ${worktreePath}`,
+      });
+    } catch (attachError) {
+      if (!gitErrorIncludes(attachError, "already checked out")) {
+        throw attachError;
+      }
+      const reusablePath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
+      if (!reusablePath) {
+        throw attachError;
+      }
+      const validation = await validateLinkedGitWorktree({
         repoRoot,
-        worktreePath,
-        branchName,
-        baseRef,
-        created: false,
-        reusedExistingBranch: true,
-      },
-      successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
-      failureLabel: `git worktree add ${worktreePath}`,
-    });
+        worktreePath: reusablePath,
+        expectedBranchName: branchName,
+      });
+      if (!validation.valid) {
+        throw attachError;
+      }
+      return await reuseExistingWorktreeAt(reusablePath);
+    }
   }
   await provisionExecutionWorktree({
     strategy: rawStrategy,
@@ -719,6 +891,98 @@ export function buildRealizedExecutionWorkspaceFromPersisted(
     worktreePath: strategy === "git_worktree" ? (ws.providerRef ?? ws.cwd ?? null) : null,
     warnings: [],
     created: false,
+  };
+}
+
+export async function ensurePersistedExecutionWorkspaceAvailable(
+  persisted: ExecutionWorkspace,
+  base: ExecutionWorkspaceInput,
+  recorder?: WorkspaceOperationRecorder | null,
+): Promise<RealizedExecutionWorkspace> {
+  const rehydrated = buildRealizedExecutionWorkspaceFromPersisted(persisted, base);
+
+  if (persisted.strategyType !== "git_worktree" || !persisted.cwd) {
+    return rehydrated;
+  }
+
+  const cwd = persisted.cwd;
+  const branchName = persisted.branchName;
+  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], base.baseCwd).catch(() => null);
+
+  if (await directoryExists(cwd)) {
+    if (!repoRoot || !branchName) {
+      return rehydrated;
+    }
+    const validation = await validateLinkedGitWorktree({
+      repoRoot,
+      worktreePath: cwd,
+      expectedBranchName: branchName,
+    });
+    if (validation.valid) return rehydrated;
+    // Disk present but git state doesn't match — fall through to re-provision.
+  }
+
+  if (!repoRoot) {
+    return rehydrated;
+  }
+  if (!branchName) {
+    throw new Error(
+      `Execution workspace "${cwd}" is missing and cannot be restored because no branch name is recorded.`,
+    );
+  }
+
+  await fs.mkdir(path.dirname(cwd), { recursive: true });
+  await runGit(["worktree", "prune"], repoRoot).catch(() => undefined);
+
+  let created = false;
+  try {
+    await recordGitOperation(recorder, {
+      phase: "worktree_prepare",
+      args: ["worktree", "add", cwd, branchName],
+      cwd: repoRoot,
+      metadata: {
+        repoRoot,
+        worktreePath: cwd,
+        branchName,
+        baseRef: persisted.baseRef ?? base.repoRef ?? null,
+        created: false,
+        restored: true,
+      },
+      successMessage: `Reattached missing git worktree at ${cwd}\n`,
+      failureLabel: `git worktree add ${cwd}`,
+    });
+  } catch (error) {
+    if (
+      !gitErrorIncludes(error, "invalid reference") &&
+      !gitErrorIncludes(error, "not a commit") &&
+      !gitErrorIncludes(error, "unknown revision")
+    ) {
+      throw error;
+    }
+    const baseRef = persisted.baseRef ?? (await detectDefaultBranch(repoRoot)) ?? "HEAD";
+    await recordGitOperation(recorder, {
+      phase: "worktree_prepare",
+      args: ["worktree", "add", "-b", branchName, cwd, baseRef],
+      cwd: repoRoot,
+      metadata: {
+        repoRoot,
+        worktreePath: cwd,
+        branchName,
+        baseRef,
+        created: true,
+        restored: true,
+      },
+      successMessage: `Recreated missing git worktree at ${cwd}\n`,
+      failureLabel: `git worktree add ${cwd}`,
+    });
+    created = true;
+  }
+
+  return {
+    ...rehydrated,
+    cwd,
+    worktreePath: cwd,
+    created,
   };
 }
 
