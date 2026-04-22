@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { GitBranch, Copy, Check, ExternalLink, GitPullRequest, Github } from "lucide-react";
-import type { ExecutionWorkspace } from "@paperclipai/shared";
+import type { ExecutionWorkspace, GitHubPrMetadata } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { OpenInIdeButton } from "../OpenInIdeButton";
@@ -9,14 +9,6 @@ import { CreatePrDialog } from "../CreatePrDialog";
 interface GitPanelProps {
   workspace: ExecutionWorkspace;
   issueId?: string | null;
-}
-
-interface PrMetadata {
-  url: string;
-  number: number;
-  state: "open" | "closed" | "merged";
-  createdAt?: string;
-  draft?: boolean;
 }
 
 const prStateColor: Record<string, string> = {
@@ -31,7 +23,7 @@ export function GitPanel({ workspace, issueId }: GitPanelProps) {
   const raw = (workspace.metadata as Record<string, unknown> | null)?.pr;
   const pr =
     typeof raw === "object" && raw !== null && "url" in raw && "number" in raw && "state" in raw
-      ? (raw as PrMetadata)
+      ? (raw as GitHubPrMetadata)
       : undefined;
 
   const handleCopy = async () => {

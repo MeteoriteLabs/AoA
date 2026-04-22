@@ -206,7 +206,7 @@ describe("CreatePrDialog", () => {
     const link = screen.getByRole("link", {
       name: /open settings → integrations/i,
     });
-    expect(link).toHaveAttribute("href", "/settings/integrations");
+    expect(link).toHaveAttribute("href", "/settings?tab=integrations");
   });
 
   it("renders scope hint banner on 403 error", async () => {

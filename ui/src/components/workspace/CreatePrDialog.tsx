@@ -226,7 +226,7 @@ export function CreatePrDialog({
                     Connect a personal access token before creating PRs.
                   </p>
                   <Link
-                    to="/settings/integrations"
+                    to="/settings?tab=integrations"
                     className="inline-flex items-center gap-1 text-xs text-foreground hover:underline"
                     onClick={() => onOpenChange(false)}
                   >
