@@ -6,6 +6,7 @@ import {
   assets,
   companies,
   companyMemberships,
+  executionWorkspaces,
   goals,
   heartbeatRuns,
   issueAttachments,
@@ -24,6 +25,7 @@ import { dependencyService } from "./dependencies.js";
 import { heartbeatService } from "./heartbeat.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { deriveIssueUserContext } from "./issue-user-context.js";
+import { issueExecutionWorkspaceModeForPersistedWorkspace } from "./execution-workspace-policy.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -61,6 +63,44 @@ export interface IssueFilters {
   projectId?: string;
   labelId?: string;
   q?: string;
+}
+
+export function pickWorkspaceInheritanceSourceIssueId(input: {
+  inheritExecutionWorkspaceFromIssueId?: string | null;
+  parentId?: string | null;
+}): string | null {
+  return input.inheritExecutionWorkspaceFromIssueId ?? input.parentId ?? null;
+}
+
+export interface WorkspaceInheritanceSource {
+  executionWorkspaceId: string | null;
+  executionWorkspaceSettings: Record<string, unknown> | null;
+}
+
+export interface ResolvedWorkspaceInheritance {
+  executionWorkspaceId: string;
+  executionWorkspacePreference: "reuse_existing";
+  executionWorkspaceSettings: Record<string, unknown>;
+}
+
+export function resolveExecutionWorkspaceInheritance(input: {
+  sourceIssue: WorkspaceInheritanceSource | null;
+  sourceWorkspaceMode: string | null | undefined;
+  isolatedWorkspacesEnabled: boolean;
+  hasExplicitOverride: boolean;
+}): ResolvedWorkspaceInheritance | null {
+  if (!input.sourceIssue) return null;
+  if (!input.isolatedWorkspacesEnabled) return null;
+  if (input.hasExplicitOverride) return null;
+  if (!input.sourceIssue.executionWorkspaceId) return null;
+  return {
+    executionWorkspaceId: input.sourceIssue.executionWorkspaceId,
+    executionWorkspacePreference: "reuse_existing",
+    executionWorkspaceSettings: {
+      ...((input.sourceIssue.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? {}),
+      mode: issueExecutionWorkspaceModeForPersistedWorkspace(input.sourceWorkspaceMode),
+    },
+  };
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -598,10 +638,13 @@ export function issueService(db: Db) {
 
     create: async (
       companyId: string,
-      data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
+      data: Omit<typeof issues.$inferInsert, "companyId"> & {
+        labelIds?: string[];
+        inheritExecutionWorkspaceFromIssueId?: string | null;
+      },
       outerTx?: Parameters<Parameters<typeof db.transaction>[0]>[0],
     ) => {
-      const { labelIds: inputLabelIds, ...issueData } = data;
+      const { labelIds: inputLabelIds, inheritExecutionWorkspaceFromIssueId, ...issueData } = data;
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
@@ -615,6 +658,55 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       const run = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
+        const workspaceInheritanceIssueId = pickWorkspaceInheritanceSourceIssueId({
+          inheritExecutionWorkspaceFromIssueId,
+          parentId: (issueData as { parentId?: string | null }).parentId ?? null,
+        });
+        const hasExplicitExecutionWorkspaceOverride =
+          (issueData as Record<string, unknown>).executionWorkspaceId !== undefined ||
+          (issueData as Record<string, unknown>).executionWorkspacePreference !== undefined ||
+          (issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined;
+
+        let inheritedExecutionWorkspaceId: string | null = null;
+        let inheritedExecutionWorkspacePreference: string | null = null;
+        let inheritedExecutionWorkspaceSettings: Record<string, unknown> | null = null;
+
+        if (workspaceInheritanceIssueId) {
+          const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental())
+            .enableIsolatedWorkspaces;
+          const sourceIssue = await tx
+            .select({
+              executionWorkspaceId: issues.executionWorkspaceId,
+              executionWorkspaceSettings: issues.executionWorkspaceSettings,
+            })
+            .from(issues)
+            .where(and(eq(issues.id, workspaceInheritanceIssueId), eq(issues.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          if (sourceIssue == null && inheritExecutionWorkspaceFromIssueId) {
+            throw notFound("Workspace inheritance issue not found");
+          }
+          let sourceWorkspaceMode: string | null = null;
+          if (sourceIssue?.executionWorkspaceId) {
+            const sourceWorkspace = await tx
+              .select({ mode: executionWorkspaces.mode })
+              .from(executionWorkspaces)
+              .where(eq(executionWorkspaces.id, sourceIssue.executionWorkspaceId))
+              .then((rows) => rows[0] ?? null);
+            sourceWorkspaceMode = sourceWorkspace?.mode ?? null;
+          }
+          const resolved = resolveExecutionWorkspaceInheritance({
+            sourceIssue,
+            sourceWorkspaceMode,
+            isolatedWorkspacesEnabled,
+            hasExplicitOverride: hasExplicitExecutionWorkspaceOverride,
+          });
+          if (resolved) {
+            inheritedExecutionWorkspaceId = resolved.executionWorkspaceId;
+            inheritedExecutionWorkspacePreference = resolved.executionWorkspacePreference;
+            inheritedExecutionWorkspaceSettings = resolved.executionWorkspaceSettings;
+          }
+        }
+
         const [company] = await tx
           .update(companies)
           .set({ issueCounter: sql`${companies.issueCounter} + 1` })
@@ -624,7 +716,19 @@ export function issueService(db: Db) {
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
 
-        const values = { ...issueData, companyId, issueNumber, identifier } as typeof issues.$inferInsert;
+        const values = {
+          ...issueData,
+          ...(inheritedExecutionWorkspaceId ? { executionWorkspaceId: inheritedExecutionWorkspaceId } : {}),
+          ...(inheritedExecutionWorkspacePreference
+            ? { executionWorkspacePreference: inheritedExecutionWorkspacePreference }
+            : {}),
+          ...(inheritedExecutionWorkspaceSettings
+            ? { executionWorkspaceSettings: inheritedExecutionWorkspaceSettings }
+            : {}),
+          companyId,
+          issueNumber,
+          identifier,
+        } as typeof issues.$inferInsert;
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }

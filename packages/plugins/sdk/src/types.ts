@@ -894,6 +894,7 @@ export interface PluginIssuesClient {
     projectId?: string;
     goalId?: string;
     parentId?: string;
+    inheritExecutionWorkspaceFromIssueId?: string;
     title: string;
     description?: string;
     priority?: Issue["priority"];
