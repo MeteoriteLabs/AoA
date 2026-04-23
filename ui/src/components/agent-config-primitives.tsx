@@ -67,11 +67,7 @@ export const adapterLabels: Record<string, string> = {
   gemini_local: "Gemini CLI (local)",
 };
 
-export const roleLabels: Record<string, string> = {
-  ceo: "CEO", cto: "CTO", cmo: "CMO", cfo: "CFO",
-  engineer: "Engineer", designer: "Designer", pm: "PM",
-  qa: "QA", devops: "DevOps", researcher: "Researcher", general: "General",
-};
+export { AGENT_ROLE_LABELS as roleLabels, displayAgentRole } from "@armyofagents/shared";
 
 /* ---- Primitive components ---- */
 

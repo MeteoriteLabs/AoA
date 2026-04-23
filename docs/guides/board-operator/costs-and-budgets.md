@@ -67,4 +67,4 @@ GET /api/companies/{companyId}/costs/by-project   # Per-project breakdown
 - Set conservative budgets initially and increase as you see results
 - Monitor the dashboard regularly for unexpected cost spikes
 - Use per-agent budgets to limit exposure from any single agent
-- Critical agents (CEO, CTO) may need higher budgets than ICs
+- Critical agents (Director, CTO) may need higher budgets than ICs

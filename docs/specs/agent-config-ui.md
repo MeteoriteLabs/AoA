@@ -212,7 +212,7 @@ Shows a flat list of agents with status badge, name, role, title, and budget bar
 **Org Chart view:**
 - Tree layout showing reporting hierarchy
 - Each node shows: agent name, role, status badge
-- CEO at the top, direct reports below, etc.
+- Director at the top, direct reports below, etc.
 - Uses the `agentsApi.org(companyId)` endpoint which already returns `OrgNode[]`
 - Clicking a node navigates to agent detail
 

@@ -25,6 +25,7 @@ import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
 import type { Agent } from "@armyofagents/shared";
 import type { AgentTrustScore } from "@armyofagents/shared";
+import { AGENT_ROLE_LABELS as roleLabels } from "@armyofagents/shared";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
@@ -36,12 +37,6 @@ const adapterLabels: Record<string, string> = {
   http: "HTTP",
   hermes_local: "Hermes",
   gemini_local: "Gemini CLI",
-};
-
-const roleLabels: Record<string, string> = {
-  ceo: "CEO", cto: "CTO", cmo: "CMO", cfo: "CFO",
-  engineer: "Engineer", designer: "Designer", pm: "PM",
-  qa: "QA", devops: "DevOps", researcher: "Researcher", general: "General",
 };
 
 type FilterTab = "all" | "active" | "paused" | "error";

@@ -64,7 +64,7 @@ type AdapterType =
   | "http"
   | "openclaw";
 
-const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO. Use the ceo persona found here: [https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md](https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md)
+const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the Director. Use the director persona found here: [https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md](https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md)
 
 Ensure you have a folder agents/ceo and then download this AGENTS.md as well as the sibling HEARTBEAT.md, SOUL.md, and TOOLS.md. and set that AGENTS.md as the path to your agents instruction file
 
@@ -95,7 +95,7 @@ export function OnboardingWizard() {
   const [suggestedRootFolder, setSuggestedRootFolder] = useState("");
 
   // Step 3 (agent — was step 2)
-  const [agentName, setAgentName] = useState("CEO");
+  const [agentName, setAgentName] = useState("Director");
   const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
   const [cwd, setCwd] = useState("");
   const [cwdManuallyEdited, setCwdManuallyEdited] = useState(false);
@@ -112,7 +112,7 @@ export function OnboardingWizard() {
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
 
   // Step 3
-  const [taskTitle, setTaskTitle] = useState("Create your CEO HEARTBEAT.md");
+  const [taskTitle, setTaskTitle] = useState("Create your Director HEARTBEAT.md");
   const [taskDescription, setTaskDescription] = useState(
     DEFAULT_TASK_DESCRIPTION
   );
@@ -256,7 +256,7 @@ export function OnboardingWizard() {
     setError(null);
     setCompanyName("");
     setCompanyGoal("");
-    setAgentName("CEO");
+    setAgentName("Director");
     setAdapterType("claude_local");
     setCwd("");
     setCwdManuallyEdited(false);
@@ -269,7 +269,7 @@ export function OnboardingWizard() {
     setAdapterEnvLoading(false);
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
-    setTaskTitle("Create your CEO HEARTBEAT.md");
+    setTaskTitle("Create your Director HEARTBEAT.md");
     setTaskDescription(DEFAULT_TASK_DESCRIPTION);
     setRootFolder("");
     setFolderBrowserOpen(false);
@@ -773,7 +773,7 @@ export function OnboardingWizard() {
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="CEO"
+                      placeholder="Director"
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
                       autoFocus
@@ -1032,7 +1032,7 @@ export function OnboardingWizard() {
                         <div className="rounded-md border border-amber-300/60 bg-amber-50/40 px-2.5 py-2 space-y-2">
                           <p className="text-[11px] text-amber-900/90 leading-relaxed">
                             Claude failed while <span className="font-mono">ANTHROPIC_API_KEY</span> is set.
-                            You can clear it in this CEO adapter config and retry the probe.
+                            You can clear it in this Director adapter config and retry the probe.
                           </p>
                           <Button
                             size="sm"

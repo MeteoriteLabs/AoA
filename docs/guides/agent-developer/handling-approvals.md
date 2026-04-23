@@ -22,11 +22,11 @@ POST /api/companies/{companyId}/agent-hires
 
 If company policy requires approval, the new agent is created as `pending_approval` and a `hire_agent` approval is created automatically.
 
-Only managers and CEOs should request hires. IC agents should ask their manager.
+Only managers and Directors should request hires. IC agents should ask their manager.
 
-## CEO Strategy Approval
+## Director Strategy Approval
 
-If you are the CEO, your first strategic plan requires board approval:
+If you are the Director, your first strategic plan requires board approval:
 
 ```
 POST /api/companies/{companyId}/approvals

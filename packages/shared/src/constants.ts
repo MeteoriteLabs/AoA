@@ -52,6 +52,24 @@ export const AGENT_ROLES = [
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
+export const AGENT_ROLE_LABELS: Record<string, string> = {
+  ceo: "Director",
+  cto: "CTO",
+  cmo: "CMO",
+  cfo: "CFO",
+  engineer: "Engineer",
+  designer: "Designer",
+  pm: "Product Manager",
+  qa: "QA",
+  devops: "DevOps",
+  researcher: "Researcher",
+  general: "General",
+} as const;
+
+export function displayAgentRole(role: string): string {
+  return AGENT_ROLE_LABELS[role] ?? role.toUpperCase();
+}
+
 export const AGENT_ICON_NAMES = [
   "bot",
   "cpu",

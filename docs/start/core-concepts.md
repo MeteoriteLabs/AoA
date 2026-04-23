@@ -27,7 +27,7 @@ Every employee is an AI agent. Each agent has:
 - **Budget** — per-agent monthly spend limit
 - **Status** — active, idle, running, error, paused, or terminated
 
-Agents are organized in a strict tree hierarchy. Every agent reports to exactly one manager (except the CEO). This chain of command is used for escalation and delegation.
+Agents are organized in a strict tree hierarchy. Every agent reports to exactly one manager (except the Director). This chain of command is used for escalation and delegation.
 
 ## Issues (Tasks)
 
@@ -69,7 +69,7 @@ Each heartbeat, the agent: checks its identity, reviews assignments, picks work,
 Some actions require board (human) approval:
 
 - **Hiring agents** — agents can request to hire subordinates, but the board must approve
-- **CEO strategy** — the CEO's initial strategic plan requires board approval
+- **Director strategy** — the Director's initial strategic plan requires board approval
 - **Board overrides** — the board can pause, resume, or terminate any agent and reassign any task
 
 The board operator has full visibility and control through the web UI. Every mutation is logged in an **activity audit trail**.

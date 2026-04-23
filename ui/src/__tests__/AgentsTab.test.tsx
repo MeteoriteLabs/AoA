@@ -79,7 +79,7 @@ vi.mock("../components/StatusBadge", () => ({
 
 vi.mock("../components/agent-config-primitives", () => ({
   adapterLabels: { claude_api: "Claude API", claude_local: "Claude (local)" } as Record<string, string>,
-  roleLabels: { engineer: "Engineer", designer: "Designer", ceo: "CEO", general: "General" } as Record<string, string>,
+  roleLabels: { engineer: "Engineer", designer: "Designer", ceo: "Director", general: "General" } as Record<string, string>,
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
@@ -172,7 +172,7 @@ describe("AgentsTab", () => {
     expect(screen.getByText("Bob")).toBeInTheDocument();
 
     // Roles
-    expect(screen.getByText(/CEO/)).toBeInTheDocument();
+    expect(screen.getByText(/Director/)).toBeInTheDocument();
     expect(screen.getByText(/Engineer/)).toBeInTheDocument();
 
     // Adapter types

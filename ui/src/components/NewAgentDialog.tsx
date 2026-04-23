@@ -81,11 +81,11 @@ export function NewAgentDialog() {
   const effectiveRole = isFirstAgent ? "ceo" : role;
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Auto-fill for CEO
+  // Auto-fill for Director
   useEffect(() => {
     if (newAgentOpen && isFirstAgent) {
-      if (!name) setName("CEO");
-      if (!title) setTitle("CEO");
+      if (!name) setName("Director");
+      if (!title) setTitle("Director");
     }
   }, [newAgentOpen, isFirstAgent]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -349,7 +349,7 @@ export function NewAgentDialog() {
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
           <span className="text-xs text-muted-foreground">
-            {isFirstAgent ? "This will be the CEO" : ""}
+            {isFirstAgent ? "This will be the Director" : ""}
           </span>
         </div>
         {formError && (

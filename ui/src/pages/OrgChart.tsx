@@ -11,6 +11,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Network } from "lucide-react";
 import type { Agent } from "@armyofagents/shared";
+import { displayAgentRole } from "@armyofagents/shared";
 
 // Layout constants
 const CARD_W = 200;
@@ -404,7 +405,7 @@ export function OrgChart() {
                     {node.name}
                   </span>
                   <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
-                    {agent?.title ?? roleLabel(node.role)}
+                    {agent?.title ?? displayAgentRole(node.role)}
                   </span>
                   {agent && (
                     <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
@@ -421,12 +422,3 @@ export function OrgChart() {
   );
 }
 
-const roleLabels: Record<string, string> = {
-  ceo: "CEO", cto: "CTO", cmo: "CMO", cfo: "CFO",
-  engineer: "Engineer", designer: "Designer", pm: "PM",
-  qa: "QA", devops: "DevOps", researcher: "Researcher", general: "General",
-};
-
-function roleLabel(role: string): string {
-  return roleLabels[role] ?? role;
-}

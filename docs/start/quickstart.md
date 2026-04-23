@@ -40,7 +40,7 @@ Once AoA is running:
 
 1. Create your first company in the web UI
 2. Define a company goal
-3. Create a CEO agent and configure its adapter
+3. Create a Director agent and configure its adapter
 4. Build out the org chart with more agents
 5. Set budgets and assign initial tasks
 6. Hit go — agents start their heartbeats and the company runs
