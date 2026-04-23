@@ -1,5 +1,7 @@
 # AoA (Army of Agents)
 
+> **Version status:** v1.0.0-rc (Release Candidate). Phase I.2 closed 2026-04-23.
+
 Hybrid Workforce Operating System for solo founders. Built on Paperclip (open-source AI agent orchestration). Founder manages AI agents + humans from a single control room.
 
 ## Stack
