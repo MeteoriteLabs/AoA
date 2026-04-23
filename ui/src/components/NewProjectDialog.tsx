@@ -9,6 +9,7 @@ import { queryKeys } from "../lib/queryKeys";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -320,6 +321,7 @@ export function NewProjectDialog() {
         onKeyDown={handleKeyDown}
       >
         <DialogTitle className="sr-only">New {typeLabel}</DialogTitle>
+        <DialogDescription className="sr-only">Create a new {typeLabel.toLowerCase()}</DialogDescription>
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">

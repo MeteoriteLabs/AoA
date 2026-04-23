@@ -61,6 +61,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -948,6 +949,7 @@ function MemoryDetailPanel({
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-y-auto">
         <DialogHeader>
+          <DialogDescription className="sr-only">Memory item details</DialogDescription>
           <div className="flex items-center gap-2 flex-wrap">
             <DialogTitle className="text-base">{item.title}</DialogTitle>
             {item.layer && (
@@ -1667,6 +1669,7 @@ function CreateMemoryDialog({
       <DialogContent className="sm:max-w-md max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Add to Memory</DialogTitle>
+          <DialogDescription className="sr-only">Create a new memory item</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
