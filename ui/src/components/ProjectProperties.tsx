@@ -11,6 +11,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ExternalLink, Github, Plus, Trash2, X } from "lucide-react";
@@ -85,6 +86,11 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
   const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [policyAdvancedOpen, setPolicyAdvancedOpen] = useState(false);
+  const [workspaceConfirm, setWorkspaceConfirm] = useState<
+    | { kind: "clearLocal"; workspace: Project["workspaces"][number] }
+    | { kind: "clearRepo"; workspace: Project["workspaces"][number] }
+    | null
+  >(null);
 
   const { data: allGoals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -245,39 +251,52 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
   };
 
   const clearLocalWorkspace = (workspace: Project["workspaces"][number]) => {
-    const confirmed = window.confirm(
-      workspace.repoUrl
-        ? "Clear local folder from this workspace?"
-        : "Delete this workspace local folder?",
-    );
-    if (!confirmed) return;
-    if (workspace.repoUrl) {
-      updateWorkspace.mutate({
-        workspaceId: workspace.id,
-        data: { cwd: null },
-      });
-      return;
-    }
-    removeWorkspace.mutate(workspace.id);
+    setWorkspaceConfirm({ kind: "clearLocal", workspace });
   };
 
   const clearRepoWorkspace = (workspace: Project["workspaces"][number]) => {
-    const hasLocalFolder = Boolean(workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL);
-    const confirmed = window.confirm(
-      hasLocalFolder
-        ? "Clear GitHub repo from this workspace?"
-        : "Delete this workspace repo?",
-    );
-    if (!confirmed) return;
-    if (hasLocalFolder) {
-      updateWorkspace.mutate({
-        workspaceId: workspace.id,
-        data: { repoUrl: null, repoRef: null },
-      });
-      return;
-    }
-    removeWorkspace.mutate(workspace.id);
+    setWorkspaceConfirm({ kind: "clearRepo", workspace });
   };
+
+  const handleWorkspaceConfirm = () => {
+    if (!workspaceConfirm) return;
+    const { kind, workspace } = workspaceConfirm;
+    if (kind === "clearLocal") {
+      if (workspace.repoUrl) {
+        updateWorkspace.mutate({
+          workspaceId: workspace.id,
+          data: { cwd: null },
+        });
+      } else {
+        removeWorkspace.mutate(workspace.id);
+      }
+    } else {
+      const hasLocalFolder = Boolean(workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL);
+      if (hasLocalFolder) {
+        updateWorkspace.mutate({
+          workspaceId: workspace.id,
+          data: { repoUrl: null, repoRef: null },
+        });
+      } else {
+        removeWorkspace.mutate(workspace.id);
+      }
+    }
+    setWorkspaceConfirm(null);
+  };
+
+  const workspaceConfirmTitle = (() => {
+    if (!workspaceConfirm) return "";
+    const { kind, workspace } = workspaceConfirm;
+    if (kind === "clearLocal") {
+      return workspace.repoUrl
+        ? "Clear local folder from this workspace?"
+        : "Delete this workspace local folder?";
+    }
+    const hasLocalFolder = Boolean(workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL);
+    return hasLocalFolder
+      ? "Clear GitHub repo from this workspace?"
+      : "Delete this workspace repo?";
+  })();
 
   return (
     <div className="space-y-4">
@@ -672,6 +691,15 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
           <span className="text-sm">{formatDate(project.updatedAt)}</span>
         </PropertyRow>
       </div>
+
+      <ConfirmDialog
+        open={workspaceConfirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setWorkspaceConfirm(null);
+        }}
+        title={workspaceConfirmTitle}
+        onConfirm={handleWorkspaceConfirm}
+      />
     </div>
   );
 }

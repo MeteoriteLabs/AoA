@@ -5,6 +5,7 @@ import { useToast } from "../context/ToastContext";
 import { secretsApi } from "../api/secrets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Field, HintIcon } from "./agent-config-primitives";
 import {
   Sparkles,
@@ -68,6 +69,7 @@ export function LLMProvidersSection() {
   const [rotateKey, setRotateKey] = useState("");
   const [showRotateKey, setShowRotateKey] = useState(false);
   const [showNewKey, setShowNewKey] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<{ secretId: string; label: string } | null>(null);
 
   const { data: allSecrets = [], isLoading } = useQuery({
     queryKey: queryKeys.secrets.list(selectedCompanyId!),
@@ -162,9 +164,7 @@ export function LLMProvidersSection() {
   }
 
   function handleRemove(secretId: string, label: string) {
-    const confirmed = window.confirm(`Remove the ${label} API key? Agents using this key will lose access.`);
-    if (!confirmed) return;
-    removeMutation.mutate(secretId);
+    setRemoveTarget({ secretId, label });
   }
 
   if (isLoading) {
@@ -357,6 +357,21 @@ export function LLMProvidersSection() {
           No LLM provider keys configured yet. Add one above to get started.
         </p>
       )}
+
+      <ConfirmDialog
+        open={removeTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setRemoveTarget(null);
+        }}
+        title={removeTarget ? `Remove the ${removeTarget.label} API key?` : "Remove API key?"}
+        description="Agents using this key will lose access."
+        confirmLabel="Remove"
+        onConfirm={() => {
+          if (!removeTarget) return;
+          removeMutation.mutate(removeTarget.secretId);
+          setRemoveTarget(null);
+        }}
+      />
     </div>
   );
 }

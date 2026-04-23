@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Settings,
   ArrowRight,
@@ -242,6 +243,7 @@ function GeneralSection() {
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
   const [snippetCopied, setSnippetCopied] = useState(false);
   const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
+  const [archiveCompanyConfirmOpen, setArchiveCompanyConfirmOpen] = useState(false);
 
   const generalDirty =
     !!selectedCompany &&
@@ -679,23 +681,7 @@ function GeneralSection() {
                 archiveMutation.isPending ||
                 selectedCompany.status === "archived"
               }
-              onClick={() => {
-                if (!selectedCompanyId) return;
-                const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
-                );
-                if (!confirmed) return;
-                const nextCompanyId =
-                  companies.find(
-                    (company) =>
-                      company.id !== selectedCompanyId &&
-                      company.status !== "archived"
-                  )?.id ?? null;
-                archiveMutation.mutate({
-                  companyId: selectedCompanyId,
-                  nextCompanyId,
-                });
-              }}
+              onClick={() => setArchiveCompanyConfirmOpen(true)}
             >
               {archiveMutation.isPending
                 ? "Archiving..."
@@ -713,6 +699,28 @@ function GeneralSection() {
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={archiveCompanyConfirmOpen}
+        onOpenChange={setArchiveCompanyConfirmOpen}
+        title={selectedCompany ? `Archive company "${selectedCompany.name}"?` : "Archive company?"}
+        description="It will be hidden from the sidebar."
+        confirmLabel="Archive"
+        onConfirm={() => {
+          if (!selectedCompanyId) return;
+          const nextCompanyId =
+            companies.find(
+              (company) =>
+                company.id !== selectedCompanyId &&
+                company.status !== "archived"
+            )?.id ?? null;
+          archiveMutation.mutate({
+            companyId: selectedCompanyId,
+            nextCompanyId,
+          });
+          setArchiveCompanyConfirmOpen(false);
+        }}
+      />
     </div>
   );
 }

@@ -11,6 +11,7 @@ import { CopyText } from "./CopyText";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChevronRight, Copy, FolderOpen, HelpCircle } from "lucide-react";
@@ -71,6 +72,7 @@ export function AgentInstructionsTab({
   const [filePanelWidth, setFilePanelWidth] = useState(260);
   const containerRef = useRef<HTMLDivElement>(null);
   const [awaitingRefresh, setAwaitingRefresh] = useState(false);
+  const [deleteFileConfirmOpen, setDeleteFileConfirmOpen] = useState(false);
   const lastFileVersionRef = useRef<string | null>(null);
   const externalBundleRef = useRef<{
     rootPath: string;
@@ -687,16 +689,7 @@ export function AgentInstructionsTab({
                 type="button"
                 size="sm"
                 variant="outline"
-                onClick={() => {
-                  if (confirm(`Delete ${selectedOrEntryFile}?`)) {
-                    deleteFile.mutate(selectedOrEntryFile, {
-                      onSuccess: () => {
-                        setSelectedFile(currentEntryFile);
-                        setDraft(null);
-                      },
-                    });
-                  }
-                }}
+                onClick={() => setDeleteFileConfirmOpen(true)}
                 disabled={deleteFile.isPending}
               >
                 Delete
@@ -729,6 +722,22 @@ export function AgentInstructionsTab({
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={deleteFileConfirmOpen}
+        onOpenChange={setDeleteFileConfirmOpen}
+        title={`Delete ${selectedOrEntryFile}?`}
+        confirmLabel="Delete"
+        onConfirm={() => {
+          deleteFile.mutate(selectedOrEntryFile, {
+            onSuccess: () => {
+              setSelectedFile(currentEntryFile);
+              setDraft(null);
+            },
+          });
+          setDeleteFileConfirmOpen(false);
+        }}
+      />
     </div>
   );
 }

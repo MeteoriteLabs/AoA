@@ -7,6 +7,7 @@ import { heartbeatsApi } from "@/api/heartbeats";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { queryKeys } from "@/lib/queryKeys";
 import { timeAgo } from "@/lib/timeAgo";
 
@@ -40,6 +41,7 @@ export function HeartbeatsTabView({
   const disabledCount = agents.length - activeCount;
   const enabledCount = agents.filter((a) => a.heartbeatEnabled).length;
   const anyEnabled = enabledCount > 0;
+  const [disableAllConfirmOpen, setDisableAllConfirmOpen] = useState(false);
 
   return (
     <div className="space-y-4">
@@ -69,17 +71,7 @@ export function HeartbeatsTabView({
             size="sm"
             className="ml-auto h-7 text-xs"
             disabled={isDisablingAll}
-            onClick={() => {
-              const noun = enabledCount === 1 ? "agent" : "agents";
-              if (
-                !window.confirm(
-                  `Disable timer heartbeats for all ${enabledCount} enabled ${noun}?`,
-                )
-              ) {
-                return;
-              }
-              onDisableAll(agents);
-            }}
+            onClick={() => setDisableAllConfirmOpen(true)}
           >
             {isDisablingAll ? "Disabling..." : "Disable All"}
           </Button>
@@ -148,6 +140,17 @@ export function HeartbeatsTabView({
           </CardContent>
         </Card>
       )}
+
+      <ConfirmDialog
+        open={disableAllConfirmOpen}
+        onOpenChange={setDisableAllConfirmOpen}
+        title={`Disable timer heartbeats for all ${enabledCount} enabled ${enabledCount === 1 ? "agent" : "agents"}?`}
+        confirmLabel="Disable all"
+        onConfirm={() => {
+          onDisableAll(agents);
+          setDisableAllConfirmOpen(false);
+        }}
+      />
     </div>
   );
 }

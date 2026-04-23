@@ -132,17 +132,18 @@ describe("HeartbeatsTab", () => {
       makeSchedulerAgent({ id: "a-2", agentName: "Bravo", heartbeatEnabled: true }),
       makeSchedulerAgent({ id: "a-3", agentName: "Charlie", heartbeatEnabled: false }),
     ]);
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderWithProviders(<HeartbeatsTab />);
 
     const btn = await screen.findByRole("button", { name: /disable all/i });
     await user.click(btn);
 
+    const confirmBtn = await screen.findByRole("button", { name: /^disable all$/i });
+    await user.click(confirmBtn);
+
     await waitFor(() => {
       expect(agentsApi.update).toHaveBeenCalledTimes(2);
     });
-    expect(confirmSpy).toHaveBeenCalled();
   });
 
   it("does not disable agents if confirmation is cancelled", async () => {
@@ -150,11 +151,13 @@ describe("HeartbeatsTab", () => {
     vi.mocked(heartbeatsApi.listInstanceSchedulerAgents).mockResolvedValue([
       makeSchedulerAgent({ id: "a-1", heartbeatEnabled: true }),
     ]);
-    vi.spyOn(window, "confirm").mockReturnValue(false);
 
     renderWithProviders(<HeartbeatsTab />);
     const btn = await screen.findByRole("button", { name: /disable all/i });
     await user.click(btn);
+
+    const cancelBtn = await screen.findByRole("button", { name: /^cancel$/i });
+    await user.click(cancelBtn);
 
     await new Promise((r) => setTimeout(r, 20));
     expect(agentsApi.update).not.toHaveBeenCalled();
