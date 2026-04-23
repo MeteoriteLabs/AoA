@@ -15,6 +15,12 @@ export type {
   AdapterSessionCodec,
   AdapterModel,
   AdapterSessionManagement,
+  AdapterSkillContext,
+  AdapterSkillEntry,
+  AdapterSkillOrigin,
+  AdapterSkillSnapshot,
+  AdapterSkillState,
+  AdapterSkillSyncMode,
   NativeContextManagement,
   ResolvedSessionCompactionPolicy,
   SessionCompactionPolicy,
@@ -37,20 +43,12 @@ import type {
 export type AdapterConfigSchema = Record<string, unknown>;
 
 /**
- * Extension of adapter-utils@0.3.1 ServerAdapterModule that adds optional
- * fields introduced in later Paperclip versions. These fields are read by
- * the /adapters route and by plugin discovery; they are unset on AoA's
- * current builtin adapters (which is fine — they're all optional).
- *
- * When adapter-utils is upgraded in a future phase, remove these additions
- * and let the upstream type define them.
+ * Extension of adapter-utils ServerAdapterModule with fields that have not
+ * yet been ported upstream. Skills-related fields (listSkills, syncSkills,
+ * supportsInstructionsBundle, requiresMaterializedRuntimeSkills,
+ * instructionsPathKey) are now provided by the upstream type as of Phase I.2.
  */
 export interface ServerAdapterModule extends BaseServerAdapterModule {
-  listSkills?: unknown;
-  syncSkills?: unknown;
-  supportsInstructionsBundle?: boolean;
-  requiresMaterializedRuntimeSkills?: boolean;
-  instructionsPathKey?: string;
   sessionManagement?: AdapterSessionManagement;
   getConfigSchema?: () => Promise<AdapterConfigSchema>;
   getQuotaWindows?: () => unknown;
