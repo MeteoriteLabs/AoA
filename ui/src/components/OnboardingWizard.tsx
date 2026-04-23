@@ -64,9 +64,9 @@ type AdapterType =
   | "http"
   | "openclaw";
 
-const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the Director. Use the director persona found here: [https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md](https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md)
+const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the Director. Your playbook files (AGENTS.md, HEARTBEAT.md, SOUL.md, TOOLS.md) have already been materialized into your instructions bundle under agents/director. Read all four to understand your role, responsibilities, and the heartbeat checklist.
 
-Ensure you have a folder agents/ceo and then download this AGENTS.md as well as the sibling HEARTBEAT.md, SOUL.md, and TOOLS.md. and set that AGENTS.md as the path to your agents instruction file
+For broader context on the system, see docs/start/core-concepts.md.
 
 And after you've finished that, hire yourself a Founding Engineer agent`;
 
@@ -112,7 +112,7 @@ export function OnboardingWizard() {
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
 
   // Step 3
-  const [taskTitle, setTaskTitle] = useState("Create your Director HEARTBEAT.md");
+  const [taskTitle, setTaskTitle] = useState("Review your Director playbook");
   const [taskDescription, setTaskDescription] = useState(
     DEFAULT_TASK_DESCRIPTION
   );
@@ -269,7 +269,7 @@ export function OnboardingWizard() {
     setAdapterEnvLoading(false);
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
-    setTaskTitle("Create your Director HEARTBEAT.md");
+    setTaskTitle("Review your Director playbook");
     setTaskDescription(DEFAULT_TASK_DESCRIPTION);
     setRootFolder("");
     setFolderBrowserOpen(false);

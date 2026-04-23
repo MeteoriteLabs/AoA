@@ -36,7 +36,7 @@ import {
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
-import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
+import { findActiveServerAdapter, findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { runClaudeLogin } from "@armyofagents/adapter-claude-local/server";
 import {
@@ -45,6 +45,10 @@ import {
 } from "@armyofagents/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@armyofagents/adapter-cursor-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@armyofagents/adapter-opencode-local/server";
+import {
+  loadDefaultAgentInstructionsBundle,
+  resolveDefaultAgentInstructionsBundleRole,
+} from "../services/default-agent-instructions.js";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -53,7 +57,14 @@ export function agentRoutes(db: Db) {
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
   };
+  const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set(Object.keys(DEFAULT_INSTRUCTIONS_PATH_KEYS));
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
+
+  function adapterSupportsInstructionsBundle(adapterType: string): boolean {
+    const adapter = findActiveServerAdapter(adapterType);
+    if (adapter?.supportsInstructionsBundle !== undefined) return adapter.supportsInstructionsBundle;
+    return DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES.has(adapterType);
+  }
 
   const router = Router();
   const svc = agentService(db);
@@ -695,6 +706,47 @@ export function agentRoutes(db: Db) {
     res.json(state);
   });
 
+  async function materializeDefaultInstructionsBundleForNewAgent<T extends {
+    id: string;
+    companyId: string;
+    name: string;
+    role: string;
+    adapterType: string;
+    adapterConfig: unknown;
+  }>(agent: T): Promise<T> {
+    if (!adapterSupportsInstructionsBundle(agent.adapterType)) {
+      return agent;
+    }
+
+    const adapterConfig = asRecord(agent.adapterConfig) ?? {};
+    const hasExplicitInstructionsBundle =
+      Boolean(asNonEmptyString(adapterConfig.instructionsBundleMode))
+      || Boolean(asNonEmptyString(adapterConfig.instructionsRootPath))
+      || Boolean(asNonEmptyString(adapterConfig.instructionsEntryFile))
+      || Boolean(asNonEmptyString(adapterConfig.instructionsFilePath))
+      || Boolean(asNonEmptyString(adapterConfig.agentsMdPath));
+    if (hasExplicitInstructionsBundle) {
+      return agent;
+    }
+
+    const promptTemplate = typeof adapterConfig.promptTemplate === "string"
+      ? adapterConfig.promptTemplate
+      : "";
+    const files = promptTemplate.trim().length === 0
+      ? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role))
+      : { "AGENTS.md": promptTemplate };
+    const materialized = await instructions.materializeManagedBundle(
+      agent,
+      files,
+      { entryFile: "AGENTS.md", replaceExisting: false },
+    );
+    const nextAdapterConfig = { ...materialized.adapterConfig };
+    delete nextAdapterConfig.promptTemplate;
+
+    const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig });
+    return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
+  }
+
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
@@ -731,12 +783,13 @@ export function agentRoutes(db: Db) {
 
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";
-    const agent = await svc.create(companyId, {
+    const createdAgent = await svc.create(companyId, {
       ...normalizedHireInput,
       status,
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
+    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
@@ -856,13 +909,14 @@ export function agentRoutes(db: Db) {
       normalizedAdapterConfig,
     );
 
-    const agent = await svc.create(companyId, {
+    const createdAgent = await svc.create(companyId, {
       ...req.body,
       adapterConfig: normalizedAdapterConfig,
       status: "idle",
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
+    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
 
     const actor = getActorInfo(req);
     await logActivity(db, {
