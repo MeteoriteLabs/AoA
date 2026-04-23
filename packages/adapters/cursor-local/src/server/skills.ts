@@ -20,39 +20,39 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function resolveGeminiSkillsHome(config: Record<string, unknown>) {
+function resolveCursorSkillsHome(config: Record<string, unknown>) {
   const env =
     typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
       ? (config.env as Record<string, unknown>)
       : {};
   const configuredHome = asString(env.HOME);
   const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
-  return path.join(home, ".gemini", "skills");
+  return path.join(home, ".cursor", "skills");
 }
 
-async function buildGeminiSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
+async function buildCursorSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
   const availableEntries = await readAoaRuntimeSkillEntries(config, __moduleDir);
   const desiredSkills = resolveAoaDesiredSkillNames(config, availableEntries);
-  const skillsHome = resolveGeminiSkillsHome(config);
+  const skillsHome = resolveCursorSkillsHome(config);
   const installed = await readInstalledSkillTargets(skillsHome);
   return buildPersistentSkillSnapshot({
-    adapterType: "gemini_local",
+    adapterType: "cursor",
     availableEntries,
     desiredSkills,
     installed,
     skillsHome,
-    locationLabel: "~/.gemini/skills",
-    missingDetail: "Configured but not currently linked into the Gemini skills home.",
+    locationLabel: "~/.cursor/skills",
+    missingDetail: "Configured but not currently linked into the Cursor skills home.",
     externalConflictDetail: "Skill name is occupied by an external installation.",
     externalDetail: "Installed outside AoA management.",
   });
 }
 
-export async function listGeminiSkills(ctx: AdapterSkillContext): Promise<AdapterSkillSnapshot> {
-  return buildGeminiSkillSnapshot(ctx.config);
+export async function listCursorSkills(ctx: AdapterSkillContext): Promise<AdapterSkillSnapshot> {
+  return buildCursorSkillSnapshot(ctx.config);
 }
 
-export async function syncGeminiSkills(
+export async function syncCursorSkills(
   ctx: AdapterSkillContext,
   desiredSkills: string[],
 ): Promise<AdapterSkillSnapshot> {
@@ -61,7 +61,7 @@ export async function syncGeminiSkills(
     ...desiredSkills,
     ...availableEntries.filter((entry) => entry.required).map((entry) => entry.key),
   ]);
-  const skillsHome = resolveGeminiSkillsHome(ctx.config);
+  const skillsHome = resolveCursorSkillsHome(ctx.config);
   await fs.mkdir(skillsHome, { recursive: true });
   const installed = await readInstalledSkillTargets(skillsHome);
   const availableByRuntimeName = new Map(availableEntries.map((entry) => [entry.runtimeName, entry]));
@@ -80,10 +80,10 @@ export async function syncGeminiSkills(
     await fs.unlink(path.join(skillsHome, name)).catch(() => {});
   }
 
-  return buildGeminiSkillSnapshot(ctx.config);
+  return buildCursorSkillSnapshot(ctx.config);
 }
 
-export function resolveGeminiDesiredSkillNames(
+export function resolveCursorDesiredSkillNames(
   config: Record<string, unknown>,
   availableEntries: Array<{ key: string; required?: boolean }>,
 ) {

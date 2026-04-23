@@ -20,39 +20,43 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function resolveGeminiSkillsHome(config: Record<string, unknown>) {
+function resolveOpenCodeSkillsHome(config: Record<string, unknown>) {
   const env =
     typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
       ? (config.env as Record<string, unknown>)
       : {};
   const configuredHome = asString(env.HOME);
   const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
-  return path.join(home, ".gemini", "skills");
+  return path.join(home, ".claude", "skills");
 }
 
-async function buildGeminiSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
+async function buildOpenCodeSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
   const availableEntries = await readAoaRuntimeSkillEntries(config, __moduleDir);
   const desiredSkills = resolveAoaDesiredSkillNames(config, availableEntries);
-  const skillsHome = resolveGeminiSkillsHome(config);
+  const skillsHome = resolveOpenCodeSkillsHome(config);
   const installed = await readInstalledSkillTargets(skillsHome);
   return buildPersistentSkillSnapshot({
-    adapterType: "gemini_local",
+    adapterType: "opencode_local",
     availableEntries,
     desiredSkills,
     installed,
     skillsHome,
-    locationLabel: "~/.gemini/skills",
-    missingDetail: "Configured but not currently linked into the Gemini skills home.",
-    externalConflictDetail: "Skill name is occupied by an external installation.",
-    externalDetail: "Installed outside AoA management.",
+    locationLabel: "~/.claude/skills",
+    installedDetail: "Installed in the shared Claude/OpenCode skills home.",
+    missingDetail: "Configured but not currently linked into the shared Claude/OpenCode skills home.",
+    externalConflictDetail: "Skill name is occupied by an external installation in the shared skills home.",
+    externalDetail: "Installed outside AoA management in the shared skills home.",
+    warnings: [
+      "OpenCode currently uses the shared Claude skills home (~/.claude/skills).",
+    ],
   });
 }
 
-export async function listGeminiSkills(ctx: AdapterSkillContext): Promise<AdapterSkillSnapshot> {
-  return buildGeminiSkillSnapshot(ctx.config);
+export async function listOpenCodeSkills(ctx: AdapterSkillContext): Promise<AdapterSkillSnapshot> {
+  return buildOpenCodeSkillSnapshot(ctx.config);
 }
 
-export async function syncGeminiSkills(
+export async function syncOpenCodeSkills(
   ctx: AdapterSkillContext,
   desiredSkills: string[],
 ): Promise<AdapterSkillSnapshot> {
@@ -61,7 +65,7 @@ export async function syncGeminiSkills(
     ...desiredSkills,
     ...availableEntries.filter((entry) => entry.required).map((entry) => entry.key),
   ]);
-  const skillsHome = resolveGeminiSkillsHome(ctx.config);
+  const skillsHome = resolveOpenCodeSkillsHome(ctx.config);
   await fs.mkdir(skillsHome, { recursive: true });
   const installed = await readInstalledSkillTargets(skillsHome);
   const availableByRuntimeName = new Map(availableEntries.map((entry) => [entry.runtimeName, entry]));
@@ -80,10 +84,10 @@ export async function syncGeminiSkills(
     await fs.unlink(path.join(skillsHome, name)).catch(() => {});
   }
 
-  return buildGeminiSkillSnapshot(ctx.config);
+  return buildOpenCodeSkillSnapshot(ctx.config);
 }
 
-export function resolveGeminiDesiredSkillNames(
+export function resolveOpenCodeDesiredSkillNames(
   config: Record<string, unknown>,
   availableEntries: Array<{ key: string; required?: boolean }>,
 ) {
