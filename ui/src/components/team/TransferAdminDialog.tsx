@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { TeamMemberSummary } from "@paperclipai/shared";
+import type { TeamMemberSummary } from "@armyofagents/shared";
 import { teamApi } from "../../api/team";
 import { queryKeys } from "../../lib/queryKeys";
 import { useToast } from "../../context/ToastContext";

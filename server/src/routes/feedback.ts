@@ -1,6 +1,6 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { feedbackTargetTypeSchema, upsertIssueFeedbackVoteSchema } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { feedbackTargetTypeSchema, upsertIssueFeedbackVoteSchema } from "@armyofagents/shared";
 import { buildBundle, listExports } from "../services/feedback-bundles.js";
 import { writeBundleLocally } from "../services/feedback-share-client.js";
 import { feedbackVotesService } from "../services/feedback-votes.js";

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import { quotaWindowsService } from "../services/quota-windows.js";
 import { assertCompanyAccess } from "./authz.js";
 

@@ -23,7 +23,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Play, Pause, MoreHorizontal, Settings, History } from "lucide-react";
-import type { Agent, AgentTrustScore } from "@paperclipai/shared";
+import type { Agent, AgentTrustScore } from "@armyofagents/shared";
 import { TrustScoreBadge } from "./TrustScoreBadge";
 
 interface AgentCardProps {

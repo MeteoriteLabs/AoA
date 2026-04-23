@@ -1,5 +1,5 @@
-import type { RoutineVariable } from "@paperclipai/shared";
-import { stringifyRoutineVariableValue } from "@paperclipai/shared";
+import type { RoutineVariable } from "@armyofagents/shared";
+import { stringifyRoutineVariableValue } from "@armyofagents/shared";
 import { unprocessable } from "../errors.js";
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {

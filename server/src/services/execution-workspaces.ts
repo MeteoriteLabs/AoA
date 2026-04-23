@@ -3,14 +3,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   executionWorkspaces,
   issues,
   projects,
   projectWorkspaces,
   workspaceRuntimeServices,
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 import type {
   ExecutionWorkspace,
   ExecutionWorkspaceCloseAction,
@@ -22,7 +22,7 @@ import type {
   WorkspaceRuntimeDesiredState,
   WorkspaceRuntimeService,
   WorkspaceRuntimeServiceStateMap,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,

@@ -1,9 +1,9 @@
 import { eq, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   internalAgentConfig,
   internalAgentRuns,
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 import type { ToolResult, ToolContext } from "./types.js";
 import type { ChatMessage } from "./providers/types.js";
 import { getProviderApiKey, createProvider } from "./providers/index.js";

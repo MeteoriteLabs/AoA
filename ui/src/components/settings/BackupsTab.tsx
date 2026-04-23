@@ -2,13 +2,13 @@ import type {
   BackupRetentionPolicy,
   InstanceGeneralSettings,
   PatchInstanceGeneralSettings,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import {
   DAILY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
   MONTHLY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
 
 interface BackupsTabProps {

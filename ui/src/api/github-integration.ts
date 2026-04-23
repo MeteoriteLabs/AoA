@@ -1,7 +1,7 @@
 import type {
   GitHubPrCreateRequest,
   GitHubPrCreateResponse,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { api } from "./client";
 
 export interface GitHubPatStatus {

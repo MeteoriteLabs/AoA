@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ShieldAlert } from "lucide-react";
-import type { BudgetPolicySummary } from "@paperclipai/shared";
+import type { BudgetPolicySummary } from "@armyofagents/shared";
 import { budgetsApi } from "../../api/budgets";
 import { useCompany } from "../../context/CompanyContext";
 import { cn } from "@/lib/utils";

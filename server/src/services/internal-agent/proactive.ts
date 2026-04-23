@@ -1,7 +1,7 @@
 // server/src/services/internal-agent/proactive.ts
 // Proactive checks for the internal agent — T11
 import { and, eq, lt, lte, gte, isNull, isNotNull, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   issues,
   taskDependencies,
@@ -11,7 +11,7 @@ import {
   notifications,
   memoryFeedbackPatterns,
   activityLog,
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 

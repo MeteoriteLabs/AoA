@@ -5,7 +5,7 @@ import type {
   FeedbackTargetType,
   FeedbackVote,
   FeedbackVoteValue,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";

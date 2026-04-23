@@ -1,5 +1,5 @@
 import { AlertTriangle, Pencil, ShieldAlert, Wallet } from "lucide-react";
-import type { BudgetPolicySummary } from "@paperclipai/shared";
+import type { BudgetPolicySummary } from "@armyofagents/shared";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn, formatCents } from "@/lib/utils";

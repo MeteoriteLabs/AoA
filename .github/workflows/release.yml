@@ -11,7 +11,7 @@
 #      draft GitHub Releases.
 #
 # Secrets required (configure in repo Settings → Secrets and variables → Actions):
-#   - NPM_TOKEN: npm automation token with publish rights for @paperclipai/* packages.
+#   - NPM_TOKEN: npm automation token with publish rights for @armyofagents/* packages.
 #     Create at https://www.npmjs.com/settings/<user>/tokens (type: Automation).
 #   - GITHUB_TOKEN: automatic, provided by Actions. No manual setup required.
 #

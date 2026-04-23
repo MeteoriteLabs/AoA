@@ -1,7 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { userRoles } from "@paperclipai/db";
-import type { UserRole } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { userRoles } from "@armyofagents/db";
+import type { UserRole } from "@armyofagents/shared";
 
 /**
  * Entity types for permission checks.

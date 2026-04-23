@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1 } from "@armyofagents/shared";
 
 const debugSpy = vi.hoisted(() => vi.fn());
 
@@ -18,8 +18,8 @@ vi.mock("../middleware/logger.js", () => ({
   },
 }));
 
-import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
-import { createTestHarness } from "@paperclipai/plugin-sdk";
+import { createHostClientHandlers } from "@armyofagents/plugin-sdk";
+import { createTestHarness } from "@armyofagents/plugin-sdk";
 import { buildHostServices } from "../services/plugin-host-services.js";
 
 function createEventBusStub() {

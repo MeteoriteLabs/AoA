@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation, Navigate, Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike } from "@paperclipai/shared";
+import { PROJECT_COLORS, isUuidLike } from "@armyofagents/shared";
 import { projectsApi } from "../api/projects";
 import type { ProjectAgentAssignment, ProjectBudget } from "../api/projects";
 import { TaskSlideOver } from "../components/TaskSlideOver";
@@ -29,7 +29,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { ExecutionWorkspaceCloseDialog } from "../components/workspace/ExecutionWorkspaceCloseDialog";
 import { EmptyState } from "../components/EmptyState";
-import type { ExecutionWorkspace } from "@paperclipai/shared";
+import type { ExecutionWorkspace } from "@armyofagents/shared";
 
 /* ── Top-level tab types ── */
 

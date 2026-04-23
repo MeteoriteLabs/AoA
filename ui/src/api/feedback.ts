@@ -4,7 +4,7 @@ import type {
   FeedbackVote,
   FeedbackVoteSummary,
   FeedbackVoteValue,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { api } from "./client";
 
 export interface RecordVoteBody {

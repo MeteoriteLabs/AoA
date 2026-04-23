@@ -7,7 +7,7 @@ import { useDialog } from "../context/DialogContext";
 import { discussionsApi, type DiscussionListItem } from "../api/discussions";
 import { projectsApi } from "../api/projects";
 import { goalsApi } from "../api/goals";
-import type { Project, Goal } from "@paperclipai/shared";
+import type { Project, Goal } from "@armyofagents/shared";
 import { queryKeys } from "../lib/queryKeys";
 import {
   Loader2,

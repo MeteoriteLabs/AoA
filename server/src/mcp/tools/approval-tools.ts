@@ -3,7 +3,7 @@ import {
   APPROVAL_STATUSES,
   APPROVAL_TYPES,
   createApprovalSchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { logActivity } from "../../services/index.js";
 import {
   type ToolContext,

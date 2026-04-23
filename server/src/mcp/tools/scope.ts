@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agentProjects, issues, projectGoals, userRoles } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { agentProjects, issues, projectGoals, userRoles } from "@armyofagents/db";
 import { forbidden } from "../../errors.js";
 import type { McpUserScope } from "./types.js";
 

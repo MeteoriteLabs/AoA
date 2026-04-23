@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { ChevronDown, ChevronRight, LayoutGrid, List, MoreHorizontal, Plus, Repeat } from "lucide-react";
-import type { RoutineListItem } from "@paperclipai/shared";
+import type { RoutineListItem } from "@armyofagents/shared";
 import { routinesApi } from "../api/routines";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";

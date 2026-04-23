@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
-import { createMcpApiKeySchema, updateMcpSettingsSchema } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { createMcpApiKeySchema, updateMcpSettingsSchema } from "@armyofagents/shared";
 import { z } from "zod";
 import { forbidden, unauthorized } from "../errors.js";
 import {

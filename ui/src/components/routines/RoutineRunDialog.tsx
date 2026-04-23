@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import type { RoutineVariable } from "@paperclipai/shared";
+import type { RoutineVariable } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,

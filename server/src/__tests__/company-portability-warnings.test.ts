@@ -23,7 +23,7 @@ vi.mock("../services/access.js", () => ({
 }));
 
 import { companyPortabilityService } from "../services/company-portability.js";
-import type { CompanyPortabilityManifest } from "@paperclipai/shared";
+import type { CompanyPortabilityManifest } from "@armyofagents/shared";
 
 function baseManifest(overrides: Partial<CompanyPortabilityManifest> = {}): CompanyPortabilityManifest {
   return {

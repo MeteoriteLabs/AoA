@@ -1,4 +1,4 @@
-import type { CreateFinanceEvent } from "@paperclipai/shared";
+import type { CreateFinanceEvent } from "@armyofagents/shared";
 import { api } from "./client";
 
 export interface FinanceSummary {

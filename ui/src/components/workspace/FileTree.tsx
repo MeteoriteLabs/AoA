@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback } from "react";
 import { cn } from "@/lib/utils";
 import { ChevronRight, ChevronDown, Search, FolderOpen, Folder } from "lucide-react";
 import { fileIcon, formatBytes, sourceLabel } from "./workspace-utils";
-import type { DetectedOutput } from "@paperclipai/shared";
+import type { DetectedOutput } from "@armyofagents/shared";
 
 /* ── Types ───────────────────────────────────────────────────────────────────── */
 

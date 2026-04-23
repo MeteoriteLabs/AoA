@@ -6,7 +6,7 @@ import type {
   CompanyPortabilityInclude,
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewResult,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { api } from "./client";
 
 export const companyPortabilityApi = {

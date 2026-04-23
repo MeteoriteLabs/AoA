@@ -1,6 +1,6 @@
 import { eq, desc } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { artifacts, artifactVersions, issues } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { artifacts, artifactVersions, issues } from "@armyofagents/db";
 
 /** Fetch artifact row + its versions (newest first) */
 async function fetchWithVersions(db: Db, artifactId: string) {

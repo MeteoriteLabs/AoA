@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import type { Project } from "@paperclipai/shared";
+import type { Project } from "@armyofagents/shared";
 import { sortProjectsByStoredOrder } from "../lib/project-order";
 import { useSidebarOrder, type SidebarOrderType } from "./useSidebarOrder";
 

@@ -1,6 +1,6 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { createGoalSchema, updateGoalSchema } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { goalService, memoryLifecycleService, logActivity } from "../services/index.js";
 import { HttpError } from "../errors.js";

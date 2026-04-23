@@ -3,7 +3,7 @@ import {
   ISSUE_STATUSES,
   mcpArtifactVersionSchema,
   mcpDebriefSchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { logActivity } from "../../services/index.js";
 import {
   type ToolContext,

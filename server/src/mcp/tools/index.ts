@@ -1,4 +1,4 @@
-import { APPROVAL_STATUSES, APPROVAL_TYPES, ISSUE_STATUSES } from "@paperclipai/shared";
+import { APPROVAL_STATUSES, APPROVAL_TYPES, ISSUE_STATUSES } from "@armyofagents/shared";
 import { readToolHandlers } from "./read-tools.js";
 import { writeToolHandlers } from "./write-tools.js";
 import { documentToolHandlers } from "./document-tools.js";

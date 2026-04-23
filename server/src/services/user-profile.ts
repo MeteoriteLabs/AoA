@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { authUsers } from "@paperclipai/db";
-import type { CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { authUsers } from "@armyofagents/db";
+import type { CurrentUserProfile, UpdateCurrentUserProfile } from "@armyofagents/shared";
 import { unauthorized } from "../errors.js";
 
 function toProfile(row: {

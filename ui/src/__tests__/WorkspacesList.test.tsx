@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import type { ExecutionWorkspace, Project } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Project } from "@armyofagents/shared";
 
 import { mockCompanyContext } from "./test-utils";
 

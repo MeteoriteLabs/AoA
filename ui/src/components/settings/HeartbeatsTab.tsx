@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Clock3 } from "lucide-react";
-import type { InstanceSchedulerHeartbeatAgent } from "@paperclipai/shared";
+import type { InstanceSchedulerHeartbeatAgent } from "@armyofagents/shared";
 import { agentsApi } from "@/api/agents";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { Badge } from "@/components/ui/badge";

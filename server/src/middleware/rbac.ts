@@ -1,6 +1,6 @@
 import type { Request } from "express";
-import type { Db } from "@paperclipai/db";
-import type { UserRole } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import type { UserRole } from "@armyofagents/shared";
 import { forbidden, unauthorized } from "../errors.js";
 import { permissionService } from "../services/permissions.js";
 import type { EntityType, PermissionAction } from "../services/permissions.js";

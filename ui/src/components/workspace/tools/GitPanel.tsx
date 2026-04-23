@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { GitBranch, Copy, Check, ExternalLink, GitPullRequest, Github } from "lucide-react";
-import type { ExecutionWorkspace, GitHubPrMetadata } from "@paperclipai/shared";
+import type { ExecutionWorkspace, GitHubPrMetadata } from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { OpenInIdeButton } from "../OpenInIdeButton";

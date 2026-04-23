@@ -100,7 +100,7 @@ vi.mock("../services/projects.js", () => ({
 }));
 
 import { companyPortabilityService } from "../services/company-portability.js";
-import type { CompanyPortabilityManifest } from "@paperclipai/shared";
+import type { CompanyPortabilityManifest } from "@armyofagents/shared";
 
 function buildInlineSource(
   manifest: CompanyPortabilityManifest,

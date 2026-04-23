@@ -15,7 +15,7 @@ import { describeSchedule } from "./ScheduleEditor";
 import { runStatusStyle } from "../lib/routine-constants";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
-import type { Agent, RoutineListItem } from "@paperclipai/shared";
+import type { Agent, RoutineListItem } from "@armyofagents/shared";
 
 interface Project {
   id: string;

@@ -1,8 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { and, eq, gte, isNull, lte } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { budgetPolicies, costEvents, financeEvents, internalAgentConfig, providerQuotaWindows, workflowTemplates } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { budgetPolicies, costEvents, financeEvents, internalAgentConfig, providerQuotaWindows, workflowTemplates } from "@armyofagents/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityBudgetPolicyManifestEntry,
@@ -33,13 +33,13 @@ import type {
   CompanyPortabilitySkillManifestEntry,
   CompanyPortabilityWorkflowTemplateManifestEntry,
   ImportWarning,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import {
   deriveProjectUrlKey,
   normalizeAgentUrlKey,
   normalizeProjectUrlKey,
   portabilityManifestSchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";

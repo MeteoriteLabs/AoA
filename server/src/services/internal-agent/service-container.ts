@@ -1,5 +1,5 @@
 // server/src/services/internal-agent/service-container.ts
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import type { ServiceContainer } from "./types.js";
 import { issueService } from "../issues.js";
 import { goalService } from "../goals.js";

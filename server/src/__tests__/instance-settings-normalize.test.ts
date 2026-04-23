@@ -4,7 +4,7 @@ import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 
 describe("instanceGeneralSettingsSchema (Phase A.7 fields)", () => {
   it("applies AoA privacy-first defaults on empty input", () => {

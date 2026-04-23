@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RoutineVariable } from "@paperclipai/shared";
+import type { RoutineVariable } from "@armyofagents/shared";
 import {
   mergeRoutineRunPayload,
   normalizeRoutineVariableValue,

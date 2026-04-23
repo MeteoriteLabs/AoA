@@ -16,7 +16,7 @@ vi.mock("drizzle-orm", () => ({
   ),
   desc: vi.fn((a: any) => ({ desc: a })),
 }));
-vi.mock("@paperclipai/db", () => ({
+vi.mock("@armyofagents/db", () => ({
   memoryItems: {
     id: "id",
     companyId: "company_id",

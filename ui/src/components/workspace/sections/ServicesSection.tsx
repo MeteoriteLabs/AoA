@@ -8,7 +8,7 @@ import { executionWorkspacesApi } from "@/api/execution-workspaces";
 import type { WorkspaceRuntimeService } from "@/api/execution-workspaces";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
-import type { ExecutionWorkspace } from "@paperclipai/shared";
+import type { ExecutionWorkspace } from "@armyofagents/shared";
 
 interface ServicesSectionProps {
   workspace: ExecutionWorkspace;

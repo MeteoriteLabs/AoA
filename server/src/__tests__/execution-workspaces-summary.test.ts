@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Mock @paperclipai/db to avoid drizzle-orm ESM cycle. We stub each table as a
+// Mock @armyofagents/db to avoid drizzle-orm ESM cycle. We stub each table as a
 // Proxy that records any column access, and stub the $inferSelect / $inferInsert
 // type helpers.
-vi.mock("@paperclipai/db", () => {
+vi.mock("@armyofagents/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {

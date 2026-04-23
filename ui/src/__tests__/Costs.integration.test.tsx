@@ -4,7 +4,7 @@ import type {
   BudgetPolicySummary,
   BudgetIncident,
   BudgetOverview,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import {
   renderWithProviders,
   mockBreadcrumbContext,

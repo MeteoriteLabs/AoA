@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Octokit } from "@octokit/rest";
-import type { Db } from "@paperclipai/db";
-import type { GitHubPrMetadata } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import type { GitHubPrMetadata } from "@armyofagents/shared";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { issueService } from "../services/issues.js";

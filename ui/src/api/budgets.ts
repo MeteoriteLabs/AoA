@@ -1,4 +1,4 @@
-import type { BudgetOverview, UpsertBudgetPolicyInput, ResolveBudgetIncidentInput } from "@paperclipai/shared";
+import type { BudgetOverview, UpsertBudgetPolicyInput, ResolveBudgetIncidentInput } from "@armyofagents/shared";
 import { api } from "./client";
 
 export const budgetsApi = {

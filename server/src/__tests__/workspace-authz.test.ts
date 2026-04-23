@@ -8,7 +8,7 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
 }));
 
-vi.mock("@paperclipai/db", () => ({
+vi.mock("@armyofagents/db", () => ({
   userRoles: {
     id: "ur_id",
     companyId: "ur_company_id",

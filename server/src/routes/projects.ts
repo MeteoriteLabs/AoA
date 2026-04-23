@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
-import { agentProjects, agents, costEvents } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { agentProjects, agents, costEvents } from "@armyofagents/db";
 import { and, eq, gte, lte, sql, desc } from "drizzle-orm";
 import {
   createProjectSchema,
@@ -8,7 +8,7 @@ import {
   isUuidLike,
   updateProjectSchema,
   updateProjectWorkspaceSchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, instanceSettingsService } from "../services/index.js";
 import { conflict, HttpError } from "../errors.js";

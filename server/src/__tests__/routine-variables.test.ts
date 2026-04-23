@@ -7,7 +7,7 @@ import {
   routineVariableSchema,
   createRoutineSchema,
   type RoutineVariable,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 
 describe("routine-variables helpers", () => {
   it("extractRoutineVariableNames finds placeholders", () => {

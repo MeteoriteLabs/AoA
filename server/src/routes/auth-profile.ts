@@ -1,7 +1,7 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import type { CurrentUserProfile } from "@paperclipai/shared";
-import { updateCurrentUserProfileSchema } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import type { CurrentUserProfile } from "@armyofagents/shared";
+import { updateCurrentUserProfileSchema } from "@armyofagents/shared";
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { userProfileService } from "../services/index.js";

@@ -1,11 +1,11 @@
 import { and, eq, gte, lt, not, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, approvals, budgetIncidents, budgetPolicies, costEvents } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { agents, approvals, budgetIncidents, budgetPolicies, costEvents } from "@armyofagents/db";
 import { logActivity } from "./activity-log.js";
 import { publishLiveEvent } from "./live-events.js";
 import { emitBudgetExhausted, type BudgetEnforcementScope } from "./budget-hooks.js";
 import { logger } from "../middleware/logger.js";
-import type { UpsertBudgetPolicy, ResolveBudgetIncident } from "@paperclipai/shared";
+import type { UpsertBudgetPolicy, ResolveBudgetIncident } from "@armyofagents/shared";
 
 // ---------------------------------------------------------------------------
 // Helpers

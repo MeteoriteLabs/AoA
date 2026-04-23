@@ -1,7 +1,7 @@
 import { and, eq, ilike, or, sql, desc } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, memoryItems, memoryItemVersions, suggestions } from "@paperclipai/db";
-import { MEMORY_ITEM_LAYERS } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { agents, memoryItems, memoryItemVersions, suggestions } from "@armyofagents/db";
+import { MEMORY_ITEM_LAYERS } from "@armyofagents/shared";
 import { generateEmbedding } from "./embeddings.js";
 import { resolveApiKey } from "../adapters/api-common.js";
 import { logger } from "../middleware/logger.js";

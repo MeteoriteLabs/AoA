@@ -15,7 +15,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChevronRight, Copy, FolderOpen, HelpCircle } from "lucide-react";
 import { cn } from "../lib/utils";
-import type { Agent, AgentInstructionsBundle, AgentInstructionsFileDetail } from "@paperclipai/shared";
+import type { Agent, AgentInstructionsBundle, AgentInstructionsFileDetail } from "@armyofagents/shared";
 
 function isMarkdown(pathValue: string) {
   return pathValue.toLowerCase().endsWith(".md");

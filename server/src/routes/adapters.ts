@@ -20,7 +20,7 @@
  * AoA deviations from Paperclip:
  *   - Uses assertBoard from routes/authz.ts (Paperclip uses assertBoardOrgAccess).
  *   - Does not wrap adapters with getAdapterSessionManagement — AoA's
- *     @paperclipai/adapter-utils@0.3.1 doesn't export that helper, and AoA's
+ *     @armyofagents/adapter-utils@0.3.1 doesn't export that helper, and AoA's
  *     builtin adapters set sessionManagement directly where needed. When
  *     adapter-utils is upgraded, restore the wrapping.
  *   - Uses AoA's service export names: getAdapterPluginByType (not

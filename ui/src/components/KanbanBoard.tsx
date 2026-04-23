@@ -27,7 +27,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Link2 } from "lucide-react";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@armyofagents/shared";
 
 const boardStatuses = [
   "backlog",

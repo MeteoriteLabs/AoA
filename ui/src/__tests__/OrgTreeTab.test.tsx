@@ -3,7 +3,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./test-utils";
 import { OrgTreeTab } from "../components/team/OrgTreeTab";
-import type { UnifiedOrgNode } from "@paperclipai/shared";
+import type { UnifiedOrgNode } from "@armyofagents/shared";
 
 // --- Mocks ---
 

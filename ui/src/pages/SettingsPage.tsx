@@ -7,7 +7,7 @@ import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { costsApi } from "../api/costs";
 import { budgetsApi } from "../api/budgets";
-import type { ResolveBudgetIncidentInput } from "@paperclipai/shared";
+import type { ResolveBudgetIncidentInput } from "@armyofagents/shared";
 import { activityApi } from "../api/activity";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
@@ -53,7 +53,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { Identity } from "../components/Identity";
 import { StatusBadge } from "../components/StatusBadge";
 import { ActivityRow } from "../components/ActivityRow";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@armyofagents/shared";
 
 const SETTINGS_TABS = [
   { value: "general", label: "General" },

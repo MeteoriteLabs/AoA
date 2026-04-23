@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
-// The sweeper + dependents import @paperclipai/db and drizzle-orm at the top;
+// The sweeper + dependents import @armyofagents/db and drizzle-orm at the top;
 // we install stubs before the SUT import so the drizzle ESM cycle stays out.
 
 vi.mock("drizzle-orm", () => ({
@@ -13,7 +13,7 @@ vi.mock("drizzle-orm", () => ({
   inArray: (col: unknown, values: unknown[]) => ({ _type: "inArray", col, values }),
 }));
 
-vi.mock("@paperclipai/db", () => {
+vi.mock("@armyofagents/db", () => {
   const cols: Record<string, symbol> = {};
   const makeTable = (name: string) =>
     new Proxy({} as Record<string, unknown>, {

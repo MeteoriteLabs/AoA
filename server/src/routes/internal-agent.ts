@@ -3,14 +3,14 @@
 import { Router } from "express";
 import { z } from "zod";
 import { and, eq, asc, desc, gte, lte, isNull, sql, type SQL } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   internalAgentConfig,
   internalAgentConversations,
   internalAgentMessages,
   internalAgentRuns,
   internalAgentReminders,
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 import { validate } from "../middleware/index.js";
 import { assertRole } from "../middleware/rbac.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";

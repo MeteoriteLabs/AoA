@@ -56,8 +56,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { ActivityEvent } from "@paperclipai/shared";
-import type { Agent, IssueAttachment } from "@paperclipai/shared";
+import type { ActivityEvent } from "@armyofagents/shared";
+import type { Agent, IssueAttachment } from "@armyofagents/shared";
 
 type CommentReassignment = {
   assigneeAgentId: string | null;

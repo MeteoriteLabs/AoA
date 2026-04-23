@@ -1,4 +1,4 @@
-import type { MemoryItem, MemoryItemVersion, PendingMemoryQueue, Suggestion } from "@paperclipai/shared";
+import type { MemoryItem, MemoryItemVersion, PendingMemoryQueue, Suggestion } from "@armyofagents/shared";
 import { api } from "./client";
 
 export type SimilarMemoryItem = MemoryItem & {

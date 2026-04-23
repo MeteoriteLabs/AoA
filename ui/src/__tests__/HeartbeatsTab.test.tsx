@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./test-utils";
-import type { InstanceSchedulerHeartbeatAgent } from "@paperclipai/shared";
+import type { InstanceSchedulerHeartbeatAgent } from "@armyofagents/shared";
 
 vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: {

@@ -25,7 +25,7 @@ import { PreviewContextSection } from "./sections/PreviewContextSection";
 import { GitPanel } from "./tools/GitPanel";
 import { TerminalPanel } from "./tools/TerminalPanel";
 import type { PreviewMode } from "./WorkspacePreviewPanel";
-import type { ArtifactWithVersions, ArtifactVersion, ExecutionWorkspace } from "@paperclipai/shared";
+import type { ArtifactWithVersions, ArtifactVersion, ExecutionWorkspace } from "@armyofagents/shared";
 
 function sectionKey(name: string) {
   return `aoa:workspace:section:${name}`;

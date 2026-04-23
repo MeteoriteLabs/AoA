@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ExecutionWorkspaceCloseReadiness } from "@paperclipai/shared";
+import type { ExecutionWorkspaceCloseReadiness } from "@armyofagents/shared";
 
 import { ApiError } from "../api/client";
 

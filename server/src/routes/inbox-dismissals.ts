@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
-import { createInboxDismissalSchema } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { createInboxDismissalSchema } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { inboxDismissalService } from "../services/index.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";

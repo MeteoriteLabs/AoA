@@ -177,7 +177,7 @@ vi.mock("../services/issues.js", () => ({
 }));
 
 import { companyPortabilityService } from "../services/company-portability.js";
-import type { CompanyPortabilityManifest } from "@paperclipai/shared";
+import type { CompanyPortabilityManifest } from "@armyofagents/shared";
 
 function resetState() {
   sourceIssues = [];

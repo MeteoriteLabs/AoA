@@ -1,9 +1,9 @@
 import { useState, useCallback } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionWorkspace } from "@paperclipai/shared";
-import type { Project } from "@paperclipai/shared";
-import type { ArtifactWithVersions, ArtifactVersion } from "@paperclipai/shared";
+import type { ExecutionWorkspace } from "@armyofagents/shared";
+import type { Project } from "@armyofagents/shared";
+import type { ArtifactWithVersions, ArtifactVersion } from "@armyofagents/shared";
 import { WorkspaceTaskNav } from "./WorkspaceTaskNav";
 import { DependencyChain } from "./DependencyChain";
 import { WorkspaceTimeline } from "./WorkspaceTimeline";

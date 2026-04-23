@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { FolderGit2 } from "lucide-react";
-import type { ExecutionWorkspace, Project } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Project } from "@armyofagents/shared";
 
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { projectsApi } from "../api/projects";

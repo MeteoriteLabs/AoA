@@ -1,6 +1,6 @@
 import { Octokit } from "@octokit/rest";
-import type { Db } from "@paperclipai/db";
-import type { GitHubPrCreateResponse } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import type { GitHubPrCreateResponse } from "@armyofagents/shared";
 import { secretService } from "./secrets.js";
 
 /**

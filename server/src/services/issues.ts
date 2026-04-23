@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   activityLog,
   agents,
@@ -17,8 +17,8 @@ import {
   projectWorkspaces,
   projects,
   taskDependencies,
-} from "@paperclipai/db";
-import { extractProjectMentionIds } from "@paperclipai/shared";
+} from "@armyofagents/db";
+import { extractProjectMentionIds } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { dependencyService } from "./dependencies.js";
 import { heartbeatService } from "./heartbeat.js";

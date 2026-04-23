@@ -1,12 +1,12 @@
 import { and, eq } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@armyofagents/db";
 import {
   updateExecutionWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
   type WorkspaceRuntimeControlTarget,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { executionWorkspaceService, instanceSettingsService, logActivity, workspaceOperationService } from "../services/index.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";

@@ -23,8 +23,8 @@ import { Bot, Plus, List, GitBranch, LayoutGrid, SlidersHorizontal, ChevronRight
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
-import type { Agent } from "@paperclipai/shared";
-import type { AgentTrustScore } from "@paperclipai/shared";
+import type { Agent } from "@armyofagents/shared";
+import type { AgentTrustScore } from "@armyofagents/shared";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",

@@ -1,4 +1,4 @@
-import type { ArtifactWithVersions, ArtifactVersion, CreateArtifactVersion } from "@paperclipai/shared";
+import type { ArtifactWithVersions, ArtifactVersion, CreateArtifactVersion } from "@armyofagents/shared";
 import { api } from "./client";
 
 export const artifactsApi = {

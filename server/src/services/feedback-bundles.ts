@@ -1,18 +1,18 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   agents,
   feedbackExports,
   feedbackVotes,
   issueComments,
   issues,
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 import type {
   FeedbackTargetType,
   FeedbackTraceTargetSummary,
   FeedbackVoteValue,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { notFound, unprocessable } from "../errors.js";
 import {
   createFeedbackRedactionState,

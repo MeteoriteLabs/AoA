@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { providerQuotaWindows } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { providerQuotaWindows } from "@armyofagents/db";
 import { listServerAdapters, findServerAdapter } from "../adapters/registry.js";
 import { logger } from "../middleware/logger.js";
 

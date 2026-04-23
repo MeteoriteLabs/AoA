@@ -1,6 +1,6 @@
 import { and, eq, lt, ne } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, projects } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { executionWorkspaces, projects } from "@armyofagents/db";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";

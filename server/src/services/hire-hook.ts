@@ -1,5 +1,5 @@
-import type { Db } from "@paperclipai/db";
-import type { HireApprovedPayload } from "@paperclipai/adapter-utils";
+import type { Db } from "@armyofagents/db";
+import type { HireApprovedPayload } from "@armyofagents/adapter-utils";
 import { findServerAdapter } from "../adapters/registry.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
@@ -120,7 +120,7 @@ export async function notifyHireApproved(
   const { companyId, agentId, source, sourceId } = input;
   const [{ and, eq }, { agents }] = await Promise.all([
     import("drizzle-orm"),
-    import("@paperclipai/db"),
+    import("@armyofagents/db"),
   ]);
 
   const row = await db

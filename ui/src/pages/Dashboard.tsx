@@ -11,7 +11,7 @@ import {
   type RecentActivityItem,
   type SetupStatus,
   type Suggestion,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { homeApi } from "../api/dashboard";
 import { authApi } from "../api/auth";
 import { suggestionsApi } from "../api/suggestions";

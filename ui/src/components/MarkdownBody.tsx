@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { parseProjectMentionHref } from "@paperclipai/shared";
+import { parseProjectMentionHref } from "@armyofagents/shared";
 import { cn } from "../lib/utils";
 import { useTheme } from "../context/ThemeContext";
 

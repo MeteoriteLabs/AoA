@@ -212,7 +212,7 @@ vi.mock("../services/routines.js", () => ({
 }));
 
 import { companyPortabilityService } from "../services/company-portability.js";
-import type { CompanyPortabilityManifest } from "@paperclipai/shared";
+import type { CompanyPortabilityManifest } from "@armyofagents/shared";
 
 function makeProject(overrides: Partial<ProjectRow> & { id: string; name: string }): ProjectRow {
   return {

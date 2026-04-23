@@ -2,7 +2,7 @@ import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@paperclipai/db", () => {
+vi.mock("@armyofagents/db", () => {
   const makeTable = () =>
     new Proxy(
       {},

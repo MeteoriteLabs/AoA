@@ -13,7 +13,7 @@ vi.mock("drizzle-orm", () => ({
   count: vi.fn(() => Symbol("count")),
 }));
 
-vi.mock("@paperclipai/db", () => {
+vi.mock("@armyofagents/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {

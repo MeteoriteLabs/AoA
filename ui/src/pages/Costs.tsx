@@ -452,7 +452,7 @@ function QuotasSection({
 function BudgetsSection({
   overview,
 }: {
-  overview: { policies: import("@paperclipai/shared").BudgetPolicySummary[]; openIncidents: import("@paperclipai/shared").BudgetIncident[] } | undefined;
+  overview: { policies: import("@armyofagents/shared").BudgetPolicySummary[]; openIncidents: import("@armyofagents/shared").BudgetIncident[] } | undefined;
 }) {
   const policies = overview?.policies ?? [];
   const incidents = overview?.openIncidents ?? [];

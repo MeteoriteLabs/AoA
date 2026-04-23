@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { execute, testEnvironment, onHireApproved } from "@paperclipai/adapter-openclaw/server";
-import { parseOpenClawStdoutLine } from "@paperclipai/adapter-openclaw/ui";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { execute, testEnvironment, onHireApproved } from "@armyofagents/adapter-openclaw/server";
+import { parseOpenClawStdoutLine } from "@armyofagents/adapter-openclaw/ui";
+import type { AdapterExecutionContext } from "@armyofagents/adapter-utils";
 
 function buildContext(
   config: Record<string, unknown>,

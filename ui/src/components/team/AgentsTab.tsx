@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Agent, AgentTrustScore } from "@paperclipai/shared";
+import type { Agent, AgentTrustScore } from "@armyofagents/shared";
 import type { OrgNode } from "../../api/agents";
 import { agentsApi } from "../../api/agents";
 import { useCompany } from "../../context/CompanyContext";

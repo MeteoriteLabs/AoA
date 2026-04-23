@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Settings } from "lucide-react";
-import type { UpdateCurrentUserProfile } from "@paperclipai/shared";
+import type { UpdateCurrentUserProfile } from "@armyofagents/shared";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

@@ -14,15 +14,15 @@ export type {
   AdapterEnvironmentTestContext,
   AdapterSessionCodec,
   AdapterModel,
-} from "@paperclipai/adapter-utils";
+} from "@armyofagents/adapter-utils";
 
-import type { ServerAdapterModule as BaseServerAdapterModule } from "@paperclipai/adapter-utils";
+import type { ServerAdapterModule as BaseServerAdapterModule } from "@armyofagents/adapter-utils";
 
 /**
  * Declarative schema for adapter configuration UI.
  *
  * Paperclip ships a richer AdapterConfigSchema definition in newer versions of
- * adapter-utils. AoA pins @paperclipai/adapter-utils@0.3.1 which predates that
+ * adapter-utils. AoA pins @armyofagents/adapter-utils@0.3.1 which predates that
  * type, so we declare a minimal structural type here. The `/adapters/:type/config-schema`
  * endpoint treats the schema as opaque JSON (hydrated by the adapter), so a
  * permissive shape is sufficient until adapter-utils is upgraded.

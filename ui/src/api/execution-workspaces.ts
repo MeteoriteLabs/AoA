@@ -4,7 +4,7 @@ import type {
   ExecutionWorkspaceSummary,
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { api } from "./client";
 
 export interface WorkspaceRuntimeControlResult {

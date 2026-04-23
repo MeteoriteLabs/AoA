@@ -1,5 +1,5 @@
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { asNumber, asString, buildPaperclipEnv, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterExecutionContext } from "@armyofagents/adapter-utils";
+import { asNumber, asString, buildPaperclipEnv, parseObject } from "@armyofagents/adapter-utils/server-utils";
 import { createHash } from "node:crypto";
 import { parseOpenClawResponse } from "./parse.js";
 

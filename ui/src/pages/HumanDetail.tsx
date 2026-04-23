@@ -12,7 +12,7 @@ import {
   Trash2,
   ChevronRight,
 } from "lucide-react";
-import type { UserRole, Project } from "@paperclipai/shared";
+import type { UserRole, Project } from "@armyofagents/shared";
 import { teamApi } from "../api/team";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";

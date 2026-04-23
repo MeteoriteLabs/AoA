@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Request } from "express";
-import type { Db } from "@paperclipai/db";
-import { userRoles } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { userRoles } from "@armyofagents/db";
 import { forbidden, unauthorized } from "../errors.js";
 
 /**

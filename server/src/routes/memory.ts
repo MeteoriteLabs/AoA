@@ -1,11 +1,11 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   createMemoryItemSchema,
   suggestMemoryArchiveSchema,
   suggestMemoryUpdateSchema,
   updateMemoryItemSchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { forbidden } from "../errors.js";
 import { memoryService, logActivity } from "../services/index.js";

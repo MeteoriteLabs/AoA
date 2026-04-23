@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, isNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { mcpApiKeys, mcpClientConnections } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { mcpApiKeys, mcpClientConnections } from "@armyofagents/db";
 import { notFound } from "../errors.js";
 
 function hashToken(token: string) {

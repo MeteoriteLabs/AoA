@@ -1,14 +1,14 @@
 import { and, eq, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { userRoles } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { userRoles } from "@armyofagents/db";
 import type {
   GlobalSearchEntityType,
   GlobalSearchGroup,
   GlobalSearchResponse,
   GlobalSearchResult,
   UserRole,
-} from "@paperclipai/shared";
-import { deriveAgentUrlKey } from "@paperclipai/shared";
+} from "@armyofagents/shared";
+import { deriveAgentUrlKey } from "@armyofagents/shared";
 
 type Actor = {
   type: "none" | "board" | "agent" | "mcp";

@@ -1,13 +1,13 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   companyMemberships,
   instanceUserRoles,
   invites,
   principalPermissionGrants,
-} from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+} from "@armyofagents/db";
+import type { PermissionKey, PrincipalType } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 

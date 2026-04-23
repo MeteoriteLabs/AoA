@@ -68,8 +68,8 @@ import {
   Sparkles,
 } from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import type { ActivityEvent } from "@paperclipai/shared";
-import type { Agent, IssueAttachment, ArtifactWithVersions, CreateArtifactVersion } from "@paperclipai/shared";
+import type { ActivityEvent } from "@armyofagents/shared";
+import type { Agent, IssueAttachment, ArtifactWithVersions, CreateArtifactVersion } from "@armyofagents/shared";
 
 /* ── Helpers (shared with IssueDetail) ── */
 

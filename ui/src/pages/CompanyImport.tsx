@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import type { Company } from "@paperclipai/shared";
+import type { Company } from "@armyofagents/shared";
 import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -18,7 +18,7 @@ import type {
   CompanyPortabilityImportRequest,
   CompanyPortabilityImportResult,
   CompanyPortabilityPreviewResult,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";

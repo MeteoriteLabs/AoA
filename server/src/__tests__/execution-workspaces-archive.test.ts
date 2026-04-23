@@ -5,7 +5,7 @@ import { errorHandler } from "../middleware/index.js";
 
 // --- Mock drizzle + db package ---
 
-vi.mock("@paperclipai/db", () => {
+vi.mock("@armyofagents/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {

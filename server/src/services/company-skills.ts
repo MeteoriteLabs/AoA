@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { and, asc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companySkills, agents as agentsTable } from "@paperclipai/db";
-import { normalizeAgentUrlKey } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { companySkills, agents as agentsTable } from "@armyofagents/db";
+import { normalizeAgentUrlKey } from "@armyofagents/shared";
 import type {
   CompanySkill,
   CompanySkillCreateRequest,
@@ -23,7 +23,7 @@ import type {
   CompanySkillTrustLevel,
   CompanySkillUpdateStatus,
   CompanySkillUsageAgent,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { agentService } from "./agents.js";

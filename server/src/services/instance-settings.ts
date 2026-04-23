@@ -1,5 +1,5 @@
-import type { Db } from "@paperclipai/db";
-import { companies, instanceSettings } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { companies, instanceSettings } from "@armyofagents/db";
 import {
   DEFAULT_BACKUP_RETENTION,
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
@@ -10,7 +10,7 @@ import {
   type PatchInstanceGeneralSettings,
   type InstanceSettings,
   type PatchInstanceExperimentalSettings,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { eq } from "drizzle-orm";
 
 const DEFAULT_SINGLETON_KEY = "default";

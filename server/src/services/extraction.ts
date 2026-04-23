@@ -1,6 +1,6 @@
 import { eq, and, desc, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, internalAgentRuns } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, internalAgentRuns } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getProviderApiKey, createProvider } from "./internal-agent/providers/index.js";

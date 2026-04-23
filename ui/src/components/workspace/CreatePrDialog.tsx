@@ -18,7 +18,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import type {
   ExecutionWorkspace,
   GitHubPrCreateResponse,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { issuesApi } from "../../api/issues";
 import { githubIntegrationApi } from "../../api/github-integration";
 import { ApiError } from "../../api/client";

@@ -19,7 +19,7 @@ vi.mock("drizzle-orm", () => ({
   }),
 }));
 
-vi.mock("@paperclipai/db", () => {
+vi.mock("@armyofagents/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {
@@ -122,7 +122,7 @@ import { companyPortabilityService } from "../services/company-portability.js";
 import type {
   CompanyPortabilityQuotaWindowManifestEntry,
   CompanyPortabilityManifest,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 
 // ── Mock DB helpers ──────────────────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 import { eq, and } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companies, memoryItems, projects } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { companies, memoryItems, projects } from "@armyofagents/db";
 
 const SYSTEM_INSTRUCTIONS = `You are the internal AI assistant for this company. Your role is to help the founder manage their team of AI agents and human collaborators.
 

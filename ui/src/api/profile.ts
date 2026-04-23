@@ -1,7 +1,7 @@
 import type {
   CurrentUserProfile,
   UpdateCurrentUserProfile,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { api } from "./client";
 
 export const profileApi = {

@@ -4,18 +4,18 @@ import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
-import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import type { AdapterRuntimeServiceReport } from "@armyofagents/adapter-utils";
+import type { Db } from "@armyofagents/db";
+import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@armyofagents/db";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type {
   WorkspaceRuntimeDesiredState,
   WorkspaceRuntimeServiceStateMap,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
-import type { ExecutionWorkspace } from "@paperclipai/shared";
+import type { ExecutionWorkspace } from "@armyofagents/shared";
 import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 

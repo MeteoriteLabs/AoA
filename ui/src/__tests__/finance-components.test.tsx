@@ -5,7 +5,7 @@ import type {
   BudgetPolicySummary,
   BudgetIncident,
   BudgetOverview,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { BudgetPolicyCard } from "../components/finance/BudgetPolicyCard";
 import { BudgetIncidentCard } from "../components/finance/BudgetIncidentCard";
 import { BudgetSidebarMarker } from "../components/finance/BudgetSidebarMarker";

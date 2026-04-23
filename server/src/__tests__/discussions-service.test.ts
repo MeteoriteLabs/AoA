@@ -14,7 +14,7 @@ vi.mock("drizzle-orm", () => ({
   inArray: vi.fn((col: any, vals: any) => ({ inArray: [col, vals] })),
 }));
 
-vi.mock("@paperclipai/db", () => ({
+vi.mock("@armyofagents/db", () => ({
   discussions: {
     id: "discussions_id",
     companyId: "discussions_company_id",

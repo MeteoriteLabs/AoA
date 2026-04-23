@@ -1,4 +1,4 @@
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import type {
   agentService,
   approvalService,

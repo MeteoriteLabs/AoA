@@ -29,7 +29,7 @@ import {
   createWorkflowTemplateSchema,
   updateWorkflowTemplateSchema,
   workflowDependencySchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 

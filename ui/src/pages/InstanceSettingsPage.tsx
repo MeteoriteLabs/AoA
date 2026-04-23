@@ -3,7 +3,7 @@ import { useNavigate } from "@/lib/router";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Settings } from "lucide-react";
-import type { PatchInstanceGeneralSettings } from "@paperclipai/shared";
+import type { PatchInstanceGeneralSettings } from "@armyofagents/shared";
 import { PluginManager } from "./PluginManager";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";

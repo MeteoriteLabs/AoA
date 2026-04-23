@@ -1,4 +1,4 @@
-import type { CompanyPortabilityManifest } from "@paperclipai/shared";
+import type { CompanyPortabilityManifest } from "@armyofagents/shared";
 
 const ROLE_LABELS: Record<string, string> = {
   ceo: "CEO",

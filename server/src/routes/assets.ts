@@ -1,9 +1,9 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import type { Db } from "@paperclipai/db";
-import { companies } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { companies } from "@armyofagents/db";
 import { eq } from "drizzle-orm";
-import { createAssetImageMetadataSchema, createAssetFileMetadataSchema } from "@paperclipai/shared";
+import { createAssetImageMetadataSchema, createAssetFileMetadataSchema } from "@armyofagents/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";

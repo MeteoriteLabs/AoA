@@ -1,13 +1,13 @@
 import { and, desc, eq, gte } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { feedbackVotes } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { feedbackVotes } from "@armyofagents/db";
 import type {
   FeedbackDataSharingPreference,
   FeedbackTargetType,
   FeedbackVote,
   FeedbackVoteSummary,
   FeedbackVoteValue,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { forbidden, notFound } from "../errors.js";
 
 // Paperclip's `normalizeReason` (paperclip-master/server/src/services/feedback.ts:192):

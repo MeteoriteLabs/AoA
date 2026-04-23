@@ -3,8 +3,8 @@ import type {
   FeedbackExportSummary,
   InstanceGeneralSettings,
   PatchInstanceGeneralSettings,
-} from "@paperclipai/shared";
-import { DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE } from "@paperclipai/shared";
+} from "@armyofagents/shared";
+import { DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE } from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
 
 interface PrivacyTabProps {

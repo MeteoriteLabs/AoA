@@ -9,7 +9,7 @@ vi.mock("drizzle-orm", () => ({
   inArray: vi.fn((col: any, vals: any) => ({ inArray: [col, vals] })),
 }));
 
-vi.mock("@paperclipai/db", () => ({
+vi.mock("@armyofagents/db", () => ({
   executionWorkspaces: {
     id: "ew_id",
     companyId: "ew_company_id",

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Mock @paperclipai/db to avoid drizzle-orm ESM cycle
-vi.mock("@paperclipai/db", () => {
+// Mock @armyofagents/db to avoid drizzle-orm ESM cycle
+vi.mock("@armyofagents/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {

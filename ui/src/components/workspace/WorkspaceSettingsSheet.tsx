@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, Loader2 } from "lucide-react";
-import type { ExecutionWorkspace, Issue, WorkspaceOperation } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue, WorkspaceOperation } from "@armyofagents/shared";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";

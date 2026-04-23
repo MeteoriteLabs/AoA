@@ -1,5 +1,5 @@
 import { useRef, useState, useMemo, useCallback, useEffect } from "react";
-import type { UnifiedOrgNode, TeamInviteSummary } from "@paperclipai/shared";
+import type { UnifiedOrgNode, TeamInviteSummary } from "@armyofagents/shared";
 import { AgentIcon } from "../AgentIconPicker";
 import { adapterLabels, roleLabels } from "../agent-config-primitives";
 import { Network, MoreVertical } from "lucide-react";

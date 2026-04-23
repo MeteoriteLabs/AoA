@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { inboxDismissals } from "@paperclipai/db";
-import type { InboxDismissal } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { inboxDismissals } from "@armyofagents/db";
+import type { InboxDismissal } from "@armyofagents/shared";
 
 function normalizeRow(row: {
   id: string;

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Users, UserPlus } from "lucide-react";
-import type { Project, TeamMemberSummary, UserRole } from "@paperclipai/shared";
+import type { Project, TeamMemberSummary, UserRole } from "@armyofagents/shared";
 import { teamApi } from "../api/team";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";

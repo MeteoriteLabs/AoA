@@ -1,6 +1,6 @@
 import { and, eq, lt, isNotNull, inArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { memoryItems, issues, taskDependencies, suggestions } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { memoryItems, issues, taskDependencies, suggestions } from "@armyofagents/db";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
 

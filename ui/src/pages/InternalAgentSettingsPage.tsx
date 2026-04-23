@@ -34,13 +34,13 @@ import {
   AGENT_PROVIDERS,
   CLI_TOOLS,
   NOTIFICATION_PREFERENCES,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import type {
   AgentProvider,
   AgentCapability,
   NotificationPreference,
   UpdateInternalAgentConfig,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */

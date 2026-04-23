@@ -5,7 +5,7 @@ import {
   syncRoutineVariablesWithTemplate,
   type RoutineVariable,
   type RoutineVariableType,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";

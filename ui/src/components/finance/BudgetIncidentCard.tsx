@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertOctagon, ArrowUpRight, PauseCircle } from "lucide-react";
-import type { BudgetIncident, ResolveBudgetIncidentInput } from "@paperclipai/shared";
+import type { BudgetIncident, ResolveBudgetIncidentInput } from "@armyofagents/shared";
 import { budgetsApi } from "../../api/budgets";
 import { useCompany } from "../../context/CompanyContext";
 import { Card, CardContent } from "@/components/ui/card";

@@ -38,7 +38,7 @@ vi.mock("drizzle-orm", () => ({
   count: vi.fn(() => Symbol("count")),
 }));
 
-vi.mock("@paperclipai/db", () => ({
+vi.mock("@armyofagents/db", () => ({
   discussions: {
     id: "discussions_id",
     companyId: "discussions_company_id",

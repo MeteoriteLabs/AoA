@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "../../context/ToastContext";
 import { Activity } from "lucide-react";
 import { summarizeOutputs } from "./workspace-utils";
-import type { IssueComment, Agent } from "@paperclipai/shared";
+import type { IssueComment, Agent } from "@armyofagents/shared";
 import { ChatbarStatusRow } from "./ChatbarStatusRow";
 import { ChatbarControls } from "./ChatbarControls";
 import { useRunTokens } from "./useRunTokens";

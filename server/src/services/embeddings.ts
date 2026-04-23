@@ -1,6 +1,6 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { memoryItems } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { memoryItems } from "@armyofagents/db";
 import { resolveApiKey } from "../adapters/api-common.js";
 import { logger } from "../middleware/logger.js";
 

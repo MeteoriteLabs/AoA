@@ -9,7 +9,7 @@ import {
   ensurePersistedExecutionWorkspaceAvailable,
   realizeExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
-import type { ExecutionWorkspace } from "@paperclipai/shared";
+import type { ExecutionWorkspace } from "@armyofagents/shared";
 import type { ExecutionWorkspaceInput } from "../services/workspace-runtime.ts";
 
 const execFileAsync = promisify(execFile);

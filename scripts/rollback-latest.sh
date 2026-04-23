@@ -54,14 +54,14 @@ source "$REPO_ROOT/scripts/release-lib.sh"
 # `const dirs = [...]` block). Update both if the workspace layout changes.
 list_publishable_packages() {
   cat <<'EOF'
-@paperclipai/shared
-@paperclipai/adapter-utils
-@paperclipai/db
-@paperclipai/adapter-claude-local
-@paperclipai/adapter-codex-local
-@paperclipai/adapter-opencode-local
-@paperclipai/adapter-openclaw
-@paperclipai/server
+@armyofagents/shared
+@armyofagents/adapter-utils
+@armyofagents/db
+@armyofagents/adapter-claude-local
+@armyofagents/adapter-codex-local
+@armyofagents/adapter-opencode-local
+@armyofagents/adapter-openclaw
+@armyofagents/server
 paperclipai
 EOF
 }
@@ -129,27 +129,27 @@ JSON
   echo "list_publishable_packages:"
   local pkg_count; pkg_count="$(list_publishable_packages | wc -l | tr -d ' \t')"
   assert_eq "$pkg_count" "9" "lists exactly 9 publishable packages"
-  assert_eq "$(list_publishable_packages | grep -c '^@paperclipai/')" "8" \
-    "8 packages are @paperclipai/ scoped"
+  assert_eq "$(list_publishable_packages | grep -c '^@armyofagents/')" "8" \
+    "8 packages are @armyofagents/ scoped"
   assert_eq "$(list_publishable_packages | grep -c '^paperclipai$')" "1" \
     "1 unscoped package (paperclipai CLI)"
 
   echo ""
   echo "build_deprecate_cmd:"
-  assert_eq "$(build_deprecate_cmd @paperclipai/server 0.2.7 'Reverted by rollback')" \
-    "npm deprecate @paperclipai/server@0.2.7 'Reverted by rollback'" \
+  assert_eq "$(build_deprecate_cmd @armyofagents/server 0.2.7 'Reverted by rollback')" \
+    "npm deprecate @armyofagents/server@0.2.7 'Reverted by rollback'" \
     "scoped package"
   assert_eq "$(build_deprecate_cmd paperclipai 0.2.7 'Reverted by rollback')" \
     "npm deprecate paperclipai@0.2.7 'Reverted by rollback'" \
     "unscoped CLI package"
-  assert_eq "$(build_deprecate_cmd @paperclipai/db 0.2.7-canary.1 'Broken build')" \
-    "npm deprecate @paperclipai/db@0.2.7-canary.1 'Broken build'" \
+  assert_eq "$(build_deprecate_cmd @armyofagents/db 0.2.7-canary.1 'Broken build')" \
+    "npm deprecate @armyofagents/db@0.2.7-canary.1 'Broken build'" \
     "canary version"
 
   echo ""
   echo "build_dist_tag_cmd:"
-  assert_eq "$(build_dist_tag_cmd @paperclipai/server 0.2.6)" \
-    "npm dist-tag add @paperclipai/server@0.2.6 latest" \
+  assert_eq "$(build_dist_tag_cmd @armyofagents/server 0.2.6)" \
+    "npm dist-tag add @armyofagents/server@0.2.6 latest" \
     "dist-tag repoint for scoped pkg"
   assert_eq "$(build_dist_tag_cmd paperclipai 0.2.6)" \
     "npm dist-tag add paperclipai@0.2.6 latest" \

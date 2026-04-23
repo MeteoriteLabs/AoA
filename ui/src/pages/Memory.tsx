@@ -38,7 +38,7 @@ import {
   type Project,
   type Goal,
   type Issue,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { memoryApi } from "../api/memory";
 import { projectsApi } from "../api/projects";
 import { goalsApi } from "../api/goals";

@@ -164,7 +164,7 @@ import type {
   FinanceEvent,
 } from "@/api/finance";
 import type { CostByModelRow } from "@/api/costs";
-import type { BudgetPolicySummary, BudgetIncident } from "@paperclipai/shared";
+import type { BudgetPolicySummary, BudgetIncident } from "@armyofagents/shared";
 import { CompanyExport as CompanyExportPage } from "@/pages/CompanyExport";
 import { CompanyImport as CompanyImportPage } from "@/pages/CompanyImport";
 import { FeedbackThumbs } from "@/components/FeedbackThumbs";

@@ -3,7 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./test-utils";
 import { FeedbackThumbs } from "../components/FeedbackThumbs";
-import type { FeedbackVote } from "@paperclipai/shared";
+import type { FeedbackVote } from "@armyofagents/shared";
 
 const mockRecordVote = vi.fn();
 const mockDismissVote = vi.fn();

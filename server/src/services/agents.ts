@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, inArray, isNull, isNotNull, ne } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   agents,
   agentConfigRevisions,
@@ -14,9 +14,9 @@ import {
   companyMemberships,
   userRoles,
   projects,
-} from "@paperclipai/db";
-import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
-import type { UnifiedOrgNode } from "@paperclipai/shared";
+} from "@armyofagents/db";
+import { isUuidLike, normalizeAgentUrlKey } from "@armyofagents/shared";
+import type { UnifiedOrgNode } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { deduplicateAgentName, hasAgentShortnameCollision } from "./agent-shortnames.js";

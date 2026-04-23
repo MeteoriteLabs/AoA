@@ -1,7 +1,7 @@
 // ui/src/__tests__/transcript/normalize-transcript.test.ts
 
 import { describe, expect, it } from "vitest";
-import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+import type { TranscriptEntry } from "@armyofagents/adapter-utils";
 import { normalizeTranscript } from "../../components/workspace/transcript/normalize-transcript";
 
 describe("normalizeTranscript", () => {

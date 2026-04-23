@@ -4,14 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExecutionWorkspace } from "@paperclipai/shared";
+import type { ExecutionWorkspace } from "@armyofagents/shared";
 
 // ── Pure function tests ─────────────────────────────────────────────────────
 // readExecutionWorkspaceConfig + mergeExecutionWorkspaceConfig are pure; we
-// can test them without mocking drizzle. But the module imports @paperclipai/db
+// can test them without mocking drizzle. But the module imports @armyofagents/db
 // at the top, which requires the drizzle stubs below to be set up FIRST.
 
-vi.mock("@paperclipai/db", () => {
+vi.mock("@armyofagents/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {

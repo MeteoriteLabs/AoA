@@ -1,7 +1,7 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import { and, eq, sql } from "drizzle-orm";
-import { joinRequests } from "@paperclipai/db";
+import { joinRequests } from "@armyofagents/db";
 import { sidebarBadgeService } from "../services/sidebar-badges.js";
 import { issueService } from "../services/issues.js";
 import { accessService } from "../services/access.js";

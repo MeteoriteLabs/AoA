@@ -1,6 +1,6 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { createFinanceEventSchema } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { createFinanceEventSchema } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { financeService } from "../services/finance.js";
 import { logActivity } from "../services/activity-log.js";

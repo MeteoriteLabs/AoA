@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { FeedbackDataSharingPreference } from "@paperclipai/shared";
+import type { FeedbackDataSharingPreference } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,

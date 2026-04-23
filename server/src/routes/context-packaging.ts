@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import { contextPackagingService } from "../services/context-packaging.js";
 import { assertCompanyAccess } from "./authz.js";
 

@@ -46,7 +46,7 @@ const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const serverScript = mode === "watch" ? "dev:watch" : "dev";
 const child = spawn(
   pnpmBin,
-  ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
+  ["--filter", "@armyofagents/server", serverScript, ...forwardedArgs],
   { stdio: "inherit", env, shell: process.platform === "win32" },
 );
 

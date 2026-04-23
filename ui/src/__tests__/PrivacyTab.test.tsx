@@ -3,7 +3,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./test-utils";
 import { PrivacyTab } from "../components/settings/PrivacyTab";
-import type { InstanceGeneralSettings } from "@paperclipai/shared";
+import type { InstanceGeneralSettings } from "@armyofagents/shared";
 
 function makeSettings(overrides: Partial<InstanceGeneralSettings> = {}): InstanceGeneralSettings {
   return {

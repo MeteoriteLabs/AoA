@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import { assertCompanyAccess } from "./authz.js";
 import { transcribe } from "../services/transcription.js";
 import { secretService } from "../services/index.js";
