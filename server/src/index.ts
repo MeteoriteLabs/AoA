@@ -1,4 +1,5 @@
 /// <reference path="./types/express.d.ts" />
+import "./env-compat.js"; // side-effect: mirror PAPERCLIP_* env to AOA_* for migration
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -63,14 +64,14 @@ type EmbeddedPostgresCtor = new (opts: {
 }) => EmbeddedPostgresInstance;
 
 const config = loadConfig();
-if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
-  process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
+if (process.env.AOA_SECRETS_PROVIDER === undefined) {
+  process.env.AOA_SECRETS_PROVIDER = config.secretsProvider;
 }
-if (process.env.PAPERCLIP_SECRETS_STRICT_MODE === undefined) {
-  process.env.PAPERCLIP_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
+if (process.env.AOA_SECRETS_STRICT_MODE === undefined) {
+  process.env.AOA_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
 }
-if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
-  process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
+if (process.env.AOA_SECRETS_MASTER_KEY_FILE === undefined) {
+  process.env.AOA_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
 }
 
 type MigrationSummary =
@@ -88,8 +89,8 @@ function formatPendingMigrationSummary(migrations: string[]): string {
 }
 
 async function promptApplyMigrations(migrations: string[]): Promise<boolean> {
-  if (process.env.PAPERCLIP_MIGRATION_PROMPT === "never") return false;
-  if (process.env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true") return true;
+  if (process.env.AOA_MIGRATION_PROMPT === "never") return false;
+  if (process.env.AOA_MIGRATION_AUTO_APPLY === "true") return true;
   if (!stdin.isTTY || !stdout.isTTY) return true;
 
   const prompt = createInterface({ input: stdin, output: stdout });
@@ -256,7 +257,7 @@ if (config.databaseUrl) {
   let port = configuredPort;
   const embeddedPostgresLogBuffer: string[] = [];
   const EMBEDDED_POSTGRES_LOG_BUFFER_LIMIT = 120;
-  const verboseEmbeddedPostgresLogs = process.env.PAPERCLIP_EMBEDDED_POSTGRES_VERBOSE === "true";
+  const verboseEmbeddedPostgresLogs = process.env.AOA_EMBEDDED_POSTGRES_VERBOSE === "true";
   const appendEmbeddedPostgresLog = (message: unknown) => {
     const text = typeof message === "string" ? message : message instanceof Error ? message.message : String(message ?? "");
     for (const lineRaw of text.split(/\r?\n/)) {
@@ -423,10 +424,10 @@ if (config.deploymentMode === "authenticated") {
     resolveBetterAuthSessionFromHeaders,
   } = await import("./auth/better-auth.js");
   const betterAuthSecret =
-    process.env.BETTER_AUTH_SECRET?.trim() ?? process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
+    process.env.BETTER_AUTH_SECRET?.trim() ?? process.env.AOA_AGENT_JWT_SECRET?.trim();
   if (!betterAuthSecret) {
     throw new Error(
-      "authenticated mode requires BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET) to be set",
+      "authenticated mode requires BETTER_AUTH_SECRET (or AOA_AGENT_JWT_SECRET) to be set",
     );
   }
   const derivedTrustedOrigins = deriveAuthTrustedOrigins(config);
@@ -481,9 +482,9 @@ const runtimeApiHost =
   runtimeListenHost === "0.0.0.0" || runtimeListenHost === "::"
     ? "localhost"
     : runtimeListenHost;
-process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
-process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+process.env.AOA_LISTEN_HOST = runtimeListenHost;
+process.env.AOA_LISTEN_PORT = String(listenPort);
+process.env.AOA_API_URL = `http://${runtimeApiHost}:${listenPort}`;
 
 setupLiveEventsWebSocketServer(server, db as any, {
   deploymentMode: config.deploymentMode,
@@ -602,7 +603,7 @@ if (config.databaseBackupEnabled) {
 
 server.listen(listenPort, config.host, () => {
   logger.info(`Server listening on ${config.host}:${listenPort}`);
-  if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
+  if (process.env.AOA_OPEN_ON_LISTEN === "true") {
     const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
     const url = `http://${openHost}:${listenPort}`;
     void import("open")

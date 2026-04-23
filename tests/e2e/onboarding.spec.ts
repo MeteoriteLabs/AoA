@@ -20,11 +20,11 @@ import { test, expect } from "@playwright/test";
  * a safe assumption for every CI environment. A later session adds an
  * adapter-stub mode so we can drive the full 6-step flow.
  *
- * Set PAPERCLIP_E2E_SKIP_LLM=false to enable LLM-dependent assertions
+ * Set AOA_E2E_SKIP_LLM=false to enable LLM-dependent assertions
  * (requires ANTHROPIC_API_KEY).
  */
 
-const SKIP_LLM = process.env.PAPERCLIP_E2E_SKIP_LLM !== "false";
+const SKIP_LLM = process.env.AOA_E2E_SKIP_LLM !== "false";
 
 const COMPANY_NAME = `E2E-Test-${Date.now()}`;
 

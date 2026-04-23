@@ -50,7 +50,7 @@ describe("buildInviteOnboardingTextDocument", () => {
     expect(text).toContain("will fail with 401 Unauthorized");
     expect(text).toContain("set the first reachable candidate as agentDefaultsPayload.paperclipApiUrl");
     expect(text).toContain("~/.openclaw/workspace/paperclip-claimed-api-key.json");
-    expect(text).toContain("PAPERCLIP_API_KEY");
+    expect(text).toContain("AOA_API_KEY");
     expect(text).toContain("saved token field");
   });
 

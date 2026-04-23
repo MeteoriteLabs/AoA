@@ -284,7 +284,7 @@ export async function createApp(
 
   // Plugin UI static assets (outside /api prefix)
   const pluginDir = path.resolve(
-    process.env.PAPERCLIP_PLUGIN_DIR ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".paperclip", "plugins"),
+    process.env.AOA_PLUGIN_DIR ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".aoa", "plugins"),
   );
   app.use("/_plugins", pluginUiStaticRoutes(db, { localPluginDir: pluginDir }));
 

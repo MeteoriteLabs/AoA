@@ -439,7 +439,7 @@ export function buildInviteOnboardingTextDocument(
     "## Step 2: Wait for approval, then claim API key",
     "/api/join-requests/{requestId}/claim-api-key",
     "~/.openclaw/workspace/paperclip-claimed-api-key.json",
-    "PAPERCLIP_API_KEY",
+    "AOA_API_KEY",
     "saved token field",
     "",
     "## Discovery",

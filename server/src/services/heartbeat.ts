@@ -2006,7 +2006,7 @@ export function heartbeatService(db: Db) {
             runId: run.id,
             adapterType: agent.adapterType,
           },
-          "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
+          "local agent jwt secret missing or invalid; running without injected AOA_API_KEY",
         );
       }
       // Fetch company skills attached to this agent and inject into context

@@ -284,7 +284,7 @@ function buildSseBody(input: {
       stream: true,
       sessionKey: state.sessionKey,
       text: payloadText,
-      paperclip: {
+      aoa: {
         ...state.wakePayload,
         sessionKey: state.sessionKey,
         streamTransport: "sse",

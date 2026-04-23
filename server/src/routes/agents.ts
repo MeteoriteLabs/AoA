@@ -64,7 +64,7 @@ export function agentRoutes(db: Db) {
   const secretsSvc = secretService(db);
   const skillSvc = companySkillService(db);
   const instructions = agentInstructionsService();
-  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const strictSecretsMode = process.env.AOA_SECRETS_STRICT_MODE === "true";
 
   function canCreateAgents(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
     if (!agent.permissions || typeof agent.permissions !== "object") return false;

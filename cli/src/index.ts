@@ -1,3 +1,4 @@
+import "./config/env-compat.js"; // side-effect: mirror PAPERCLIP_* env to AOA_* for migration
 import { Command } from "commander";
 import { onboard } from "./commands/onboard.js";
 import { doctor } from "./commands/doctor.js";
@@ -20,11 +21,11 @@ import { applyDataDirOverride, type DataDirOptionLike } from "./config/data-dir.
 
 const program = new Command();
 const DATA_DIR_OPTION_HELP =
-  "Paperclip data directory root (isolates state from ~/.paperclip)";
+  "AoA data directory root (isolates state from ~/.aoa)";
 
 program
-  .name("paperclipai")
-  .description("Paperclip CLI — setup, diagnose, and configure your instance")
+  .name("aoa")
+  .description("AoA CLI — setup, diagnose, and configure your instance")
   .version("0.2.7");
 
 program.hook("preAction", (_thisCommand, actionCommand) => {

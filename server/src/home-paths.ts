@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -12,15 +13,22 @@ function expandHomePrefix(value: string): string {
 }
 
 export function resolvePaperclipHomeDir(): string {
-  const envHome = process.env.PAPERCLIP_HOME?.trim();
+  const envHome = process.env.AOA_HOME?.trim();
   if (envHome) return path.resolve(expandHomePrefix(envHome));
-  return path.resolve(os.homedir(), ".paperclip");
+  const aoaHome = path.resolve(os.homedir(), ".aoa");
+  // Migration fallback: use legacy ~/.paperclip/ if it exists and the new
+  // ~/.aoa/ hasn't been created yet. Remove after the next major.
+  if (!existsSync(aoaHome)) {
+    const legacyHome = path.resolve(os.homedir(), ".paperclip");
+    if (existsSync(legacyHome)) return legacyHome;
+  }
+  return aoaHome;
 }
 
 export function resolvePaperclipInstanceId(): string {
-  const raw = process.env.PAPERCLIP_INSTANCE_ID?.trim() || DEFAULT_INSTANCE_ID;
+  const raw = process.env.AOA_INSTANCE_ID?.trim() || DEFAULT_INSTANCE_ID;
   if (!INSTANCE_ID_RE.test(raw)) {
-    throw new Error(`Invalid PAPERCLIP_INSTANCE_ID '${raw}'.`);
+    throw new Error(`Invalid AOA_INSTANCE_ID '${raw}'.`);
   }
   return raw;
 }

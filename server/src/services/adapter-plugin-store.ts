@@ -2,7 +2,7 @@
  * JSON-file-backed store for external adapter registrations.
  *
  * Stores metadata about externally installed adapter packages at
- * <PAPERCLIP_HOME>/adapter-plugins.json. This is the source of truth for which
+ * <AOA_HOME>/adapter-plugins.json. This is the source of truth for which
  * external adapters should be loaded at startup.
  *
  * Both the plugin store and the settings store are cached in memory after
@@ -42,7 +42,7 @@ interface AdapterSettings {
 }
 
 // ---------------------------------------------------------------------------
-// Paths (lazy — read env at call time so tests can override PAPERCLIP_HOME)
+// Paths (lazy — read env at call time so tests can override AOA_HOME)
 // ---------------------------------------------------------------------------
 
 function adapterPluginsRootDir(): string {

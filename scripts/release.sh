@@ -182,7 +182,7 @@ console.log(names.join('\n'));
   else
     echo "Promoted all packages to @latest at v$NEW_VERSION"
     echo ""
-    echo "Verify: npm view paperclipai@latest version"
+    echo "Verify: npm view @armyofagents/cli@latest version"
     echo ""
     echo "To push:"
     echo "  git push && git push origin v$NEW_VERSION"
@@ -398,7 +398,7 @@ if [ "$canary" = true ]; then
   else
     echo "Published canary at v$NEW_VERSION"
     echo ""
-    echo "Verify: npm view paperclipai@canary version"
+    echo "Verify: npm view @armyofagents/cli@canary version"
     echo ""
     echo "To promote to latest:"
     echo "  ./scripts/release.sh --promote $NEW_VERSION"

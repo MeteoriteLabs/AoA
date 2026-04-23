@@ -1016,7 +1016,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         const created = await createWebhookSecret(routine.companyId, routine.id, actor);
         secretId = created.secret.id;
         secretMaterial = {
-          webhookUrl: `${process.env.AOA_API_URL ?? process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
+          webhookUrl: `${process.env.AOA_API_URL ?? process.env.AOA_API_URL}/api/routine-triggers/public/${publicId}/fire`,
           webhookSecret: created.secretValue,
         };
       }
@@ -1128,7 +1128,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       return {
         trigger: toRoutineTrigger(updated),
         secretMaterial: {
-          webhookUrl: `${process.env.AOA_API_URL ?? process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${existing.publicId}/fire`,
+          webhookUrl: `${process.env.AOA_API_URL ?? process.env.AOA_API_URL}/api/routine-triggers/public/${existing.publicId}/fire`,
           webhookSecret: secretValue,
         },
       };

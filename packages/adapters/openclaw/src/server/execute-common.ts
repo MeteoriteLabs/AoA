@@ -250,19 +250,19 @@ export function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePaylo
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
   const paperclipEnv: Record<string, string> = {
     ...buildPaperclipEnv(ctx.agent),
-    PAPERCLIP_RUN_ID: ctx.runId,
+    AOA_RUN_ID: ctx.runId,
   };
 
   if (paperclipApiUrlOverride) {
-    paperclipEnv.PAPERCLIP_API_URL = paperclipApiUrlOverride;
+    paperclipEnv.AOA_API_URL = paperclipApiUrlOverride;
   }
-  if (wakePayload.taskId) paperclipEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
-  if (wakePayload.wakeReason) paperclipEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
-  if (wakePayload.wakeCommentId) paperclipEnv.PAPERCLIP_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
-  if (wakePayload.approvalId) paperclipEnv.PAPERCLIP_APPROVAL_ID = wakePayload.approvalId;
-  if (wakePayload.approvalStatus) paperclipEnv.PAPERCLIP_APPROVAL_STATUS = wakePayload.approvalStatus;
+  if (wakePayload.taskId) paperclipEnv.AOA_TASK_ID = wakePayload.taskId;
+  if (wakePayload.wakeReason) paperclipEnv.AOA_WAKE_REASON = wakePayload.wakeReason;
+  if (wakePayload.wakeCommentId) paperclipEnv.AOA_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
+  if (wakePayload.approvalId) paperclipEnv.AOA_APPROVAL_ID = wakePayload.approvalId;
+  if (wakePayload.approvalStatus) paperclipEnv.AOA_APPROVAL_STATUS = wakePayload.approvalStatus;
   if (wakePayload.issueIds.length > 0) {
-    paperclipEnv.PAPERCLIP_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
+    paperclipEnv.AOA_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
   }
 
   return paperclipEnv;
@@ -271,16 +271,16 @@ export function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePaylo
 export function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
   const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
-    "PAPERCLIP_RUN_ID",
-    "PAPERCLIP_AGENT_ID",
-    "PAPERCLIP_COMPANY_ID",
-    "PAPERCLIP_API_URL",
-    "PAPERCLIP_TASK_ID",
-    "PAPERCLIP_WAKE_REASON",
-    "PAPERCLIP_WAKE_COMMENT_ID",
-    "PAPERCLIP_APPROVAL_ID",
-    "PAPERCLIP_APPROVAL_STATUS",
-    "PAPERCLIP_LINKED_ISSUE_IDS",
+    "AOA_RUN_ID",
+    "AOA_AGENT_ID",
+    "AOA_COMPANY_ID",
+    "AOA_API_URL",
+    "AOA_TASK_ID",
+    "AOA_WAKE_REASON",
+    "AOA_WAKE_COMMENT_ID",
+    "AOA_APPROVAL_ID",
+    "AOA_APPROVAL_STATUS",
+    "AOA_LINKED_ISSUE_IDS",
   ];
 
   const envLines: string[] = [];
@@ -295,9 +295,9 @@ export function buildWakeText(payload: WakePayload, paperclipEnv: Record<string,
     "",
     "Set these values in your run context:",
     ...envLines,
-    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
+    `AOA_API_KEY=<token from ${claimedApiKeyPath}>`,
     "",
-    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    `Load AOA_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
     "",
     `task_id=${payload.taskId ?? ""}`,
     `issue_id=${payload.issueId ?? ""}`,

@@ -153,7 +153,7 @@ function buildLegacyWebhookBody(input: {
     stream: false,
     sessionKey: state.sessionKey,
     text: payloadText,
-    paperclip: {
+    aoa: {
       ...state.wakePayload,
       sessionKey: state.sessionKey,
       streamTransport: "webhook",

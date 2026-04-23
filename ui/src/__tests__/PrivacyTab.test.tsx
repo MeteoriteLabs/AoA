@@ -139,7 +139,7 @@ describe("PrivacyTab", () => {
     // F.4 removed the "not yet wired" banner — sharing is live now (bundles
     // write to local fs; transmission destination is still a deferred decision).
     expect(screen.queryByRole("note")).toBeNull();
-    expect(screen.getByText(/~\/\.paperclip\/feedback-exports\//)).toBeInTheDocument();
+    expect(screen.getByText(/~\/\.aoa\/feedback-exports\//)).toBeInTheDocument();
   });
 
   // ── Recent shared bundles (F.4) ──────────────────────────────────────────

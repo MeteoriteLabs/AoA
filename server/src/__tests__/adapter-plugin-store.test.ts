@@ -15,7 +15,7 @@ import {
 } from "../services/adapter-plugin-store.js";
 
 describe("adapter-plugin-store", () => {
-  const originalPaperclipHome = process.env.PAPERCLIP_HOME;
+  const originalPaperclipHome = process.env.AOA_HOME;
   const cleanupDirs = new Set<string>();
 
   async function makeHome(): Promise<string> {
@@ -29,8 +29,8 @@ describe("adapter-plugin-store", () => {
   });
 
   afterEach(async () => {
-    if (originalPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
-    else process.env.PAPERCLIP_HOME = originalPaperclipHome;
+    if (originalPaperclipHome === undefined) delete process.env.AOA_HOME;
+    else process.env.AOA_HOME = originalPaperclipHome;
     __resetAdapterPluginStoreCaches();
     await Promise.all([...cleanupDirs].map(async (dir) => {
       await fs.rm(dir, { recursive: true, force: true });
@@ -39,12 +39,12 @@ describe("adapter-plugin-store", () => {
   });
 
   it("returns empty list when registry file does not exist", async () => {
-    process.env.PAPERCLIP_HOME = await makeHome();
+    process.env.AOA_HOME = await makeHome();
     expect(listAdapterPlugins()).toEqual([]);
   });
 
   it("persists a registered adapter and returns it on list", async () => {
-    process.env.PAPERCLIP_HOME = await makeHome();
+    process.env.AOA_HOME = await makeHome();
     addAdapterPlugin({
       packageName: "my-custom-llm-adapter",
       version: "1.0.0",
@@ -58,7 +58,7 @@ describe("adapter-plugin-store", () => {
   });
 
   it("upserts a record when re-adding same type", async () => {
-    process.env.PAPERCLIP_HOME = await makeHome();
+    process.env.AOA_HOME = await makeHome();
     addAdapterPlugin({
       packageName: "foo",
       version: "1.0.0",
@@ -77,7 +77,7 @@ describe("adapter-plugin-store", () => {
   });
 
   it("removes an adapter from the registry on remove", async () => {
-    process.env.PAPERCLIP_HOME = await makeHome();
+    process.env.AOA_HOME = await makeHome();
     addAdapterPlugin({
       packageName: "foo",
       version: "1.0.0",
@@ -90,12 +90,12 @@ describe("adapter-plugin-store", () => {
   });
 
   it("returns false when removing a type that doesn't exist", async () => {
-    process.env.PAPERCLIP_HOME = await makeHome();
+    process.env.AOA_HOME = await makeHome();
     expect(removeAdapterPlugin("nonexistent")).toBe(false);
   });
 
   it("getAdapterPluginByType returns the record or undefined", async () => {
-    process.env.PAPERCLIP_HOME = await makeHome();
+    process.env.AOA_HOME = await makeHome();
     addAdapterPlugin({
       packageName: "foo",
       type: "custom-llm",
@@ -107,7 +107,7 @@ describe("adapter-plugin-store", () => {
 
   it("getAdapterPluginsDir creates and returns the managed directory with package.json", async () => {
     const home = await makeHome();
-    process.env.PAPERCLIP_HOME = home;
+    process.env.AOA_HOME = home;
     const dir = getAdapterPluginsDir();
     expect(dir).toBe(path.join(home, "adapter-plugins"));
     const pkgRaw = await fs.readFile(path.join(dir, "package.json"), "utf-8");
@@ -116,7 +116,7 @@ describe("adapter-plugin-store", () => {
   });
 
   it("setAdapterDisabled toggles disabled flag and persists", async () => {
-    process.env.PAPERCLIP_HOME = await makeHome();
+    process.env.AOA_HOME = await makeHome();
     expect(isAdapterDisabled("claude-local")).toBe(false);
     expect(setAdapterDisabled("claude-local", true)).toBe(true);
     expect(isAdapterDisabled("claude-local")).toBe(true);

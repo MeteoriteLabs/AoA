@@ -124,7 +124,7 @@ const PROJECT_SCAN_DIRECTORY_ROOTS = [
   ".vibe/skills",
   ".mux/skills",
   ".openhands/skills",
-  ".paperclip/skills",
+  ".aoa/skills",
   ".pi/skills",
   ".qoder/skills",
   ".qwen/skills",

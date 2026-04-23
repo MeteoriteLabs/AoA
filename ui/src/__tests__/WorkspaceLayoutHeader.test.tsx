@@ -60,7 +60,7 @@ const mockWorkspace = {
   strategyType: "git_worktree",
   name: "feature-login",
   status: "active",
-  cwd: "/repo/.paperclip/worktrees/feature-login",
+  cwd: "/repo/.aoa/worktrees/feature-login",
   repoUrl: null,
   baseRef: "main",
   branchName: "feature-login",

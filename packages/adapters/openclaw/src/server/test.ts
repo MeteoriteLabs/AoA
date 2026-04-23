@@ -80,7 +80,7 @@ function pushDeploymentDiagnostics(
         code: "openclaw_private_bind_hostname_not_allowed",
         level: "warn",
         message: `Paperclip bind host "${bindHost}" is not in allowed hostnames.`,
-        hint: `Run pnpm paperclipai allowed-hostname ${bindHost} so remote OpenClaw callbacks can pass host checks.`,
+        hint: `Run pnpm aoa allowed-hostname ${bindHost} so remote OpenClaw callbacks can pass host checks.`,
       });
     }
 
@@ -98,7 +98,7 @@ function pushDeploymentDiagnostics(
         code: "openclaw_private_no_allowed_hostnames",
         level: "warn",
         message: "No explicit allowed hostnames are configured for authenticated/private mode.",
-        hint: "Set one with pnpm paperclipai allowed-hostname <host> when OpenClaw runs on another machine.",
+        hint: "Set one with pnpm aoa allowed-hostname <host> when OpenClaw runs on another machine.",
       });
     }
   }

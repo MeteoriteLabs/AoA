@@ -30,7 +30,7 @@ import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { documentService } from "../services/documents.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
 
-const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
   "image/png",
   "image/jpeg",

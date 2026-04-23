@@ -59,7 +59,7 @@ export function FeedbackConsentModal({
           <p>
             When enabled, the voted comment plus nearby context is redacted and
             written to{" "}
-            <code className="font-mono">~/.paperclip/feedback-exports/</code>.
+            <code className="font-mono">~/.aoa/feedback-exports/</code>.
             Transmission to AoA Labs is pending a destination decision.
           </p>
           <p>You can change this anytime from Privacy settings.</p>

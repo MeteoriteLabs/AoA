@@ -1,12 +1,15 @@
 {
-  "name": "paperclipai",
+  "name": "@armyofagents/cli",
   "version": "0.2.7",
-  "description": "Paperclip CLI — orchestrate AI agent teams to run a business",
+  "description": "AoA (Army of Agents) CLI — orchestrate AI agent teams to run a business",
   "type": "module",
   "bin": {
+    "aoa": "./dist/index.js",
     "paperclipai": "./dist/index.js"
   },
   "keywords": [
+    "aoa",
+    "army-of-agents",
     "paperclip",
     "ai",
     "agents",

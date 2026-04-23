@@ -559,7 +559,7 @@ function buildJoinConnectivityDiagnostics(input: {
         code: "openclaw_private_bind_not_allowed",
         level: "warn",
         message: `Paperclip bind host \"${bindHost}\" is not in allowed hostnames.`,
-        hint: `Run pnpm paperclipai allowed-hostname ${bindHost}`
+        hint: `Run pnpm aoa allowed-hostname ${bindHost}`
       });
     }
     if (callbackHost && !isLoopbackHost(callbackHost) && allowSet.size === 0) {
@@ -568,7 +568,7 @@ function buildJoinConnectivityDiagnostics(input: {
         level: "warn",
         message:
           "No explicit allowed hostnames are configured for authenticated/private mode.",
-        hint: "Set one with pnpm paperclipai allowed-hostname <host> when OpenClaw runs off-host."
+        hint: "Set one with pnpm aoa allowed-hostname <host> when OpenClaw runs off-host."
       });
     }
   }
@@ -882,7 +882,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
       code: "openclaw_onboarding_private_host_not_allowed",
       level: "warn",
       message: `Onboarding host "${apiHost}" is not in allowed hostnames for authenticated/private mode.`,
-      hint: `Run pnpm paperclipai allowed-hostname ${apiHost}`
+      hint: `Run pnpm aoa allowed-hostname ${apiHost}`
     });
   }
 
@@ -972,7 +972,7 @@ function buildInviteOnboardingManifest(
     invite: toInviteSummaryResponse(req, token, invite),
     onboarding: {
       instructions:
-        "Join as an OpenClaw agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST include agentDefaultsPayload.headers.x-openclaw-auth in your join request so Paperclip can authenticate callback requests.",
+        "Join as an OpenClaw agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load AOA_API_KEY from that file before starting heartbeat loops. You MUST include agentDefaultsPayload.headers.x-openclaw-auth in your join request so Paperclip can authenticate callback requests.",
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: "openclaw",
       requiredFields: {
@@ -1015,7 +1015,7 @@ function buildInviteOnboardingManifest(
         guidance:
           opts.deploymentMode === "authenticated" &&
           opts.deploymentExposure === "private"
-            ? "If OpenClaw runs on another machine, ensure the Paperclip hostname is reachable and allowed via `pnpm paperclipai allowed-hostname <host>`."
+            ? "If OpenClaw runs on another machine, ensure the Paperclip hostname is reachable and allowed via `pnpm aoa allowed-hostname <host>`."
             : "Ensure OpenClaw can reach this Paperclip API base URL for callbacks and claims."
       },
       textInstructions: {
@@ -1184,19 +1184,19 @@ export function buildInviteOnboardingTextDocument(
     - ~/.openclaw/workspace/paperclip-claimed-api-key.json
     chmod 600 ~/.openclaw/workspace/paperclip-claimed-api-key.json
 
-    And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
+    And set the AOA_API_KEY and AOA_API_URL in your environment variables as specified here:
     https://docs.openclaw.ai/help/environment
 
     e.g. 
 
     {
       env: {
-        PAPERCLIP_API_KEY: "...",
-        PAPERCLIP_API_URL: "...",
+        AOA_API_KEY: "...",
+        AOA_API_URL: "...",
       },
     }
 
-    Then set PAPERCLIP_API_KEY and PAPERCLIP_API_URL from the saved token field for every heartbeat run.
+    Then set AOA_API_KEY and AOA_API_URL from the saved token field for every heartbeat run.
 
     Important:
     - claim secrets expire
@@ -1207,7 +1207,7 @@ export function buildInviteOnboardingTextDocument(
     GET ${onboarding.skill.url}
     Install path: ${onboarding.skill.installPath}
 
-    Be sure to prepend your PAPERCLIP_API_URL to the top of your skill and note the path to your PAPERCLIP_API_URL
+    Be sure to prepend your AOA_API_URL to the top of your skill and note the path to your AOA_API_URL
 
     ## Text onboarding URL
     ${onboarding.textInstructions.url}
@@ -1251,7 +1251,7 @@ export function buildInviteOnboardingTextDocument(
 
       If none are reachable: ask your human operator for a reachable hostname/address and help them update network configuration.
       For authenticated/private mode, they may need:
-      - pnpm paperclipai allowed-hostname <host>
+      - pnpm aoa allowed-hostname <host>
       - then restart Paperclip and retry onboarding.
     `);
   }

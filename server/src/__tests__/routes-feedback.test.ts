@@ -40,7 +40,7 @@ vi.mock("../services/feedback-bundles.js", () => ({
 
 vi.mock("../services/feedback-share-client.js", () => ({
   writeBundleLocally: mockWriteBundleLocally,
-  FEEDBACK_LOCAL_EXPORT_DIR_NAME: ".paperclip/feedback-exports",
+  FEEDBACK_LOCAL_EXPORT_DIR_NAME: ".aoa/feedback-exports",
 }));
 
 // InstanceSettingsService is a real call in feedback.ts; stub it out so route

@@ -22,15 +22,20 @@ function expandHomePrefix(value: string): string {
 }
 
 function resolvePaperclipHomeDir(): string {
-  const envHome = process.env.PAPERCLIP_HOME?.trim();
+  const envHome = process.env.AOA_HOME?.trim();
   if (envHome) return path.resolve(expandHomePrefix(envHome));
-  return path.resolve(os.homedir(), ".paperclip");
+  const aoaHome = path.resolve(os.homedir(), ".aoa");
+  if (!existsSync(aoaHome)) {
+    const legacyHome = path.resolve(os.homedir(), ".paperclip");
+    if (existsSync(legacyHome)) return legacyHome;
+  }
+  return aoaHome;
 }
 
 function resolvePaperclipInstanceId(): string {
-  const raw = process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default";
+  const raw = process.env.AOA_INSTANCE_ID?.trim() || "default";
   if (!/^[a-zA-Z0-9_-]+$/.test(raw)) {
-    throw new Error(`Invalid PAPERCLIP_INSTANCE_ID '${raw}'.`);
+    throw new Error(`Invalid AOA_INSTANCE_ID '${raw}'.`);
   }
   return raw;
 }

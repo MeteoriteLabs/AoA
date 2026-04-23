@@ -21,7 +21,7 @@ import { test, expect, type APIRequestContext } from "@playwright/test";
  * the MCP server. If both fail, the webServer didn't boot.
  */
 
-const SKIP_LIVE = process.env.PAPERCLIP_E2E_SKIP_MCP === "true";
+const SKIP_LIVE = process.env.AOA_E2E_SKIP_MCP === "true";
 
 async function createCompany(
   request: APIRequestContext,
@@ -74,7 +74,7 @@ test.describe("MCP key → tool call flow", () => {
   test("founder issues key, calls me tool, receives own identity", async ({
     request,
   }) => {
-    test.skip(SKIP_LIVE, "PAPERCLIP_E2E_SKIP_MCP=true");
+    test.skip(SKIP_LIVE, "AOA_E2E_SKIP_MCP=true");
 
     const companyName = `E2E-MCP-${Date.now()}`;
     const companyId = await createCompany(request, companyName);

@@ -8,8 +8,8 @@ import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
-const MAX_ASSET_IMAGE_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
-const MAX_ASSET_FILE_BYTES = Number(process.env.PAPERCLIP_FILE_MAX_BYTES) || 50 * 1024 * 1024;
+const MAX_ASSET_IMAGE_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
+const MAX_ASSET_FILE_BYTES = Number(process.env.AOA_FILE_MAX_BYTES) || 50 * 1024 * 1024;
 const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
   "image/png",
   "image/jpeg",

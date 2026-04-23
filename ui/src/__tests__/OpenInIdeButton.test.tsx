@@ -16,7 +16,7 @@ Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(und
 import { OpenInIdeButton } from "../components/workspace/OpenInIdeButton";
 
 const PREF_KEY = "aoa:workspace:preferred-editor";
-const CWD = "C:\\repo\\.paperclip\\worktrees\\feature-login";
+const CWD = "C:\\repo\\.aoa\\worktrees\\feature-login";
 
 describe("OpenInIdeButton", () => {
   let originalLocation: Location;

@@ -47,16 +47,16 @@ let originalHome: string | undefined;
 
 beforeEach(async () => {
   tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-adapter-routes-"));
-  originalHome = process.env.PAPERCLIP_HOME;
-  process.env.PAPERCLIP_HOME = tmpHome;
+  originalHome = process.env.AOA_HOME;
+  process.env.AOA_HOME = tmpHome;
   __resetAdapterPluginStoreCaches();
 });
 
 afterEach(async () => {
   if (originalHome === undefined) {
-    delete process.env.PAPERCLIP_HOME;
+    delete process.env.AOA_HOME;
   } else {
-    process.env.PAPERCLIP_HOME = originalHome;
+    process.env.AOA_HOME = originalHome;
   }
   __resetAdapterPluginStoreCaches();
   await fs.rm(tmpHome, { recursive: true, force: true });

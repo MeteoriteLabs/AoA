@@ -35,13 +35,13 @@ import { expect, test, type Page } from "@playwright/test";
 
 const ADMIN_EMAIL =
   process.env.AOA_RELEASE_SMOKE_EMAIL ??
-  process.env.PAPERCLIP_RELEASE_SMOKE_EMAIL ??
+  process.env.AOA_RELEASE_SMOKE_EMAIL ??
   process.env.SMOKE_ADMIN_EMAIL ??
   "smoke-admin@paperclip.local";
 
 const ADMIN_PASSWORD =
   process.env.AOA_RELEASE_SMOKE_PASSWORD ??
-  process.env.PAPERCLIP_RELEASE_SMOKE_PASSWORD ??
+  process.env.AOA_RELEASE_SMOKE_PASSWORD ??
   process.env.SMOKE_ADMIN_PASSWORD ??
   "paperclip-smoke-password";
 

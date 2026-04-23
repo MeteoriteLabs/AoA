@@ -245,7 +245,7 @@ describe("ensurePersistedExecutionWorkspaceAvailable", () => {
   it("throws when persisted workspace is missing and has no branch to restore from", async () => {
     const repoRoot = await createTempRepo();
     const base = buildInput(repoRoot);
-    const missingCwd = path.join(repoRoot, ".paperclip", "worktrees", "gone");
+    const missingCwd = path.join(repoRoot, ".aoa", "worktrees", "gone");
     const persisted = buildPersistedWorkspace({
       cwd: missingCwd,
       branchName: null,

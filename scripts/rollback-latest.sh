@@ -62,7 +62,7 @@ list_publishable_packages() {
 @armyofagents/adapter-opencode-local
 @armyofagents/adapter-openclaw
 @armyofagents/server
-paperclipai
+@armyofagents/cli
 EOF
 }
 
@@ -114,13 +114,13 @@ run_self_tests() {
   echo "get_current_version:"
   mkdir -p "$tmpdir/cli"
   cat > "$tmpdir/cli/package.json" <<'JSON'
-{"name":"paperclipai","version":"0.2.7"}
+{"name":"@armyofagents/cli","version":"0.2.7"}
 JSON
   assert_eq "$(get_current_version "$tmpdir/cli/package.json")" "0.2.7" \
     "reads stable version from fixture"
 
   cat > "$tmpdir/cli/package.json" <<'JSON'
-{"name":"paperclipai","version":"0.2.7-canary.3"}
+{"name":"@armyofagents/cli","version":"0.2.7-canary.3"}
 JSON
   assert_eq "$(get_current_version "$tmpdir/cli/package.json")" "0.2.7-canary.3" \
     "reads canary version from fixture"
@@ -129,18 +129,18 @@ JSON
   echo "list_publishable_packages:"
   local pkg_count; pkg_count="$(list_publishable_packages | wc -l | tr -d ' \t')"
   assert_eq "$pkg_count" "9" "lists exactly 9 publishable packages"
-  assert_eq "$(list_publishable_packages | grep -c '^@armyofagents/')" "8" \
-    "8 packages are @armyofagents/ scoped"
-  assert_eq "$(list_publishable_packages | grep -c '^paperclipai$')" "1" \
-    "1 unscoped package (paperclipai CLI)"
+  assert_eq "$(list_publishable_packages | grep -c '^@armyofagents/')" "9" \
+    "9 packages are @armyofagents/ scoped"
+  assert_eq "$(list_publishable_packages | grep -c '^@armyofagents/cli$')" "1" \
+    "1 CLI package (@armyofagents/cli)"
 
   echo ""
   echo "build_deprecate_cmd:"
   assert_eq "$(build_deprecate_cmd @armyofagents/server 0.2.7 'Reverted by rollback')" \
     "npm deprecate @armyofagents/server@0.2.7 'Reverted by rollback'" \
     "scoped package"
-  assert_eq "$(build_deprecate_cmd paperclipai 0.2.7 'Reverted by rollback')" \
-    "npm deprecate paperclipai@0.2.7 'Reverted by rollback'" \
+  assert_eq "$(build_deprecate_cmd @armyofagents/cli 0.2.7 'Reverted by rollback')" \
+    "npm deprecate @armyofagents/cli@0.2.7 'Reverted by rollback'" \
     "unscoped CLI package"
   assert_eq "$(build_deprecate_cmd @armyofagents/db 0.2.7-canary.1 'Broken build')" \
     "npm deprecate @armyofagents/db@0.2.7-canary.1 'Broken build'" \
@@ -151,8 +151,8 @@ JSON
   assert_eq "$(build_dist_tag_cmd @armyofagents/server 0.2.6)" \
     "npm dist-tag add @armyofagents/server@0.2.6 latest" \
     "dist-tag repoint for scoped pkg"
-  assert_eq "$(build_dist_tag_cmd paperclipai 0.2.6)" \
-    "npm dist-tag add paperclipai@0.2.6 latest" \
+  assert_eq "$(build_dist_tag_cmd @armyofagents/cli 0.2.6)" \
+    "npm dist-tag add @armyofagents/cli@0.2.6 latest" \
     "dist-tag repoint for CLI"
 
   echo ""
@@ -289,7 +289,7 @@ else
   release_info "✓ Rollback complete for v$current_version"
   release_info ""
   release_info "Next steps:"
-  release_info "  - Verify deprecation: npm view paperclipai@$current_version deprecated"
+  release_info "  - Verify deprecation: npm view @armyofagents/cli@$current_version deprecated"
   release_info "  - Investigate what went wrong before the next release"
   if [ "$revert_commit" = true ]; then
     release_info "  - Push the revert commit: git push $remote"

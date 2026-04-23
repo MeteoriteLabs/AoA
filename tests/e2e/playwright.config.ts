@@ -5,9 +5,9 @@ import { defineConfig } from "@playwright/test";
 
 // Use a dedicated port so e2e tests always start their own server in local_trusted mode,
 // even when the dev server is running on :3100 in authenticated mode.
-const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
+const PORT = Number(process.env.AOA_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
-const PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "aoa-e2e-home-"));
+const AOA_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "aoa-e2e-home-"));
 
 export default defineConfig({
   testDir: ".",
@@ -29,9 +29,9 @@ export default defineConfig({
     },
   ],
   // The webServer directive bootstraps a throwaway AoA instance.
-  // `onboard --yes --run` works in a non-interactive temp PAPERCLIP_HOME.
+  // `onboard --yes --run` works in a non-interactive temp AOA_HOME.
   webServer: {
-    command: `pnpm paperclipai onboard --yes --run`,
+    command: `pnpm aoa onboard --yes --run`,
     url: `${BASE_URL}/api/health`,
     // Always boot a dedicated throwaway instance for e2e so browser tests
     // never attach to the developer's active AoA home/server.
@@ -42,11 +42,11 @@ export default defineConfig({
     env: {
       ...process.env,
       PORT: String(PORT),
-      PAPERCLIP_HOME,
-      PAPERCLIP_INSTANCE_ID: "playwright-e2e",
-      PAPERCLIP_BIND: "loopback",
-      PAPERCLIP_DEPLOYMENT_MODE: "local_trusted",
-      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private",
+      AOA_HOME,
+      AOA_INSTANCE_ID: "playwright-e2e",
+      AOA_BIND: "loopback",
+      AOA_DEPLOYMENT_MODE: "local_trusted",
+      AOA_DEPLOYMENT_EXPOSURE: "private",
     },
   },
   outputDir: "./test-results",

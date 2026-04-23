@@ -112,7 +112,7 @@ describe("FeedbackConsentModal", () => {
       <FeedbackConsentModal open onOpenChange={vi.fn()} onDecide={vi.fn()} />,
     );
     expect(
-      screen.getByText(/~\/\.paperclip\/feedback-exports\//),
+      screen.getByText(/~\/\.aoa\/feedback-exports\//),
     ).toBeInTheDocument();
   });
 });

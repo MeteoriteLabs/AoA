@@ -98,7 +98,7 @@ export function PrivacyTab({
             <p className="max-w-2xl text-sm text-muted-foreground">
               When a teammate gives a thumbs up or down on an agent's output, this setting decides
               whether the voted output is shared. Votes are always saved locally; bundles are
-              written to <code className="font-mono text-xs">~/.paperclip/feedback-exports/</code>
+              written to <code className="font-mono text-xs">~/.aoa/feedback-exports/</code>
               {" "}
               when sharing is allowed (transmission to AoA Labs is pending a destination decision).
             </p>

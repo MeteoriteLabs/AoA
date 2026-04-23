@@ -29,13 +29,13 @@ if (process.env.npm_config_authenticated_private === "true") {
 
 const env = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  AOA_UI_DEV_MIDDLEWARE: "true",
 };
 
 if (tailscaleAuth) {
-  env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
-  env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
-  env.PAPERCLIP_AUTH_BASE_URL_MODE = "auto";
+  env.AOA_DEPLOYMENT_MODE = "authenticated";
+  env.AOA_DEPLOYMENT_EXPOSURE = "private";
+  env.AOA_AUTH_BASE_URL_MODE = "auto";
   env.HOST = "0.0.0.0";
   console.log("[paperclip] dev mode: authenticated/private (tailscale-friendly) on 0.0.0.0");
 } else {

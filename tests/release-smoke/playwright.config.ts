@@ -6,12 +6,12 @@ import { defineConfig } from "@playwright/test";
 // directive — the container is the server.
 //
 // Default port 3232 matches AoA's Dockerfile EXPOSE. AOA_RELEASE_SMOKE_BASE_URL
-// is the primary env var; PAPERCLIP_RELEASE_SMOKE_BASE_URL is retained as a
+// is the primary env var; AOA_RELEASE_SMOKE_BASE_URL is retained as a
 // fallback so Docker images still using the old env name keep working
 // through the rename window.
 const BASE_URL =
   process.env.AOA_RELEASE_SMOKE_BASE_URL ??
-  process.env.PAPERCLIP_RELEASE_SMOKE_BASE_URL ??
+  process.env.AOA_RELEASE_SMOKE_BASE_URL ??
   "http://127.0.0.1:3232";
 
 export default defineConfig({
