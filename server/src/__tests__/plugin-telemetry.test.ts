@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@armyofagents/shared";
 
 const debugSpy = vi.hoisted(() => vi.fn());
+const transmitPluginTelemetrySpy = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
@@ -16,6 +17,14 @@ vi.mock("../middleware/logger.js", () => ({
       error: vi.fn(),
     }),
   },
+}));
+
+vi.mock("../services/feedback-transmission.js", () => ({
+  transmitPluginTelemetry: transmitPluginTelemetrySpy,
+  isTransmissionEnabled: () => Boolean(process.env.AOA_FEEDBACK_ENDPOINT),
+  transmitFeedbackBundle: vi.fn(),
+  ENDPOINT_ENV: "AOA_FEEDBACK_ENDPOINT",
+  API_KEY_ENV: "AOA_FEEDBACK_API_KEY",
 }));
 
 import { createHostClientHandlers } from "@armyofagents/plugin-sdk";
@@ -46,13 +55,21 @@ function buildTelemetryTestManifest(
   };
 }
 
-describe("plugin telemetry bridge (F.5, infrastructure-only)", () => {
+describe("plugin telemetry bridge (F.5 + Phase I.2 Task 11 transmission wiring)", () => {
   beforeEach(() => {
     debugSpy.mockReset();
+    transmitPluginTelemetrySpy.mockClear();
+  });
+
+  afterEach(() => {
+    delete process.env.AOA_FEEDBACK_ENDPOINT;
+    delete process.env.AOA_FEEDBACK_API_KEY;
   });
 
   // ---------------------------------------------------------------------------
-  // plugin-host-services telemetry implementation (log-and-discard per F.D4)
+  // plugin-host-services telemetry implementation
+  //   — logs at debug regardless of transmission config (F.5)
+  //   — hands event off to transmitPluginTelemetry (PF.2, Task 11)
   // ---------------------------------------------------------------------------
 
   it("accepts a valid event name and logs at debug with pluginId+pluginKey+eventName+dimensions", async () => {
@@ -76,8 +93,58 @@ describe("plugin telemetry bridge (F.5, infrastructure-only)", () => {
         eventName: "sync_completed",
         dimensions: { attempts: 2, success: true },
       },
-      "Plugin telemetry event (log-and-discard; phase-I routes)",
+      "Plugin telemetry event (transmitted if AOA_FEEDBACK_ENDPOINT set)",
     );
+  });
+
+  it("hands the event off to transmitPluginTelemetry with eventName + dimensions", async () => {
+    const services = buildHostServices(
+      {} as never,
+      "plugin-rec-id",
+      "linear",
+      createEventBusStub(),
+    );
+
+    await services.telemetry.track({
+      eventName: "sync_completed",
+      dimensions: { attempts: 2, success: true },
+    });
+
+    expect(transmitPluginTelemetrySpy).toHaveBeenCalledTimes(1);
+    expect(transmitPluginTelemetrySpy).toHaveBeenCalledWith(
+      "sync_completed",
+      { attempts: 2, success: true },
+    );
+  });
+
+  it("still hands off to transmitPluginTelemetry even when dimensions are omitted", async () => {
+    const services = buildHostServices(
+      {} as never,
+      "plugin-rec-id",
+      "linear",
+      createEventBusStub(),
+    );
+
+    await services.telemetry.track({ eventName: "bare_event" });
+
+    expect(transmitPluginTelemetrySpy).toHaveBeenCalledTimes(1);
+    expect(transmitPluginTelemetrySpy).toHaveBeenCalledWith("bare_event", undefined);
+  });
+
+  it("does not call transmitPluginTelemetry when eventName is invalid (throws before transmission)", async () => {
+    const services = buildHostServices(
+      {} as never,
+      "plugin-rec-id",
+      "linear",
+      createEventBusStub(),
+    );
+
+    await expect(
+      services.telemetry.track({ eventName: "sync.completed" }),
+    ).rejects.toThrow();
+
+    expect(transmitPluginTelemetrySpy).not.toHaveBeenCalled();
+    expect(debugSpy).not.toHaveBeenCalled();
   });
 
   it("accepts event names with underscores, dashes, and digits", async () => {
@@ -115,7 +182,7 @@ describe("plugin telemetry bridge (F.5, infrastructure-only)", () => {
     expect(debugSpy).not.toHaveBeenCalled();
   });
 
-  it("returns void without routing when called (log-and-discard, no destination wired)", async () => {
+  it("returns void (the caller does not observe transmission outcome)", async () => {
     const services = buildHostServices(
       {} as never,
       "plugin-rec-id",

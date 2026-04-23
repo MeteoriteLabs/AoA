@@ -34,6 +34,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
+import { transmitPluginTelemetry } from "./feedback-transmission.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -651,11 +652,15 @@ export function buildHostServices(
             'Plugin telemetry event names must be lowercase slugs using letters, numbers, "_" or "-".',
           );
         }
-        // F.D4: infrastructure-only — log at debug level and discard.
-        // Phase I will decide whether to route into the feedback pipeline.
+        // Phase I.2 Task 11 (PF.2): hand off to the env-gated transmission
+        // path. Fire-and-forget — if AOA_FEEDBACK_ENDPOINT is unset, this is
+        // a no-op; if set, the POST runs in the background. The host always
+        // logs at debug so operators can tail plugin telemetry locally
+        // regardless of transmission config.
+        await transmitPluginTelemetry(eventName, params.dimensions);
         logger.debug(
           { pluginId, pluginKey, eventName, dimensions: params.dimensions },
-          "Plugin telemetry event (log-and-discard; phase-I routes)",
+          "Plugin telemetry event (transmitted if AOA_FEEDBACK_ENDPOINT set)",
         );
       },
     },

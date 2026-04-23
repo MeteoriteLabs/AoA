@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { Db } from "@armyofagents/db";
 import { feedbackTargetTypeSchema, upsertIssueFeedbackVoteSchema } from "@armyofagents/shared";
 import { buildBundle, listExports } from "../services/feedback-bundles.js";
-import { writeBundleLocally } from "../services/feedback-share-client.js";
+import { shareFeedbackBundle } from "../services/feedback-share-client.js";
 import { feedbackVotesService } from "../services/feedback-votes.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
@@ -27,15 +27,20 @@ export function feedbackRoutes(db: Db) {
   const settings = instanceSettingsService(db);
   const votes = feedbackVotesService(db, {
     // F.4: gate bundle-build on the instance sharing preference. "allowed" →
-    // build + write locally. "not_allowed" or "prompt" → skip (the UI will
-    // trigger the consent modal and transition preference before re-submitting
-    // the vote with a resolved preference).
+    // build + share. "not_allowed" or "prompt" → skip (the UI will trigger
+    // the consent modal and transition preference before re-submitting the
+    // vote with a resolved preference).
+    //
+    // Phase I.2 Task 11 (PF.1): `shareFeedbackBundle` routes to the
+    // `AOA_FEEDBACK_ENDPOINT` POST when configured, else writes locally.
+    // Transient transmission failures fall back to local so the vote is
+    // never lost.
     getFeedbackSharingPreference: async () =>
       (await settings.getGeneral()).feedbackDataSharingPreference,
     onVoteShared: async (voteId) => {
       const now = new Date();
       const bundle = await buildBundle(db, { voteId, now });
-      await writeBundleLocally({
+      await shareFeedbackBundle({
         id: bundle.feedbackExportId,
         exportId: bundle.exportId,
         createdAt: now,

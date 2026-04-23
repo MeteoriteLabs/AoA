@@ -2,11 +2,13 @@ import { gunzipSync } from "node:zlib";
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   FEEDBACK_LOCAL_EXPORT_DIR_NAME,
+  shareFeedbackBundle,
   writeBundleLocally,
 } from "../services/feedback-share-client.js";
+import { ENDPOINT_ENV } from "../services/feedback-transmission.js";
 import { stableStringify } from "../services/feedback-redaction.js";
 
 // The share client writes under HOME by default. Tests isolate HOME to a tmp
@@ -131,5 +133,77 @@ describe("feedbackShareClient — writeBundleLocally", () => {
     const aBytes = readFileSync(aResult.path);
     const bBytes = readFileSync(bResult.path);
     expect(aBytes.equals(bBytes)).toBe(true);
+  });
+});
+
+// ── shareFeedbackBundle ─────────────────────────────────────────────────────
+// Phase I.2 Task 11 (PF.1) umbrella: env-gated HTTP transmission with local
+// fallback. The bundle tests above cover the pure-local path; these cases
+// cover the transmission branch + fallback semantics.
+
+describe("feedbackShareClient — shareFeedbackBundle", () => {
+  afterEach(() => {
+    delete process.env[ENDPOINT_ENV];
+    vi.unstubAllGlobals();
+  });
+
+  it("falls through to local write when AOA_FEEDBACK_ENDPOINT is unset", async () => {
+    const bundle = makeBundle();
+    const result = await shareFeedbackBundle(bundle);
+
+    expect(result.delivered).toBe("local");
+    if (result.delivered === "local") {
+      expect(existsSync(result.path)).toBe(true);
+      expect(result.size).toBeGreaterThan(0);
+      expect(result.transmissionFailure).toBeUndefined();
+    }
+  });
+
+  it("transmits without writing locally on a 2xx response", async () => {
+    process.env[ENDPOINT_ENV] = "https://example.com/feedback";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const bundle = makeBundle();
+    const result = await shareFeedbackBundle(bundle);
+
+    expect(result.delivered).toBe("transmitted");
+    if (result.delivered === "transmitted") {
+      expect(result.endpoint).toBe("https://example.com/feedback");
+      expect(result.status).toBe(200);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Nothing should have been written under tempHome.
+    const dir = path.join(tempHome, FEEDBACK_LOCAL_EXPORT_DIR_NAME);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it("falls back to local write when transmission returns non-2xx, annotates failure", async () => {
+    process.env[ENDPOINT_ENV] = "https://example.com";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 503 }));
+
+    const bundle = makeBundle();
+    const result = await shareFeedbackBundle(bundle);
+
+    expect(result.delivered).toBe("local");
+    if (result.delivered === "local") {
+      expect(existsSync(result.path)).toBe(true);
+      expect(result.transmissionFailure?.status).toBe(503);
+    }
+  });
+
+  it("falls back to local write when transmission throws (network failure)", async () => {
+    process.env[ENDPOINT_ENV] = "https://example.com";
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+
+    const bundle = makeBundle();
+    const result = await shareFeedbackBundle(bundle);
+
+    expect(result.delivered).toBe("local");
+    if (result.delivered === "local") {
+      expect(existsSync(result.path)).toBe(true);
+      expect(result.transmissionFailure?.error).toContain("ECONNREFUSED");
+    }
   });
 });

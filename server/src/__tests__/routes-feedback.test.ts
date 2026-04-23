@@ -20,6 +20,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockListExports = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 const mockBuildBundle = vi.hoisted(() => vi.fn());
 const mockWriteBundleLocally = vi.hoisted(() => vi.fn());
+const mockShareFeedbackBundle = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/feedback-votes.js", () => ({
   feedbackVotesService: () => mockVotesService,
@@ -40,6 +41,7 @@ vi.mock("../services/feedback-bundles.js", () => ({
 
 vi.mock("../services/feedback-share-client.js", () => ({
   writeBundleLocally: mockWriteBundleLocally,
+  shareFeedbackBundle: mockShareFeedbackBundle,
   FEEDBACK_LOCAL_EXPORT_DIR_NAME: ".aoa/feedback-exports",
 }));
 
