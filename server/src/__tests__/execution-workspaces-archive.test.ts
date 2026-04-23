@@ -296,4 +296,30 @@ describe("PATCH /api/execution-workspaces/:id — archive flow", () => {
     // readiness check is skipped for already-archived workspaces
     expect(mockSvc.getCloseReadiness).not.toHaveBeenCalled();
   });
+
+  it("preserves existing metadata.config when PATCH body has metadata without config key", async () => {
+    const existing = buildExistingWorkspace({
+      metadata: {
+        config: { provisionCommand: "pnpm install" },
+        other: "original",
+      },
+    });
+    mockSvc.getById.mockResolvedValue(existing);
+    mockSvc.update.mockResolvedValue({ ...existing, status: "idle" });
+
+    const res = await request(createApp())
+      .patch(`/api/execution-workspaces/ws-1`)
+      .send({ metadata: { other: "updated" } });
+
+    expect(res.status).toBe(200);
+    expect(mockSvc.update).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          config: { provisionCommand: "pnpm install" },
+          other: "updated",
+        }),
+      }),
+    );
+  });
 });

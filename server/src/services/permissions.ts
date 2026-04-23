@@ -83,6 +83,27 @@ export function permissionService(db: Db) {
   }
 
   /**
+   * Get all team_lead rows for a user within a company, including the
+   * company-wide scope (where projectId is null). Differs from
+   * {@link getTeamLeadDepartments}, which filters out null-projectId rows.
+   */
+  async function getTeamLeadScope(
+    companyId: string,
+    userId: string,
+  ): Promise<{ projectId: string | null }[]> {
+    return db
+      .select({ projectId: userRoles.projectId })
+      .from(userRoles)
+      .where(
+        and(
+          eq(userRoles.companyId, companyId),
+          eq(userRoles.userId, userId),
+          eq(userRoles.role, "team_lead"),
+        ),
+      );
+  }
+
+  /**
    * Memory-specific RBAC:
    * - Founder: full CRUD on all layers, all scopes
    * - Team lead: can create/approve domain and active_context items for THEIR department.
@@ -324,6 +345,7 @@ export function permissionService(db: Db) {
     isFounder,
     getTeamLeadDepartments,
     isTeamLeadForDepartment,
+    getTeamLeadScope,
     canAccessMemory,
     canApproveMemory,
     canAccessEntity,

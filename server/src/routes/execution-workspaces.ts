@@ -93,6 +93,12 @@ export function executionWorkspaceRoutes(db: Db) {
         (req.body.metadata as Record<string, unknown> | null | undefined) ?? existing.metadata,
         configPatch as Record<string, unknown>,
       );
+    } else if (req.body.metadata !== undefined) {
+      const existingConfig = (existing.metadata as Record<string, unknown> | null)?.config;
+      patch.metadata = {
+        ...(req.body.metadata as Record<string, unknown>),
+        ...(existingConfig !== undefined ? { config: existingConfig } : {}),
+      };
     }
     let workspace = existing;
     let cleanupWarnings: string[] = [];

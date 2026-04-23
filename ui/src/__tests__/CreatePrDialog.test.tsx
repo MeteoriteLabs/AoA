@@ -239,4 +239,39 @@ describe("CreatePrDialog", () => {
     renderDialog({ open: false });
     expect(screen.queryByTestId("create-pr-dialog")).not.toBeInTheDocument();
   });
+
+  it("shows 'PR already created' banner + link when workspace.metadata.pr exists, hides form", async () => {
+    mockGetIssue.mockResolvedValue({ id: "issue-1", title: "T", description: "" });
+    const workspaceWithPr = makeWorkspace({
+      metadata: {
+        pr: {
+          url: "https://github.com/acme/repo/pull/42",
+          number: 42,
+          state: "open",
+        },
+      },
+    });
+
+    renderDialog({ workspace: workspaceWithPr });
+
+    const banner = await screen.findByTestId("pr-already-exists");
+    expect(banner).toBeInTheDocument();
+    const link = screen.getByTestId("pr-already-exists-link");
+    expect(link).toHaveAttribute("href", "https://github.com/acme/repo/pull/42");
+    expect(link).toHaveTextContent(/View PR #42/i);
+    // Form is not rendered
+    expect(screen.queryByTestId("pr-title-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("pr-submit")).not.toBeInTheDocument();
+  });
+
+  it("shows the create form (no banner) when workspace has no existing PR", async () => {
+    mockGetIssue.mockResolvedValue({ id: "issue-1", title: "T", description: "" });
+
+    renderDialog();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("pr-title-input")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("pr-already-exists")).not.toBeInTheDocument();
+  });
 });

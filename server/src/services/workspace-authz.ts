@@ -1,8 +1,7 @@
-import { and, eq } from "drizzle-orm";
 import type { Request } from "express";
 import type { Db } from "@armyofagents/db";
-import { userRoles } from "@armyofagents/db";
 import { forbidden, unauthorized } from "../errors.js";
+import { permissionService } from "./permissions.js";
 
 /**
  * Decision returned by {@link checkCanControlWorkspace}. Either the caller is
@@ -63,10 +62,8 @@ export async function checkCanControlWorkspace(
   if (!userId) {
     return { allowed: false, status: 401, message: "Authentication required" };
   }
-  const roles = await db
-    .select({ role: userRoles.role, projectId: userRoles.projectId })
-    .from(userRoles)
-    .where(and(eq(userRoles.companyId, workspace.companyId), eq(userRoles.userId, userId)));
+  const permSvc = permissionService(db);
+  const roles = await permSvc.getUserRoles(workspace.companyId, userId);
 
   if (roles.length === 0) {
     return { allowed: false, status: 403, message: DENY_MESSAGE };

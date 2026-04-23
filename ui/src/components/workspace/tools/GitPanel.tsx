@@ -37,7 +37,16 @@ export function GitPanel({ workspace, issueId }: GitPanelProps) {
     }
   };
 
-  const canCreatePr = Boolean(issueId);
+  const hasRepoUrl = Boolean(workspace.repoUrl);
+  const hasBranchName = Boolean(workspace.branchName);
+  const canCreatePr = Boolean(issueId) && hasRepoUrl && hasBranchName;
+  const disabledReason = !issueId
+    ? "Link a task to this workspace to create a PR"
+    : !hasRepoUrl
+      ? "Configure repo URL first"
+      : !hasBranchName
+        ? "Workspace branch not yet provisioned"
+        : null;
 
   return (
     <div className="space-y-2 text-sm" data-testid="git-panel">
@@ -140,11 +149,7 @@ export function GitPanel({ workspace, issueId }: GitPanelProps) {
           variant="outline"
           className="w-full mt-1"
           disabled={!canCreatePr}
-          title={
-            canCreatePr
-              ? "Open pull request on GitHub"
-              : "Link a task to this workspace to create a PR"
-          }
+          title={disabledReason ?? "Open pull request on GitHub"}
           onClick={() => setCreatePrOpen(true)}
           data-testid="create-pr-btn"
         >

@@ -18,6 +18,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import type {
   ExecutionWorkspace,
   GitHubPrCreateResponse,
+  GitHubPrMetadata,
 } from "@armyofagents/shared";
 import { issuesApi } from "../../api/issues";
 import { githubIntegrationApi } from "../../api/github-integration";
@@ -54,6 +55,12 @@ export function CreatePrDialog({
 }: Props) {
   const qc = useQueryClient();
   const { pushToast } = useToast();
+
+  const rawPr = (workspace.metadata as Record<string, unknown> | null)?.pr;
+  const existingPr =
+    typeof rawPr === "object" && rawPr !== null && "url" in rawPr && "number" in rawPr && "state" in rawPr
+      ? (rawPr as GitHubPrMetadata)
+      : null;
 
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -108,7 +115,7 @@ export function CreatePrDialog({
       : null;
 
   const canSubmit =
-    title.trim().length > 0 && base.trim().length > 0 && !mutation.isPending;
+    title.trim().length > 0 && base.trim().length > 0 && !mutation.isPending && !existingPr;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -131,6 +138,41 @@ export function CreatePrDialog({
             </DialogDescription>
           </DialogHeader>
 
+          {existingPr ? (
+            <div className="space-y-4">
+              <div
+                className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+                data-testid="pr-already-exists"
+              >
+                <AlertCircle
+                  className="mt-0.5 h-4 w-4 shrink-0 text-amber-500"
+                  aria-hidden="true"
+                />
+                <div className="flex-1 space-y-1">
+                  <div className="font-medium">PR already created</div>
+                  <a
+                    href={existingPr.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-foreground hover:underline"
+                    data-testid="pr-already-exists-link"
+                  >
+                    View PR #{existingPr.number}
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                  </a>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => onOpenChange(false)}
+                >
+                  Close
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Title */}
             <div className="space-y-1.5">
@@ -292,6 +334,7 @@ export function CreatePrDialog({
               </Button>
             </DialogFooter>
           </form>
+          )}
         </DialogContent>
       )}
     </Dialog>
