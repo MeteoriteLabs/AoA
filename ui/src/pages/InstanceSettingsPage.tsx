@@ -22,6 +22,7 @@ const TABS = [
   { value: "heartbeats", label: "Heartbeats" },
   { value: "experimental", label: "Experimental" },
   { value: "plugins", label: "Plugins" },
+  { value: "access", label: "Access" },
 ];
 
 export function InstanceSettingsPage() {
@@ -33,13 +34,17 @@ export function InstanceSettingsPage() {
 
   const handleTabChange = useCallback(
     (value: string) => {
+      if (value === "access") {
+        navigate("/instance/access");
+        return;
+      }
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
         next.set("tab", value);
         return next;
       });
     },
-    [setSearchParams],
+    [navigate, setSearchParams],
   );
 
   // ── General settings ──────────────────────────────────────────────────────

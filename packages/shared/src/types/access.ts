@@ -1,5 +1,6 @@
 import type {
   AgentAdapterType,
+  CompanyStatus,
   InstanceUserRole,
   InviteJoinType,
   InviteType,
@@ -78,4 +79,27 @@ export interface InstanceUserRoleGrant {
   role: InstanceUserRole;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface AccessUserProfile {
+  id: string;
+  email: string | null;
+  name: string | null;
+  image: string | null;
+}
+
+export interface AdminUserDirectoryEntry extends AccessUserProfile {
+  isInstanceAdmin: boolean;
+  activeCompanyMembershipCount: number;
+}
+
+export interface UserCompanyAccessEntry extends CompanyMembership {
+  principalType: "user";
+  companyName: string | null;
+  companyStatus: CompanyStatus | null;
+}
+
+export interface UserCompanyAccessResponse {
+  user: (AccessUserProfile & { isInstanceAdmin: boolean }) | null;
+  companyAccess: UserCompanyAccessEntry[];
 }

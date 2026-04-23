@@ -4,11 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
-import { and, eq, isNull, desc } from "drizzle-orm";
+import { and, eq, inArray, isNull, desc } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   agentApiKeys,
   authUsers,
+  companies,
+  companyMemberships,
   invites,
   joinRequests
 } from "@armyofagents/db";
@@ -17,6 +19,7 @@ import {
   claimJoinRequestApiKeySchema,
   createCompanyInviteSchema,
   listJoinRequestsQuerySchema,
+  searchAdminUsersQuerySchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS
@@ -1500,6 +1503,80 @@ async function probeInviteResolutionTarget(
   }
 }
 
+function toUserProfile(
+  user:
+    | {
+      id: string;
+      email: string | null;
+      name: string | null;
+      image?: string | null;
+    }
+    | null
+    | undefined,
+) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    email: user.email ?? null,
+    name: user.name ?? null,
+    image: user.image ?? null,
+  };
+}
+
+async function loadUserCompanyAccessResponse(
+  db: Db,
+  access: ReturnType<typeof accessService>,
+  userId: string,
+) {
+  const [memberships, user, isInstanceAdmin] = await Promise.all([
+    access.listUserCompanyAccess(userId),
+    db
+      .select({
+        id: authUsers.id,
+        email: authUsers.email,
+        name: authUsers.name,
+        image: authUsers.image,
+      })
+      .from(authUsers)
+      .where(eq(authUsers.id, userId))
+      .then((rows) => rows[0] ?? null),
+    access.isInstanceAdmin(userId),
+  ]);
+  const companyIds = [...new Set(memberships.map((membership) => membership.companyId))];
+  const companyRows = companyIds.length
+    ? await db
+        .select({
+          id: companies.id,
+          name: companies.name,
+          status: companies.status,
+        })
+        .from(companies)
+        .where(inArray(companies.id, companyIds))
+    : [];
+  const companyMap = new Map(companyRows.map((company) => [company.id, company]));
+
+  return {
+    user: user
+      ? {
+          id: user.id,
+          email: user.email ?? null,
+          name: user.name ?? null,
+          image: user.image ?? null,
+          isInstanceAdmin,
+        }
+      : null,
+    companyAccess: memberships.map((membership) => {
+      const company = companyMap.get(membership.companyId) ?? null;
+      return {
+        ...membership,
+        principalType: "user" as const,
+        companyName: company?.name ?? null,
+        companyStatus: company?.status ?? null,
+      };
+    }),
+  };
+}
+
 export function accessRoutes(
   db: Db,
   opts: {
@@ -2593,6 +2670,66 @@ export function accessRoutes(
     }
   );
 
+  router.get("/admin/users", async (req, res) => {
+    await assertInstanceAdmin(req);
+    const query = searchAdminUsersQuerySchema.parse(req.query);
+    const needle = query.query.trim().toLowerCase();
+    const users = await db
+      .select({
+        id: authUsers.id,
+        email: authUsers.email,
+        name: authUsers.name,
+        image: authUsers.image,
+      })
+      .from(authUsers)
+      .orderBy(desc(authUsers.updatedAt));
+    const filteredUsers = needle
+      ? users.filter((user) =>
+          [user.name, user.email]
+            .filter((value): value is string => Boolean(value))
+            .some((value) => value.toLowerCase().includes(needle)),
+        )
+      : users;
+    const userIds = filteredUsers.slice(0, 50).map((user) => user.id);
+    const memberships = userIds.length
+      ? await db
+          .select({
+            principalId: companyMemberships.principalId,
+          })
+          .from(companyMemberships)
+          .where(
+            and(
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.status, "active"),
+              inArray(companyMemberships.principalId, userIds),
+            ),
+          )
+      : [];
+    const membershipCountByUserId = new Map<string, number>();
+    for (const membership of memberships) {
+      membershipCountByUserId.set(
+        membership.principalId,
+        (membershipCountByUserId.get(membership.principalId) ?? 0) + 1,
+      );
+    }
+    const adminIds = new Set(
+      await Promise.all(
+        userIds.map(async (userId) =>
+          (await access.isInstanceAdmin(userId)) ? userId : null,
+        ),
+      ).then((values) => values.filter((value): value is string => Boolean(value))),
+    );
+
+    res.json(
+      filteredUsers.slice(0, 50).map((user) => ({
+        ...toUserProfile(user)!,
+        isInstanceAdmin: adminIds.has(user.id),
+        activeCompanyMembershipCount:
+          membershipCountByUserId.get(user.id) ?? 0,
+      })),
+    );
+  });
+
   router.post(
     "/admin/users/:userId/demote-instance-admin",
     async (req, res) => {
@@ -2607,8 +2744,7 @@ export function accessRoutes(
   router.get("/admin/users/:userId/company-access", async (req, res) => {
     await assertInstanceAdmin(req);
     const userId = req.params.userId as string;
-    const memberships = await access.listUserCompanyAccess(userId);
-    res.json(memberships);
+    res.json(await loadUserCompanyAccessResponse(db, access, userId));
   });
 
   router.put(
@@ -2617,11 +2753,11 @@ export function accessRoutes(
     async (req, res) => {
       await assertInstanceAdmin(req);
       const userId = req.params.userId as string;
-      const memberships = await access.setUserCompanyAccess(
+      await access.setUserCompanyAccess(
         userId,
         req.body.companyIds ?? []
       );
-      res.json(memberships);
+      res.json(await loadUserCompanyAccessResponse(db, access, userId));
     }
   );
 

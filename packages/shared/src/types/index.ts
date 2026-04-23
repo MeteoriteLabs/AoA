@@ -67,6 +67,10 @@ export type {
   Invite,
   JoinRequest,
   InstanceUserRoleGrant,
+  AccessUserProfile,
+  AdminUserDirectoryEntry,
+  UserCompanyAccessEntry,
+  UserCompanyAccessResponse,
 } from "./access.js";
 export type { TaskDependency } from "./task-dependency.js";
 export type { Artifact, ArtifactVersion, ArtifactWithVersions } from "./artifact.js";

@@ -210,6 +210,7 @@ export {
   claimJoinRequestApiKeySchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
+  searchAdminUsersQuerySchema,
   boardCliAuthAccessLevelSchema,
   createCliAuthChallengeSchema,
   resolveCliAuthChallengeSchema,
@@ -219,6 +220,7 @@ export {
   type ClaimJoinRequestApiKey,
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
+  type SearchAdminUsersQuery,
 } from "./access.js";
 
 export {

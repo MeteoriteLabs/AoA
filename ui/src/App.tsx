@@ -9,6 +9,7 @@ import { healthApi } from "./api/health";
 import { Dashboard } from "./pages/Dashboard";
 import { Lobby } from "./pages/Lobby";
 import { InstanceSettingsPage } from "./pages/InstanceSettingsPage";
+import { InstanceAccessPage } from "./pages/InstanceAccessPage";
 import { Companies } from "./pages/Companies";
 import { Agents } from "./pages/Agents";
 import { AgentDetail } from "./pages/AgentDetail";
@@ -268,6 +269,7 @@ export function App() {
           </Route>
           <Route path="instance/settings" element={<InstanceSettingsPage />} />
           <Route path="instance/settings/plugins/:pluginId" element={<PluginSettings />} />
+          <Route path="instance/access" element={<InstanceAccessPage />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
