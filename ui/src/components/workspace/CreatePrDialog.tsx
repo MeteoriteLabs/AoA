@@ -101,6 +101,9 @@ export function CreatePrDialog({
       qc.invalidateQueries({
         queryKey: queryKeys.executionWorkspaces.detail(workspace.id),
       });
+      qc.invalidateQueries({
+        queryKey: queryKeys.executionWorkspaces.list(workspace.companyId),
+      });
       qc.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
       qc.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId) });
       onCreated?.(pr);

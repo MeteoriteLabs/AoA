@@ -732,6 +732,12 @@ export {
   type CreateInboxDismissal,
 } from "./validators/index.js";
 
+export {
+  GITHUB_PAT_SECRET_NAME,
+  GITHUB_PAT_ACTIVITY_KINDS,
+  type GitHubPatActivityKind,
+} from "./constants/github.js";
+
 export { API_PREFIX, API } from "./api.js";
 export {
   BUILTIN_ROUTINE_VARIABLE_NAMES,

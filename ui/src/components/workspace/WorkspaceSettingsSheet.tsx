@@ -179,13 +179,27 @@ export function WorkspaceSettingsSheet({ workspaceId, companyId, open, onOpenCha
   const [validationError, setValidationError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
 
+  const patchString = useMemo(() => {
+    if (!formState || !initialState) return "{}";
+    try {
+      return JSON.stringify(buildWorkspacePatch(initialState, formState));
+    } catch {
+      return "{}";
+    }
+  }, [formState, initialState]);
+  const isDirty = patchString !== "{}";
+
+  // Sync query data → local form state, but skip when the user has unsaved
+  // edits: a background refetch (window focus, polling, mutation invalidation)
+  // must not clobber in-progress changes.
   useEffect(() => {
     if (!workspace) return;
+    if (isDirty) return;
     const next = formStateFromWorkspace(workspace);
     setFormState(next);
     setInitialState(next);
     setValidationError(null);
-  }, [workspace]);
+  }, [workspace, isDirty]);
 
   const operationsQuery = useQuery({
     queryKey: [...queryKeys.executionWorkspaces.detail(workspaceId), "workspace-operations"] as const,
@@ -223,16 +237,6 @@ export function WorkspaceSettingsSheet({ workspaceId, companyId, open, onOpenCha
       if (err instanceof ApiError && err.status === 403) setForbidden(true);
     },
   });
-
-  const patchString = useMemo(() => {
-    if (!formState || !initialState) return "{}";
-    try {
-      return JSON.stringify(buildWorkspacePatch(initialState, formState));
-    } catch {
-      return "{}";
-    }
-  }, [formState, initialState]);
-  const isDirty = patchString !== "{}";
 
   const handleSave = () => {
     if (!formState || !initialState) return;

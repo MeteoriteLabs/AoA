@@ -49,7 +49,8 @@ vi.mock("../services/execution-workspaces.js", () => ({
 }));
 
 import { errorHandler } from "../middleware/index.js";
-import { GITHUB_PAT_SECRET_NAME, githubRoutes } from "../routes/github.js";
+import { GITHUB_PAT_ACTIVITY_KINDS, GITHUB_PAT_SECRET_NAME } from "@armyofagents/shared";
+import { githubRoutes } from "../routes/github.js";
 import {
   GitHubPrError,
   createPullRequest,
@@ -333,7 +334,7 @@ describe("POST /issues/:issueId/github-pr", () => {
       expect.anything(),
       expect.objectContaining({
         companyId: "company-1",
-        action: "github.pr.created",
+        action: GITHUB_PAT_ACTIVITY_KINDS.PR_CREATED,
         entityType: "issue",
         entityId: "issue-1",
         details: expect.objectContaining({
@@ -472,7 +473,7 @@ describe("Task 11 follow-up: DELETE /companies/:companyId/github/pat", () => {
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        action: "github.pat.disconnected",
+        action: GITHUB_PAT_ACTIVITY_KINDS.DISCONNECTED,
         entityType: "secret",
         entityId: "uuid-row-123",
         details: expect.objectContaining({ githubUser: "octocat" }),

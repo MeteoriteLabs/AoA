@@ -88,7 +88,7 @@ function renderDialog(props: Partial<React.ComponentProps<typeof CreatePrDialog>
     />,
     { wrapper: Wrapper },
   );
-  return { ...result, onOpenChange };
+  return { ...result, onOpenChange, queryClient };
 }
 
 describe("CreatePrDialog", () => {
@@ -273,5 +273,34 @@ describe("CreatePrDialog", () => {
       expect(screen.getByTestId("pr-title-input")).toBeInTheDocument(),
     );
     expect(screen.queryByTestId("pr-already-exists")).not.toBeInTheDocument();
+  });
+
+  it("invalidates both executionWorkspaces.detail and .list query keys on PR create success", async () => {
+    mockGetIssue.mockResolvedValue({ id: "issue-1", title: "T", description: "B" });
+    mockCreatePR.mockResolvedValue({
+      url: "https://github.com/acme/repo/pull/42",
+      number: 42,
+      state: "open",
+      draft: false,
+    });
+
+    const user = userEvent.setup();
+    const { queryClient } = renderDialog();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("pr-title-input")).toHaveValue("T"),
+    );
+    await user.click(screen.getByTestId("pr-submit"));
+
+    await waitFor(() => expect(mockCreatePR).toHaveBeenCalled());
+
+    const invalidatedKeys = invalidateSpy.mock.calls.map(
+      (call) => (call[0] as { queryKey: readonly unknown[] }).queryKey,
+    );
+    // Workspace detail (existing behavior)
+    expect(invalidatedKeys).toContainEqual(["executionWorkspaces", "detail", "ws-1"]);
+    // Workspace list for the company (new in Task 15 — prevents stale /workspaces page)
+    expect(invalidatedKeys).toContainEqual(["executionWorkspaces", "co-1"]);
   });
 });

@@ -21,7 +21,8 @@ vi.mock("../services/index.js", () => ({
 }));
 
 import { errorHandler } from "../middleware/index.js";
-import { githubRoutes, GITHUB_PAT_SECRET_NAME } from "../routes/github.js";
+import { GITHUB_PAT_ACTIVITY_KINDS, GITHUB_PAT_SECRET_NAME } from "@armyofagents/shared";
+import { githubRoutes } from "../routes/github.js";
 
 function createApp(actor: any) {
   const app = express();
@@ -64,11 +65,11 @@ describe("github integration routes", () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ configured: true, githubUser: "octocat" });
       expect(mockOctokit.users.getAuthenticated).toHaveBeenCalledTimes(1);
-      expect(mockSvc.delete).toHaveBeenCalledWith("company-1", "github_pat");
+      expect(mockSvc.delete).toHaveBeenCalledWith("company-1", GITHUB_PAT_SECRET_NAME);
       expect(mockSvc.create).toHaveBeenCalledWith(
         "company-1",
         expect.objectContaining({
-          name: "github_pat",
+          name: GITHUB_PAT_SECRET_NAME,
           provider: "local_encrypted",
           value: "ghp_validtoken",
           externalRef: "octocat",
@@ -79,7 +80,7 @@ describe("github integration routes", () => {
         expect.anything(),
         expect.objectContaining({
           companyId: "company-1",
-          action: "github.pat.connected",
+          action: GITHUB_PAT_ACTIVITY_KINDS.CONNECTED,
           entityType: "secret",
           entityId: "secret-1",
           details: { githubUser: "octocat" },
@@ -164,7 +165,7 @@ describe("github integration routes", () => {
         expect.anything(),
         expect.objectContaining({
           companyId: "company-1",
-          action: "github.pat.disconnected",
+          action: GITHUB_PAT_ACTIVITY_KINDS.DISCONNECTED,
           entityType: "secret",
           entityId: "secret-row-uuid",
           details: { githubUser: "octocat" },

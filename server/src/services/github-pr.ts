@@ -1,14 +1,7 @@
 import { Octokit } from "@octokit/rest";
 import type { Db } from "@armyofagents/db";
-import type { GitHubPrCreateResponse } from "@armyofagents/shared";
+import { GITHUB_PAT_SECRET_NAME, type GitHubPrCreateResponse } from "@armyofagents/shared";
 import { secretService } from "./secrets.js";
-
-/**
- * The canonical secret name used to store a company's GitHub PAT.
- * Defined here (service layer) rather than in the routes layer to avoid a
- * routes→service→routes import cycle. The routes module re-exports this.
- */
-export const GITHUB_PAT_SECRET_NAME = "github_pat";
 
 /**
  * Error thrown by the GitHub PR service when we want to surface a specific

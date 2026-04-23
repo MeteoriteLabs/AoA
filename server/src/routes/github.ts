@@ -2,20 +2,16 @@ import { Router } from "express";
 import { z } from "zod";
 import { Octokit } from "@octokit/rest";
 import type { Db } from "@armyofagents/db";
-import type { GitHubPrMetadata } from "@armyofagents/shared";
+import {
+  GITHUB_PAT_ACTIVITY_KINDS,
+  GITHUB_PAT_SECRET_NAME,
+  type GitHubPrMetadata,
+} from "@armyofagents/shared";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { issueService } from "../services/issues.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
-import {
-  createPullRequest,
-  GitHubPrError,
-  GITHUB_PAT_SECRET_NAME,
-} from "../services/github-pr.js";
-
-// Re-export so callers (tests, UI-adjacent server code) can keep importing
-// the canonical secret name from the routes module.
-export { GITHUB_PAT_SECRET_NAME };
+import { createPullRequest, GitHubPrError } from "../services/github-pr.js";
 const setPatSchema = z.object({ pat: z.string().min(1) });
 const createPrBodySchema = z.object({
   workspaceId: z.string().uuid(),
@@ -73,7 +69,7 @@ export function githubRoutes(db: Db) {
       companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
-      action: "github.pat.connected",
+      action: GITHUB_PAT_ACTIVITY_KINDS.CONNECTED,
       entityType: "secret",
       entityId: created.id,
       details: { githubUser },
@@ -99,7 +95,7 @@ export function githubRoutes(db: Db) {
       companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
-      action: "github.pat.disconnected",
+      action: GITHUB_PAT_ACTIVITY_KINDS.DISCONNECTED,
       entityType: "secret",
       entityId: existing.id,
       details: { githubUser: existing.externalRef ?? null },
@@ -204,7 +200,7 @@ export function githubRoutes(db: Db) {
         companyId: issue.companyId,
         actorType: "user",
         actorId: req.actor.userId ?? "board",
-        action: "github.pr.created",
+        action: GITHUB_PAT_ACTIVITY_KINDS.PR_CREATED,
         entityType: "issue",
         entityId: issue.id,
         details: {

@@ -320,4 +320,28 @@ describe("WorkspaceSettingsSheet", () => {
       );
     });
   });
+
+  it("background refetch does not clobber in-progress edits (dirty-flag guard)", async () => {
+    const user = userEvent.setup();
+    mockGet.mockResolvedValue(makeWorkspace({ name: "original" }));
+
+    const { queryClient } = renderSheet();
+    const nameInput = (await screen.findByTestId("workspace-settings-field-name")) as HTMLInputElement;
+
+    await user.clear(nameInput);
+    await user.type(nameInput, "user-edit-in-progress");
+    expect(nameInput.value).toBe("user-edit-in-progress");
+
+    // Simulate a background refetch (window focus / polling / mutation invalidation)
+    await queryClient.invalidateQueries({
+      queryKey: ["executionWorkspaces", "detail", "ws-1"],
+    });
+
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+
+    // Dirty-flag guard: the user's in-progress edit must survive the refetch.
+    expect(
+      (screen.getByTestId("workspace-settings-field-name") as HTMLInputElement).value,
+    ).toBe("user-edit-in-progress");
+  });
 });
