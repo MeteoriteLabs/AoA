@@ -275,7 +275,7 @@ function buildSseBody(input: {
       input: openResponsesInput,
       metadata: {
         ...toStringRecord(state.payloadTemplate.metadata),
-        ...state.paperclipEnv,
+        ...state.aoaEnv,
         paperclip_session_key: state.sessionKey,
       },
     }
@@ -288,7 +288,7 @@ function buildSseBody(input: {
         ...state.wakePayload,
         sessionKey: state.sessionKey,
         streamTransport: "sse",
-        env: state.paperclipEnv,
+        env: state.aoaEnv,
         context,
       },
     };

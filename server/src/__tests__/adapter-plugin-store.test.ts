@@ -15,7 +15,7 @@ import {
 } from "../services/adapter-plugin-store.js";
 
 describe("adapter-plugin-store", () => {
-  const originalPaperclipHome = process.env.AOA_HOME;
+  const originalAoaHome = process.env.AOA_HOME;
   const cleanupDirs = new Set<string>();
 
   async function makeHome(): Promise<string> {
@@ -29,8 +29,8 @@ describe("adapter-plugin-store", () => {
   });
 
   afterEach(async () => {
-    if (originalPaperclipHome === undefined) delete process.env.AOA_HOME;
-    else process.env.AOA_HOME = originalPaperclipHome;
+    if (originalAoaHome === undefined) delete process.env.AOA_HOME;
+    else process.env.AOA_HOME = originalAoaHome;
     __resetAdapterPluginStoreCaches();
     await Promise.all([...cleanupDirs].map(async (dir) => {
       await fs.rm(dir, { recursive: true, force: true });

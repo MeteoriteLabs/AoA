@@ -222,7 +222,7 @@ export interface PaperclipPluginManifestV1 {
    * Legacy alias for `minimumHostVersion`.
    * Kept for backwards compatibility with existing manifests and docs.
    */
-  minimumPaperclipVersion?: PluginMinimumHostVersion;
+  minimumAoaVersion?: PluginMinimumHostVersion;
   /** Capabilities this plugin requires from the host. Enforced at runtime. */
   capabilities: PluginCapability[];
   /** Entrypoint paths relative to the package root. */

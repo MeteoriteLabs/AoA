@@ -8,7 +8,7 @@ import { stableStringify } from "./feedback-redaction.js";
 const gzipAsync = promisify(gzip);
 
 // AoA's home-dir convention is `~/.aoa/` (see cli/src/config/home.ts's
-// `resolvePaperclipHomeDir` + docs/deploy/*). F.3 initially used `~/.aoa/`; F.4
+// `resolveAoaHomeDir` + docs/deploy/*). F.3 initially used `~/.aoa/`; F.4
 // migrates this to `~/.aoa/feedback-exports/` for convention parity so
 // operators don't have to know a second home dir for a sibling subsystem.
 export const FEEDBACK_LOCAL_EXPORT_DIR_NAME = path.join(".aoa", "feedback-exports");

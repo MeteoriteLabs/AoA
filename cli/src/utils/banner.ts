@@ -11,7 +11,7 @@ const AOA_ART = [
 
 const TAGLINE = "Open-source orchestration for zero-human companies";
 
-export function printPaperclipCliBanner(): void {
+export function printAoaCliBanner(): void {
   const lines = [
     "",
     ...AOA_ART.map((line) => pc.cyan(line)),

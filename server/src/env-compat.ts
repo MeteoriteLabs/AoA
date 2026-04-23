@@ -5,7 +5,7 @@
 // have updated.
 //
 // Import this module before any code that reads `process.env.AOA_*`.
-function mirrorPaperclipEnv(): void {
+function mirrorAoaEnv(): void {
   const prefix = "PAPERCLIP_";
   for (const key of Object.keys(process.env)) {
     if (!key.startsWith(prefix)) continue;
@@ -16,7 +16,7 @@ function mirrorPaperclipEnv(): void {
   }
 }
 
-mirrorPaperclipEnv();
+mirrorAoaEnv();
 
 export function readAoaEnv(key: string): string | undefined {
   const aoa = process.env[`AOA_${key}`];

@@ -2,7 +2,7 @@ import pc from "picocolors";
 import type { Command } from "commander";
 import { readConfig } from "../../config/store.js";
 import { readContext, resolveProfile, type ClientContextProfile } from "../../client/context.js";
-import { ApiRequestError, PaperclipApiClient } from "../../client/http.js";
+import { ApiRequestError, AoaApiClient } from "../../client/http.js";
 
 export interface BaseClientOptions {
   config?: string;
@@ -16,7 +16,7 @@ export interface BaseClientOptions {
 }
 
 export interface ResolvedClientContext {
-  api: PaperclipApiClient;
+  api: AoaApiClient;
   companyId?: string;
   profileName: string;
   profile: ClientContextProfile;
@@ -69,7 +69,7 @@ export function resolveCommandContext(
     );
   }
 
-  const api = new PaperclipApiClient({ apiBase, apiKey });
+  const api = new AoaApiClient({ apiBase, apiKey });
   return {
     api,
     companyId,

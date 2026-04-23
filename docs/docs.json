@@ -16,7 +16,7 @@
   "topbarLinks": [
     {
       "name": "GitHub",
-      "url": "https://github.com/paperclip-ai/paperclip"
+      "url": "https://github.com/meteoritelabs/aoa"
     }
   ],
   "navigation": {
@@ -137,6 +137,6 @@
     ]
   },
   "footerSocials": {
-    "github": "https://github.com/paperclip-ai/paperclip"
+    "github": "https://github.com/meteoritelabs/aoa"
   }
 }

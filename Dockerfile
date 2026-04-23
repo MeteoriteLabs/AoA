@@ -40,6 +40,11 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
+
+LABEL org.opencontainers.image.title="AoA"
+LABEL org.opencontainers.image.description="Army of Agents — Hybrid Workforce OS"
+LABEL org.opencontainers.image.source="https://github.com/meteoritelabs/aoa"
+
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \

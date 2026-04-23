@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { buildPaperclipEnv } from "../adapters/utils.js";
+import { buildAoaEnv } from "../adapters/utils.js";
 
 const ORIGINAL_AOA_API_URL = process.env.AOA_API_URL;
 const ORIGINAL_AOA_LISTEN_HOST = process.env.AOA_LISTEN_HOST;
@@ -24,13 +24,13 @@ afterEach(() => {
   else process.env.PORT = ORIGINAL_PORT;
 });
 
-describe("buildPaperclipEnv", () => {
+describe("buildAoaEnv", () => {
   it("prefers an explicit AOA_API_URL", () => {
     process.env.AOA_API_URL = "http://localhost:4100";
     process.env.AOA_LISTEN_HOST = "127.0.0.1";
     process.env.AOA_LISTEN_PORT = "3101";
 
-    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+    const env = buildAoaEnv({ id: "agent-1", companyId: "company-1" });
 
     expect(env.AOA_API_URL).toBe("http://localhost:4100");
   });
@@ -41,7 +41,7 @@ describe("buildPaperclipEnv", () => {
     process.env.AOA_LISTEN_PORT = "3101";
     process.env.PORT = "3100";
 
-    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+    const env = buildAoaEnv({ id: "agent-1", companyId: "company-1" });
 
     expect(env.AOA_API_URL).toBe("http://localhost:3101");
   });
@@ -51,7 +51,7 @@ describe("buildPaperclipEnv", () => {
     process.env.AOA_LISTEN_HOST = "::1";
     process.env.AOA_LISTEN_PORT = "3101";
 
-    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+    const env = buildAoaEnv({ id: "agent-1", companyId: "company-1" });
 
     expect(env.AOA_API_URL).toBe("http://[::1]:3101");
   });

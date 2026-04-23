@@ -2,7 +2,7 @@ import "./env-compat.js"; // side-effect: mirror PAPERCLIP_* env to AOA_* for mi
 import { readConfigFile } from "./config-file.js";
 import { existsSync } from "node:fs";
 import { config as loadDotenv } from "dotenv";
-import { resolvePaperclipEnvPath } from "./paths.js";
+import { resolveAoaEnvPath } from "./paths.js";
 import {
   AUTH_BASE_URL_MODES,
   DEPLOYMENT_EXPOSURES,
@@ -23,7 +23,7 @@ import {
   resolveHomeAwarePath,
 } from "./home-paths.js";
 
-const AOA_ENV_FILE_PATH = resolvePaperclipEnvPath();
+const AOA_ENV_FILE_PATH = resolveAoaEnvPath();
 if (existsSync(AOA_ENV_FILE_PATH)) {
   loadDotenv({ path: AOA_ENV_FILE_PATH, override: false, quiet: true });
 }

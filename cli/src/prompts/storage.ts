@@ -1,9 +1,9 @@
 import * as p from "@clack/prompts";
 import type { StorageConfig } from "../config/schema.js";
-import { resolveDefaultStorageDir, resolvePaperclipInstanceId } from "../config/home.js";
+import { resolveDefaultStorageDir, resolveAoaInstanceId } from "../config/home.js";
 
 function defaultStorageBaseDir(): string {
-  return resolveDefaultStorageDir(resolvePaperclipInstanceId());
+  return resolveDefaultStorageDir(resolveAoaInstanceId());
 }
 
 export function defaultStorageConfig(): StorageConfig {

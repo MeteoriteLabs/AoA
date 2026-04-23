@@ -16,7 +16,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { resolvePaperclipHomeDir } from "../home-paths.js";
+import { resolveAoaHomeDir } from "../home-paths.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,15 +46,15 @@ interface AdapterSettings {
 // ---------------------------------------------------------------------------
 
 function adapterPluginsRootDir(): string {
-  return path.join(resolvePaperclipHomeDir(), "adapter-plugins");
+  return path.join(resolveAoaHomeDir(), "adapter-plugins");
 }
 
 function adapterPluginsStorePath(): string {
-  return path.join(resolvePaperclipHomeDir(), "adapter-plugins.json");
+  return path.join(resolveAoaHomeDir(), "adapter-plugins.json");
 }
 
 function adapterSettingsPath(): string {
-  return path.join(resolvePaperclipHomeDir(), "adapter-settings.json");
+  return path.join(resolveAoaHomeDir(), "adapter-settings.json");
 }
 
 // ---------------------------------------------------------------------------

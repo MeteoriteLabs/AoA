@@ -23,7 +23,7 @@ interface ApiClientOptions {
   runId?: string;
 }
 
-export class PaperclipApiClient {
+export class AoaApiClient {
   readonly apiBase: string;
   readonly apiKey?: string;
   readonly runId?: string;

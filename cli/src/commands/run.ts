@@ -8,8 +8,8 @@ import { doctor } from "./doctor.js";
 import { configExists, resolveConfigPath } from "../config/store.js";
 import {
   describeLocalInstancePaths,
-  resolvePaperclipHomeDir,
-  resolvePaperclipInstanceId,
+  resolveAoaHomeDir,
+  resolveAoaInstanceId,
 } from "../config/home.js";
 
 interface RunOptions {
@@ -20,10 +20,10 @@ interface RunOptions {
 }
 
 export async function runCommand(opts: RunOptions): Promise<void> {
-  const instanceId = resolvePaperclipInstanceId(opts.instance);
+  const instanceId = resolveAoaInstanceId(opts.instance);
   process.env.AOA_INSTANCE_ID = instanceId;
 
-  const homeDir = resolvePaperclipHomeDir();
+  const homeDir = resolveAoaHomeDir();
   fs.mkdirSync(homeDir, { recursive: true });
 
   const paths = describeLocalInstancePaths(instanceId);

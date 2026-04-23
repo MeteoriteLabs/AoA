@@ -3,7 +3,7 @@ title: Storage
 summary: Local disk vs S3-compatible storage
 ---
 
-Paperclip stores uploaded files (issue attachments, images) using a configurable storage provider.
+AoA stores uploaded files (issue attachments, images) using a configurable storage provider.
 
 ## Local Disk (Default)
 
@@ -22,7 +22,7 @@ For production or multi-node deployments, use S3-compatible object storage (AWS 
 Configure via CLI:
 
 ```sh
-pnpm paperclipai configure --section storage
+pnpm aoa configure --section storage
 ```
 
 ## Configuration

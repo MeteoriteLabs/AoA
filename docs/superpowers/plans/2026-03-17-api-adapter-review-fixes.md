@@ -686,7 +686,7 @@ Expected: PASS — the new module compiles without errors
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { Issue, LiveEvent } from "@paperclipai/shared";
+import type { Issue, LiveEvent } from "@armyofagents/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
@@ -743,7 +743,7 @@ This replaces the inline dedup/merge logic (seenKeys check, streaming merge, 600
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { Issue, LiveEvent } from "@paperclipai/shared";
+import type { Issue, LiveEvent } from "@armyofagents/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import { getUIAdapter } from "../adapters";

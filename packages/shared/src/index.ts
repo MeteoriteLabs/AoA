@@ -759,7 +759,7 @@ export {
   storageLocalDiskConfigSchema,
   storageS3ConfigSchema,
   secretsLocalEncryptedConfigSchema,
-  type PaperclipConfig,
+  type AoaConfig,
   type LlmConfig,
   type DatabaseBackupConfig,
   type DatabaseConfig,

@@ -11,7 +11,7 @@ import {
   asStringArray,
   parseObject,
   parseJson,
-  buildPaperclipEnv,
+  buildAoaEnv,
   redactEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
@@ -153,7 +153,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.AOA_API_KEY === "string" && envConfig.AOA_API_KEY.trim().length > 0;
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  const env: Record<string, string> = { ...buildAoaEnv(agent) };
   env.AOA_RUN_ID = runId;
 
   const wakeTaskId =

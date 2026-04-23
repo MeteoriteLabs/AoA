@@ -22,7 +22,7 @@ Depends on: All v2.5 spec documents (reviewed and approved 2026-03-25)
 - Activity logging: `logActivity(db, { companyId, actorType, actorId, action, entityType, entityId, details })`
 - Costs in cents (integer), never USD floats
 - API keys via `company_secrets` table + `secretService(db).resolveSecretValue()`
-- Tests mock `drizzle-orm` and `@paperclipai/db` before importing services (ESM workaround)
+- Tests mock `drizzle-orm` and `@armyofagents/db` before importing services (ESM workaround)
 
 ---
 
@@ -85,7 +85,7 @@ Depends on: All v2.5 spec documents (reviewed and approved 2026-03-25)
 Create `server/src/__tests__/discussions-schema-contract.test.ts`:
 ```typescript
 import { describe, it, expect } from "vitest";
-import { discussions, discussionEntries, discussionExtractedItems, discussionAnnotations } from "@paperclipai/db";
+import { discussions, discussionEntries, discussionExtractedItems, discussionAnnotations } from "@armyofagents/db";
 
 describe("Discussion schema contract", () => {
   it("discussions table has required columns", () => {
@@ -179,7 +179,7 @@ import { describe, it, expect } from "vitest";
 import {
   internalAgentConfig, internalAgentConversations, internalAgentMessages,
   internalAgentRuns, internalAgentReminders, workflowTemplates, notifications
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 
 describe("Internal agent schema contract", () => {
   it("internalAgentConfig uses cents for budget", () => {
@@ -332,7 +332,7 @@ import { describe, it, expect } from "vitest";
 import {
   DISCUSSION_STATUSES, EXTRACTION_ITEM_TYPES, AGENT_CAPABILITIES,
   TRIGGER_TYPES, NOTIFICATION_TYPES, createDiscussionSchema, chatMessageSchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 
 describe("v2.5 shared types contract", () => {
   it("discussion statuses include active and archived", () => {
@@ -398,8 +398,8 @@ pnpm test -- --run migration-debrief-to-discussion
 1. **Create `server/src/services/discussions.ts`**
    ```typescript
    import { and, eq, desc, sql } from "drizzle-orm";
-   import type { Db } from "@paperclipai/db";
-   import { discussions, discussionEntries, discussionExtractedItems, discussionAnnotations } from "@paperclipai/db";
+   import type { Db } from "@armyofagents/db";
+   import { discussions, discussionEntries, discussionExtractedItems, discussionAnnotations } from "@armyofagents/db";
    import { publishLiveEvent } from "./live-events.js";
    import { logActivity } from "./activity-log.js";
 
@@ -439,7 +439,7 @@ pnpm test -- --run migration-debrief-to-discussion
 **Tests (RED → GREEN):**
 
 Create `server/src/__tests__/discussions-service.test.ts`:
-- Mock `drizzle-orm` and `@paperclipai/db` per ESM pattern
+- Mock `drizzle-orm` and `@armyofagents/db` per ESM pattern
 - Test `list()` with filters returns correct query conditions
 - Test `create()` with entry triggers LiveEvent
 - Test `approveItems()` creates tasks and memory items in transaction
@@ -469,8 +469,8 @@ pnpm test -- --run discussions-service
 1. **Create `server/src/routes/discussions.ts`**
    ```typescript
    import { Router } from "express";
-   import type { Db } from "@paperclipai/db";
-   import { createDiscussionSchema, createDiscussionEntrySchema, updateDiscussionSchema, approveItemsSchema, createAnnotationSchema } from "@paperclipai/shared";
+   import type { Db } from "@armyofagents/db";
+   import { createDiscussionSchema, createDiscussionEntrySchema, updateDiscussionSchema, approveItemsSchema, createAnnotationSchema } from "@armyofagents/shared";
    import { validate } from "../middleware/validate.js";
    import { discussionService, logActivity } from "../services/index.js";
    import { assertCompanyAccess, getActorInfo } from "./authz.js";

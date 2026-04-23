@@ -8,7 +8,7 @@ How AoA gets shipped: Docker images on GHCR + NPM packages on npmjs.org, automat
 |----|----------|--------------|
 | H.D1 | Distribution format | **Docker + NPM only.** No desktop installer in Phase H. |
 | H.D2 | Versioning | **SemVer** (`MAJOR.MINOR.PATCH`). First version `0.1.0`. Pre-1.0 signals "evolving — may break." Deviates from Paperclip's CalVer. |
-| H.D3 | Artifact destinations | **GHCR** (`ghcr.io/${{ github.repository }}` — auto-resolves to current owner; future rename to `anthropic/aoa` is a one-line workflow edit) + **npmjs.org public** for `@paperclipai/*` scoped packages + unscoped `paperclipai` CLI. |
+| H.D3 | Artifact destinations | **GHCR** (`ghcr.io/${{ github.repository }}` — auto-resolves to current owner; future rename to `anthropic/aoa` is a one-line workflow edit) + **npmjs.org public** for `@armyofagents/*` scoped packages + unscoped `aoa` CLI. |
 | H.D4 | CI service | **GitHub Actions.** |
 | H.D5 | Multi-arch Docker | **amd64 + arm64.** arm/v7 (Raspberry Pi) deferred to Phase I. |
 | H.D6 | Smoke test scope | **Minimal MVP.** Auth + onboarding wizard step-1 only. Discussions, MCP, budgets, artifacts deferred to Phase I. |
@@ -16,7 +16,7 @@ How AoA gets shipped: Docker images on GHCR + NPM packages on npmjs.org, automat
 ## Artifact destinations
 
 - **Docker:** `ghcr.io/${{ github.repository }}:<tag>`. Tags published per-release: `latest` (default-branch only), `{{version}}` (e.g. `0.1.0`), `{{major}}.{{minor}}` (e.g. `0.1`), and the git `sha`.
-- **NPM:** `paperclipai` (CLI, unscoped) + 8 `@paperclipai/*` workspace packages on npmjs.org public registry.
+- **NPM:** `aoa` (CLI, unscoped) + 8 `@armyofagents/*` workspace packages on npmjs.org public registry.
 
 H.D3 future: when the repo settles at `anthropic/aoa`, the GHCR image moves to `ghcr.io/anthropic/aoa` automatically (since the workflow uses `${{ github.repository }}`). NPM scope rename to `@anthropic/aoa` is a separate Changesets-driven publish.
 
@@ -26,7 +26,7 @@ Configured in GitHub repo Settings → Secrets and variables → Actions:
 
 | Secret | Type | How to obtain | Used by |
 |--------|------|---------------|---------|
-| `NPM_TOKEN` | repo secret | npmjs.com → Account → Access Tokens → Generate New Token → **Automation** type → grant publish on `paperclipai` + `@paperclipai/*` | `release.yml` (passed as `NPM_TOKEN` and `NODE_AUTH_TOKEN`) |
+| `NPM_TOKEN` | repo secret | npmjs.com → Account → Access Tokens → Generate New Token → **Automation** type → grant publish on `aoa` + `@armyofagents/*` | `release.yml` (passed as `NPM_TOKEN` and `NODE_AUTH_TOKEN`) |
 | `GITHUB_TOKEN` | automatic | provided by GitHub Actions, no setup | `release.yml`, `docker.yml` (used by Changesets for tags + GHCR auth) |
 
 GHCR push uses `GITHUB_TOKEN` with `packages: write` permission — no extra secret needed.
@@ -45,7 +45,7 @@ GHCR push uses `GITHUB_TOKEN` with `packages: write` permission — no extra sec
 
 4. **`docker.yml` fires on the published tag.** Multi-arch buildx (amd64 + arm64) builds the image, pushes to GHCR with 4 tag patterns (`latest`, full version, `major.minor`, sha).
 
-5. **`release-smoke.yml` runs as `post-publish-smoke` job in `release.yml`** (gated on `changesets/action` `published == 'true'`). Pulls `paperclipai@latest` inside a freshly-built smoke Docker image, runs the Playwright auth + onboarding spec against it. Diagnostics (docker logs + playwright report + test results) uploaded as `release-smoke-post-publish` artifact, retained 14 days.
+5. **`release-smoke.yml` runs as `post-publish-smoke` job in `release.yml`** (gated on `changesets/action` `published == 'true'`). Pulls `aoa@latest` inside a freshly-built smoke Docker image, runs the Playwright auth + onboarding spec against it. Diagnostics (docker logs + playwright report + test results) uploaded as `release-smoke-post-publish` artifact, retained 14 days.
 
 `scripts/release.sh` remains as a local-only escape hatch for one-shot bumps outside CI. NOT invoked by the workflow.
 
@@ -83,7 +83,7 @@ Before pushing release-affecting changes:
 pnpm docker:build-test                # native-arch Dockerfile build + binary smoke
 pnpm docker:build-test --multi-arch   # buildx amd64 + arm64 (verifies both build cleanly)
 pnpm docker:build-test --dry-run      # print commands without executing
-pnpm docker:smoke                     # full onboard auto-bootstrap smoke (pulls paperclipai@$VERSION from npm)
+pnpm docker:smoke                     # full onboard auto-bootstrap smoke (pulls aoa@$VERSION from npm)
 ```
 
 `docker:smoke` requires a working docker daemon and pulls from npm — won't work against unpublished local changes. Use it after a canary publish to verify the published artifact end-to-end.

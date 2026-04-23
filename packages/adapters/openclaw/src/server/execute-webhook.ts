@@ -75,7 +75,7 @@ function buildOpenResponsesWebhookBody(input: {
     input: openResponsesInput,
     metadata: {
       ...toStringRecord(state.payloadTemplate.metadata),
-      ...state.paperclipEnv,
+      ...state.aoaEnv,
       paperclip_session_key: state.sessionKey,
       paperclip_stream_transport: "webhook",
     },
@@ -157,7 +157,7 @@ function buildLegacyWebhookBody(input: {
       ...state.wakePayload,
       sessionKey: state.sessionKey,
       streamTransport: "webhook",
-      env: state.paperclipEnv,
+      env: state.aoaEnv,
       context,
     },
   };

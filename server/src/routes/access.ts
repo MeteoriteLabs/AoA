@@ -342,8 +342,8 @@ export function buildJoinDefaultsPayloadForAccept(input: {
   }
 
   if (!nonEmptyTrimmedString(merged.paperclipApiUrl)) {
-    const legacyPaperclipApiUrl = nonEmptyTrimmedString(input.paperclipApiUrl);
-    if (legacyPaperclipApiUrl) merged.paperclipApiUrl = legacyPaperclipApiUrl;
+    const legacyAoaApiUrl = nonEmptyTrimmedString(input.paperclipApiUrl);
+    if (legacyAoaApiUrl) merged.paperclipApiUrl = legacyAoaApiUrl;
   }
 
   if (!nonEmptyTrimmedString(merged.webhookAuthHeader)) {
@@ -739,30 +739,30 @@ function normalizeAgentDefaultsForJoin(input: {
     normalized.payloadTemplate = defaults.payloadTemplate;
   }
 
-  const rawPaperclipApiUrl =
+  const rawAoaApiUrl =
     typeof defaults.paperclipApiUrl === "string"
       ? defaults.paperclipApiUrl.trim()
       : "";
-  if (rawPaperclipApiUrl) {
+  if (rawAoaApiUrl) {
     try {
-      const parsedPaperclipApiUrl = new URL(rawPaperclipApiUrl);
+      const parsedAoaApiUrl = new URL(rawAoaApiUrl);
       if (
-        parsedPaperclipApiUrl.protocol !== "http:" &&
-        parsedPaperclipApiUrl.protocol !== "https:"
+        parsedAoaApiUrl.protocol !== "http:" &&
+        parsedAoaApiUrl.protocol !== "https:"
       ) {
         diagnostics.push({
           code: "openclaw_paperclip_api_url_protocol",
           level: "warn",
-          message: `paperclipApiUrl must use http:// or https:// (got ${parsedPaperclipApiUrl.protocol}).`
+          message: `paperclipApiUrl must use http:// or https:// (got ${parsedAoaApiUrl.protocol}).`
         });
       } else {
-        normalized.paperclipApiUrl = parsedPaperclipApiUrl.toString();
+        normalized.paperclipApiUrl = parsedAoaApiUrl.toString();
         diagnostics.push({
           code: "openclaw_paperclip_api_url_configured",
           level: "info",
-          message: `paperclipApiUrl set to ${parsedPaperclipApiUrl.toString()}`
+          message: `paperclipApiUrl set to ${parsedAoaApiUrl.toString()}`
         });
-        if (isLoopbackHost(parsedPaperclipApiUrl.hostname)) {
+        if (isLoopbackHost(parsedAoaApiUrl.hostname)) {
           diagnostics.push({
             code: "openclaw_paperclip_api_url_loopback",
             level: "warn",
@@ -776,7 +776,7 @@ function normalizeAgentDefaultsForJoin(input: {
       diagnostics.push({
         code: "openclaw_paperclip_api_url_invalid",
         level: "warn",
-        message: `Invalid paperclipApiUrl: ${rawPaperclipApiUrl}`
+        message: `Invalid paperclipApiUrl: ${rawAoaApiUrl}`
       });
     }
   }

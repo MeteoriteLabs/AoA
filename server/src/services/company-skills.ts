@@ -25,7 +25,7 @@ import type {
   CompanySkillUsageAgent,
 } from "@armyofagents/shared";
 import { notFound, unprocessable } from "../errors.js";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveAoaInstanceRoot } from "../home-paths.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 
@@ -234,7 +234,7 @@ function buildSkillRuntimeName(slug: string, name: string): string {
 }
 
 function resolveManagedSkillsRoot(companyId: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId);
+  return path.resolve(resolveAoaInstanceRoot(), "skills", companyId);
 }
 
 function normalizeSkillDirectory(skill: CompanySkill): string | null {

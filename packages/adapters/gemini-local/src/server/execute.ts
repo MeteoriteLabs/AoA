@@ -6,7 +6,7 @@ import {
   asNumber,
   asString,
   asStringArray,
-  buildPaperclipEnv,
+  buildAoaEnv,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
@@ -36,7 +36,7 @@ function resolveGeminiBillingType(env: Record<string, string>): "api" | "subscri
     : "subscription";
 }
 
-function renderPaperclipEnvNote(env: Record<string, string>): string {
+function renderAoaEnvNote(env: Record<string, string>): string {
   const paperclipKeys = Object.keys(env)
     .filter((key) => key.startsWith("AOA_"))
     .sort();
@@ -100,7 +100,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.AOA_API_KEY === "string" && envConfig.AOA_API_KEY.trim().length > 0;
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  const env: Record<string, string> = { ...buildAoaEnv(agent) };
   env.AOA_RUN_ID = runId;
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -219,13 +219,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const paperclipEnvNote = renderPaperclipEnvNote(env);
+  const aoaEnvNote = renderAoaEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     sessionHandoffNote,
-    paperclipEnvNote,
+    aoaEnvNote,
     apiAccessNote,
     renderedPrompt,
   ]);
@@ -234,7 +234,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsChars: instructionsPrefix.length,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
-    runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
+    runtimeNoteChars: aoaEnvNote.length + apiAccessNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
 

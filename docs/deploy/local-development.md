@@ -1,9 +1,9 @@
 ---
 title: Local Development
-summary: Set up Paperclip for local development
+summary: Set up AoA for local development
 ---
 
-Run Paperclip locally with zero external dependencies.
+Run AoA locally with zero external dependencies.
 
 ## Prerequisites
 
@@ -22,20 +22,20 @@ This starts:
 - **API server** at `http://localhost:3100`
 - **UI** served by the API server in dev middleware mode (same origin)
 
-No Docker or external database required. Paperclip uses embedded PostgreSQL automatically.
+No Docker or external database required. AoA uses embedded PostgreSQL automatically.
 
 ## One-Command Bootstrap
 
 For a first-time install:
 
 ```sh
-pnpm paperclipai run
+pnpm aoa run
 ```
 
 This does:
 
 1. Auto-onboards if config is missing
-2. Runs `paperclipai doctor` with repair enabled
+2. Runs `aoa doctor` with repair enabled
 3. Starts the server when checks pass
 
 ## Tailscale/Private Auth Dev Mode
@@ -57,7 +57,7 @@ pnpm dev --authenticated-private
 Allow additional private hostnames:
 
 ```sh
-pnpm paperclipai allowed-hostname dotta-macbook-pro
+pnpm aoa allowed-hostname dotta-macbook-pro
 ```
 
 For full setup and troubleshooting, see [Tailscale Private Access](/deploy/tailscale-private-access).
@@ -94,5 +94,5 @@ pnpm dev
 Override with environment variables:
 
 ```sh
-PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
+AOA_HOME=/custom/path AOA_INSTANCE_ID=dev pnpm aoa run
 ```

@@ -161,7 +161,7 @@ export const paperclipConfigSchema = z
     }
   });
 
-export type PaperclipConfig = z.infer<typeof paperclipConfigSchema>;
+export type AoaConfig = z.infer<typeof paperclipConfigSchema>;
 export type LlmConfig = z.infer<typeof llmConfigSchema>;
 export type DatabaseConfig = z.infer<typeof databaseConfigSchema>;
 export type LoggingConfig = z.infer<typeof loggingConfigSchema>;

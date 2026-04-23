@@ -640,7 +640,7 @@ function compareSemver(left: string, right: string): number {
 }
 
 function getMinimumHostVersion(manifest: PaperclipPluginManifestV1): string | undefined {
-  return manifest.minimumHostVersion ?? manifest.minimumPaperclipVersion;
+  return manifest.minimumHostVersion ?? manifest.minimumAoaVersion;
 }
 
 /**

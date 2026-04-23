@@ -23,12 +23,12 @@ function findConfigFileFromAncestors(startDir: string): string | null {
   return null;
 }
 
-export function resolvePaperclipConfigPath(overridePath?: string): string {
+export function resolveAoaConfigPath(overridePath?: string): string {
   if (overridePath) return path.resolve(overridePath);
   if (process.env.AOA_CONFIG) return path.resolve(process.env.AOA_CONFIG);
   return findConfigFileFromAncestors(process.cwd()) ?? resolveDefaultConfigPath();
 }
 
-export function resolvePaperclipEnvPath(overrideConfigPath?: string): string {
-  return path.resolve(path.dirname(resolvePaperclipConfigPath(overrideConfigPath)), AOA_ENV_FILENAME);
+export function resolveAoaEnvPath(overrideConfigPath?: string): string {
+  return path.resolve(path.dirname(resolveAoaConfigPath(overrideConfigPath)), AOA_ENV_FILENAME);
 }

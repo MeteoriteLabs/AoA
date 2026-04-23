@@ -25,15 +25,15 @@ function makeAgent(adapterConfig: Record<string, unknown>): TestAgent {
 }
 
 describe("agent instructions service", () => {
-  const originalPaperclipHome = process.env.AOA_HOME;
-  const originalPaperclipInstanceId = process.env.AOA_INSTANCE_ID;
+  const originalAoaHome = process.env.AOA_HOME;
+  const originalAoaInstanceId = process.env.AOA_INSTANCE_ID;
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
-    if (originalPaperclipHome === undefined) delete process.env.AOA_HOME;
-    else process.env.AOA_HOME = originalPaperclipHome;
-    if (originalPaperclipInstanceId === undefined) delete process.env.AOA_INSTANCE_ID;
-    else process.env.AOA_INSTANCE_ID = originalPaperclipInstanceId;
+    if (originalAoaHome === undefined) delete process.env.AOA_HOME;
+    else process.env.AOA_HOME = originalAoaHome;
+    if (originalAoaInstanceId === undefined) delete process.env.AOA_INSTANCE_ID;
+    else process.env.AOA_INSTANCE_ID = originalAoaInstanceId;
 
     await Promise.all([...cleanupDirs].map(async (dir) => {
       await fs.rm(dir, { recursive: true, force: true });

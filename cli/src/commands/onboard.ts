@@ -14,7 +14,7 @@ import {
   type StorageProvider,
 } from "@armyofagents/shared";
 import { configExists, readConfig, resolveConfigPath, writeConfig } from "../config/store.js";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { AoaConfig } from "../config/schema.js";
 import { ensureAgentJwtSecret, resolveAgentJwtEnvFile } from "../config/env.js";
 import { ensureLocalSecretsKeyFile } from "../config/secrets-key.js";
 import { promptDatabase } from "../prompts/database.js";
@@ -29,10 +29,10 @@ import {
   resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultLogsDir,
-  resolvePaperclipInstanceId,
+  resolveAoaInstanceId,
 } from "../config/home.js";
 import { bootstrapCeoInvite } from "./auth-bootstrap-ceo.js";
-import { printPaperclipCliBanner } from "../utils/banner.js";
+import { printAoaCliBanner } from "../utils/banner.js";
 
 type SetupMode = "quickstart" | "advanced";
 
@@ -43,7 +43,7 @@ type OnboardOptions = {
   invokedByRun?: boolean;
 };
 
-type OnboardDefaults = Pick<PaperclipConfig, "database" | "logging" | "server" | "auth" | "storage" | "secrets">;
+type OnboardDefaults = Pick<AoaConfig, "database" | "logging" | "server" | "auth" | "storage" | "secrets">;
 
 const ONBOARD_ENV_KEYS = [
   "AOA_PUBLIC_URL",
@@ -104,7 +104,7 @@ function quickstartDefaultsFromEnv(): {
   usedEnvKeys: string[];
   ignoredEnvKeys: Array<{ key: string; reason: string }>;
 } {
-  const instanceId = resolvePaperclipInstanceId();
+  const instanceId = resolveAoaInstanceId();
   const defaultStorage = defaultStorageConfig();
   const defaultSecrets = defaultSecretsConfig();
   const databaseUrl = process.env.DATABASE_URL?.trim() || undefined;
@@ -229,10 +229,10 @@ function quickstartDefaultsFromEnv(): {
 }
 
 export async function onboard(opts: OnboardOptions): Promise<void> {
-  printPaperclipCliBanner();
+  printAoaCliBanner();
   p.intro(pc.bgCyan(pc.black(" aoa onboard ")));
   const configPath = resolveConfigPath(opts.config);
-  const instance = describeLocalInstancePaths(resolvePaperclipInstanceId());
+  const instance = describeLocalInstancePaths(resolveAoaInstanceId());
   p.log.message(
     pc.dim(
       `Local home: ${instance.homeDir} | instance: ${instance.instanceId} | config: ${configPath}`,
@@ -280,7 +280,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     setupMode = setupModeChoice as SetupMode;
   }
 
-  let llm: PaperclipConfig["llm"] | undefined;
+  let llm: AoaConfig["llm"] | undefined;
   const { defaults: derivedDefaults, usedEnvKeys, ignoredEnvKeys } = quickstartDefaultsFromEnv();
   let {
     database,
@@ -401,7 +401,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     p.log.info(`Using existing ${pc.cyan("AOA_AGENT_JWT_SECRET")} in ${pc.dim(envFilePath)}`);
   }
 
-  const config: PaperclipConfig = {
+  const config: AoaConfig = {
     $meta: {
       version: 1,
       updatedAt: new Date().toISOString(),

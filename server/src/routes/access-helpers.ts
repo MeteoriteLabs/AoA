@@ -203,8 +203,8 @@ export function buildJoinDefaultsPayloadForAccept(input: {
   }
 
   if (!nonEmptyTrimmedString(merged.paperclipApiUrl)) {
-    const legacyPaperclipApiUrl = nonEmptyTrimmedString(input.paperclipApiUrl);
-    if (legacyPaperclipApiUrl) merged.paperclipApiUrl = legacyPaperclipApiUrl;
+    const legacyAoaApiUrl = nonEmptyTrimmedString(input.paperclipApiUrl);
+    if (legacyAoaApiUrl) merged.paperclipApiUrl = legacyAoaApiUrl;
   }
 
   if (!nonEmptyTrimmedString(merged.webhookAuthHeader)) {

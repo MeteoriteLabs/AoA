@@ -1,5 +1,5 @@
 import type { AdapterExecutionContext } from "@armyofagents/adapter-utils";
-import { asNumber, asString, buildPaperclipEnv, parseObject } from "@armyofagents/adapter-utils/server-utils";
+import { asNumber, asString, buildAoaEnv, parseObject } from "@armyofagents/adapter-utils/server-utils";
 import { createHash } from "node:crypto";
 import { parseOpenClawResponse } from "./parse.js";
 
@@ -27,7 +27,7 @@ export type OpenClawExecutionState = {
   payloadTemplate: Record<string, unknown>;
   wakePayload: WakePayload;
   sessionKey: string;
-  paperclipEnv: Record<string, string>;
+  aoaEnv: Record<string, string>;
   wakeText: string;
 };
 
@@ -44,7 +44,7 @@ export function toAuthorizationHeaderValue(rawToken: string): string {
   return /^bearer\s+/i.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
 }
 
-export function resolvePaperclipApiUrlOverride(value: unknown): string | null {
+export function resolveAoaApiUrlOverride(value: unknown): string | null {
   const raw = nonEmpty(value);
   if (!raw) return null;
   try {
@@ -246,29 +246,29 @@ export function buildWakePayload(ctx: AdapterExecutionContext): WakePayload {
   };
 }
 
-export function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
-  const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
-  const paperclipEnv: Record<string, string> = {
-    ...buildPaperclipEnv(ctx.agent),
+export function buildAoaEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
+  const paperclipApiUrlOverride = resolveAoaApiUrlOverride(ctx.config.paperclipApiUrl);
+  const aoaEnv: Record<string, string> = {
+    ...buildAoaEnv(ctx.agent),
     AOA_RUN_ID: ctx.runId,
   };
 
   if (paperclipApiUrlOverride) {
-    paperclipEnv.AOA_API_URL = paperclipApiUrlOverride;
+    aoaEnv.AOA_API_URL = paperclipApiUrlOverride;
   }
-  if (wakePayload.taskId) paperclipEnv.AOA_TASK_ID = wakePayload.taskId;
-  if (wakePayload.wakeReason) paperclipEnv.AOA_WAKE_REASON = wakePayload.wakeReason;
-  if (wakePayload.wakeCommentId) paperclipEnv.AOA_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
-  if (wakePayload.approvalId) paperclipEnv.AOA_APPROVAL_ID = wakePayload.approvalId;
-  if (wakePayload.approvalStatus) paperclipEnv.AOA_APPROVAL_STATUS = wakePayload.approvalStatus;
+  if (wakePayload.taskId) aoaEnv.AOA_TASK_ID = wakePayload.taskId;
+  if (wakePayload.wakeReason) aoaEnv.AOA_WAKE_REASON = wakePayload.wakeReason;
+  if (wakePayload.wakeCommentId) aoaEnv.AOA_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
+  if (wakePayload.approvalId) aoaEnv.AOA_APPROVAL_ID = wakePayload.approvalId;
+  if (wakePayload.approvalStatus) aoaEnv.AOA_APPROVAL_STATUS = wakePayload.approvalStatus;
   if (wakePayload.issueIds.length > 0) {
-    paperclipEnv.AOA_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
+    aoaEnv.AOA_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
   }
 
-  return paperclipEnv;
+  return aoaEnv;
 }
 
-export function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
+export function buildWakeText(payload: WakePayload, aoaEnv: Record<string, string>): string {
   const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "AOA_RUN_ID",
@@ -285,7 +285,7 @@ export function buildWakeText(payload: WakePayload, paperclipEnv: Record<string,
 
   const envLines: string[] = [];
   for (const key of orderedKeys) {
-    const value = paperclipEnv[key];
+    const value = aoaEnv[key];
     if (!value) continue;
     envLines.push(`${key}=${value}`);
   }
@@ -480,8 +480,8 @@ export function buildExecutionState(ctx: AdapterExecutionContext): OpenClawExecu
     issueId: wakePayload.issueId ?? wakePayload.taskId,
   });
 
-  const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
-  const wakeText = buildWakeText(wakePayload, paperclipEnv);
+  const aoaEnv = buildAoaEnvForWake(ctx, wakePayload);
+  const wakeText = buildWakeText(wakePayload, aoaEnv);
 
   return {
     method,
@@ -490,7 +490,7 @@ export function buildExecutionState(ctx: AdapterExecutionContext): OpenClawExecu
     payloadTemplate,
     wakePayload,
     sessionKey,
-    paperclipEnv,
+    aoaEnv,
     wakeText,
   };
 }

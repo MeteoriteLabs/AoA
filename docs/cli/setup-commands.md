@@ -5,32 +5,32 @@ summary: Onboard, run, doctor, and configure
 
 Instance setup and diagnostics commands.
 
-## `paperclipai run`
+## `aoa run`
 
 One-command bootstrap and start:
 
 ```sh
-pnpm paperclipai run
+pnpm aoa run
 ```
 
 Does:
 
 1. Auto-onboards if config is missing
-2. Runs `paperclipai doctor` with repair enabled
+2. Runs `aoa doctor` with repair enabled
 3. Starts the server when checks pass
 
 Choose a specific instance:
 
 ```sh
-pnpm paperclipai run --instance dev
+pnpm aoa run --instance dev
 ```
 
-## `paperclipai onboard`
+## `aoa onboard`
 
 Interactive first-time setup:
 
 ```sh
-pnpm paperclipai onboard
+pnpm aoa onboard
 ```
 
 First prompt:
@@ -41,22 +41,22 @@ First prompt:
 Start immediately after onboarding:
 
 ```sh
-pnpm paperclipai onboard --run
+pnpm aoa onboard --run
 ```
 
 Non-interactive defaults + immediate start (opens browser on server listen):
 
 ```sh
-pnpm paperclipai onboard --yes
+pnpm aoa onboard --yes
 ```
 
-## `paperclipai doctor`
+## `aoa doctor`
 
 Health checks with optional auto-repair:
 
 ```sh
-pnpm paperclipai doctor
-pnpm paperclipai doctor --repair
+pnpm aoa doctor
+pnpm aoa doctor --repair
 ```
 
 Validates:
@@ -67,30 +67,30 @@ Validates:
 - Storage configuration
 - Missing key files
 
-## `paperclipai configure`
+## `aoa configure`
 
 Update configuration sections:
 
 ```sh
-pnpm paperclipai configure --section server
-pnpm paperclipai configure --section secrets
-pnpm paperclipai configure --section storage
+pnpm aoa configure --section server
+pnpm aoa configure --section secrets
+pnpm aoa configure --section storage
 ```
 
-## `paperclipai env`
+## `aoa env`
 
 Show resolved environment configuration:
 
 ```sh
-pnpm paperclipai env
+pnpm aoa env
 ```
 
-## `paperclipai allowed-hostname`
+## `aoa allowed-hostname`
 
 Allow a private hostname for authenticated/private mode:
 
 ```sh
-pnpm paperclipai allowed-hostname my-tailscale-host
+pnpm aoa allowed-hostname my-tailscale-host
 ```
 
 ## Local Storage Paths
@@ -106,12 +106,12 @@ pnpm paperclipai allowed-hostname my-tailscale-host
 Override with:
 
 ```sh
-PAPERCLIP_HOME=/custom/home PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
+AOA_HOME=/custom/home AOA_INSTANCE_ID=dev pnpm aoa run
 ```
 
 Or pass `--data-dir` directly on any command:
 
 ```sh
-pnpm paperclipai run --data-dir ./tmp/paperclip-dev
-pnpm paperclipai doctor --data-dir ./tmp/paperclip-dev
+pnpm aoa run --data-dir ./tmp/paperclip-dev
+pnpm aoa doctor --data-dir ./tmp/paperclip-dev
 ```

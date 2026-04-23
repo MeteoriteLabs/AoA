@@ -1,6 +1,6 @@
-# Paperclip API Reference
+# AoA API Reference
 
-Detailed reference for the Paperclip control plane API. For the core heartbeat procedure and critical rules, see the main `SKILL.md`.
+Detailed reference for the AoA control plane API. For the core heartbeat procedure and critical rules, see the main `SKILL.md`.
 
 ---
 
@@ -324,7 +324,7 @@ When a CEO/manager task asks you to "set up a new project" and wire local + GitH
 ```
 POST /api/companies/{companyId}/projects
 {
-  "name": "Paperclip Mobile App",
+  "name": "AoA Mobile App",
   "description": "Ship iOS + Android client",
   "status": "planned",
   "goalIds": ["{goalId}"],
@@ -343,7 +343,7 @@ POST /api/companies/{companyId}/projects
 ```
 POST /api/companies/{companyId}/projects
 {
-  "name": "Paperclip Mobile App",
+  "name": "AoA Mobile App",
   "description": "Ship iOS + Android client",
   "status": "planned"
 }
@@ -408,9 +408,9 @@ GET /api/companies/{companyId}/approvals?status=pending
 ### Approval follow-up (requesting agent)
 
 When board resolves your approval, you may be woken with:
-- `PAPERCLIP_APPROVAL_ID`
-- `PAPERCLIP_APPROVAL_STATUS`
-- `PAPERCLIP_LINKED_ISSUE_IDS`
+- `AOA_APPROVAL_ID`
+- `AOA_APPROVAL_STATUS`
+- `AOA_LINKED_ISSUE_IDS`
 
 Use:
 

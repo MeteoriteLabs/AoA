@@ -17,7 +17,7 @@ export {
   resolvePathValue,
   renderTemplate,
   redactEnvForLogs,
-  buildPaperclipEnv,
+  buildAoaEnv,
   defaultPathForPlatform,
   ensurePathInEnv,
   ensureAbsoluteDirectory,

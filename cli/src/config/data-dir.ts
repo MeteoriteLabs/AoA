@@ -3,7 +3,7 @@ import {
   expandHomePrefix,
   resolveDefaultConfigPath,
   resolveDefaultContextPath,
-  resolvePaperclipInstanceId,
+  resolveAoaInstanceId,
 } from "./home.js";
 
 export interface DataDirOptionLike {
@@ -31,7 +31,7 @@ export function applyDataDirOverride(
   if (support.hasConfigOption) {
     const hasConfigOverride = Boolean(options.config?.trim()) || Boolean(process.env.AOA_CONFIG?.trim());
     if (!hasConfigOverride) {
-      const instanceId = resolvePaperclipInstanceId(options.instance);
+      const instanceId = resolveAoaInstanceId(options.instance);
       process.env.AOA_INSTANCE_ID = instanceId;
       process.env.AOA_CONFIG = resolveDefaultConfigPath(instanceId);
     }

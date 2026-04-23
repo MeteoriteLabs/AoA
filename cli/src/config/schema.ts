@@ -12,7 +12,7 @@ export {
   storageS3ConfigSchema,
   secretsConfigSchema,
   secretsLocalEncryptedConfigSchema,
-  type PaperclipConfig,
+  type AoaConfig,
   type LlmConfig,
   type DatabaseBackupConfig,
   type DatabaseConfig,

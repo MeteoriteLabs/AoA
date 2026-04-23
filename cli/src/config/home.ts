@@ -5,7 +5,7 @@ import path from "node:path";
 const DEFAULT_INSTANCE_ID = "default";
 const INSTANCE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
-export function resolvePaperclipHomeDir(): string {
+export function resolveAoaHomeDir(): string {
   const envHome = process.env.AOA_HOME?.trim();
   if (envHome) return path.resolve(expandHomePrefix(envHome));
   const aoaHome = path.resolve(os.homedir(), ".aoa");
@@ -19,7 +19,7 @@ export function resolvePaperclipHomeDir(): string {
   return aoaHome;
 }
 
-export function resolvePaperclipInstanceId(override?: string): string {
+export function resolveAoaInstanceId(override?: string): string {
   const raw = override?.trim() || process.env.AOA_INSTANCE_ID?.trim() || DEFAULT_INSTANCE_ID;
   if (!INSTANCE_ID_RE.test(raw)) {
     throw new Error(
@@ -29,41 +29,41 @@ export function resolvePaperclipInstanceId(override?: string): string {
   return raw;
 }
 
-export function resolvePaperclipInstanceRoot(instanceId?: string): string {
-  const id = resolvePaperclipInstanceId(instanceId);
-  return path.resolve(resolvePaperclipHomeDir(), "instances", id);
+export function resolveAoaInstanceRoot(instanceId?: string): string {
+  const id = resolveAoaInstanceId(instanceId);
+  return path.resolve(resolveAoaHomeDir(), "instances", id);
 }
 
 export function resolveDefaultConfigPath(instanceId?: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "config.json");
+  return path.resolve(resolveAoaInstanceRoot(instanceId), "config.json");
 }
 
 export function resolveDefaultContextPath(): string {
-  return path.resolve(resolvePaperclipHomeDir(), "context.json");
+  return path.resolve(resolveAoaHomeDir(), "context.json");
 }
 
 export function resolveDefaultEmbeddedPostgresDir(instanceId?: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "db");
+  return path.resolve(resolveAoaInstanceRoot(instanceId), "db");
 }
 
 export function resolveDefaultLogsDir(instanceId?: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "logs");
+  return path.resolve(resolveAoaInstanceRoot(instanceId), "logs");
 }
 
 export function resolveDefaultSecretsKeyFilePath(instanceId?: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "secrets", "master.key");
+  return path.resolve(resolveAoaInstanceRoot(instanceId), "secrets", "master.key");
 }
 
 export function resolveDefaultStorageDir(instanceId?: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "data", "storage");
+  return path.resolve(resolveAoaInstanceRoot(instanceId), "data", "storage");
 }
 
 export function resolveDefaultBackupDir(instanceId?: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "data", "backups");
+  return path.resolve(resolveAoaInstanceRoot(instanceId), "data", "backups");
 }
 
 export function resolveDefaultCliAuthPath(): string {
-  return path.resolve(resolvePaperclipHomeDir(), "auth.json");
+  return path.resolve(resolveAoaHomeDir(), "auth.json");
 }
 
 export function expandHomePrefix(value: string): string {
@@ -73,10 +73,10 @@ export function expandHomePrefix(value: string): string {
 }
 
 export function describeLocalInstancePaths(instanceId?: string) {
-  const resolvedInstanceId = resolvePaperclipInstanceId(instanceId);
-  const instanceRoot = resolvePaperclipInstanceRoot(resolvedInstanceId);
+  const resolvedInstanceId = resolveAoaInstanceId(instanceId);
+  const instanceRoot = resolveAoaInstanceRoot(resolvedInstanceId);
   return {
-    homeDir: resolvePaperclipHomeDir(),
+    homeDir: resolveAoaHomeDir(),
     instanceId: resolvedInstanceId,
     instanceRoot,
     configPath: resolveDefaultConfigPath(resolvedInstanceId),

@@ -70,7 +70,7 @@ import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { buildHostServices } from "./services/plugin-host-services.js";
 import { createHostClientHandlers } from "@armyofagents/plugin-sdk";
-import { resolvePaperclipInstanceId } from "./home-paths.js";
+import { resolveAoaInstanceId } from "./home-paths.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 // Host version reported to plugin workers during initialize. Read from
@@ -261,7 +261,7 @@ export async function createApp(
       });
     },
     instanceInfo: {
-      instanceId: resolvePaperclipInstanceId(),
+      instanceId: resolveAoaInstanceId(),
       hostVersion: SERVER_VERSION,
     },
   };

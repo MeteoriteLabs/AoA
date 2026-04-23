@@ -14,7 +14,7 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
-import { resolvePaperclipConfigPath } from "../paths.ts";
+import { resolveAoaConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@armyofagents/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
 
@@ -429,7 +429,7 @@ describe("realizeExecutionWorkspace", () => {
       );
 
       process.chdir(workspace.cwd);
-      expect(resolvePaperclipConfigPath()).toBe(configPath);
+      expect(resolveAoaConfigPath()).toBe(configPath);
     } finally {
       process.chdir(previousCwd);
     }

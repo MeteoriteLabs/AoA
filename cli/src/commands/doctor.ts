@@ -1,6 +1,6 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { AoaConfig } from "../config/schema.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 import {
   agentJwtSecretCheck,
@@ -14,7 +14,7 @@ import {
   storageCheck,
   type CheckResult,
 } from "../checks/index.js";
-import { printPaperclipCliBanner } from "../utils/banner.js";
+import { printAoaCliBanner } from "../utils/banner.js";
 
 const STATUS_ICON = {
   pass: pc.green("✓"),
@@ -27,7 +27,7 @@ export async function doctor(opts: {
   repair?: boolean;
   yes?: boolean;
 }): Promise<{ passed: number; warned: number; failed: number }> {
-  printPaperclipCliBanner();
+  printAoaCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclip doctor ")));
 
   const configPath = resolveConfigPath(opts.config);
@@ -42,7 +42,7 @@ export async function doctor(opts: {
     return printSummary(results);
   }
 
-  let config: PaperclipConfig;
+  let config: AoaConfig;
   try {
     config = readConfig(opts.config)!;
   } catch (err) {
