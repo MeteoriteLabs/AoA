@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { ExecutionWorkspace, Project } from "@armyofagents/shared";
 
-import { mockCompanyContext } from "./test-utils";
+import { mockBreadcrumbContext, mockCompanyContext } from "./test-utils";
 
 const mockWorkspacesList = vi.fn();
 const mockProjectsList = vi.fn();
@@ -50,6 +50,10 @@ vi.mock("../context/CompanyContext", () => ({
     selectedCompanyId: "comp-1",
     companies: [{ id: "comp-1", issuePrefix: "TC" }],
   }),
+}));
+
+vi.mock("../context/BreadcrumbContext", () => ({
+  useBreadcrumbs: () => mockBreadcrumbContext,
 }));
 
 import { WorkspacesList } from "../pages/WorkspacesList";

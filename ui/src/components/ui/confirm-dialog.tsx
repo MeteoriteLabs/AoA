@@ -38,14 +38,16 @@ function ConfirmDialog({
 }: ConfirmDialogProps) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent {...(description ? {} : { "aria-describedby": undefined })}>
+      <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           {description ? (
             <AlertDialogDescription asChild>
               <div>{description}</div>
             </AlertDialogDescription>
-          ) : null}
+          ) : (
+            <AlertDialogDescription className="sr-only">{title}</AlertDialogDescription>
+          )}
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={disabled}>{cancelLabel}</AlertDialogCancel>

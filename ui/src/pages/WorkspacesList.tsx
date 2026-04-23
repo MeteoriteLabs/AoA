@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { FolderGit2 } from "lucide-react";
@@ -6,6 +6,7 @@ import type { ExecutionWorkspace, Project } from "@armyofagents/shared";
 
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { projectsApi } from "../api/projects";
+import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -76,11 +77,16 @@ const UNGROUPED_KEY = "__ungrouped__";
 export function WorkspacesList() {
   const { selectedCompanyId } = useCompany();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
+  const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [modeFilter, setModeFilter] = useState<ModeFilter>("all");
   const [settingsId, setSettingsId] = useState<string | null>(null);
   const [archiveId, setArchiveId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setBreadcrumbs([{ label: "Workspaces" }]);
+  }, [setBreadcrumbs]);
 
   const companyId = selectedCompanyId ?? "";
 
