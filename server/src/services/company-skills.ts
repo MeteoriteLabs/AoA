@@ -26,8 +26,11 @@ import type {
 } from "@armyofagents/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveAoaInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
+import { findActiveServerAdapter } from "../adapters/registry.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
+import { secretService } from "./secrets.js";
 
 // ---------------------------------------------------------------------------
 // RuntimeSkillEntry — replaces PaperclipSkillEntry from Paperclip
@@ -1303,6 +1306,7 @@ const skillPackageImportQueue = new Map<string, Promise<unknown>>();
 export function companySkillService(db: Db) {
   const agents = agentService(db);
   const projects = projectService(db);
+  const secrets = secretService(db);
 
   // -----------------------------------------------------------------------
   // Inventory health: prune stale local_path skills, then cache promise
@@ -1402,19 +1406,52 @@ export function companySkillService(db: Db) {
 
   async function usage(companyId: string, key: string): Promise<CompanySkillUsageAgent[]> {
     const agentRows = await agents.list(companyId);
-    return agentRows
-      .filter((agent: any) => {
-        const skillKeys: string[] = Array.isArray(agent.skillKeys) ? agent.skillKeys : [];
-        return skillKeys.includes(key);
-      })
-      .map((agent: any) => ({
-        id: agent.id,
-        name: agent.name,
-        urlKey: normalizeAgentUrlKey(agent.name) ?? agent.id,
-        adapterType: agent.adapterType ?? "process",
-        desired: true,
-        actualState: null, // not tracked in v1
-      }));
+    const desiredAgents = agentRows.filter((agent: any) => {
+      const skillKeys: string[] = Array.isArray(agent.skillKeys) ? agent.skillKeys : [];
+      return skillKeys.includes(key);
+    });
+
+    return Promise.all(
+      desiredAgents.map(async (agent: any) => {
+        const adapterType = agent.adapterType ?? "process";
+        const adapter = findActiveServerAdapter(adapterType);
+        let actualState: string | null = null;
+
+        if (!adapter?.listSkills) {
+          actualState = "unsupported";
+        } else {
+          try {
+            const runtimeConfig = await secrets.resolveAdapterConfigForRuntime(
+              agent.companyId,
+              (agent.adapterConfig ?? {}) as Record<string, unknown>,
+            );
+            const snapshot = await adapter.listSkills({
+              agentId: agent.id,
+              companyId: agent.companyId,
+              adapterType,
+              config: runtimeConfig,
+            });
+            actualState = snapshot.entries.find((entry) => entry.key === key)?.state
+              ?? (snapshot.supported ? "missing" : "unsupported");
+          } catch (err) {
+            logger.warn(
+              { err, agentId: agent.id, adapterType },
+              "adapter.listSkills failed in company-skills usage dispatcher",
+            );
+            actualState = "unknown";
+          }
+        }
+
+        return {
+          id: agent.id,
+          name: agent.name,
+          urlKey: normalizeAgentUrlKey(agent.name) ?? agent.id,
+          adapterType,
+          desired: true,
+          actualState,
+        };
+      }),
+    );
   }
 
   async function detail(companyId: string, id: string): Promise<CompanySkillDetail | null> {
@@ -2327,5 +2364,6 @@ export function companySkillService(db: Db) {
     listRuntimeSkillEntries,
     resolveSkillKeys,
     upsertImportedSkills,
+    usage,
   };
 }
