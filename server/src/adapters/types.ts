@@ -14,9 +14,16 @@ export type {
   AdapterEnvironmentTestContext,
   AdapterSessionCodec,
   AdapterModel,
+  AdapterSessionManagement,
+  NativeContextManagement,
+  ResolvedSessionCompactionPolicy,
+  SessionCompactionPolicy,
 } from "@armyofagents/adapter-utils";
 
-import type { ServerAdapterModule as BaseServerAdapterModule } from "@armyofagents/adapter-utils";
+import type {
+  AdapterSessionManagement,
+  ServerAdapterModule as BaseServerAdapterModule,
+} from "@armyofagents/adapter-utils";
 
 /**
  * Declarative schema for adapter configuration UI.
@@ -44,7 +51,7 @@ export interface ServerAdapterModule extends BaseServerAdapterModule {
   supportsInstructionsBundle?: boolean;
   requiresMaterializedRuntimeSkills?: boolean;
   instructionsPathKey?: string;
-  sessionManagement?: unknown;
+  sessionManagement?: AdapterSessionManagement;
   getConfigSchema?: () => Promise<AdapterConfigSchema>;
   getQuotaWindows?: () => unknown;
   detectModel?: (...args: unknown[]) => unknown;

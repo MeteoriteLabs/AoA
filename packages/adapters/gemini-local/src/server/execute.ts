@@ -218,7 +218,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const sessionHandoffNote = asString(
+    context.aoaSessionHandoffMarkdown ?? context.paperclipSessionHandoffMarkdown,
+    "",
+  ).trim();
   const aoaEnvNote = renderAoaEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([

@@ -67,10 +67,16 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import {
+  hasSessionCompactionThresholds,
+  resolveSessionCompactionPolicy,
+  type SessionCompactionPolicy,
+} from "@armyofagents/adapter-utils";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
+const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -354,6 +360,100 @@ function resolveNextSessionState(input: {
     displayId,
     legacySessionId,
   };
+}
+
+type UsageTotals = {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+};
+
+type SessionCompactionDecision = {
+  rotate: boolean;
+  reason: string | null;
+  handoffMarkdown: string | null;
+  previousRunId: string | null;
+};
+
+const heartbeatRunListResultColumns = {
+  resultSummary: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultSummary"),
+  resultResult: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultResult"),
+  resultMessage: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultMessage"),
+  resultError: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultError"),
+  resultTotalCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'total_cost_usd'`.as("resultTotalCostUsd"),
+  resultCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'cost_usd'`.as("resultCostUsd"),
+  resultCostUsdCamel: sql<string | null>`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
+} as const;
+
+function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
+  const parsed = parseObject(usageJson);
+  if (Object.keys(parsed).length === 0) return null;
+
+  const inputTokens = Math.max(
+    0,
+    Math.floor(asNumber(parsed.rawInputTokens, asNumber(parsed.inputTokens, 0))),
+  );
+  const cachedInputTokens = Math.max(
+    0,
+    Math.floor(asNumber(parsed.rawCachedInputTokens, asNumber(parsed.cachedInputTokens, 0))),
+  );
+  const outputTokens = Math.max(
+    0,
+    Math.floor(asNumber(parsed.rawOutputTokens, asNumber(parsed.outputTokens, 0))),
+  );
+
+  if (inputTokens <= 0 && cachedInputTokens <= 0 && outputTokens <= 0) {
+    return null;
+  }
+
+  return {
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+  };
+}
+
+function summarizeHeartbeatRunListResultJson(input: {
+  summary?: string | null;
+  result?: string | null;
+  message?: string | null;
+  error?: string | null;
+  totalCostUsd?: string | null;
+  costUsd?: string | null;
+  costUsdCamel?: string | null;
+}): Record<string, unknown> | null {
+  const summary: Record<string, unknown> = {};
+  for (const [key, value] of [
+    ["summary", input.summary],
+    ["result", input.result],
+    ["message", input.message],
+    ["error", input.error],
+  ] as const) {
+    const normalized = readNonEmptyString(value);
+    if (normalized) summary[key] = normalized;
+  }
+
+  for (const [key, value] of [
+    ["total_cost_usd", input.totalCostUsd],
+    ["cost_usd", input.costUsd],
+    ["costUsd", input.costUsdCamel],
+  ] as const) {
+    const normalized = readNonEmptyString(value);
+    if (!normalized) continue;
+    const parsed = Number(normalized);
+    if (Number.isFinite(parsed)) summary[key] = parsed;
+  }
+
+  return Object.keys(summary).length > 0 ? summary : null;
+}
+
+function formatCount(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "0";
+  return value.toLocaleString("en-US");
+}
+
+export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect): SessionCompactionPolicy {
+  return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
 }
 
 export function heartbeatService(db: Db) {
@@ -1351,6 +1451,163 @@ export function heartbeatService(db: Db) {
     });
   }
 
+  async function getLatestRunForSession(
+    agentId: string,
+    sessionId: string,
+    opts?: { excludeRunId?: string | null },
+  ) {
+    const conditions = [
+      eq(heartbeatRuns.agentId, agentId),
+      eq(heartbeatRuns.sessionIdAfter, sessionId),
+    ];
+    if (opts?.excludeRunId) {
+      conditions.push(sql`${heartbeatRuns.id} <> ${opts.excludeRunId}`);
+    }
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        usageJson: heartbeatRuns.usageJson,
+      })
+      .from(heartbeatRuns)
+      .where(and(...conditions))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getOldestRunForSession(agentId: string, sessionId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.sessionIdAfter, sessionId)))
+      .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function evaluateSessionCompaction(input: {
+    agent: typeof agents.$inferSelect;
+    sessionId: string | null;
+    issueId: string | null;
+  }): Promise<SessionCompactionDecision> {
+    const { agent, sessionId, issueId } = input;
+    if (!sessionId) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: null,
+      };
+    }
+
+    const policy = parseSessionCompactionPolicy(agent);
+    if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: null,
+      };
+    }
+
+    const fetchLimit = Math.max(policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0, 4);
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        createdAt: heartbeatRuns.createdAt,
+        usageJson: heartbeatRuns.usageJson,
+        error: heartbeatRuns.error,
+        ...heartbeatRunListResultColumns,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.sessionIdAfter, sessionId)))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(fetchLimit);
+
+    if (runs.length === 0) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: null,
+      };
+    }
+
+    const latestRun = runs[0] ?? null;
+    const oldestRun =
+      policy.maxSessionAgeHours > 0
+        ? await getOldestRunForSession(agent.id, sessionId)
+        : runs[runs.length - 1] ?? latestRun;
+    const latestRawUsage = readRawUsageTotals(latestRun?.usageJson);
+    const sessionAgeHours =
+      latestRun && oldestRun
+        ? Math.max(
+            0,
+            (new Date(latestRun.createdAt).getTime() - new Date(oldestRun.createdAt).getTime()) / (1000 * 60 * 60),
+          )
+        : 0;
+
+    let reason: string | null = null;
+    if (policy.maxSessionRuns > 0 && runs.length > policy.maxSessionRuns) {
+      reason = `session exceeded ${policy.maxSessionRuns} runs`;
+    } else if (
+      policy.maxRawInputTokens > 0 &&
+      latestRawUsage &&
+      latestRawUsage.inputTokens >= policy.maxRawInputTokens
+    ) {
+      reason =
+        `session raw input reached ${formatCount(latestRawUsage.inputTokens)} tokens ` +
+        `(threshold ${formatCount(policy.maxRawInputTokens)})`;
+    } else if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
+      reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
+    }
+
+    if (!reason || !latestRun) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: latestRun?.id ?? null,
+      };
+    }
+
+    const latestSummary = summarizeHeartbeatRunListResultJson({
+      summary: latestRun?.resultSummary,
+      result: latestRun?.resultResult,
+      message: latestRun?.resultMessage,
+      error: latestRun?.resultError,
+      totalCostUsd: latestRun?.resultTotalCostUsd,
+      costUsd: latestRun?.resultCostUsd,
+      costUsdCamel: latestRun?.resultCostUsdCamel,
+    });
+    const latestTextSummary =
+      readNonEmptyString(latestSummary?.summary) ??
+      readNonEmptyString(latestSummary?.result) ??
+      readNonEmptyString(latestSummary?.message) ??
+      readNonEmptyString(latestRun.error);
+
+    const handoffMarkdown = [
+      "AoA session handoff:",
+      `- Previous session: ${sessionId}`,
+      issueId ? `- Issue: ${issueId}` : "",
+      `- Rotation reason: ${reason}`,
+      latestTextSummary ? `- Last run summary: ${latestTextSummary}` : "",
+      "Continue from the current task state. Rebuild only the minimum context you need.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    return {
+      rotate: true,
+      reason,
+      handoffMarkdown,
+      previousRunId: latestRun.id,
+    };
+  }
+
   async function executeRun(runId: string) {
     let run = await getRun(runId);
     if (!run) return;
@@ -1821,15 +2078,42 @@ export function heartbeatService(db: Db) {
     }
 
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
-    const previousSessionDisplayId = truncateDisplayId(
+    let previousSessionDisplayId = truncateDisplayId(
       taskSessionForRun?.sessionDisplayId ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
         readNonEmptyString(runtimeSessionParams?.sessionId) ??
         runtimeSessionFallback,
     );
+    let runtimeSessionIdForAdapter =
+      readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
+    let runtimeSessionParamsForAdapter = runtimeSessionParams;
+
+    const sessionCompaction = await evaluateSessionCompaction({
+      agent,
+      sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
+      issueId,
+    });
+    if (sessionCompaction.rotate) {
+      context.aoaSessionHandoffMarkdown = sessionCompaction.handoffMarkdown;
+      context.aoaSessionRotationReason = sessionCompaction.reason;
+      context.aoaPreviousSessionId = previousSessionDisplayId ?? runtimeSessionIdForAdapter;
+      runtimeSessionIdForAdapter = null;
+      runtimeSessionParamsForAdapter = null;
+      previousSessionDisplayId = null;
+      if (sessionCompaction.reason) {
+        runtimeWorkspaceWarnings.push(
+          `Starting a fresh session because ${sessionCompaction.reason}.`,
+        );
+      }
+    } else {
+      delete context.aoaSessionHandoffMarkdown;
+      delete context.aoaSessionRotationReason;
+      delete context.aoaPreviousSessionId;
+    }
+
     const runtimeForAdapter = {
-      sessionId: readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback,
-      sessionParams: runtimeSessionParams,
+      sessionId: runtimeSessionIdForAdapter,
+      sessionParams: runtimeSessionParamsForAdapter,
       sessionDisplayId: previousSessionDisplayId,
       taskKey,
     };
