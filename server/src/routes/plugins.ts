@@ -119,15 +119,15 @@ const REPO_ROOT = path.resolve(__dirname, "../../..");
 const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   {
     packageName: "@armyofagents/plugin-hello-world-example",
-    pluginKey: "paperclip.hello-world-example",
+    pluginKey: "aoa.hello-world-example",
     displayName: "Hello World Widget (Example)",
-    description: "Reference UI plugin that adds a simple Hello World widget to the Paperclip dashboard.",
+    description: "Reference UI plugin that adds a simple Hello World widget to the AoA dashboard.",
     localPath: "packages/plugins/examples/plugin-hello-world-example",
     tag: "example",
   },
   {
     packageName: "@armyofagents/plugin-file-browser-example",
-    pluginKey: "paperclip-file-browser-example",
+    pluginKey: "aoa-file-browser-example",
     displayName: "File Browser (Example)",
     description: "Example plugin that adds a Files link in project navigation plus a project detail file browser.",
     localPath: "packages/plugins/examples/plugin-file-browser-example",
@@ -135,9 +135,9 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   },
   {
     packageName: "@armyofagents/plugin-kitchen-sink-example",
-    pluginKey: "paperclip-kitchen-sink-example",
+    pluginKey: "aoa-kitchen-sink-example",
     displayName: "Kitchen Sink (Example)",
-    description: "Reference plugin that demonstrates the current Paperclip plugin API surface, bridge flows, UI extension surfaces, jobs, webhooks, tools, streams, and trusted local workspace/process demos.",
+    description: "Reference plugin that demonstrates the current AoA plugin API surface, bridge flows, UI extension surfaces, jobs, webhooks, tools, streams, and trusted local workspace/process demos.",
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
     tag: "example",
   },

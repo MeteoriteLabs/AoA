@@ -1,6 +1,6 @@
 import type { PluginLauncherRegistration } from "@armyofagents/plugin-sdk";
 
-export const PLUGIN_ID = "paperclip-kitchen-sink-example";
+export const PLUGIN_ID = "aoa-kitchen-sink-example";
 export const PLUGIN_VERSION = "0.1.0";
 export const PAGE_ROUTE = "kitchensink";
 

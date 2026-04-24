@@ -9,7 +9,7 @@ function hashToken(token: string) {
 }
 
 function createToken() {
-  return `pcp_mcp_${randomBytes(24).toString("hex")}`;
+  return `aoa_mcp_${randomBytes(24).toString("hex")}`;
 }
 
 export function mcpService(db: Db) {

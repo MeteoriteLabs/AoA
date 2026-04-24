@@ -11,7 +11,7 @@ import type { PermissionKey, PrincipalType } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 
-const INVITE_TOKEN_PREFIX = "pcp_invite_";
+const INVITE_TOKEN_PREFIX = "aoa_invite_";
 const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const INVITE_TOKEN_SUFFIX_LENGTH = 24;
 const INVITE_TOKEN_MAX_RETRIES = 5;

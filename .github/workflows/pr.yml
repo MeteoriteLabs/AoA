@@ -96,6 +96,79 @@ jobs:
             pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
           fi
 
+  brand-check:
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for stale Paperclip references in user-facing surfaces
+        run: |
+          # Guard against regressions of the AoA rebrand (Sprint 3 polish, rc.4).
+          # Only the highest-signal user-facing patterns are enforced.
+          # Intentional wire-compat/backward-compat residuals are documented
+          # in docs/telemetry.md and CLAUDE.md and explicitly allowed here:
+          #   - PAPERCLIP_* env vars (mirrored to AOA_*)
+          #   - paperclipai CLI bin alias
+          #   - paperclipPlugin / __paperclipPluginBridge__ (plugin wire protocol)
+          #   - paperclip-feedback-envelope-v2 / paperclip-feedback-bundle-v2
+          #   - hermes-paperclip-adapter (external npm package)
+          #   - PaperclipPluginManifest / paperclipConfigSchema (type aliases)
+          failed=0
+
+          # 1. No pcp_ token prefixes in source (all renamed to aoa_).
+          pcp_hits=$(grep -rnE '"pcp_(invite|mcp|claim)_|'\''pcp_(invite|mcp|claim)_' \
+            --include='*.ts' --include='*.tsx' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src ui/src cli/src packages/plugins/examples 2>/dev/null || true)
+          if [ -n "$pcp_hits" ]; then
+            echo "::error::Found pcp_ token prefixes in source (should be aoa_):"
+            printf '%s\n' "$pcp_hits"
+            failed=1
+          fi
+
+          # 2. No "paperclip.*-example" plugin keys in source (renamed to aoa.*).
+          plugin_hits=$(grep -rnE '"paperclip[.-](hello-world|file-browser|kitchen-sink)' \
+            --include='*.ts' --include='*.tsx' --include='*.md' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src ui/src cli/src packages/plugins/examples 2>/dev/null \
+            | grep -v 'mapLegacyPaperclipKey' || true)
+          if [ -n "$plugin_hits" ]; then
+            echo "::error::Found paperclip.* plugin keys in source (should be aoa.*):"
+            printf '%s\n' "$plugin_hits"
+            failed=1
+          fi
+
+          # 3. No "PAPERCLIP" ASCII art blocks (renamed to AOA).
+          banner_hits=$(grep -rnE '"██████╗.*PAPERCLIP|PAPERCLIP.*██████╗' \
+            --include='*.ts' --include='*.tsx' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src ui/src cli/src packages/plugins/examples 2>/dev/null || true)
+          if [ -n "$banner_hits" ]; then
+            echo "::error::Found PAPERCLIP ASCII banner in source (rename to AOA):"
+            printf '%s\n' "$banner_hits"
+            failed=1
+          fi
+
+          # 4. No "Start Paperclip" or "Paperclip dashboard" user-visible strings.
+          ui_hits=$(grep -rnE '"Start Paperclip|Paperclip dashboard|Paperclip plugin API|Paperclip setup' \
+            --include='*.ts' --include='*.tsx' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src ui/src cli/src packages/plugins/examples 2>/dev/null || true)
+          if [ -n "$ui_hits" ]; then
+            echo "::error::Found user-visible Paperclip strings in source (should say AoA):"
+            printf '%s\n' "$ui_hits"
+            failed=1
+          fi
+
+          if [ "$failed" -eq 1 ]; then
+            exit 1
+          fi
+          echo "Brand check passed: no user-facing Paperclip regressions."
+
   verify:
     needs: [policy]
     runs-on: ubuntu-latest
