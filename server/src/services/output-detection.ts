@@ -77,6 +77,10 @@ export interface OutputDetectionInput {
   agentId: string;
   cwd: string;
   startedAt: Date;
+  // Retained for caller compatibility (heartbeat.ts populates it). No longer
+  // dispatched on since Sprint 2A removed the API adapters; every remaining
+  // adapter has a workspace. Safe to drop in a future cleanup pass once all
+  // call sites are audited.
   adapterType: string | null;
   adapterHints?: Array<{ path: string; label?: string; artifactType?: string }>;
   issueId: string | null;

@@ -9,7 +9,13 @@ interface ChatbarControlsProps {
   defaultModel: string | null;
   /** Currently selected model override */
   selectedModel: string | null;
-  onModelChange: (model: string | null) => void;
+  /**
+   * Retained for caller compatibility. Sprint 2A removed the API-mode model
+   * picker; CLI tools manage their own model selection. Still accepted by
+   * WorkspaceTimeline so it can wire up `setModelOverride`, but not called
+   * from within this component anymore. Optional from Sprint 2A onward.
+   */
+  onModelChange?: (model: string | null) => void;
   onSend: () => void;
   onAttach?: () => void;
   sendDisabled: boolean;
