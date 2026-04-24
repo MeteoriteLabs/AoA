@@ -1741,8 +1741,11 @@ export function pluginLoader(
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @armyofagents/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
+      // Node 24's ESM loader rejects raw absolute paths as --import values;
+      // on Windows it sees `C:\...` and treats `C:` as a URL scheme. Convert
+      // to a file:// URL so the loader accepts it cross-platform.
       if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
-        workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+        workerOptions.execArgv = ["--import", pathToFileURL(DEV_TSX_LOADER_PATH).href];
       }
 
       await workerManager.startWorker(pluginId, workerOptions);
