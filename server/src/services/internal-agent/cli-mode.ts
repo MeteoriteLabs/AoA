@@ -178,10 +178,22 @@ export function cliModeService(db: Db) {
             return;
           }
 
-          const args = argsBuilder(configPath, params.content);
+          // Windows note: CLI tools like `claude`, `codex`, `opencode` are
+          // installed as .cmd wrappers. Node's `spawn` can only launch
+          // .bat/.cmd files with `shell: true` (direct spawn raises
+          // EINVAL). `shell: true` invokes cmd.exe which forwards args to
+          // the shell — so user-controlled content (params.content) must
+          // be escaped to prevent cmd injection. Other args (config path,
+          // flag literals) come from constants and tmpdir, not user input.
+          const isWin = platform() === "win32";
+          const safeContent = isWin
+            ? `"${params.content.replace(/"/g, '""').replace(/%/g, "%%").replace(/\^/g, "^^")}"`
+            : params.content;
+          const args = argsBuilder(configPath, safeContent);
           const cliProcess = spawn(binary, args, {
             stdio: ["pipe", "pipe", "pipe"],
             env: { ...process.env },
+            shell: isWin,
           });
 
           session = {
