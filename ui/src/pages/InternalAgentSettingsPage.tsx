@@ -30,13 +30,10 @@ import { PageTabBar } from "../components/PageTabBar";
 import { PageSkeleton } from "../components/PageSkeleton";
 import {
   AGENT_CAPABILITIES,
-  AGENT_MODELS_BY_PROVIDER,
-  AGENT_PROVIDERS,
   CLI_TOOLS,
   NOTIFICATION_PREFERENCES,
 } from "@armyofagents/shared";
 import type {
-  AgentProvider,
   AgentCapability,
   NotificationPreference,
   UpdateInternalAgentConfig,

@@ -42,7 +42,7 @@ export async function detectCliTool(tool: string): Promise<CLIDetectionResult> {
   } catch {
     return {
       available: false,
-      error: `CLI tool '${tool}' (binary: '${binary}') not found in PATH. Install it or switch to API mode in Settings.`,
+      error: `CLI tool '${tool}' (binary: '${binary}') not found in PATH. Install the CLI and ensure it's on your PATH, then try again.`,
     };
   }
 }
@@ -141,7 +141,7 @@ export function cliModeService(db: Db) {
       if (!config.cliTool) {
         yield {
           type: "error",
-          message: "No CLI tool configured. Go to Settings and select a CLI tool, or switch to API mode.",
+          message: "No CLI tool configured. Go to Settings → Commander and select a CLI tool (claude, codex, or opencode).",
         };
         return;
       }
