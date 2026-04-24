@@ -117,6 +117,8 @@ function IdentityCard({
           size="icon-sm"
           className="shrink-0 text-muted-foreground hover:text-foreground"
           onClick={onEdit}
+          aria-label={`Edit ${label}`}
+          title={`Edit ${label}`}
         >
           <Pencil className="h-3.5 w-3.5" />
         </Button>

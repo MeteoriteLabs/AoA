@@ -490,7 +490,7 @@ export function Routines() {
 
           <div className="flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
-              After creation, AoA takes you straight to trigger setup for schedules, webhooks, or internal runs.
+              After creation, AoA takes you straight to trigger setup for schedules. Webhook triggers ship in a future release.
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button

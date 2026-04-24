@@ -528,9 +528,12 @@ function SkillList({
   });
 
   if (filteredSkills.length === 0) {
+    const emptyMessage = skillFilter.trim().length > 0
+      ? "No skills match this filter."
+      : "No custom skills yet. Built-in skills (like paperclip-create-agent) are managed by the underlying CLI tool and aren't shown here.";
     return (
       <div className="px-4 py-6 text-sm text-muted-foreground">
-        No skills match this filter.
+        {emptyMessage}
       </div>
     );
   }

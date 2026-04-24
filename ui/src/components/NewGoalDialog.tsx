@@ -25,7 +25,8 @@ import {
   Target,
   Layers,
   FolderOpen,
-  Check,
+  Square,
+  CheckSquare,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
@@ -165,6 +166,7 @@ export function NewGoalDialog() {
               size="icon-xs"
               className="text-muted-foreground"
               onClick={() => setExpanded(!expanded)}
+              aria-label={expanded ? "Collapse dialog" : "Expand dialog"}
             >
               {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
             </Button>
@@ -173,6 +175,7 @@ export function NewGoalDialog() {
               size="icon-xs"
               className="text-muted-foreground"
               onClick={() => { reset(); closeNewGoal(); }}
+              aria-label="Close new goal dialog"
             >
               <span className="text-lg leading-none">&times;</span>
             </Button>
@@ -307,7 +310,7 @@ export function NewGoalDialog() {
               >
                 <FolderOpen className="h-3 w-3 text-muted-foreground" />
                 {appliedProjectIds.length === 0
-                  ? "Dept / Project *"
+                  ? "Depts / Projects (one or more) *"
                   : `${appliedProjectIds.length} selected`}
               </button>
             </PopoverTrigger>
@@ -330,6 +333,8 @@ export function NewGoalDialog() {
                       return (
                         <button
                           key={p.id}
+                          role="checkbox"
+                          aria-checked={selected}
                           className={cn(
                             "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
                             selected && "bg-accent",
@@ -337,9 +342,9 @@ export function NewGoalDialog() {
                           onClick={() => toggleProjectId(p.id)}
                         >
                           {selected ? (
-                            <Check className="h-3 w-3 shrink-0" />
+                            <CheckSquare className="h-3.5 w-3.5 shrink-0 text-primary" />
                           ) : (
-                            <span className="w-3 shrink-0" />
+                            <Square className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           )}
                           <span className="truncate">{p.name}</span>
                           <span className="ml-auto text-[10px] text-muted-foreground capitalize">

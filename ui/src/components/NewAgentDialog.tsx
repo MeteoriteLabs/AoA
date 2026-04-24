@@ -245,10 +245,22 @@ export function NewAgentDialog() {
             <span>New agent</span>
           </div>
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={() => setExpanded(!expanded)}>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="text-muted-foreground"
+              onClick={() => setExpanded(!expanded)}
+              aria-label={expanded ? "Collapse dialog" : "Expand dialog"}
+            >
               {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
             </Button>
-            <Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={() => { reset(); closeNewAgent(); }}>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="text-muted-foreground"
+              onClick={() => { reset(); closeNewAgent(); }}
+              aria-label="Close new agent dialog"
+            >
               <span className="text-lg leading-none">&times;</span>
             </Button>
           </div>
