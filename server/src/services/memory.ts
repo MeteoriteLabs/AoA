@@ -7,7 +7,7 @@ import { resolveApiKey } from "../adapters/api-common.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { getDbCapabilities } from "./db-capabilities.js";
-import { memoryItemsSelection } from "./memory-projection.js";
+import { buildMemoryInsert, memoryItemsSelection } from "./memory-projection.js";
 
 const log = logger.child({ service: "memory" });
 
@@ -114,19 +114,23 @@ export function memoryService(db: Db) {
       const status = data.source === "agent"
         ? "pending"
         : (data.status ?? (data.source === "founder" ? "approved" : "pending"));
-      // Embedding is NULL on create — background worker generates it asynchronously
-      // when pgvector is available. When absent, we omit the column entirely so
-      // Drizzle doesn't reference a non-existent column.
+      // Drizzle 0.38's .insert(table).values({...}) enumerates EVERY schema
+      // column — including `embedding` — and fills unspecified ones with SQL
+      // DEFAULT. On installs without pgvector, the `embedding` column doesn't
+      // exist (migration 0038 creates it conditionally), so Drizzle's column
+      // list references a non-existent column and postgres errors.
+      //
+      // Work around this by building the insert via a raw sql template that
+      // omits `embedding` when pgvector is absent. The RETURNING projection
+      // stays in sync via memoryItemsSelection().
       const caps = getDbCapabilities();
       const values: Record<string, unknown> = { ...data, companyId, status };
       if (caps.hasVectorSupport) {
         values.embedding = null;
       }
-      return (tx ?? db)
-        .insert(memoryItems)
-        .values(values as typeof memoryItems.$inferInsert)
-        .returning(memoryItemsSelection(caps.hasVectorSupport))
-        .then((rows) => rows[0]);
+      return buildMemoryInsert((tx ?? db) as Db, values, caps.hasVectorSupport).then(
+        (rows) => rows[0],
+      );
     },
 
     update: (companyId: string, id: string, data: Partial<typeof memoryItems.$inferInsert>) => {
