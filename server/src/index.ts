@@ -32,6 +32,7 @@ import {
   restartDesiredRuntimeServicesOnStartup,
 } from "./services/workspace-runtime.js";
 import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
+import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { onBudgetExhausted } from "./services/budget-hooks.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -529,6 +530,10 @@ if (config.heartbeatSchedulerEnabled) {
   // Periodic sweep: mark stale workspaces as cleanup-eligible based on project TTL.
   // Sweeper no-ops when the instance-level experimental flag is off.
   scheduleTtlSweeper(db as any);
+
+  // Retry filesystem cleanup for workspaces stuck in `cleanup_failed` (Windows
+  // file-handle races). Runs every 60s; promotes to `archived` once rm succeeds.
+  scheduleCleanupRetrySweeper(db as any);
 
   setInterval(() => {
     void heartbeat
