@@ -281,6 +281,7 @@ vi.mock("@/components/ui/sheet", () => ({
   ),
   SheetHeader: ({ children }: any) => <div>{children}</div>,
   SheetTitle: ({ children }: any) => <div>{children}</div>,
+  SheetDescription: ({ children }: any) => <div>{children}</div>,
 }));
 
 vi.mock("@/components/ui/scroll-area", () => ({
