@@ -36,6 +36,7 @@ import {
   ChevronRight,
   DollarSign,
   History,
+  Plus,
   Puzzle,
   Upload,
   X,
@@ -54,6 +55,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { Identity } from "../components/Identity";
 import { StatusBadge } from "../components/StatusBadge";
 import { ActivityRow } from "../components/ActivityRow";
+import { CreateBudgetPolicyDialog } from "../components/finance/CreateBudgetPolicyDialog";
 import type { Agent } from "@armyofagents/shared";
 
 const SETTINGS_TABS = [
@@ -732,6 +734,7 @@ function BudgetSection() {
   const [preset, setPreset] = useState<DatePreset>("mtd");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  const [newPolicyOpen, setNewPolicyOpen] = useState(false);
 
   const { from, to } = useMemo(() => {
     if (preset === "custom") {
@@ -809,18 +812,34 @@ function BudgetSection() {
   return (
     <div className="space-y-6">
       {/* Cross-link to full Budget page (primary entry point for finance analytics) */}
-      <Link
-        to="../budget"
-        className="group flex items-center justify-between gap-3 rounded-md border border-primary/40 bg-primary/5 px-4 py-3 hover:bg-primary/10 hover:border-primary/60 transition-colors"
-      >
-        <div className="min-w-0">
-          <p className="text-sm font-medium">Open full Budget page</p>
-          <p className="text-xs text-muted-foreground">
-            Breakdown, budgets, quotas, and the finance ledger in one place. This tab shows a quick summary.
-          </p>
-        </div>
-        <ArrowRight className="h-4 w-4 text-primary group-hover:translate-x-0.5 transition-transform shrink-0" />
-      </Link>
+      <div className="flex flex-wrap items-stretch gap-3">
+        <Link
+          to="../budget"
+          className="group flex-1 min-w-[260px] flex items-center justify-between gap-3 rounded-md border border-primary/40 bg-primary/5 px-4 py-3 hover:bg-primary/10 hover:border-primary/60 transition-colors"
+        >
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Open full Budget page</p>
+            <p className="text-xs text-muted-foreground">
+              Breakdown, budgets, quotas, and the finance ledger in one place. This tab shows a quick summary.
+            </p>
+          </div>
+          <ArrowRight className="h-4 w-4 text-primary group-hover:translate-x-0.5 transition-transform shrink-0" />
+        </Link>
+        <Button
+          variant="outline"
+          className="shrink-0 self-center"
+          onClick={() => setNewPolicyOpen(true)}
+        >
+          <Plus className="h-3.5 w-3.5 mr-1.5" />
+          New Budget Policy
+        </Button>
+      </div>
+
+      <CreateBudgetPolicyDialog
+        open={newPolicyOpen}
+        onOpenChange={setNewPolicyOpen}
+        onCreated={() => refetchOverview()}
+      />
 
       {/* Date range selector */}
       <div className="flex flex-wrap items-center gap-2">

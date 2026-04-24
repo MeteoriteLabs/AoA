@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { DollarSign } from "lucide-react";
+import { DollarSign, Plus } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -13,6 +13,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "../components/EmptyState";
 import { BudgetPolicyCard } from "../components/finance/BudgetPolicyCard";
 import { BudgetIncidentCard } from "../components/finance/BudgetIncidentCard";
+import { CreateBudgetPolicyDialog } from "../components/finance/CreateBudgetPolicyDialog";
 import { ProviderQuotaCard } from "../components/finance/ProviderQuotaCard";
 import { FinanceBillerCard } from "../components/finance/FinanceBillerCard";
 import { FinanceKindCard } from "../components/finance/FinanceKindCard";
@@ -86,6 +87,7 @@ export function Costs() {
   const [preset, setPreset] = useState<DatePreset>("mtd");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  const [newPolicyOpen, setNewPolicyOpen] = useState(false);
 
   const { from, to } = useMemo(() => {
     if (preset === "custom") {
@@ -252,7 +254,10 @@ export function Costs() {
       )}
 
       {/* Budgets (full-width when populated) */}
-      <BudgetsSection overview={budgetOverviewQuery.data} />
+      <BudgetsSection
+        overview={budgetOverviewQuery.data}
+        onNewPolicy={() => setNewPolicyOpen(true)}
+      />
 
       {/* Quotas (full-width when populated) */}
       <QuotasSection
@@ -272,6 +277,11 @@ export function Costs() {
         billerRows={financeByBillerQuery.data ?? []}
         kindRows={financeByKindQuery.data ?? []}
         events={financeListQuery.data ?? []}
+      />
+
+      <CreateBudgetPolicyDialog
+        open={newPolicyOpen}
+        onOpenChange={setNewPolicyOpen}
       />
     </div>
   );
@@ -445,8 +455,10 @@ function QuotasSection({
 // ─── Budgets section ───────────────────────────────────────────────────
 function BudgetsSection({
   overview,
+  onNewPolicy,
 }: {
   overview: { policies: import("@armyofagents/shared").BudgetPolicySummary[]; openIncidents: import("@armyofagents/shared").BudgetIncident[] } | undefined;
+  onNewPolicy: () => void;
 }) {
   const policies = overview?.policies ?? [];
   const incidents = overview?.openIncidents ?? [];
@@ -454,16 +466,35 @@ function BudgetsSection({
 
   if (!hasAny) {
     return (
-      <SectionPlaceholder
-        title="Budgets"
-        description="No budget policies configured yet. Create one in Settings → Budget."
-      />
+      <Card>
+        <CardContent className="p-4 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold">Budgets</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                No budget policies configured yet. Create one to cap monthly spend for the
+                whole company or a single agent.
+              </p>
+            </div>
+            <Button size="sm" onClick={onNewPolicy} className="shrink-0">
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              New Budget Policy
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     );
   }
 
   return (
     <div className="space-y-3">
-      <h3 className="text-sm font-semibold">Budgets</h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold">Budgets</h3>
+        <Button size="sm" variant="outline" onClick={onNewPolicy}>
+          <Plus className="h-3.5 w-3.5 mr-1.5" />
+          New Budget Policy
+        </Button>
+      </div>
       {incidents.length > 0 && (
         <div className="grid gap-3 md:grid-cols-2">
           {incidents.map((incident) => (
