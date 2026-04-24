@@ -197,6 +197,31 @@ export function costRoutes(db: Db) {
     res.status(201).json(policy);
   });
 
+  router.delete("/companies/:companyId/budgets/policies/:policyId", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    const policyId = req.params.policyId as string;
+    assertCompanyAccess(req, companyId);
+    const deleted = await budgets.deletePolicy(companyId, policyId);
+    if (!deleted) {
+      res.status(404).json({ error: "Budget policy not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "budget.policy_deleted",
+      entityType: "company",
+      entityId: companyId,
+      details: { policyId },
+    });
+    res.json({ ok: true });
+  });
+
   router.post("/companies/:companyId/budget-incidents/:incidentId/resolve", validate(resolveBudgetIncidentSchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;

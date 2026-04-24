@@ -1,4 +1,4 @@
-import { AlertTriangle, Pencil, ShieldAlert, Wallet } from "lucide-react";
+import { AlertTriangle, Pencil, ShieldAlert, Trash2, Wallet } from "lucide-react";
 import type { BudgetPolicySummary } from "@armyofagents/shared";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -35,9 +35,10 @@ function windowLabel(windowKind: string) {
 export interface BudgetPolicyCardProps {
   policy: BudgetPolicySummary;
   onEdit?: (policy: BudgetPolicySummary) => void;
+  onDelete?: (policy: BudgetPolicySummary) => void;
 }
 
-export function BudgetPolicyCard({ policy, onEdit }: BudgetPolicyCardProps) {
+export function BudgetPolicyCard({ policy, onEdit, onDelete }: BudgetPolicyCardProps) {
   const progress = policy.amountCents > 0
     ? Math.min(100, Math.max(0, policy.utilizationPercent))
     : 0;
@@ -123,17 +124,31 @@ export function BudgetPolicyCard({ policy, onEdit }: BudgetPolicyCardProps) {
           </div>
         </div>
 
-        {onEdit && (
-          <div className="flex justify-end">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7"
-              onClick={() => onEdit(policy)}
-            >
-              <Pencil className="h-3.5 w-3.5 mr-1.5" />
-              Edit
-            </Button>
+        {(onEdit || onDelete) && (
+          <div className="flex justify-end gap-1">
+            {onEdit && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7"
+                onClick={() => onEdit(policy)}
+              >
+                <Pencil className="h-3.5 w-3.5 mr-1.5" />
+                Edit
+              </Button>
+            )}
+            {onDelete && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-red-600 hover:text-red-700 dark:text-red-400"
+                onClick={() => onDelete(policy)}
+                aria-label={`Delete ${policy.scopeName} budget policy`}
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                Delete
+              </Button>
+            )}
           </div>
         )}
       </CardContent>

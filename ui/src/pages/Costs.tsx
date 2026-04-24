@@ -111,6 +111,16 @@ export function Costs() {
     queryFn: () => budgetsApi.overview(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const costsQueryClient = useQueryClient();
+  const deletePolicyMutation = useMutation({
+    mutationFn: (policyId: string) =>
+      budgetsApi.deletePolicy(selectedCompanyId!, policyId),
+    onSuccess: () => {
+      costsQueryClient.invalidateQueries({
+        queryKey: ["budgets", "overview", selectedCompanyId],
+      });
+    },
+  });
   const quotasQuery = useQuery({
     queryKey: ["quotas", selectedCompanyId],
     queryFn: () => quotasApi.list(selectedCompanyId!),
@@ -257,6 +267,11 @@ export function Costs() {
       <BudgetsSection
         overview={budgetOverviewQuery.data}
         onNewPolicy={() => setNewPolicyOpen(true)}
+        onDeletePolicy={(policy) => {
+          if (!selectedCompanyId) return;
+          if (!window.confirm(`Delete budget policy for ${policy.scopeName}? This cannot be undone.`)) return;
+          deletePolicyMutation.mutate(policy.id);
+        }}
       />
 
       {/* Quotas (full-width when populated) */}
@@ -456,9 +471,11 @@ function QuotasSection({
 function BudgetsSection({
   overview,
   onNewPolicy,
+  onDeletePolicy,
 }: {
   overview: { policies: import("@armyofagents/shared").BudgetPolicySummary[]; openIncidents: import("@armyofagents/shared").BudgetIncident[] } | undefined;
   onNewPolicy: () => void;
+  onDeletePolicy?: (policy: import("@armyofagents/shared").BudgetPolicySummary) => void;
 }) {
   const policies = overview?.policies ?? [];
   const incidents = overview?.openIncidents ?? [];
@@ -505,7 +522,11 @@ function BudgetsSection({
       {policies.length > 0 && (
         <div className="grid gap-3 md:grid-cols-2">
           {policies.map((policy) => (
-            <BudgetPolicyCard key={policy.id} policy={policy} />
+            <BudgetPolicyCard
+              key={policy.id}
+              policy={policy}
+              onDelete={onDeletePolicy}
+            />
           ))}
         </div>
       )}

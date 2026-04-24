@@ -63,6 +63,12 @@ export interface IssueFilters {
   projectId?: string;
   labelId?: string;
   q?: string;
+  /**
+   * Filter by parent task. Use `null` to select only top-level tasks (no parent).
+   * Use a UUID string to select children of a specific parent.
+   * Omit to include all tasks regardless of parentage.
+   */
+  parentId?: string | null;
 }
 
 export function pickWorkspaceInheritanceSourceIssueId(input: {
@@ -477,6 +483,13 @@ export function issueService(db: Db) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters && Object.prototype.hasOwnProperty.call(filters, "parentId")) {
+        conditions.push(
+          filters.parentId === null
+            ? isNull(issues.parentId)
+            : eq(issues.parentId, filters.parentId as string),
+        );
+      }
       if (filters?.labelId) {
         const labeledIssueIds = await db
           .select({ issueId: issueLabels.issueId })

@@ -264,6 +264,20 @@ export function budgetService(db: Db) {
       return summaries;
     },
 
+    // ----- deletePolicy -----
+    async deletePolicy(companyId: string, policyId: string): Promise<boolean> {
+      const deleted = await db
+        .delete(budgetPolicies)
+        .where(
+          and(
+            eq(budgetPolicies.id, policyId),
+            eq(budgetPolicies.companyId, companyId),
+          ),
+        )
+        .returning({ id: budgetPolicies.id });
+      return deleted.length > 0;
+    },
+
     // ----- listOpenIncidents -----
     async listOpenIncidents(companyId: string) {
       const incidents = await db

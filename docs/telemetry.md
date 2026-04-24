@@ -77,3 +77,22 @@ is the same durable local write that backs the fallback path.
 - Envelope shapes (feedback vs plugin_telemetry) are disjoint — route on
   the `kind` field for `plugin_telemetry`; the vote envelope uses
   `schemaVersion: "paperclip-feedback-envelope-v2"`.
+
+## Bundle envelope schemaVersion
+
+The feedback vote bundle's `payloadSnapshot.schemaVersion` reads
+`paperclip-feedback-envelope-v2` (and `bundleVersion` reads
+`paperclip-feedback-bundle-v2`). **This is intentional wire-format
+compatibility** with downstream feedback receivers originally built for
+Paperclip bundles — AoA was forked from Paperclip and the telemetry
+receiver wire format predates the rebrand.
+
+Do not rename these literals without coordinating with the telemetry
+endpoint operator. If you need to ship a new schema shape, cut a v3
+constant (`aoa-feedback-envelope-v3`) alongside v2 and have consumers
+pick the latest they understand.
+
+The constants live in `server/src/services/feedback-bundles.ts`
+(`FEEDBACK_SCHEMA_VERSION`, `FEEDBACK_BUNDLE_VERSION`) and are mirrored
+in the `feedback_exports` table defaults
+(`packages/db/src/schema/feedback_exports.ts`).

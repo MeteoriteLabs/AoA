@@ -220,6 +220,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
+    const parentIdRaw = req.query.parentId;
+    let parentIdFilter: string | null | undefined;
+    if (typeof parentIdRaw === "string") {
+      parentIdFilter = parentIdRaw === "null" || parentIdRaw === "" ? null : parentIdRaw;
+    }
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
@@ -229,8 +235,21 @@ export function issueRoutes(db: Db, storage: StorageService) {
       projectId: req.query.projectId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
+      ...(parentIdFilter !== undefined ? { parentId: parentIdFilter } : {}),
     });
     res.json(result);
+  });
+
+  // Explicit 404 for the common mis-path /companies/:cid/issues/:id — the
+  // canonical issue-by-id endpoint is unprefixed at /api/issues/:id. Placed
+  // AFTER the list handler so it doesn't intercept GET /companies/:cid/issues.
+  router.all("/companies/:companyId/issues/:id", (req, res) => {
+    const id = req.params.id as string;
+    res.status(404).json({
+      error: "Issue endpoint is unprefixed",
+      hint: `Use /api/issues/${id} instead`,
+      correctRoute: `/api/issues/${id}`,
+    });
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {

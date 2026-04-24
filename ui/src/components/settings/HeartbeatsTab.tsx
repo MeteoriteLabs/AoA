@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Clock3 } from "lucide-react";
 import type { InstanceSchedulerHeartbeatAgent } from "@armyofagents/shared";
@@ -8,6 +8,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { queryKeys } from "@/lib/queryKeys";
 import { timeAgo } from "@/lib/timeAgo";
 
@@ -37,9 +44,23 @@ export function HeartbeatsTabView({
   onToggle,
   onDisableAll,
 }: HeartbeatsTabViewProps) {
-  const activeCount = agents.filter((a) => a.schedulerActive).length;
-  const disabledCount = agents.length - activeCount;
-  const enabledCount = agents.filter((a) => a.heartbeatEnabled).length;
+  const [companyFilter, setCompanyFilter] = useState<string>("__all__");
+  const companyOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const a of agents) {
+      if (!map.has(a.companyId)) map.set(a.companyId, a.companyName);
+    }
+    return Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [agents]);
+  const filteredAgents = useMemo(() => {
+    if (companyFilter === "__all__") return agents;
+    return agents.filter((a) => a.companyId === companyFilter);
+  }, [agents, companyFilter]);
+  const activeCount = filteredAgents.filter((a) => a.schedulerActive).length;
+  const disabledCount = filteredAgents.length - activeCount;
+  const enabledCount = filteredAgents.filter((a) => a.heartbeatEnabled).length;
   const anyEnabled = enabledCount > 0;
   const [disableAllConfirmOpen, setDisableAllConfirmOpen] = useState(false);
 
@@ -65,11 +86,35 @@ export function HeartbeatsTabView({
           </span>{" "}
           disabled
         </span>
+        {companyOptions.length > 1 && (
+          <div className="ml-auto flex items-center gap-2">
+            <label htmlFor="heartbeats-company-filter" className="text-xs shrink-0">
+              Company
+            </label>
+            <Select value={companyFilter} onValueChange={setCompanyFilter}>
+              <SelectTrigger
+                id="heartbeats-company-filter"
+                className="h-7 w-40 text-xs"
+                aria-label="Filter heartbeats by company"
+              >
+                <SelectValue placeholder="All companies" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All companies</SelectItem>
+                {companyOptions.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         {anyEnabled && (
           <Button
             variant="destructive"
             size="sm"
-            className="ml-auto h-7 text-xs"
+            className={companyOptions.length > 1 ? "h-7 text-xs" : "ml-auto h-7 text-xs"}
             disabled={isDisablingAll}
             onClick={() => setDisableAllConfirmOpen(true)}
           >
@@ -84,7 +129,7 @@ export function HeartbeatsTabView({
         </div>
       )}
 
-      {agents.length === 0 ? (
+      {filteredAgents.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
             <Clock3 className="h-6 w-6 opacity-60" />
@@ -95,7 +140,7 @@ export function HeartbeatsTabView({
         <Card>
           <CardContent className="p-0">
             <div className="divide-y">
-              {agents.map((agent) => {
+              {filteredAgents.map((agent) => {
                 const saving = isTogglingId === agent.id;
                 return (
                   <div
@@ -109,6 +154,13 @@ export function HeartbeatsTabView({
                       {agent.schedulerActive ? "On" : "Off"}
                     </Badge>
                     <span className="font-medium truncate">{agent.agentName}</span>
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 text-[10px] px-1.5 py-0 font-normal text-muted-foreground"
+                      title={agent.companyName}
+                    >
+                      {agent.companyIssuePrefix ?? agent.companyName}
+                    </Badge>
                     <span className="hidden sm:inline text-muted-foreground truncate">
                       {humanize(agent.title ?? agent.role)}
                     </span>
@@ -147,7 +199,7 @@ export function HeartbeatsTabView({
         title={`Disable timer heartbeats for all ${enabledCount} enabled ${enabledCount === 1 ? "agent" : "agents"}?`}
         confirmLabel="Disable all"
         onConfirm={() => {
-          onDisableAll(agents);
+          onDisableAll(filteredAgents);
           setDisableAllConfirmOpen(false);
         }}
       />

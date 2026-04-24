@@ -400,12 +400,19 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     return options;
   }, [agents, orderedProjects]);
 
+  const { data: childIssuesData } = useQuery({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "children", issue?.id],
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, { parentId: issue!.id }),
+    enabled: !!selectedCompanyId && !!issue?.id,
+  });
+
   const childIssues = useMemo(() => {
-    if (!allIssues || !issue) return [];
-    return allIssues
-      .filter((i) => i.parentId === issue.id)
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }, [allIssues, issue]);
+    if (!childIssuesData) return [];
+    return [...childIssuesData].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+  }, [childIssuesData]);
 
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
@@ -810,7 +817,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                   <ExternalLink className="h-3.5 w-3.5" />
                   Open Workspace
                 </Button>
-                <Button variant="ghost" size="icon-xs" onClick={onClose}>
+                <Button variant="ghost" size="icon-xs" onClick={onClose} aria-label="Close workspace view">
                   <X className="h-4 w-4" />
                 </Button>
               </div>
@@ -866,6 +873,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                       size="icon-xs"
                       className="shrink-0"
                       title="Open in LLM"
+                      aria-label="Open in LLM"
                       disabled={contextLoading}
                     >
                       <Sparkles className="h-4 w-4" />
@@ -900,7 +908,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                 </Popover>
                 <Popover open={moreOpen} onOpenChange={setMoreOpen}>
                   <PopoverTrigger asChild>
-                    <Button variant="ghost" size="icon-xs" className="shrink-0">
+                    <Button variant="ghost" size="icon-xs" className="shrink-0" aria-label="More task actions">
                       <MoreHorizontal className="h-4 w-4" />
                     </Button>
                   </PopoverTrigger>
