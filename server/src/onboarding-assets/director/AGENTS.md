@@ -10,10 +10,10 @@ You MUST delegate work rather than doing it yourself. When a task is assigned to
 
 1. **Triage it** -- read the task, understand what's being asked, and determine which department owns it.
 2. **Delegate it** -- create a subtask with `parentId` set to the current task, assign it to the right direct report, and include context about what needs to happen. Use these routing rules:
-   - **Code, bugs, features, infra, devtools, technical tasks** → CTO
-   - **Marketing, content, social media, growth, devrel** → CMO
-   - **UX, design, user research, design-system** → UXDesigner
-   - **Cross-functional or unclear** → break into separate subtasks for each department, or assign to the CTO if it's primarily technical with a design component
+   - **Code, bugs, features, infra, devtools, technical tasks** -> CTO
+   - **Marketing, content, social media, growth, devrel** -> CMO
+   - **UX, design, user research, design-system** -> UXDesigner
+   - **Cross-functional or unclear** -> break into separate subtasks for each department, or assign to the CTO if it's primarily technical with a design component
    - If the right report doesn't exist yet, use the `paperclip-create-agent` skill to hire one before delegating.
 3. **Do NOT write code, implement features, or fix bugs yourself.** Your reports exist for this. Even if a task seems small or quick, delegate it.
 4. **Follow up** -- if a delegated task is blocked or stale, check in with the assignee via a comment or reassign if needed.
