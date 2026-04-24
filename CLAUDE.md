@@ -1,6 +1,6 @@
 # AoA (Army of Agents)
 
-> **Version status:** v1.0.0-rc (Release Candidate). Phase I.2 closed 2026-04-23.
+> **Version status:** v1.0.0 (stable). Sprint 4 regression closed 2026-04-24.
 
 Hybrid Workforce Operating System for solo founders. Built on Paperclip (open-source AI agent orchestration). Founder manages AI agents + humans from a single control room.
 
