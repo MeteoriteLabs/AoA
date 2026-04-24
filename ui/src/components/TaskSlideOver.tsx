@@ -35,7 +35,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -767,6 +767,17 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
           }
         }}
       >
+        {/* Screen-reader-only title and description so the underlying Radix
+            Dialog has an accessible name. Sheet is built on Dialog; Task 17's
+            a11y sweep missed SheetContent. Silences the DialogTitle warning
+            emitted 8+ times per task slideover open. (Finding A) */}
+        <SheetTitle className="sr-only">
+          {issue?.identifier ? `${issue.identifier}: ` : ""}
+          {issue?.title ?? "Task details"}
+        </SheetTitle>
+        <SheetDescription className="sr-only">
+          Task details, comments, and workspace actions
+        </SheetDescription>
         {/* Mode 2: Workspace Chat */}
         {sidebarMode === "workspace" && issue && (
           <>
