@@ -8,7 +8,8 @@ import { PluginManager } from "./PluginManager";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
 import { PrivacyTab } from "@/components/settings/PrivacyTab";
-import { BackupsTab } from "@/components/settings/BackupsTab";
+// NOTE: BackupsTab is intentionally unmounted for v1.0 — backup/restore ships in 1.1.
+// Retention config in BackupsTab persists harmlessly in settings DB for the future feature.
 import { HeartbeatsTab } from "@/components/settings/HeartbeatsTab";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { feedbackApi } from "@/api/feedback";
@@ -18,7 +19,7 @@ import { cn } from "@/lib/utils";
 const TABS = [
   { value: "general", label: "General" },
   { value: "privacy", label: "Privacy" },
-  { value: "backups", label: "Backups" },
+  // Backups tab hidden in v1.0 — pending backup/restore implementation (Finding X).
   { value: "heartbeats", label: "Heartbeats" },
   { value: "experimental", label: "Experimental" },
   { value: "plugins", label: "Plugins" },
@@ -172,16 +173,12 @@ export function InstanceSettingsPage() {
               />
             </TabsContent>
 
-            {/* ── Backups tab ──────────────────────────────────────────── */}
-            <TabsContent value="backups" className="mt-6">
-              <BackupsTab
-                settings={generalQuery.data}
-                isLoading={generalQuery.isLoading}
-                error={generalQuery.error}
-                isSaving={generalMutation.isPending}
-                onChange={(patch) => generalMutation.mutate(patch)}
-              />
-            </TabsContent>
+            {/* ── Backups tab ──────────────────────────────────────────────
+               * Hidden in v1.0 — backup/restore functionality ships in 1.1.
+               * The BackupsTab component + retention config remain so we can
+               * unmount with a one-line change when the feature lands.
+               * (Finding X — v1.0.0-rc validation audit.)
+               */}
 
             {/* ── Heartbeats tab ───────────────────────────────────────── */}
             <TabsContent value="heartbeats" className="mt-6">
