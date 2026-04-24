@@ -6,6 +6,8 @@ import { generateEmbedding } from "./embeddings.js";
 import { resolveApiKey } from "../adapters/api-common.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, notFound } from "../errors.js";
+import { getDbCapabilities } from "./db-capabilities.js";
+import { memoryItemsSelection } from "./memory-projection.js";
 
 const log = logger.child({ service: "memory" });
 
@@ -84,12 +86,12 @@ export function memoryService(db: Db) {
         }
       }
 
-      return db.select().from(memoryItems).where(and(...conditions));
+      return db.select(memoryItemsSelection()).from(memoryItems).where(and(...conditions));
     },
 
     getById: (companyId: string, id: string) =>
       db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .then((rows) => rows[0] ?? null),
@@ -112,26 +114,35 @@ export function memoryService(db: Db) {
       const status = data.source === "agent"
         ? "pending"
         : (data.status ?? (data.source === "founder" ? "approved" : "pending"));
-      // Embedding is always NULL on create — background worker generates it asynchronously
+      // Embedding is NULL on create — background worker generates it asynchronously
+      // when pgvector is available. When absent, we omit the column entirely so
+      // Drizzle doesn't reference a non-existent column.
+      const caps = getDbCapabilities();
+      const values: Record<string, unknown> = { ...data, companyId, status };
+      if (caps.hasVectorSupport) {
+        values.embedding = null;
+      }
       return (tx ?? db)
         .insert(memoryItems)
-        .values({ ...data, companyId, status, embedding: null })
-        .returning()
+        .values(values as typeof memoryItems.$inferInsert)
+        .returning(memoryItemsSelection(caps.hasVectorSupport))
         .then((rows) => rows[0]);
     },
 
     update: (companyId: string, id: string, data: Partial<typeof memoryItems.$inferInsert>) => {
-      // If content or title changed, invalidate embedding so background worker regenerates it
+      // If content or title changed, invalidate embedding so background worker
+      // regenerates it. Only touch the column when pgvector is present.
+      const caps = getDbCapabilities();
       const hasContentChange = data.content !== undefined || data.title !== undefined;
       const setData: Record<string, unknown> = { ...data, updatedAt: new Date() };
-      if (hasContentChange) {
+      if (hasContentChange && caps.hasVectorSupport) {
         setData.embedding = null;
       }
       return db
         .update(memoryItems)
         .set(setData)
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
-        .returning()
+        .returning(memoryItemsSelection(caps.hasVectorSupport))
         .then((rows) => rows[0] ?? null);
     },
 
@@ -139,7 +150,7 @@ export function memoryService(db: Db) {
       db
         .delete(memoryItems)
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
-        .returning()
+        .returning(memoryItemsSelection())
         .then((rows) => rows[0] ?? null),
 
     approve: (companyId: string, id: string) =>
@@ -147,7 +158,7 @@ export function memoryService(db: Db) {
         .update(memoryItems)
         .set({ status: "approved", updatedAt: new Date() })
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
-        .returning()
+        .returning(memoryItemsSelection())
         .then((rows) => rows[0] ?? null),
 
     reject: (companyId: string, id: string) =>
@@ -155,7 +166,7 @@ export function memoryService(db: Db) {
         .update(memoryItems)
         .set({ status: "rejected", updatedAt: new Date() })
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
-        .returning()
+        .returning(memoryItemsSelection())
         .then((rows) => rows[0] ?? null),
 
     /**
@@ -168,13 +179,18 @@ export function memoryService(db: Db) {
       filters: SemanticSearchFilters = {},
     ) => {
       const limit = filters.limit ?? 10;
+      const caps = getDbCapabilities();
 
-      // Try to get API key for embedding generation
+      // Try to get API key for embedding generation. Skip entirely when
+      // pgvector isn't installed — the embedding column doesn't exist so
+      // cosine-distance SQL would 500; fall through to text search.
       let apiKey: string | null = null;
-      try {
-        apiKey = await resolveApiKey(companyId, "openai");
-      } catch {
-        // No API key — fall back to text search
+      if (caps.hasVectorSupport) {
+        try {
+          apiKey = await resolveApiKey(companyId, "openai");
+        } catch {
+          // No API key — fall back to text search
+        }
       }
 
       if (apiKey) {
@@ -274,12 +290,15 @@ export function memoryService(db: Db) {
      */
     findSimilarItems: async (content: string, scope: FindSimilarScope) => {
       const SIMILARITY_THRESHOLD = 0.85;
+      const caps = getDbCapabilities();
 
       let apiKey: string | null = null;
-      try {
-        apiKey = await resolveApiKey(scope.companyId, "openai");
-      } catch {
-        // No API key — fall back to text search
+      if (caps.hasVectorSupport) {
+        try {
+          apiKey = await resolveApiKey(scope.companyId, "openai");
+        } catch {
+          // No API key — fall back to text search
+        }
       }
 
       if (apiKey) {
@@ -424,7 +443,7 @@ export function memoryService(db: Db) {
       }
 
       const item = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(and(eq(memoryItems.id, memoryItemId), eq(memoryItems.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
@@ -480,7 +499,7 @@ export function memoryService(db: Db) {
 
     approveSuggestedVersion: async (companyId: string, memoryItemId: string, versionId: string) => {
       const item = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(and(eq(memoryItems.id, memoryItemId), eq(memoryItems.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
@@ -565,7 +584,7 @@ export function memoryService(db: Db) {
 
     saveDraft: async (companyId: string, memoryItemId: string, content: string, createdBy: string) => {
       const item = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(and(eq(memoryItems.id, memoryItemId), eq(memoryItems.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
@@ -619,7 +638,7 @@ export function memoryService(db: Db) {
 
     publishDraft: async (companyId: string, memoryItemId: string, createdBy: string) => {
       const item = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(and(eq(memoryItems.id, memoryItemId), eq(memoryItems.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
@@ -673,7 +692,7 @@ export function memoryService(db: Db) {
 
     restore: async (companyId: string, id: string) => {
       const item = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
@@ -683,7 +702,7 @@ export function memoryService(db: Db) {
         .update(memoryItems)
         .set({ status: "approved", updatedAt: new Date() })
         .where(eq(memoryItems.id, id))
-        .returning()
+        .returning(memoryItemsSelection())
         .then((rows) => rows[0] ?? null);
     },
 
@@ -698,7 +717,7 @@ export function memoryService(db: Db) {
       }
 
       const item = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(and(eq(memoryItems.id, memoryItemId), eq(memoryItems.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
@@ -768,7 +787,7 @@ export function memoryService(db: Db) {
     listPending: async (companyId: string) => {
       const [items, versionRows, archiveRows] = await Promise.all([
         db
-          .select()
+          .select(memoryItemsSelection())
           .from(memoryItems)
           .where(
             and(
@@ -929,7 +948,7 @@ export function memoryService(db: Db) {
         .update(memoryItems)
         .set({ accessedAt: new Date(), updatedAt: new Date() })
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
-        .returning()
+        .returning(memoryItemsSelection())
         .then((rows) => rows[0] ?? null),
   };
 }

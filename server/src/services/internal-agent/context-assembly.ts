@@ -1,6 +1,7 @@
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companies, memoryItems, projects } from "@armyofagents/db";
+import { memoryItemsSelection } from "../memory-projection.js";
 
 const SYSTEM_INSTRUCTIONS = `You are the internal AI assistant for this company. Your role is to help the founder manage their team of AI agents and human collaborators.
 
@@ -78,7 +79,7 @@ export function contextAssemblyService(db: Db) {
         if (company.mission) parts.push(`Mission: ${company.mission}`);
 
         const identityItems = await db
-          .select()
+          .select(memoryItemsSelection())
           .from(memoryItems)
           .where(
             and(
@@ -110,7 +111,7 @@ export function contextAssemblyService(db: Db) {
           if (dept.description) parts.push(dept.description);
 
           const domainItems = await db
-            .select()
+            .select(memoryItemsSelection())
             .from(memoryItems)
             .where(
               and(

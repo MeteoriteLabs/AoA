@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { memoryItems, issues, taskDependencies, suggestions } from "@armyofagents/db";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
+import { memoryItemsSelection } from "./memory-projection.js";
 
 const log = logger.child({ service: "memory-lifecycle" });
 
@@ -97,7 +98,7 @@ export function memoryLifecycleService(db: Db) {
      */
     onGoalCompleted: async (companyId: string, goalId: string): Promise<number> => {
       const itemsToArchive = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(
           and(
@@ -138,7 +139,7 @@ export function memoryLifecycleService(db: Db) {
      */
     archiveExpiredWorkingMemory: async (companyId: string): Promise<number> => {
       const workingItems = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(
           and(
@@ -191,7 +192,7 @@ export function memoryLifecycleService(db: Db) {
     archiveExpiredItems: async (companyId: string): Promise<number> => {
       const now = new Date();
       const expiredItems = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(
           and(
@@ -238,7 +239,7 @@ export function memoryLifecycleService(db: Db) {
       const cutoff = new Date(Date.now() - STALENESS_THRESHOLD_DAYS * 24 * 60 * 60 * 1000);
 
       const staleItems = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(
           and(

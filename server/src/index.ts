@@ -26,6 +26,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService, routineService } from "./services/index.js";
+import { probeDbCapabilities } from "./services/db-capabilities.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
   restartDesiredRuntimeServicesOnStartup,
@@ -378,6 +379,10 @@ if (config.databaseUrl) {
   activeDatabaseConnectionString = embeddedConnectionString;
   startupDbInfo = { mode: "embedded-postgres", dataDir, port };
 }
+
+// Probe optional database capabilities (pgvector). Services read the result
+// via getDbCapabilities() to gate semantic-search paths and embedding columns.
+await probeDbCapabilities(db as any);
 
 if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
   throw new Error(
