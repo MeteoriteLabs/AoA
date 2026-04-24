@@ -385,17 +385,11 @@ function QuotasSection({
 }) {
   const queryClient = useQueryClient();
   const refreshMutation = useMutation({
-    mutationFn: (provider: string) =>
-      // Map provider → adapterType. Built-in AoA adapters all support either
-      // anthropic or openai; unknown providers still trigger a full refresh.
-      quotasApi.refresh(companyId, {
-        adapterType:
-          provider === "anthropic"
-            ? "claude_api"
-            : provider === "openai"
-              ? "openai_api"
-              : undefined,
-      }),
+    // Sprint 2A removed the API adapters, so there's no adapter-type filter
+    // to pass per provider — refresh all quota windows for the company.
+    // The provider arg is still accepted so callers don't break, but unused.
+    mutationFn: (_provider: string) =>
+      quotasApi.refresh(companyId, {}),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["quotas", companyId] });
     },

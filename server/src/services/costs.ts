@@ -19,19 +19,15 @@ const WINDOW_HOURS: Record<WindowKind, number> = {
 };
 
 // Map adapter/provider identifiers to the billingType stored on cost_events.
-// Subscription-based local CLIs report against bundled quota; *_api adapters
-// consume metered tokens; everything else is "unknown" until upstream surfaces
-// richer billing signal.
+// Subscription-based local CLIs report against bundled quota; everything else
+// is "unknown" until upstream surfaces a richer billing signal. (API adapter
+// cases removed in Sprint 2A — Decision #91.)
 export function inferBillingType(provider: string): string {
   switch (provider) {
     case "claude_local":
       return "subscription_claude";
     case "codex_local":
       return "subscription_codex";
-    case "claude_api":
-    case "openai_api":
-    case "gemini_api":
-      return "metered_api";
     default:
       return "unknown";
   }

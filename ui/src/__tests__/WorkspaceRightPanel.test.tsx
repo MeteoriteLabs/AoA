@@ -74,7 +74,7 @@ const mockAgent = {
   parentType: null,
   parentId: null,
   capabilities: null,
-  adapterType: "claude_api",
+  adapterType: "claude_local",
   adapterConfig: {},
   runtimeConfig: {},
   lastHeartbeatAt: new Date().toISOString(),
@@ -427,7 +427,7 @@ describe("ProcessSection", () => {
     });
 
     expect(screen.getByText("Claude Agent")).toBeInTheDocument();
-    expect(screen.getByText("claude_api")).toBeInTheDocument();
+    expect(screen.getByText("claude_local")).toBeInTheDocument();
   });
 
   it("shows run count", async () => {

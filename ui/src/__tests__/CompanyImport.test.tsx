@@ -74,7 +74,7 @@ function makeValidBundle() {
         brandColor: null,
       },
       agents: [
-        { slug: "ceo", path: "agents/ceo.md", name: "CEO", role: "ceo", adapterType: "claude_api", title: null, icon: null, runtimeConfig: {}, adapterConfig: {}, skillKeys: [], reportsToSlug: null, projectSlug: null },
+        { slug: "ceo", path: "agents/ceo.md", name: "CEO", role: "ceo", adapterType: "claude_local", title: null, icon: null, runtimeConfig: {}, adapterConfig: {}, skillKeys: [], reportsToSlug: null, projectSlug: null },
       ],
       requiredSecrets: [],
     },

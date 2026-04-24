@@ -184,7 +184,7 @@ const baseAgent: MockRow = {
 
 const baseEventData = {
   agentId,
-  provider: "claude_api",
+  provider: "claude_local",
   model: "claude-opus-4-7",
   inputTokens: 100,
   outputTokens: 50,
@@ -203,12 +203,6 @@ describe("inferBillingType", () => {
     expect(inferBillingType("codex_local")).toBe("subscription_codex");
   });
 
-  it("maps API adapters → metered_api", () => {
-    expect(inferBillingType("claude_api")).toBe("metered_api");
-    expect(inferBillingType("openai_api")).toBe("metered_api");
-    expect(inferBillingType("gemini_api")).toBe("metered_api");
-  });
-
   it("returns 'unknown' for adapters with no billing assumption", () => {
     for (const p of [
       "cursor",
@@ -218,6 +212,12 @@ describe("inferBillingType", () => {
       "hermes_local",
       "http",
       "process",
+      // Sprint 2A — API adapter providers removed from the switch; historical
+      // cost_events with these strings now map to 'unknown' rather than
+      // 'metered_api'. See Decision #91.
+      "claude_api",
+      "openai_api",
+      "gemini_api",
     ]) {
       expect(inferBillingType(p)).toBe("unknown");
     }
@@ -236,8 +236,8 @@ describe("costService — createEvent biller / billingType defaults", () => {
     const svc = costService(db as any);
     await svc.createEvent(companyId, baseEventData as any);
     expect(captured.inserts[0]).toMatchObject({
-      biller: "claude_api",
-      billingType: "metered_api",
+      biller: "claude_local",
+      billingType: "subscription_claude",
     });
   });
 
@@ -305,7 +305,7 @@ describe("costService — aggregation methods", () => {
 
   it("byProvider returns rows from db", async () => {
     const rows: MockRow[] = [
-      { provider: "claude_api", totalCostCents: 300, eventCount: 4 },
+      { provider: "claude_local", totalCostCents: 300, eventCount: 4 },
     ];
     const db = createSequenceDb({ selects: [rows] });
     const svc = costService(db as any);

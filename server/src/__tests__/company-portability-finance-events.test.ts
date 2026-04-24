@@ -323,7 +323,7 @@ const financeEventRow = {
   direction: "debit",
   biller: "anthropic",
   provider: "anthropic",
-  executionAdapterType: "claude_api",
+  executionAdapterType: "claude_local",
   pricingTier: "standard",
   region: "us-east-1",
   model: "claude-opus-4-7",

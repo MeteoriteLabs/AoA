@@ -64,9 +64,6 @@ import {
 } from "hermes-paperclip-adapter";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
-import { claudeApiAdapter } from "./claude-api/index.js";
-import { openaiApiAdapter } from "./openai-api/index.js";
-import { geminiApiAdapter } from "./gemini-api/index.js";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { getDisabledAdapterTypes, isAdapterDisabled } from "../services/adapter-plugin-store.js";
 
@@ -169,7 +166,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>(
-  [claudeLocalAdapter, codexLocalAdapter, openCodeLocalAdapter, cursorLocalAdapter, openclawAdapter, geminiLocalAdapter, hermesLocalAdapter, processAdapter, httpAdapter, claudeApiAdapter, openaiApiAdapter, geminiApiAdapter].map((a) => [a.type, a]),
+  [claudeLocalAdapter, codexLocalAdapter, openCodeLocalAdapter, cursorLocalAdapter, openclawAdapter, geminiLocalAdapter, hermesLocalAdapter, processAdapter, httpAdapter].map((a) => [a.type, a]),
 );
 
 // Builtin adapters that have been replaced by an external adapter of the same

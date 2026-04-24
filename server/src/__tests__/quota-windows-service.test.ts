@@ -172,7 +172,7 @@ describe("providerSlugForAdapterType", () => {
   });
 
   it("passes through other adapter types unchanged", () => {
-    expect(providerSlugForAdapterType("gemini_api")).toBe("gemini_api");
+    expect(providerSlugForAdapterType("gemini_local")).toBe("gemini_local");
     expect(providerSlugForAdapterType("cursor")).toBe("cursor");
   });
 });

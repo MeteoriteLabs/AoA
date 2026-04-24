@@ -78,7 +78,7 @@ vi.mock("../components/StatusBadge", () => ({
 }));
 
 vi.mock("../components/agent-config-primitives", () => ({
-  adapterLabels: { claude_api: "Claude API", claude_local: "Claude (local)" } as Record<string, string>,
+  adapterLabels: { claude_local: "Claude (local)", codex_local: "Codex (local)" } as Record<string, string>,
   roleLabels: { engineer: "Engineer", designer: "Designer", ceo: "Director", general: "General" } as Record<string, string>,
 }));
 
@@ -151,7 +151,7 @@ describe("AgentsTab", () => {
 
   function makeAgentList() {
     return [
-      makeAgent({ id: "a1", name: "Alice", role: "ceo", status: "active", adapterType: "claude_api", reportsTo: null, budgetMonthlyCents: 5000, title: "Chief Executive" }),
+      makeAgent({ id: "a1", name: "Alice", role: "ceo", status: "active", adapterType: "claude_local", reportsTo: null, budgetMonthlyCents: 5000, title: "Chief Executive" }),
       makeAgent({ id: "a2", name: "Bob", role: "engineer", status: "paused", adapterType: "claude_local", reportsTo: "a1", parentType: "agent", parentId: "a1", budgetMonthlyCents: 0, title: null }),
     ];
   }

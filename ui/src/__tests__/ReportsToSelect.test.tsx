@@ -26,14 +26,14 @@ const sampleTree: UnifiedOrgNode[] = [
     name: "Claude",
     role: "ceo",
     nodeType: "agent",
-    adapterType: "claude_api",
+    adapterType: "claude_local",
     children: [
       makeOrgNode({
         id: "agent-2",
         name: "Gemini",
         role: "engineer",
         nodeType: "agent",
-        adapterType: "gemini_api",
+        adapterType: "gemini_local",
       }),
     ],
   }),
@@ -328,7 +328,7 @@ describe("ReportsToSelect", () => {
     await screen.findByText("Claude");
 
     // Agent detail text shows adapterType
-    expect(screen.getByText("claude_api")).toBeInTheDocument();
+    expect(screen.getByText("claude_local")).toBeInTheDocument();
     // User detail text shows role label
     expect(screen.getByText("Founder")).toBeInTheDocument();
     expect(screen.getByText("Team Lead")).toBeInTheDocument();

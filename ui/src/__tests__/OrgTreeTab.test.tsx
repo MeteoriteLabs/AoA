@@ -16,7 +16,7 @@ vi.mock("../components/AgentIconPicker", () => ({
 }));
 
 vi.mock("../components/agent-config-primitives", () => ({
-  adapterLabels: { claude_api: "Claude (API)", openai_api: "OpenAI (API)" } as Record<string, string>,
+  adapterLabels: { claude_local: "Claude (local)", codex_local: "Codex (local)" } as Record<string, string>,
   roleLabels: { engineer: "Engineer", designer: "Designer" } as Record<string, string>,
 }));
 
@@ -33,7 +33,7 @@ function makeAgentNode(overrides: Partial<UnifiedOrgNode> = {}): UnifiedOrgNode 
     nodeType: "agent",
     role: "engineer",
     status: "active",
-    adapterType: "claude_api",
+    adapterType: "claude_local",
     pendingApproval: false,
     children: [],
     ...overrides,
@@ -189,11 +189,11 @@ describe("OrgTreeTab", () => {
 
   it("renders adapter type label for agents", () => {
     const onClick = vi.fn();
-    const tree = [makeAgentNode({ adapterType: "claude_api" })];
+    const tree = [makeAgentNode({ adapterType: "claude_local" })];
 
     renderWithProviders(<OrgTreeTab orgTree={tree} onNodeClick={onClick} />);
 
-    expect(screen.getByText("Claude (API)")).toBeInTheDocument();
+    expect(screen.getByText("Claude (local)")).toBeInTheDocument();
   });
 
   it("renders role badge for users", () => {

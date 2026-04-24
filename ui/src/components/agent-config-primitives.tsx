@@ -60,9 +60,6 @@ export const adapterLabels: Record<string, string> = {
   cursor: "Cursor (local)",
   process: "Process",
   http: "HTTP",
-  claude_api: "Claude (API)",
-  openai_api: "OpenAI (API)",
-  gemini_api: "Gemini (API)",
   hermes_local: "Hermes (local)",
   gemini_local: "Gemini CLI (local)",
 };

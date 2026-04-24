@@ -22,9 +22,6 @@ const MAX_FILE_BYTES = 50 * 1024 * 1024;
 /** Timeout for git commands */
 const GIT_TIMEOUT_MS = 10_000;
 
-/** API adapter types that have no workspace */
-const API_ADAPTER_TYPES = new Set(["claude_api", "openai_api", "gemini_api"]);
-
 /** Directory patterns to exclude from detection */
 const NOISE_DIR_PATTERNS = [
   "node_modules",
@@ -241,13 +238,7 @@ async function detectAndCaptureImpl(
   db: Db,
   input: OutputDetectionInput,
 ): Promise<DetectedOutput[]> {
-  const { runId, companyId, agentId, cwd, startedAt, adapterType, adapterHints } = input;
-
-  // Guard: API adapters have no workspace
-  const isApiAdapter = adapterType != null && API_ADAPTER_TYPES.has(adapterType);
-  if (isApiAdapter && (!adapterHints || adapterHints.length === 0)) {
-    return [];
-  }
+  const { runId, companyId, agentId, cwd, startedAt, adapterHints } = input;
 
   // Guard: verify cwd exists
   try {
@@ -259,20 +250,16 @@ async function detectAndCaptureImpl(
 
   // Detect changed files
   let detectedPaths: string[];
-  if (!isApiAdapter) {
-    const isGit = await isGitRepo(cwd);
-    if (isGit) {
-      try {
-        detectedPaths = await detectChangedFilesGit(cwd);
-      } catch (err) {
-        logger.warn({ err, cwd }, "git detection failed, falling back to mtime");
-        detectedPaths = await detectChangedFilesMtime(cwd, startedAt);
-      }
-    } else {
+  const isGit = await isGitRepo(cwd);
+  if (isGit) {
+    try {
+      detectedPaths = await detectChangedFilesGit(cwd);
+    } catch (err) {
+      logger.warn({ err, cwd }, "git detection failed, falling back to mtime");
       detectedPaths = await detectChangedFilesMtime(cwd, startedAt);
     }
   } else {
-    detectedPaths = [];
+    detectedPaths = await detectChangedFilesMtime(cwd, startedAt);
   }
 
   // Build hint map

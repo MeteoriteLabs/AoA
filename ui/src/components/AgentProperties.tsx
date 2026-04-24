@@ -22,9 +22,6 @@ const adapterLabels: Record<string, string> = {
   cursor: "Cursor (local)",
   process: "Process",
   http: "HTTP",
-  claude_api: "Claude (API)",
-  openai_api: "OpenAI (API)",
-  gemini_api: "Gemini (API)",
 };
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {

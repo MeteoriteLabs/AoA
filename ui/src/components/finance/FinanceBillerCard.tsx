@@ -9,9 +9,6 @@ const BILLER_LABELS: Record<string, string> = {
   cursor: "Cursor",
   claude_local: "Claude (local)",
   codex_local: "Codex (local)",
-  claude_api: "Claude API",
-  openai_api: "OpenAI API",
-  gemini_api: "Gemini API",
 };
 
 function billerLabel(biller: string | null): string {

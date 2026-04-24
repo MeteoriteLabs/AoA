@@ -12,11 +12,6 @@ const adaptersByType = new Map<string, UIAdapterModule>(
   [claudeLocalUIAdapter, codexLocalUIAdapter, openCodeLocalUIAdapter, cursorLocalUIAdapter, openClawUIAdapter, geminiLocalUIAdapter, processUIAdapter, httpUIAdapter].map((a) => [a.type, a]),
 );
 
-// API adapters return plain text — reuse processUIAdapter behavior
-adaptersByType.set("claude_api", processUIAdapter);
-adaptersByType.set("openai_api", processUIAdapter);
-adaptersByType.set("gemini_api", processUIAdapter);
-
 export function getUIAdapter(type: string): UIAdapterModule {
   return adaptersByType.get(type) ?? processUIAdapter;
 }

@@ -1594,7 +1594,7 @@ function ReportsToSelectShowcase() {
       role: "ceo",
       status: "active",
       nodeType: "agent",
-      adapterType: "claude_api",
+      adapterType: "claude_local",
       children: [],
     },
     {
@@ -1603,7 +1603,7 @@ function ReportsToSelectShowcase() {
       role: "engineer",
       status: "terminated",
       nodeType: "agent",
-      adapterType: "openai_api",
+      adapterType: "codex_local",
       children: [],
     },
     {
@@ -2064,7 +2064,7 @@ function SettingsTabsShowcase() {
                 role: "pm",
                 title: "Product Lead",
                 status: "active",
-                adapterType: "openai_api",
+                adapterType: "codex_local",
                 intervalSec: 300,
                 heartbeatEnabled: false,
                 schedulerActive: false,

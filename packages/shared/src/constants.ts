@@ -29,9 +29,6 @@ export const AGENT_ADAPTER_TYPES = [
   "opencode_local",
   "cursor",
   "openclaw",
-  "claude_api",
-  "openai_api",
-  "gemini_api",
   "hermes_local",
   "gemini_local",
 ] as const;

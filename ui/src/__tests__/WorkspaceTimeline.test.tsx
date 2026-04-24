@@ -68,7 +68,7 @@ const mockComments = [
 ];
 
 const mockAgents = [
-  { id: "agent-1", name: "Alpha Agent", status: "active", companyId: "comp-1", adapterType: "claude_api", adapterConfig: { model: "claude-sonnet-4-6" } },
+  { id: "agent-1", name: "Alpha Agent", status: "active", companyId: "comp-1", adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" } },
   { id: "agent-2", name: "Beta Agent", status: "active", companyId: "comp-1", adapterType: "process", adapterConfig: {} },
 ];
 
