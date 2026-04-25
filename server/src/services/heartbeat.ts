@@ -77,9 +77,24 @@ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
-const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+// AoA canonical names. Existing rows still using the legacy paperclip-
+// names are read transparently via the helpers below; writes only emit
+// the AoA names and strip the legacy keys from the same blob so we
+// converge over time.
+const DEFERRED_WAKE_CONTEXT_KEY = "_aoaWakeContext";
+const LEGACY_DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const REPO_ONLY_CWD_SENTINEL = "/__aoa_repo_only__";
+const LEGACY_REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+
+/**
+ * True if `cwd` is the "repo-only / no-local-cwd" sentinel,
+ * regardless of whether the row holds the legacy or new value.
+ */
+export function isRepoOnlySentinel(cwd: string | null | undefined): boolean {
+  return cwd === REPO_ONLY_CWD_SENTINEL || cwd === LEGACY_REPO_ONLY_CWD_SENTINEL;
+}
+
 const startLocksByAgent = new Map<string, Promise<void>>();
-const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
@@ -812,7 +827,7 @@ export function heartbeatService(db: Db) {
       let hasConfiguredProjectCwd = false;
       for (const workspace of projectWorkspaceRows) {
         const projectCwd = readNonEmptyString(workspace.cwd);
-        if (!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL) {
+        if (!projectCwd || isRepoOnlySentinel(projectCwd)) {
           continue;
         }
         hasConfiguredProjectCwd = true;
@@ -2724,7 +2739,9 @@ export function heartbeatService(db: Db) {
         }
 
         const deferredPayload = parseObject(deferred.payload);
-        const deferredContextSeed = parseObject(deferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
+        const deferredContextSeed = parseObject(
+          deferredPayload[DEFERRED_WAKE_CONTEXT_KEY] ?? deferredPayload[LEGACY_DEFERRED_WAKE_CONTEXT_KEY],
+        );
         const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =
@@ -2733,6 +2750,7 @@ export function heartbeatService(db: Db) {
           (readNonEmptyString(deferred.triggerDetail) as WakeupOptions["triggerDetail"]) ?? null;
         const promotedPayload = deferredPayload;
         delete promotedPayload[DEFERRED_WAKE_CONTEXT_KEY];
+        delete promotedPayload[LEGACY_DEFERRED_WAKE_CONTEXT_KEY];
 
         const {
           contextSnapshot: promotedContextSnapshot,
@@ -3038,13 +3056,18 @@ export function heartbeatService(db: Db) {
 
           if (existingDeferred) {
             const existingDeferredPayload = parseObject(existingDeferred.payload);
-            const existingDeferredContext = parseObject(existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
+            const existingDeferredContext = parseObject(
+              existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY] ?? existingDeferredPayload[LEGACY_DEFERRED_WAKE_CONTEXT_KEY],
+            );
             const mergedDeferredContext = mergeCoalescedContextSnapshot(
               existingDeferredContext,
               enrichedContextSnapshot,
             );
+            // Spread existing payload then overwrite with AoA key; also strip the legacy
+            // key so that every write converges the row toward the new name.
+            const { [LEGACY_DEFERRED_WAKE_CONTEXT_KEY]: _stripLegacy, ...existingWithoutLegacy } = existingDeferredPayload;
             const mergedDeferredPayload = {
-              ...existingDeferredPayload,
+              ...existingWithoutLegacy,
               ...(payload ?? {}),
               issueId,
               [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
