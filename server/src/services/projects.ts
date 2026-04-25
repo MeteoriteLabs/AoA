@@ -10,15 +10,10 @@ import {
   type ProjectWorkspace,
 } from "@armyofagents/shared";
 import { conflict } from "../errors.js";
+import { isRepoOnlySentinel } from "./heartbeat.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
-const REPO_ONLY_CWD_SENTINEL = "/__aoa_repo_only__";
-const LEGACY_REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
-
-function isRepoOnlySentinel(cwd: string | null | undefined): boolean {
-  return cwd === REPO_ONLY_CWD_SENTINEL || cwd === LEGACY_REPO_ONLY_CWD_SENTINEL;
-}
 
 type CreateWorkspaceInput = {
   name?: string | null;

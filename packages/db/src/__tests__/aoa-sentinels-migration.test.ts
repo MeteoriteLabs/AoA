@@ -9,7 +9,7 @@
  * This test instead verifies the static guarantees that matter most:
  *   1. The migration SQL file exists at the expected path.
  *   2. It contains the correct idempotent UPDATE statements for both
- *      tables (project_workspaces and agent_runtime_state).
+ *      tables (project_workspaces and agent_wakeup_requests).
  *   3. The migration is registered in _journal.json with the correct
  *      tag, idx, and version fields.
  *
@@ -63,22 +63,39 @@ describe("0060_aoa_sentinels migration", () => {
     });
   });
 
-  describe("SQL correctness — agent_runtime_state", () => {
-    it("UPDATEs agent_runtime_state table", () => {
-      expect(sql).toMatch(/UPDATE\s+agent_runtime_state/i);
+  describe("SQL correctness — agent_wakeup_requests", () => {
+    it("UPDATEs agent_wakeup_requests table (at least twice)", () => {
+      const matches = sql.match(/UPDATE\s+agent_wakeup_requests/gi);
+      expect(matches).not.toBeNull();
+      expect(matches!.length).toBeGreaterThanOrEqual(2);
     });
 
-    it("removes legacy key via jsonb subtraction", () => {
-      expect(sql).toContain("context - '_paperclipWakeContext'");
+    it("rename UPDATE removes legacy key via jsonb subtraction on payload", () => {
+      expect(sql).toContain("payload - '_paperclipWakeContext'");
     });
 
-    it("builds new AoA key via jsonb_build_object", () => {
+    it("rename UPDATE builds new AoA key via jsonb_build_object on payload", () => {
       expect(sql).toContain("'_aoaWakeContext'");
       expect(sql).toContain("jsonb_build_object");
     });
 
-    it("WHERE clause gates on legacy key (idempotency)", () => {
-      expect(sql).toContain("context ? '_paperclipWakeContext'");
+    it("rename UPDATE WHERE clause gates on legacy key (idempotency)", () => {
+      expect(sql).toContain("payload ? '_paperclipWakeContext'");
+    });
+
+    it("rename UPDATE has AND NOT guard to preserve freshly-written AoA key", () => {
+      expect(sql).toContain("AND NOT (payload ? '_aoaWakeContext')");
+    });
+
+    it("cleanup UPDATE strips legacy key from rows with BOTH keys", () => {
+      // Verify the cleanup statement is present: it gates on BOTH keys simultaneously
+      expect(sql).toMatch(
+        /payload\s*\?\s*'_paperclipWakeContext'[\s\S]*?payload\s*\?\s*'_aoaWakeContext'/,
+      );
+    });
+
+    it("never references agent_runtime_state", () => {
+      expect(sql).not.toMatch(/agent_runtime_state/i);
     });
   });
 
