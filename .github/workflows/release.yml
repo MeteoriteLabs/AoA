@@ -26,6 +26,7 @@ on:
       - master
       - main
       - Porting1.1
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref }}

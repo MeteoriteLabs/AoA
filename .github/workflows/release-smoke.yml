@@ -89,9 +89,6 @@ jobs:
           AOA_RELEASE_SMOKE_BASE_URL: ${{ env.SMOKE_BASE_URL }}
           AOA_RELEASE_SMOKE_EMAIL: ${{ env.SMOKE_ADMIN_EMAIL }}
           AOA_RELEASE_SMOKE_PASSWORD: ${{ env.SMOKE_ADMIN_PASSWORD }}
-          AOA_RELEASE_SMOKE_BASE_URL: ${{ env.SMOKE_BASE_URL }}
-          AOA_RELEASE_SMOKE_EMAIL: ${{ env.SMOKE_ADMIN_EMAIL }}
-          AOA_RELEASE_SMOKE_PASSWORD: ${{ env.SMOKE_ADMIN_PASSWORD }}
         run: pnpm run test:release-smoke
 
       - name: Capture Docker logs
