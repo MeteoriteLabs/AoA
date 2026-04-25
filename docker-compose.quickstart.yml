@@ -15,4 +15,6 @@ services:
       AOA_PUBLIC_URL: "${AOA_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
     volumes:
-      - "${AOA_DATA_DIR:-./data/docker-paperclip}:/paperclip"
+      # Default host bind path. Existing users with data under ./data/docker-paperclip
+      # should either set AOA_DATA_DIR=./data/docker-paperclip or rename that dir to ./data/docker-aoa.
+      - "${AOA_DATA_DIR:-./data/docker-aoa}:/paperclip"

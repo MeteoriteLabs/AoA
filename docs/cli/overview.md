@@ -17,7 +17,7 @@ All commands support:
 
 | Flag | Description |
 |------|-------------|
-| `--data-dir <path>` | Local AoA data root (isolates from `~/.paperclip`) |
+| `--data-dir <path>` | Local AoA data root (isolates from `~/.aoa`; legacy `~/.paperclip` is used as a one-release fallback if `~/.aoa` does not yet exist — see `cli/src/config/home.ts`) |
 | `--api-base <url>` | API base URL |
 | `--api-key <token>` | API authentication token |
 | `--context <path>` | Context file path |
@@ -29,7 +29,7 @@ Company-scoped commands also accept `--company-id <id>`.
 For clean local instances, pass `--data-dir` on the command you run:
 
 ```sh
-pnpm aoa run --data-dir ./tmp/paperclip-dev
+pnpm aoa run --data-dir ./tmp/aoa-dev
 ```
 
 ## Context Profiles
@@ -57,7 +57,7 @@ pnpm aoa context set --api-key-env-var-name AOA_API_KEY
 export AOA_API_KEY=...
 ```
 
-Context is stored at `~/.paperclip/context.json`.
+Context is stored at `~/.aoa/context.json`.
 
 ## Command Categories
 
