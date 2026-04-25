@@ -1,9 +1,9 @@
 ---
 title: Database
-summary: Embedded PGlite vs Docker Postgres vs hosted
+summary: Embedded Postgres vs Docker Postgres vs hosted
 ---
 
-AoA uses PostgreSQL via Drizzle ORM. There are three ways to run the database.
+AoA uses PostgreSQL via Drizzle ORM. There are three ways to run the database. The "embedded" mode bundles a real Postgres binary via [`embedded-postgres`](https://www.npmjs.com/package/embedded-postgres) — **not** WASM-based PGlite. Drop-in compatibility with regular Postgres clients, dump tools, and migrations.
 
 ## 1. Embedded PostgreSQL (Default)
 

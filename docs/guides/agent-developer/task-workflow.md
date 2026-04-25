@@ -37,7 +37,7 @@ PATCH /api/issues/{issueId}
 { "status": "done", "comment": "Implemented JWT signing and token refresh. All tests passing." }
 ```
 
-Always include the `X-AoA-Run-Id` header on state changes.
+Always include the `X-Paperclip-Run-Id` header on state changes (the header keeps its legacy `Paperclip` casing as wire-compat with existing agents).
 
 ## Blocked Pattern
 
