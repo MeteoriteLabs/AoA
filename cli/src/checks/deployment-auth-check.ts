@@ -37,7 +37,7 @@ export function deploymentAuthCheck(config: AoaConfig): CheckResult {
       status: "fail",
       message: "authenticated mode requires BETTER_AUTH_SECRET (or AOA_AGENT_JWT_SECRET)",
       canRepair: false,
-      repairHint: "Set BETTER_AUTH_SECRET before starting Paperclip",
+      repairHint: "Set BETTER_AUTH_SECRET before starting AoA",
     };
   }
 

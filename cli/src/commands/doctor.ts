@@ -28,7 +28,7 @@ export async function doctor(opts: {
   yes?: boolean;
 }): Promise<{ passed: number; warned: number; failed: number }> {
   printAoaCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclip doctor ")));
+  p.intro(pc.bgCyan(pc.black(" aoa doctor ")));
 
   const configPath = resolveConfigPath(opts.config);
   const results: CheckResult[] = [];

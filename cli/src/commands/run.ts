@@ -60,7 +60,7 @@ export async function runCommand(opts: RunOptions): Promise<void> {
     process.exit(1);
   }
 
-  p.log.step("Starting Paperclip server...");
+  p.log.step("Starting AoA server...");
   await importServerEntry();
 }
 
@@ -119,13 +119,13 @@ async function importServerEntry(): Promise<void> {
     const missingServerEntrypoint = !missingSpecifier || missingSpecifier === "@armyofagents/server";
     if (isModuleNotFoundError(err) && missingServerEntrypoint) {
       throw new Error(
-        `Could not locate a Paperclip server entrypoint.\n` +
+        `Could not locate an AoA server entrypoint.\n` +
           `Tried: ${devEntry}, @armyofagents/server\n` +
           `${formatError(err)}`,
       );
     }
     throw new Error(
-      `Paperclip server failed to start.\n` +
+      `AoA server failed to start.\n` +
         `${formatError(err)}`,
     );
   }

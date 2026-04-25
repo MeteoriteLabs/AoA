@@ -168,7 +168,7 @@ function isLoopbackHost(host: string): boolean {
 }
 
 const LOCAL_BOARD_USER_ID = "local-board";
-const LOCAL_BOARD_USER_EMAIL = "local@paperclip.local";
+const LOCAL_BOARD_USER_EMAIL = "local@aoa.local";
 const LOCAL_BOARD_USER_NAME = "Board";
 
 async function ensureLocalTrustedBoardPrincipal(db: any): Promise<void> {
