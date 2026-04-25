@@ -21,7 +21,7 @@ import {
 } from "../hooks/useInboxBadge";
 
 const COMPANY_A = "11111111-1111-1111-1111-111111111111";
-const MIGRATION_FLAG_KEY = "paperclip:inbox:dismissed:migrated";
+const MIGRATION_FLAG_KEY = "aoa:inbox:dismissed:migrated";
 
 function wrapper() {
   const qc = new QueryClient({

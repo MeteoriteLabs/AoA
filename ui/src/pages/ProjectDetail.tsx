@@ -198,7 +198,7 @@ function ProjectIssuesList({
       agents={agents}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
-      viewStateKey={`paperclip:project-view:${projectId}`}
+      viewStateKey={`aoa:project-view:${projectId}`}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
       onSelectIssue={onSelectIssue}
     />

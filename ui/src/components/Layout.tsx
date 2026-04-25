@@ -42,12 +42,6 @@ export function Layout() {
     retry: false,
   });
 
-  // G1 + G15: Clean up stale localStorage keys from removed CompanyRail and PropertiesPanel
-  useEffect(() => {
-    localStorage.removeItem("paperclip.companyOrder");
-    localStorage.removeItem("paperclip:panel-visible");
-  }, []);
-
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
     if (health?.deploymentMode === "authenticated") return;

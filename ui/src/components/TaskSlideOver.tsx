@@ -1370,7 +1370,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                       linkedRuns={timelineRuns}
                       issueStatus={issue.status}
                       agentMap={agentMap}
-                      draftKey={`paperclip:issue-comment-draft:${issue.id}`}
+                      draftKey={`aoa:issue-comment-draft:${issue.id}`}
                       enableReassign={permissions.canAssignTasks}
                       reassignOptions={commentReassignOptions}
                       currentAssigneeValue={currentAssigneeValue}

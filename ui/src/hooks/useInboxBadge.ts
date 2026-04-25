@@ -3,8 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { inboxDismissalsApi, type InboxDismissal } from "@/api/inbox-dismissals";
 import { queryKeys } from "@/lib/queryKeys";
 
-export const DISMISSED_LOCAL_STORAGE_KEY = "paperclip:inbox:dismissed";
-const MIGRATION_FLAG_KEY = "paperclip:inbox:dismissed:migrated";
+export const DISMISSED_LOCAL_STORAGE_KEY = "aoa:inbox:dismissed";
+const MIGRATION_FLAG_KEY = "aoa:inbox:dismissed:migrated";
 
 function readLegacyDismissed(): string[] {
   if (typeof window === "undefined") return [];

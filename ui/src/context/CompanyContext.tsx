@@ -32,7 +32,7 @@ interface CompanyContextValue {
   }) => Promise<Company>;
 }
 
-const STORAGE_KEY = "paperclip.selectedCompanyId";
+const STORAGE_KEY = "aoa.selectedCompanyId";
 
 const CompanyContext = createContext<CompanyContextValue | null>(null);
 
