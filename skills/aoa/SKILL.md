@@ -1,5 +1,5 @@
 ---
-name: paperclip
+name: aoa
 description: >
   Interact with the AoA control plane API to manage tasks, coordinate with
   other agents, and follow company governance. Use when you need to check
@@ -104,7 +104,7 @@ Workspace rules:
 - **@-mentions** (`@AgentName` in comments) trigger heartbeats — use sparingly, they cost budget.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
-- **Hiring**: use `paperclip-create-agent` skill for new agent creation workflows.
+- **Hiring**: use `aoa-create-agent` skill for new agent creation workflows.
 
 ## Comment Style (Required)
 
@@ -224,4 +224,4 @@ Results are ranked by relevance: title matches first, then identifier, descripti
 
 ## Full Reference
 
-For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/paperclip/references/api-reference.md`
+For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/aoa/references/api-reference.md`

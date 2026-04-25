@@ -95,7 +95,7 @@ function requestBaseUrl(req: Request) {
 
 function readSkillMarkdown(skillName: string): string | null {
   const normalized = skillName.trim().toLowerCase();
-  if (normalized !== "paperclip" && normalized !== "paperclip-create-agent")
+  if (normalized !== "aoa" && normalized !== "aoa-create-agent")
     return null;
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
@@ -944,7 +944,7 @@ function buildInviteOnboardingManifest(
   }
 ) {
   const baseUrl = requestBaseUrl(req);
-  const skillPath = "/api/skills/paperclip";
+  const skillPath = "/api/skills/aoa";
   const skillUrl = baseUrl ? `${baseUrl}${skillPath}` : skillPath;
   const registrationEndpointPath = `/api/invites/${token}/accept`;
   const registrationEndpointUrl = baseUrl
@@ -1027,10 +1027,10 @@ function buildInviteOnboardingManifest(
         contentType: "text/plain"
       },
       skill: {
-        name: "paperclip",
+        name: "aoa",
         path: skillPath,
         url: skillUrl,
-        installPath: "~/.openclaw/skills/paperclip/SKILL.md"
+        installPath: "~/.openclaw/skills/aoa/SKILL.md"
       }
     }
   };
@@ -1676,10 +1676,10 @@ export function accessRoutes(
   router.get("/skills/index", (_req, res) => {
     res.json({
       skills: [
-        { name: "paperclip", path: "/api/skills/paperclip" },
+        { name: "aoa", path: "/api/skills/aoa" },
         {
-          name: "paperclip-create-agent",
-          path: "/api/skills/paperclip-create-agent"
+          name: "aoa-create-agent",
+          path: "/api/skills/aoa-create-agent"
         }
       ]
     });
