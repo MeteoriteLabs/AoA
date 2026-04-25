@@ -2,7 +2,7 @@
 
 Each session below is designed to produce a committable increment. Run each session in a new Claude session targeted at the **AoA-2.5 folder**.
 
-**Before starting each session:** Tell Claude to read `docs/workspace-implementation-plan.md` and `docs/workspace-architecture-decisions.md`.
+**Before starting each session:** Tell Claude to read `docs/aoa/specs/workspace-implementation-plan.md` and `docs/aoa/reference/workspace-decisions.md`.
 
 **Important framework note:** The backend uses **Express 5.x** (not Hono). CLAUDE.md has been corrected. Routes use `Router()` from Express. All route files follow this pattern.
 
@@ -21,7 +21,7 @@ Each session below is designed to produce a committable increment. Run each sess
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 1) and docs/workspace-architecture-decisions.md for full context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 1) and docs/aoa/reference/workspace-decisions.md for full context.
 
 IMPORTANT: The backend uses Express 5.x (not Hono). Routes use Router() from Express. Follow existing patterns in the codebase.
 
@@ -85,7 +85,7 @@ Phase 1 backend changes needed:
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 2.1) for context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 2.1) for context.
 
 Convert TaskSlideOver from a centered Dialog modal to a right-side Sheet panel.
 
@@ -145,7 +145,7 @@ Verify: The app should compile. Click a task in the global Issues page → right
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 2.2) for context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 2.2) for context.
 
 Wire the TaskSlideOver component into ProjectDetail so clicking a task in the project board opens the right-side panel.
 
@@ -181,7 +181,7 @@ Verify: Navigate to a department/project → Board tab → click a task card →
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 2.3 and 2.4) for context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 2.3 and 2.4) for context.
 
 Two things to build:
 
@@ -271,7 +271,7 @@ Verify: Open a task → see workspace section (empty state or with data). If tas
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 2.5 and 2.6) for context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 2.5 and 2.6) for context.
 
 PART 1: Department function picker in NewProjectDialog
 
@@ -336,7 +336,7 @@ Verify: Create a new department → see function picker → select "Product (Sof
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 2.7) for context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 2.7) for context.
 
 Add a "Workspaces" tab to ProjectDetail alongside the existing tabs.
 
@@ -379,7 +379,7 @@ Verify: Navigate to a department → see Workspaces tab. Click it → see worksp
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 3.0, 3.1, 3.2, 3.3) for context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 3.0, 3.1, 3.2, 3.3) for context.
 
 Build the foundation of the full workspace view.
 
@@ -448,7 +448,7 @@ Verify: Navigate to /:companyPrefix/workspaces/:id → sidebar auto-collapses �
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 3.4) for context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 3.4) for context.
 
 Build the center panel of the workspace view.
 
@@ -516,7 +516,7 @@ Verify: In workspace view, center panel shows dependency chain at top (if task h
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 3.5 and 3.6) for context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 3.5 and 3.6) for context.
 
 PART 1: Center-Right Panel (mode switcher)
 
@@ -592,7 +592,7 @@ Verify: Right panel shows 5 collapsible sections. Artifacts show linked items. C
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 3.7) for context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 3.7) for context.
 
 Wire up all navigation between task detail and workspace view.
 
@@ -640,7 +640,7 @@ Verify: Full navigation flow: task board → click task → Sheet → click work
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 4) for context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 4) for context.
 
 1. Install dependency:
    cd ui && pnpm add @xterm/xterm
@@ -690,7 +690,7 @@ Verify: Open workspace for a Software Dev task → right panel Tools section sho
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 4) for context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 4) for context.
 
 1. Install dependency:
    cd ui && pnpm add @git-diff-view/react
@@ -728,7 +728,7 @@ Verify: Open workspace for a Software Dev task with code changes → toggle Chan
 ### Prompt:
 
 ```
-Read docs/workspace-implementation-plan.md (Phase 5) for context.
+Read docs/aoa/specs/workspace-implementation-plan.md (Phase 5) for context.
 
 Polish pass across the workspace system.
 

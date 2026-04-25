@@ -1,6 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "name": "Paperclip",
+  "name": "AoA",
   "description": "The control plane for autonomous AI companies",
   "theme": "mint",
   "colors": {
@@ -48,7 +48,8 @@
               "guides/board-operator/managing-tasks",
               "guides/board-operator/approvals",
               "guides/board-operator/costs-and-budgets",
-              "guides/board-operator/activity-log"
+              "guides/board-operator/activity-log",
+              "guides/board-operator/execution-workspaces"
             ]
           },
           {
@@ -79,7 +80,9 @@
               "deploy/database",
               "deploy/secrets",
               "deploy/storage",
-              "deploy/environment-variables"
+              "deploy/environment-variables",
+              "deploy/distribution",
+              "deploy/telemetry"
             ]
           }
         ]
@@ -91,6 +94,7 @@
             "group": "Agent Adapters",
             "pages": [
               "adapters/overview",
+              "adapters/runtime",
               "adapters/claude-local",
               "adapters/codex-local",
               "adapters/process",

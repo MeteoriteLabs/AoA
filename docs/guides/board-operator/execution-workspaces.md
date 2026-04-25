@@ -1,10 +1,13 @@
-# Worktree Guide — AoA Execution Workspaces
+---
+title: Execution Workspaces
+summary: Per-task git-worktree isolation for engineering work
+---
 
 A practical reference for the per-task git-worktree isolation system that
 powers engineering workflows in AoA. Companion to
-[`workspace-architecture-decisions.md`](workspace-architecture-decisions.md)
+[`workspace-decisions.md`](/aoa/reference/workspace-decisions)
 (architectural rationale) and
-[`workspace-implementation-plan.md`](workspace-implementation-plan.md).
+[`workspace-implementation-plan.md`](/aoa/specs/workspace-implementation-plan).
 
 ## What is a workspace?
 
