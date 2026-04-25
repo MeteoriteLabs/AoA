@@ -281,6 +281,17 @@ export function NewIssueDialog() {
         action: { label: `View ${issue.identifier ?? "task"}`, href: `/issues/${issue.identifier ?? issue.id}` },
       });
     },
+    onError: (error: unknown) => {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Something went wrong. Please try again.";
+      pushToast({
+        title: "Couldn't create task",
+        body: message,
+        tone: "error",
+      });
+    },
   });
 
   const uploadDescriptionImage = useMutation({
