@@ -39,6 +39,7 @@ import {
   Paperclip,
 } from "lucide-react";
 import { cn } from "../lib/utils";
+import { pruneStaleId } from "../lib/issueDraft";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
@@ -363,6 +364,17 @@ export function NewIssueDialog() {
       setAssigneeUseProjectWorkspace(true);
     }
   }, [newIssueOpen, newIssueDefaults]);
+
+  // Drop rehydrated assigneeId / projectId once we know the live agent &
+  // project lists, in case the persisted draft was pointing at an entity
+  // that has since been deleted (DB nuke, manual delete, etc).
+  useEffect(() => {
+    if (!newIssueOpen || !agents || !projects) return;
+    const agentIds = new Set(agents.map((a) => a.id));
+    const projectIds = new Set(projects.map((p) => p.id));
+    setAssigneeId((prev) => pruneStaleId(prev, agentIds));
+    setProjectId((prev) => pruneStaleId(prev, projectIds));
+  }, [newIssueOpen, agents, projects]);
 
   useEffect(() => {
     if (!supportsAssigneeOverrides) {
