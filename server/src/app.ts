@@ -318,7 +318,7 @@ export async function createApp(
         res.sendFile(path.join(uiDist, "index.html"));
       });
     } else {
-      console.warn("[paperclip] UI dist not found; running in API-only mode");
+      console.warn("[aoa] UI dist not found; running in API-only mode");
     }
   }
 
