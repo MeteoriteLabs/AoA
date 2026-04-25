@@ -1,50 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── DB table stubs ────────────────────────────────────────────────────────────
+import { makeTableProxy, drizzleOperatorStubs } from "./helpers/drizzle-mock.js";
 
-vi.mock("drizzle-orm", () => ({
-  and: vi.fn((...args: unknown[]) => ({ and: args })),
-  eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
-  desc: vi.fn((col: unknown) => ({ desc: col })),
-  gte: vi.fn((a: unknown, b: unknown) => ({ gte: [a, b] })),
-  lt: vi.fn((a: unknown, b: unknown) => ({ lt: [a, b] })),
-  lte: vi.fn((a: unknown, b: unknown) => ({ lte: [a, b] })),
-  isNull: vi.fn((col: unknown) => ({ isNull: col })),
-  or: vi.fn((...args: unknown[]) => ({ or: args })),
-  sql: new Proxy(() => ({ sql: true }), {
-    get: () => () => ({ sql: true }),
-    apply: () => ({ sql: true }),
-  }),
-  asc: vi.fn((col: unknown) => ({ asc: col })),
-  inArray: vi.fn((col: unknown, vals: unknown) => ({ inArray: [col, vals] })),
+vi.mock("drizzle-orm", () => drizzleOperatorStubs());
+
+vi.mock("@armyofagents/db", () => ({
+  routines: makeTableProxy("routines"),
+  routineTriggers: makeTableProxy("routine_triggers"),
+  routineRuns: makeTableProxy("routine_runs"),
+  issues: makeTableProxy("issues"),
+  agents: makeTableProxy("agents"),
+  projects: makeTableProxy("projects"),
+  activityLog: makeTableProxy("activity_log"),
+  heartbeatRuns: makeTableProxy("heartbeat_runs"),
+  // heartbeat.ts also accesses these at module level
+  agentRuntimeState: makeTableProxy("agent_runtime_state"),
+  memoryItems: makeTableProxy("memory_items"),
+  agentWakeupRequests: makeTableProxy("agent_wakeup_requests"),
+  costEvents: makeTableProxy("cost_events"),
 }));
-
-vi.mock("@armyofagents/db", () => {
-  const makeTable = (name: string) => {
-    const cols: Record<string, symbol> = {};
-    return new Proxy({} as Record<string, unknown>, {
-      get(_t, prop) {
-        if (prop === "_") return { name };
-        if (prop === "$inferSelect" || prop === "$inferInsert") return {};
-        if (typeof prop === "string") {
-          if (!cols[prop]) cols[prop] = Symbol(`${name}.${prop}`);
-          return cols[prop];
-        }
-        return undefined;
-      },
-    });
-  };
-  return {
-    routines: makeTable("routines"),
-    routineTriggers: makeTable("routine_triggers"),
-    routineRuns: makeTable("routine_runs"),
-    issues: makeTable("issues"),
-    agents: makeTable("agents"),
-    projects: makeTable("projects"),
-    activityLog: makeTable("activity_log"),
-    heartbeatRuns: makeTable("heartbeat_runs"),
-  };
-});
 
 // ── Service mocks injected via deps ──────────────────────────────────────────
 
