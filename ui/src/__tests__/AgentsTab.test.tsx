@@ -151,7 +151,7 @@ describe("AgentsTab", () => {
 
   function makeAgentList() {
     return [
-      makeAgent({ id: "a1", name: "Alice", role: "ceo", status: "active", adapterType: "claude_local", reportsTo: null, budgetMonthlyCents: 5000, title: "Chief Executive" }),
+      makeAgent({ id: "a1", name: "Alice", role: "ceo", status: "active", adapterType: "codex_local", reportsTo: null, budgetMonthlyCents: 5000, title: "Chief Executive" }),
       makeAgent({ id: "a2", name: "Bob", role: "engineer", status: "paused", adapterType: "claude_local", reportsTo: "a1", parentType: "agent", parentId: "a1", budgetMonthlyCents: 0, title: null }),
     ];
   }
@@ -175,8 +175,8 @@ describe("AgentsTab", () => {
     expect(screen.getByText(/Director/)).toBeInTheDocument();
     expect(screen.getByText(/Engineer/)).toBeInTheDocument();
 
-    // Adapter types
-    expect(screen.getByText("Claude API")).toBeInTheDocument();
+    // Adapter types (Sprint 2A removed claude_api — Alice now uses codex_local)
+    expect(screen.getByText("Codex (local)")).toBeInTheDocument();
     expect(screen.getByText("Claude (local)")).toBeInTheDocument();
 
     // Reports to
