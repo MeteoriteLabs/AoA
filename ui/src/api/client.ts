@@ -1,5 +1,11 @@
 const BASE = "/api";
 
+export interface ApiFieldError {
+  field: string;
+  id: string;
+  message: string;
+}
+
 export class ApiError extends Error {
   status: number;
   body: unknown;
@@ -9,6 +15,22 @@ export class ApiError extends Error {
     this.name = "ApiError";
     this.status = status;
     this.body = body;
+  }
+
+  /**
+   * If this is a 422 with a `{ details: { field, id } }` body (the shape the
+   * server emits when an FK reference is invalid), return the field/id/message
+   * tuple so callers can render an inline error against the offending input.
+   */
+  get fieldError(): ApiFieldError | null {
+    if (this.status !== 422) return null;
+    const body = this.body;
+    if (!body || typeof body !== "object") return null;
+    const details = (body as { details?: unknown }).details;
+    if (!details || typeof details !== "object") return null;
+    const { field, id } = details as { field?: unknown; id?: unknown };
+    if (typeof field !== "string" || typeof id !== "string") return null;
+    return { field, id, message: this.message };
   }
 }
 
