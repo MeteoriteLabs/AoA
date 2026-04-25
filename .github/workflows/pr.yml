@@ -134,10 +134,11 @@ jobs:
           #            "AoA runtime note:" so they no longer trip), and the
           #            historical changelog title in cli/CHANGELOG.md.
           #
-          # Guards (1-8): pcp_ tokens, paperclip plugin keys, PAPERCLIP banner,
+          # Guards (1-9): pcp_ tokens, paperclip plugin keys, PAPERCLIP banner,
           #               user-visible Paperclip strings, paperclip:/. localStorage
           #               keys, [paperclip] log prefix, paperclip-* CSS classes,
-          #               quoted "Paperclip <Word>" prose in shipping code.
+          #               quoted "Paperclip <Word>" prose in shipping code,
+          #               AOA_* env-var doc completeness (catches docs drift).
           failed=0
 
           # 1. No pcp_ token prefixes in source (all renamed to aoa_).
@@ -242,6 +243,23 @@ jobs:
           if [ -n "$prose_hits" ]; then
             echo "::error::Found quoted \"Paperclip <Word>\" prose in shipping code (rename to AoA):"
             printf '%s\n' "$prose_hits"
+            failed=1
+          fi
+
+          # 9. env-var doc completeness — every AOA_* env var read by code must
+          #    appear in docs/deploy/environment-variables.md. Catches silent
+          #    drift when a feature lands a new env var without doc update.
+          declared_env=$(grep -rhoE 'process\.env\.AOA_[A-Z_]+' \
+            --include='*.ts' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src cli/src packages 2>/dev/null \
+            | sed 's/process\.env\.//' | sort -u)
+          documented_env=$(grep -oE 'AOA_[A-Z_]+' docs/deploy/environment-variables.md 2>/dev/null | sort -u)
+          missing_env=$(comm -23 <(printf '%s\n' "$declared_env") <(printf '%s\n' "$documented_env") || true)
+          if [ -n "$missing_env" ]; then
+            echo "::error::AOA_* env vars read by code but not documented in docs/deploy/environment-variables.md:"
+            printf '%s\n' "$missing_env"
+            echo "::error::Add these to docs/deploy/environment-variables.md or remove them from code."
             failed=1
           fi
 
