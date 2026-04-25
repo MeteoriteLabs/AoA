@@ -77,19 +77,21 @@ curl http://localhost:3100/api/companies
 To wipe local data and start fresh:
 
 ```sh
-rm -rf ~/.paperclip/instances/default/db
+rm -rf ~/.aoa/instances/default/db
 pnpm dev
 ```
+
+> Note: existing installs that still have `~/.paperclip/` are read via the legacy fallback in `cli/src/config/home.ts` (used when `~/.aoa/` does not yet exist). On a fresh install, AoA writes only to `~/.aoa/`.
 
 ## Data Locations
 
 | Data | Path |
 |------|------|
-| Config | `~/.paperclip/instances/default/config.json` |
-| Database | `~/.paperclip/instances/default/db` |
-| Storage | `~/.paperclip/instances/default/data/storage` |
-| Secrets key | `~/.paperclip/instances/default/secrets/master.key` |
-| Logs | `~/.paperclip/instances/default/logs` |
+| Config | `~/.aoa/instances/default/config.json` |
+| Database | `~/.aoa/instances/default/db` |
+| Storage | `~/.aoa/instances/default/data/storage` |
+| Secrets key | `~/.aoa/instances/default/secrets/master.key` |
+| Logs | `~/.aoa/instances/default/logs` |
 
 Override with environment variables:
 

@@ -10,8 +10,10 @@ AoA stores uploaded files (issue attachments, images) using a configurable stora
 Files are stored at:
 
 ```
-~/.paperclip/instances/default/data/storage
+~/.aoa/instances/default/data/storage
 ```
+
+> Note: existing installs that still have `~/.paperclip/` are read via the legacy fallback in `cli/src/config/home.ts`. On a fresh install, AoA writes only to `~/.aoa/`.
 
 No configuration required. Suitable for local development and single-machine deployments.
 
@@ -35,5 +37,5 @@ pnpm aoa configure --section storage
 Storage configuration is stored in the instance config file:
 
 ```
-~/.paperclip/instances/default/config.json
+~/.aoa/instances/default/config.json
 ```

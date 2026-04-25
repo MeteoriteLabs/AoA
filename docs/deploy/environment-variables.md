@@ -12,7 +12,7 @@ All environment variables that AoA uses for server configuration.
 | `PORT` | `3100` | Server port |
 | `HOST` | `127.0.0.1` | Server host binding |
 | `DATABASE_URL` | (embedded) | PostgreSQL connection string |
-| `AOA_HOME` | `~/.paperclip` | Base directory for all AoA data |
+| `AOA_HOME` | `~/.aoa` (with legacy `~/.paperclip` fallback) | Base directory for all AoA data. Resolved by `cli/src/config/home.ts`: prefers `~/.aoa/`, falls back to `~/.paperclip/` if the legacy dir exists and the new one does not. |
 | `AOA_INSTANCE_ID` | `default` | Instance identifier (for multiple local instances) |
 | `AOA_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
 
@@ -21,7 +21,7 @@ All environment variables that AoA uses for server configuration.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AOA_SECRETS_MASTER_KEY` | (from file) | 32-byte encryption key (base64/hex/raw) |
-| `AOA_SECRETS_MASTER_KEY_FILE` | `~/.paperclip/.../secrets/master.key` | Path to key file |
+| `AOA_SECRETS_MASTER_KEY_FILE` | `~/.aoa/.../secrets/master.key` (with legacy `~/.paperclip/` fallback) | Path to key file |
 | `AOA_SECRETS_STRICT_MODE` | `false` | Require secret refs for sensitive env vars |
 
 ## Agent Runtime (Injected into agent processes)
