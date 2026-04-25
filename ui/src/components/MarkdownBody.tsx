@@ -53,7 +53,7 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
               return (
                 <a
                   href={`/projects/${parsed.projectId}`}
-                  className="paperclip-project-mention-chip"
+                  className="aoa-project-mention-chip"
                   style={mentionChipStyle(parsed.color)}
                 >
                   {label}
