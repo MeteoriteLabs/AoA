@@ -24,7 +24,7 @@ import {
   routineService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden, HttpError, unauthorized } from "../errors.js";
+import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { documentService } from "../services/documents.js";
@@ -435,6 +435,63 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, companyId);
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
+    }
+
+    // Validate FK references up-front so the client gets a typed 422 (with
+    // field/id details) instead of a generic 404 from the service or a 500
+    // from a DB-level FK constraint failure.  Out-of-company hits are treated
+    // as "not found" — leaking existence across tenants would be a bug.
+    const fkLookups: Array<{
+      field: "assigneeAgentId" | "projectId" | "goalId" | "parentId" | "inheritExecutionWorkspaceFromIssueId";
+      id: string;
+      label: string;
+      fetch: () => Promise<{ companyId: string } | null>;
+    }> = [];
+    if (req.body.assigneeAgentId) {
+      fkLookups.push({
+        field: "assigneeAgentId",
+        id: req.body.assigneeAgentId,
+        label: "Assignee agent",
+        fetch: () => agentsSvc.getById(req.body.assigneeAgentId),
+      });
+    }
+    if (req.body.projectId) {
+      fkLookups.push({
+        field: "projectId",
+        id: req.body.projectId,
+        label: "Project",
+        fetch: () => projectsSvc.getById(req.body.projectId),
+      });
+    }
+    if (req.body.goalId) {
+      fkLookups.push({
+        field: "goalId",
+        id: req.body.goalId,
+        label: "Goal",
+        fetch: () => goalsSvc.getById(req.body.goalId),
+      });
+    }
+    if (req.body.parentId) {
+      fkLookups.push({
+        field: "parentId",
+        id: req.body.parentId,
+        label: "Parent task",
+        fetch: () => svc.getById(req.body.parentId),
+      });
+    }
+    if (req.body.inheritExecutionWorkspaceFromIssueId) {
+      fkLookups.push({
+        field: "inheritExecutionWorkspaceFromIssueId",
+        id: req.body.inheritExecutionWorkspaceFromIssueId,
+        label: "Workspace inheritance task",
+        fetch: () => svc.getById(req.body.inheritExecutionWorkspaceFromIssueId),
+      });
+    }
+    for (const check of fkLookups) {
+      const row = await check.fetch();
+      if (!row || row.companyId !== companyId) {
+        throw unprocessable(`${check.label} not found`, { field: check.field, id: check.id });
+      }
     }
 
     const actor = getActorInfo(req);
