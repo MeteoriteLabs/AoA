@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
+import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
@@ -188,7 +189,20 @@ export function NewIssueDialog() {
   const [assigneeUseProjectWorkspace, setAssigneeUseProjectWorkspace] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
+  // Per-field server-side validation errors (populated from 422 responses with
+  // a `fieldError` payload). Keyed by the server's field name (e.g.
+  // "assigneeAgentId") so it lines up with the API contract.
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function clearFieldError(field: "assigneeAgentId" | "projectId") {
+    setFieldErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  }
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
@@ -282,6 +296,17 @@ export function NewIssueDialog() {
       });
     },
     onError: (error: unknown) => {
+      // FK reference errors land here as a 422 with { details: { field, id } }.
+      // Surface them under the offending picker instead of a toast — the toast
+      // is too easy to miss when the bad value is sitting right there in the
+      // form. Other errors (validation, auth, network) keep the toast path.
+      if (error instanceof ApiError) {
+        const fe = error.fieldError;
+        if (fe && (fe.field === "assigneeAgentId" || fe.field === "projectId")) {
+          setFieldErrors((prev) => ({ ...prev, [fe.field]: fe.message }));
+          return;
+        }
+      }
       const message =
         error instanceof Error && error.message
           ? error.message
@@ -430,6 +455,7 @@ export function NewIssueDialog() {
     setExpanded(false);
     setDialogCompanyId(null);
     setCompanyOpen(false);
+    setFieldErrors({});
   }
 
   function handleCompanyChange(companyId: string) {
@@ -441,6 +467,7 @@ export function NewIssueDialog() {
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
     setAssigneeUseProjectWorkspace(true);
+    setFieldErrors({});
   }
 
   function discardDraft() {
@@ -451,6 +478,7 @@ export function NewIssueDialog() {
 
   function handleSubmit() {
     if (!effectiveCompanyId || !title.trim()) return;
+    setFieldErrors({});
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       modelOverride: assigneeModelOverride,
@@ -704,7 +732,11 @@ export function NewIssueDialog() {
                   noneLabel="No assignee"
                   searchPlaceholder="Search assignees..."
                   emptyMessage="No assignees found."
-                  onChange={(id) => { if (id) trackRecentAssignee(id); setAssigneeId(id); }}
+                  onChange={(id) => {
+                    if (id) trackRecentAssignee(id);
+                    setAssigneeId(id);
+                    clearFieldError("assigneeAgentId");
+                  }}
                   onConfirm={() => {
                     projectSelectorRef.current?.focus();
                   }}
@@ -744,7 +776,10 @@ export function NewIssueDialog() {
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
                 emptyMessage="No projects found."
-                onChange={setProjectId}
+                onChange={(id) => {
+                  setProjectId(id);
+                  clearFieldError("projectId");
+                }}
                 onConfirm={() => {
                   descriptionEditorRef.current?.focus();
                 }}
@@ -777,6 +812,20 @@ export function NewIssueDialog() {
               />
             </div>
           </div>
+          {(fieldErrors.assigneeAgentId || fieldErrors.projectId) && (
+            <div className="mt-1 space-y-0.5 text-xs text-destructive">
+              {fieldErrors.assigneeAgentId && (
+                <div data-testid="field-error-assigneeAgentId">
+                  <span className="font-medium">Assignee:</span> {fieldErrors.assigneeAgentId}
+                </div>
+              )}
+              {fieldErrors.projectId && (
+                <div data-testid="field-error-projectId">
+                  <span className="font-medium">Project:</span> {fieldErrors.projectId}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {supportsAssigneeOverrides && (
