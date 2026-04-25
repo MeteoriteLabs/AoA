@@ -119,7 +119,7 @@ summary: "Identifiers that intentionally still say paperclip and why"
 - `packages/adapters/openclaw/src/server/execute-webhook.ts`
 - `packages/adapters/openclaw/src/server/execute-sse.ts`
 
-**Why kept.** The field names are part of the wire format consumed by external Hermes and OpenClaw processes. Renaming them unilaterally would silently break any deployment whose Hermes version predates the rename. This is **Phase 6 of the rename plan** and is explicitly deferred pending upstream coordination with the Hermes/OpenClaw maintainers.
+**Why kept.** The field names are part of the wire format consumed by external Hermes and OpenClaw processes. Renaming them unilaterally would silently break any deployment whose Hermes version predates the rename. This is **Phase 6 of the rename plan** and is explicitly deferred pending upstream coordination with the Hermes/OpenClaw maintainers (locked as **Decision #92** — see `docs/aoa/reference/decisions.md`).
 
 **Retire when.** Upstream Hermes/OpenClaw ships a version that accepts the new `aoa_session_key` / `aoa_stream_transport` field names (or supports both), the minimum required Hermes version in `package.json` is bumped to that release, and the old field names are removed from the execute files.
 
