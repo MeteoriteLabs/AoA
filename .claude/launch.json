@@ -2,6 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "app",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "pnpm", "dev:once"],
+      "port": 3100
+    },
+    {
       "name": "server",
       "runtimeExecutable": "cmd",
       "runtimeArgs": ["/c", "pnpm", "dev:server"],
