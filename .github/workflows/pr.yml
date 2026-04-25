@@ -117,6 +117,18 @@ jobs:
           #   - paperclip-feedback-envelope-v2 / paperclip-feedback-bundle-v2
           #   - hermes-paperclip-adapter (external npm package)
           #   - PaperclipPluginManifest / paperclipConfigSchema (type aliases)
+          # Guards 5-7 have their own allow-list:
+          #   Guard 5: paperclip:/. localStorage legacy reads allowed only in
+          #            lib/storage-migrations.ts, __tests__/storage-migration,
+          #            and ui/index.html (FOUC bootstrap legacy fallback read).
+          #   Guard 6: [paperclip] allowed only in normalize-transcript.ts
+          #            (matches upstream CLI binary's stderr output, not our
+          #            own log prefix — see brand-check-ignore comment there).
+          #   Guard 7: no allow-list; paperclip-* CSS classes are fully renamed.
+          #
+          # Guards (1-7): pcp_ tokens, paperclip plugin keys, PAPERCLIP banner,
+          #               user-visible Paperclip strings, paperclip:/. localStorage
+          #               keys, [paperclip] log prefix, paperclip-* CSS classes.
           failed=0
 
           # 1. No pcp_ token prefixes in source (all renamed to aoa_).
@@ -161,6 +173,45 @@ jobs:
           if [ -n "$ui_hits" ]; then
             echo "::error::Found user-visible Paperclip strings in source (should say AoA):"
             printf '%s\n' "$ui_hits"
+            failed=1
+          fi
+
+          # 5. No paperclip:/. localStorage keys outside the migration registry.
+          # ui/index.html FOUC bootstrap has one intentional legacy fallback read
+          # (paperclip.theme → aoa.theme) and is excluded from this guard.
+          ls_hits=$(grep -rnE 'localStorage\.(set|get|remove)Item\([^)]*paperclip|paperclip[:.][a-zA-Z]' \
+            --include='*.ts' --include='*.tsx' --include='*.html' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            ui/src ui/index.html 2>/dev/null \
+            | grep -v 'lib/storage-migrations\|__tests__/storage-migration\|ui/index\.html' || true)
+          if [ -n "$ls_hits" ]; then
+            echo "::error::Found paperclip:/. localStorage keys in ui/ outside the migration registry (use aoa: prefix; legacy reads only allowed in lib/storage-migrations.ts and ui/index.html FOUC bootstrap):"
+            printf '%s\n' "$ls_hits"
+            failed=1
+          fi
+
+          # 6. No [paperclip] log prefix outside docs (renamed to [aoa]).
+          # normalize-transcript.ts is excluded: it matches the upstream Claude
+          # CLI binary's stderr output, not an AoA-emitted prefix.
+          log_hits=$(grep -rnE '\[paperclip\]' \
+            --include='*.ts' --include='*.tsx' --include='*.mjs' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src ui/src cli/src packages/adapters scripts 2>/dev/null \
+            | grep -v 'normalize-transcript' || true)
+          if [ -n "$log_hits" ]; then
+            echo "::error::Found [paperclip] log prefix (rename to [aoa]):"
+            printf '%s\n' "$log_hits"
+            failed=1
+          fi
+
+          # 7. No paperclip-* CSS classes (renamed to aoa-*).
+          css_hits=$(grep -rnE 'paperclip-(mdxeditor|project-mention-chip)' \
+            --include='*.css' --include='*.tsx' --include='*.ts' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            ui/src 2>/dev/null || true)
+          if [ -n "$css_hits" ]; then
+            echo "::error::Found paperclip-* CSS classes (rename to aoa-*):"
+            printf '%s\n' "$css_hits"
             failed=1
           fi
 
