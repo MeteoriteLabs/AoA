@@ -6,8 +6,11 @@
 // `await screen.findByText(...)` for every row-level assertion here so
 // the retry loop handles that gap. Each suite (Board, Discussions,
 // Workspaces) needs the same treatment as rows are added.
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+
+// These tests render a multi-query page; give enough headroom for slow CI runs.
+vi.setConfig({ testTimeout: 15000 });
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -218,28 +221,32 @@ beforeEach(() => {
   // Archive now uses a Dialog instead of window.confirm
 });
 
+afterEach(() => {
+  cleanup();
+});
+
 // --- Tests ---
 
 describe("ProjectDetail — Workspaces tab", () => {
   it("renders a Workspaces tab button alongside other tabs", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
 
-    expect(await screen.findByText("ENG-99-fix-auth")).toBeInTheDocument();
+    await screen.findByText("ENG-99-fix-auth", {}, { timeout: 5000 });
 
-    expect(await screen.findByText("Overview")).toBeInTheDocument();
-    expect(await screen.findByText("Board")).toBeInTheDocument();
-    expect(await screen.findByText("Goals")).toBeInTheDocument();
-    expect(await screen.findByText("Team")).toBeInTheDocument();
-    expect(await screen.findByText("Budget")).toBeInTheDocument();
-    expect(await screen.findByText("Discussions")).toBeInTheDocument();
-    expect(await screen.findByText("Workspaces")).toBeInTheDocument();
+    await screen.findByText("Overview");
+    await screen.findByText("Board");
+    await screen.findByText("Goals");
+    await screen.findByText("Team");
+    await screen.findByText("Budget");
+    await screen.findByText("Discussions");
+    await screen.findByText("Workspaces");
   });
 
   it("shows workspace list when workspaces tab is active", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
 
-    expect(await screen.findByText("ENG-99-fix-auth")).toBeInTheDocument();
-    expect(await screen.findByText("ENG-100-new-feature")).toBeInTheDocument();
+    await screen.findByText("ENG-99-fix-auth", {}, { timeout: 5000 });
+    await screen.findByText("ENG-100-new-feature");
   });
 
   it("fetches workspaces filtered by project ID", async () => {
@@ -250,23 +257,23 @@ describe("ProjectDetail — Workspaces tab", () => {
         "comp-1",
         expect.objectContaining({ projectId: "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d" }),
       );
-    });
+    }, { timeout: 5000 });
   });
 
   it("shows status badges for workspaces", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
 
-    expect(await screen.findByText("ENG-99-fix-auth")).toBeInTheDocument();
-    expect(await screen.findByText("active")).toBeInTheDocument();
-    expect(await screen.findByText("idle")).toBeInTheDocument();
+    await screen.findByText("ENG-99-fix-auth", {}, { timeout: 5000 });
+    await screen.findByText("active");
+    await screen.findByText("idle");
   });
 
   it("shows mode badges for workspaces", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
 
-    expect(await screen.findByText("ENG-99-fix-auth")).toBeInTheDocument();
-    expect(await screen.findByText("Isolated")).toBeInTheDocument();
-    expect(await screen.findByText("Shared")).toBeInTheDocument();
+    await screen.findByText("ENG-99-fix-auth", {}, { timeout: 5000 });
+    await screen.findByText("Isolated");
+    await screen.findByText("Shared");
   });
 
   it("shows empty state when no workspaces for this project", async () => {
@@ -274,11 +281,7 @@ describe("ProjectDetail — Workspaces tab", () => {
 
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
 
-    await waitFor(() => {
-      expect(
-        screen.getByText(/No workspaces yet/),
-      ).toBeInTheDocument();
-    });
+    await screen.findByText(/No workspaces yet/, {}, { timeout: 5000 });
   });
 
   it("shows Workspaces tab for departments without explicit policy", async () => {
@@ -287,11 +290,8 @@ describe("ProjectDetail — Workspaces tab", () => {
 
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
 
-    await waitFor(() => {
-      expect(screen.getByText(/No workspaces yet/)).toBeInTheDocument();
-    });
-
-    expect(screen.getByText("Workspaces")).toBeInTheDocument();
+    await screen.findByText(/No workspaces yet/, {}, { timeout: 5000 });
+    await screen.findByText("Workspaces");
   });
 
   it("workspace row navigates to workspace view on click", async () => {
@@ -319,7 +319,7 @@ describe("ProjectDetail — Workspaces tab", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByText("ENG-99-fix-auth")).toBeInTheDocument();
+    await screen.findByText("ENG-99-fix-auth", {}, { timeout: 5000 });
 
     fireEvent.click(screen.getByTestId("workspace-row-ws-1"));
 
@@ -331,15 +331,15 @@ describe("ProjectDetail — Workspaces tab", () => {
   it("shows Archive button on active workspace rows", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
 
-    expect(await screen.findByText("ENG-99-fix-auth")).toBeInTheDocument();
-    expect(await screen.findByTestId("archive-workspace-ws-1")).toBeInTheDocument();
-    expect(await screen.findByTestId("archive-workspace-ws-2")).toBeInTheDocument();
+    await screen.findByText("ENG-99-fix-auth", {}, { timeout: 5000 });
+    await screen.findByTestId("archive-workspace-ws-1");
+    await screen.findByTestId("archive-workspace-ws-2");
   });
 
   it("calls update with archived status when Archive is confirmed via dialog", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
 
-    fireEvent.click(await screen.findByTestId("archive-workspace-ws-1"));
+    fireEvent.click(await screen.findByTestId("archive-workspace-ws-1", {}, { timeout: 5000 }));
 
     // Readiness loads via getCloseReadiness mock; wait for the action button
     // to be enabled before confirming. The AlertDialog action starts disabled
@@ -367,8 +367,9 @@ describe("ProjectDetail — Workspaces tab", () => {
 
     // Wait for both the trigger AND its count label to render — under
     // parallel-suite CPU contention, React sometimes flushes the tab
-    // shell before the executionWorkspaces query resolves.
-    expect(await screen.findByText("Archived (2)")).toBeInTheDocument();
+    // shell before the executionWorkspaces query resolves. Use a generous
+    // timeout to handle slow CI / parallel-suite runs.
+    await screen.findByText("Archived (2)", {}, { timeout: 5000 });
 
     // Archived workspaces are NOT visible by default (collapsed)
     expect(screen.queryByTestId("archived-workspaces-list")).not.toBeInTheDocument();
@@ -387,11 +388,11 @@ describe("ProjectDetail — Workspaces tab", () => {
     // Wait for project to load first (tab bar appears), then workspace loading shows
     await waitFor(() => {
       expect(screen.getByText("Workspaces")).toBeInTheDocument();
-    });
+    }, { timeout: 5000 });
 
     await waitFor(() => {
       expect(screen.getByTestId("workspaces-loading")).toBeInTheDocument();
-    });
+    }, { timeout: 5000 });
 
     const skeletons = screen.getByTestId("workspaces-loading").querySelectorAll("[data-slot='skeleton']");
     expect(skeletons.length).toBeGreaterThanOrEqual(2);

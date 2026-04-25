@@ -1,6 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
+
+// These tests render a multi-query page; give enough headroom for slow CI runs.
+vi.setConfig({ testTimeout: 15000 });
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -173,29 +175,28 @@ beforeEach(() => {
   discussionsApiMock.list.mockResolvedValue(mockListResponse);
 });
 
+afterEach(() => {
+  cleanup();
+});
+
 // --- Tests ---
 
 describe("ProjectDetail — Discussions tab", () => {
   it("renders a Discussions tab button", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/discussions");
 
-    await waitFor(() => {
-      expect(screen.getByText("Sprint Planning Notes")).toBeInTheDocument();
-    });
+    await screen.findByText("Sprint Planning Notes", {}, { timeout: 5000 });
 
     // Tab buttons are plain <button> elements, not role="button" accessible
-    const tabButtons = screen.getAllByText("Discussions");
+    const tabButtons = await screen.findAllByText("Discussions");
     expect(tabButtons.length).toBeGreaterThanOrEqual(1);
   });
 
   it("shows discussions list when Discussions tab is active", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/discussions");
 
-    await waitFor(() => {
-      expect(screen.getByText("Sprint Planning Notes")).toBeInTheDocument();
-    });
-
-    expect(screen.getByText("Architecture Review")).toBeInTheDocument();
+    await screen.findByText("Sprint Planning Notes", {}, { timeout: 5000 });
+    await screen.findByText("Architecture Review");
   });
 
   it("fetches discussions filtered by project scope", async () => {
@@ -206,18 +207,15 @@ describe("ProjectDetail — Discussions tab", () => {
         "comp-1",
         expect.objectContaining({ scopeId: "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d" }),
       );
-    });
+    }, { timeout: 5000 });
   });
 
   it("shows New Discussion button that opens capture modal pre-scoped", async () => {
-    const user = userEvent.setup();
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/discussions");
 
-    await waitFor(() => {
-      expect(screen.getByText("Sprint Planning Notes")).toBeInTheDocument();
-    });
+    await screen.findByText("Sprint Planning Notes", {}, { timeout: 5000 });
 
-    await user.click(screen.getByText("New Discussion"));
+    fireEvent.click(await screen.findByText("New Discussion", {}, { timeout: 5000 }));
     expect(mockDialogContext.openDiscussionCapture).toHaveBeenCalledWith(
       expect.objectContaining({
         scopeType: "department",
@@ -229,17 +227,13 @@ describe("ProjectDetail — Discussions tab", () => {
   it("shows pending badge count on discussions", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/discussions");
 
-    await waitFor(() => {
-      expect(screen.getByText("2 pending")).toBeInTheDocument();
-    });
+    await screen.findByText("2 pending", {}, { timeout: 5000 });
   });
 
   it("shows discussion count header", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/discussions");
 
-    await waitFor(() => {
-      expect(screen.getByText("2 discussions")).toBeInTheDocument();
-    });
+    await screen.findByText("2 discussions", {}, { timeout: 5000 });
   });
 
   it("shows empty state when no discussions for this project", async () => {
@@ -252,25 +246,21 @@ describe("ProjectDetail — Discussions tab", () => {
 
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/discussions");
 
-    await waitFor(() => {
-      expect(screen.getByText(/No discussions/)).toBeInTheDocument();
-    });
+    await screen.findByText(/No discussions/, {}, { timeout: 5000 });
   });
 
   it("shows the Discussions tab alongside other tabs", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/discussions");
 
-    await waitFor(() => {
-      expect(screen.getByText("Sprint Planning Notes")).toBeInTheDocument();
-    });
+    await screen.findByText("Sprint Planning Notes", {}, { timeout: 5000 });
 
     // All tabs should be visible
-    expect(screen.getByText("Overview")).toBeInTheDocument();
-    expect(screen.getByText("Board")).toBeInTheDocument();
-    expect(screen.getByText("Goals")).toBeInTheDocument();
-    expect(screen.getByText("Team")).toBeInTheDocument();
-    expect(screen.getByText("Budget")).toBeInTheDocument();
-    expect(screen.getByText("Discussions")).toBeInTheDocument();
+    await screen.findByText("Overview");
+    await screen.findByText("Board");
+    await screen.findByText("Goals");
+    await screen.findByText("Team");
+    await screen.findByText("Budget");
+    await screen.findByText("Discussions");
   });
 
   it("uses correct scope type based on project type", async () => {
@@ -287,6 +277,6 @@ describe("ProjectDetail — Discussions tab", () => {
         "comp-1",
         expect.objectContaining({ scopeType: "project" }),
       );
-    });
+    }, { timeout: 5000 });
   });
 });
