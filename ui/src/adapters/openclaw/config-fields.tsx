@@ -118,7 +118,7 @@ export function OpenClawConfigFields({
               onCommit={(v) => mark("adapterConfig", "paperclipApiUrl", v || undefined)}
               immediate
               className={inputClass}
-              placeholder="https://paperclip.example"
+              placeholder="https://aoa.example"
             />
           </Field>
 
@@ -148,11 +148,11 @@ export function OpenClawConfigFields({
           {sessionStrategy === "fixed" && (
             <Field label="Session key">
               <DraftInput
-                value={eff("adapterConfig", "sessionKey", String(config.sessionKey ?? "paperclip"))}
+                value={eff("adapterConfig", "sessionKey", String(config.sessionKey ?? "aoa"))}
                 onCommit={(v) => mark("adapterConfig", "sessionKey", v || undefined)}
                 immediate
                 className={inputClass}
-                placeholder="paperclip"
+                placeholder="aoa"
               />
             </Field>
           )}
