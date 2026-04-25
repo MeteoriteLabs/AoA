@@ -29,6 +29,22 @@ const SKIP_LLM = process.env.AOA_E2E_SKIP_LLM !== "false";
 const COMPANY_NAME = `E2E-Test-${Date.now()}`;
 
 test.describe("Onboarding wizard", () => {
+  test.beforeEach(async ({ request }) => {
+    // Pre-condition: zero companies in DB so NoCompaniesStartPage renders.
+    // Use the local-board admin endpoint to delete any leftover test companies.
+    // In local_trusted mode the request fixture is automatically authorised
+    // (source: "local_implicit") — no Bearer token required.
+    const res = await request.get("/api/companies");
+    if (!res.ok()) return; // server might not be up yet — first test will fail loudly
+    const companies = (await res.json()) as Array<{ id: string; name: string }>;
+    for (const c of companies) {
+      // Only delete obvious test artifacts. Be defensive: a dev who runs e2e
+      // against a real DB shouldn't lose their work.
+      if (!/^E2E-(Test|MCP)-/.test(c.name)) continue;
+      await request.delete(`/api/companies/${c.id}`);
+    }
+  });
+
   test("opens on first run and advances past step 1", async ({ page }) => {
     await page.goto("/");
 
