@@ -13,6 +13,8 @@ npx aoa onboard --yes
 
 This walks you through setup, configures your environment, and gets AoA running.
 
+> The `aoa` bin is provided by `@armyofagents/cli` (with a legacy `paperclipai` alias) once the package is npm-published. If you're running from a fresh clone before publishing, use `pnpm aoa` from the repo root instead — `npx aoa` only works against the published artifact.
+
 ## Local Development
 
 Prerequisites: Node.js 20+ and pnpm 9+.
