@@ -46,19 +46,21 @@ pnpm exec playwright test --config=tests/e2e/playwright.config.ts --list
 
 ## Environment variables
 
-| Variable                  | Default                  | Purpose                                                              |
-| ------------------------- | ------------------------ | -------------------------------------------------------------------- |
-| `PAPERCLIP_E2E_PORT`      | `3199`                   | Dedicated port for the throwaway e2e server (avoids clobbering dev). |
-| `PAPERCLIP_E2E_SKIP_LLM`  | `true`                   | Skip LLM-dependent assertions (onboarding only).                     |
-| `ANTHROPIC_API_KEY`       | —                        | Required only when `PAPERCLIP_E2E_SKIP_LLM=false`.                   |
+| Variable               | Default | Purpose                                                              |
+| ---------------------- | ------- | -------------------------------------------------------------------- |
+| `AOA_E2E_PORT`         | `3199`  | Dedicated port for the throwaway e2e server (avoids clobbering dev). |
+| `AOA_E2E_SKIP_LLM`     | `true`  | Skip LLM-dependent assertions (onboarding only).                     |
+| `ANTHROPIC_API_KEY`    | —       | Required only when `AOA_E2E_SKIP_LLM=false`.                         |
+
+> `PAPERCLIP_E2E_*` aliases still work via the env-compat layer; switch to `AOA_E2E_*` at your convenience.
 
 ## How the harness boots a server
 
-The Playwright `webServer` directive runs `pnpm paperclipai onboard --yes
---run` in a temp `PAPERCLIP_HOME`. That bootstraps a fresh instance with
-Quickstart defaults and starts the server on `PAPERCLIP_E2E_PORT`. The
+The Playwright `webServer` directive runs `pnpm aoa onboard --yes
+--run` in a temp `AOA_HOME`. That bootstraps a fresh instance with
+Quickstart defaults and starts the server on `AOA_E2E_PORT`. The
 spec talks to `http://127.0.0.1:${PORT}` — never to the developer's
-active Paperclip home.
+active AoA home.
 
 `reuseExistingServer: false` means each run starts a clean server. First
 run downloads nothing extra but subsequent runs reuse the temp dir for
@@ -74,7 +76,7 @@ that test invocation only.
   adapter CLI) on PATH for the step-3 adapter environment check. A
   later session will add an adapter-stub mode for full-flow e2e.
 - **Port collision:** if `:3199` is already in use, set
-  `PAPERCLIP_E2E_PORT` to any free port.
+  `AOA_E2E_PORT` to any free port.
 - **Flakiness:** the spec uses Playwright's locator auto-retry. No
   manual `waitFor` sleeps. If a spec flakes, increase timeouts on the
   specific assertion rather than retrying the whole test.
