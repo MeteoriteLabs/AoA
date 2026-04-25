@@ -122,3 +122,40 @@ The `paperclip_session_key` and `paperclip_stream_transport` wire fields are int
 
 **"Plugin won't load."**
 Check the plugin manifest. The original `paperclipPlugin` key is still supported. If the plugin was updated to use the new `aoaPlugin` alias, ensure you're running a version of AoA that recognizes it (both are supported). If in doubt, revert the manifest to `paperclipPlugin`.
+
+## Log filter migration
+
+Commit `97eeddc` renamed every AoA-emitted log prefix from `[paperclip]` to `[aoa]`. If you have log aggregation rules, alerting queries, or tail/grep scripts that filter on `[paperclip]`, they are now silently dead — they will match nothing in logs produced by v1.0.0 and later.
+
+An audit script (`scripts/find-dead-paperclip-filters.mjs`) was run against the full codebase at the time of the v1.0.0 release and returned **no operator-side filter consumers** in shipping code. The only codebase occurrence of `[paperclip]` as a parsed string is in `ui/src/components/workspace/transcript/normalize-transcript.ts`, which matches the *upstream Claude CLI binary's* stderr output — not an AoA-emitted prefix — and is intentionally preserved.
+
+### What to update on the operator side
+
+If you run any of the following, update them before or immediately after upgrading:
+
+| Consumer type | Old filter | New filter | Notes |
+|---|---|---|---|
+| Shell tail / grep | `grep '\[paperclip\]'` | `grep '\[aoa\]'` | Or dual-match for one release: `grep -E '\[(aoa\|paperclip)\]'` |
+| Datadog log query | `@message:[paperclip]` | `@message:[aoa]` | Update in Logs → Saved Views and any Monitor queries |
+| Loki / Grafana | `\|= "[paperclip]"` | `\|= "[aoa]"` | Check LogQL in dashboards and alert rules |
+| Splunk | `"[paperclip]"` | `"[aoa]"` | Search, saved searches, and alerts |
+| k8s log-router (Fluentd / Vector) | `grep_pattern: '\[paperclip\]'` | `grep_pattern: '\[aoa\]'` | Check DaemonSet ConfigMaps |
+| CloudWatch Insights | `filter @message like /\[paperclip\]/` | `filter @message like /\[aoa\]/` | Update metric filters and log group dashboards |
+
+### Dual-match for zero-downtime rollouts
+
+If you are running a rolling upgrade (some nodes on the old version, some on the new), use a dual-match filter for one release cycle to avoid gaps:
+
+```sh
+# Shell
+grep -E '\[(aoa|paperclip)\]' /var/log/aoa/server.log
+
+# Loki
+{app="aoa"} |~ `\[(aoa|paperclip)\]`
+```
+
+Remove the `paperclip` branch once all nodes are upgraded.
+
+### Exception: normalize-transcript.ts upstream CLI filter
+
+The filter `[paperclip] skipping saved session resume` in the workspace transcript normalizer matches stderr from the upstream Claude CLI binary (which still emits that prefix). Do **not** update that string — it will break session-resume suppression for users on older CLI versions. Track the upstream CLI changelog to know when the CLI itself renames its prefix.
