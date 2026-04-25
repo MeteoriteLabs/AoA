@@ -47,3 +47,7 @@ plans/
 # Playwright e2e outputs
 tests/e2e/playwright-report/
 tests/e2e/test-results/
+
+# Playwright release-smoke outputs
+tests/release-smoke/playwright-report/
+tests/release-smoke/test-results/
