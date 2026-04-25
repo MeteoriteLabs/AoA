@@ -1,6 +1,6 @@
 # HEARTBEAT.md -- Director Heartbeat Checklist
 
-Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the paperclip skill.
+Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the aoa skill.
 
 ## 1. Identity and Context
 
@@ -76,7 +76,7 @@ Status quick guide:
 
 ## Rules
 
-- Always use the paperclip skill for coordination.
+- Always use the aoa skill for coordination.
 - Always include `X-Paperclip-Run-Id` header on mutating API calls.
 - Comment in concise markdown: status line + bullets + links.
 - Self-assign via checkout only when explicitly @-mentioned.
