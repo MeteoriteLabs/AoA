@@ -30,7 +30,9 @@
               "start/what-is-aoa",
               "start/quickstart",
               "start/core-concepts",
-              "start/architecture"
+              "start/architecture",
+              "start/paperclip-vs-aoa",
+              "start/openclaw-integration"
             ]
           }
         ]
@@ -81,6 +83,7 @@
               "deploy/secrets",
               "deploy/storage",
               "deploy/environment-variables",
+              "deploy/upgrade-guide",
               "deploy/distribution",
               "deploy/telemetry"
             ]
