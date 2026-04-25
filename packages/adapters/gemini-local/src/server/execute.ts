@@ -37,13 +37,13 @@ function resolveGeminiBillingType(env: Record<string, string>): "api" | "subscri
 }
 
 function renderAoaEnvNote(env: Record<string, string>): string {
-  const paperclipKeys = Object.keys(env)
+  const aoaKeys = Object.keys(env)
     .filter((key) => key.startsWith("AOA_"))
     .sort();
-  if (paperclipKeys.length === 0) return "";
+  if (aoaKeys.length === 0) return "";
   return [
-    "Paperclip runtime note:",
-    `The following AOA_* environment variables are available in this run: ${paperclipKeys.join(", ")}`,
+    "AoA runtime note:",
+    `The following AOA_* environment variables are available in this run: ${aoaKeys.join(", ")}`,
     "Do not assume these variables are missing without checking your shell environment.",
     "",
     "",
@@ -53,8 +53,8 @@ function renderAoaEnvNote(env: Record<string, string>): string {
 function renderApiAccessNote(env: Record<string, string>): string {
   if (!hasNonEmptyEnvValue(env, "AOA_API_URL") || !hasNonEmptyEnvValue(env, "AOA_API_KEY")) return "";
   return [
-    "Paperclip API access note:",
-    "Use run_shell_command with curl to make Paperclip API requests.",
+    "AoA API access note:",
+    "Use run_shell_command with curl to make AoA API requests.",
     "GET example:",
     `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $AOA_API_KEY\\" \\"$AOA_API_URL/api/agents/me\\"" })`,
     "POST/PATCH example:",
@@ -73,7 +73,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+    "You are agent {{agent.id}} ({{agent.name}}). Continue your AoA work.",
   );
   const command = asString(config.command, "gemini");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
