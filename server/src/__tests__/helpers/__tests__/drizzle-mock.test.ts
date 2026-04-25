@@ -32,10 +32,40 @@ describe("drizzleOperatorStubs", () => {
     expect(ops.asc()).toBe("asc");
   });
 
-  it("provides an sql template tag that returns a string sentinel", () => {
+  it("returns a string sentinel for count", () => {
     const ops = drizzleOperatorStubs();
-    // Both call form and tagged-template form must work.
-    expect((ops.sql as unknown as () => string)()).toBe("sql");
-    expect((ops.sql as unknown as (s: TemplateStringsArray) => string)`SELECT 1`).toBe("sql");
+    expect(ops.count()).toBe("count");
+  });
+
+  it("sql call-form and tagged-template form both return a non-crashing sentinel", () => {
+    const ops = drizzleOperatorStubs();
+    const sqlFn = ops.sql as unknown as (...args: unknown[]) => { as: (...args: unknown[]) => unknown };
+    // Call form
+    const callResult = sqlFn();
+    expect(callResult).toBeDefined();
+    // Tagged template form
+    const tagResult = (ops.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => { as: (...args: unknown[]) => unknown })`SELECT 1`;
+    expect(tagResult).toBeDefined();
+  });
+
+  it("sql result supports .as() chaining without throwing", () => {
+    const ops = drizzleOperatorStubs();
+    const sqlFn = ops.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => { as: (alias: string) => unknown };
+    const result = sqlFn`some expression`.as("myAlias");
+    expect(result).toBeDefined();
+  });
+
+  it("sql.join() does not throw", () => {
+    const ops = drizzleOperatorStubs();
+    const sqlWithJoin = ops.sql as unknown as { join: (...args: unknown[]) => unknown };
+    const result = sqlWithJoin.join(["a", "b", "c"], ", ");
+    expect(result).toBeDefined();
+  });
+
+  it("sql.raw() does not throw", () => {
+    const ops = drizzleOperatorStubs();
+    const sqlWithRaw = ops.sql as unknown as { raw: (s: string) => unknown };
+    const result = sqlWithRaw.raw("SELECT 1");
+    expect(result).toBeDefined();
   });
 });
