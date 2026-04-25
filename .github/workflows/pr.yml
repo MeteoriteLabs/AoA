@@ -125,10 +125,19 @@ jobs:
           #            (matches upstream CLI binary's stderr output, not our
           #            own log prefix — see brand-check-ignore comment there).
           #   Guard 7: no allow-list; paperclip-* CSS classes are fully renamed.
+          #   Guard 8: quoted "Paperclip <Word>" prose strings; allow-listed for
+          #            wire-compat field-name prose ("paperclipApiUrl ..."),
+          #            test fixtures using "Paperclip" as a literal name
+          #            ("Paperclip Hook", "Paperclip Test", "Paperclip runtime
+          #            note:" assertions in cursor-local-execute.test.ts which
+          #            mirror the renamed AoA prompt text — these are now
+          #            "AoA runtime note:" so they no longer trip), and the
+          #            historical changelog title in cli/CHANGELOG.md.
           #
-          # Guards (1-7): pcp_ tokens, paperclip plugin keys, PAPERCLIP banner,
+          # Guards (1-8): pcp_ tokens, paperclip plugin keys, PAPERCLIP banner,
           #               user-visible Paperclip strings, paperclip:/. localStorage
-          #               keys, [paperclip] log prefix, paperclip-* CSS classes.
+          #               keys, [paperclip] log prefix, paperclip-* CSS classes,
+          #               quoted "Paperclip <Word>" prose in shipping code.
           failed=0
 
           # 1. No pcp_ token prefixes in source (all renamed to aoa_).
@@ -212,6 +221,27 @@ jobs:
           if [ -n "$css_hits" ]; then
             echo "::error::Found paperclip-* CSS classes (rename to aoa-*):"
             printf '%s\n' "$css_hits"
+            failed=1
+          fi
+
+          # 8. No quoted "Paperclip <Word>" prose in shipping code (renamed to "AoA <Word>").
+          # Catches the OpenClaw onboarding prose class ("Paperclip is bound to...",
+          # "Paperclip callback requests...", "Suggested Paperclip base URLs to try",
+          # "# Paperclip OpenClaw Onboarding", etc.). Allow-listed:
+          #   - paperclipApiUrl wire-compat field references (the regex matches a
+          #     literal SPACE after "Paperclip", so identifiers like
+          #     "paperclipApiUrl" don't trip)
+          #   - test fixtures using "Paperclip" as a literal name (Hook, Test, etc.)
+          #     — those now read "AoA <Word>" after the OpenClaw prose sweep
+          #   - historical entries in cli/CHANGELOG.md (excluded by path)
+          prose_hits=$(grep -rnE '"Paperclip [A-Za-z]|`Paperclip [A-Za-z]|# Paperclip [A-Za-z]' \
+            --include='*.ts' --include='*.tsx' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src ui/src cli/src packages/plugins/examples 2>/dev/null \
+            | grep -v 'Paperclip Hook\|Paperclip Test' || true)
+          if [ -n "$prose_hits" ]; then
+            echo "::error::Found quoted \"Paperclip <Word>\" prose in shipping code (rename to AoA):"
+            printf '%s\n' "$prose_hits"
             failed=1
           fi
 

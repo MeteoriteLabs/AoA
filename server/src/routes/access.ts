@@ -553,7 +553,7 @@ function buildJoinConnectivityDiagnostics(input: {
         code: "openclaw_private_bind_loopback",
         level: "warn",
         message:
-          "Paperclip is bound to loopback in authenticated/private mode.",
+          "AoA is bound to loopback in authenticated/private mode.",
         hint: "Bind to a reachable private hostname/IP for remote OpenClaw callbacks."
       });
     }
@@ -561,7 +561,7 @@ function buildJoinConnectivityDiagnostics(input: {
       diagnostics.push({
         code: "openclaw_private_bind_not_allowed",
         level: "warn",
-        message: `Paperclip bind host \"${bindHost}\" is not in allowed hostnames.`,
+        message: `AoA bind host \"${bindHost}\" is not in allowed hostnames.`,
         hint: `Run pnpm aoa allowed-hostname ${bindHost}`
       });
     }
@@ -615,7 +615,7 @@ function normalizeAgentDefaultsForJoin(input: {
       level: "warn",
       message:
         "No OpenClaw callback config was provided in agentDefaultsPayload.",
-      hint: "Include agentDefaultsPayload.url so Paperclip can invoke the OpenClaw endpoint immediately after approval."
+      hint: "Include agentDefaultsPayload.url so AoA can invoke the OpenClaw endpoint immediately after approval."
     });
     return { normalized: null as Record<string, unknown> | null, diagnostics };
   }
@@ -770,7 +770,7 @@ function normalizeAgentDefaultsForJoin(input: {
             code: "openclaw_paperclip_api_url_loopback",
             level: "warn",
             message:
-              "paperclipApiUrl uses loopback hostname. Remote OpenClaw workers cannot reach localhost on the Paperclip host.",
+              "paperclipApiUrl uses loopback hostname. Remote OpenClaw workers cannot reach localhost on the AoA host.",
             hint: "Use a reachable hostname/IP and keep it in allowed hostnames for authenticated/private deployments."
           });
         }
@@ -855,7 +855,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
       code: "openclaw_onboarding_api_loopback",
       level: "warn",
       message:
-        "Onboarding URL resolves to loopback hostname. Remote OpenClaw agents cannot reach localhost on your Paperclip host.",
+        "Onboarding URL resolves to loopback hostname. Remote OpenClaw agents cannot reach localhost on your AoA host.",
       hint: "Use a reachable hostname/IP (for example Tailscale hostname, Docker host alias, or public domain)."
     });
   }
@@ -868,7 +868,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
     diagnostics.push({
       code: "openclaw_onboarding_private_loopback_bind",
       level: "warn",
-      message: "Paperclip is bound to loopback in authenticated/private mode.",
+      message: "AoA is bound to loopback in authenticated/private mode.",
       hint: "Run with a reachable bind host or use pnpm dev --tailscale-auth for private-network onboarding."
     });
   }
@@ -975,7 +975,7 @@ function buildInviteOnboardingManifest(
     invite: toInviteSummaryResponse(req, token, invite),
     onboarding: {
       instructions:
-        "Join as an OpenClaw agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load AOA_API_KEY from that file before starting heartbeat loops. You MUST include agentDefaultsPayload.headers.x-openclaw-auth in your join request so Paperclip can authenticate callback requests.",
+        "Join as an OpenClaw agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json (filename is wire-compat with existing OpenClaw clients) and load AOA_API_KEY from that file before starting heartbeat loops. You MUST include agentDefaultsPayload.headers.x-openclaw-auth in your join request so AoA can authenticate callback requests.",
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: "openclaw",
       requiredFields: {
@@ -1018,8 +1018,8 @@ function buildInviteOnboardingManifest(
         guidance:
           opts.deploymentMode === "authenticated" &&
           opts.deploymentExposure === "private"
-            ? "If OpenClaw runs on another machine, ensure the Paperclip hostname is reachable and allowed via `pnpm aoa allowed-hostname <host>`."
-            : "Ensure OpenClaw can reach this Paperclip API base URL for callbacks and claims."
+            ? "If OpenClaw runs on another machine, ensure the AoA hostname is reachable and allowed via `pnpm aoa allowed-hostname <host>`."
+            : "Ensure OpenClaw can reach this AoA API base URL for callbacks and claims."
       },
       textInstructions: {
         path: onboardingTextPath,
@@ -1080,7 +1080,7 @@ export function buildInviteOnboardingTextDocument(
   };
 
   appendBlock(`
-    # Paperclip OpenClaw Onboarding
+    # AoA OpenClaw Onboarding
 
     This document is meant to be readable by both humans and agents.
 
@@ -1140,7 +1140,7 @@ export function buildInviteOnboardingTextDocument(
   }
 
     IMPORTANT: You MUST include agentDefaultsPayload.headers.x-openclaw-auth with your gateway token.
-    Without this token, Paperclip callback requests to your OpenClaw endpoint will fail with 401 Unauthorized.
+    Without this token, AoA callback requests to your OpenClaw endpoint will fail with 401 Unauthorized.
     Set "streamTransport" to "sse" for streaming /v1/responses endpoints, or "webhook" for wake-style callbacks.
 
     Body (JSON):
@@ -1151,7 +1151,7 @@ export function buildInviteOnboardingTextDocument(
       "capabilities": "Optional summary",
       "agentDefaultsPayload": {
         "url": "https://your-openclaw-agent.example/v1/responses",
-        "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
+        "paperclipApiUrl": "https://aoa-hostname-your-agent-can-reach:3100",
         "streamTransport": "sse",
         "method": "POST",
         "headers": { "x-openclaw-auth": "replace-me" },
@@ -1170,7 +1170,7 @@ export function buildInviteOnboardingTextDocument(
     'openclaw_auth_header_missing'
 
     ## Step 2: Wait for board approval
-    The board approves the join request in Paperclip before key claim is allowed.
+    The board approves the join request in AoA before key claim is allowed.
 
     ## Step 3: Claim API key (one-time)
     ${
@@ -1206,7 +1206,7 @@ export function buildInviteOnboardingTextDocument(
     - claim secrets are single-use
     - claim fails before board approval
 
-    ## Step 4: Install Paperclip skill in OpenClaw
+    ## Step 4: Install AoA skill in OpenClaw
     GET ${onboarding.skill.url}
     Install path: ${onboarding.skill.installPath}
 
@@ -1218,18 +1218,18 @@ export function buildInviteOnboardingTextDocument(
     ## Connectivity guidance
     ${
       onboarding.connectivity?.guidance ??
-      "Ensure Paperclip is reachable from your OpenClaw runtime."
+      "Ensure AoA is reachable from your OpenClaw runtime."
     }
   `);
 
   if (onboarding.connectivity?.testResolutionEndpoint?.url) {
     appendBlock(`
-      ## Optional: test callback resolution from Paperclip
+      ## Optional: test callback resolution from AoA
       ${onboarding.connectivity.testResolutionEndpoint.method ?? "GET"} ${
       onboarding.connectivity.testResolutionEndpoint.url
     }?url=https%3A%2F%2Fyour-openclaw-agent.example%2Fv1%2Fresponses
 
-      This endpoint checks whether Paperclip can reach your OpenClaw endpoint and reports reachable, timeout, or unreachable.
+      This endpoint checks whether AoA can reach your OpenClaw endpoint and reports reachable, timeout, or unreachable.
     `);
   }
 
@@ -1242,7 +1242,7 @@ export function buildInviteOnboardingTextDocument(
     : [];
 
   if (connectionCandidates.length > 0) {
-    lines.push("## Suggested Paperclip base URLs to try");
+    lines.push("## Suggested AoA base URLs to try");
     for (const candidate of connectionCandidates) {
       lines.push(`- ${candidate}`);
     }
@@ -1255,7 +1255,7 @@ export function buildInviteOnboardingTextDocument(
       If none are reachable: ask your human operator for a reachable hostname/address and help them update network configuration.
       For authenticated/private mode, they may need:
       - pnpm aoa allowed-hostname <host>
-      - then restart Paperclip and retry onboarding.
+      - then restart AoA and retry onboarding.
     `);
   }
 

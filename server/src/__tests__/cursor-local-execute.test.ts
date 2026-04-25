@@ -120,9 +120,9 @@ describe("cursor execute", () => {
           "AOA_RUN_ID",
         ]),
       );
-      expect(capture.prompt).toContain("Paperclip runtime note:");
+      expect(capture.prompt).toContain("AoA runtime note:");
       expect(capture.prompt).toContain("AOA_API_KEY");
-      expect(invocationPrompt).toContain("Paperclip runtime note:");
+      expect(invocationPrompt).toContain("AoA runtime note:");
       expect(invocationPrompt).toContain("AOA_API_URL");
     } finally {
       if (previousHome === undefined) {
