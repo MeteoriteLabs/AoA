@@ -23,8 +23,10 @@ COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
+COPY packages/adapters/gemini-local/package.json packages/adapters/gemini-local/
 COPY packages/adapters/openclaw/package.json packages/adapters/openclaw/
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
+COPY packages/plugins/create-paperclip-plugin/package.json packages/plugins/create-paperclip-plugin/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 COPY patches/ patches/
 RUN pnpm install --frozen-lockfile
