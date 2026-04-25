@@ -52,7 +52,11 @@ pnpm exec playwright test --config=tests/e2e/playwright.config.ts --list
 | `AOA_E2E_SKIP_LLM`     | `true`  | Skip LLM-dependent assertions (onboarding only).                     |
 | `ANTHROPIC_API_KEY`    | —       | Required only when `AOA_E2E_SKIP_LLM=false`.                         |
 
-> `PAPERCLIP_E2E_*` aliases still work via the env-compat layer; switch to `AOA_E2E_*` at your convenience.
+> Note: `tests/e2e/playwright.config.ts` reads `AOA_E2E_*` env vars
+> directly — the runtime env-compat layer that mirrors `PAPERCLIP_*`
+> for the server/cli does NOT cover the Playwright runner. If your
+> shell exports `PAPERCLIP_E2E_PORT` or similar, rename them to
+> `AOA_E2E_*` before running e2e.
 
 ## How the harness boots a server
 

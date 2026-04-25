@@ -203,7 +203,7 @@ works end-to-end.
 Use the existing Docker smoke test infrastructure with the canary version:
 
 ```bash
-PAPERCLIPAI_VERSION=canary ./scripts/docker-onboard-smoke.sh
+AOA_CLI_VERSION=canary ./scripts/docker-onboard-smoke.sh
 ```
 
 This builds a clean Ubuntu container, installs `aoa@canary` via npx, and
