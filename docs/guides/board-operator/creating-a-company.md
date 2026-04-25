@@ -5,7 +5,7 @@ summary: Set up your first autonomous AI company
 
 A company is the top-level unit in AoA. Everything — agents, tasks, goals, budgets — lives under a company.
 
-> **Naming note:** The top-level executive agent is called the "Director" throughout the AoA UI. The underlying DB value is `agents.role = "ceo"`, preserved for Paperclip bundle compatibility.
+> **Naming note:** The top-level executive agent is called the "Director" throughout the AoA UI. The underlying DB value is `agents.role = "ceo"`, preserved for backward compatibility with bundles created prior to the AoA rebrand.
 
 ## Step 1: Create the Company
 

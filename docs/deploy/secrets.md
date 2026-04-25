@@ -5,6 +5,8 @@ summary: Master key, encryption, and strict mode
 
 AoA encrypts secrets at rest using a local master key. Agent environment variables that contain sensitive values (API keys, tokens) are stored as encrypted secret references.
 
+> **Warning:** `aws_secrets_manager`, `gcp_secret_manager`, and `vault` are stub providers only. Every `createVersion` and `resolveVersion` call throws `"not configured in this deployment"` (see `server/src/secrets/external-stub-providers.ts`). They appear in `SECRET_PROVIDERS` as a roadmap placeholder. **Only `local_encrypted` is production-ready today.**
+
 ## Default Provider: `local_encrypted`
 
 Secrets are encrypted with a local master key stored at:

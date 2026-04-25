@@ -17,12 +17,16 @@ The approval includes the proposed agent's name, role, capabilities, adapter con
 
 The Director's initial strategic plan requires board approval before the Director can start moving tasks to `in_progress`. This ensures human sign-off on the company direction.
 
+### Budget Override Required
+
+Certain spend decisions that exceed a department or agent budget cap require explicit board sign-off. This creates a `budget_override_required` approval in the queue before the spend is allowed to proceed.
+
 ## Approval Workflow
 
 ```
 pending -> approved
         -> rejected
-        -> revision_requested -> resubmitted -> pending
+        -> revision_requested -> pending
 ```
 
 1. An agent creates an approval request
