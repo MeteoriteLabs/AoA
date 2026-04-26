@@ -368,6 +368,51 @@ describe("adapter-utils skills helpers", () => {
     });
   });
 
+  describe("renderAoaWakePrompt — harness-checkout advisory", () => {
+    const minimalPayload = {
+      issue: { id: "iss_hco", identifier: "TASK-99", title: "Checkout test" },
+      latestCommentId: "c_hco",
+      comments: [
+        {
+          id: "c_hco",
+          body: "please check this out",
+          author: { type: "user", id: "u_hco" },
+        },
+      ],
+    };
+
+    it("includes 'already claimed by the harness' note when checkedOutByHarness=true", () => {
+      const prompt = renderAoaWakePrompt({
+        ...minimalPayload,
+        checkedOutByHarness: true,
+      });
+      expect(prompt).toContain("already claimed by the harness");
+      expect(prompt).toContain("Do not call");
+      expect(prompt).toContain("/checkout");
+    });
+
+    it("includes the checkout bullet line when checkedOutByHarness=true", () => {
+      const prompt = renderAoaWakePrompt({
+        ...minimalPayload,
+        checkedOutByHarness: true,
+      });
+      expect(prompt).toContain("- checkout: already claimed by the harness for this run");
+    });
+
+    it("omits the harness-claim note when checkedOutByHarness=false", () => {
+      const prompt = renderAoaWakePrompt({
+        ...minimalPayload,
+        checkedOutByHarness: false,
+      });
+      expect(prompt).not.toContain("already claimed by the harness");
+    });
+
+    it("omits the harness-claim note when checkedOutByHarness is absent", () => {
+      const prompt = renderAoaWakePrompt(minimalPayload);
+      expect(prompt).not.toContain("already claimed by the harness");
+    });
+  });
+
   describe("Paperclip-named aliases", () => {
     it("exposes the same function identity as the AoA-named primaries", () => {
       expect(normalizePaperclipWakePayload).toBe(normalizeAoaWakePayload);

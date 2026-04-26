@@ -21,7 +21,7 @@ import {
   projects,
   companySkills,
 } from "@armyofagents/db";
-import { conflict, notFound } from "../errors.js";
+import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -31,6 +31,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { companySkillService } from "./company-skills.js";
+import { issueService as createIssueService } from "./issues.js";
 import { quotaWindowsService } from "./quota-windows.js";
 import { extractSkillMentionIds } from "@armyofagents/shared";
 import {
@@ -91,6 +92,10 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_aoaWakeContext";
 const LEGACY_DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const REPO_ONLY_CWD_SENTINEL = "/__aoa_repo_only__";
 const LEGACY_REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+// Context key set during executeRun when the harness pre-claims the issue via
+// issueService.checkout. Downstream (renderAoaWakePrompt) reads this from the
+// wake payload to suppress the redundant /issues/{id}/checkout agent call.
+const AOA_HARNESS_CHECKOUT_KEY = "aoaHarnessCheckedOut";
 
 /**
  * True if `cwd` is the "repo-only / no-local-cwd" sentinel,
@@ -101,6 +106,19 @@ export function isRepoOnlySentinel(cwd: string | null | undefined): boolean {
 }
 
 const startLocksByAgent = new Map<string, Promise<void>>();
+
+/**
+ * Returns true when the thrown error is a checkout-conflict from
+ * issueService.checkout (HTTP 409 "Issue checkout conflict").
+ * Exported so unit tests can import it directly.
+ */
+export function isCheckoutConflictError(error: unknown): boolean {
+  return (
+    error instanceof HttpError &&
+    error.status === 409 &&
+    error.message === "Issue checkout conflict"
+  );
+}
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
@@ -1759,6 +1777,53 @@ export function heartbeatService(db: Db) {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    // ── Auto-checkout for scoped wakes (T22 / PR #3538 upstream) ────────────
+    // When the wake is scoped to an issue and the wake reason is comment-driven,
+    // pre-claim the issue server-side before the adapter runs so the agent
+    // prompt can skip the redundant /api/issues/{id}/checkout round-trip.
+    // Best-effort: any failure (conflict or other) is caught and logged.
+    if (
+      issueId &&
+      issueContext &&
+      issueContext.assigneeAgentId === agent.id
+    ) {
+      const wakeReason = readNonEmptyString(context.wakeReason);
+      // Mirror Paperclip's shouldAutoCheckoutIssueForWake: only fire for
+      // comment-driven wakes; skip execution_* and issue_comment_mentioned.
+      const shouldAutoCheckout =
+        wakeReason !== null &&
+        wakeReason !== "issue_comment_mentioned" &&
+        !wakeReason.startsWith("execution_") &&
+        (
+          issueContext.assigneeAgentId === agent.id
+        );
+      if (shouldAutoCheckout) {
+        try {
+          const issueSvc = createIssueService(db);
+          await issueSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked", "in_progress"], run.id);
+          context[AOA_HARNESS_CHECKOUT_KEY] = true;
+          logger.info(
+            { runId: run.id, issueId, agentId: agent.id },
+            "[heartbeat] Harness pre-checked out issue for scoped wake",
+          );
+        } catch (err) {
+          if (isCheckoutConflictError(err)) {
+            logger.info(
+              { runId: run.id, issueId },
+              "[heartbeat] Harness checkout skipped — already claimed",
+            );
+          } else {
+            logger.warn(
+              { runId: run.id, issueId, err },
+              "[heartbeat] Harness checkout failed — continuing without pre-claim",
+            );
+          }
+          context[AOA_HARNESS_CHECKOUT_KEY] = false;
+        }
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(
