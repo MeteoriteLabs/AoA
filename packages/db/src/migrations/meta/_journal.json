@@ -437,6 +437,13 @@
       "breakpoints": true
     },
     {
+      "idx": 62,
+      "version": "7",
+      "when": 1745625600000,
+      "tag": "0062_heartbeat_liveness_and_watchdog",
+      "breakpoints": true
+    },
+    {
       "idx": 63,
       "version": "7",
       "when": 1777382400000,
