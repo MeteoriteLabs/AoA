@@ -995,7 +995,8 @@ export function readAoaSkillSyncPreference(config: Record<string, unknown>): {
   explicit: boolean;
   desiredSkills: string[];
 } {
-  const raw = config.aoaSkillSync;
+  // paperclipSkillSync compat read — remove in next major
+  const raw = config.aoaSkillSync ?? config.paperclipSkillSync;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return { explicit: false, desiredSkills: [] };
   }
@@ -1077,6 +1078,8 @@ export function writeAoaSkillSyncPreference(
     ),
   );
   next.aoaSkillSync = current;
+  // paperclipSkillSync compat write — remove in next major
+  next.paperclipSkillSync = current;
   return next;
 }
 export const writePaperclipSkillSyncPreference = writeAoaSkillSyncPreference;

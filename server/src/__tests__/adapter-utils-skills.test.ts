@@ -141,6 +141,23 @@ describe("adapter-utils skills helpers", () => {
       expect(result.explicit).toBe(true);
       expect(result.desiredSkills.sort()).toEqual(["bar", "foo"]);
     });
+
+    it("falls back to paperclipSkillSync when aoaSkillSync is absent (back-compat)", () => {
+      const result = readAoaSkillSyncPreference({
+        paperclipSkillSync: { desiredSkills: ["legacy-key"] },
+      });
+      expect(result.explicit).toBe(true);
+      expect(result.desiredSkills).toContain("legacy-key");
+    });
+
+    it("prefers aoaSkillSync over paperclipSkillSync when both are present", () => {
+      const result = readAoaSkillSyncPreference({
+        aoaSkillSync: { desiredSkills: ["new-key"] },
+        paperclipSkillSync: { desiredSkills: ["old-key"] },
+      });
+      expect(result.desiredSkills).toContain("new-key");
+      expect(result.desiredSkills).not.toContain("old-key");
+    });
   });
 
   describe("writeAoaSkillSyncPreference", () => {
@@ -151,6 +168,21 @@ describe("adapter-utils skills helpers", () => {
       const sync = next.aoaSkillSync as Record<string, unknown>;
       expect(sync.retained).toBe(true);
       expect(sync.desiredSkills).toEqual(["a", "b"]);
+    });
+
+    it("writes both aoaSkillSync and paperclipSkillSync for back-compat", () => {
+      const out = writeAoaSkillSyncPreference({} as Record<string, unknown>, ["x", "y"]);
+      expect(out.aoaSkillSync).toBeDefined();
+      expect(out.paperclipSkillSync).toBeDefined();
+      expect(out.paperclipSkillSync).toEqual(out.aoaSkillSync);
+    });
+
+    it("dual-writes the same desiredSkills array into both fields", () => {
+      const out = writeAoaSkillSyncPreference({}, ["deploy-prod", "qa-agent"]);
+      const aoa = out.aoaSkillSync as Record<string, unknown>;
+      const pcp = out.paperclipSkillSync as Record<string, unknown>;
+      expect(aoa.desiredSkills).toEqual(["deploy-prod", "qa-agent"]);
+      expect(pcp.desiredSkills).toEqual(["deploy-prod", "qa-agent"]);
     });
   });
 

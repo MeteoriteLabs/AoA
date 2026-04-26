@@ -19,6 +19,7 @@ import {
   issueComments,
   assets,
   projects,
+  companySkills,
 } from "@armyofagents/db";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -31,6 +32,11 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { companySkillService } from "./company-skills.js";
 import { quotaWindowsService } from "./quota-windows.js";
+import { extractSkillMentionIds } from "@armyofagents/shared";
+import {
+  readAoaSkillSyncPreference,
+  writeAoaSkillSyncPreference,
+} from "@armyofagents/adapter-utils/server-utils";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 
 /** Strip non-Latin1 characters that crash WIN1252-encoded embedded Postgres on Windows. */
@@ -469,6 +475,84 @@ function formatCount(value: number | null | undefined) {
 
 export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect): SessionCompactionPolicy {
   return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
+}
+
+// ---------------------------------------------------------------------------
+// Run-scoped mentioned-skill helpers (Task 17 upstream resync)
+// ---------------------------------------------------------------------------
+
+/**
+ * Collect all unique skill IDs referenced via skill:// mention links across
+ * an array of nullable markdown strings (issue title + description + comments).
+ */
+export function extractMentionedSkillIdsFromSources(
+  sources: Array<string | null | undefined>,
+): string[] {
+  const seen = new Set<string>();
+  for (const src of sources) {
+    if (!src) continue;
+    for (const id of extractSkillMentionIds(src)) seen.add(id);
+  }
+  return [...seen];
+}
+
+/**
+ * Look up the skill keys for any skill-mention IDs found in the issue title,
+ * description, and comments. Returns an empty array when no issue is active.
+ */
+async function resolveRunScopedMentionedSkillKeys(
+  db: Db,
+  companyId: string,
+  issueId: string | null,
+): Promise<string[]> {
+  if (!issueId) return [];
+
+  const [issueRow] = await db
+    .select({ title: issues.title, description: issues.description })
+    .from(issues)
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+    .limit(1);
+  if (!issueRow) return [];
+
+  const commentRows = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(eq(issueComments.issueId, issueId));
+
+  const sources = [
+    issueRow.title,
+    issueRow.description,
+    ...commentRows.map((c) => c.body),
+  ];
+  const mentionedIds = extractMentionedSkillIdsFromSources(sources);
+  if (mentionedIds.length === 0) return [];
+
+  const rows = await db
+    .select({ key: companySkills.key })
+    .from(companySkills)
+    .where(
+      and(
+        eq(companySkills.companyId, companyId),
+        inArray(companySkills.id, mentionedIds),
+      ),
+    );
+
+  return rows.map((r) => r.key);
+}
+
+/**
+ * Merge run-scoped mentioned skill keys into the adapter config's
+ * aoaSkillSync.desiredSkills (preserving any existing selections).
+ * Also dual-writes paperclipSkillSync for external back-compat.
+ */
+export function applyRunScopedMentionedSkillKeys<T extends Record<string, unknown>>(
+  config: T,
+  skillKeys: string[],
+): T {
+  if (skillKeys.length === 0) return config;
+  const existing = readAoaSkillSyncPreference(config);
+  const merged = Array.from(new Set([...(existing.desiredSkills ?? []), ...skillKeys]));
+  return writeAoaSkillSyncPreference(config, merged) as T;
 }
 
 export function heartbeatService(db: Db) {
@@ -2347,11 +2431,39 @@ export function heartbeatService(db: Db) {
         );
       }
 
+      // ── Auto-enable skills mentioned in the issue body/comments ──────
+      let runScopedConfig: Record<string, unknown> = resolvedConfig;
+      try {
+        const mentionedSkillKeys = await resolveRunScopedMentionedSkillKeys(
+          db,
+          agent.companyId,
+          issueId,
+        );
+        runScopedConfig = applyRunScopedMentionedSkillKeys(resolvedConfig, mentionedSkillKeys);
+        if (mentionedSkillKeys.length > 0) {
+          logger.info(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              skills: mentionedSkillKeys,
+              issueId,
+            },
+            "[heartbeat] auto-enabled run-scoped skills from issue mentions",
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
+          "Failed to resolve run-scoped mentioned skills; continuing without auto-enable",
+        );
+      }
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
         runtime: runtimeForAdapter,
-        config: resolvedConfig,
+        config: runScopedConfig,
         context,
         onLog,
         onMeta: onAdapterMeta,
