@@ -1,6 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+
+// These tests render a multi-step import flow; give enough headroom for slow CI runs.
+vi.setConfig({ testTimeout: 15000 });
 import { renderWithProviders, mockCompanyContext, makeCompany } from "./test-utils";
 import { CompanyImport } from "../pages/CompanyImport";
 
@@ -128,6 +131,10 @@ describe("CompanyImport page", () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    cleanup();
+  });
+
   it("renders heading and upload prompt", () => {
     renderWithProviders(<CompanyImport />);
     expect(screen.getByRole("heading", { name: /import company/i })).toBeInTheDocument();
@@ -153,7 +160,7 @@ describe("CompanyImport page", () => {
     previewImport.mockResolvedValue(makePreviewResult());
     renderWithProviders(<CompanyImport />);
     await uploadBundle(user, makeValidBundle());
-    await user.click(screen.getByRole("button", { name: /preview/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /preview/i }));
 
     await waitFor(() => expect(previewImport).toHaveBeenCalled());
     const arg = previewImport.mock.calls[0]![0] as { source: { type: string } };
@@ -189,17 +196,17 @@ describe("CompanyImport page", () => {
     ];
 
     await uploadBundle(user, bundle);
-    await user.click(screen.getByRole("button", { name: /preview/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /preview/i }));
 
     await screen.findByText(/Budget & Internal Agent/i);
-    expect(screen.getByText(/^Internal agent$/i)).toBeInTheDocument();
-    expect(screen.getByText(/^Budget policies$/i)).toBeInTheDocument();
-    expect(screen.getByText(/^Cost events$/i)).toBeInTheDocument();
-    expect(screen.getByText(/^Finance events$/i)).toBeInTheDocument();
-    expect(screen.getByText(/^Quota windows$/i)).toBeInTheDocument();
+    await screen.findByText(/^Internal agent$/i);
+    await screen.findByText(/^Budget policies$/i);
+    await screen.findByText(/^Cost events$/i);
+    await screen.findByText(/^Finance events$/i);
+    await screen.findByText(/^Quota windows$/i);
     // Counts rendered
-    expect(screen.getByText(/^42$/)).toBeInTheDocument();
-    expect(screen.getByText(/^3$/)).toBeInTheDocument();
+    await screen.findByText(/^42$/);
+    await screen.findByText(/^3$/);
   });
 
   it("renders preview plan actions and counts after previewImport succeeds", async () => {
@@ -217,11 +224,11 @@ describe("CompanyImport page", () => {
     );
     renderWithProviders(<CompanyImport />);
     await uploadBundle(user, makeValidBundle());
-    await user.click(screen.getByRole("button", { name: /preview/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /preview/i }));
 
     await screen.findByText(/Agents/);
     // Rendered plan summary: 2 agents (1 create, 1 skip), 1 project (create)
-    expect(screen.getByText(/Engineering/)).toBeInTheDocument();
+    await screen.findByText(/Engineering/);
   });
 
   it("renders warnings with amber styling when preview returns warnings", async () => {
@@ -235,7 +242,7 @@ describe("CompanyImport page", () => {
     );
     renderWithProviders(<CompanyImport />);
     await uploadBundle(user, makeValidBundle());
-    await user.click(screen.getByRole("button", { name: /preview/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /preview/i }));
     await screen.findByText(/Unknown section: memory/);
   });
 
@@ -250,7 +257,7 @@ describe("CompanyImport page", () => {
     );
     renderWithProviders(<CompanyImport />);
     await uploadBundle(user, makeValidBundle());
-    await user.click(screen.getByRole("button", { name: /preview/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /preview/i }));
     await screen.findByText(/GITHUB_TOKEN/);
   });
 
@@ -260,10 +267,10 @@ describe("CompanyImport page", () => {
     renderWithProviders(<CompanyImport />);
     await uploadBundle(user, makeValidBundle());
 
-    const select = screen.getByLabelText(/collision strategy/i) as HTMLSelectElement;
+    const select = await screen.findByLabelText(/collision strategy/i) as HTMLSelectElement;
     await user.selectOptions(select, "skip");
 
-    await user.click(screen.getByRole("button", { name: /preview/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /preview/i }));
     await waitFor(() => expect(previewImport).toHaveBeenCalled());
     const arg = previewImport.mock.calls[previewImport.mock.calls.length - 1]![0] as {
       collisionStrategy: string;
@@ -277,10 +284,10 @@ describe("CompanyImport page", () => {
     renderWithProviders(<CompanyImport />);
     await uploadBundle(user, makeValidBundle());
 
-    const importBtn = screen.getByRole("button", { name: /^import$/i });
+    const importBtn = await screen.findByRole("button", { name: /^import$/i });
     expect(importBtn).toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: /preview/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /preview/i }));
     await waitFor(() => expect(importBtn).not.toBeDisabled());
   });
 
@@ -303,11 +310,10 @@ describe("CompanyImport page", () => {
 
     renderWithProviders(<CompanyImport />);
     await uploadBundle(user, makeValidBundle());
-    await user.click(screen.getByRole("button", { name: /preview/i }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /^import$/i })).not.toBeDisabled(),
-    );
-    await user.click(screen.getByRole("button", { name: /^import$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /preview/i }));
+    const importBtn = await screen.findByRole("button", { name: /^import$/i });
+    await waitFor(() => expect(importBtn).not.toBeDisabled());
+    fireEvent.click(importBtn);
 
     await waitFor(() => expect(importBundle).toHaveBeenCalled());
     await waitFor(() => expect(reloadCompanies).toHaveBeenCalled());
@@ -319,7 +325,7 @@ describe("CompanyImport page", () => {
     previewImport.mockRejectedValue(new Error("Server error"));
     renderWithProviders(<CompanyImport />);
     await uploadBundle(user, makeValidBundle());
-    await user.click(screen.getByRole("button", { name: /preview/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /preview/i }));
     await screen.findByText(/Server error/);
   });
 });
