@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { makeTableProxy, drizzleOperatorStubs } from "./helpers/drizzle-mock.js";
+import { makeTableProxy, drizzleOperatorStubs, mockDbCapabilities } from "./helpers/drizzle-mock.js";
 
 vi.mock("@armyofagents/db", () => ({
   memoryItems: makeTableProxy("memory_items"),
@@ -9,6 +9,11 @@ vi.mock("@armyofagents/db", () => ({
 }));
 
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
+
+// "creates agent memory items" asserts `embedding: null` in the values passed
+// to buildMemoryInsert. memory.ts line 128-130 only sets embedding=null when
+// hasVectorSupport is true; mock it to ensure the field is present.
+vi.mock("../services/db-capabilities.js", () => mockDbCapabilities());
 
 vi.mock("../services/embeddings.js", () => ({
   generateEmbedding: vi.fn(),
