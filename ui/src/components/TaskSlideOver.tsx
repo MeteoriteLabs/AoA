@@ -750,6 +750,8 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
       setShowAddVersion(false);
       setShowAllVersions(false);
       setSidebarMode("task");
+      setGalleryOpen(false);
+      setGalleryInitialIndex(0);
     }
   }, [issueId]);
 

@@ -43,4 +43,28 @@ describe("ImageGalleryModal", () => {
     const { container } = render(<ImageGalleryModal images={[]} initialIndex={0} open onOpenChange={() => {}} />);
     expect(container.querySelector("img")).toBeNull();
   });
+
+  it("calls onOpenChange(false) when curtain is clicked", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    render(<ImageGalleryModal images={mockImages} initialIndex={0} open onOpenChange={onOpenChange} />);
+    const curtain = screen.getByTestId("image-gallery-curtain");
+    await user.click(curtain);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("does NOT call onOpenChange when image itself is clicked", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    render(<ImageGalleryModal images={mockImages} initialIndex={0} open onOpenChange={onOpenChange} />);
+    const img = screen.getByRole("img");
+    await user.click(img);
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("navigates backward on ArrowLeft (wraps from first to last)", () => {
+    render(<ImageGalleryModal images={mockImages} initialIndex={0} open onOpenChange={() => {}} />);
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(screen.getByRole("img", { name: /third\.gif/ })).toBeInTheDocument();
+  });
 });

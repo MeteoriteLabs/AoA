@@ -21,7 +21,7 @@ export function ImageGalleryModal({ images, initialIndex, open, onOpenChange }: 
 
   useEffect(() => {
     if (open) setIndex(Math.max(0, Math.min(initialIndex, images.length - 1)));
-  }, [open, initialIndex, images.length]);
+  }, [open, initialIndex, images]);
 
   useEffect(() => {
     if (!open) return;
@@ -78,6 +78,7 @@ export function ImageGalleryModal({ images, initialIndex, open, onOpenChange }: 
 
           {/* Image area — click on curtain to close, click on image stays open */}
           <div
+            data-testid="image-gallery-curtain"
             className="relative flex flex-1 items-center justify-center"
             onClick={() => onOpenChange(false)}
           >
