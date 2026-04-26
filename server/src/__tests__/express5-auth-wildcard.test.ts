@@ -25,28 +25,22 @@ describe("Express 5 better-auth wildcard route", () => {
     expect(handlerCalls.length).toBeGreaterThan(0);
   });
 
-  it("does NOT match /api/auth/sign-in/email with old *authPath syntax (regression guard)", async () => {
-    // This test documents the Express 5 breaking change: the old bare *authPath
-    // wildcard silently 404s. We keep this as a regression guard so if someone
-    // reverts the fix the wildcard test above catches it.
-    const app = express();
+  it("does NOT match /api/auth/ root with the old *authPath syntax (regression guard)", async () => {
+    // The old bare *authPath syntax requires at least one character after the
+    // prefix, so it silently skips /api/auth/ (the trailing-slash root endpoint
+    // that better-auth uses for session and callback discovery). The fixed
+    // {*authPath} syntax accepts an empty capture group and therefore matches.
+    // This test proves the old syntax's gap — if someone reverts app.ts:152 back
+    // to *authPath, better-auth's root endpoint breaks silently.
     const handlerCalls: string[] = [];
-
-    // Old (broken) syntax — should NOT match in Express 5
-    // We test the fixed syntax in the test above; this test just confirms
-    // the fixed route IS reachable, which is sufficient.
-    app.all("/api/auth/{*authPath}", (req, _res, next) => {
+    const app = express();
+    // OLD broken syntax — Express 5 path-to-regexp v8 does not match /api/auth/ (empty segment)
+    app.all("/api/auth/*authPath", (req, _res, next) => {
       handlerCalls.push(req.path);
       next();
     });
-
-    app.use((_req, res) => {
-      res.status(200).end();
-    });
-
-    await request(app)
-      .get("/api/auth/callback/google");
-
-    expect(handlerCalls.length).toBeGreaterThan(0);
+    app.use((_req, res) => res.status(404).end());
+    await request(app).get("/api/auth/").send();
+    expect(handlerCalls).toEqual([]);
   });
 });

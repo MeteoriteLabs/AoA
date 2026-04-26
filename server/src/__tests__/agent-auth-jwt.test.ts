@@ -106,6 +106,10 @@ describe("AOA_AGENT_JWT_SECRET fallback", () => {
 
     const token = createLocalAgentJwt("a1", "c1", "claude_local", "r1");
     expect(token).toBeTruthy();
+
+    const decoded = verifyLocalAgentJwt(token!);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.sub).toBe("a1");
   });
 
   it("trims whitespace from BETTER_AUTH_SECRET when used as fallback", () => {
@@ -114,6 +118,10 @@ describe("AOA_AGENT_JWT_SECRET fallback", () => {
 
     const token = createLocalAgentJwt("a1", "c1", "claude_local", "r1");
     expect(token).toBeTruthy();
+
+    const decoded = verifyLocalAgentJwt(token!);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.sub).toBe("a1");
   });
 
   it("returns null when both secrets are unset", () => {
