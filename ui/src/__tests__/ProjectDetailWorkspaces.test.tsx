@@ -321,7 +321,10 @@ describe("ProjectDetail — Workspaces tab", () => {
 
     await screen.findByText("ENG-99-fix-auth", {}, { timeout: 5000 });
 
-    fireEvent.click(screen.getByTestId("workspace-row-ws-1"));
+    // Use findByTestId instead of getByTestId — under parallel-suite load
+    // the row query can resolve after the project header but before the
+    // row's own DOM node has rendered. findBy retries until the node exists.
+    fireEvent.click(await screen.findByTestId("workspace-row-ws-1"));
 
     await waitFor(() => {
       expect(screen.getByTestId("location")).toHaveTextContent("/TC/workspaces/ws-1");
@@ -386,14 +389,13 @@ describe("ProjectDetail — Workspaces tab", () => {
 
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/workspaces");
 
-    // Wait for project to load first (tab bar appears), then workspace loading shows
-    await waitFor(() => {
-      expect(screen.getByText("Workspaces")).toBeInTheDocument();
-    }, { timeout: 5000 });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("workspaces-loading")).toBeInTheDocument();
-    }, { timeout: 5000 });
+    // Wait for project to load first (tab bar appears), then workspace loading
+    // shows. Replace `waitFor + getByX` with `findByX` — single retry loop
+    // instead of nested waitFor wrapping a sync getByX, which can blow the
+    // test budget under parallel-suite load when each waitFor consumes its
+    // 5s ceiling sequentially.
+    await screen.findByText("Workspaces", {}, { timeout: 5000 });
+    await screen.findByTestId("workspaces-loading", {}, { timeout: 5000 });
 
     const skeletons = screen.getByTestId("workspaces-loading").querySelectorAll("[data-slot='skeleton']");
     expect(skeletons.length).toBeGreaterThanOrEqual(2);
