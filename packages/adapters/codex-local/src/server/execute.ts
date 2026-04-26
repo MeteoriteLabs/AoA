@@ -18,6 +18,7 @@ import {
   runChildProcess,
 } from "@armyofagents/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+import { isCodexLocalFastModeSupported, CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const AOA_SKILLS_CANDIDATES = [
@@ -122,6 +123,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.dangerouslyBypassApprovalsAndSandbox,
     asBoolean(config.dangerouslyBypassSandbox, false),
   );
+  const fastModeRequested = asBoolean(config.fastMode, false);
+  const fastModeApplied = fastModeRequested && isCodexLocalFastModeSupported(model);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -286,11 +289,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
     if (model) args.push("--model", model);
     if (modelReasoningEffort) args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
+    if (fastModeApplied) {
+      args.push("-c", 'service_tier="fast"');
+      args.push("-c", "features.fast_mode=true");
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     if (resumeSessionId) args.push("resume", resumeSessionId, "-");
     else args.push("-");
     return args;
   };
+
+  if (fastModeRequested && !fastModeApplied) {
+    await onLog(
+      "stderr",
+      `[aoa] fastMode requested but model "${model || "(none)"}" does not support it (supported: ${CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ")}); ignoring.\n`,
+    );
+  }
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const args = buildArgs(resumeSessionId);
