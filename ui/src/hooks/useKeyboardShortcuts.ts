@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { isKeyboardShortcutTextInputTarget } from "@/lib/keyboard-shortcuts-config";
 
 interface ShortcutHandlers {
   onNewIssue?: () => void;
@@ -6,12 +7,21 @@ interface ShortcutHandlers {
   onSwitchCompany?: (index: number) => void;
 }
 
+/**
+ * Handles keyboard shortcuts for global navigation.
+ *
+ * Currently bound IDs from KEYBOARD_SHORTCUTS:
+ *   - global.new_task       → onNewIssue
+ *   - global.toggle_sidebar → onToggleSidebar
+ *   - global.switch_company → onSwitchCompany
+ *
+ * T7 will add: global.cheatsheet → onShowCheatsheet
+ */
 export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onSwitchCompany }: ShortcutHandlers) {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       // Don't fire shortcuts when typing in inputs
-      const target = e.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
+      if (isKeyboardShortcutTextInputTarget(e.target)) {
         return;
       }
 
