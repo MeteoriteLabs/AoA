@@ -117,6 +117,12 @@ export interface AdapterExecutionContext {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   authToken?: string;
+  /**
+   * Optional hook called by the adapter immediately after spawning the
+   * underlying subprocess. The adapter forwards (pid, pgid, startedAt)
+   * so the controller (heartbeat) can persist them for cleanup + watchdog.
+   */
+  onSpawn?: (pid: number | null, pgid: number | null, startedAt: Date) => void;
 }
 
 export interface AdapterModel {

@@ -69,7 +69,7 @@ function joinPromptSections(sections: string[]): string {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -279,6 +279,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
       onLog,
+      onSpawn,
     });
     return {
       proc,

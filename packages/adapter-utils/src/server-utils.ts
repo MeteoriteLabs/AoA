@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import type { AdapterSkillEntry, AdapterSkillSnapshot } from "./types.js";
@@ -14,6 +14,61 @@ export interface RunProcessResult {
 interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
+  /** POSIX process-group id captured at spawn; null on Windows or if unavailable. */
+  pgid: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Platform-aware process-tree helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the POSIX process-group id for a PID.
+ * Returns null on Windows or if the syscall fails (e.g. the process has
+ * already exited).
+ */
+export function safeGetPgid(pid: number): number | null {
+  if (process.platform === "win32") return null;
+  try {
+    return (process as unknown as { getpgid(pid: number): number }).getpgid(pid);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Kill a child process (and its entire process group / tree) in a
+ * platform-aware manner.
+ *
+ * POSIX: sends SIGTERM to the process group (-pgid), then SIGKILL after
+ *        5 seconds if the group is still alive.  Falls back to the
+ *        individual PID when pgid is null.
+ * Windows: runs `taskkill /PID <pid> /T /F` which terminates the process
+ *          tree recursively.  Falls back to process.kill(pid) if taskkill
+ *          itself fails.
+ */
+export function killProcessTree(pid: number | null, pgid: number | null): void {
+  if (pid === null && pgid === null) return;
+  if (process.platform === "win32") {
+    if (pid === null) return;
+    try {
+      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"]);
+    } catch {
+      try { process.kill(pid); } catch { /* ignore */ }
+    }
+    return;
+  }
+  // POSIX
+  try {
+    if (pgid !== null) process.kill(-pgid, "SIGTERM");
+    else if (pid !== null) process.kill(pid, "SIGTERM");
+  } catch { /* process may have already exited */ }
+  setTimeout(() => {
+    try {
+      if (pgid !== null) process.kill(-pgid, "SIGKILL");
+      else if (pid !== null) process.kill(pid, "SIGKILL");
+    } catch { /* ignore */ }
+  }, 5000);
 }
 
 type ChildProcessWithEvents = ChildProcess & {
@@ -215,6 +270,12 @@ export async function runChildProcess(
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     stdin?: string;
+    /**
+     * Called once immediately after the child process spawns, before any
+     * stdin is written.  Callers can use this to persist PID / PGID to a
+     * database row so that an out-of-process watchdog can kill the group.
+     */
+    onSpawn?: (pid: number | null, pgid: number | null, startedAt: Date) => void;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -230,12 +291,22 @@ export async function runChildProcess(
       stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
     }) as ChildProcessWithEvents;
 
+    // Capture process metadata immediately after spawn, before stdin write.
+    const spawnedPid = child.pid ?? null;
+    const spawnedPgid = spawnedPid !== null ? safeGetPgid(spawnedPid) : null;
+    const spawnedAt = new Date();
+
+    runningProcesses.set(runId, { child, graceSec: opts.graceSec, pgid: spawnedPgid });
+
+    // Notify caller before writing stdin so they can persist the PID/PGID.
+    if (opts.onSpawn) {
+      opts.onSpawn(spawnedPid, spawnedPgid, spawnedAt);
+    }
+
     if (opts.stdin != null && child.stdin) {
       child.stdin.write(opts.stdin);
       child.stdin.end();
     }
-
-    runningProcesses.set(runId, { child, graceSec: opts.graceSec });
 
     let timedOut = false;
     let stdout = "";

@@ -106,7 +106,7 @@ async function ensureCodexSkillsInjected(onLog: AdapterExecutionContext["onLog"]
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -341,6 +341,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (!cleaned.trim()) return;
         await onLog(stream, cleaned);
       },
+      onSpawn,
     });
     const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
     return {

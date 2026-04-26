@@ -2473,15 +2473,52 @@ export function heartbeatService(db: Db) {
         );
       }
 
+      // ── onSpawn: persist PID/PGID/startedAt immediately after fork ──────
+      const onSpawn = (pid: number | null, pgid: number | null, startedAt: Date) => {
+        void db
+          .update(heartbeatRuns)
+          .set({ processPid: pid, processGroupId: pgid, processStartedAt: startedAt })
+          .where(eq(heartbeatRuns.id, run.id))
+          .catch((err: unknown) =>
+            logger.warn({ err, runId: run.id }, "Failed to persist process metadata"),
+          );
+      };
+
+      // ── Debounced lastOutputAt: update at most once per second ───────────
+      let outputSeq = 0;
+      let lastOutputDbMs = 0;
+      const originalOnLog = onLog;
+      const onLogWithOutput = async (stream: "stdout" | "stderr", chunk: string) => {
+        outputSeq += 1;
+        const now = Date.now();
+        if (now - lastOutputDbMs > 1000) {
+          lastOutputDbMs = now;
+          void db
+            .update(heartbeatRuns)
+            .set({
+              lastOutputAt: new Date(now),
+              lastOutputSeq: outputSeq,
+              lastOutputStream: stream,
+              lastOutputBytes: Buffer.byteLength(chunk),
+            })
+            .where(eq(heartbeatRuns.id, run.id))
+            .catch((err: unknown) =>
+              logger.warn({ err, runId: run.id }, "Failed to update lastOutputAt"),
+            );
+        }
+        await originalOnLog(stream, chunk);
+      };
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
         runtime: runtimeForAdapter,
         config: runScopedConfig,
         context,
-        onLog,
+        onLog: onLogWithOutput,
         onMeta: onAdapterMeta,
         authToken: authToken ?? undefined,
+        onSpawn,
       });
 
       // ── Persist adapter-managed runtime services (gated) ───────────
