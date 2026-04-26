@@ -52,12 +52,14 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import type { RoutineTrigger } from "@armyofagents/shared";
+import { ROUTINE_VARIABLE_NAME_PATTERN } from "@armyofagents/shared";
 import { RoutineVariablesEditor } from "@/components/routines/RoutineVariablesEditor";
 import { RoutineRunDialog } from "@/components/routines/RoutineRunDialog";
 import { RoutineTitleWithVariables } from "@/components/routines/RoutineTitleWithVariables";
 
 const triggerKinds = ["schedule", "webhook"];
 const signingModes = ["bearer", "hmac_sha256"];
+const HAS_VALID_VARIABLE_TOKEN_RE = new RegExp(`\\{\\{\\s*${ROUTINE_VARIABLE_NAME_PATTERN}\\s*\\}\\}`);
 const routineTabs = ["triggers", "runs", "variables", "activity"] as const;
 
 type RoutineTab = (typeof routineTabs)[number];
@@ -711,7 +713,7 @@ export function RoutineDetail() {
                 }
               }}
             />
-            {/\{\{/.test(editDraft.title) && (
+            {HAS_VALID_VARIABLE_TOKEN_RE.test(editDraft.title) && (
               <div className="text-sm text-muted-foreground">
                 <RoutineTitleWithVariables template={editDraft.title} />
               </div>

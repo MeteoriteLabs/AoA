@@ -1,3 +1,5 @@
+import { ROUTINE_VARIABLE_NAME_PATTERN } from "@armyofagents/shared";
+
 interface Props {
   template: string;
   /**
@@ -10,8 +12,11 @@ interface Props {
   className?: string;
 }
 
-const VARIABLE_TOKEN_RE = /(\{\{\s*[A-Za-z][A-Za-z0-9_]*\s*\}\})/g;
-const VARIABLE_NAME_RE = /^\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}$/;
+// Split-friendly version: captures the entire {{var}} token with the surrounding braces.
+const VARIABLE_TOKEN_RE = new RegExp(`(\\{\\{\\s*${ROUTINE_VARIABLE_NAME_PATTERN}\\s*\\}\\})`, "g");
+
+// Single-match version for extracting the bare variable name from a token.
+const VARIABLE_NAME_RE = new RegExp(`^\\{\\{\\s*(${ROUTINE_VARIABLE_NAME_PATTERN})\\s*\\}\\}$`);
 
 export function RoutineTitleWithVariables({
   template,

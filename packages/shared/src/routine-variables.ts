@@ -1,6 +1,12 @@
 import type { RoutineVariable } from "./types/routine.js";
 
-const ROUTINE_VARIABLE_MATCHER = /\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g;
+/**
+ * The grammar for a valid routine variable name: one ASCII letter followed
+ * by letters / digits / underscores. Use `ROUTINE_VARIABLE_NAME_PATTERN` to
+ * compose new RegExp instances (e.g., for split() with capture groups).
+ */
+export const ROUTINE_VARIABLE_NAME_PATTERN = "[A-Za-z][A-Za-z0-9_]*";
+export const ROUTINE_VARIABLE_MATCHER = new RegExp(`\\{\\{\\s*(${ROUTINE_VARIABLE_NAME_PATTERN})\\s*\\}\\}`, "g");
 type RoutineTemplateInput = string | null | undefined | Array<string | null | undefined>;
 
 export const BUILTIN_ROUTINE_VARIABLE_NAMES = new Set(["date"]);

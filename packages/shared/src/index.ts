@@ -740,6 +740,8 @@ export {
 
 export { API_PREFIX, API } from "./api.js";
 export {
+  ROUTINE_VARIABLE_NAME_PATTERN,
+  ROUTINE_VARIABLE_MATCHER,
   BUILTIN_ROUTINE_VARIABLE_NAMES,
   isBuiltinRoutineVariable,
   getBuiltinRoutineVariableValues,
