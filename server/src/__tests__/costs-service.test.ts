@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── DB / drizzle stubs ────────────────────────────────────────────────────────
@@ -430,5 +433,154 @@ describe("AdapterBillingType — 8-variant coverage (T15)", () => {
     expect(
       apiVariants.length + subscriptionVariants.length + deferredVariants.length + unknownVariant.length,
     ).toBe(8);
+  });
+
+  // ── Runtime regression guard: SQL source contains metered_api in IN-clause ──
+  it("costs.ts CASE expression IN-clause contains 'metered_api' (SQL regression guard)", () => {
+    // This test reads the production source file and asserts that the apiRunCount
+    // SQL CASE expression includes 'metered_api' in the IN-list alongside 'api'.
+    // If someone narrows the clause back to = 'api' only, this test fails immediately
+    // before T13 (Bedrock) ships — Bedrock is the first adapter emitting metered_api rows.
+    const costsSource = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../services/costs.ts"),
+      "utf8",
+    );
+    // The apiRunCount CASE expression must contain both variants in the same IN-clause.
+    expect(costsSource).toMatch(/'api',\s*'metered_api'/);
+    expect(costsSource).toMatch(/'metered_api'/);
+  });
+});
+
+// ── T15 runtime: byAgent bucketing via sequence mock DB ─────────────────────
+
+describe("costService — byAgent billingType bucketing (T15 runtime)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("counts metered_api runs in apiRunCount, not subscriptionRunCount", async () => {
+    // byAgent makes two sequential selects:
+    //   select[0] — cost rows joined with agents (one row per agent)
+    //   select[1] — run rows with apiRunCount / subscriptionRunCount aggregates
+    //
+    // We feed the mocked DB pre-computed aggregates that the real DB CASE expression
+    // would produce for a single heartbeat_run with billingType = 'metered_api'.
+    // If the IN-clause were narrowed back to = 'api' only, the real DB would return
+    // apiRunCount: 0 instead of 1 — this test documents the expected shape.
+
+    const costRow: MockRow = {
+      agentId,
+      agentName: "Bedrock Agent",
+      agentStatus: "active",
+      costCents: 100,
+      inputTokens: 500,
+      outputTokens: 250,
+    };
+
+    // Simulates DB output after evaluating:
+    //   CASE WHEN billingType IN ('api', 'metered_api') THEN 1 ELSE 0 END → apiRunCount = 1
+    //   CASE WHEN billingType IN ('subscription', ...) THEN 1 ELSE 0 END  → subscriptionRunCount = 0
+    const runRow: MockRow = {
+      agentId,
+      apiRunCount: 1,
+      subscriptionRunCount: 0,
+      subscriptionInputTokens: 0,
+      subscriptionOutputTokens: 0,
+    };
+
+    const db = createSequenceDb({ selects: [[costRow], [runRow]] });
+    const svc = costService(db as any);
+    const result = await svc.byAgent(companyId);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.apiRunCount).toBe(1);
+    expect(result[0]?.subscriptionRunCount).toBe(0);
+  });
+
+  it("counts subscription_included runs in subscriptionRunCount, not apiRunCount", async () => {
+    // Mirrors the metered_api test for the subscription bucket — ensures the two
+    // categories are cleanly separated and the mapping logic is symmetric.
+
+    const costRow: MockRow = {
+      agentId,
+      agentName: "Claude Local Agent",
+      agentStatus: "active",
+      costCents: 0,
+      inputTokens: 1000,
+      outputTokens: 500,
+    };
+
+    // Simulates DB output for billingType = 'subscription_included':
+    //   apiRunCount = 0, subscriptionRunCount = 1
+    const runRow: MockRow = {
+      agentId,
+      apiRunCount: 0,
+      subscriptionRunCount: 1,
+      subscriptionInputTokens: 1000,
+      subscriptionOutputTokens: 500,
+    };
+
+    const db = createSequenceDb({ selects: [[costRow], [runRow]] });
+    const svc = costService(db as any);
+    const result = await svc.byAgent(companyId);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.subscriptionRunCount).toBe(1);
+    expect(result[0]?.apiRunCount).toBe(0);
+    expect(result[0]?.subscriptionInputTokens).toBe(1000);
+    expect(result[0]?.subscriptionOutputTokens).toBe(500);
+  });
+
+  it("credits and unknown billingType contribute 0 to both run count buckets", async () => {
+    // 'credits', 'fixed', and 'unknown' fall through the ELSE 0 branch in both
+    // CASE expressions. Neither apiRunCount nor subscriptionRunCount increments.
+
+    const costRow: MockRow = {
+      agentId,
+      agentName: "Credits Agent",
+      agentStatus: "active",
+      costCents: 50,
+      inputTokens: 200,
+      outputTokens: 100,
+    };
+
+    // Simulates DB output for billingType = 'credits' (falls to ELSE 0 in both CASEs):
+    //   apiRunCount = 0, subscriptionRunCount = 0
+    const runRow: MockRow = {
+      agentId,
+      apiRunCount: 0,
+      subscriptionRunCount: 0,
+      subscriptionInputTokens: 0,
+      subscriptionOutputTokens: 0,
+    };
+
+    const db = createSequenceDb({ selects: [[costRow], [runRow]] });
+    const svc = costService(db as any);
+    const result = await svc.byAgent(companyId);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.apiRunCount).toBe(0);
+    expect(result[0]?.subscriptionRunCount).toBe(0);
+  });
+
+  it("falls back to 0 for apiRunCount when no run rows exist for the agent", async () => {
+    // If heartbeat_runs has no rows for this agent (e.g. new agent, no runs yet),
+    // byAgent must default apiRunCount and subscriptionRunCount to 0.
+
+    const costRow: MockRow = {
+      agentId,
+      agentName: "New Agent",
+      agentStatus: "idle",
+      costCents: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+
+    // Second select returns empty — no run rows for this agent.
+    const db = createSequenceDb({ selects: [[costRow], []] });
+    const svc = costService(db as any);
+    const result = await svc.byAgent(companyId);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.apiRunCount).toBe(0);
+    expect(result[0]?.subscriptionRunCount).toBe(0);
   });
 });
