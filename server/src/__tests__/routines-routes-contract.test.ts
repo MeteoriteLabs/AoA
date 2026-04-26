@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Dynamic import("../routes/routines.js") in this file traverses a heavy
+// module graph that occasionally exceeds the default 5000ms test timeout
+// under parallel-suite load. Bump per-file so the first import has headroom;
+// subsequent imports are cached and fast.
+vi.setConfig({ testTimeout: 15000 });
 
 /**
  * Routine Routes Contract Tests
