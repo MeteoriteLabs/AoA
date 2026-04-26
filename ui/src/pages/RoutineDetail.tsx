@@ -54,6 +54,7 @@ import { Badge } from "@/components/ui/badge";
 import type { RoutineTrigger } from "@armyofagents/shared";
 import { RoutineVariablesEditor } from "@/components/routines/RoutineVariablesEditor";
 import { RoutineRunDialog } from "@/components/routines/RoutineRunDialog";
+import { RoutineTitleWithVariables } from "@/components/routines/RoutineTitleWithVariables";
 
 const triggerKinds = ["schedule", "webhook"];
 const signingModes = ["bearer", "hmac_sha256"];
@@ -679,36 +680,43 @@ export function RoutineDetail() {
       <div className="border border-border rounded-lg bg-card p-5 space-y-4">
         {/* Header: editable title + actions */}
         <div className="flex items-start gap-4">
-          <textarea
-            ref={titleInputRef}
-            className="flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
-            placeholder="Routine title"
-            rows={1}
-            value={editDraft.title}
-            onChange={(event) => {
-              setEditDraft((current) => ({ ...current, title: event.target.value }));
-              autoResizeTextarea(event.target);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                descriptionEditorRef.current?.focus();
-                return;
-              }
-              if (event.key === "Tab" && !event.shiftKey) {
-                event.preventDefault();
-                if (editDraft.assigneeAgentId) {
-                  if (editDraft.projectId) {
-                    descriptionEditorRef.current?.focus();
-                  } else {
-                    projectSelectorRef.current?.focus();
-                  }
-                } else {
-                  assigneeSelectorRef.current?.focus();
+          <div className="flex-1 min-w-0 space-y-1">
+            <textarea
+              ref={titleInputRef}
+              className="w-full resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
+              placeholder="Routine title"
+              rows={1}
+              value={editDraft.title}
+              onChange={(event) => {
+                setEditDraft((current) => ({ ...current, title: event.target.value }));
+                autoResizeTextarea(event.target);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  descriptionEditorRef.current?.focus();
+                  return;
                 }
-              }
-            }}
-          />
+                if (event.key === "Tab" && !event.shiftKey) {
+                  event.preventDefault();
+                  if (editDraft.assigneeAgentId) {
+                    if (editDraft.projectId) {
+                      descriptionEditorRef.current?.focus();
+                    } else {
+                      projectSelectorRef.current?.focus();
+                    }
+                  } else {
+                    assigneeSelectorRef.current?.focus();
+                  }
+                }
+              }}
+            />
+            {/\{\{/.test(editDraft.title) && (
+              <div className="text-sm text-muted-foreground">
+                <RoutineTitleWithVariables template={editDraft.title} />
+              </div>
+            )}
+          </div>
           <div className="flex shrink-0 items-center gap-3 pt-1">
             <Button size="sm" variant="outline" onClick={() => setRunDialogOpen(true)}>
               <Play className="mr-1.5 h-3.5 w-3.5" /> Run now

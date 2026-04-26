@@ -14,6 +14,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { EmptyState } from "../components/EmptyState";
 import { RoutineCard } from "../components/RoutineCard";
+import { RoutineTitleWithVariables } from "../components/routines/RoutineTitleWithVariables";
 import {
   autoResizeTextarea,
   catchUpPolicies,
@@ -595,7 +596,9 @@ export function Routines() {
                   >
                     <td className="px-3 py-2.5">
                       <div className="min-w-[180px]">
-                        <span className="font-medium">{routine.title}</span>
+                        <span className="font-medium">
+                          <RoutineTitleWithVariables template={routine.title} />
+                        </span>
                         {(isArchived || routine.status === "paused") && (
                           <div className="mt-0.5 text-xs text-muted-foreground capitalize">{routine.status}</div>
                         )}
