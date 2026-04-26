@@ -343,13 +343,14 @@ describe("ProjectDetail — Workspaces tab", () => {
 
     // Readiness loads via getCloseReadiness mock; wait for the action button
     // to be enabled before confirming. The AlertDialog action starts disabled
-    // while readiness is loading.
-    const confirmButton = await screen.findByTestId("confirm-archive-workspace");
+    // while readiness is loading. Re-query the button each waitFor tick so
+    // a React re-render between findByTestId and the assertion can't leave
+    // us holding a stale DOM node (this races under parallel-suite load).
     await waitFor(() => {
-      expect(confirmButton).not.toBeDisabled();
+      expect(screen.getByTestId("confirm-archive-workspace")).not.toBeDisabled();
     });
 
-    fireEvent.click(confirmButton);
+    fireEvent.click(screen.getByTestId("confirm-archive-workspace"));
 
     await waitFor(() => {
       expect(executionWorkspacesApiMock.update).toHaveBeenCalledWith("ws-1", { status: "archived" });
