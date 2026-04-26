@@ -26,6 +26,7 @@ import { IssueProperties } from "./IssueProperties";
 import { LiveRunWidget } from "./LiveRunWidget";
 import { WorkspaceTimeline } from "./workspace/WorkspaceTimeline";
 import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
+import { ImageGalleryModal } from "./ImageGalleryModal";
 import type { MentionOption } from "./MarkdownEditor";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
@@ -221,6 +222,8 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
   const [depPickerOpen, setDepPickerOpen] = useState(false);
   const [depSearch, setDepSearch] = useState("");
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryInitialIndex, setGalleryInitialIndex] = useState(0);
   const [showAddVersion, setShowAddVersion] = useState(false);
   const [versionMode, setVersionMode] = useState<"text" | "file">("text");
   const [showAllVersions, setShowAllVersions] = useState(false);
@@ -283,6 +286,11 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     queryFn: () => issuesApi.listAttachments(issueId!),
     enabled: !!issueId && open,
   });
+
+  const imageAttachments = useMemo(
+    () => (attachments ?? []).filter((a) => a.contentType?.startsWith("image/")),
+    [attachments],
+  );
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId!),
@@ -1281,20 +1289,38 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                             {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
                           </p>
                           {isImageAttachment(attachment) && (
-                            <a href={attachment.contentPath} target="_blank" rel="noreferrer">
+                            <button
+                              type="button"
+                              className="mt-2 block w-full cursor-zoom-in text-left"
+                              aria-label={`Open ${attachment.originalFilename ?? "image"} in gallery`}
+                              onClick={() => {
+                                const idx = imageAttachments.findIndex((img) => img.id === attachment.id);
+                                if (idx >= 0) {
+                                  setGalleryInitialIndex(idx);
+                                  setGalleryOpen(true);
+                                }
+                              }}
+                            >
                               <img
                                 src={attachment.contentPath}
                                 alt={attachment.originalFilename ?? "attachment"}
-                                className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
+                                className="max-h-56 w-full rounded border border-border object-contain bg-accent/10"
                                 loading="lazy"
                               />
-                            </a>
+                            </button>
                           )}
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
+
+                <ImageGalleryModal
+                  images={imageAttachments}
+                  initialIndex={galleryInitialIndex}
+                  open={galleryOpen}
+                  onOpenChange={setGalleryOpen}
+                />
 
                 <Separator />
 
