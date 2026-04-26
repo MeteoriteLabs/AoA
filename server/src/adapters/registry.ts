@@ -62,6 +62,10 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  parseObject,
+  asString,
+} from "@armyofagents/adapter-utils/server-utils";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
@@ -157,7 +161,37 @@ const geminiLocalAdapter: ServerAdapterModule = {
 
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
-  execute: hermesExecute,
+  execute: async (ctx) => {
+    // Hermes reads its config from ctx.agent.adapterConfig — build a patched
+    // agent object so env injection flows through to the child process.
+    // Spread to avoid mutating the original adapterConfig object.
+    const agentConfig = { ...parseObject(ctx.agent?.adapterConfig) } as Record<string, unknown>;
+    const env = parseObject(agentConfig.env) as Record<string, string>;
+
+    // Always inject PAPERCLIP_RUN_ID.
+    // PAPERCLIP_API_KEY and PAPERCLIP_RUN_ID are wire-protocol contracts with
+    // hermes-paperclip-adapter — do NOT rename these to AOA_*.
+    const nextEnv: Record<string, string> = { ...env, PAPERCLIP_RUN_ID: ctx.runId };
+
+    // Inject PAPERCLIP_API_KEY from agent JWT only when not explicitly
+    // configured — an explicit key takes precedence over the JWT.
+    const explicitApiKey = asString(env.PAPERCLIP_API_KEY, "").trim();
+    if (!explicitApiKey && ctx.authToken) {
+      nextEnv.PAPERCLIP_API_KEY = ctx.authToken;
+    }
+    agentConfig.env = nextEnv;
+
+    // Honor hermesCommand override (preferred); fall back to legacy "command"
+    // field for back-compat with agents saved before this rename.
+    const hermesCommand = asString(
+      agentConfig.hermesCommand ?? agentConfig.command,
+      "hermes",
+    );
+    agentConfig.hermesCommand = hermesCommand;
+
+    const patchedAgent = { ...ctx.agent, adapterConfig: agentConfig };
+    return hermesExecute({ ...ctx, agent: patchedAgent });
+  },
   testEnvironment: hermesTestEnvironment,
   sessionCodec: hermesSessionCodec,
   models: hermesModels,
