@@ -112,85 +112,14 @@ export function drizzleOperatorStubs(): OperatorStubs {
   };
 }
 
-/**
- * Convenience factory: returns an object with a `select`/`insert`/`update`/`delete`
- * stub where each call resolves to the next pre-configured result.
- *
- * Use when a service-under-test calls db.select().from(...).where(...) twice
- * and you want each call to return a different array.
- */
-export function createSequenceDb(results: unknown[][]): {
-  select: () => { from: () => { where: () => Promise<unknown[]> } };
-  __remaining: () => number;
-} {
-  const queue = [...results];
-  const next = (): Promise<unknown[]> => {
-    const r = queue.shift();
-    if (!r) throw new Error("createSequenceDb: ran out of pre-configured results");
-    return Promise.resolve(r);
-  };
-  return {
-    select: () => ({ from: () => ({ where: () => next() }) }),
-    __remaining: () => queue.length,
-  };
-}
-
-/**
- * Extended sequence DB that supports insert/update/delete/execute in addition
- * to select. Each operation pops the next pre-configured result from its queue.
- *
- * Returned chains are fully thenable so `await db.insert(...).values(...)` works.
- * `execute` is provided for raw-sql paths (e.g. buildMemoryInsert).
- */
-export type SequenceDbConfig = {
-  selects?: unknown[][];
-  inserts?: unknown[][];
-  updates?: unknown[][];
-  deletes?: unknown[][];
-};
-
-export function createExtendedSequenceDb(config: SequenceDbConfig = {}): {
-  select: (...args: unknown[]) => Record<string, unknown>;
-  insert: (...args: unknown[]) => Record<string, unknown>;
-  update: (...args: unknown[]) => Record<string, unknown>;
-  delete: (...args: unknown[]) => Record<string, unknown>;
-  execute: (...args: unknown[]) => Promise<unknown[]>;
-  transaction: (fn: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
-} {
-  let selectIdx = 0;
-  let insertIdx = 0;
-  let updateIdx = 0;
-  let deleteIdx = 0;
-
-  const chainMethods = ["from", "where", "set", "values", "returning", "innerJoin", "leftJoin", "orderBy", "limit"];
-
-  function makeChain(getResult: () => unknown[]): Record<string, unknown> {
-    const chain: Record<string, unknown> = {};
-    for (const m of chainMethods) {
-      chain[m] = (..._args: unknown[]) => chain;
-    }
-    chain.then = (resolve: (v: unknown[]) => unknown, reject?: (e: unknown) => unknown) => {
-      try {
-        return Promise.resolve(resolve(getResult()));
-      } catch (e) {
-        return reject ? Promise.resolve(reject(e)) : Promise.reject(e);
-      }
-    };
-    chain.catch = (_fn: unknown) => chain;
-    chain.finally = (_fn: unknown) => chain;
-    return chain;
-  }
-
-  const db = {
-    select: (..._args: unknown[]) => makeChain(() => config.selects?.[selectIdx++] ?? []),
-    insert: (..._args: unknown[]) => makeChain(() => config.inserts?.[insertIdx++] ?? []),
-    update: (..._args: unknown[]) => makeChain(() => config.updates?.[updateIdx++] ?? []),
-    delete: (..._args: unknown[]) => makeChain(() => config.deletes?.[deleteIdx++] ?? []),
-    execute: (..._args: unknown[]) => Promise.resolve(config.inserts?.[insertIdx++] ?? []),
-    transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
-  };
-  return db;
-}
+// NOTE: a generic `createSequenceDb`/`createExtendedSequenceDb` helper was
+// previously exported from this file but had zero consumers — every test that
+// needs sequence-DB scaffolding declares its own local function tuned to its
+// service-under-test (e.g. `setCalls` tracking in embedding-retry-persistence,
+// `captured.insertValues` in memory-suggestions, scoped `tx` in routines-
+// service). The exports were deleted as part of the residual-cleanup review;
+// see commit history. If a future test wants a shared sequence-DB pattern,
+// extract one only after multiple call-sites converge on a real shape.
 
 /**
  * Vitest mock factory for the db-capabilities module. Use it like:
