@@ -328,6 +328,16 @@ export function projectService(db: Db) {
       return enriched ?? null;
     },
 
+    updateEnvironment: async (id: string, env: Record<string, unknown> | null): Promise<ProjectRow | null> => {
+      const row = await db
+        .update(projects)
+        .set({ env: env as typeof projects.$inferInsert["env"], updatedAt: new Date() })
+        .where(eq(projects.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return row;
+    },
+
     remove: async (id: string) => {
       // Decision #63: Block deletion if project has tasks or goals
       const [taskCount] = await db

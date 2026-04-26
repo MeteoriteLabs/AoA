@@ -2,6 +2,7 @@ import { pgTable, uuid, text, timestamp, date, index, jsonb } from "drizzle-orm/
 import { companies } from "./companies.js";
 import { goals } from "./goals.js";
 import { agents } from "./agents.js";
+import type { AgentEnvConfig } from "@armyofagents/shared";
 
 export const projects = pgTable(
   "projects",
@@ -18,6 +19,7 @@ export const projects = pgTable(
     color: text("color"),
     functionType: text("function_type").default("general"),
     executionWorkspacePolicy: jsonb("execution_workspace_policy").$type<Record<string, unknown>>(),
+    env: jsonb("env").$type<AgentEnvConfig>(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

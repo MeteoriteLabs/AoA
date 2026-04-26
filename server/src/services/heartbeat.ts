@@ -1781,17 +1781,20 @@ export function heartbeatService(db: Db) {
       : null;
     const contextProjectId = readNonEmptyString(context.projectId);
     const executionProjectId = issueContext?.projectId ?? contextProjectId;
-    const projectExecutionWorkspacePolicy = executionProjectId
+    const projectRow = executionProjectId
       ? await db
-          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy, env: projects.env })
           .from(projects)
           .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
-          .then((rows) =>
-            gateProjectExecutionWorkspacePolicy(
-              parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy),
-              isolatedWorkspacesEnabled,
-            ))
+          .then((rows) => rows[0] ?? null)
       : null;
+    const projectExecutionWorkspacePolicy = projectRow
+      ? gateProjectExecutionWorkspacePolicy(
+          parseProjectExecutionWorkspacePolicy(projectRow.executionWorkspacePolicy),
+          isolatedWorkspacesEnabled,
+        )
+      : null;
+    const projectEnv = projectRow?.env ?? null;
     const executionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
@@ -1816,9 +1819,20 @@ export function heartbeatService(db: Db) {
     const mergedConfig = issueAssigneeOverrides?.adapterConfig
       ? { ...workspaceManagedConfig, ...issueAssigneeOverrides.adapterConfig }
       : workspaceManagedConfig;
+    // ── Project env merge (system → instance → company → project → agent) ──
+    // projectEnv underlies the agent's own adapterConfig.env — agent overrides project.
+    const mergedConfigWithProjectEnv = projectEnv
+      ? {
+          ...mergedConfig,
+          env: {
+            ...(projectEnv as Record<string, unknown>),
+            ...parseObject(mergedConfig.env),
+          },
+        }
+      : mergedConfig;
     const resolvedConfig = await secretsSvc.resolveAdapterConfigForRuntime(
       agent.companyId,
-      mergedConfig,
+      mergedConfigWithProjectEnv,
     );
 
     // ── Issue ref for execution workspace ───────────────────────────

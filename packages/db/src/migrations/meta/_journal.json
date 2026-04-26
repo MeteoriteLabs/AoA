@@ -430,6 +430,13 @@
       "breakpoints": true
     },
     {
+      "idx": 61,
+      "version": "7",
+      "when": 1777238138640,
+      "tag": "0061_project_environment_variables",
+      "breakpoints": true
+    },
+    {
       "idx": 63,
       "version": "7",
       "when": 1777382400000,

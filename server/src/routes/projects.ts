@@ -5,6 +5,7 @@ import { and, eq, gte, lte, sql, desc } from "drizzle-orm";
 import {
   createProjectSchema,
   createProjectWorkspaceSchema,
+  envConfigSchema,
   isUuidLike,
   updateProjectSchema,
   updateProjectWorkspaceSchema,
@@ -298,6 +299,43 @@ export function projectRoutes(db: Db) {
     });
 
     res.json(workspace);
+  });
+
+  /* ── Project environment variables ── */
+
+  router.get("/projects/:id/environment", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+    res.json({ env: project.env ?? null });
+  });
+
+  router.patch("/projects/:id/environment", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, project.companyId);
+    const bodyEnv = req.body?.env ?? null;
+    if (bodyEnv !== null) {
+      const parsed = envConfigSchema.safeParse(bodyEnv);
+      if (!parsed.success) {
+        res.status(422).json({ error: "validation", issues: parsed.error.issues });
+        return;
+      }
+    }
+    const updated = await svc.updateEnvironment(id, bodyEnv);
+    if (!updated) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    res.json({ env: updated.env ?? null });
   });
 
   router.delete("/projects/:id", async (req, res) => {

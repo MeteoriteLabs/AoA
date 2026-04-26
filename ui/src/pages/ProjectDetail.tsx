@@ -29,6 +29,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { ExecutionWorkspaceCloseDialog } from "../components/workspace/ExecutionWorkspaceCloseDialog";
 import { EmptyState } from "../components/EmptyState";
+import { ProjectEnvironmentSection } from "../components/ProjectEnvironmentSection";
 import type { ExecutionWorkspace } from "@armyofagents/shared";
 
 /* ── Top-level tab types ── */
@@ -57,11 +58,13 @@ function OverviewContent({
   onUpdate,
   imageUploadHandler,
   propertiesContent,
+  environmentContent,
 }: {
   project: { description: string | null; status: string; targetDate: string | null };
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
   propertiesContent: React.ReactNode;
+  environmentContent?: React.ReactNode;
 }) {
   return (
     <div className="space-y-6">
@@ -80,6 +83,9 @@ function OverviewContent({
         <h3 className="text-sm font-medium text-muted-foreground mb-3">Properties</h3>
         {propertiesContent}
       </div>
+
+      {/* Environment variables section */}
+      {environmentContent}
     </div>
   );
 }
@@ -1005,6 +1011,7 @@ export function ProjectDetail() {
             return asset.contentPath;
           }}
           propertiesContent={propertiesContent}
+          environmentContent={project.id ? <ProjectEnvironmentSection projectId={project.id} /> : undefined}
         />
       )}
 
