@@ -149,7 +149,7 @@ export async function createApp(
   // before the betterAuthHandler catch-all so specific routes win.
   app.use("/api", authProfileRoutes(db));
   if (opts.betterAuthHandler) {
-    app.all("/api/auth/*authPath", opts.betterAuthHandler);
+    app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
   app.use(llmRoutes(db));
 
