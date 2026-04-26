@@ -112,7 +112,7 @@ export function resolveRoutineRunVariables(
   if (overrides) {
     for (const [k, val] of Object.entries(overrides)) {
       if (!(k in resolved)) {
-        throw new Error(`unknown_routine_variable:${k}`);
+        throw unprocessable(`Unknown routine variable: "${k}"`);
       }
       resolved[k] = val;
     }

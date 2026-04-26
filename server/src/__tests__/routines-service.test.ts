@@ -381,7 +381,7 @@ describe("resolveRoutineRunVariables — pure function", () => {
         { variables: [{ name: "environment", label: null, type: "text", defaultValue: "staging", required: true, options: [] }] },
         { unknownVar: "x" },
       ),
-    ).toThrow("unknown_routine_variable:unknownVar");
+    ).toThrow('Unknown routine variable: "unknownVar"');
   });
 
   it("handles null defaultValue by coercing to empty string", () => {
@@ -396,6 +396,31 @@ describe("resolveRoutineRunVariables — pure function", () => {
     // no known keys → any override key would be unknown
     expect(() =>
       resolveRoutineRunVariables({ variables: [] }, { anything: "val" }),
-    ).toThrow("unknown_routine_variable:anything");
+    ).toThrow('Unknown routine variable: "anything"');
+  });
+
+  it("variableOverrides take precedence over input.variables for matching keys", () => {
+    // Mirrors the merge at routines.ts:589:
+    //   effectiveVariables = { ...input.variables, ...resolveRoutineRunVariables(routine, overrides) }
+    // So variableOverrides (resolved last) always win over input.variables for the same key.
+    const routine = {
+      variables: [
+        { name: "foo", label: null, type: "text" as const, defaultValue: "stored-default", required: false, options: [] },
+        { name: "bar", label: null, type: "text" as const, defaultValue: "bar-default", required: false, options: [] },
+      ],
+    };
+
+    // resolveRoutineRunVariables represents the variableOverrides layer:
+    // it takes stored defaults from the routine and applies caller overrides on top.
+    const resolvedOverrides = resolveRoutineRunVariables(routine, { foo: "from-overrides" });
+    // "foo" came from the override; "bar" came from stored default.
+    expect(resolvedOverrides).toEqual({ foo: "from-overrides", bar: "bar-default" });
+
+    // Simulate the full merge: input.variables provides "from-variables" for "foo",
+    // but overrides spread last so "from-overrides" wins.
+    const inputVariables = { foo: "from-variables", bar: "bar-default" };
+    const effectiveVariables = { ...inputVariables, ...resolvedOverrides };
+    expect(effectiveVariables.foo).toBe("from-overrides");
+    expect(effectiveVariables.bar).toBe("bar-default");
   });
 });
