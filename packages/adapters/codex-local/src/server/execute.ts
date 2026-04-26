@@ -290,8 +290,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model) args.push("--model", model);
     if (modelReasoningEffort) args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
     if (fastModeApplied) {
-      args.push("-c", 'service_tier="fast"');
-      args.push("-c", "features.fast_mode=true");
+      // service_tier expects a quoted string ("fast"); features.fast_mode expects an
+      // unquoted boolean (true). JSON.stringify happens to produce both correctly.
+      args.push("-c", `service_tier=${JSON.stringify("fast")}`);
+      args.push("-c", `features.fast_mode=${JSON.stringify(true)}`);
     }
     if (extraArgs.length > 0) args.push(...extraArgs);
     if (resumeSessionId) args.push("resume", resumeSessionId, "-");

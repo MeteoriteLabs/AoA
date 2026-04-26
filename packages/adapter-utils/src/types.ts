@@ -302,7 +302,7 @@ export interface CreateConfigValues {
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
   search: boolean;
-  fastMode: boolean;
+  fastMode?: boolean;
   dangerouslyBypassSandbox: boolean;
   command: string;
   args: string;

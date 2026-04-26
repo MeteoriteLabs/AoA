@@ -86,7 +86,7 @@ export function CodexLocalConfigFields({
         hint="Use Codex Fast tier for lower latency. Consumes credits faster. Ignored on unsupported models."
         checked={
           isCreate
-            ? values!.fastMode
+            ? !!values!.fastMode
             : eff("adapterConfig", "fastMode", !!config.fastMode)
         }
         onChange={(v) =>
