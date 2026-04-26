@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { makeTableProxy, drizzleOperatorStubs } from "./helpers/drizzle-mock.js";
+import { makeTableProxy, drizzleOperatorStubs, mockDbCapabilities } from "./helpers/drizzle-mock.js";
 
 // Mock drizzle-orm and db to avoid ESM cycle issues
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 vi.mock("@armyofagents/db", () => ({
   memoryItems: makeTableProxy("memory_items"),
 }));
+
+// Embedding generation, semantic search, and embedding invalidation are all
+// gated behind hasVectorSupport. Default in production is false (probe hasn't
+// run). All tests in this file exercise those paths, so override to true.
+vi.mock("../services/db-capabilities.js", () => mockDbCapabilities());
 
 // Mock logger
 vi.mock("../middleware/logger.js", () => ({
