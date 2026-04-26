@@ -201,13 +201,17 @@ jobs:
           fi
 
           # 6. No [paperclip] log prefix outside docs (renamed to [aoa]).
-          # normalize-transcript.ts is excluded: it matches the upstream Claude
-          # CLI binary's stderr output, not an AoA-emitted prefix.
+          # Two files are excluded:
+          #   - normalize-transcript.ts — matches the upstream Claude CLI
+          #     binary's stderr output, not an AoA-emitted prefix.
+          #   - find-dead-paperclip-filters.mjs — the audit script that LOOKS
+          #     FOR this exact pattern; the literal occurrences are the
+          #     script's search target and documentation, not log emissions.
           log_hits=$(grep -rnE '\[paperclip\]' \
             --include='*.ts' --include='*.tsx' --include='*.mjs' \
             --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
             server/src ui/src cli/src packages/adapters scripts 2>/dev/null \
-            | grep -v 'normalize-transcript' || true)
+            | grep -v 'normalize-transcript\|find-dead-paperclip-filters' || true)
           if [ -n "$log_hits" ]; then
             echo "::error::Found [paperclip] log prefix (rename to [aoa]):"
             printf '%s\n' "$log_hits"
