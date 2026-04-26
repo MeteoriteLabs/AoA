@@ -955,13 +955,15 @@ function BudgetSection() {
                           {(row.apiRunCount > 0 ||
                             row.subscriptionRunCount > 0) && (
                             <span className="text-xs text-muted-foreground block">
+                              {/* apiRunCount includes 'api' and 'metered_api' variants */}
                               {row.apiRunCount > 0
-                                ? `api runs: ${row.apiRunCount}`
+                                ? `metered runs: ${row.apiRunCount}`
                                 : null}
                               {row.apiRunCount > 0 &&
                               row.subscriptionRunCount > 0
                                 ? " | "
                                 : null}
+                              {/* subscriptionRunCount includes 'subscription', 'subscription_included', 'subscription_overage' */}
                               {row.subscriptionRunCount > 0
                                 ? `subscription runs: ${row.subscriptionRunCount} (${formatTokens(row.subscriptionInputTokens)} in / ${formatTokens(row.subscriptionOutputTokens)} out tok)`
                                 : null}

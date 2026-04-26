@@ -30,7 +30,15 @@ export interface UsageSummary {
   cachedInputTokens?: number;
 }
 
-export type AdapterBillingType = "api" | "subscription" | "unknown";
+export type AdapterBillingType =
+  | "api"
+  | "subscription"
+  | "metered_api"
+  | "subscription_included"
+  | "subscription_overage"
+  | "credits"
+  | "fixed"
+  | "unknown";
 
 export interface AdapterExecutionResult {
   exitCode: number | null;

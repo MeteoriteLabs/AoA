@@ -163,17 +163,21 @@ export function costService(db: Db) {
       if (range?.from) runConditions.push(gte(heartbeatRuns.finishedAt, range.from));
       if (range?.to) runConditions.push(lte(heartbeatRuns.finishedAt, range.to));
 
+      // API-billed variants: 'api' (explicit API key) and 'metered_api' (T13 Bedrock + similar per-call adapters).
+      // Subscription-billed variants: 'subscription' (generic), 'subscription_included' (included in plan),
+      // 'subscription_overage' (overage — treat like subscription for token tracking even though cost accrues).
+      // 'credits' and 'fixed' are deferred to costEvents records and excluded from run-count tallies.
       const runRows = await db
         .select({
           agentId: heartbeatRuns.agentId,
           apiRunCount:
-            sql<number>`coalesce(sum(case when coalesce((${heartbeatRuns.usageJson} ->> 'billingType'), 'unknown') = 'api' then 1 else 0 end), 0)::int`,
+            sql<number>`coalesce(sum(case when coalesce((${heartbeatRuns.usageJson} ->> 'billingType'), 'unknown') in ('api', 'metered_api') then 1 else 0 end), 0)::int`,
           subscriptionRunCount:
-            sql<number>`coalesce(sum(case when coalesce((${heartbeatRuns.usageJson} ->> 'billingType'), 'unknown') = 'subscription' then 1 else 0 end), 0)::int`,
+            sql<number>`coalesce(sum(case when coalesce((${heartbeatRuns.usageJson} ->> 'billingType'), 'unknown') in ('subscription', 'subscription_included', 'subscription_overage') then 1 else 0 end), 0)::int`,
           subscriptionInputTokens:
-            sql<number>`coalesce(sum(case when coalesce((${heartbeatRuns.usageJson} ->> 'billingType'), 'unknown') = 'subscription' then coalesce((${heartbeatRuns.usageJson} ->> 'inputTokens')::int, 0) else 0 end), 0)::int`,
+            sql<number>`coalesce(sum(case when coalesce((${heartbeatRuns.usageJson} ->> 'billingType'), 'unknown') in ('subscription', 'subscription_included', 'subscription_overage') then coalesce((${heartbeatRuns.usageJson} ->> 'inputTokens')::int, 0) else 0 end), 0)::int`,
           subscriptionOutputTokens:
-            sql<number>`coalesce(sum(case when coalesce((${heartbeatRuns.usageJson} ->> 'billingType'), 'unknown') = 'subscription' then coalesce((${heartbeatRuns.usageJson} ->> 'outputTokens')::int, 0) else 0 end), 0)::int`,
+            sql<number>`coalesce(sum(case when coalesce((${heartbeatRuns.usageJson} ->> 'billingType'), 'unknown') in ('subscription', 'subscription_included', 'subscription_overage') then coalesce((${heartbeatRuns.usageJson} ->> 'outputTokens')::int, 0) else 0 end), 0)::int`,
         })
         .from(heartbeatRuns)
         .where(and(...runConditions))

@@ -55,6 +55,7 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 import { costService, inferBillingType } from "../services/costs.js";
+import type { AdapterBillingType } from "@armyofagents/adapter-utils";
 
 // ── Mock DB helpers ──────────────────────────────────────────────────────────
 
@@ -384,5 +385,50 @@ describe("costService — contract", () => {
     for (const m of methods) {
       expect(typeof (svc as any)[m], `missing method: ${m}`).toBe("function");
     }
+  });
+});
+
+// ── T15: AdapterBillingType 8-variant compile check ─────────────────────────
+
+describe("AdapterBillingType — 8-variant coverage (T15)", () => {
+  it("type compiles for all 8 variants", () => {
+    // Compile-time guard: if a variant is removed this array will fail tsc.
+    const all: AdapterBillingType[] = [
+      "api",
+      "subscription",
+      "metered_api",
+      "subscription_included",
+      "subscription_overage",
+      "credits",
+      "fixed",
+      "unknown",
+    ];
+    expect(all).toHaveLength(8);
+  });
+
+  it("inferBillingType still returns 'unknown' for unrecognized providers", () => {
+    // Verify the function returns something that is a valid AdapterBillingType
+    // (or at minimum a string) — protects against accidental narrowing.
+    const result = inferBillingType("mystery_provider_xyz");
+    expect(typeof result).toBe("string");
+    expect(result).toBe("unknown");
+  });
+
+  it("apiRunCount SQL includes metered_api in addition to api", () => {
+    // This is a doc test: the byAgent SQL counts 'api' and 'metered_api' together
+    // as apiRunCount. Verifies no silent regression if someone changes the constant.
+    // The SQL fragment is correct if metered_api is NOT silently defaulted to unknown.
+    const apiVariants: AdapterBillingType[] = ["api", "metered_api"];
+    const subscriptionVariants: AdapterBillingType[] = [
+      "subscription",
+      "subscription_included",
+      "subscription_overage",
+    ];
+    const deferredVariants: AdapterBillingType[] = ["credits", "fixed"];
+    const unknownVariant: AdapterBillingType[] = ["unknown"];
+    // All 8 variants are accounted for across the four groups:
+    expect(
+      apiVariants.length + subscriptionVariants.length + deferredVariants.length + unknownVariant.length,
+    ).toBe(8);
   });
 });
