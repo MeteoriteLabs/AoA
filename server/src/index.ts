@@ -33,6 +33,7 @@ import {
 } from "./services/workspace-runtime.js";
 import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
+import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
 import { onBudgetExhausted } from "./services/budget-hooks.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -534,6 +535,11 @@ if (config.heartbeatSchedulerEnabled) {
   // Retry filesystem cleanup for workspaces stuck in `cleanup_failed` (Windows
   // file-handle races). Runs every 60s; promotes to `archived` once rm succeeds.
   scheduleCleanupRetrySweeper(db as any);
+
+  // Detect heartbeat runs that are still marked `running` but have produced no
+  // output for >30 min. Records a watchdog decision and snoozes re-evaluation
+  // for 1 hr to avoid duplicate decisions. Observe-only — no recovery actions.
+  registerHeartbeatWatchdogSweeper(db as any);
 
   setInterval(() => {
     void heartbeat
