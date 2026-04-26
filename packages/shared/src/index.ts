@@ -759,6 +759,12 @@ export {
   parseProjectMentionHref,
   extractProjectMentionIds,
   type ParsedProjectMention,
+  SKILL_MENTION_SCHEME,
+  buildSkillMentionHref,
+  parseSkillMentionHref,
+  extractSkillMentionIds,
+  normalizeSkillSlug,
+  type ParsedSkillMention,
 } from "./project-mentions.js";
 
 export {

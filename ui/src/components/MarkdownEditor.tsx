@@ -29,6 +29,11 @@ import {
 } from "@mdxeditor/editor";
 import { buildProjectMentionHref, parseProjectMentionHref } from "@armyofagents/shared";
 import { cn } from "../lib/utils";
+import {
+  EditorAutocompleteProvider,
+  useEditorAutocomplete,
+  type SkillCommandOption,
+} from "../context/EditorAutocompleteContext";
 
 /* ---- Mention types ---- */
 
@@ -55,6 +60,11 @@ interface MarkdownEditorProps {
   mentions?: MentionOption[];
   /** Called on Cmd/Ctrl+Enter */
   onSubmit?: () => void;
+  /**
+   * Company ID used to load skill slash-command options.
+   * When provided, typing `/` opens the skill autocomplete dropdown.
+   */
+  companyId?: string | null;
 }
 
 export interface MarkdownEditorRef {
@@ -69,6 +79,16 @@ interface MentionState {
   left: number;
   textNode: Text;
   atPos: number;
+  endPos: number;
+}
+
+/** Slash-command trigger state — mirrors MentionState but for `/` triggers. */
+interface SlashState {
+  query: string;
+  top: number;
+  left: number;
+  textNode: Text;
+  slashPos: number;
   endPos: number;
 }
 
@@ -146,6 +166,67 @@ function detectMention(container: HTMLElement): MentionState | null {
   };
 }
 
+/**
+ * Detect whether the cursor is positioned after a `/` trigger that should open
+ * the skill slash-command dropdown.
+ *
+ * The trigger fires when:
+ *   - The previous non-whitespace character is `/`
+ *   - The `/` is at the start of the text node or preceded by whitespace
+ *   - The cursor is not inside a CodeMirror code-block element
+ */
+function detectSlash(container: HTMLElement): SlashState | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
+
+  const range = sel.getRangeAt(0);
+  const textNode = range.startContainer;
+  if (textNode.nodeType !== Node.TEXT_NODE) return null;
+  if (!container.contains(textNode)) return null;
+
+  // Do not trigger inside CodeMirror code blocks
+  const node = textNode as Node;
+  if (
+    node.parentElement?.closest(".cm-editor, .cm-content, [data-lexical-editor]")
+  ) {
+    return null;
+  }
+
+  const text = textNode.textContent ?? "";
+  const offset = range.startOffset;
+
+  let slashPos = -1;
+  for (let i = offset - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch === "/") {
+      if (i === 0 || /\s/.test(text[i - 1])) {
+        slashPos = i;
+      }
+      break;
+    }
+    if (/\s/.test(ch)) break;
+  }
+
+  if (slashPos === -1) return null;
+
+  const query = text.slice(slashPos + 1, offset);
+
+  const tempRange = document.createRange();
+  tempRange.setStart(textNode, slashPos);
+  tempRange.setEnd(textNode, slashPos + 1);
+  const rect = tempRange.getBoundingClientRect();
+  const containerRect = container.getBoundingClientRect();
+
+  return {
+    query,
+    top: rect.bottom - containerRect.top,
+    left: rect.left - containerRect.left,
+    textNode: textNode as Text,
+    slashPos,
+    endPos: offset,
+  };
+}
+
 function mentionMarkdown(option: MentionOption): string {
   if (option.kind === "project" && option.projectId) {
     return `[@${option.name}](${buildProjectMentionHref(option.projectId, option.projectColor ?? null)}) `;
@@ -157,6 +238,19 @@ function mentionMarkdown(option: MentionOption): string {
 function applyMention(markdown: string, query: string, option: MentionOption): string {
   const search = `@${query}`;
   const replacement = mentionMarkdown(option);
+  const idx = markdown.lastIndexOf(search);
+  if (idx === -1) return markdown;
+  return markdown.slice(0, idx) + replacement + markdown.slice(idx + search.length);
+}
+
+/** Replace `/<query>` in the markdown string with a skill mention link. */
+function applySkillSlashCommand(
+  markdown: string,
+  query: string,
+  option: SkillCommandOption,
+): string {
+  const search = `/${query}`;
+  const replacement = `[${option.name}](${option.href}) `;
   const idx = markdown.lastIndexOf(search);
   if (idx === -1) return markdown;
   return markdown.slice(0, idx) + replacement + markdown.slice(idx + search.length);
@@ -187,268 +281,348 @@ function mentionChipStyle(color: string | null): CSSProperties | undefined {
   };
 }
 
-/* ---- Component ---- */
+/* ---- Inner editor (consumes the autocomplete context) ---- */
 
-export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>(function MarkdownEditor({
-  value,
-  onChange,
-  placeholder,
-  className,
-  contentClassName,
-  onBlur,
-  imageUploadHandler,
-  bordered = true,
-  mentions,
-  onSubmit,
-}: MarkdownEditorProps, forwardedRef) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const ref = useRef<MDXEditorMethods>(null);
-  const latestValueRef = useRef(value);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [isDragOver, setIsDragOver] = useState(false);
-  const dragDepthRef = useRef(0);
+const MarkdownEditorInner = forwardRef<MarkdownEditorRef, MarkdownEditorProps>(
+  function MarkdownEditorInner(
+    {
+      value,
+      onChange,
+      placeholder,
+      className,
+      contentClassName,
+      onBlur,
+      imageUploadHandler,
+      bordered = true,
+      mentions,
+      onSubmit,
+    }: MarkdownEditorProps,
+    forwardedRef,
+  ) {
+    const { slashCommands } = useEditorAutocomplete();
 
-  // Stable ref for imageUploadHandler so plugins don't recreate on every render
-  const imageUploadHandlerRef = useRef(imageUploadHandler);
-  imageUploadHandlerRef.current = imageUploadHandler;
+    const containerRef = useRef<HTMLDivElement>(null);
+    const ref = useRef<MDXEditorMethods>(null);
+    const latestValueRef = useRef(value);
+    const [uploadError, setUploadError] = useState<string | null>(null);
+    const [isDragOver, setIsDragOver] = useState(false);
+    const dragDepthRef = useRef(0);
 
-  // Mention state (ref kept in sync so callbacks always see the latest value)
-  const [mentionState, setMentionState] = useState<MentionState | null>(null);
-  const mentionStateRef = useRef<MentionState | null>(null);
-  const [mentionIndex, setMentionIndex] = useState(0);
-  const mentionActive = mentionState !== null && mentions && mentions.length > 0;
-  const projectColorById = useMemo(() => {
-    const map = new Map<string, string | null>();
-    for (const mention of mentions ?? []) {
-      if (mention.kind === "project" && mention.projectId) {
-        map.set(mention.projectId, mention.projectColor ?? null);
+    // Stable ref for imageUploadHandler so plugins don't recreate on every render
+    const imageUploadHandlerRef = useRef(imageUploadHandler);
+    imageUploadHandlerRef.current = imageUploadHandler;
+
+    // Mention state (ref kept in sync so callbacks always see the latest value)
+    const [mentionState, setMentionState] = useState<MentionState | null>(null);
+    const mentionStateRef = useRef<MentionState | null>(null);
+    const [mentionIndex, setMentionIndex] = useState(0);
+    const mentionActive = mentionState !== null && mentions && mentions.length > 0;
+    const projectColorById = useMemo(() => {
+      const map = new Map<string, string | null>();
+      for (const mention of mentions ?? []) {
+        if (mention.kind === "project" && mention.projectId) {
+          map.set(mention.projectId, mention.projectColor ?? null);
+        }
       }
-    }
-    return map;
-  }, [mentions]);
+      return map;
+    }, [mentions]);
 
-  const filteredMentions = useMemo(() => {
-    if (!mentionState || !mentions) return [];
-    const q = mentionState.query.toLowerCase();
-    return mentions.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
-  }, [mentionState?.query, mentions]);
+    const filteredMentions = useMemo(() => {
+      if (!mentionState || !mentions) return [];
+      const q = mentionState.query.toLowerCase();
+      return mentions.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
+    }, [mentionState?.query, mentions]);
 
-  useImperativeHandle(forwardedRef, () => ({
-    focus: () => {
-      ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
-    },
-  }), []);
+    // Slash-command state
+    const [slashState, setSlashState] = useState<SlashState | null>(null);
+    const slashStateRef = useRef<SlashState | null>(null);
+    const [slashIndex, setSlashIndex] = useState(0);
+    const slashActive = slashState !== null && slashCommands.length > 0;
 
-  // Whether the image plugin should be included (boolean is stable across renders
-  // as long as the handler presence doesn't toggle)
-  const hasImageUpload = Boolean(imageUploadHandler);
+    const filteredSlashCommands = useMemo(() => {
+      if (!slashState) return [];
+      const q = slashState.query.toLowerCase();
+      if (!q) return slashCommands.slice(0, 8);
+      return slashCommands
+        .filter((cmd) =>
+          cmd.aliases.some((alias) => alias.toLowerCase().includes(q)),
+        )
+        .slice(0, 8);
+    }, [slashState?.query, slashCommands]);
 
-  const plugins = useMemo<RealmPlugin[]>(() => {
-    const imageHandler = hasImageUpload
-      ? async (file: File) => {
-          const handler = imageUploadHandlerRef.current;
-          if (!handler) throw new Error("No image upload handler");
-          try {
-            const src = await handler(file);
-            setUploadError(null);
-            return src;
-          } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
-            setUploadError(message);
-            throw err;
+    useImperativeHandle(forwardedRef, () => ({
+      focus: () => {
+        ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+      },
+    }), []);
+
+    // Whether the image plugin should be included (boolean is stable across renders
+    // as long as the handler presence doesn't toggle)
+    const hasImageUpload = Boolean(imageUploadHandler);
+
+    const plugins = useMemo<RealmPlugin[]>(() => {
+      const imageHandler = hasImageUpload
+        ? async (file: File) => {
+            const handler = imageUploadHandlerRef.current;
+            if (!handler) throw new Error("No image upload handler");
+            try {
+              const src = await handler(file);
+              setUploadError(null);
+              return src;
+            } catch (err) {
+              const message = err instanceof Error ? err.message : "Image upload failed";
+              setUploadError(message);
+              throw err;
+            }
           }
-        }
-      : undefined;
-    const all: RealmPlugin[] = [
-      headingsPlugin(),
-      listsPlugin(),
-      quotePlugin(),
-      tablePlugin(),
-      linkPlugin(),
-      linkDialogPlugin(),
-      thematicBreakPlugin(),
-      codeBlockPlugin({
-        defaultCodeBlockLanguage: "txt",
-        codeBlockEditorDescriptors: [FALLBACK_CODE_BLOCK_DESCRIPTOR],
-      }),
-      codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
-      markdownShortcutPlugin(),
-    ];
-    if (imageHandler) {
-      all.push(imagePlugin({ imageUploadHandler: imageHandler }));
-    }
-    return all;
-  }, [hasImageUpload]);
-
-  useEffect(() => {
-    if (value !== latestValueRef.current) {
-      ref.current?.setMarkdown(value);
-      latestValueRef.current = value;
-    }
-  }, [value]);
-
-  const decorateProjectMentions = useCallback(() => {
-    const editable = containerRef.current?.querySelector('[contenteditable="true"]');
-    if (!editable) return;
-    const links = editable.querySelectorAll("a");
-    for (const node of links) {
-      const link = node as HTMLAnchorElement;
-      const parsed = parseProjectMentionHref(link.getAttribute("href") ?? "");
-      if (!parsed) {
-        if (link.dataset.projectMention === "true") {
-          link.dataset.projectMention = "false";
-          link.classList.remove("aoa-project-mention-chip");
-          link.removeAttribute("contenteditable");
-          link.style.removeProperty("border-color");
-          link.style.removeProperty("background-color");
-          link.style.removeProperty("color");
-        }
-        continue;
+        : undefined;
+      const all: RealmPlugin[] = [
+        headingsPlugin(),
+        listsPlugin(),
+        quotePlugin(),
+        tablePlugin(),
+        linkPlugin(),
+        linkDialogPlugin(),
+        thematicBreakPlugin(),
+        codeBlockPlugin({
+          defaultCodeBlockLanguage: "txt",
+          codeBlockEditorDescriptors: [FALLBACK_CODE_BLOCK_DESCRIPTOR],
+        }),
+        codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
+        markdownShortcutPlugin(),
+      ];
+      if (imageHandler) {
+        all.push(imagePlugin({ imageUploadHandler: imageHandler }));
       }
+      return all;
+    }, [hasImageUpload]);
 
-      const color = parsed.color ?? projectColorById.get(parsed.projectId) ?? null;
-      link.dataset.projectMention = "true";
-      link.classList.add("aoa-project-mention-chip");
-      link.setAttribute("contenteditable", "false");
-      const style = mentionChipStyle(color);
-      if (style) {
-        link.style.borderColor = style.borderColor ?? "";
-        link.style.backgroundColor = style.backgroundColor ?? "";
-        link.style.color = style.color ?? "";
+    useEffect(() => {
+      if (value !== latestValueRef.current) {
+        ref.current?.setMarkdown(value);
+        latestValueRef.current = value;
       }
-    }
-  }, [projectColorById]);
+    }, [value]);
 
-  // Mention detection: listen for selection changes and input events
-  const checkMention = useCallback(() => {
-    if (!mentions || mentions.length === 0 || !containerRef.current) {
-      mentionStateRef.current = null;
-      setMentionState(null);
-      return;
-    }
-    const result = detectMention(containerRef.current);
-    mentionStateRef.current = result;
-    if (result) {
-      setMentionState(result);
-      setMentionIndex(0);
-    } else {
-      setMentionState(null);
-    }
-  }, [mentions]);
-
-  useEffect(() => {
-    if (!mentions || mentions.length === 0) return;
-
-    const el = containerRef.current;
-    // Listen for input events on the container so mention detection
-    // also fires after typing (e.g. space to dismiss).
-    const onInput = () => requestAnimationFrame(checkMention);
-
-    document.addEventListener("selectionchange", checkMention);
-    el?.addEventListener("input", onInput, true);
-    return () => {
-      document.removeEventListener("selectionchange", checkMention);
-      el?.removeEventListener("input", onInput, true);
-    };
-  }, [checkMention, mentions]);
-
-  useEffect(() => {
-    const editable = containerRef.current?.querySelector('[contenteditable="true"]');
-    if (!editable) return;
-    decorateProjectMentions();
-    const observer = new MutationObserver(() => {
-      decorateProjectMentions();
-    });
-    observer.observe(editable, {
-      subtree: true,
-      childList: true,
-      characterData: true,
-    });
-    return () => observer.disconnect();
-  }, [decorateProjectMentions, value]);
-
-  const selectMention = useCallback(
-    (option: MentionOption) => {
-      // Read from ref to avoid stale-closure issues (selectionchange can
-      // update state between the last render and this callback firing).
-      const state = mentionStateRef.current;
-      if (!state) return;
-
-      if (option.kind === "project" && option.projectId) {
-        const current = latestValueRef.current;
-        const next = applyMention(current, state.query, option);
-        if (next !== current) {
-          latestValueRef.current = next;
-          ref.current?.setMarkdown(next);
-          onChange(next);
+    const decorateProjectMentions = useCallback(() => {
+      const editable = containerRef.current?.querySelector('[contenteditable="true"]');
+      if (!editable) return;
+      const links = editable.querySelectorAll("a");
+      for (const node of links) {
+        const link = node as HTMLAnchorElement;
+        const parsed = parseProjectMentionHref(link.getAttribute("href") ?? "");
+        if (!parsed) {
+          if (link.dataset.projectMention === "true") {
+            link.dataset.projectMention = "false";
+            link.classList.remove("aoa-project-mention-chip");
+            link.removeAttribute("contenteditable");
+            link.style.removeProperty("border-color");
+            link.style.removeProperty("background-color");
+            link.style.removeProperty("color");
+          }
+          continue;
         }
-        requestAnimationFrame(() => {
-          ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
-          decorateProjectMentions();
-        });
+
+        const color = parsed.color ?? projectColorById.get(parsed.projectId) ?? null;
+        link.dataset.projectMention = "true";
+        link.classList.add("aoa-project-mention-chip");
+        link.setAttribute("contenteditable", "false");
+        const style = mentionChipStyle(color);
+        if (style) {
+          link.style.borderColor = style.borderColor ?? "";
+          link.style.backgroundColor = style.backgroundColor ?? "";
+          link.style.color = style.color ?? "";
+        }
+      }
+    }, [projectColorById]);
+
+    // Mention detection: listen for selection changes and input events
+    const checkMention = useCallback(() => {
+      if (!mentions || mentions.length === 0 || !containerRef.current) {
         mentionStateRef.current = null;
         setMentionState(null);
         return;
       }
+      const result = detectMention(containerRef.current);
+      mentionStateRef.current = result;
+      if (result) {
+        setMentionState(result);
+        setMentionIndex(0);
+      } else {
+        setMentionState(null);
+      }
+    }, [mentions]);
 
-      const replacement = mentionMarkdown(option);
+    // Slash-command detection
+    const checkSlash = useCallback(() => {
+      if (slashCommands.length === 0 || !containerRef.current) {
+        slashStateRef.current = null;
+        setSlashState(null);
+        return;
+      }
+      const result = detectSlash(containerRef.current);
+      slashStateRef.current = result;
+      if (result) {
+        setSlashState(result);
+        setSlashIndex(0);
+      } else {
+        setSlashState(null);
+      }
+    }, [slashCommands.length]);
 
-      // Replace @query directly via DOM selection so the cursor naturally
-      // lands after the inserted text. Lexical picks up the change through
-      // its normal input-event handling.
-      const sel = window.getSelection();
-      if (sel && state.textNode.isConnected) {
-        const range = document.createRange();
-        range.setStart(state.textNode, state.atPos);
-        range.setEnd(state.textNode, state.endPos);
-        sel.removeAllRanges();
-        sel.addRange(range);
-        document.execCommand("insertText", false, replacement);
+    useEffect(() => {
+      if (!mentions || mentions.length === 0) return;
 
-        // After Lexical reconciles the DOM, the cursor position set by
-        // execCommand may be lost. Explicitly reposition it after the
-        // inserted mention text.
-        const cursorTarget = state.atPos + replacement.length;
-        requestAnimationFrame(() => {
-          const newSel = window.getSelection();
-          if (!newSel) return;
-          // Try the original text node first (it may still be valid)
-          if (state.textNode.isConnected) {
-            const len = state.textNode.textContent?.length ?? 0;
-            if (cursorTarget <= len) {
-              const r = document.createRange();
-              r.setStart(state.textNode, cursorTarget);
-              r.collapse(true);
-              newSel.removeAllRanges();
-              newSel.addRange(r);
-              return;
-            }
+      const el = containerRef.current;
+      // Listen for input events on the container so mention detection
+      // also fires after typing (e.g. space to dismiss).
+      const onInput = () => requestAnimationFrame(checkMention);
+
+      document.addEventListener("selectionchange", checkMention);
+      el?.addEventListener("input", onInput, true);
+      return () => {
+        document.removeEventListener("selectionchange", checkMention);
+        el?.removeEventListener("input", onInput, true);
+      };
+    }, [checkMention, mentions]);
+
+    useEffect(() => {
+      if (slashCommands.length === 0) return;
+
+      const el = containerRef.current;
+      const onInput = () => requestAnimationFrame(checkSlash);
+      document.addEventListener("selectionchange", checkSlash);
+      el?.addEventListener("input", onInput, true);
+      return () => {
+        document.removeEventListener("selectionchange", checkSlash);
+        el?.removeEventListener("input", onInput, true);
+      };
+    }, [checkSlash, slashCommands.length]);
+
+    useEffect(() => {
+      const editable = containerRef.current?.querySelector('[contenteditable="true"]');
+      if (!editable) return;
+      decorateProjectMentions();
+      const observer = new MutationObserver(() => {
+        decorateProjectMentions();
+      });
+      observer.observe(editable, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      });
+      return () => observer.disconnect();
+    }, [decorateProjectMentions, value]);
+
+    const selectMention = useCallback(
+      (option: MentionOption) => {
+        // Read from ref to avoid stale-closure issues (selectionchange can
+        // update state between the last render and this callback firing).
+        const state = mentionStateRef.current;
+        if (!state) return;
+
+        if (option.kind === "project" && option.projectId) {
+          const current = latestValueRef.current;
+          const next = applyMention(current, state.query, option);
+          if (next !== current) {
+            latestValueRef.current = next;
+            ref.current?.setMarkdown(next);
+            onChange(next);
           }
-          // Fallback: search for the replacement in text nodes
-          const editable = containerRef.current?.querySelector('[contenteditable="true"]');
-          if (!editable) return;
-          const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT);
-          let node: Text | null;
-          while ((node = walker.nextNode() as Text | null)) {
-            const text = node.textContent ?? "";
-            const idx = text.indexOf(replacement);
-            if (idx !== -1) {
-              const pos = idx + replacement.length;
-              if (pos <= text.length) {
+          requestAnimationFrame(() => {
+            ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+            decorateProjectMentions();
+          });
+          mentionStateRef.current = null;
+          setMentionState(null);
+          return;
+        }
+
+        const replacement = mentionMarkdown(option);
+
+        // Replace @query directly via DOM selection so the cursor naturally
+        // lands after the inserted text. Lexical picks up the change through
+        // its normal input-event handling.
+        const sel = window.getSelection();
+        if (sel && state.textNode.isConnected) {
+          const range = document.createRange();
+          range.setStart(state.textNode, state.atPos);
+          range.setEnd(state.textNode, state.endPos);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          document.execCommand("insertText", false, replacement);
+
+          // After Lexical reconciles the DOM, the cursor position set by
+          // execCommand may be lost. Explicitly reposition it after the
+          // inserted mention text.
+          const cursorTarget = state.atPos + replacement.length;
+          requestAnimationFrame(() => {
+            const newSel = window.getSelection();
+            if (!newSel) return;
+            // Try the original text node first (it may still be valid)
+            if (state.textNode.isConnected) {
+              const len = state.textNode.textContent?.length ?? 0;
+              if (cursorTarget <= len) {
                 const r = document.createRange();
-                r.setStart(node, pos);
+                r.setStart(state.textNode, cursorTarget);
                 r.collapse(true);
                 newSel.removeAllRanges();
                 newSel.addRange(r);
                 return;
               }
             }
+            // Fallback: search for the replacement in text nodes
+            const editable = containerRef.current?.querySelector('[contenteditable="true"]');
+            if (!editable) return;
+            const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT);
+            let node: Text | null;
+            while ((node = walker.nextNode() as Text | null)) {
+              const text = node.textContent ?? "";
+              const idx = text.indexOf(replacement);
+              if (idx !== -1) {
+                const pos = idx + replacement.length;
+                if (pos <= text.length) {
+                  const r = document.createRange();
+                  r.setStart(node, pos);
+                  r.collapse(true);
+                  newSel.removeAllRanges();
+                  newSel.addRange(r);
+                  return;
+                }
+              }
+            }
+          });
+        } else {
+          // Fallback: full markdown replacement when DOM node is stale
+          const current = latestValueRef.current;
+          const next = applyMention(current, state.query, option);
+          if (next !== current) {
+            latestValueRef.current = next;
+            ref.current?.setMarkdown(next);
+            onChange(next);
           }
+          requestAnimationFrame(() => {
+            ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+          });
+        }
+
+        requestAnimationFrame(() => {
+          decorateProjectMentions();
         });
-      } else {
-        // Fallback: full markdown replacement when DOM node is stale
+
+        mentionStateRef.current = null;
+        setMentionState(null);
+      },
+      [decorateProjectMentions, onChange],
+    );
+
+    const selectSlashCommand = useCallback(
+      (option: SkillCommandOption) => {
+        const state = slashStateRef.current;
+        if (!state) return;
+
         const current = latestValueRef.current;
-        const next = applyMention(current, state.query, option);
+        const next = applySkillSlashCommand(current, state.query, option);
         if (next !== current) {
           latestValueRef.current = next;
           ref.current?.setMarkdown(next);
@@ -457,170 +631,240 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         requestAnimationFrame(() => {
           ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
         });
-      }
 
-      requestAnimationFrame(() => {
-        decorateProjectMentions();
-      });
+        slashStateRef.current = null;
+        setSlashState(null);
+      },
+      [onChange],
+    );
 
-      mentionStateRef.current = null;
-      setMentionState(null);
-    },
-    [decorateProjectMentions, onChange],
-  );
+    function hasFilePayload(evt: DragEvent<HTMLDivElement>) {
+      return Array.from(evt.dataTransfer?.types ?? []).includes("Files");
+    }
 
-  function hasFilePayload(evt: DragEvent<HTMLDivElement>) {
-    return Array.from(evt.dataTransfer?.types ?? []).includes("Files");
-  }
+    const canDropImage = Boolean(imageUploadHandler);
 
-  const canDropImage = Boolean(imageUploadHandler);
-
-  return (
-    <div
-      ref={containerRef}
-      className={cn(
-        "relative aoa-mdxeditor-scope",
-        bordered ? "rounded-md border border-border bg-transparent" : "bg-transparent",
-        isDragOver && "ring-1 ring-primary/60 bg-accent/20",
-        className,
-      )}
-      onKeyDownCapture={(e) => {
-        // Cmd/Ctrl+Enter to submit
-        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-          e.preventDefault();
-          e.stopPropagation();
-          onSubmit();
-          return;
-        }
-
-        // Mention keyboard handling
-        if (mentionActive) {
-          // Space dismisses the popup (let the character be typed normally)
-          if (e.key === " ") {
-            mentionStateRef.current = null;
-            setMentionState(null);
-            return;
-          }
-          // Escape always dismisses
-          if (e.key === "Escape") {
+    return (
+      <div
+        ref={containerRef}
+        className={cn(
+          "relative aoa-mdxeditor-scope",
+          bordered ? "rounded-md border border-border bg-transparent" : "bg-transparent",
+          isDragOver && "ring-1 ring-primary/60 bg-accent/20",
+          className,
+        )}
+        onKeyDownCapture={(e) => {
+          // Cmd/Ctrl+Enter to submit
+          if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             e.stopPropagation();
-            mentionStateRef.current = null;
-            setMentionState(null);
+            onSubmit();
             return;
           }
-          // Arrow / Enter / Tab only when there are filtered results
-          if (filteredMentions.length > 0) {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              e.stopPropagation();
-              setMentionIndex((prev) => Math.min(prev + 1, filteredMentions.length - 1));
+
+          // Slash-command keyboard handling (higher priority than @-mention)
+          if (slashActive) {
+            if (e.key === " " || e.key === "Escape") {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+              slashStateRef.current = null;
+              setSlashState(null);
               return;
             }
-            if (e.key === "ArrowUp") {
-              e.preventDefault();
-              e.stopPropagation();
-              setMentionIndex((prev) => Math.max(prev - 1, 0));
-              return;
-            }
-            if (e.key === "Enter" || e.key === "Tab") {
-              e.preventDefault();
-              e.stopPropagation();
-              selectMention(filteredMentions[mentionIndex]);
-              return;
+            if (filteredSlashCommands.length > 0) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                e.stopPropagation();
+                setSlashIndex((prev) => Math.min(prev + 1, filteredSlashCommands.length - 1));
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                e.stopPropagation();
+                setSlashIndex((prev) => Math.max(prev - 1, 0));
+                return;
+              }
+              if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault();
+                e.stopPropagation();
+                selectSlashCommand(filteredSlashCommands[slashIndex]);
+                return;
+              }
             }
           }
-        }
-      }}
-      onDragEnter={(evt) => {
-        if (!canDropImage || !hasFilePayload(evt)) return;
-        dragDepthRef.current += 1;
-        setIsDragOver(true);
-      }}
-      onDragOver={(evt) => {
-        if (!canDropImage || !hasFilePayload(evt)) return;
-        evt.preventDefault();
-        evt.dataTransfer.dropEffect = "copy";
-      }}
-      onDragLeave={() => {
-        if (!canDropImage) return;
-        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-        if (dragDepthRef.current === 0) setIsDragOver(false);
-      }}
-      onDrop={() => {
-        dragDepthRef.current = 0;
-        setIsDragOver(false);
-      }}
-    >
-      <MDXEditor
-        ref={ref}
-        markdown={value}
-        placeholder={placeholder}
-        onChange={(next) => {
-          latestValueRef.current = next;
-          onChange(next);
+
+          // Mention keyboard handling
+          if (mentionActive) {
+            // Space dismisses the popup (let the character be typed normally)
+            if (e.key === " ") {
+              mentionStateRef.current = null;
+              setMentionState(null);
+              return;
+            }
+            // Escape always dismisses
+            if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              mentionStateRef.current = null;
+              setMentionState(null);
+              return;
+            }
+            // Arrow / Enter / Tab only when there are filtered results
+            if (filteredMentions.length > 0) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                e.stopPropagation();
+                setMentionIndex((prev) => Math.min(prev + 1, filteredMentions.length - 1));
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                e.stopPropagation();
+                setMentionIndex((prev) => Math.max(prev - 1, 0));
+                return;
+              }
+              if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault();
+                e.stopPropagation();
+                selectMention(filteredMentions[mentionIndex]);
+                return;
+              }
+            }
+          }
         }}
-        onBlur={() => onBlur?.()}
-        className={cn("aoa-mdxeditor", !bordered && "aoa-mdxeditor--borderless")}
-        contentEditableClassName={cn(
-          "aoa-mdxeditor-content focus:outline-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
-          contentClassName,
-        )}
-        overlayContainer={containerRef.current}
-        plugins={plugins}
-      />
-
-      {/* Mention dropdown */}
-      {mentionActive && filteredMentions.length > 0 && (
-        <div
-          className="absolute z-50 min-w-[180px] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
-          style={{ top: mentionState.top + 4, left: mentionState.left }}
-        >
-          {filteredMentions.map((option, i) => (
-            <button
-              key={option.id}
-              className={cn(
-                "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
-                i === mentionIndex && "bg-accent",
-              )}
-              onMouseDown={(e) => {
-                e.preventDefault(); // prevent blur
-                selectMention(option);
-              }}
-              onMouseEnter={() => setMentionIndex(i)}
-            >
-              {option.kind === "project" && option.projectId ? (
-                <span
-                  className="inline-flex h-2 w-2 rounded-full border border-border/50"
-                  style={{ backgroundColor: option.projectColor ?? "#64748b" }}
-                />
-              ) : (
-                <span className="text-muted-foreground">@</span>
-              )}
-              <span>{option.name}</span>
-              {option.kind === "project" && option.projectId && (
-                <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                  Project
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {isDragOver && canDropImage && (
-        <div
-          className={cn(
-            "pointer-events-none absolute inset-1 z-40 flex items-center justify-center rounded-md border border-dashed border-primary/80 bg-primary/10 text-xs font-medium text-primary",
-            !bordered && "inset-0 rounded-sm",
+        onDragEnter={(evt) => {
+          if (!canDropImage || !hasFilePayload(evt)) return;
+          dragDepthRef.current += 1;
+          setIsDragOver(true);
+        }}
+        onDragOver={(evt) => {
+          if (!canDropImage || !hasFilePayload(evt)) return;
+          evt.preventDefault();
+          evt.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={() => {
+          if (!canDropImage) return;
+          dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+          if (dragDepthRef.current === 0) setIsDragOver(false);
+        }}
+        onDrop={() => {
+          dragDepthRef.current = 0;
+          setIsDragOver(false);
+        }}
+      >
+        <MDXEditor
+          ref={ref}
+          markdown={value}
+          placeholder={placeholder}
+          onChange={(next) => {
+            latestValueRef.current = next;
+            onChange(next);
+          }}
+          onBlur={() => onBlur?.()}
+          className={cn("aoa-mdxeditor", !bordered && "aoa-mdxeditor--borderless")}
+          contentEditableClassName={cn(
+            "aoa-mdxeditor-content focus:outline-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
+            contentClassName,
           )}
-        >
-          Drop image to upload
-        </div>
-      )}
-      {uploadError && (
-        <p className="px-3 pb-2 text-xs text-destructive">{uploadError}</p>
-      )}
-    </div>
-  );
-});
+          overlayContainer={containerRef.current}
+          plugins={plugins}
+        />
+
+        {/* Skill slash-command dropdown */}
+        {slashActive && filteredSlashCommands.length > 0 && (
+          <div
+            className="absolute z-50 min-w-[220px] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            style={{ top: slashState.top + 4, left: slashState.left }}
+          >
+            {filteredSlashCommands.map((cmd, i) => (
+              <button
+                key={cmd.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
+                  i === slashIndex && "bg-accent",
+                )}
+                onMouseDown={(e) => {
+                  e.preventDefault(); // prevent blur
+                  selectSlashCommand(cmd);
+                }}
+                onMouseEnter={() => setSlashIndex(i)}
+              >
+                <span className="text-muted-foreground text-[10px]">/</span>
+                <span className="flex-1 truncate">{cmd.name}</span>
+                <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Skill
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Mention dropdown */}
+        {mentionActive && filteredMentions.length > 0 && (
+          <div
+            className="absolute z-50 min-w-[180px] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            style={{ top: mentionState.top + 4, left: mentionState.left }}
+          >
+            {filteredMentions.map((option, i) => (
+              <button
+                key={option.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
+                  i === mentionIndex && "bg-accent",
+                )}
+                onMouseDown={(e) => {
+                  e.preventDefault(); // prevent blur
+                  selectMention(option);
+                }}
+                onMouseEnter={() => setMentionIndex(i)}
+              >
+                {option.kind === "project" && option.projectId ? (
+                  <span
+                    className="inline-flex h-2 w-2 rounded-full border border-border/50"
+                    style={{ backgroundColor: option.projectColor ?? "#64748b" }}
+                  />
+                ) : (
+                  <span className="text-muted-foreground">@</span>
+                )}
+                <span>{option.name}</span>
+                {option.kind === "project" && option.projectId && (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Project
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {isDragOver && canDropImage && (
+          <div
+            className={cn(
+              "pointer-events-none absolute inset-1 z-40 flex items-center justify-center rounded-md border border-dashed border-primary/80 bg-primary/10 text-xs font-medium text-primary",
+              !bordered && "inset-0 rounded-sm",
+            )}
+          >
+            Drop image to upload
+          </div>
+        )}
+        {uploadError && (
+          <p className="px-3 pb-2 text-xs text-destructive">{uploadError}</p>
+        )}
+      </div>
+    );
+  },
+);
+
+/* ---- Public component (wraps inner with the autocomplete provider) ---- */
+
+export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>(
+  function MarkdownEditor(props, ref) {
+    return (
+      <EditorAutocompleteProvider companyId={props.companyId ?? null}>
+        <MarkdownEditorInner {...props} ref={ref} />
+      </EditorAutocompleteProvider>
+    );
+  },
+);
