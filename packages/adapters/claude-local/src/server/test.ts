@@ -50,6 +50,20 @@ function summarizeProbeDetail(stdout: string, stderr: string): string | null {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+export function describeStaleApiKey(
+  env: Record<string, string>,
+): { code: string; level: "warn"; message: string; hint: string } | null {
+  if (isBedrockAuth(env) && isNonEmpty(env.ANTHROPIC_API_KEY)) {
+    return {
+      code: "claude_bedrock_api_key_ignored",
+      level: "warn",
+      message: "ANTHROPIC_API_KEY is set but will be ignored because AWS Bedrock auth is active.",
+      hint: "Unset ANTHROPIC_API_KEY to avoid confusion.",
+    };
+  }
+  return null;
+}
+
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -103,6 +117,8 @@ export async function testEnvironment(
       level: "info",
       message: "AWS Bedrock auth detected. Claude will use Bedrock for inference.",
     });
+    const staleKeyCheck = describeStaleApiKey(effectiveEnv);
+    if (staleKeyCheck) checks.push(staleKeyCheck);
   }
 
   const configApiKey = env.ANTHROPIC_API_KEY;
