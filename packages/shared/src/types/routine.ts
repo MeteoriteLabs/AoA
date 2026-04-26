@@ -98,7 +98,7 @@ export interface RoutineRunSummary extends RoutineRun {
 }
 
 export interface RoutineListItem extends Routine {
-  triggers: Pick<RoutineTrigger, "id" | "kind" | "label" | "enabled" | "cronExpression" | "nextRunAt">[];
+  triggers: Pick<RoutineTrigger, "id" | "kind" | "label" | "enabled" | "cronExpression" | "timezone" | "nextRunAt">[];
   lastRun: RoutineRun | null;
   activeIssue: { id: string; title: string; identifier: string; status: string } | null;
 }

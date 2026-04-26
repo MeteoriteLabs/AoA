@@ -208,6 +208,32 @@ describe("routineService — list", () => {
     const result = await svc.list(companyId);
     expect(result).toEqual([]);
   });
+
+  it("includes cronExpression and timezone in trigger list response", async () => {
+    const cronTrigger = {
+      ...baseTrigger,
+      cronExpression: "0 9 * * 1",
+      timezone: "America/New_York",
+    };
+    // Sequence: [routines], [triggers], [latestRuns], [liveIssues]
+    const db = createSequenceDb({
+      selects: [
+        [baseRoutine],   // select from routines
+        [cronTrigger],   // listTriggersForRoutineIds → select from routineTriggers
+        [],              // listLatestRunByRoutineIds → selectDistinctOn from routineRuns
+        [],              // listLiveIssueByRoutineIds → selectDistinctOn from issues
+      ],
+    });
+    const svc = routineService(db as any);
+    const result = await svc.list(companyId);
+    expect(result).toHaveLength(1);
+    const found = result[0];
+    expect(found.triggers).toHaveLength(1);
+    expect(found.triggers[0]).toMatchObject({
+      cronExpression: "0 9 * * 1",
+      timezone: "America/New_York",
+    });
+  });
 });
 
 describe("routineService — syncRunStatusForIssue", () => {
