@@ -42,4 +42,9 @@ describe("skill mentions", () => {
   it("normalizeSkillSlug handles spaces and special chars", () => {
     expect(normalizeSkillSlug("My Cool Skill!")).toBe("my-cool-skill");
   });
+
+  it("normalizeSkillSlug decomposes accented Latin chars", () => {
+    expect(normalizeSkillSlug("naïve skill")).toBe("naive-skill");
+    expect(normalizeSkillSlug("Café Routine")).toBe("cafe-routine");
+  });
 });

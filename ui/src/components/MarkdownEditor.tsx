@@ -249,6 +249,12 @@ function applySkillSlashCommand(
   query: string,
   option: SkillCommandOption,
 ): string {
+  // KNOWN LIMITATION: uses lastIndexOf to locate the trigger sequence in the
+  // serialized markdown. If `/<query>` appears earlier in the document (e.g.
+  // in a URL or code comment), the wrong occurrence will be replaced. This
+  // matches the existing applyMention behavior. Robust positioning requires
+  // mapping DOM caret offset to MDXEditor's markdown serialization, which
+  // isn't currently exposed. Accept the limitation for now.
   const search = `/${query}`;
   const replacement = `[${option.name}](${option.href}) `;
   const idx = markdown.lastIndexOf(search);
@@ -337,7 +343,7 @@ const MarkdownEditorInner = forwardRef<MarkdownEditorRef, MarkdownEditorProps>(
     const [slashState, setSlashState] = useState<SlashState | null>(null);
     const slashStateRef = useRef<SlashState | null>(null);
     const [slashIndex, setSlashIndex] = useState(0);
-    const slashActive = slashState !== null && slashCommands.length > 0;
+    const slashActive = slashState !== null;
 
     const filteredSlashCommands = useMemo(() => {
       if (!slashState) return [];

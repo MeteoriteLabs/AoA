@@ -139,6 +139,8 @@ export function normalizeSkillSlug(input: string): string {
   return input
     .trim()
     .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }

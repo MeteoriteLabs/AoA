@@ -358,6 +358,22 @@
   user-select: none;
 }
 
+.aoa-mdxeditor-content a.aoa-skill-mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0 0.1rem;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  text-decoration: none;
+  vertical-align: baseline;
+  white-space: nowrap;
+  user-select: none;
+}
+
 .aoa-mdxeditor-content ul,
 .aoa-mdxeditor-content ol {
   margin: 0.35rem 0;
@@ -446,6 +462,22 @@
 
 /* Project mention chips rendered inside MarkdownBody */
 a.aoa-project-mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0 0.1rem;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  text-decoration: none;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+/* Skill mention chips rendered inside MarkdownBody */
+a.aoa-skill-mention-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
