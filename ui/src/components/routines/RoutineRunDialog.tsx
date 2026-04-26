@@ -103,13 +103,13 @@ export function RoutineRunDialog({
     mutationFn: async () => {
       const payload: Record<string, unknown> = { source: "manual" };
       if (variables.length > 0) {
-        const nextVariables: Record<string, string | number | boolean> = {};
+        const overrides: Record<string, string> = {};
         for (const variable of variables) {
           const raw = values[variable.name] ?? "";
           const serialized = serializeVariableForSubmit(variable, raw);
-          if (serialized !== null) nextVariables[variable.name] = serialized;
+          if (serialized !== null) overrides[variable.name] = String(serialized);
         }
-        if (Object.keys(nextVariables).length > 0) payload.variables = nextVariables;
+        if (Object.keys(overrides).length > 0) payload.variableOverrides = overrides;
       }
       return routinesApi.run(routineId, payload);
     },

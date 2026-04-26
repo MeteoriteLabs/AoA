@@ -40,6 +40,7 @@ import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./is
 import { logActivity } from "./activity-log.js";
 import {
   mergeRoutineRunPayload,
+  resolveRoutineRunVariables,
   resolveRoutineVariableValues,
 } from "./routine-variable-runtime.js";
 
@@ -577,13 +578,20 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     source: "schedule" | "manual" | "api" | "webhook";
     payload?: Record<string, unknown> | null;
     variables?: Record<string, unknown> | null;
+    /** Strict per-run variable overrides; merged with stored defaults; unknown keys throw. */
+    variableOverrides?: Record<string, string> | null;
     idempotencyKey?: string | null;
   }) {
     const routineVariables = input.routine.variables ?? [];
+    // Apply explicit variableOverrides on top of stored defaults first, then
+    // run through the full resolver so type coercion and required-field checks apply.
+    const effectiveVariables = input.variableOverrides
+      ? { ...(input.variables ?? {}), ...resolveRoutineRunVariables(input.routine, input.variableOverrides) }
+      : input.variables;
     const resolvedVariables = resolveRoutineVariableValues(routineVariables, {
       source: input.source,
       payload: input.payload,
-      variables: input.variables,
+      variables: effectiveVariables,
     });
     const interpolationContext = { ...getBuiltinRoutineVariableValues(), ...resolvedVariables };
     const interpolatedTitle =
@@ -826,8 +834,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       const row = await getRoutineById(id);
       if (!row) return null;
       const [project, assignee, parentIssue, triggers, recentRuns, activeIssue] = await Promise.all([
-        db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null),
-        db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null),
+        row.projectId ? db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null) : null,
+        row.assigneeAgentId ? db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null) : null,
         row.parentIssueId ? issueSvc.getById(row.parentIssueId) : null,
         db.select().from(routineTriggers).where(eq(routineTriggers.routineId, row.id)).orderBy(asc(routineTriggers.createdAt)),
         db
@@ -930,21 +938,20 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     },
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
-      if (!input.projectId) throw unprocessable("projectId is required");
-      await assertProject(companyId, input.projectId);
-      await assertAssignableAgent(companyId, input.assigneeAgentId);
+      if (input.projectId) await assertProject(companyId, input.projectId);
+      if (input.assigneeAgentId) await assertAssignableAgent(companyId, input.assigneeAgentId);
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
       const [created] = await db
         .insert(routines)
         .values({
           companyId,
-          projectId: input.projectId,
+          projectId: input.projectId ?? null,
           goalId: input.goalId ?? null,
           parentIssueId: input.parentIssueId ?? null,
           title: input.title,
           description: input.description ?? null,
-          assigneeAgentId: input.assigneeAgentId,
+          assigneeAgentId: input.assigneeAgentId ?? null,
           priority: input.priority,
           status: input.status,
           concurrencyPolicy: input.concurrencyPolicy,
@@ -964,8 +971,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (!existing) return null;
       const nextProjectId = patch.projectId ?? existing.projectId;
       const nextAssigneeAgentId = patch.assigneeAgentId ?? existing.assigneeAgentId;
-      if (patch.projectId) await assertProject(existing.companyId, nextProjectId);
-      if (patch.assigneeAgentId) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
+      if (patch.projectId) await assertProject(existing.companyId, patch.projectId);
+      if (patch.assigneeAgentId) await assertAssignableAgent(existing.companyId, patch.assigneeAgentId);
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
       const [updated] = await db
@@ -1148,6 +1155,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         source: input.source ?? "manual",
         payload: input.payload as Record<string, unknown> | null | undefined,
         variables: input.variables as Record<string, unknown> | null | undefined,
+        variableOverrides: input.variableOverrides as Record<string, string> | null | undefined,
         idempotencyKey: input.idempotencyKey,
       });
     },

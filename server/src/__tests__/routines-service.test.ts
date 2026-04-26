@@ -313,3 +313,89 @@ describe("routineService — constants contract", () => {
     }
   });
 });
+
+// ── Draft routine (null project / null assignee) ──────────────────────────────
+
+describe("routineService — draft defaults (null project + null assignee)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("creates a draft routine with null projectId and null assigneeAgentId", async () => {
+    const draftRoutineRow = {
+      ...baseRoutine,
+      projectId: null,
+      assigneeAgentId: null,
+      variables: [],
+    };
+    const db = createSequenceDb({
+      inserts: [[draftRoutineRow]],
+    });
+    const svc = routineService(db as any);
+    const result = await svc.create(companyId, {
+      title: "Draft routine",
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    }, { userId: "board" });
+    expect(result).toMatchObject({ projectId: null, assigneeAgentId: null });
+  });
+
+  it("get returns a routine with null projectId and null assigneeAgentId", async () => {
+    const draftRoutineRow = {
+      ...baseRoutine,
+      projectId: null,
+      assigneeAgentId: null,
+      variables: [],
+    };
+    const db = createSequenceDb({ selects: [[draftRoutineRow]] });
+    const svc = routineService(db as any);
+    const result = await svc.get(routineId);
+    expect(result).toMatchObject({ id: routineId, projectId: null, assigneeAgentId: null });
+  });
+});
+
+// ── Run-time variable overrides ───────────────────────────────────────────────
+
+import { resolveRoutineRunVariables } from "../services/routine-variable-runtime.js";
+
+describe("resolveRoutineRunVariables — pure function", () => {
+  it("pre-fills defaults for all variables", () => {
+    const result = resolveRoutineRunVariables(
+      { variables: [{ name: "environment", label: null, type: "text", defaultValue: "staging", required: true, options: [] }] },
+      undefined,
+    );
+    expect(result).toEqual({ environment: "staging" });
+  });
+
+  it("merges variableOverrides with stored defaults — overrides win", () => {
+    const result = resolveRoutineRunVariables(
+      { variables: [{ name: "environment", label: null, type: "text", defaultValue: "staging", required: true, options: [] }] },
+      { environment: "production" },
+    );
+    expect(result).toEqual({ environment: "production" });
+  });
+
+  it("rejects unknown variable names in overrides", () => {
+    expect(() =>
+      resolveRoutineRunVariables(
+        { variables: [{ name: "environment", label: null, type: "text", defaultValue: "staging", required: true, options: [] }] },
+        { unknownVar: "x" },
+      ),
+    ).toThrow("unknown_routine_variable:unknownVar");
+  });
+
+  it("handles null defaultValue by coercing to empty string", () => {
+    const result = resolveRoutineRunVariables(
+      { variables: [{ name: "region", label: null, type: "text", defaultValue: null, required: false, options: [] }] },
+      undefined,
+    );
+    expect(result).toEqual({ region: "" });
+  });
+
+  it("rejects any override key when routine has no variables", () => {
+    // no known keys → any override key would be unknown
+    expect(() =>
+      resolveRoutineRunVariables({ variables: [] }, { anything: "val" }),
+    ).toThrow("unknown_routine_variable:anything");
+  });
+});

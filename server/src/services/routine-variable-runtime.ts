@@ -96,6 +96,30 @@ export function resolveRoutineVariableValues(
   return resolved;
 }
 
+/**
+ * Merges caller-supplied variableOverrides (from the run request body) with
+ * the routine's stored defaults.  Unknown override keys are rejected with an
+ * error so the caller gets a clear 422.
+ */
+export function resolveRoutineRunVariables(
+  routine: { variables: RoutineVariable[] },
+  overrides: Record<string, string> | undefined,
+): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const v of routine.variables ?? []) {
+    resolved[v.name] = v.defaultValue != null ? String(v.defaultValue) : "";
+  }
+  if (overrides) {
+    for (const [k, val] of Object.entries(overrides)) {
+      if (!(k in resolved)) {
+        throw new Error(`unknown_routine_variable:${k}`);
+      }
+      resolved[k] = val;
+    }
+  }
+  return resolved;
+}
+
 export function mergeRoutineRunPayload(
   payload: Record<string, unknown> | null | undefined,
   variables: Record<string, string | number | boolean>,

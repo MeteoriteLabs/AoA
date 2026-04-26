@@ -108,9 +108,11 @@ describe("RoutineRunDialog", () => {
     await user.type(countInput, "3");
     await user.click(screen.getByRole("button", { name: /run routine/i }));
     await waitFor(() => {
+      // T11 (draft defaults + run-time variable overrides): RoutineRunDialog
+      // now sends variableOverrides (string map) instead of variables.
       expect(routinesRun).toHaveBeenCalledWith(routineId, {
         source: "manual",
-        variables: { topic: "OKRs", count: 3 },
+        variableOverrides: { topic: "OKRs", count: "3" },
       });
     });
   });

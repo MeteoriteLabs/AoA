@@ -24,7 +24,7 @@ export const createRoutineSchema = z.object({
   parentIssueId: z.string().uuid().nullable().optional(),
   title: z.string().min(1).max(500),
   description: z.string().max(10000).nullable().optional(),
-  assigneeAgentId: z.string().uuid(),
+  assigneeAgentId: z.string().uuid().nullable().optional(),
   priority: z.enum(["urgent", "high", "medium", "low"]).optional(),
   status: z.enum(ROUTINE_STATUSES).optional(),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional(),
@@ -74,6 +74,8 @@ export const runRoutineSchema = z.object({
   triggerId: z.string().uuid().optional(),
   payload: z.record(z.unknown()).optional(),
   variables: z.record(routineVariableValueSchema).optional(),
+  /** Run-time variable overrides: merged with stored defaults; unknown keys rejected. */
+  variableOverrides: z.record(z.string()).optional(),
   idempotencyKey: z.string().max(200).optional(),
   source: z.enum(ROUTINE_RUN_SOURCES).optional(),
 });
