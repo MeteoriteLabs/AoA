@@ -14,9 +14,12 @@ export function buildHermesLocalConfig(v: CreateConfigValues): Record<string, un
   if (v.model) ac.model = v.model;
   // Map the shared "command" form field to hermesCommand in adapterConfig.
   // The server wrapper reads hermesCommand first, then falls back to command.
-  if (v.command) {
-    ac.hermesCommand = v.command;
-  }
+  // Use undefined (not empty string) so the server falls back to the default
+  // "hermes" via asString(agentConfig.hermesCommand ?? agentConfig.command, "hermes").
+  // An empty string is falsy and would have silently kept the prior saved value
+  // in edit mode — explicitly clearing to undefined ensures the reset is honoured.
+  const trimmedCommand = (v.command ?? "").trim();
+  ac.hermesCommand = trimmedCommand.length > 0 ? trimmedCommand : undefined;
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (v.thinkingEffort) ac.thinkingEffort = v.thinkingEffort;
   return ac;

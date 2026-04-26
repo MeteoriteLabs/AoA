@@ -166,12 +166,20 @@ const hermesLocalAdapter: ServerAdapterModule = {
     // agent object so env injection flows through to the child process.
     // Spread to avoid mutating the original adapterConfig object.
     const agentConfig = { ...parseObject(ctx.agent?.adapterConfig) } as Record<string, unknown>;
-    const env = parseObject(agentConfig.env) as Record<string, string>;
+    // parseObject returns Record<string, unknown> — do NOT cast to Record<string, string>.
+    // Build nextEnv with explicit per-value coercion so non-string env values
+    // (numbers, booleans, objects) cannot silently slip through to the child process.
+    const env = parseObject(agentConfig.env);
+    const nextEnv: Record<string, string> = {};
+    for (const [k, val] of Object.entries(env)) {
+      const s = asString(val, "");
+      nextEnv[k] = s;
+    }
 
     // Always inject PAPERCLIP_RUN_ID.
     // PAPERCLIP_API_KEY and PAPERCLIP_RUN_ID are wire-protocol contracts with
     // hermes-paperclip-adapter — do NOT rename these to AOA_*.
-    const nextEnv: Record<string, string> = { ...env, PAPERCLIP_RUN_ID: ctx.runId };
+    nextEnv.PAPERCLIP_RUN_ID = ctx.runId;
 
     // Inject PAPERCLIP_API_KEY from agent JWT only when not explicitly
     // configured — an explicit key takes precedence over the JWT.
