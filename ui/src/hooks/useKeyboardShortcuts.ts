@@ -34,7 +34,7 @@ export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onSwitchComp
       }
 
       // ? → Show keyboard cheatsheet (e.key === "?" regardless of Shift state on US layout)
-      if (e.key === "?") {
+      if (e.key === "?" && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         onShowCheatsheet?.();
         return;
