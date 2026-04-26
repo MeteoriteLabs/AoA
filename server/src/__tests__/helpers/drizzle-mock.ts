@@ -191,3 +191,23 @@ export function createExtendedSequenceDb(config: SequenceDbConfig = {}): {
   };
   return db;
 }
+
+/**
+ * Vitest mock factory for the db-capabilities module. Use it like:
+ *
+ *   vi.mock("../services/db-capabilities.js", () => mockDbCapabilities());
+ *   // or to test the no-vector path:
+ *   vi.mock("../services/db-capabilities.js", () => mockDbCapabilities({ hasVectorSupport: false }));
+ *
+ * `getDbCapabilities()` returns `{ hasVectorSupport: false }` by default in
+ * production until `probeDbCapabilities()` runs against a live DB. Tests that
+ * exercise embedding/semantic-search paths must override this.
+ */
+export function mockDbCapabilities(overrides: { hasVectorSupport?: boolean } = {}) {
+  const caps = { hasVectorSupport: true, ...overrides };
+  return {
+    getDbCapabilities: () => caps,
+    setDbCapabilities: () => {},
+    probeDbCapabilities: () => Promise.resolve(caps),
+  };
+}

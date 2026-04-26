@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { makeTableProxy, drizzleOperatorStubs } from "../drizzle-mock.js";
+import { makeTableProxy, drizzleOperatorStubs, mockDbCapabilities } from "../drizzle-mock.js";
 
 describe("makeTableProxy", () => {
   it("returns a stable symbol per column accessed", () => {
@@ -67,5 +67,23 @@ describe("drizzleOperatorStubs", () => {
     const sqlWithRaw = ops.sql as unknown as { raw: (s: string) => unknown };
     const result = sqlWithRaw.raw("SELECT 1");
     expect(result).toBeDefined();
+  });
+});
+
+describe("mockDbCapabilities", () => {
+  it("defaults to hasVectorSupport: true", () => {
+    const { getDbCapabilities } = mockDbCapabilities();
+    expect(getDbCapabilities().hasVectorSupport).toBe(true);
+  });
+
+  it("respects overrides", () => {
+    const { getDbCapabilities } = mockDbCapabilities({ hasVectorSupport: false });
+    expect(getDbCapabilities().hasVectorSupport).toBe(false);
+  });
+
+  it("provides probeDbCapabilities and setDbCapabilities stubs", () => {
+    const m = mockDbCapabilities();
+    expect(typeof m.probeDbCapabilities).toBe("function");
+    expect(typeof m.setDbCapabilities).toBe("function");
   });
 });
