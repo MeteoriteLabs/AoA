@@ -1,9 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
 
-// Dynamic import("../routes/debriefs.js") in this file traverses a heavy
-// module graph that occasionally exceeds the default 5000ms test timeout
-// under parallel-suite load. Bump per-file so the first import has headroom;
-// subsequent imports are cached and fast.
+// No `@armyofagents/db` or `drizzle-orm` mock needed — this file tests pure
+// functions (mapMcpToDiscussion) plus a single `await import("../routes/...")`
+// that asserts factory exports. The drizzle-mock helper at
+// `helpers/drizzle-mock.ts` is only required when a test actually destructures
+// tables/operators at module scope.
+//
+// Dynamic import("../routes/debriefs.js") traverses a heavy module graph that
+// occasionally exceeds the default 5000ms test timeout under parallel-suite
+// load. Bump per-file so the first import has headroom; subsequent imports
+// are cached and fast.
 vi.setConfig({ testTimeout: 15000 });
 
 /**
