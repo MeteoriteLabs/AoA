@@ -16,6 +16,7 @@ import {
 } from "@armyofagents/adapter-utils/server-utils";
 import path from "node:path";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import { isBedrockAuth } from "./execute.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -95,9 +96,18 @@ export async function testEnvironment(
     });
   }
 
+  const effectiveEnv = { ...env } as Record<string, string>;
+  if (isBedrockAuth(effectiveEnv)) {
+    checks.push({
+      code: "claude_bedrock_auth_detected",
+      level: "info",
+      message: "AWS Bedrock auth detected. Claude will use Bedrock for inference.",
+    });
+  }
+
   const configApiKey = env.ANTHROPIC_API_KEY;
   const hostApiKey = process.env.ANTHROPIC_API_KEY;
-  if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
+  if (!isBedrockAuth(effectiveEnv) && (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey))) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
     checks.push({
       code: "claude_anthropic_api_key_overrides_subscription",
@@ -107,7 +117,7 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
-  } else {
+  } else if (!isBedrockAuth(effectiveEnv)) {
     checks.push({
       code: "claude_subscription_mode_possible",
       level: "info",
@@ -141,7 +151,7 @@ export async function testEnvironment(
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
       if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
       if (chrome) args.push("--chrome");
-      if (model) args.push("--model", model);
+      if (model && !isBedrockAuth(effectiveEnv)) args.push("--model", model);
       if (effort) args.push("--effort", effort);
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (extraArgs.length > 0) args.push(...extraArgs);

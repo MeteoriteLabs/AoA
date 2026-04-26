@@ -11,6 +11,7 @@ const STALE_THRESHOLD_MS = 10 * 60 * 1000;
 // so we don't introduce a utils change for just 4 providers.
 const PROVIDER_LABELS: Record<string, string> = {
   anthropic: "Anthropic",
+  aws_bedrock: "AWS Bedrock",
   openai: "OpenAI",
   google: "Google",
   cursor: "Cursor",
