@@ -108,9 +108,8 @@ describe("InstanceSettingsPage Sign out section", () => {
 
   it("renders the Sign out section heading and description", async () => {
     renderWithProviders(<InstanceSettingsPage />);
-    // The heading "Sign out" appears both as an <h2> and as button text — use getAllByText
-    const headings = await screen.findAllByText("Sign out");
-    expect(headings.length).toBeGreaterThanOrEqual(1);
+    const heading = await screen.findByRole("heading", { name: "Sign out", level: 2 });
+    expect(heading).toBeInTheDocument();
     expect(
       await screen.findByText(/sign out of this AoA instance/i),
     ).toBeInTheDocument();

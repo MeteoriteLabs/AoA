@@ -94,6 +94,7 @@ export function InstanceSettingsPage() {
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
     onSuccess: () => {
+      setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
     },
     onError: (error) => {
