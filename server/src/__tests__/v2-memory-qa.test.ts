@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { makeTableProxy, drizzleOperatorStubs } from "./helpers/drizzle-mock.js";
+import { makeTableProxy, drizzleOperatorStubs, mockDbCapabilities } from "./helpers/drizzle-mock.js";
 
 /**
  * V2 Memory QA Tests (Session 29)
@@ -19,6 +19,11 @@ import { makeTableProxy, drizzleOperatorStubs } from "./helpers/drizzle-mock.js"
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
+
+// The "Embedding lifecycle" describe block (create always sets embedding=null,
+// update invalidates on content change) requires hasVectorSupport: true —
+// those code paths are gated and silently no-op otherwise.
+vi.mock("../services/db-capabilities.js", () => mockDbCapabilities());
 
 vi.mock("@armyofagents/db", () => ({
   memoryItems: makeTableProxy("memory_items"),
