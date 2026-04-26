@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { useNavigate } from "@/lib/router";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Settings } from "lucide-react";
+import { ArrowLeft, LogOut, Settings } from "lucide-react";
 import type { PatchInstanceGeneralSettings } from "@armyofagents/shared";
 import { PluginManager } from "./PluginManager";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
@@ -13,6 +13,8 @@ import { PrivacyTab } from "@/components/settings/PrivacyTab";
 import { HeartbeatsTab } from "@/components/settings/HeartbeatsTab";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { feedbackApi } from "@/api/feedback";
+import { authApi } from "@/api/auth";
+import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 
@@ -89,6 +91,16 @@ export function InstanceSettingsPage() {
     },
   });
 
+  const signOutMutation = useMutation({
+    mutationFn: () => authApi.signOut(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to sign out.");
+    },
+  });
+
   const censorUsernameInLogs = generalQuery.data?.censorUsernameInLogs === true;
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
@@ -161,6 +173,26 @@ export function InstanceSettingsPage() {
                   />
                 </>
               )}
+
+              <section className="rounded-xl border border-border bg-card p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1.5">
+                    <h2 className="text-sm font-semibold">Sign out</h2>
+                    <p className="max-w-2xl text-sm text-muted-foreground">
+                      Sign out of this AoA instance. You will be redirected to the login page.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={signOutMutation.isPending}
+                    onClick={() => signOutMutation.mutate()}
+                  >
+                    <LogOut className="size-4" />
+                    {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                  </Button>
+                </div>
+              </section>
             </TabsContent>
 
             {/* ── Privacy tab ──────────────────────────────────────────── */}
