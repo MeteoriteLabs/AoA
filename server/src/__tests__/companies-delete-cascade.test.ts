@@ -46,6 +46,7 @@ vi.mock("@armyofagents/db", () => {
     "mcpClientConnections",
     "mcpApiKeys",
     "issueReadStates",
+    "assets",
     "issues",
     "goals",
     "projects",
@@ -110,5 +111,16 @@ describe("companyService.remove() cascade ordering", () => {
     const svc = companyService(makeMockDb() as any);
     await svc.remove("comp-1");
     expect(deleteCalls[deleteCalls.length - 1]).toBe("companies");
+  });
+
+  it("deletes assets BEFORE agents and BEFORE issueReadStates", async () => {
+    const svc = companyService(makeMockDb() as any);
+    await svc.remove("comp-1");
+    const assetsIdx = deleteCalls.indexOf("assets");
+    const agentsIdx = deleteCalls.indexOf("agents");
+    const irsIdx = deleteCalls.indexOf("issueReadStates");
+    expect(assetsIdx).toBeGreaterThanOrEqual(0);
+    expect(assetsIdx).toBeLessThan(agentsIdx);
+    expect(assetsIdx).toBeLessThan(irsIdx);
   });
 });
