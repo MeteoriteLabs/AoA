@@ -483,3 +483,41 @@ Paperclip's `paperclipUpsertIssueDocument` tool wraps a markdown body (identifie
 - Re-open this decision when an upstream coordination window opens. Owner: whoever picks up the Hermes adapter or OpenClaw integration work next.
 
 **Reference:** Original Phase 6 spec lives in the rename plan; do not re-litigate without reading it first. Wire-compat surface #8 in `wire-compat.md` cross-references this decision.
+
+---
+
+## Decision #93 — Skip standalone `@paperclipai/mcp-server` package port
+
+**Status:** Locked (2026-04-26)
+
+**Context:** Paperclip released `packages/mcp-server` — a stdio-based MCP server that wraps the Paperclip REST API for external MCP clients (e.g., Claude Desktop, Cursor) to call Paperclip from outside a running instance. It's a separate npm package (~1,148 LOC) that ships with its own bin entry and serves as a bridge: external MCP client → stdio → REST → Paperclip backend.
+
+**Decision:** Do NOT port. AoA's existing in-server MCP at `server/src/mcp/server.ts` already exposes 31 RBAC-scoped, rate-limited tools directly to clients connected to the running AoA backend (read tools, write tools, document tools, approval tools — all per-user-keyed via `mcp_api_keys`). The standalone wrapper would only matter when the MCP client cannot reach AoA's HTTP endpoint — a use case AoA's local-first deployment model does not currently have.
+
+**Reasoning:**
+- AoA's deployment model assumes the client and server run on the same host or LAN. The in-server MCP serves that case directly without a stdio bridge.
+- Maintaining the standalone package would mean tracking Paperclip's tool surface separately from AoA's (which has diverged — AoA has 31 tools vs. Paperclip's tool count, with different RBAC scoping and AoA-specific tools like `debrief-push` mapped to discussions).
+- The performance + simplicity argument for stdio-MCP doesn't hold when AoA's MCP is already a single in-process call away.
+
+**Revisit when:** AoA grows a multi-tenant cloud deployment where external Claude Desktop / Cursor / etc. clients on a different machine need to talk to a hosted instance. At that point, port the standalone package and rebrand: `@paperclipai/mcp-server` → `@armyofagents/mcp-server`, bin `paperclip-mcp-server` → `aoa-mcp-server`, env vars stay as wire-protocol contracts (`PAPERCLIP_API_KEY` etc.) per Decision #92's rationale.
+
+**Reference:** Plan `docs/superpowers/plans/2026-04-26-upstream-paperclip-resync.md` (Tier 5 / D1 skipped).
+
+---
+
+## Decision #94 — Skip Paperclip `pi-local` skill bin/ PATH support port
+
+**Status:** Locked (2026-04-26)
+
+**Context:** Paperclip commit `854fa817` adds skill `bin/` directories to the child process PATH for the `pi-local` adapter so AGENTS.md-invoked skill helpers (`paperclip-get-issue`, `paperclip-add-comment`, etc.) resolve without absolute paths during agent CLI runs.
+
+**Decision:** Do NOT port. AoA's adapter set is `claude_local | opencode_local | openclaw | http | process | cursor | codex_local | hermes_local | gemini_local`. None of these are Paperclip's `pi-local`. Skill helpers via the PATH-prepending mechanism are not part of AoA's heartbeat protocol today — agents communicate with the AoA backend via the in-server MCP, not via shelling out to skill-bundled CLI binaries.
+
+**Reasoning:**
+- The Paperclip change targets a specific adapter (`pi-local`) that AoA does not have and has no plan to add (Sprint 2A / Decision #91 removed API-mode adapters; the adapter list is curated).
+- AoA's equivalent agent-tool surface is the in-server MCP exposed via per-user keys — agents call MCP tools, not bundled CLI binaries.
+- Adding generic skill-bin PATH support to AoA's other adapters (claude_local, codex_local, etc.) would be feature-creep without a concrete agent workflow that needs it.
+
+**Revisit when:** AoA introduces a similar skill-helper protocol (e.g., bundled CLI binaries that run alongside the agent) or adopts a `pi-local`-family adapter. At that point the PATH-prepending logic in the existing adapter `execute.ts` files is the porting site.
+
+**Reference:** Plan `docs/superpowers/plans/2026-04-26-upstream-paperclip-resync.md` (Tier 5 / D5 skipped).
