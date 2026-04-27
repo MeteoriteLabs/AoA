@@ -93,6 +93,7 @@ vi.mock("../middleware/logger.js", () => ({
 import { describe, expect, it } from "vitest";
 import { HttpError } from "../errors.js";
 import { isCheckoutConflictError } from "../services/heartbeat.js";
+import { renderAoaWakePrompt } from "@armyofagents/adapter-utils/server-utils";
 
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -128,5 +129,45 @@ describe("isCheckoutConflictError", () => {
 
   it("returns false for undefined", () => {
     expect(isCheckoutConflictError(undefined)).toBe(false);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("end-to-end: harness-checkout flag flows from context to wake prompt", () => {
+  it("renders the harness-checkout advisory when context flag is set", () => {
+    const prompt = renderAoaWakePrompt({
+      reason: "issue_comment_received",
+      issue: { id: "i1", identifier: "TASK-1", title: "x", status: "in_progress", priority: "med" },
+      checkedOutByHarness: true,
+      executionStage: null,
+      commentIds: [],
+      latestCommentId: null,
+      comments: [],
+      requestedCount: 0,
+      includedCount: 0,
+      missingCount: 0,
+      truncated: false,
+      fallbackFetchNeeded: false,
+    });
+    expect(prompt).toContain("already claimed by the harness");
+  });
+
+  it("omits harness advisory for checkedOutByHarness=false", () => {
+    const prompt = renderAoaWakePrompt({
+      reason: "issue_comment_received",
+      issue: { id: "i1", identifier: "TASK-1", title: "x", status: "in_progress", priority: "med" },
+      checkedOutByHarness: false,
+      executionStage: null,
+      commentIds: [],
+      latestCommentId: null,
+      comments: [],
+      requestedCount: 0,
+      includedCount: 0,
+      missingCount: 0,
+      truncated: false,
+      fallbackFetchNeeded: false,
+    });
+    expect(prompt).not.toContain("already claimed by the harness");
   });
 });

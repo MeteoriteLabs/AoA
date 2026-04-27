@@ -1820,6 +1820,7 @@ export function heartbeatService(db: Db) {
           }
           context[AOA_HARNESS_CHECKOUT_KEY] = false;
         }
+        context.checkedOutByHarness = context[AOA_HARNESS_CHECKOUT_KEY] === true;
       }
     }
     // ────────────────────────────────────────────────────────────────────────
