@@ -38,6 +38,7 @@ import { onBudgetExhausted } from "./services/budget-hooks.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 
 type BetterAuthSessionUser = {
@@ -351,6 +352,11 @@ if (config.databaseUrl) {
 
     if (existsSync(postmasterPidFile)) {
       logger.warn("Removing stale embedded PostgreSQL lock file");
+      // On Windows, also kill any orphan postgres.exe still holding the
+      // shared-memory block — otherwise embeddedPostgres.start() below will
+      // fail with "pre-existing shared memory block is still in use".
+      // No-op on non-Windows.
+      await tryRecoverOrphanPostgres({ dataDir });
       rmSync(postmasterPidFile, { force: true });
     }
     try {
