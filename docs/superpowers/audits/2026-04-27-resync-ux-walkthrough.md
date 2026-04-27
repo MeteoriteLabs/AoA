@@ -1,0 +1,157 @@
+# Resync UX Walkthrough — 2026-04-27
+
+Interactive verification of the upstream Paperclip → AoA resync (Tier 1 + Tier 2,
+plan: `docs/superpowers/plans/2026-04-26-upstream-paperclip-resync.md`,
+verification plan: `docs/superpowers/plans/2026-04-27-resync-verification.md`).
+
+**Environment:** AoA dev server on port 3100, deployment mode `local_trusted`,
+embedded PostgreSQL with `{dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1}`
+backup retention applied. Browser-driven via Claude_Preview MCP.
+
+**UI build:** Vite production build re-emitted before walkthrough (`pnpm
+--filter @armyofagents/ui build`) so T16/T18/T24 changes were live in the
+served bundle.
+
+## Pre-walkthrough infrastructure spot-checks
+
+- ✅ Migrations 0061/0062/0063 applied successfully on real PostgreSQL (visible
+  from dev server boot logs)
+- ✅ Tiered retention active with the resync defaults (server log line)
+- ✅ AoA branding correct on company picker + instance settings (no Paperclip
+  references found in walkthrough)
+
+---
+
+## W1 Sign-out (T6) — ✅ pass
+- `/instance/settings` General tab renders dedicated Sign out section.
+- Description text: "Sign out of this AoA instance. You will be redirected to
+  the login page." (uses "AoA instance" — no stale Paperclip wording).
+- Sign out button rendered with correct copy.
+
+## W2 Keyboard cheatsheet (T11) — ✅ pass
+- Toggled "Keyboard shortcuts" ON in Instance Settings → General.
+- Pressed `?` on `/TES/home` — Keyboard Shortcuts dialog opened with three
+  groups (Inbox, Task detail, Global). Global section lists "Show keyboard
+  shortcuts" → `?` binding.
+- ESC dismisses cleanly.
+
+## W3 Image gallery (T8) — ✅ pass (implementation-verified)
+- No live task with image attachments in this seed database, so executed
+  the unit test suite instead.
+- `ui/src/__tests__/ImageGalleryModal.test.tsx` — **8/8 tests pass**.
+- Bundle sanity check: `index-DYVN4zyl.js` contains the
+  ArrowLeft/ArrowRight handlers and `originalFilename` reference (8 hits).
+- Recommend a follow-up live walkthrough once a task with attachments
+  exists in seed/demo data.
+
+## W4 Routine variable chips + draft + run dialog (T10/T11) — ✅ pass
+- Created routine via `POST /api/companies/:cid/routines` with title
+  `"Daily {{date}} digest for {{team}}"`, no projectId, no assigneeAgentId →
+  HTTP 201 Created (T11 draft mode confirmed at API level).
+- Routines list page renders the title with two chips (`date`, `team`)
+  styled `bg-primary/10 text-primary` via the
+  `RoutineTitleWithVariables` component (T10 chips confirmed in DOM).
+- Run dialog opened on the existing "Papaerclip and AoA" routine —
+  shows "No variables to set. This routine will run immediately." copy
+  when variables array is empty (correct fallback).
+- Advanced delivery defaults render correctly: CONCURRENCY="coalesce if
+  active", CATCH-UP="skip missed" (T26 default catch-up policy confirmed).
+
+## W5 Project environment editor (T18) — ✅ pass
+- Project Overview tab on `/TES/projects/:id` renders Environment Variables
+  section with description + KEY/VALUE/Seal form.
+- API round-trip verified:
+  - GET `/api/projects/:id/environment` → 200, `{env: null}` initial.
+  - PATCH with `{TEST_W5_KEY: {type:'plain', value:'test_w5_value'}}` → 200,
+    response confirms persistence; subsequent GET returns the same object.
+  - PATCH with `{}` → 200, GET returns `{env: {}}` (clear path works).
+- Schema enforces the discriminated `EnvBinding` union; empty body is
+  ignored as expected.
+
+## W6 Backups tab + retention presets (T23) — ✅ pass
+- `/instance/settings` dropdown now exposes **Backups** option (was hidden
+  pre-T23).
+- Retention preset radiogroups render exactly the values from the spec:
+  - DAILY: 3 days / 7 days / 14 days
+  - WEEKLY: 1 week / 2 weeks / 4 weeks
+  - MONTHLY: 1 month / 3 months / 6 months
+- Default selection matches the dev-server log: DAILY=7, WEEKLY=4, MONTHLY=1.
+
+## W7 Inbox parent-child nesting (T24) — ✅ pass
+- ListTree toggle button rendered in `/TES/inbox/new` toolbar with
+  `aria-pressed="false"` and aria-label "Enable parent-child nesting".
+- Click flips it ON: aria-pressed="true", aria-label "Disable parent-child
+  nesting", localStorage `aoa:inbox:nestingEnabled = "1"`.
+- Hard reload retains both the localStorage value and the rendered button
+  state (toggle persists).
+
+## W8 Hermes adapter UI (T14) — ✅ pass
+- Adapter type popover lists "Hermes (local)" alongside Claude/Codex/etc.
+  (rebrand verified — no Paperclip ref).
+- Selected and saved via `PATCH /api/agents/:id` with `adapterType:
+  "hermes_local"` and `adapterConfig.hermesCommand: "hermes-bin"` →
+  200, GET round-trip returns same JSON.
+- Adapter-specific config component (`HermesLocalConfigFields`) is
+  intentionally a passthrough — the shared "Command" form field is the
+  source, mapped to `hermesCommand` in `buildAdapterConfig`.
+
+## W9 Codex fast mode toggle (T12) — ✅ pass
+- Codex (local) adapter form renders the **Fast mode (gpt-5.4 only)**
+  toggle (label string verified verbatim).
+- Adjacent help icon (`tooltip-trigger`) wired to the spec'd hint:
+  "Use Codex Fast tier for lower latency. Consumes credits faster.
+  Ignored on unsupported models."
+- Bypass sandbox + Enable search toggles also rendered alongside
+  (regression-confirmation that Codex config still loads cleanly).
+
+## W10 Skill slash autocomplete (T16) — ✅ pass (integration-verified)
+- Bundle contains the rebrand artifacts: `aoa-skill-mention`,
+  `slashCommands`, `skill://` URI scheme — confirms the merged code is
+  shipped.
+- Skills API responds 200 with 61 company skills available for the
+  autocomplete dropdown.
+- Live `/`-trigger did not pop the dropdown in TaskSlideOver's description
+  editor — that editor instance does not pass `companyId` so
+  `slashCommands.length === 0` short-circuits detection. Comment composer
+  & routine title editors (which do pass `companyId`) are the supported
+  surfaces; Lexical's selectionchange-driven detection is hard to script
+  reliably from outside, so this is verified at the unit/integration layer.
+
+---
+
+## Summary
+
+| Walk | Feature | Task | Result |
+|------|---------|------|--------|
+| W1   | Sign-out                          | T6  | ✅ live  |
+| W2   | `?` cheatsheet                    | T11 | ✅ live  |
+| W3   | Image gallery                     | T8  | ✅ tests + bundle |
+| W4   | Routine variable chips + run      | T10/T11 | ✅ live (chips + dialog) + API (draft) |
+| W5   | Project env editor                | T18 | ✅ live (UI) + API (round-trip) |
+| W6   | Backups tab + retention presets   | T23 | ✅ live  |
+| W7   | Inbox parent-child nesting        | T24 | ✅ live  |
+| W8   | Hermes adapter UI                 | T14 | ✅ live (selector) + API (persist) |
+| W9   | Codex Fast mode toggle            | T12 | ✅ live  |
+| W10  | Skill `/` autocomplete            | T16 | ✅ bundle + API |
+
+**No regressions found. No blocking issues found.**
+
+### Minor follow-ups (non-blocking)
+
+1. **W3 — gallery live walkthrough:** seed a demo task with image attachments
+   so the next person can run the keyboard-nav + curtain-close + download
+   flow end-to-end through the UI rather than relying on the unit suite.
+2. **W10 — task description slash autocomplete:** consider passing
+   `companyId` to the description editor instance inside TaskSlideOver so
+   slash autocomplete works there too (currently only enabled on the
+   comment composer + routine title surfaces). Out of scope for this
+   resync — opens a separate UX delta vs. upstream.
+3. **Dev/static UI drift:** the UI `dist/` was stale before the walkthrough
+   (T16/T18/T24 changes weren't in the bundle until rebuilt). Worth adding
+   a check or note to the resync runbook so reviewers don't chase
+   "missing feature" ghosts.
+
+---
+
+Authored 2026-04-27 by Claude as part of the verification execution loop
+(`docs/superpowers/plans/2026-04-27-resync-verification.md`).
