@@ -3,31 +3,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Capture the order of table.delete() calls inside companyService.remove().
 const deleteCalls: string[] = [];
 
-// Build a Proxy-based table stub that records its name when used in tx.delete().
-function tableStub(name: string) {
-  return new Proxy(
-    {} as Record<string, unknown>,
-    {
-      get(_target, prop) {
-        if (prop === "_") return { name };
-        if (prop === "_tableName") return name;
-        if (prop === "$inferSelect" || prop === "$inferInsert") return {};
-        if (prop === Symbol.toPrimitive || prop === "toString") {
-          return () => `[Table:${name}]`;
-        }
-        // Drizzle uses column property accesses internally; return a unique
-        // symbol per column so equality checks don't collide across tables.
-        if (typeof prop === "string") {
-          return Symbol(`${name}.${prop}`);
-        }
-        return undefined;
-      },
-    },
-  );
-}
-
-vi.mock("@armyofagents/db", () => {
-  const tableNames = [
+// Canonical list of every table imported by `companies.ts`. Hoisted so the
+// vi.mock() factory below can use it AND the drift-detection test at the
+// bottom can iterate it as the source of truth.
+const { tables } = vi.hoisted(() => ({
+  tables: [
     // existing
     "heartbeatRunEvents",
     "agentTaskSessions",
@@ -72,9 +52,35 @@ vi.mock("@armyofagents/db", () => {
     "projectWorkspaces",
     "workspaceOperations",
     "workspaceRuntimeServices",
-  ];
+  ] as string[],
+}));
+
+// Build a Proxy-based table stub that records its name when used in tx.delete().
+function tableStub(name: string) {
+  return new Proxy(
+    {} as Record<string, unknown>,
+    {
+      get(_target, prop) {
+        if (prop === "_") return { name };
+        if (prop === "_tableName") return name;
+        if (prop === "$inferSelect" || prop === "$inferInsert") return {};
+        if (prop === Symbol.toPrimitive || prop === "toString") {
+          return () => `[Table:${name}]`;
+        }
+        // Drizzle uses column property accesses internally; return a unique
+        // symbol per column so equality checks don't collide across tables.
+        if (typeof prop === "string") {
+          return Symbol(`${name}.${prop}`);
+        }
+        return undefined;
+      },
+    },
+  );
+}
+
+vi.mock("@armyofagents/db", () => {
   const stubs: Record<string, unknown> = {};
-  for (const name of tableNames) {
+  for (const name of tables) {
     stubs[name] = tableStub(name);
   }
   return stubs;
@@ -301,5 +307,23 @@ describe("companyService.remove() cascade ordering", () => {
     for (const table of newTables) {
       expect(deleteCalls).toContain(table);
     }
+  });
+
+  it("delete count matches imported table count (drift detection)", async () => {
+    const svc = companyService(makeMockDb() as any);
+    await svc.remove("comp-1");
+    // Every table imported by the service (excluding `companies` itself, which is
+    // the final delete) should appear at least once in deleteCalls. If a future
+    // schema adds a new companyId reference and someone imports the table without
+    // adding a tx.delete() line, this fails.
+    //
+    // Note: the `tables` array hoisted at the top of this file is the source of
+    // truth for what companies.ts imports. Cross-checking ensures parity.
+    const expectedDeletes = tables.filter((t) => t !== "companies");
+    for (const tableName of expectedDeletes) {
+      expect(deleteCalls).toContain(tableName);
+    }
+    // The final delete must be `companies`
+    expect(deleteCalls[deleteCalls.length - 1]).toBe("companies");
   });
 });

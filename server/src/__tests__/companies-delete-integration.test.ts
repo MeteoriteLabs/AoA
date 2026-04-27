@@ -45,6 +45,14 @@ let db: Db;
 let svc: ReturnType<typeof companyService>;
 let setupError: unknown = null;
 
+// Normalize an `INSERT ... RETURNING id` result across the two shapes
+// drizzle's `db.execute()` may return (postgres-js array vs. node-pg
+// `{rows}` envelope), and pull out the first row's `id` column.
+function firstId(result: unknown): string {
+  if (Array.isArray(result)) return (result[0] as any)?.id;
+  return (result as any).rows?.[0]?.id;
+}
+
 // Random port between 55000-55999 to avoid collisions with other test runs
 const PORT = 55000 + Math.floor(Math.random() * 1000);
 
@@ -114,130 +122,88 @@ describe(
       // Insert dependency tree using raw SQL (works regardless of
       // schema-helper drift). We only insert NOT-NULL columns and let
       // defaults handle the rest.
-      await db.execute(sql`
+      const agentInserted = await db.execute<{ id: string }>(sql`
         INSERT INTO agents (id, company_id, name, role, status, adapter_type, runtime_config, adapter_config, permissions, skill_keys, budget_monthly_cents, spent_monthly_cents)
         VALUES (gen_random_uuid(), ${companyId}, 'agent-a', 'general', 'idle', 'process', '{}', '{}', '{}', '[]', 0, 0)
+        RETURNING id
       `);
-      const agentRow = (
-        await db.execute<{ id: string }>(
-          sql`SELECT id FROM agents WHERE company_id = ${companyId} LIMIT 1`,
-        )
-      ).rows ?? (await db.execute<{ id: string }>(
-          sql`SELECT id FROM agents WHERE company_id = ${companyId} LIMIT 1`,
-        ));
-      const agentId = (Array.isArray(agentRow) ? agentRow[0]?.id : (agentRow as any).rows?.[0]?.id) ?? null;
+      const agentId = firstId(agentInserted);
       expect(agentId).toBeTruthy();
 
-      await db.execute(sql`
+      const projectInserted = await db.execute<{ id: string }>(sql`
         INSERT INTO projects (id, company_id, name, type, status)
         VALUES (gen_random_uuid(), ${companyId}, 'proj-a', 'project', 'backlog')
+        RETURNING id
       `);
-      const projectRowResult = await db.execute<{ id: string }>(
-        sql`SELECT id FROM projects WHERE company_id = ${companyId} LIMIT 1`,
-      );
-      const projectId = (Array.isArray(projectRowResult)
-        ? projectRowResult[0]?.id
-        : (projectRowResult as any).rows?.[0]?.id) ?? null;
+      const projectId = firstId(projectInserted);
       expect(projectId).toBeTruthy();
 
-      await db.execute(sql`
+      const goalInserted = await db.execute<{ id: string }>(sql`
         INSERT INTO goals (id, company_id, title, level, status)
         VALUES (gen_random_uuid(), ${companyId}, 'goal-a', 'task', 'planned')
+        RETURNING id
       `);
-      const goalRowResult = await db.execute<{ id: string }>(
-        sql`SELECT id FROM goals WHERE company_id = ${companyId} LIMIT 1`,
-      );
-      const goalId = (Array.isArray(goalRowResult)
-        ? goalRowResult[0]?.id
-        : (goalRowResult as any).rows?.[0]?.id) ?? null;
+      const goalId = firstId(goalInserted);
       expect(goalId).toBeTruthy();
 
-      await db.execute(sql`
+      const issueInserted = await db.execute<{ id: string }>(sql`
         INSERT INTO issues (id, company_id, project_id, title, status, priority, request_depth)
         VALUES (gen_random_uuid(), ${companyId}, ${projectId}, 'issue-a', 'backlog', 'medium', 0)
+        RETURNING id
       `);
-      const issueRowResult = await db.execute<{ id: string }>(
-        sql`SELECT id FROM issues WHERE company_id = ${companyId} LIMIT 1`,
-      );
-      const issueId = (Array.isArray(issueRowResult)
-        ? issueRowResult[0]?.id
-        : (issueRowResult as any).rows?.[0]?.id) ?? null;
+      const issueId = firstId(issueInserted);
       expect(issueId).toBeTruthy();
 
-      await db.execute(sql`
+      const runInserted = await db.execute<{ id: string }>(sql`
         INSERT INTO heartbeat_runs (id, company_id, agent_id, status)
         VALUES (gen_random_uuid(), ${companyId}, ${agentId}, 'queued')
+        RETURNING id
       `);
-      const runRowResult = await db.execute<{ id: string }>(
-        sql`SELECT id FROM heartbeat_runs WHERE company_id = ${companyId} LIMIT 1`,
-      );
-      const runId = (Array.isArray(runRowResult)
-        ? runRowResult[0]?.id
-        : (runRowResult as any).rows?.[0]?.id) ?? null;
+      const runId = firstId(runInserted);
       expect(runId).toBeTruthy();
 
-      await db.execute(sql`
+      const approvalInserted = await db.execute<{ id: string }>(sql`
         INSERT INTO approvals (id, company_id, type, status, payload)
         VALUES (gen_random_uuid(), ${companyId}, 'test', 'pending', '{}')
+        RETURNING id
       `);
-      const approvalRowResult = await db.execute<{ id: string }>(
-        sql`SELECT id FROM approvals WHERE company_id = ${companyId} LIMIT 1`,
-      );
-      const approvalId = (Array.isArray(approvalRowResult)
-        ? approvalRowResult[0]?.id
-        : (approvalRowResult as any).rows?.[0]?.id) ?? null;
+      const approvalId = firstId(approvalInserted);
       expect(approvalId).toBeTruthy();
 
       // Documents (must exist before document_revisions)
-      await db.execute(sql`
+      const documentInserted = await db.execute<{ id: string }>(sql`
         INSERT INTO documents (id, company_id, format, latest_body, latest_revision_number)
         VALUES (gen_random_uuid(), ${companyId}, 'markdown', 'hello', 1)
+        RETURNING id
       `);
-      const documentRowResult = await db.execute<{ id: string }>(
-        sql`SELECT id FROM documents WHERE company_id = ${companyId} LIMIT 1`,
-      );
-      const documentId = (Array.isArray(documentRowResult)
-        ? documentRowResult[0]?.id
-        : (documentRowResult as any).rows?.[0]?.id) ?? null;
+      const documentId = firstId(documentInserted);
       expect(documentId).toBeTruthy();
 
       // Assets (for issue_attachments)
-      await db.execute(sql`
+      const assetInserted = await db.execute<{ id: string }>(sql`
         INSERT INTO assets (id, company_id, provider, object_key, content_type, byte_size, sha256)
         VALUES (gen_random_uuid(), ${companyId}, 'local', 'k1', 'text/plain', 10, 'abc')
+        RETURNING id
       `);
-      const assetRowResult = await db.execute<{ id: string }>(
-        sql`SELECT id FROM assets WHERE company_id = ${companyId} LIMIT 1`,
-      );
-      const assetId = (Array.isArray(assetRowResult)
-        ? assetRowResult[0]?.id
-        : (assetRowResult as any).rows?.[0]?.id) ?? null;
+      const assetId = firstId(assetInserted);
       expect(assetId).toBeTruthy();
 
       // Project workspace (for execution_workspaces)
-      await db.execute(sql`
+      const projectWsInserted = await db.execute<{ id: string }>(sql`
         INSERT INTO project_workspaces (id, company_id, project_id, name, source_type, visibility, is_primary)
         VALUES (gen_random_uuid(), ${companyId}, ${projectId}, 'pw-a', 'local_path', 'default', false)
+        RETURNING id
       `);
-      const projectWsRowResult = await db.execute<{ id: string }>(
-        sql`SELECT id FROM project_workspaces WHERE company_id = ${companyId} LIMIT 1`,
-      );
-      const projectWorkspaceId = (Array.isArray(projectWsRowResult)
-        ? projectWsRowResult[0]?.id
-        : (projectWsRowResult as any).rows?.[0]?.id) ?? null;
+      const projectWorkspaceId = firstId(projectWsInserted);
       expect(projectWorkspaceId).toBeTruthy();
 
       // Execution workspace
-      await db.execute(sql`
+      const execWsInserted = await db.execute<{ id: string }>(sql`
         INSERT INTO execution_workspaces (id, company_id, project_id, project_workspace_id, mode, strategy_type, name, status, provider_type)
         VALUES (gen_random_uuid(), ${companyId}, ${projectId}, ${projectWorkspaceId}, 'isolated', 'project_primary', 'ew-a', 'active', 'local_fs')
+        RETURNING id
       `);
-      const execWsRowResult = await db.execute<{ id: string }>(
-        sql`SELECT id FROM execution_workspaces WHERE company_id = ${companyId} LIMIT 1`,
-      );
-      const executionWorkspaceId = (Array.isArray(execWsRowResult)
-        ? execWsRowResult[0]?.id
-        : (execWsRowResult as any).rows?.[0]?.id) ?? null;
+      const executionWorkspaceId = firstId(execWsInserted);
       expect(executionWorkspaceId).toBeTruthy();
 
       // ── 2. Insert one row per newly-swept table ─────────────────────
@@ -269,16 +235,12 @@ describe(
 
       // execution_workspaces already inserted
       // feedback_votes
-      await db.execute(sql`
+      const feedbackVoteInserted = await db.execute<{ id: string }>(sql`
         INSERT INTO feedback_votes (id, company_id, issue_id, target_type, target_id, author_user_id, vote)
         VALUES (gen_random_uuid(), ${companyId}, ${issueId}, 'comment', 'tid', 'u1', 'up')
+        RETURNING id
       `);
-      const feedbackVoteRowResult = await db.execute<{ id: string }>(
-        sql`SELECT id FROM feedback_votes WHERE company_id = ${companyId} LIMIT 1`,
-      );
-      const feedbackVoteId = (Array.isArray(feedbackVoteRowResult)
-        ? feedbackVoteRowResult[0]?.id
-        : (feedbackVoteRowResult as any).rows?.[0]?.id) ?? null;
+      const feedbackVoteId = firstId(feedbackVoteInserted);
       expect(feedbackVoteId).toBeTruthy();
 
       // feedback_exports

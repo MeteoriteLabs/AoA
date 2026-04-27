@@ -243,6 +243,12 @@ ALTER TABLE "heartbeat_run_watchdog_decisions" DROP CONSTRAINT IF EXISTS "heartb
 --> statement-breakpoint
 ALTER TABLE "heartbeat_run_watchdog_decisions" DROP CONSTRAINT IF EXISTS "heartbeat_run_watchdog_decisions_run_id_heartbeat_runs_id_fk";
 --> statement-breakpoint
+-- NOTE: PG identifier limit is 63 chars. The three constraints below have
+-- names that exceed this and get silently truncated by Postgres. Both DROP
+-- and ADD truncate the same way, so the operations match -- but future FKs
+-- on heartbeat_run_watchdog_decisions with the same first 63 chars would
+-- collide on the truncated name. Consider renaming the table to
+-- hb_watchdog_decisions in a future migration if more FKs are added.
 ALTER TABLE "heartbeat_run_watchdog_decisions" DROP CONSTRAINT IF EXISTS "heartbeat_run_watchdog_decisions_evaluation_issue_id_issues_id_fk";
 --> statement-breakpoint
 ALTER TABLE "heartbeat_run_watchdog_decisions" DROP CONSTRAINT IF EXISTS "heartbeat_run_watchdog_decisions_created_by_agent_id_agents_id_fk";
