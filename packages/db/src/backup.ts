@@ -89,27 +89,20 @@ function resolveBackupDir(config: PartialConfig | null): string {
   return resolveDefaultBackupDir();
 }
 
-function resolveRetentionDays(config: PartialConfig | null): number {
-  return asPositiveInt(config?.database?.backup?.retentionDays) ?? 30;
-}
-
 async function main() {
   const configPath = resolveDefaultConfigPath();
   const config = readConfig(configPath);
   const connectionString = resolveConnectionString(config);
   const backupDir = resolveBackupDir(config);
-  const retentionDays = resolveRetentionDays(config);
 
   console.log(`Config path: ${configPath}`);
   console.log(`Backing up database to: ${backupDir}`);
-  console.log(`Retention window: ${retentionDays} day(s)`);
 
   try {
     const result = await runDatabaseBackup({
       connectionString,
       backupDir,
-      retentionDays,
-      filenamePrefix: "paperclip",
+      filenamePrefix: "aoa",
     });
 
     console.log(`Backup saved: ${formatDatabaseBackupResult(result)}`);

@@ -13,6 +13,7 @@ export {
 export {
   runDatabaseBackup,
   formatDatabaseBackupResult,
+  pruneOldBackups,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
 } from "./backup-lib.js";

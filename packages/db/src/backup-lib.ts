@@ -1,12 +1,19 @@
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { createGzip } from "node:zlib";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
 import { resolve } from "node:path";
 import postgres from "postgres";
+import type { BackupRetentionPolicy } from "@armyofagents/shared";
+import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 
 export type RunDatabaseBackupOptions = {
   connectionString: string;
   backupDir: string;
-  retentionDays: number;
+  retention?: BackupRetentionPolicy;
+  /** @deprecated Use `retention` instead. Ignored when `retention` is provided. */
+  retentionDays?: number;
   filenamePrefix?: string;
   connectTimeoutSeconds?: number;
 };
@@ -22,23 +29,104 @@ function timestamp(date: Date = new Date()): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function pruneOldBackups(backupDir: string, retentionDays: number, filenamePrefix: string): number {
-  if (!existsSync(backupDir)) return 0;
-  const safeRetention = Math.max(1, Math.trunc(retentionDays));
-  const cutoff = Date.now() - safeRetention * 24 * 60 * 60 * 1000;
-  let pruned = 0;
+// ── Tiered retention helpers ──────────────────────────────────────────────────
 
-  for (const name of readdirSync(backupDir)) {
-    if (!name.startsWith(`${filenamePrefix}-`) || !name.endsWith(".sql")) continue;
-    const fullPath = resolve(backupDir, name);
-    const stat = statSync(fullPath);
-    if (stat.mtimeMs < cutoff) {
-      unlinkSync(fullPath);
-      pruned++;
+function isoWeek(d: Date): string {
+  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const weekNum = Math.ceil(((+date - +yearStart) / 86400000 + 1) / 7);
+  return `${date.getUTCFullYear()}-W${String(weekNum).padStart(2, "0")}`;
+}
+
+function calendarMonth(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * Pure tiered retention pruning. Given a list of backup entries, returns
+ * which paths to keep and which to remove according to the policy.
+ *
+ * Tiers:
+ *   - Daily:   keep the newest backup per calendar day for the last `dailyDays` days.
+ *   - Weekly:  keep the newest backup per ISO week for the next `weeklyWeeks` weeks beyond the daily window.
+ *   - Monthly: keep the newest backup per calendar month for the next `monthlyMonths` months beyond the weekly window.
+ *   - Anything older than the monthly window is pruned.
+ */
+export function pruneOldBackups(
+  backups: Array<{ path: string; createdAt: Date }>,
+  policy: BackupRetentionPolicy,
+  now: Date = new Date(),
+): { keep: string[]; remove: string[] } {
+  const sorted = [...backups].sort((a, b) => +b.createdAt - +a.createdAt);
+  const keep = new Set<string>();
+
+  // Daily tier: newest backup per day for last N days
+  const dayCutoff = new Date(now);
+  dayCutoff.setUTCDate(dayCutoff.getUTCDate() - policy.dailyDays);
+  const seenDays = new Set<string>();
+  for (const b of sorted) {
+    if (b.createdAt < dayCutoff) break;
+    const dayKey = b.createdAt.toISOString().slice(0, 10);
+    if (!seenDays.has(dayKey)) {
+      seenDays.add(dayKey);
+      keep.add(b.path);
     }
   }
 
-  return pruned;
+  // Weekly tier: newest per ISO-week for next N weeks beyond the daily window
+  const weekCutoff = new Date(dayCutoff);
+  weekCutoff.setUTCDate(weekCutoff.getUTCDate() - policy.weeklyWeeks * 7);
+  const seenWeeks = new Set<string>();
+  for (const b of sorted) {
+    if (b.createdAt >= dayCutoff || b.createdAt < weekCutoff) continue;
+    const weekKey = isoWeek(b.createdAt);
+    if (!seenWeeks.has(weekKey)) {
+      seenWeeks.add(weekKey);
+      keep.add(b.path);
+    }
+  }
+
+  // Monthly tier: newest per calendar-month for next N months beyond the weekly window
+  const monthCutoff = new Date(weekCutoff);
+  monthCutoff.setUTCMonth(monthCutoff.getUTCMonth() - policy.monthlyMonths);
+  const seenMonths = new Set<string>();
+  for (const b of sorted) {
+    if (b.createdAt >= weekCutoff || b.createdAt < monthCutoff) continue;
+    const monthKey = calendarMonth(b.createdAt);
+    if (!seenMonths.has(monthKey)) {
+      seenMonths.add(monthKey);
+      keep.add(b.path);
+    }
+  }
+
+  const remove = sorted.filter((b) => !keep.has(b.path)).map((b) => b.path);
+  return { keep: [...keep], remove };
+}
+
+// ── Filesystem-level pruning (uses tiered policy on .sql and .sql.gz files) ───
+
+function pruneBackupFiles(backupDir: string, policy: BackupRetentionPolicy, filenamePrefix: string): number {
+  if (!existsSync(backupDir)) return 0;
+
+  const backups: Array<{ path: string; createdAt: Date }> = [];
+
+  for (const name of readdirSync(backupDir)) {
+    const isSql = name.startsWith(`${filenamePrefix}-`) && name.endsWith(".sql");
+    const isGz = name.startsWith(`${filenamePrefix}-`) && name.endsWith(".sql.gz");
+    if (!isSql && !isGz) continue;
+    const fullPath = resolve(backupDir, name);
+    const stat = statSync(fullPath);
+    backups.push({ path: fullPath, createdAt: new Date(stat.mtimeMs) });
+  }
+
+  if (backups.length === 0) return 0;
+
+  const { remove } = pruneOldBackups(backups, policy);
+  for (const p of remove) {
+    unlinkSync(p);
+  }
+  return remove.length;
 }
 
 function formatBackupSize(sizeBytes: number): string {
@@ -48,8 +136,14 @@ function formatBackupSize(sizeBytes: number): string {
 }
 
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
-  const filenamePrefix = opts.filenamePrefix ?? "paperclip";
-  const retentionDays = Math.max(1, Math.trunc(opts.retentionDays));
+  const filenamePrefix = opts.filenamePrefix ?? "aoa";
+  // Resolve retention policy: prefer structured policy, fall back to a
+  // simple daily-only policy derived from the legacy retentionDays number.
+  const retention: BackupRetentionPolicy = opts.retention ?? (
+    opts.retentionDays != null
+      ? { dailyDays: Math.min(Math.max(3, Math.trunc(opts.retentionDays)), 14) as (typeof DEFAULT_BACKUP_RETENTION)["dailyDays"], weeklyWeeks: DEFAULT_BACKUP_RETENTION.weeklyWeeks, monthlyMonths: DEFAULT_BACKUP_RETENTION.monthlyMonths }
+      : DEFAULT_BACKUP_RETENTION
+  );
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
 
@@ -59,7 +153,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     const lines: string[] = [];
     const emit = (line: string) => lines.push(line);
 
-    emit("-- Paperclip database backup");
+    emit("-- AoA database backup");
     emit(`-- Created: ${new Date().toISOString()}`);
     emit("");
     emit("BEGIN;");
@@ -308,13 +402,30 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emit("COMMIT;");
     emit("");
 
-    // Write the backup file
+    // Write the backup file as gzip-compressed .sql.gz
     mkdirSync(opts.backupDir, { recursive: true });
-    const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
-    await writeFile(backupFile, lines.join("\n"), "utf8");
+    const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql.gz`);
+
+    // Compress the SQL text through gzip. On failure, clean up the partial file.
+    const sqlText = lines.join("\n");
+    try {
+      await pipeline(
+        Readable.from([sqlText]),
+        createGzip(),
+        createWriteStream(backupFile),
+      );
+    } catch (gzipErr) {
+      // Clean up any partial .sql.gz file left by a failed pipeline
+      try {
+        if (existsSync(backupFile)) unlinkSync(backupFile);
+      } catch {
+        // best-effort cleanup; suppress secondary errors
+      }
+      throw gzipErr;
+    }
 
     const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retentionDays, filenamePrefix);
+    const prunedCount = pruneBackupFiles(opts.backupDir, retention, filenamePrefix);
 
     return {
       backupFile,

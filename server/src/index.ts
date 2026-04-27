@@ -38,6 +38,7 @@ import { onBudgetExhausted } from "./services/budget-hooks.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -584,8 +585,8 @@ if (config.databaseBackupEnabled) {
       const result = await runDatabaseBackup({
         connectionString: activeDatabaseConnectionString,
         backupDir: config.databaseBackupDir,
-        retentionDays: config.databaseBackupRetentionDays,
-        filenamePrefix: "paperclip",
+        retention: DEFAULT_BACKUP_RETENTION,
+        filenamePrefix: "aoa",
       });
       logger.info(
         {
@@ -593,7 +594,6 @@ if (config.databaseBackupEnabled) {
           sizeBytes: result.sizeBytes,
           prunedCount: result.prunedCount,
           backupDir: config.databaseBackupDir,
-          retentionDays: config.databaseBackupRetentionDays,
         },
         `Automatic database backup complete: ${formatDatabaseBackupResult(result)}`,
       );
@@ -607,7 +607,7 @@ if (config.databaseBackupEnabled) {
   logger.info(
     {
       intervalMinutes: config.databaseBackupIntervalMinutes,
-      retentionDays: config.databaseBackupRetentionDays,
+      retention: DEFAULT_BACKUP_RETENTION,
       backupDir: config.databaseBackupDir,
     },
     "Automatic database backups enabled",
@@ -645,7 +645,6 @@ server.listen(listenPort, config.host, () => {
     heartbeatSchedulerIntervalMs: config.heartbeatSchedulerIntervalMs,
     databaseBackupEnabled: config.databaseBackupEnabled,
     databaseBackupIntervalMinutes: config.databaseBackupIntervalMinutes,
-    databaseBackupRetentionDays: config.databaseBackupRetentionDays,
     databaseBackupDir: config.databaseBackupDir,
   });
 
