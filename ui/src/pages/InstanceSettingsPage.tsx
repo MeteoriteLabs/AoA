@@ -16,6 +16,7 @@ import { authApi } from "@/api/auth";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { healthApi } from "@/api/health";
 
 const TABS = [
   { value: "general", label: "General" },
@@ -55,6 +56,13 @@ export function InstanceSettingsPage() {
     queryKey: queryKeys.instanceSettings.general,
     queryFn: () => instanceSettingsApi.getGeneral(),
   });
+
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
+  const isLocalTrusted = healthQuery.data?.deploymentMode === "local_trusted";
 
   const generalMutation = useMutation({
     mutationFn: async (patch: PatchInstanceGeneralSettings) =>
@@ -174,25 +182,27 @@ export function InstanceSettingsPage() {
                 </>
               )}
 
-              <section className="rounded-xl border border-border bg-card p-5">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-1.5">
-                    <h2 className="text-sm font-semibold">Sign out</h2>
-                    <p className="max-w-2xl text-sm text-muted-foreground">
-                      Sign out of this AoA instance. You will be redirected to the login page.
-                    </p>
+              {!isLocalTrusted && (
+                <section className="rounded-xl border border-border bg-card p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1.5">
+                      <h2 className="text-sm font-semibold">Sign out</h2>
+                      <p className="max-w-2xl text-sm text-muted-foreground">
+                        Sign out of this AoA instance. You will be redirected to the login page.
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={signOutMutation.isPending}
+                      onClick={() => signOutMutation.mutate()}
+                    >
+                      <LogOut className="size-4" />
+                      {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                    </Button>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={signOutMutation.isPending}
-                    onClick={() => signOutMutation.mutate()}
-                  >
-                    <LogOut className="size-4" />
-                    {signOutMutation.isPending ? "Signing out..." : "Sign out"}
-                  </Button>
-                </div>
-              </section>
+                </section>
+              )}
             </TabsContent>
 
             {/* ── Privacy tab ──────────────────────────────────────────── */}

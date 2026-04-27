@@ -35,6 +35,14 @@ vi.mock("../api/auth", () => ({
   },
 }));
 
+const mockGetHealth = vi.fn();
+
+vi.mock("../api/health", () => ({
+  healthApi: {
+    get: (...args: unknown[]) => mockGetHealth(...args),
+  },
+}));
+
 // feedbackApi is only called when the Privacy tab is active — not needed here.
 vi.mock("../api/feedback", () => ({
   feedbackApi: {
@@ -97,6 +105,7 @@ describe("InstanceSettingsPage Sign out section", () => {
     mockGetGeneral.mockResolvedValue(defaultGeneralSettings);
     mockGetExperimental.mockResolvedValue(defaultExperimentalSettings);
     mockSignOut.mockResolvedValue(undefined);
+    mockGetHealth.mockResolvedValue({ status: "ok", deploymentMode: "authenticated" });
   });
 
   it("renders the Sign out button in the General tab", async () => {
@@ -139,5 +148,40 @@ describe("InstanceSettingsPage Sign out section", () => {
         screen.getByRole("button", { name: /signing out/i }),
       ).toBeDisabled(),
     );
+  });
+
+  describe("Sign out section visibility by deployment mode", () => {
+    it("hides the Sign out section when deploymentMode is local_trusted", async () => {
+      mockGetHealth.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
+      renderWithProviders(<InstanceSettingsPage />);
+
+      // Wait for general settings to load so the General tab body is rendered.
+      await screen.findByRole("heading", { name: /keyboard shortcuts/i });
+
+      expect(
+        screen.queryByRole("heading", { name: "Sign out", level: 2 }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /sign out/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("renders the Sign out section when deploymentMode is authenticated", async () => {
+      mockGetHealth.mockResolvedValue({ status: "ok", deploymentMode: "authenticated" });
+      renderWithProviders(<InstanceSettingsPage />);
+
+      expect(
+        await screen.findByRole("heading", { name: "Sign out", level: 2 }),
+      ).toBeInTheDocument();
+    });
+
+    it("renders the Sign out section when deploymentMode is undefined (legacy)", async () => {
+      mockGetHealth.mockResolvedValue({ status: "ok" });
+      renderWithProviders(<InstanceSettingsPage />);
+
+      expect(
+        await screen.findByRole("heading", { name: "Sign out", level: 2 }),
+      ).toBeInTheDocument();
+    });
   });
 });
