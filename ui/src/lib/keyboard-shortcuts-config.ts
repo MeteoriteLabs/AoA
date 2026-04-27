@@ -13,6 +13,7 @@ export const KEYBOARD_SHORTCUTS: KeyboardShortcut[] = [
   // Inbox
   { id: "inbox.next", keys: ["j"], description: "Next item", section: "Inbox" },
   { id: "inbox.prev", keys: ["k"], description: "Previous item", section: "Inbox" },
+  { id: "inbox.toggle_nesting", keys: ["t"], description: "Toggle parent-child nesting", section: "Inbox" },
   { id: "inbox.archive", keys: ["a"], description: "Archive", section: "Inbox" },
   { id: "inbox.archive_undo", keys: ["y"], description: "Archive (z to undo)", section: "Inbox" },
   { id: "inbox.undo", keys: ["z"], description: "Undo last archive", section: "Inbox" },

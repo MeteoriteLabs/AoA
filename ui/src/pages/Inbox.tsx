@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { getInboxNestingEnabled, setInboxNestingEnabled, subscribeInboxNestingChange } from "@/lib/inbox";
+import { cn } from "@/lib/utils";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
@@ -40,6 +42,7 @@ import {
   MessageSquare,
   RotateCcw,
   FileText,
+  ListTree,
 } from "lucide-react";
 import { Identity } from "../components/Identity";
 import { PageTabBar } from "../components/PageTabBar";
@@ -369,6 +372,7 @@ export function Inbox() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [nestingEnabled, setNestingEnabled] = useState(() => getInboxNestingEnabled());
   const [allCategoryFilter, setAllCategoryFilter] = useState<InboxCategoryFilter>("everything");
   const [allApprovalFilter, setAllApprovalFilter] = useState<InboxApprovalFilter>("all");
   const { isDismissed, dismiss, undismiss } = useInboxBadge(selectedCompanyId);
@@ -385,6 +389,10 @@ export function Inbox() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Inbox" }]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    return subscribeInboxNestingChange((enabled) => setNestingEnabled(enabled));
+  }, []);
 
   const {
     data: approvals,
@@ -708,6 +716,24 @@ export function Inbox() {
             ]}
           />
         </Tabs>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setInboxNestingEnabled(!nestingEnabled)}
+            aria-pressed={nestingEnabled}
+            aria-label={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+            title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+            className={cn(
+              "rounded p-1.5 transition-colors",
+              nestingEnabled
+                ? "text-primary bg-primary/10"
+                : "text-muted-foreground hover:text-foreground hover:bg-accent",
+            )}
+          >
+            <ListTree className="h-4 w-4" />
+          </button>
+        </div>
 
         {tab === "all" && (
           <div className="flex flex-wrap items-center gap-2">
