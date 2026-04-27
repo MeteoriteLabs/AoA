@@ -155,3 +155,32 @@ served bundle.
 
 Authored 2026-04-27 by Claude as part of the verification execution loop
 (`docs/superpowers/plans/2026-04-27-resync-verification.md`).
+
+---
+
+## 2026-04-28 follow-ups
+
+P1, P2, P3, P4, P5a–d, P6 from the post-walkthrough RCA pass landed via
+`docs/superpowers/plans/2026-04-28-resync-followup-fixes.md` (T1–T9). T10
+final gates ran clean: typecheck, full test suite, e2e suite (now functional
+because T3–T6 fixed the fixture story), and build all green.
+
+Two follow-ups deferred to a future sprint (not blockers for this branch):
+
+1. **FK cascade missing on `issue_read_states`** — `DELETE /api/companies/:id`
+   returns 500 when the company has any `issue_read_states` rows because the
+   FK at `packages/db/src/schema/issue_read_states.ts:10` lacks `onDelete:
+   "cascade"` and `companies.remove()` (`server/src/services/companies.ts:~122`)
+   never deletes from `issueReadStates` first. Surfaced during T5 e2e cleanup;
+   masked by `.catch(() => {})` in `tests/e2e/helpers/seed-company.ts:46`.
+   Real production bug — any company with read state cannot be deleted via API.
+
+2. **Prose-level Paperclip leaks in `scripts/smoke/openclaw-docker-ui.sh`** —
+   lines 259, 270, 272, 292, 303, 305 contain user-facing heredoc prose like
+   "If Paperclip rejects the host..." and "Then restart Paperclip and re-run
+   this script." T9's brand-check uses leading-quote token prefixes (matches
+   code literals) and intentionally doesn't catch unquoted prose. Either
+   rebrand the 6 lines OR widen the gate. Out of T9 scope by design.
+
+P7 (tester-only synthetic-event quirk) and P8 (Vite EPERM during running-
+server rebuild) remain documentation-only loose ends as originally noted.
