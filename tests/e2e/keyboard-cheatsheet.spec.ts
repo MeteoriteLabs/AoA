@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { seedCompany, cleanupTestCompanies } from "./helpers/seed-company";
 
 /**
  * E2E: Keyboard shortcut cheatsheet (T7).
@@ -10,15 +11,12 @@ import { test, expect } from "@playwright/test";
  *
  * Architecture note — URL strategy:
  *   The keyboard hook (`useKeyboardShortcuts`) is mounted inside Layout.tsx,
- *   which wraps all routes under `/:companyPrefix/*`. The e2e server boots via
- *   `pnpm aoa onboard --yes --run` (playwright.config.ts webServer), which
- *   auto-creates a company. Navigating to `/` triggers CompanyRootRedirect
- *   → `/:companyPrefix/home`, landing inside the Layout where the hook is
- *   active. We use this redirect rather than hard-coding a company prefix.
- *
- *   `/inbox` alone is NOT an UnprefixedBoardRedirect in App.tsx (only listed
- *   routes redirect); it would be interpreted as a companyPrefix="inbox" which
- *   loads no data. `/` → redirect is the safe canonical approach.
+ *   which wraps all routes under `/:companyPrefix/*`. The e2e webServer boots
+ *   via `pnpm aoa onboard --yes --run` (playwright.config.ts), which leaves
+ *   the instance EMPTY — no auto-seeded company. We seed one in beforeEach
+ *   and navigate directly to `/{issuePrefix}/home` to land inside the
+ *   Layout where the hook is active. (App.tsx's index route is `<Lobby />`
+ *   which does not auto-redirect; CompanyRootRedirect exists but is unwired.)
  *
  * Section heading names are taken verbatim from SECTION_ORDER in
  * KeyboardShortcutsCheatsheet.tsx: ["Inbox", "Task detail", "Global"].
@@ -28,13 +26,15 @@ import { test, expect } from "@playwright/test";
  */
 
 test.describe("Keyboard shortcut cheatsheet (T7)", () => {
-  test("? opens the cheatsheet from the home page (not in input)", async ({ page }) => {
-    // Navigate to root — CompanyRootRedirect will push to /:companyPrefix/home,
-    // mounting Layout and activating the keyboard hook.
-    await page.goto("/");
+  let companyPrefix: string;
+  test.beforeEach(async ({ request }) => {
+    await cleanupTestCompanies(request);
+    const company = await seedCompany(request);
+    companyPrefix = company.issuePrefix;
+  });
 
-    // Wait for the redirect to settle inside the Layout-wrapped routes.
-    await page.waitForURL(/\/[^/]+\/home/, { timeout: 15_000 });
+  test("? opens the cheatsheet from the home page (not in input)", async ({ page }) => {
+    await page.goto(`/${companyPrefix}/home`);
 
     // Click a neutral spot to ensure no input has focus.
     await page.locator("body").click({ position: { x: 5, y: 5 } });
@@ -48,8 +48,7 @@ test.describe("Keyboard shortcut cheatsheet (T7)", () => {
   });
 
   test("Escape closes the cheatsheet", async ({ page }) => {
-    await page.goto("/");
-    await page.waitForURL(/\/[^/]+\/home/, { timeout: 15_000 });
+    await page.goto(`/${companyPrefix}/home`);
 
     await page.locator("body").click({ position: { x: 5, y: 5 } });
     await page.keyboard.press("?");
@@ -62,8 +61,7 @@ test.describe("Keyboard shortcut cheatsheet (T7)", () => {
   });
 
   test("? does not open cheatsheet when typing in a textarea", async ({ page }) => {
-    await page.goto("/");
-    await page.waitForURL(/\/[^/]+\/home/, { timeout: 15_000 });
+    await page.goto(`/${companyPrefix}/home`);
 
     const composer = page.locator("textarea").first();
     const composerVisible = await composer
@@ -83,8 +81,7 @@ test.describe("Keyboard shortcut cheatsheet (T7)", () => {
   });
 
   test("Cheatsheet shows all 3 sections (Inbox, Task detail, Global)", async ({ page }) => {
-    await page.goto("/");
-    await page.waitForURL(/\/[^/]+\/home/, { timeout: 15_000 });
+    await page.goto(`/${companyPrefix}/home`);
 
     await page.locator("body").click({ position: { x: 5, y: 5 } });
     await page.keyboard.press("?");

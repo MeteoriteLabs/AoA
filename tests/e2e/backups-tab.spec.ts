@@ -27,23 +27,14 @@ import { test, expect } from "@playwright/test";
  *
  * Architecture note:
  *   e2e server runs in AOA_DEPLOYMENT_MODE=local_trusted — no auth barrier.
- *   The page fetches general settings from the API; BackupsTab falls through
- *   to the DEFAULT_BACKUP_RETENTION (dailyDays:7, weeklyWeeks:4, monthlyMonths:1)
- *   when the API response is undefined or loading. All preset buttons still
- *   render regardless of which value is selected.
- *
- * Spec is committed but unrun in this environment — requires full server
- * boot. Phase E interactive walkthrough validates manually.
+ *   InstanceSettingsPage is not company-scoped (route /instance/settings,
+ *   no useCompany call, BackupsTab consumes only generalQuery.data), so no
+ *   company seed is needed in beforeEach.
  *
  * Phase B audit: docs/superpowers/plans/2026-04-27-resync-verification.md (Task 9)
  */
 
 test.describe("Backups tab in Instance Settings (T23)", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto("/");
-    await page.waitForURL(/\/[^/]+\/home/, { timeout: 15_000 });
-  });
-
   test("Backups tab is visible in Instance Settings nav and is selectable", async ({ page }) => {
     await page.goto("/instance/settings");
 

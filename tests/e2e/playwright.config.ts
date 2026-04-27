@@ -16,6 +16,11 @@ export default defineConfig({
   testIgnore: ["multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
   timeout: 60_000,
   retries: 0,
+  // Single worker: e2e specs share an embedded-postgres-backed instance
+  // (one AOA_HOME per config run). Seed-and-cleanup helpers in helpers/
+  // are not worker-safe; multiple workers race on /api/companies. Force
+  // sequential execution until per-worker isolation lands.
+  workers: 1,
   use: {
     baseURL: BASE_URL,
     headless: true,
