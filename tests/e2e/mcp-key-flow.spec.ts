@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
+import { cleanupTestCompanies } from "./helpers/seed-company";
 
 /**
  * E2E: MCP key issuance → tool call smoke.
@@ -63,6 +64,10 @@ async function issueMcpKey(
 }
 
 test.describe("MCP key → tool call flow", () => {
+  test.afterEach(async ({ request }) => {
+    await cleanupTestCompanies(request);
+  });
+
   test("unauthenticated MCP POST returns 401", async ({ request }) => {
     // This runs regardless of env — a cheap contract check that the MCP
     // endpoint is mounted and rejects callers without access (Decision #14).
