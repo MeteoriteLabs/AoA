@@ -8,7 +8,7 @@ export const heartbeatRunWatchdogDecisions = pgTable(
   "heartbeat_run_watchdog_decisions",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     runId: uuid("run_id").notNull().references(() => heartbeatRuns.id, { onDelete: "cascade" }),
     evaluationIssueId: uuid("evaluation_issue_id").references(() => issues.id, { onDelete: "set null" }),
     decision: text("decision").notNull(),

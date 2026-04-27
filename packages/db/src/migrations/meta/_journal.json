@@ -463,6 +463,13 @@
       "when": 1777293426824,
       "tag": "0065_assets_cascade",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1777296689543,
+      "tag": "0066_complete_fk_cascade_sweep",
+      "breakpoints": true
     }
   ]
 }
