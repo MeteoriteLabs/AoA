@@ -1004,6 +1004,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                     placeholder="Add a description..."
                     multiline
                     mentions={mentionOptions}
+                    companyId={selectedCompanyId}
                     imageUploadHandler={async (file) => {
                       const attachment = await uploadAttachment.mutateAsync(file);
                       return attachment.contentPath;
