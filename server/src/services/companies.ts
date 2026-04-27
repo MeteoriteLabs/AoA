@@ -9,6 +9,7 @@ import {
   agentWakeupRequests,
   issues,
   issueComments,
+  issueReadStates,
   projects,
   goals,
   heartbeatRuns,
@@ -119,6 +120,7 @@ export function companyService(db: Db) {
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
         await tx.delete(mcpClientConnections).where(eq(mcpClientConnections.companyId, id));
         await tx.delete(mcpApiKeys).where(eq(mcpApiKeys.companyId, id));
+        await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
