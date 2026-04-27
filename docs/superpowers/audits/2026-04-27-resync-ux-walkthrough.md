@@ -184,3 +184,44 @@ Two follow-ups deferred to a future sprint (not blockers for this branch):
 
 P7 (tester-only synthetic-event quirk) and P8 (Vite EPERM during running-
 server rebuild) remain documentation-only loose ends as originally noted.
+
+---
+
+## 2026-04-28 final status — branch ready to merge
+
+After a comprehensive end-of-branch review (scope: 12 commits ahead of the
+audit baseline, 28 files), the reviewer flagged one Critical issue (B1 —
+17-table FK cascade gap) plus 5 Minor polish items + 4 deferred items from
+prior tasks. All landed:
+
+| Commit | What it closed |
+|--------|---|
+| `6e26362` | B1 Critical — comprehensive FK cascade sweep across 37 schema files (50 cascade + 31 set null = 81 FKs); 17 explicit deletes added to `companies.remove()`; new real-DB integration test; schema-source regex test; service ordering test extended from 3 → 21 cases. |
+| `53c249a` | I-1 + M-1/2/3/5 from review — constraint-truncation doc note in 0066; domain grouping comments in `companies.remove()`; drift-detection assertion (every imported table appears in deleteCalls); `INSERT ... RETURNING` refactor in integration test; regex-allowance rationale comment. |
+| `8ed7287` | Smoke script prose rebrand — 6 user-facing Paperclip lines in `scripts/smoke/openclaw-docker-ui.sh` rebranded to AoA. Variable names (paperclip_base_url etc.) intentionally left for a future rename pass. |
+| `aff040a` | Drizzle snapshot backfill — `meta/0066_snapshot.json` added so future `pnpm db:generate` runs produce minimal migrations instead of sweeping drift sweeps that need hand-trimming. |
+| `523000e` | Brand-check elevated to PR-level CI gate — `.github/workflows/pr.yml` now runs `pnpm exec node scripts/check-forbidden-tokens.mjs` on every PR, not just at publish time. |
+
+### Final gate state
+
+- `pnpm typecheck` — clean across all packages
+- `pnpm exec node scripts/check-forbidden-tokens.mjs` — exits 0 (7 tokens, 4 allowlist paths)
+- `pnpm test:run` — 3006 passed / 2 skipped / 0 failed
+- `pnpm test:e2e` — 18 passed / 1 skipped / 0 failed
+- `pnpm build` — clean
+
+### Branch state
+
+- `port/upstream-resync-2026-04-26` — **63 commits ahead of `Porting1.1`**
+- HEAD: `523000e`, pushed to origin
+- Working tree clean
+
+### Loose ends still open (intentional)
+
+- **P7** (synthetic-event quirk during automation testing) — not a real bug, no action.
+- **P8** (Vite EPERM during running-server rebuild) — workaround documented; T7 reduces likelihood; no code change needed.
+- **e2e fixture refactor** (closure-captured `let companyPrefix` / `taskId` → Playwright `test.extend` fixtures) — deferred per review until a 3rd spec needs the same setup. Currently 2 specs use the pattern; 3rd is the trigger.
+- **Lift `EmbeddedPostgres` bootstrap to a shared helper** — deferred per review until a 2nd integration test lands. Currently only `companies-delete-integration.test.ts` uses the pattern.
+- **Schema regex test allows `restrict|no action`** — kept as forward-compat hatch; rationale documented in the test file. Tighten if the team decides RESTRICT semantics need a separate opt-out mechanism.
+
+The branch is ready to merge upstream.
