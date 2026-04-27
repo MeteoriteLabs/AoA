@@ -10,7 +10,7 @@
     {
       "name": "server",
       "runtimeExecutable": "cmd",
-      "runtimeArgs": ["/c", "pnpm", "dev:server"],
+      "runtimeArgs": ["/c", "pnpm", "dev"],
       "port": 3100
     },
     {
