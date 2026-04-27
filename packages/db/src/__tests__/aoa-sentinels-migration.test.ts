@@ -116,9 +116,11 @@ describe("0060_aoa_sentinels migration", () => {
       expect(journalEntry?.breakpoints).toBe(true);
     });
 
-    it("entry idx is the highest in the journal (last migration)", () => {
-      const maxIdx = Math.max(...journal.entries.map((e) => e.idx));
-      expect(maxIdx).toBe(60);
+    it("entry idx is 60 (the slot 0060_aoa_sentinels was registered into)", () => {
+      // Brand-check: 0060_aoa_sentinels must remain at idx 60 even as later
+      // migrations (0061+) land. The original assertion was "max idx" which
+      // broke on every new migration; pin to the specific value instead.
+      expect(journalEntry?.idx).toBe(60);
     });
   });
 });
