@@ -43,6 +43,7 @@ tmp/
 .worktrees/
 docs/superpowers/
 plans/
+.superpowers/
 
 # Playwright e2e outputs
 tests/e2e/playwright-report/
