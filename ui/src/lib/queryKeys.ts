@@ -81,6 +81,13 @@ export const queryKeys = {
     member: (companyId: string, userId: string) => ["team", companyId, "member", userId] as const,
     dependencies: (companyId: string, userId: string) => ["team", companyId, "dependencies", userId] as const,
   },
+  teams: {
+    list: (companyId: string) => ["teams", companyId] as const,
+    detail: (companyId: string, teamId: string) => ["teams", companyId, teamId] as const,
+    detailBySlug: (companyId: string, slug: string) => ["teams", companyId, "by-slug", slug] as const,
+    members: (companyId: string, teamId: string) => ["teams", companyId, teamId, "members"] as const,
+    coordination: (companyId: string, teamId: string) => ["teams", companyId, teamId, "coordination"] as const,
+  },
   auth: {
     session: ["auth", "session"] as const,
     profile: ["auth", "profile"] as const,
