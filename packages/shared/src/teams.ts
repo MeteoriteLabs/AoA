@@ -113,3 +113,34 @@ export interface CreateTeamCoordinationInput {
   markdown: string;
   description?: string;
 }
+
+// HTTP route validation schemas. Names use the prefix `teamsMember*` (plural)
+// to disambiguate from `addTeamMemberSchema` / `updateTeamMemberRoleSchema`
+// which already exist in packages/shared/src/validators/team.ts for the
+// user/board permissions domain. Slice 1 / Task 1.10.
+export const createTeamSchema = z.object({
+  name: z.string().min(1).max(128),
+  parentProjectId: z.string().uuid(),
+  description: z.string().optional(),
+});
+
+export const updateTeamSchema = z.object({
+  name: z.string().min(1).max(128).optional(),
+  description: z.string().optional(),
+  status: TeamStatusSchema.optional(),
+});
+
+export const addTeamsMemberSchema = z.object({
+  agentId: z.string().uuid(),
+  role: TeamRoleSchema,
+});
+
+export const updateTeamsMemberRoleSchema = z.object({
+  role: TeamRoleSchema,
+});
+
+export const upsertCoordinationSchema = z.object({
+  name: z.string().min(1).max(256),
+  markdown: z.string(),
+  description: z.string().optional(),
+});

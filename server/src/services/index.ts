@@ -19,6 +19,8 @@ export { sidebarPreferencesService } from "./sidebar-preferences.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { accessService } from "./access.js";
 export { teamService } from "./team.js";
+export { teamsService } from "./teams.js";
+export { teamCoordinationService } from "./team-coordination.js";
 export { orgHierarchyService } from "./org-hierarchy.js";
 export { memoryService, type MemoryFilters, type SemanticSearchFilters, type FindSimilarScope } from "./memory.js";
 export { generateEmbedding, generateEmbeddingsBatch, processEmbeddingQueue, invalidateEmbedding } from "./embeddings.js";
