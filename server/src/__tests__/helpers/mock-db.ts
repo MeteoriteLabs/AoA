@@ -93,13 +93,16 @@ export function createAgentDb(config: {
   selects?: MockRow[][];
   updates?: MockRow[][];
   inserts?: MockRow[][];
+  deletes?: MockRow[][];
 } = {}) {
   let selectIdx = 0;
   let updateIdx = 0;
   let insertIdx = 0;
+  let deleteIdx = 0;
   const selects = config.selects ?? [];
   const updates = config.updates ?? [];
   const inserts = config.inserts ?? [];
+  const deletes = config.deletes ?? [];
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
@@ -118,6 +121,19 @@ export function createAgentDb(config: {
     select: () => makeChain(() => selects[selectIdx++] ?? []),
     update: (_table: unknown) => makeChain(() => updates[updateIdx++] ?? []),
     insert: (_table: unknown) => makeChain(() => inserts[insertIdx++] ?? []),
+    delete: (_table: unknown) => makeChain(() => deletes[deleteIdx++] ?? []),
+    transaction: async (callback: (tx: any) => unknown) => {
+      const proxy = {
+        select: () => makeChain(() => selects[selectIdx++] ?? []),
+        update: (_table: unknown) =>
+          makeChain(() => updates[updateIdx++] ?? []),
+        insert: (_table: unknown) =>
+          makeChain(() => inserts[insertIdx++] ?? []),
+        delete: (_table: unknown) =>
+          makeChain(() => deletes[deleteIdx++] ?? []),
+      };
+      return callback(proxy);
+    },
   };
 }
 
