@@ -1,5 +1,7 @@
 import { Router } from "express";
-import type { Db } from "@armyofagents/db";
+import { z } from "zod";
+import { eq } from "drizzle-orm";
+import { companies, type Db } from "@armyofagents/db";
 import {
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
@@ -9,6 +11,7 @@ import {
 } from "@armyofagents/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
+import { assertRole } from "../middleware/rbac.js";
 import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -152,6 +155,31 @@ export function companyRoutes(db: Db) {
     });
     res.json(company);
   });
+
+  // Founder-only toggle for the team-architecture feature flag (Slices 6 + 7).
+  // Default is false; flipping to true opts the company into the teams system.
+  router.patch(
+    "/:companyId/enable-teams",
+    validate(z.object({ enabled: z.boolean() })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+      await db
+        .update(companies)
+        .set({ enableTeams: req.body.enabled, updatedAt: new Date() })
+        .where(eq(companies.id, companyId));
+      await logActivity(db, {
+        ...getActorInfo(req),
+        companyId,
+        action: "company.teams_feature_toggled",
+        entityType: "company",
+        entityId: companyId,
+        details: { enabled: req.body.enabled },
+      });
+      res.json({ ok: true });
+    },
+  );
 
   router.post("/:companyId/archive", async (req, res) => {
     assertBoard(req);
