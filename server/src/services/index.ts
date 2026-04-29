@@ -22,6 +22,7 @@ export { teamService } from "./team.js";
 export { teamsService } from "./teams.js";
 export { teamCoordinationService } from "./team-coordination.js";
 export { teamScaffolderService } from "./team-scaffolder.js";
+export { teamImportService } from "./team-import.js";
 export { orgHierarchyService } from "./org-hierarchy.js";
 export { memoryService, type MemoryFilters, type SemanticSearchFilters, type FindSimilarScope } from "./memory.js";
 export { generateEmbedding, generateEmbeddingsBatch, processEmbeddingQueue, invalidateEmbedding } from "./embeddings.js";
