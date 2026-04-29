@@ -245,7 +245,7 @@ export function teamImportService(db: Db) {
 
       // ===== Transactional cascade =====
 
-      return db.transaction(async (tx: any) => {
+      return db.transaction(async (tx) => {
         // Step 1: resolve agents (skip / reuse / create)
         const agentIdByLocalName = new Map<string, string>();
 

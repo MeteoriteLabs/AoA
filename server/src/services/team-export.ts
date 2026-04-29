@@ -67,7 +67,12 @@ export function teamExportService(db: Db) {
         name: team.slug, // canonical slug from the DB row
         version: team.templateVersion ?? stored.version ?? "1.0.0",
         displayName: team.name,
-        description: team.description ?? stored.description,
+        // P2-H: TeamManifestSchema.description is `.optional()` (not
+        // `.nullable()`), so a residual `null` from the DB column would crash
+        // `.parse()` below. Coalesce both sources, then coerce a trailing
+        // `null` to `undefined`. `??` only descends on null-or-undefined, so
+        // `null ?? undefined === undefined`.
+        description: team.description ?? stored.description ?? undefined,
         agents: memberRows.map((m) => {
           const a = agentById.get(m.agentId);
           return {

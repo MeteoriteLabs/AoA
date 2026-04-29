@@ -135,6 +135,42 @@ describe("teamExportService.exportYaml()", () => {
     ).rejects.toThrow(/team nonexistent not found/);
   });
 
+  it("coerces description: null → undefined when both team and stored are null (P2-H)", async () => {
+    // P2-H: team.description is a nullable TEXT column on the `teams` table;
+    // stored.description (on the persisted manifest) is also possibly null
+    // (e.g. when a manifest was imported without a description). The
+    // previous coalesce `team.description ?? stored.description` would
+    // therefore evaluate to `null` and feed straight into
+    // `TeamManifestSchema.parse()` — which uses `.optional()`, NOT
+    // `.nullable()`, so it crashes on `null`. Fix: append `?? undefined`.
+    const teamWithNullDesc = {
+      ...TEAM_ROW,
+      description: null,
+      manifest: {
+        routing: { rules: [] },
+        description: null,
+      },
+    };
+    const db = createAgentDb({
+      selects: [
+        [teamWithNullDesc],
+        [{ teamId: "team-1", agentId: "agent-1", role: "lead" }],
+        [{ id: "agent-1", name: "alice", skillKeys: [] }],
+      ],
+    });
+
+    // The whole point: this used to throw a ZodError because the assembled
+    // manifest had `description: null` and the schema rejects it.
+    const yaml = await teamExportService(db as any).exportYaml("team-1");
+    const parsed = parseYaml(yaml);
+
+    // YAML serialization of `undefined` produces no key (or `null` from
+    // null), but Zod stripping after `.parse()` drops the optional field
+    // entirely when the value was undefined. Either way, the parsed YAML
+    // should not carry a string description.
+    expect(parsed.description).toBeUndefined();
+  });
+
   it("preserves workflowTemplates and memoryItems from team.manifest (P1-5)", async () => {
     // P1-5 fidelity contract: the export path used to only rehydrate
     // routing/skillDeps/pluginDeps from team.manifest, silently dropping

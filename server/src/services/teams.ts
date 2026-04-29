@@ -303,7 +303,7 @@ export function teamsService(db: Db) {
       // buildTeamCoordinationSkillEntries continues to inject the team's
       // markdown into every member agent's heartbeat run because the
       // coordination row stays status='published'.
-      return db.transaction(async (tx: any) => {
+      return db.transaction(async (tx) => {
         const updated = await tx
           .update(teams)
           .set({
