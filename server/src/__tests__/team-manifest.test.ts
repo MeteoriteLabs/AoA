@@ -86,7 +86,7 @@ routing:
 });
 
 describe("serializeManifest", () => {
-  it("roundtrips: parse → serialize → parse equivalence", () => {
+  it("roundtrips: parse -> serialize -> parse equivalence", () => {
     const m1 = parseManifest(VALID_YAML);
     const yaml = serializeManifest(m1);
     const m2 = parseManifest(yaml);

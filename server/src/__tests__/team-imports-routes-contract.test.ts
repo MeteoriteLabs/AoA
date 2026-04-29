@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 // Verifies the factory shape and that BOTH routes (preview + install) are
 // registered at the expected paths. Handler behaviour (parse, collision
 // detection, transactional cascade) is exercised by the service tests in
-// team-import-{preview,install}-*.test.ts — this contract test is just the
+// team-import-{preview,install}-*.test.ts -- this contract test is just the
 // route-table check.
 //
 // Dynamic import for parity with `teams-routes-contract.test.ts` (heavy
@@ -14,7 +14,7 @@ vi.setConfig({ testTimeout: 15000 });
 
 import { vi } from "vitest";
 
-describe("teamImportsRoutes — conformance + contract", () => {
+describe("teamImportsRoutes -- conformance + contract", () => {
   it("exports a factory function (not a top-level Router)", async () => {
     const mod = await import("../routes/team-imports.js");
     expect(typeof mod.teamImportsRoutes).toBe("function");

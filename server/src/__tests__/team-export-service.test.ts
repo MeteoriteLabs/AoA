@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
 
-// ── Mocks ────────────────────────────────────────────────────────────────────
+// -- Mocks --------------------------------------------------------------------
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
@@ -43,7 +43,7 @@ vi.mock("../errors.js", () => ({
 import { teamExportService } from "../services/team-export.js";
 import { createAgentDb } from "./helpers/mock-db.js";
 
-// ── Fixtures ─────────────────────────────────────────────────────────────────
+// -- Fixtures -----------------------------------------------------------------
 
 const TEAM_ROW = {
   id: "team-1",
@@ -55,7 +55,7 @@ const TEAM_ROW = {
   templateVersion: "1.0.0",
 };
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// -- Tests --------------------------------------------------------------------
 
 describe("teamExportService.exportYaml()", () => {
   beforeEach(() => {
@@ -64,9 +64,9 @@ describe("teamExportService.exportYaml()", () => {
 
   it("returns YAML containing the team's slug, member name, and skill", async () => {
     // Sequence:
-    //   1. teams lookup → 1 row
-    //   2. teamMembers lookup → 1 lead member
-    //   3. agents lookup → 1 agent named "alice" with [react]
+    //   1. teams lookup -> 1 row
+    //   2. teamMembers lookup -> 1 lead member
+    //   3. agents lookup -> 1 agent named "alice" with [react]
     const db = createAgentDb({
       selects: [
         [TEAM_ROW],
@@ -126,7 +126,7 @@ describe("teamExportService.exportYaml()", () => {
   it("throws notFound when the team doesn't exist", async () => {
     const db = createAgentDb({
       selects: [
-        [], // teams lookup → empty
+        [], // teams lookup -> empty
       ],
     });
 
@@ -135,13 +135,13 @@ describe("teamExportService.exportYaml()", () => {
     ).rejects.toThrow(/team nonexistent not found/);
   });
 
-  it("coerces description: null → undefined when both team and stored are null (P2-H)", async () => {
+  it("coerces description: null -> undefined when both team and stored are null (P2-H)", async () => {
     // P2-H: team.description is a nullable TEXT column on the `teams` table;
     // stored.description (on the persisted manifest) is also possibly null
     // (e.g. when a manifest was imported without a description). The
     // previous coalesce `team.description ?? stored.description` would
     // therefore evaluate to `null` and feed straight into
-    // `TeamManifestSchema.parse()` — which uses `.optional()`, NOT
+    // `TeamManifestSchema.parse()` -- which uses `.optional()`, NOT
     // `.nullable()`, so it crashes on `null`. Fix: append `?? undefined`.
     const teamWithNullDesc = {
       ...TEAM_ROW,

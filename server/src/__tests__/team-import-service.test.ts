@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// ── Mocks ────────────────────────────────────────────────────────────────────
+// -- Mocks --------------------------------------------------------------------
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
@@ -76,7 +76,7 @@ vi.mock("../services/team-scaffolder.js", () => ({
 import { teamImportService } from "../services/team-import.js";
 import { createAgentDb } from "./helpers/mock-db.js";
 
-// ── Fixtures ─────────────────────────────────────────────────────────────────
+// -- Fixtures -----------------------------------------------------------------
 
 const VALID_YAML = `
 schemaVersion: 1
@@ -91,7 +91,7 @@ routing:
 skillDeps: ["@aoa/react@1.0.0"]
 `;
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// -- Tests --------------------------------------------------------------------
 
 describe("teamImportService.preview()", () => {
   beforeEach(() => {
@@ -162,7 +162,7 @@ describe("teamImportService.preview()", () => {
   });
 
   it("rejects manifest with duplicate agent names (P2)", async () => {
-    // Two inline agents both named "alice" — the install path's
+    // Two inline agents both named "alice" -- the install path's
     // agentIdByLocalName map would silently collapse them. Preview must
     // reject the bad input with a 400-shaped error before hitting DB.
     const DUPLICATE_NAMES_YAML = `
@@ -187,12 +187,12 @@ routing:
   });
 });
 
-// ── Install tests ────────────────────────────────────────────────────────────
+// -- Install tests ------------------------------------------------------------
 //
 // Strategy: tests #1-#3 exercise the pre-transaction guards exhaustively
 // (skills missing, >1 lead, slug already taken). Test #4 is a smoke test
 // that confirms `install()` reaches `db.transaction(...)` on the happy path
-// and produces the expected return shape — we don't try to recreate the
+// and produces the expected return shape -- we don't try to recreate the
 // full insert sequence inside the mock because the chain (insert agents,
 // insert agent_projects, insert team, insert team_members, insert
 // coordination) would make the test more about the mock than the code.
@@ -233,11 +233,11 @@ describe("teamImportService.install()", () => {
   });
 
   it("refuses install when manifest requires uninstalled skills", async () => {
-    // Preview: no agent collisions, no installed skills → skill is missing.
+    // Preview: no agent collisions, no installed skills -> skill is missing.
     const db = createAgentDb({
       selects: [
         [], // agents collision lookup
-        [], // companySkills lookup → none installed
+        [], // companySkills lookup -> none installed
       ],
     });
 
@@ -266,7 +266,7 @@ describe("teamImportService.install()", () => {
   });
 
   it("refuses install when a team with the same slug already exists", async () => {
-    // Preview clean → then the slug-existence probe finds a row → throw.
+    // Preview clean -> then the slug-existence probe finds a row -> throw.
     const db = createAgentDb({
       selects: [
         [], // preview: agents collision lookup
@@ -284,16 +284,16 @@ describe("teamImportService.install()", () => {
 
   it("happy path: returns team id/slug/name/parentProjectId after cascade", async () => {
     // Sequence:
-    //   1. preview → agents collision lookup → []
-    //   2. slug-existence probe → []
-    //   3. P1 parent-project company check → [{id: "proj-1"}]
-    //   4. tx.insert(agents).returning → [{id: "new-agent-1"}]
-    //   5. tx.insert(agentProjects) → no return
-    //   6. helper: SELECT existing-slugs (inside tx) → []
-    //   7. helper: tx.insert(teams).returning → [{...}]
-    //   8. tx.insert(teamMembers) → no return
+    //   1. preview -> agents collision lookup -> []
+    //   2. slug-existence probe -> []
+    //   3. P1 parent-project company check -> [{id: "proj-1"}]
+    //   4. tx.insert(agents).returning -> [{id: "new-agent-1"}]
+    //   5. tx.insert(agentProjects) -> no return
+    //   6. helper: SELECT existing-slugs (inside tx) -> []
+    //   7. helper: tx.insert(teams).returning -> [{...}]
+    //   8. tx.insert(teamMembers) -> no return
     //   9. (scaffolder is stubbed at the module level, so it never queries)
-    //  10. tx.insert(teamCoordinations) → no return
+    //  10. tx.insert(teamCoordinations) -> no return
     const db = createAgentDb({
       selects: [
         [], // 1: preview agents collision
@@ -333,9 +333,9 @@ describe("teamImportService.install()", () => {
 
   it("refuses install when parentProjectId belongs to another company (P1)", async () => {
     // Pre-tx sequence:
-    //   1. preview agents collision lookup → []
-    //   2. slug existence probe → []
-    //   3. P1 parent-project company check → [] (cross-tenant guard fails)
+    //   1. preview agents collision lookup -> []
+    //   2. slug existence probe -> []
+    //   3. P1 parent-project company check -> [] (cross-tenant guard fails)
     const db = createAgentDb({
       selects: [
         [], // 1: preview agents collision
@@ -354,7 +354,7 @@ describe("teamImportService.install()", () => {
 
   it("converts PG 23505 on slug race during install to 409 (P1-C)", async () => {
     // P1-C: the pre-flight slug-existence probe at install() narrows but
-    // does not eliminate the TOCTOU window — between the probe and the
+    // does not eliminate the TOCTOU window -- between the probe and the
     // tx.insert(teams) inside the transaction, a concurrent install can
     // win the slug. The shared insertTeamWithUniqueSlug helper retries up
     // to 5 times; if all retries fail (slug space saturated), the helper
@@ -373,14 +373,14 @@ describe("teamImportService.install()", () => {
             const idx = selectCalls++;
             // Pre-tx order (no skillDeps in HAPPY_PATH_YAML so no
             // companySkills probe):
-            //   0: preview agents collision lookup → []
-            //   1: slug existence pre-flight → [] (clean)
-            //   2: P1 parent-project company check → [{id: proj-1}]
+            //   0: preview agents collision lookup -> []
+            //   1: slug existence pre-flight -> [] (clean)
+            //   2: P1 parent-project company check -> [{id: proj-1}]
             //   3+: helper's existing-slugs probe inside tx (always [])
             if (idx === 0) return Promise.resolve([]);
             if (idx === 1) return Promise.resolve([]);
             if (idx === 2) return Promise.resolve([{ id: "proj-1" }]);
-            // Helper's existing-slugs probe — empty so helper keeps
+            // Helper's existing-slugs probe -- empty so helper keeps
             // picking the colliding base slug.
             return Promise.resolve([]);
           },
@@ -388,7 +388,7 @@ describe("teamImportService.install()", () => {
       }),
       transaction: async (cb: (tx: any) => Promise<unknown>) => {
         // Step 1 of install inserts agents (with .returning()) and
-        // agent_projects (no .returning() — awaited directly off
+        // agent_projects (no .returning() -- awaited directly off
         // .values()). The helper's team insert uses .returning().
         const tx: any = {
           select: db.select,
@@ -396,7 +396,7 @@ describe("teamImportService.install()", () => {
             const valuesChain: any = {
               returning: () => {
                 txInsertCalls++;
-                // 1st .returning() call: agents insert (Step 1) — succeed
+                // 1st .returning() call: agents insert (Step 1) -- succeed
                 if (txInsertCalls === 1) {
                   return Promise.resolve([{ id: "new-agent-1" }]);
                 }
@@ -409,7 +409,7 @@ describe("teamImportService.install()", () => {
                 throw err;
               },
               // agent_projects insert is `await tx.insert(agentProjects).values(...)`
-              // — no .returning(). The chain itself is the awaited value.
+              // -- no .returning(). The chain itself is the awaited value.
               then: (resolve: (v: unknown) => unknown) =>
                 Promise.resolve(resolve(undefined)),
             };

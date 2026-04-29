@@ -4,7 +4,7 @@
  * The helper builds skill-shaped entries from team coordinations the assigned
  * agent belongs to. Returned entries are appended to context.skills so the
  * adapter materializes each as a markdown file in skillsDir alongside the
- * agent's normal skills — no adapter changes required.
+ * agent's normal skills -- no adapter changes required.
  *
  * Tests verify only the pure-helper contract (DB shape -> RuntimeSkillEntry[]).
  * Defensive try/catch behavior is the CALLER's concern (heartbeat.ts:2574-2603)
@@ -14,7 +14,7 @@
 
 import { vi } from "vitest";
 
-// ── Mocks required because heartbeat.ts has top-level DB + drizzle imports ──
+// -- Mocks required because heartbeat.ts has top-level DB + drizzle imports --
 
 vi.mock("@armyofagents/db", () => {
   const makeTable = () =>
@@ -102,7 +102,7 @@ import { describe, expect, it } from "vitest";
 import { buildTeamCoordinationSkillEntries } from "../services/heartbeat.js";
 import { createAgentDb } from "./helpers/mock-db.js";
 
-// ────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------------------
 
 describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
   it("returns 1 entry when enableTeams=true and agent on a team with published coord", async () => {
@@ -135,7 +135,7 @@ describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
   it("returns [] when enableTeams=false (feature flag gate)", async () => {
     const db = createAgentDb({
       selects: [
-        [{ enableTeams: false }],  // companies query — flag off
+        [{ enableTeams: false }],  // companies query -- flag off
         // No further queries should fire.
       ],
     });
@@ -149,7 +149,7 @@ describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
     const db = createAgentDb({
       selects: [
         [{ enableTeams: true }],  // companies query
-        [],                        // memberships query — none
+        [],                        // memberships query -- none
       ],
     });
 
@@ -206,13 +206,13 @@ describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
   it("excludes drafts (status='published' filter at DB layer): 2 memberships, only 1 published coord", async () => {
     // The DB query has a status='published' filter, so the coords query result
     // will only include the published rows. This test asserts the helper's
-    // output reflects exactly what the DB returned — no in-memory filtering
+    // output reflects exactly what the DB returned -- no in-memory filtering
     // shenanigans that could accidentally include drafts.
     const db = createAgentDb({
       selects: [
         [{ enableTeams: true }],                                                          // companies query
         [{ teamId: "t1" }, { teamId: "t2" }],                                             // memberships query
-        [{ teamId: "t1", markdown: "# T1 published", trustLevel: "markdown_only" }],      // coords query — only t1 published; t2 is draft, filtered out at SQL layer
+        [{ teamId: "t1", markdown: "# T1 published", trustLevel: "markdown_only" }],      // coords query -- only t1 published; t2 is draft, filtered out at SQL layer
         [
           { id: "t1", name: "Frontend Team" },
           { id: "t2", name: "Backend Team" },
@@ -245,7 +245,7 @@ describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
       selects: [
         [{ enableTeams: true }],                                                                  // companies query
         [{ teamId: "t1" }],                                                                       // memberships query
-        [{ teamId: "t1", markdown: "# Trusted scripts", trustLevel: "scripts_executables" }],     // coords query — elevated trust
+        [{ teamId: "t1", markdown: "# Trusted scripts", trustLevel: "scripts_executables" }],     // coords query -- elevated trust
         [{ id: "t1", name: "Ops Team" }],                                                         // teams names query
       ],
     });
@@ -296,7 +296,7 @@ describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
     // status='published' (data drift, manual SQL bypass, or a legacy row from
     // before the archive cascade landed). The team itself is archived. The
     // coords SELECT must JOIN `teams` and filter teams.status != 'archived',
-    // so the coords-query returns [] server-side — and the helper short-circuits
+    // so the coords-query returns [] server-side -- and the helper short-circuits
     // to [] without ever issuing the team-names SELECT.
     //
     // The test asserts the implementation contract directly: the coords query
@@ -309,7 +309,7 @@ describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
     const sequenced: any[][] = [
       [{ enableTeams: true }],   // 1: companies query
       [{ teamId: "t1" }],        // 2: memberships query
-      [],                        // 3: coords query — what the JOIN'd query would return
+      [],                        // 3: coords query -- what the JOIN'd query would return
       // 4: teams-names query never runs (helper short-circuits when coords empty)
     ];
 
@@ -335,9 +335,9 @@ describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
 
     const result = await buildTeamCoordinationSkillEntries(db, "c1", "a1");
 
-    // Implementation contract — the coords query must JOIN teams.
+    // Implementation contract -- the coords query must JOIN teams.
     expect(innerJoinCalled).toBe(true);
-    // Result contract — archived team's coord must not surface.
+    // Result contract -- archived team's coord must not surface.
     expect(result).toHaveLength(0);
   });
 });

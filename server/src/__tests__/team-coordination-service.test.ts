@@ -56,8 +56,8 @@ describe("teamCoordinationService.upsert", () => {
 
   it("accepts description: null to clear an existing description (C4)", async () => {
     // Founder wants to clear a previously-set description. After the schema
-    // relaxed `.optional()` → `.nullable().optional()`, the service must
-    // pass `null` straight through to the DB write — the column is
+    // relaxed `.optional()` -> `.nullable().optional()`, the service must
+    // pass `null` straight through to the DB write -- the column is
     // `text` nullable. Capture the update payload and assert null persists.
     const updateSets: any[] = [];
     let selectCalls = 0;
@@ -246,7 +246,7 @@ old routing
     const svc = teamCoordinationService(db);
     const result = await svc.regenerateAutoSections("tc1", {
       members: "## Members\n- alice [LEAD]",
-      routing: "## Routing\n- default → @alice",
+      routing: "## Routing\n- default -> @alice",
     });
     expect(result).toBeDefined();
     expect(result.id).toBe("tc1");
