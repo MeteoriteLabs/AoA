@@ -27,6 +27,7 @@ import { useCompany } from "../../context/CompanyContext";
 import { useToast } from "../../context/ToastContext";
 import { useNavigate } from "@/lib/router";
 import { queryKeys } from "../../lib/queryKeys";
+import type { AgentAdapterType } from "@armyofagents/shared";
 import { MemberRow, type DraftMember } from "./MemberRow";
 
 interface Props {
@@ -95,44 +96,47 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
 
   const createMut = useMutation({
     mutationFn: async () => {
-      // 1. Create any "new" agents first.
-      // CRITICAL: agentsApi.create does NOT auto-add to agent_projects (verified in Task 1.10).
-      // We MUST explicitly call projectsApi.assignAgent next, otherwise the team-create
-      // will fail server-side with "agents not in parent department."
-      // (Convention C-6 from teams_plan_corrections.md)
-      const created: Record<string, string> = {};
-      for (const m of members.filter(
-        (m): m is Extract<DraftMember, { kind: "new" }> => m.kind === "new",
-      )) {
-        const agent = await agentsApi.create(selectedCompanyId!, {
+      // P1-G: single atomic call. The server accepts both existing-agent
+      // members and new-agent specs in one request and runs the agent +
+      // agent_projects + team + team_members inserts inside one
+      // transaction. Any failure rolls every preceding insert back, so
+      // a retry hits a clean state — no orphan agent rows.
+      //
+      // Previously this mutationFn looped per-agent agentsApi.create +
+      // projectsApi.assignAgent calls BEFORE the team-create. A failure
+      // partway through left committed agent rows the founder couldn't
+      // see in any UI surface, and a retry created MORE duplicates
+      // (agents has no unique constraint on name).
+      const memberPayload = members
+        .filter(
+          (m): m is Extract<DraftMember, { kind: "existing" }> =>
+            m.kind === "existing",
+        )
+        .map((m) => ({ agentId: m.agentId, role: m.role }));
+
+      const newAgentPayload = members
+        .filter(
+          (m): m is Extract<DraftMember, { kind: "new" }> => m.kind === "new",
+        )
+        .map((m) => ({
           name: m.name,
-          adapterType: m.adapterType,
-          skillKeys: m.skillKeys,
-        });
-        created[m.tempId] = agent.id;
+          // The DraftMember.adapterType is typed as `string` in MemberRow's
+          // discriminated union; the dropdown only ever sets one of the
+          // server-validated values. Cast narrows it for the wire payload —
+          // server-side Zod re-validates against AGENT_ADAPTER_TYPES.
+          adapterType: m.adapterType as AgentAdapterType,
+          role: m.role,
+        }));
 
-        // CRITICAL — assign agent to parent dept BEFORE the team create
-        // sees this agent in its members payload (Convention C-6).
-        await projectsApi.assignAgent(parentProjectId, agent.id);
-      }
-
-      // 2. Create the team WITH members in a single transactional request.
-      // P1-4: previously the UI made a POST /teams call followed by N
-      // POST /teams/:id/members calls in a loop, which left orphan teams
-      // with partial members on partial failure. The server now accepts
-      // an inline `members` array and inserts team + members atomically.
-      const memberPayload = members.map((m) => ({
-        agentId: m.kind === "existing" ? m.agentId : created[m.tempId]!,
-        role: m.role,
-      }));
       const team = await teamsApi.create(selectedCompanyId!, {
         name,
         parentProjectId,
         description: description || undefined,
         members: memberPayload,
+        newAgents: newAgentPayload.length > 0 ? newAgentPayload : undefined,
       });
 
-      // 3. Trigger initial coordination.md scaffolding
+      // Trigger initial coordination.md scaffolding.
       // Soft-fail: if scaffolding fails, the team still exists. User can
       // retry from the team detail page via the "Regenerate" button.
       try {
@@ -153,8 +157,17 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
       return team;
     },
     onSuccess: (team) => {
+      // P1-G: invalidate agents + projects caches too — newAgents created
+      // server-side won't show up in the agents list / dept assignments
+      // until queries refetch.
       queryClient.invalidateQueries({
         queryKey: queryKeys.teams.list(selectedCompanyId!),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.list(selectedCompanyId!),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.list(selectedCompanyId!),
       });
       pushToast({
         title: "Team created",
@@ -165,6 +178,9 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
       navigate(`/team/teams/${team.slug}`);
     },
     onError: (err) => {
+      // P1-G: no compensating cleanup needed — server-side transaction
+      // rolls back every preceding insert if anything fails. Just surface
+      // the error; the founder retries from a clean state.
       pushToast({
         title: "Failed to create team",
         body: (err as Error).message,

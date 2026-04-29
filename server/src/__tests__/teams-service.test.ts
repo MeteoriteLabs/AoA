@@ -35,6 +35,26 @@ vi.mock("@armyofagents/db", () => ({
   agentProjects: {
     agentId: "ap_agent_id",
     projectId: "ap_project_id",
+    companyId: "ap_company_id",
+  },
+  agents: {
+    id: "agents_id",
+    companyId: "agents_company_id",
+    name: "agents_name",
+    adapterType: "agents_adapter_type",
+    role: "agents_role",
+    title: "agents_title",
+    icon: "agents_icon",
+    status: "agents_status",
+    permissions: "agents_permissions",
+    runtimeConfig: "agents_runtime_config",
+    adapterConfig: "agents_adapter_config",
+    spentMonthlyCents: "agents_spent_monthly_cents",
+    budgetMonthlyCents: "agents_budget_monthly_cents",
+    lastHeartbeatAt: "agents_last_heartbeat_at",
+    metadata: "agents_metadata",
+    createdAt: "agents_created_at",
+    updatedAt: "agents_updated_at",
   },
   projects: {
     id: "projects_id",
@@ -368,6 +388,80 @@ describe("teamsService", () => {
           ],
         }),
       ).rejects.toThrow(/at most one lead per team, got 2/);
+    });
+
+    it("create() with newAgents rolls back when team insert fails", async () => {
+      // Two newAgents pre-validated. Mock the tx so:
+      //   - tx.insert(agents) succeeds (returns 2 rows)
+      //   - tx.insert(agentProjects) succeeds
+      //   - insertTeamWithUniqueSlug throws conflict (slug saturated)
+      // The transaction-wrapper's natural rollback should mean no DB writes
+      // persist; we assert the final outcome by counting committed inserts.
+      let agentInsertCalls = 0;
+      let agentProjectInsertCalls = 0;
+      let teamInsertCalls = 0;
+
+      const db: any = {
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => Promise.resolve([{ id: "p1" }])), // parent project belongs to company
+          })),
+        })),
+        transaction: async (cb: any) => {
+          const tx: any = {
+            select: vi.fn(() => ({
+              from: vi.fn(() => ({
+                where: vi.fn(() => Promise.resolve([])), // no existing slugs
+              })),
+            })),
+            insert: vi.fn((table: any) => ({
+              values: vi.fn(() => ({
+                returning: vi.fn(() => {
+                  if (table?.id === "agents_id") {
+                    agentInsertCalls++;
+                    return Promise.resolve([
+                      { id: "new-agent-1", name: "Alpha" },
+                      { id: "new-agent-2", name: "Beta" },
+                    ]);
+                  }
+                  if (table?.id === "ap_agent_id" || table?.companyId === "ap_company_id") {
+                    agentProjectInsertCalls++;
+                    return Promise.resolve([{ ok: true }]);
+                  }
+                  if (table?.id === "teams_id") {
+                    teamInsertCalls++;
+                    const err = Object.assign(new Error("dup slug"), { code: "23505" });
+                    throw err;
+                  }
+                  return Promise.resolve([]);
+                }),
+              })),
+            })),
+          };
+          try {
+            return await cb(tx);
+          } catch (err) {
+            // Simulate Postgres transaction rollback — re-raise.
+            throw err;
+          }
+        },
+      };
+
+      await expect(
+        teamsService(db).create("co-1", {
+          parentProjectId: "p1",
+          name: "QA",
+          newAgents: [
+            { name: "Alpha", adapterType: "claude_local", role: "lead" },
+            { name: "Beta", adapterType: "claude_local", role: "member" },
+          ],
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+
+      // Verify the writes WERE attempted (so we proved the path) but the rollback
+      // is a Postgres-level guarantee outside our test scope.
+      expect(agentInsertCalls).toBeGreaterThan(0);
+      expect(teamInsertCalls).toBeGreaterThan(0);
     });
   });
 

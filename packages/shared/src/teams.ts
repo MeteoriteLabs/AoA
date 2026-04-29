@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AGENT_ADAPTER_TYPES, AGENT_ICON_NAMES } from "./constants.js";
 
 export type TeamRole = "lead" | "member";
 export type TeamStatus = "active" | "archived";
@@ -117,6 +118,18 @@ export interface CreateTeamInput {
   // orphan team with missing members. When omitted, behavior matches the
   // pre-P1 single-row insert.
   members?: Array<{ agentId: string; role: TeamRole }>;
+  // P1-G: optional inline new-agent specs. When provided, the service
+  // creates the agents + agent_projects rows + team + team_members
+  // atomically in a single transaction. Avoids the BuildFromScratchForm
+  // pattern of looping per-agent INSERTs before the team-create call,
+  // which orphaned partial agent rows on team-insert failure.
+  newAgents?: Array<{
+    name: string;
+    adapterType: (typeof AGENT_ADAPTER_TYPES)[number];
+    role: TeamRole;
+    title?: string | null;
+    icon?: (typeof AGENT_ICON_NAMES)[number] | null;
+  }>;
 }
 
 export interface UpdateTeamInput {
@@ -156,6 +169,21 @@ export const createTeamSchema = z.object({
       z.object({
         agentId: z.string().uuid(),
         role: TeamRoleSchema,
+      }),
+    )
+    .optional(),
+  // P1-G: optional inline new-agent specs. The service inserts agents +
+  // agent_projects + team + team_members atomically — any failure rolls
+  // back every preceding insert. The total lead count across `members`
+  // and `newAgents` is bounded by the at-most-one-lead invariant.
+  newAgents: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(128),
+        adapterType: z.enum(AGENT_ADAPTER_TYPES).default("claude_local"),
+        role: TeamRoleSchema,
+        title: z.string().nullable().optional(),
+        icon: z.enum(AGENT_ICON_NAMES).nullable().optional(),
       }),
     )
     .optional(),
