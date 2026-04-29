@@ -777,5 +777,41 @@ describe("teamsService", () => {
         teamsService(db as any).updateMemberRole("t1", "a-missing", "member"),
       ).rejects.toThrow(/not found/i);
     });
+
+    it("converts PG 23505 on concurrent lead promotion to 409", async () => {
+      // P1-B: updateMemberRole(role: "lead") — the partial unique index
+      // team_members_one_lead_uq guarantees at most one lead per team. If
+      // two concurrent transactions both demote then promote, the second
+      // one's UPDATE-to-lead loses the race and throws 23505. The service
+      // should map that to 409 (matching addMember's pattern).
+      const db: any = {
+        transaction: async (cb: (tx: any) => Promise<unknown>) => {
+          const tx: any = {
+            select: () => ({
+              from: () => ({
+                where: () => Promise.resolve([]), // no existing leads to demote
+              }),
+            }),
+            update: () => ({
+              set: () => ({
+                where: () => ({
+                  returning: () => {
+                    const err = Object.assign(new Error("dup lead"), {
+                      code: "23505",
+                    });
+                    throw err;
+                  },
+                }),
+              }),
+            }),
+          };
+          return cb(tx);
+        },
+      };
+
+      await expect(
+        teamsService(db).updateMemberRole("t1", "a1", "lead"),
+      ).rejects.toMatchObject({ status: 409 });
+    });
   });
 });

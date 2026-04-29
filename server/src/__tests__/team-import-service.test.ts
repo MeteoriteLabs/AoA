@@ -53,6 +53,11 @@ vi.mock("../errors.js", () => ({
     (err as any).status = 400;
     return err;
   },
+  conflict: (msg: string) => {
+    const err = new Error(msg);
+    (err as any).status = 409;
+    return err;
+  },
   notFound: (msg: string) => {
     const err = new Error(msg);
     (err as any).status = 404;
@@ -284,19 +289,21 @@ describe("teamImportService.install()", () => {
     //   3. P1 parent-project company check → [{id: "proj-1"}]
     //   4. tx.insert(agents).returning → [{id: "new-agent-1"}]
     //   5. tx.insert(agentProjects) → no return
-    //   6. tx.insert(teams).returning → [{id: "new-team-1", slug: "happy-team", name: "Happy Team", parentProjectId: "proj-1"}]
-    //   7. tx.insert(teamMembers) → no return
-    //   8. (scaffolder is stubbed at the module level, so it never queries)
-    //   9. tx.insert(teamCoordinations) → no return
+    //   6. helper: SELECT existing-slugs (inside tx) → []
+    //   7. helper: tx.insert(teams).returning → [{...}]
+    //   8. tx.insert(teamMembers) → no return
+    //   9. (scaffolder is stubbed at the module level, so it never queries)
+    //  10. tx.insert(teamCoordinations) → no return
     const db = createAgentDb({
       selects: [
         [], // 1: preview agents collision
-        [], // 2: slug existence
+        [], // 2: slug existence pre-flight
         [{ id: "proj-1" }], // 3: P1 parent-project company check
+        [], // 6: helper's existing-slugs probe (inside tx)
       ],
       inserts: [
-        [{ id: "new-agent-1" }],   // 4: agents.returning
-        [],                          // 5: agentProjects
+        [{ id: "new-agent-1" }], // 4: agents.returning
+        [], // 5: agentProjects
         [
           {
             id: "new-team-1",
@@ -304,9 +311,9 @@ describe("teamImportService.install()", () => {
             name: "Happy Team",
             parentProjectId: "proj-1",
           },
-        ], // 6: teams.returning
-        [], // 7: teamMembers
-        [], // 8: teamCoordinations
+        ], // 7: teams.returning (via helper)
+        [], // 8: teamMembers
+        [], // 10: teamCoordinations
       ],
     });
 
@@ -343,5 +350,81 @@ describe("teamImportService.install()", () => {
         parentProjectId: "from-other-company",
       }),
     ).rejects.toThrow(/parent project.*not found in company/);
+  });
+
+  it("converts PG 23505 on slug race during install to 409 (P1-C)", async () => {
+    // P1-C: the pre-flight slug-existence probe at install() narrows but
+    // does not eliminate the TOCTOU window — between the probe and the
+    // tx.insert(teams) inside the transaction, a concurrent install can
+    // win the slug. The shared insertTeamWithUniqueSlug helper retries up
+    // to 5 times; if all retries fail (slug space saturated), the helper
+    // throws conflict() and the service surfaces a 409.
+    //
+    // This test forces the helper to throw 23505 on every team-insert
+    // attempt: existing-slugs probe always returns empty (helper picks
+    // the same base slug each time), and the team insert always rejects
+    // with 23505. After maxRetries the helper throws conflict().
+    let selectCalls = 0;
+    let txInsertCalls = 0;
+    const db: any = {
+      select: () => ({
+        from: () => ({
+          where: () => {
+            const idx = selectCalls++;
+            // Pre-tx order (no skillDeps in HAPPY_PATH_YAML so no
+            // companySkills probe):
+            //   0: preview agents collision lookup → []
+            //   1: slug existence pre-flight → [] (clean)
+            //   2: P1 parent-project company check → [{id: proj-1}]
+            //   3+: helper's existing-slugs probe inside tx (always [])
+            if (idx === 0) return Promise.resolve([]);
+            if (idx === 1) return Promise.resolve([]);
+            if (idx === 2) return Promise.resolve([{ id: "proj-1" }]);
+            // Helper's existing-slugs probe — empty so helper keeps
+            // picking the colliding base slug.
+            return Promise.resolve([]);
+          },
+        }),
+      }),
+      transaction: async (cb: (tx: any) => Promise<unknown>) => {
+        // Step 1 of install inserts agents (with .returning()) and
+        // agent_projects (no .returning() — awaited directly off
+        // .values()). The helper's team insert uses .returning().
+        const tx: any = {
+          select: db.select,
+          insert: () => {
+            const valuesChain: any = {
+              returning: () => {
+                txInsertCalls++;
+                // 1st .returning() call: agents insert (Step 1) — succeed
+                if (txInsertCalls === 1) {
+                  return Promise.resolve([{ id: "new-agent-1" }]);
+                }
+                // From the 2nd .returning() onward (helper's team
+                // insert), every attempt throws 23505. Helper retries up
+                // to maxRetries before throwing conflict().
+                const err = Object.assign(new Error("dup slug"), {
+                  code: "23505",
+                });
+                throw err;
+              },
+              // agent_projects insert is `await tx.insert(agentProjects).values(...)`
+              // — no .returning(). The chain itself is the awaited value.
+              then: (resolve: (v: unknown) => unknown) =>
+                Promise.resolve(resolve(undefined)),
+            };
+            return { values: () => valuesChain };
+          },
+        };
+        return cb(tx);
+      },
+    };
+
+    await expect(
+      teamImportService(db).install("co-1", HAPPY_PATH_YAML, {
+        collisions: {},
+        parentProjectId: "proj-1",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
   });
 });

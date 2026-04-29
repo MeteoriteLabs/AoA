@@ -11,6 +11,7 @@ import {
 import { and, eq, inArray } from "drizzle-orm";
 import { parseManifest } from "./team-manifest.js";
 import { teamScaffolderService } from "./team-scaffolder.js";
+import { insertTeamWithUniqueSlug } from "./teams.js";
 import type { TeamManifest } from "@armyofagents/shared";
 import { badRequest } from "../errors.js";
 
@@ -327,21 +328,31 @@ export function teamImportService(db: Db) {
           });
         }
 
-        // Step 2: insert the team row
-        const teamInsert = await tx
-          .insert(teams)
-          .values({
+        // Step 2: insert the team row.
+        //
+        // P1-C: the pre-flight slug-existence probe above narrows the
+        // window where a concurrent install of the same manifest could
+        // win the slug, but it does not eliminate it. The shared helper
+        // retries up to 5 times on 23505 against `teams_company_slug_uq`,
+        // and throws conflict() if the slug space is saturated.
+        //
+        // `slugBase` is the manifest's `name` (already a slug per the
+        // manifest validator) — that preserves the original behavior
+        // where the row's slug came directly from `manifest.name` rather
+        // than slugifying the displayName.
+        const team = await insertTeamWithUniqueSlug(
+          tx,
+          {
             companyId,
             parentProjectId: resolution.parentProjectId,
             name: manifest.displayName ?? manifest.name,
-            slug: manifest.name,
             description: manifest.description ?? null,
             manifest,
             templateOrigin: `@${manifest.name}`,
             templateVersion: manifest.version,
-          })
-          .returning();
-        const team = teamInsert[0];
+          },
+          { slugBase: manifest.name },
+        );
 
         // Step 3: link agents to the team via team_members.
         // Skipped agents have no entry in `agentIdByLocalName`.

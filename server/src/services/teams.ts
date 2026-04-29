@@ -10,6 +10,88 @@ import { generateTeamSlug, ensureUniqueSlug } from "./team-slug.js";
 import { validateManifest } from "./team-manifest.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 
+/**
+ * Insert a team with a unique slug, retrying with `-2`, `-3`, ... suffixes
+ * on 23505 collisions against `teams_company_slug_uq`. Returns the
+ * inserted team row.
+ *
+ * Caller MUST run this inside a transaction — the `tx` parameter is the
+ * Drizzle transaction handle. The helper reads existing slugs to pick a
+ * suffix; a concurrent insert can still beat us between the SELECT and
+ * the INSERT, so retries re-probe and try again.
+ *
+ * The base slug is derived from `slugBase` if provided (used by
+ * team-import where the manifest already supplies a slug-shaped string),
+ * otherwise from `values.name` via `generateTeamSlug`. The display-name
+ * column on the row is always `values.name`.
+ *
+ * Throws `conflict()` after `maxRetries` attempts (default 5) — the slug
+ * space for that base name is functionally saturated, so the founder
+ * needs to pick a different team name.
+ *
+ * P1-C: shared by `teamsService.create` and `teamImportService.install`.
+ * Both paths previously had their own retry logic (or, in import's case,
+ * none at all — relying on a pre-flight slug-existence probe that does
+ * not close the TOCTOU window).
+ *
+ * `tx` is typed `any` because the inferred Drizzle Tx type isn't exported
+ * cleanly across modules. The shape we depend on (select/insert) is the
+ * same as `Db`.
+ */
+export async function insertTeamWithUniqueSlug(
+  tx: any,
+  values: {
+    companyId: string;
+    parentProjectId: string;
+    name: string;
+    description?: string | null;
+    manifest?: unknown;
+    templateOrigin?: string | null;
+    templateVersion?: string | null;
+  },
+  options: { maxRetries?: number; slugBase?: string } = {},
+): Promise<{
+  id: string;
+  slug: string;
+  name: string;
+  parentProjectId: string;
+  [k: string]: unknown;
+}> {
+  const maxRetries = options.maxRetries ?? 5;
+  const baseSlug = generateTeamSlug(options.slugBase ?? values.name);
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const existing = await tx
+      .select({ slug: teams.slug })
+      .from(teams)
+      .where(eq(teams.companyId, values.companyId));
+    const slug = ensureUniqueSlug(
+      baseSlug,
+      new Set(existing.map((r: { slug: string }) => r.slug)),
+    );
+
+    try {
+      const inserted = await tx
+        .insert(teams)
+        .values({ ...values, slug })
+        .returning();
+      return inserted[0];
+    } catch (err) {
+      const code =
+        (err as { code?: string }).code ??
+        (err as { cause?: { code?: string } }).cause?.code;
+      if (code !== "23505") throw err;
+      // Loop will re-fetch existing slugs (the colliding row is now
+      // visible in this tx's snapshot or in subsequent reads) and pick a
+      // fresh suffix.
+    }
+  }
+
+  throw conflict(
+    `could not generate a unique slug for "${options.slugBase ?? values.name}" after ${maxRetries} attempts — pick a different team name`,
+  );
+}
+
 export function teamsService(db: Db) {
   return {
     list: async (companyId: string, projectId?: string) => {
@@ -99,78 +181,30 @@ export function teamsService(db: Db) {
       }
 
       // Slug uniqueness is enforced by the (companyId, slug) unique index
-      // (teams_company_slug_uq). Between the SELECT-existing-slugs probe
-      // and the INSERT below, a concurrent transaction could win the race
-      // and claim the slug we picked, causing PG to throw 23505. We retry
-      // up to MAX_SLUG_RETRIES times — each retry re-reads the existing
-      // slugs (the colliding row is now visible) and picks a fresh suffix.
-      //
-      // P1: when `memberInputs` is non-empty, the team insert + member
-      // inserts run inside ONE transaction per attempt — partial-success is
-      // impossible. Slug-retry restarts the entire transaction (cheap, since
-      // we expect 0 retries in the common case).
-      const MAX_SLUG_RETRIES = 5;
-      const baseSlug = generateTeamSlug(input.name);
-      let lastError: unknown = null;
+      // (teams_company_slug_uq). The team insert + (optional) member
+      // inserts run inside one transaction so partial success is
+      // impossible — the helper handles 23505 retries internally.
+      return db.transaction(async (tx) => {
+        const team = await insertTeamWithUniqueSlug(tx, {
+          companyId,
+          parentProjectId: input.parentProjectId,
+          name: input.name,
+          description: input.description ?? null,
+          manifest: input.manifest ?? {},
+        });
 
-      for (let attempt = 0; attempt < MAX_SLUG_RETRIES; attempt++) {
-        const existing = await db
-          .select({ slug: teams.slug })
-          .from(teams)
-          .where(eq(teams.companyId, companyId));
-        const slug = ensureUniqueSlug(
-          baseSlug,
-          new Set(existing.map((r: { slug: string }) => r.slug)),
-        );
-
-        try {
-          const insertedTeam = await db.transaction(async (tx: any) => {
-            const teamInsert = await tx
-              .insert(teams)
-              .values({
-                companyId,
-                parentProjectId: input.parentProjectId,
-                name: input.name,
-                slug,
-                description: input.description,
-                manifest: input.manifest ?? {},
-              })
-              .returning();
-            const team = teamInsert[0];
-
-            if (memberInputs.length > 0) {
-              await tx.insert(teamMembers).values(
-                memberInputs.map((m) => ({
-                  teamId: team.id,
-                  agentId: m.agentId,
-                  role: m.role,
-                })),
-              );
-            }
-
-            return team;
-          });
-          return insertedTeam;
-        } catch (err) {
-          // PostgreSQL unique_violation = 23505. Drizzle wraps the underlying
-          // pg/postgres-js error; the code may live on the cause chain.
-          const code =
-            (err as { code?: string }).code ??
-            (err as { cause?: { code?: string } }).cause?.code;
-          if (code !== "23505") throw err;
-          lastError = err;
-          // Loop will re-fetch existing slugs and pick a new suffix.
+        if (memberInputs.length > 0) {
+          await tx.insert(teamMembers).values(
+            memberInputs.map((m) => ({
+              teamId: team.id,
+              agentId: m.agentId,
+              role: m.role,
+            })),
+          );
         }
-      }
 
-      // Exhausted retries — re-throw the last error so the caller sees a
-      // real DB error (not a generic "could not generate slug").
-      throw (
-        lastError ??
-        new Error(
-          `failed to generate unique slug for "${input.name}" after ${MAX_SLUG_RETRIES} attempts`,
-        )
-      );
+        return team;
+      });
     },
 
     update: async (id: string, patch: UpdateTeamInput) => {
@@ -370,8 +404,13 @@ export function teamsService(db: Db) {
       agentId: string,
       role: TeamRole,
     ) => {
-      // If promoting to lead, demote any existing lead first (transactional)
-      return db.transaction(async (tx: any) => {
+      // P1-B: when promoting to lead, the partial unique index
+      // team_members_one_lead_uq backstops the demote-then-promote
+      // sequence. A concurrent caller racing the same promotion can win
+      // the lead slot; our UPDATE then throws 23505. Convert to a clean
+      // 409 — the asymmetry with addMember (which already does this) was
+      // the bug.
+      return db.transaction(async (tx) => {
         if (role === "lead") {
           const existingLead = await tx
             .select()
@@ -391,18 +430,30 @@ export function teamsService(db: Db) {
             }
           }
         }
-        const updated = await tx
-          .update(teamMembers)
-          .set({ role })
-          .where(
-            and(
-              eq(teamMembers.teamId, teamId),
-              eq(teamMembers.agentId, agentId),
-            ),
-          )
-          .returning();
-        if (updated.length === 0) throw notFound(`membership not found`);
-        return updated[0];
+        try {
+          const updated = await tx
+            .update(teamMembers)
+            .set({ role })
+            .where(
+              and(
+                eq(teamMembers.teamId, teamId),
+                eq(teamMembers.agentId, agentId),
+              ),
+            )
+            .returning();
+          if (updated.length === 0) throw notFound(`membership not found`);
+          return updated[0];
+        } catch (err) {
+          const code =
+            (err as { code?: string }).code ??
+            (err as { cause?: { code?: string } }).cause?.code;
+          if (code === "23505") {
+            throw conflict(
+              `concurrent lead change for team ${teamId} — retry`,
+            );
+          }
+          throw err;
+        }
       });
     },
   };
