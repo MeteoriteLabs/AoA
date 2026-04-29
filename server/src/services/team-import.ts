@@ -188,8 +188,10 @@ export function teamImportService(db: Db) {
 
       // Refuse installs that need skills not on the company. v1 has no
       // marketplace fetch — founder must install dependencies separately first.
+      // Throws via badRequest so the global error handler returns 400 with the
+      // actionable message (plain `new Error` would map to a generic 500).
       if (preview.skillsToInstall.length > 0) {
-        throw new Error(
+        throw badRequest(
           `manifest requires skills not installed in this company: ${preview.skillsToInstall.join(", ")}. Install them first via the Skills tab.`,
         );
       }
@@ -199,7 +201,7 @@ export function teamImportService(db: Db) {
       // pre-flight error so the founder sees a useful message.
       const leadAgents = manifest.agents.filter((a) => a.role === "lead");
       if (leadAgents.length > 1) {
-        throw new Error(
+        throw badRequest(
           `manifest has ${leadAgents.length} agents with role 'lead' — at most one lead per team is allowed`,
         );
       }
@@ -216,7 +218,7 @@ export function teamImportService(db: Db) {
           ),
         );
       if (existingTeam.length > 0) {
-        throw new Error(
+        throw badRequest(
           `a team with slug "${manifest.name}" already exists in this company`,
         );
       }
