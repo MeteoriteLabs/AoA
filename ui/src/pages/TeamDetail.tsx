@@ -13,6 +13,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { EmptyState } from "../components/EmptyState";
 import { PageTabBar } from "../components/PageTabBar";
+import { CoordinationEditor } from "../components/team/CoordinationEditor";
 
 const VALID_TABS = ["overview", "coordination", "manifest", "activity"] as const;
 type TeamDetailTab = (typeof VALID_TABS)[number];
@@ -150,7 +151,7 @@ export function TeamDetail() {
         <div className="mt-4">
           {activeTab === "overview" && <OverviewTab team={team} members={members} />}
           {activeTab === "coordination" && (
-            <p className="text-sm text-muted-foreground">Coordination tab — Slice 3.</p>
+            <CoordinationEditor teamId={team.id} teamName={team.name} />
           )}
           {activeTab === "manifest" && (
             <p className="text-sm text-muted-foreground">Manifest tab — Slice 5.</p>
