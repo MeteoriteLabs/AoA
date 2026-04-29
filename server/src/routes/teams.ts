@@ -14,42 +14,13 @@ import {
   teamCoordinationService,
   teamScaffolderService,
   teamExportService,
-  logActivity,
 } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole, assertDepartmentAccess } from "../middleware/rbac.js";
 import { logger } from "../middleware/logger.js";
+import { safeLogActivity } from "../utils/safe-log-activity.js";
 
 const log = logger.child({ route: "teams" });
-
-/**
- * Activity-log helper that swallows errors. The main operation has already
- * succeeded by the time this runs; a transient DB error here would otherwise
- * cause the client to see a 500 + retry, double-applying the operation.
- *
- * (D3: pre-release polish — consistent across all team-route activity logs.)
- */
-async function safeLogActivity(
-  db: Db,
-  params: Parameters<typeof logActivity>[1],
-): Promise<void> {
-  try {
-    await logActivity(db, params);
-  } catch (err) {
-    log.warn(
-      {
-        err:
-          err instanceof Error
-            ? { name: err.name, message: err.message }
-            : String(err),
-        action: params.action,
-        entityType: params.entityType,
-        entityId: params.entityId,
-      },
-      "activity log failed; main operation succeeded",
-    );
-  }
-}
 
 /**
  * HTTP routes for the new departmental Teams domain (Slice 1 / Task 1.10).

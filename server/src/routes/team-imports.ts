@@ -2,12 +2,13 @@ import { Router } from "express";
 import multer from "multer";
 import { z } from "zod";
 import type { Db } from "@armyofagents/db";
-import { teamImportService, logActivity } from "../services/index.js";
+import { teamImportService } from "../services/index.js";
 import { validate } from "../middleware/validate.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole, assertDepartmentAccess } from "../middleware/rbac.js";
 import { badRequest } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { safeLogActivity } from "../utils/safe-log-activity.js";
 
 const log = logger.child({ route: "team-imports" });
 
@@ -36,7 +37,10 @@ const log = logger.child({ route: "team-imports" });
  *    inside both helpers (`rbac.ts`). Gated identically to
  *    `POST /companies/:companyId/teams`.
  *  - JSON body validation via the `validate(zodSchema)` middleware.
- *  - Activity logging on install via `logActivity` (Convention C-7).
+ *  - Activity logging on install via `safeLogActivity` (Convention C-7) —
+ *    the install transaction has already committed by this point, so a
+ *    transient activity-log INSERT failure must not surface as a 500
+ *    that would prompt the founder to retry the import.
  */
 export function teamImportsRoutes(db: Db) {
   const router = Router();
@@ -140,7 +144,7 @@ export function teamImportsRoutes(db: Db) {
       });
 
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      await safeLogActivity(db, {
         companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
