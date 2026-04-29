@@ -42,7 +42,15 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
-  const sql = postgres(url);
+  // Force UTF-8 client encoding. Helps when the postgres SERVER's default
+  // encoding is UTF-8 but the connection got created without explicit
+  // client_encoding. On Windows, the embedded-postgres CLUSTER itself is
+  // initialized with the OS locale (WIN1252) at initdb time, so this option
+  // alone doesn't rescue clusters that were already created with WIN1252
+  // storage — those need to be re-initialized (see `initdbFlags` in
+  // server/src/index.ts) or migrated. Defensive scaffolder code (avoid
+  // `→`, em-dashes, emoji in stored markdown) is the cheapest workaround.
+  const sql = postgres(url, { connection: { client_encoding: "UTF8" } });
   return drizzlePg(sql, { schema });
 }
 

@@ -50,13 +50,17 @@ export function teamScaffolderService(db: Db) {
       lines.push("");
 
       // Auto sections
+      // ASCII-only output — postgres clusters initialized with WIN1252 (Windows
+      // default) reject non-Latin-1 characters in INSERT/UPDATE. Use ASCII
+      // separators (`-`, `--`, `->`) to keep the scaffolder portable across
+      // cluster encodings without requiring a re-initdb.
       lines.push("<!-- begin:auto:members -->");
       lines.push("## Members");
       for (const m of memberRows) {
         const a = byId.get(m.agentId);
-        const skills = (a?.skillKeys as string[] | undefined)?.join(", ") ?? "—";
+        const skills = (a?.skillKeys as string[] | undefined)?.join(", ") ?? "-";
         const roleLabel = m.role === "lead" ? "[LEAD]" : "[MEMBER]";
-        lines.push(`- **${a?.name ?? m.agentId}** ${roleLabel} — ${skills}`);
+        lines.push(`- **${a?.name ?? m.agentId}** ${roleLabel} -- ${skills}`);
       }
       lines.push("<!-- end:auto:members -->");
       lines.push("");
@@ -65,7 +69,7 @@ export function teamScaffolderService(db: Db) {
       lines.push("## Routing");
       const lead = memberRows.find((m) => m.role === "lead");
       const leadAgent = lead ? byId.get(lead.agentId) : undefined;
-      lines.push(`- default → @${leadAgent?.name ?? "lead"} (lead)`);
+      lines.push(`- default -> @${leadAgent?.name ?? "lead"} (lead)`);
       lines.push("<!-- end:auto:routing -->");
       lines.push("");
 
@@ -100,11 +104,12 @@ export function teamScaffolderService(db: Db) {
           : [];
       const byId = new Map(agentRows.map((a) => [a.id, a]));
 
+      // ASCII-only output (see scaffoldInitial above for rationale).
       const memberLines: string[] = ["## Members"];
       for (const m of memberRows) {
         const a = byId.get(m.agentId);
-        const skills = (a?.skillKeys as string[] | undefined)?.join(", ") ?? "—";
-        memberLines.push(`- **${a?.name ?? m.agentId}** [${m.role.toUpperCase()}] — ${skills}`);
+        const skills = (a?.skillKeys as string[] | undefined)?.join(", ") ?? "-";
+        memberLines.push(`- **${a?.name ?? m.agentId}** [${m.role.toUpperCase()}] -- ${skills}`);
       }
 
       const routingLines: string[] = ["## Routing"];
@@ -112,11 +117,11 @@ export function teamScaffolderService(db: Db) {
         routing?: { rules?: Array<{ match: string; mention: string }> };
       })?.routing;
       for (const rule of manifestRouting?.rules ?? []) {
-        routingLines.push(`- pattern \`${rule.match}\` → ${rule.mention}`);
+        routingLines.push(`- pattern \`${rule.match}\` -> ${rule.mention}`);
       }
       const lead = memberRows.find((m) => m.role === "lead");
       const leadName = lead ? byId.get(lead.agentId)?.name : undefined;
-      routingLines.push(`- default → @${leadName ?? "lead"} (lead)`);
+      routingLines.push(`- default -> @${leadName ?? "lead"} (lead)`);
 
       return {
         members: memberLines.join("\n"),
