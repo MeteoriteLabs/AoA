@@ -13,6 +13,7 @@ import {
   teamsService,
   teamCoordinationService,
   teamScaffolderService,
+  teamExportService,
   logActivity,
 } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -85,6 +86,27 @@ export function teamsRoutes(db: Db) {
     const team = await svc.getById(id);
     assertCompanyAccess(req, team.companyId);
     res.json(team);
+  });
+
+  // GET /teams/:id/export — download as .team.yaml
+  //
+  // Read access only — founders, leads, AND members can export their own
+  // team's manifest. assertCompanyAccess is sufficient; no assertRole.
+  // Activity logging is intentionally skipped for this read-only operation.
+  router.get("/teams/:id/export", async (req, res) => {
+    const id = req.params.id as string;
+    const team = await svc.getById(id);
+    assertCompanyAccess(req, team.companyId);
+
+    const exportSvc = teamExportService(db);
+    const yaml = await exportSvc.exportYaml(id);
+
+    res.setHeader("Content-Type", "application/x-yaml");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${team.slug}.team.yaml"`,
+    );
+    res.send(yaml);
   });
 
   // PATCH /teams/:id
