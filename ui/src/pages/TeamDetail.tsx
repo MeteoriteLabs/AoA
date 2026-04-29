@@ -14,6 +14,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { EmptyState } from "../components/EmptyState";
 import { PageTabBar } from "../components/PageTabBar";
 import { CoordinationEditor } from "../components/team/CoordinationEditor";
+import { ManifestEditor } from "../components/team/ManifestEditor";
 
 const VALID_TABS = ["overview", "coordination", "manifest", "activity"] as const;
 type TeamDetailTab = (typeof VALID_TABS)[number];
@@ -154,7 +155,7 @@ export function TeamDetail() {
             <CoordinationEditor teamId={team.id} teamName={team.name} />
           )}
           {activeTab === "manifest" && (
-            <p className="text-sm text-muted-foreground">Manifest tab — Slice 5.</p>
+            <ManifestEditor teamId={team.id} initialManifest={team.manifest} />
           )}
           {activeTab === "activity" && (
             <p className="text-sm text-muted-foreground">Activity tab — future slice.</p>
