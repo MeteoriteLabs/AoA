@@ -105,9 +105,14 @@ export const teamsApi = {
   regenerateCoordination: (teamId: string) =>
     api.post<TeamCoordination>(`/teams/${teamId}/coordination/regenerate`, {}),
 
-  previewImport: (companyId: string, file: File) => {
+  previewImport: (companyId: string, file: File, parentProjectId: string) => {
     const fd = new FormData();
     fd.append("file", file);
+    // Task 4 (P1-A): server-side dept gate requires the target department
+    // up-front so a team_lead can't probe agent collisions in another dept
+    // by uploading a manifest. The dept picker now lives in the upload
+    // dialog (was previously in the preview dialog).
+    fd.append("parentProjectId", parentProjectId);
     return api.postForm<TeamImportPreview>(
       `/companies/${companyId}/teams/_imports/preview`,
       fd,

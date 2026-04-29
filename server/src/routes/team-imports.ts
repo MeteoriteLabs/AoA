@@ -5,7 +5,7 @@ import type { Db } from "@armyofagents/db";
 import { teamImportService, logActivity } from "../services/index.js";
 import { validate } from "../middleware/validate.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertRole, assertDepartmentAccess } from "../middleware/rbac.js";
 import { badRequest } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
@@ -29,9 +29,12 @@ const log = logger.child({ route: "team-imports" });
  *  - No try/catch in handlers — `HttpError` propagates to the global
  *    error middleware.
  *  - Auth: `assertCompanyAccess(req, companyId)` for tenant scope plus
- *    `assertRole(db, req, companyId, "founder", "team_lead")` for the
- *    write permission. (Imports create teams + agents — gated identically
- *    to `POST /companies/:companyId/teams`.)
+ *    `assertRole(db, req, companyId, "team_lead")` for company-level write
+ *    permission, plus `assertDepartmentAccess(db, req, companyId,
+ *    parentProjectId)` so a team_lead can only import into their own
+ *    department. Founder + local_trusted + instance_admin short-circuit
+ *    inside both helpers (`rbac.ts`). Gated identically to
+ *    `POST /companies/:companyId/teams`.
  *  - JSON body validation via the `validate(zodSchema)` middleware.
  *  - Activity logging on install via `logActivity` (Convention C-7).
  */
@@ -76,11 +79,28 @@ export function teamImportsRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertRole(db, req, companyId, "team_lead");
+
+      // Task 4 (P1-A): preview is read-only but still discloses
+      // existing-agent name collisions across the company. Gate by the
+      // intended target department so a team_lead in dept A can't probe
+      // dept B's agent roster by uploading any manifest. The manifest
+      // itself does not carry a target dept — the founder/lead picks
+      // it. We accept it via `parentProjectId` (multipart form field or
+      // JSON field). The install route already requires it.
+      const body = (req.body ?? {}) as {
+        yamlContent?: unknown;
+        parentProjectId?: unknown;
+      };
+      const parentProjectId =
+        typeof body.parentProjectId === "string" ? body.parentProjectId : null;
+      if (!parentProjectId) {
+        throw badRequest("missing 'parentProjectId' field");
+      }
+      await assertDepartmentAccess(db, req, companyId, parentProjectId);
 
       const fileBuf = req.file?.buffer;
-      const bodyYaml = (req.body as { yamlContent?: unknown } | undefined)
-        ?.yamlContent;
+      const bodyYaml = body.yamlContent;
       const yaml = fileBuf
         ? fileBuf.toString("utf8")
         : typeof bodyYaml === "string"
@@ -110,7 +130,8 @@ export function teamImportsRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertRole(db, req, companyId, "team_lead");
+      await assertDepartmentAccess(db, req, companyId, req.body.parentProjectId);
 
       const team = await importSvc.install(companyId, req.body.yamlContent, {
         collisions: req.body.collisions,

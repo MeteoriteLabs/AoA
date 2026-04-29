@@ -17,7 +17,7 @@ import {
   logActivity,
 } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertRole, assertDepartmentAccess } from "../middleware/rbac.js";
 import { logger } from "../middleware/logger.js";
 
 const log = logger.child({ route: "teams" });
@@ -94,7 +94,8 @@ export function teamsRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertRole(db, req, companyId, "team_lead");
+      await assertDepartmentAccess(db, req, companyId, req.body.parentProjectId);
       const result = await svc.create(companyId, req.body);
       const actor = getActorInfo(req);
       await safeLogActivity(db, {
@@ -160,7 +161,8 @@ export function teamsRoutes(db: Db) {
       const id = req.params.id as string;
       const existing = await svc.getById(id);
       assertCompanyAccess(req, existing.companyId);
-      await assertRole(db, req, existing.companyId, "founder", "team_lead");
+      await assertRole(db, req, existing.companyId, "team_lead");
+      await assertDepartmentAccess(db, req, existing.companyId, existing.parentProjectId);
       const result = await svc.update(id, req.body);
       const actor = getActorInfo(req);
       await safeLogActivity(db, {
@@ -193,7 +195,8 @@ export function teamsRoutes(db: Db) {
       const id = req.params.id as string;
       const team = await svc.getById(id);
       assertCompanyAccess(req, team.companyId);
-      await assertRole(db, req, team.companyId, "founder", "team_lead");
+      await assertRole(db, req, team.companyId, "team_lead");
+      await assertDepartmentAccess(db, req, team.companyId, team.parentProjectId);
 
       const result = await svc.updateManifest(id, req.body);
 
@@ -228,7 +231,8 @@ export function teamsRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     assertCompanyAccess(req, existing.companyId);
-    await assertRole(db, req, existing.companyId, "founder", "team_lead");
+    await assertRole(db, req, existing.companyId, "team_lead");
+    await assertDepartmentAccess(db, req, existing.companyId, existing.parentProjectId);
     await svc.archive(id);
     const actor = getActorInfo(req);
     await safeLogActivity(db, {
@@ -252,7 +256,8 @@ export function teamsRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     assertCompanyAccess(req, existing.companyId);
-    await assertRole(db, req, existing.companyId, "founder", "team_lead");
+    await assertRole(db, req, existing.companyId, "team_lead");
+    await assertDepartmentAccess(db, req, existing.companyId, existing.parentProjectId);
     const result = await svc.dismantle(id);
     const actor = getActorInfo(req);
     await safeLogActivity(db, {
@@ -286,7 +291,8 @@ export function teamsRoutes(db: Db) {
       const id = req.params.id as string;
       const team = await svc.getById(id);
       assertCompanyAccess(req, team.companyId);
-      await assertRole(db, req, team.companyId, "founder", "team_lead");
+      await assertRole(db, req, team.companyId, "team_lead");
+      await assertDepartmentAccess(db, req, team.companyId, team.parentProjectId);
       const result = await svc.addMember(id, req.body.agentId, req.body.role);
       const actor = getActorInfo(req);
       await safeLogActivity(db, {
@@ -310,7 +316,8 @@ export function teamsRoutes(db: Db) {
     const agentId = req.params.agentId as string;
     const team = await svc.getById(id);
     assertCompanyAccess(req, team.companyId);
-    await assertRole(db, req, team.companyId, "founder", "team_lead");
+    await assertRole(db, req, team.companyId, "team_lead");
+    await assertDepartmentAccess(db, req, team.companyId, team.parentProjectId);
     await svc.removeMember(id, agentId);
     const actor = getActorInfo(req);
     await safeLogActivity(db, {
@@ -336,7 +343,8 @@ export function teamsRoutes(db: Db) {
       const agentId = req.params.agentId as string;
       const team = await svc.getById(id);
       assertCompanyAccess(req, team.companyId);
-      await assertRole(db, req, team.companyId, "founder", "team_lead");
+      await assertRole(db, req, team.companyId, "team_lead");
+      await assertDepartmentAccess(db, req, team.companyId, team.parentProjectId);
       const result = await svc.updateMemberRole(id, agentId, req.body.role);
       const actor = getActorInfo(req);
       await safeLogActivity(db, {
@@ -371,7 +379,8 @@ export function teamsRoutes(db: Db) {
       const id = req.params.id as string;
       const team = await svc.getById(id);
       assertCompanyAccess(req, team.companyId);
-      await assertRole(db, req, team.companyId, "founder", "team_lead");
+      await assertRole(db, req, team.companyId, "team_lead");
+      await assertDepartmentAccess(db, req, team.companyId, team.parentProjectId);
       const result = await coordSvc.upsert(team.companyId, {
         teamId: id,
         ...req.body,
@@ -402,7 +411,8 @@ export function teamsRoutes(db: Db) {
     const id = req.params.id as string;
     const team = await svc.getById(id);
     assertCompanyAccess(req, team.companyId);
-    await assertRole(db, req, team.companyId, "founder", "team_lead");
+    await assertRole(db, req, team.companyId, "team_lead");
+    await assertDepartmentAccess(db, req, team.companyId, team.parentProjectId);
 
     const existing = await coordSvc.getByTeam(id);
     const actor = getActorInfo(req);

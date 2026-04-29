@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Dialog,
   DialogContent,
@@ -17,7 +17,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { teamsApi, type TeamImportPreview } from "../../api/teams";
-import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { useToast } from "../../context/ToastContext";
 import { useNavigate } from "@/lib/router";
@@ -30,44 +29,42 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   preview: TeamImportPreview;
   yamlContent: string;
+  /**
+   * Task 4 (P1-A): the parent department is now picked in the upload
+   * dialog (before preview) so the server-side dept gate can fire on
+   * the preview request itself. Passed through here for the install
+   * mutation.
+   */
+  parentProjectId: string;
 }
 
 /**
- * Slice 8 / Task 8.4: Renders the import diff (parent dept picker, member
- * list with collision badges + per-row resolver, missing-skill warning) and
+ * Slice 8 / Task 8.4: Renders the import diff (member list with
+ * collision badges + per-row resolver, missing-skill warning) and
  * triggers the install on confirmation. The Install button is disabled
  * client-side when `skillsToInstall` is non-empty because the server will
  * refuse the cascade in that case (Task 8.2 / `team-import.ts`); better UX
  * to short-circuit than to surface a generic 500.
+ *
+ * Task 4 (P1-A): parent-department picker moved to the upload dialog so
+ * the server-side dept gate can validate access before disclosing
+ * cross-dept agent collision data via preview.
  */
 export function ImportPreviewDialog({
   open,
   onOpenChange,
   preview,
   yamlContent,
+  parentProjectId,
 }: Props) {
   const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [parentProjectId, setParentProjectId] = useState("");
   const [collisions, setCollisions] = useState<
     Record<string, CollisionAction>
   >({});
-
-  // Department list for the parent picker. Manifests are intentionally
-  // dept-agnostic, so the founder picks where the imported team lives.
-  const projectsQuery = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.projects.list(selectedCompanyId)
-      : ["projects", "none"],
-    queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
-  });
-  const departments = (projectsQuery.data ?? []).filter(
-    (p) => p.type === "department",
-  );
 
   const installMut = useMutation({
     mutationFn: () => {
@@ -119,37 +116,6 @@ export function ImportPreviewDialog({
             v{preview.manifest.version}
           </p>
         </DialogHeader>
-
-        {/* Parent dept picker */}
-        <div className="rounded-md bg-amber-50 p-3 dark:bg-amber-950/20">
-          <div className="flex items-center gap-3">
-            <span aria-hidden="true" className="text-base">
-              📁
-            </span>
-            <div className="flex-1">
-              <p className="text-xs font-bold">Pick a parent department</p>
-              <p className="text-[11px] text-muted-foreground">
-                Templates don't include a department — choose where this team
-                lives.
-              </p>
-            </div>
-            <Select
-              value={parentProjectId}
-              onValueChange={setParentProjectId}
-            >
-              <SelectTrigger className="h-8 w-[180px] text-xs">
-                <SelectValue placeholder="Select department" />
-              </SelectTrigger>
-              <SelectContent>
-                {departments.map((d) => (
-                  <SelectItem key={d.id} value={d.id}>
-                    {d.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
 
         {/* Members */}
         <section className="mt-3">
