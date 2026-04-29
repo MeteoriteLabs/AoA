@@ -398,9 +398,30 @@ describe("teamsService", () => {
       // The transaction-wrapper's natural rollback should mean no DB writes
       // persist; we assert the final outcome by counting committed inserts.
       let agentInsertCalls = 0;
-      let agentProjectInsertCalls = 0;
       let teamInsertCalls = 0;
-      let teamMembersInsertCalls = 0;
+
+      const insertSpy = vi.fn((table: any) => ({
+        values: vi.fn(() => ({
+          returning: vi.fn(() => {
+            if (table?.id === "agents_id") {
+              agentInsertCalls++;
+              return Promise.resolve([
+                { id: "new-agent-1", name: "Alpha" },
+                { id: "new-agent-2", name: "Beta" },
+              ]);
+            }
+            if (table?.id === "ap_agent_id" || table?.companyId === "ap_company_id") {
+              return Promise.resolve([{ ok: true }]);
+            }
+            if (table?.id === "teams_id") {
+              teamInsertCalls++;
+              const err = Object.assign(new Error("dup slug"), { code: "23505" });
+              throw err;
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
 
       const db: any = {
         select: vi.fn(() => ({
@@ -415,33 +436,7 @@ describe("teamsService", () => {
                 where: vi.fn(() => Promise.resolve([])), // no existing slugs
               })),
             })),
-            insert: vi.fn((table: any) => ({
-              values: vi.fn(() => ({
-                returning: vi.fn(() => {
-                  if (table?.id === "agents_id") {
-                    agentInsertCalls++;
-                    return Promise.resolve([
-                      { id: "new-agent-1", name: "Alpha" },
-                      { id: "new-agent-2", name: "Beta" },
-                    ]);
-                  }
-                  if (table?.id === "ap_agent_id" || table?.companyId === "ap_company_id") {
-                    agentProjectInsertCalls++;
-                    return Promise.resolve([{ ok: true }]);
-                  }
-                  if (table?.id === "teams_id") {
-                    teamInsertCalls++;
-                    const err = Object.assign(new Error("dup slug"), { code: "23505" });
-                    throw err;
-                  }
-                  if (table?.id === "tm_id") {
-                    teamMembersInsertCalls++;
-                    return Promise.resolve([]);
-                  }
-                  return Promise.resolve([]);
-                }),
-              })),
-            })),
+            insert: insertSpy,
           };
           try {
             return await cb(tx);
@@ -471,7 +466,17 @@ describe("teamsService", () => {
       // silently reorder the inserts and write team_members BEFORE the team
       // insert (which would defeat the whole-transaction rollback story for
       // any half-committed team_members row depending on FK timing).
-      expect(teamMembersInsertCalls).toBe(0);
+      //
+      // Using insertSpy.mock.calls.filter rather than a counter increment in
+      // .returning() because production code calls
+      // tx.insert(teamMembers).values(rows) WITHOUT .returning() — a counter
+      // inside .returning() would never fire and the assertion would pass
+      // vacuously even if the regression occurred. mock.calls.filter counts
+      // every insert(table) call regardless of how the chain continues.
+      const teamMembersInsertAttempts = insertSpy.mock.calls.filter(
+        ([table]) => table?.id === "tm_id",
+      ).length;
+      expect(teamMembersInsertAttempts).toBe(0);
     });
   });
 
