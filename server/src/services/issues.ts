@@ -4,6 +4,7 @@ import {
   activityLog,
   agents,
   assets,
+  authUsers,
   companies,
   companyMemberships,
   executionWorkspaces,
@@ -18,6 +19,7 @@ import {
   projectWorkspaces,
   projects,
   taskDependencies,
+  userRoles,
 } from "@armyofagents/db";
 import { extractProjectMentionIds } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -1424,6 +1426,41 @@ export function issueService(db: Db) {
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
       return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+    },
+
+    /**
+     * Resolve @username mentions to human user IDs in the same company.
+     *
+     * Pattern mirrors `findMentionedAgents` above:
+     *   - Regex extracts @-tokens from the body, stops at whitespace/punctuation.
+     *   - Tokens are lowercased.
+     *   - Tokens ending in "-h" have the suffix stripped — disambiguates from
+     *     agent mentions when both share a name (`@alice-h` = "the human alice").
+     *   - Matched against `authUsers.name` (case-insensitive), scoped to the
+     *     company via the `userRoles` join.
+     *
+     * Returns matching user IDs (text, not uuid — `authUsers.id` is text).
+     */
+    findMentionedHumans: async (companyId: string, body: string): Promise<string[]> => {
+      // Tighter token class than findMentionedAgents above — `\w` + `-` only.
+      // Stops cleanly at trailing punctuation like `;`, `)`, `:`, etc., which
+      // matters more for human display names than for agent slugs. Future:
+      // extract a shared MENTION_TOKEN_RE and unify both resolvers (followup).
+      const re = /\B@([\w-]+)/g;
+      const tokens = new Set<string>();
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(body)) !== null) {
+        let token = m[1].toLowerCase();
+        if (token.endsWith("-h")) token = token.slice(0, -2);
+        tokens.add(token);
+      }
+      if (tokens.size === 0) return [];
+      const rows = await db
+        .select({ id: authUsers.id, name: authUsers.name })
+        .from(authUsers)
+        .innerJoin(userRoles, eq(userRoles.userId, authUsers.id))
+        .where(eq(userRoles.companyId, companyId));
+      return [...new Set(rows.filter((u) => tokens.has(u.name.toLowerCase())).map((u) => u.id))];
     },
 
     findMentionedProjectIds: async (issueId: string) => {
