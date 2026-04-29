@@ -71,6 +71,12 @@ export function teamsRoutes(db: Db) {
   const router = Router();
   const svc = teamsService(db);
   const coordSvc = teamCoordinationService(db);
+  // B3.2: hoist scaffolder construction to factory time. Other services
+  // (`svc`, `coordSvc`) are also factory-scoped — the per-request
+  // construction inside the manifest + regenerate handlers was an
+  // inconsistency, not a deliberate request-scoping. The scaffolder is
+  // stateless and safely shared across requests.
+  const scaffolder = teamScaffolderService(db);
 
   // GET /companies/:companyId/teams
   router.get("/companies/:companyId/teams", async (req, res) => {
@@ -194,7 +200,6 @@ export function teamsRoutes(db: Db) {
       // Cascade: refresh auto sections of coordination.md if one exists.
       const existing = await coordSvc.getByTeam(id);
       if (existing) {
-        const scaffolder = teamScaffolderService(db);
         const sections = await scaffolder.regenerateAutoContent(id);
         await coordSvc.regenerateAutoSections(existing.id, sections);
       }
@@ -399,7 +404,6 @@ export function teamsRoutes(db: Db) {
     assertCompanyAccess(req, team.companyId);
     await assertRole(db, req, team.companyId, "founder", "team_lead");
 
-    const scaffolder = teamScaffolderService(db);
     const existing = await coordSvc.getByTeam(id);
     const actor = getActorInfo(req);
 

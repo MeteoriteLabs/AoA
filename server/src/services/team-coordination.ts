@@ -102,6 +102,13 @@ export function teamCoordinationService(db: Db) {
         .set({ markdown, updatedAt: new Date() })
         .where(eq(teamCoordinations.id, coordinationId))
         .returning();
+      // B3.1: defense-in-depth against the row being deleted between the
+      // SELECT above and the UPDATE here. Without this guard, the function
+      // would return `undefined` and the caller would silently drop the
+      // result. Mirrors the symmetric guard in `archive` above.
+      if (updated.length === 0) {
+        throw notFound(`coordination ${coordinationId} not found`);
+      }
       return updated[0];
     },
   };
