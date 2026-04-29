@@ -83,7 +83,12 @@ vi.mock("@armyofagents/db", () => ({
   activityLog: {},
   agents: { id: "agents_id", name: "agents_name", companyId: "agents_company_id" },
   assets: {},
-  authUsers: { id: "auth_users_id", name: "auth_users_name" },
+  // C5: notifyMentionedHumans now selects `email` for the local-part fallback.
+  authUsers: {
+    id: "auth_users_id",
+    name: "auth_users_name",
+    email: "auth_users_email",
+  },
   companies: { id: "companies_id", enableTeams: "companies_enable_teams" },
   companyMemberships: {},
   executionWorkspaces: {},
@@ -169,8 +174,14 @@ function makeHelperDb({
   users,
 }: {
   enableTeams: boolean;
-  users: Array<{ id: string; name: string }>;
+  // C5: users may now optionally specify `email` to drive the local-part
+  // fallback. Existing tests omit it; we backfill a sentinel that won't match.
+  users: Array<{ id: string; name: string; email?: string }>;
 }) {
+  const enrichedUsers = users.map((u) => ({
+    ...u,
+    email: u.email ?? "__no-email-fallback__@invalid.example",
+  }));
   let queryIdx = 0;
   return {
     select: () => ({
@@ -190,7 +201,7 @@ function makeHelperDb({
         // Users query
         return {
           innerJoin: () => ({
-            where: () => Promise.resolve(users),
+            where: () => Promise.resolve(enrichedUsers),
           }),
         };
       },

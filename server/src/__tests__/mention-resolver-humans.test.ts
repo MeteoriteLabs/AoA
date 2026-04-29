@@ -19,7 +19,14 @@ vi.mock("@armyofagents/db", () => ({
   activityLog: {},
   agents: { id: "agents_id", name: "agents_name", companyId: "agents_company_id" },
   assets: {},
-  authUsers: { id: "auth_users_id", name: "auth_users_name" },
+  // C5: email column is now selected by findMentionedHumans for the
+  // local-part fallback. The stub key is sufficient because the mock DB
+  // intercepts the chain before drizzle reads it.
+  authUsers: {
+    id: "auth_users_id",
+    name: "auth_users_name",
+    email: "auth_users_email",
+  },
   companies: {},
   companyMemberships: {},
   executionWorkspaces: {},
@@ -73,12 +80,21 @@ import { issueService } from "../services/issues.js";
 // This is a single-query helper — a hand-rolled chain is more readable than
 // the sequence-based factory and keeps each test explicit + self-contained.
 
-function makeUsersDb(rows: Array<{ id: string; name: string }>) {
+// C5: rows may now optionally include `email`. Tests that don't care about
+// the email-local-part match supply a sentinel value that won't accidentally
+// match any token under test (`__no-email-fallback__@invalid.example`).
+type MockUserRow = { id: string; name: string; email?: string };
+
+function makeUsersDb(rows: MockUserRow[]) {
+  const enriched = rows.map((r) => ({
+    ...r,
+    email: r.email ?? "__no-email-fallback__@invalid.example",
+  }));
   return {
     select: () => ({
       from: () => ({
         innerJoin: () => ({
-          where: () => Promise.resolve(rows),
+          where: () => Promise.resolve(enriched),
         }),
       }),
     }),
@@ -178,6 +194,61 @@ describe("issueService.findMentionedHumans", () => {
     ]);
     const body = "ping @alice; cc @bob: also (@charlie)";
     const result = await issueService(db).findMentionedHumans("c1", body);
+    expect(result.sort()).toEqual(["u1", "u2", "u3"]);
+  });
+
+  // ── C5: email-local-part fallback ─────────────────────────────────────────
+  // authUsers.name is a free-form display name like "Alice Smith". `@alice`
+  // in a comment body wouldn't match that. The fallback resolves the @-token
+  // against the email-local-part too — `alice@example.com` → "alice".
+
+  it("matches @-token against email-local-part when name doesn't match (C5)", async () => {
+    const db = makeUsersDb([
+      { id: "u1", name: "Alice Smith", email: "alice@example.com" },
+    ]);
+    const result = await issueService(db).findMentionedHumans(
+      "c1",
+      "hey @alice can you check this",
+    );
+    expect(result).toEqual(["u1"]);
+  });
+
+  it("dedupes when both name AND email-local-part match (C5)", async () => {
+    // User has name "alice" AND email "alice@example.com". Both branches of
+    // the OR fire, but the trailing `new Set([...])` collapses to a single id.
+    const db = makeUsersDb([
+      { id: "u1", name: "alice", email: "alice@example.com" },
+    ]);
+    const result = await issueService(db).findMentionedHumans("c1", "@alice");
+    expect(result).toEqual(["u1"]);
+  });
+
+  it("returns empty when neither name nor email-local-part matches (C5)", async () => {
+    const db = makeUsersDb([
+      { id: "u1", name: "Alice Smith", email: "alice@example.com" },
+    ]);
+    const result = await issueService(db).findMentionedHumans("c1", "@bob");
+    expect(result).toEqual([]);
+  });
+
+  it("matches email-local-part case-insensitively (C5)", async () => {
+    const db = makeUsersDb([
+      { id: "u1", name: "Alice Smith", email: "Alice@Example.COM" },
+    ]);
+    const result = await issueService(db).findMentionedHumans("c1", "@ALICE");
+    expect(result).toEqual(["u1"]);
+  });
+
+  it("matches multiple users by email-local-part (C5)", async () => {
+    const db = makeUsersDb([
+      { id: "u1", name: "Alice Smith", email: "alice@example.com" },
+      { id: "u2", name: "Bob Jones", email: "bob@example.com" },
+      { id: "u3", name: "Charlie Brown", email: "charlie@example.com" },
+    ]);
+    const result = await issueService(db).findMentionedHumans(
+      "c1",
+      "ping @alice and @bob — fyi @charlie",
+    );
     expect(result.sort()).toEqual(["u1", "u2", "u3"]);
   });
 });

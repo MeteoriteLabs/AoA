@@ -1438,8 +1438,11 @@ export function issueService(db: Db) {
      *   - Tokens are lowercased.
      *   - Tokens ending in "-h" have the suffix stripped — disambiguates from
      *     agent mentions when both share a name (`@alice-h` = "the human alice").
-     *   - Matched against `authUsers.name` (case-insensitive), scoped to the
-     *     company via the `userRoles` join.
+     *   - Matched against `authUsers.name` OR the email-local-part (the bit
+     *     before `@` in the email), both case-insensitive (C5). `authUsers.name`
+     *     is a free-form display name like "Alice Smith" — matching that
+     *     against `@alice` would fail. The email fallback is what most users
+     *     actually expect.
      *
      * Returns matching user IDs (text, not uuid — `authUsers.id` is text).
      */
@@ -1458,11 +1461,29 @@ export function issueService(db: Db) {
       }
       if (tokens.size === 0) return [];
       const rows = await db
-        .select({ id: authUsers.id, name: authUsers.name })
+        .select({
+          id: authUsers.id,
+          name: authUsers.name,
+          // C5: pull email so we can match the local-part. authUsers.email is
+          // notNull at the schema level, so `u.email.split("@")[0]` is safe.
+          email: authUsers.email,
+        })
         .from(authUsers)
         .innerJoin(userRoles, eq(userRoles.userId, authUsers.id))
         .where(eq(userRoles.companyId, companyId));
-      return [...new Set(rows.filter((u) => tokens.has(u.name.toLowerCase())).map((u) => u.id))];
+      return [
+        ...new Set(
+          rows
+            .filter((u) => {
+              const nameMatch = tokens.has(u.name.toLowerCase());
+              const emailLocalPart = u.email.split("@")[0]?.toLowerCase() ?? "";
+              const emailMatch =
+                emailLocalPart.length > 0 && tokens.has(emailLocalPart);
+              return nameMatch || emailMatch;
+            })
+            .map((u) => u.id),
+        ),
+      ];
     },
 
     /**
@@ -1506,6 +1527,9 @@ export function issueService(db: Db) {
 
         // Inline mirror of findMentionedHumans regex+query — kept local so the
         // existing helper is untouched (per Slice 7 review constraint).
+        // C5: match against EITHER name OR email-local-part — this is the
+        // notification path that fires the actual user-visible alert, so it
+        // must mirror the helper's resolution logic.
         const re = /\B@([\w-]+)/g;
         const tokens = new Set<string>();
         let m: RegExpExecArray | null;
@@ -1517,12 +1541,27 @@ export function issueService(db: Db) {
         if (tokens.size === 0) return 0;
 
         const rows = await db
-          .select({ id: authUsers.id, name: authUsers.name })
+          .select({
+            id: authUsers.id,
+            name: authUsers.name,
+            email: authUsers.email,
+          })
           .from(authUsers)
           .innerJoin(userRoles, eq(userRoles.userId, authUsers.id))
           .where(eq(userRoles.companyId, companyId));
         const mentionedIds = [
-          ...new Set(rows.filter((u) => tokens.has(u.name.toLowerCase())).map((u) => u.id)),
+          ...new Set(
+            rows
+              .filter((u) => {
+                const nameMatch = tokens.has(u.name.toLowerCase());
+                const emailLocalPart =
+                  u.email.split("@")[0]?.toLowerCase() ?? "";
+                const emailMatch =
+                  emailLocalPart.length > 0 && tokens.has(emailLocalPart);
+                return nameMatch || emailMatch;
+              })
+              .map((u) => u.id),
+          ),
         ];
         if (mentionedIds.length === 0) return 0;
 
