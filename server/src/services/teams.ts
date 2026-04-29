@@ -8,7 +8,7 @@ import type {
 } from "@armyofagents/shared";
 import { generateTeamSlug, ensureUniqueSlug } from "./team-slug.js";
 import { validateManifest } from "./team-manifest.js";
-import { badRequest, notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 
 export function teamsService(db: Db) {
   return {
@@ -257,11 +257,28 @@ export function teamsService(db: Db) {
         }
       }
 
-      const inserted = await db
-        .insert(teamMembers)
-        .values({ teamId, agentId, role })
-        .returning();
-      return inserted[0];
+      // P2: convert PG 23505 unique-violation on the
+      // `team_members_team_agent_uq` index into a clean 409 Conflict.
+      // A naked re-insert would otherwise bubble up as 500 via the global
+      // error handler — but a duplicate addMember is a client-correctable
+      // condition, not a server fault.
+      try {
+        const inserted = await db
+          .insert(teamMembers)
+          .values({ teamId, agentId, role })
+          .returning();
+        return inserted[0];
+      } catch (err) {
+        const code =
+          (err as { code?: string }).code ??
+          (err as { cause?: { code?: string } }).cause?.code;
+        if (code === "23505") {
+          throw conflict(
+            `agent ${agentId} is already a member of team ${teamId}`,
+          );
+        }
+        throw err;
+      }
     },
 
     removeMember: async (teamId: string, agentId: string) => {

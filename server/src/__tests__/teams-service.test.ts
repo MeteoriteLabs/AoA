@@ -48,6 +48,11 @@ vi.mock("../errors.js", () => ({
     (err as any).status = 400;
     return err;
   },
+  conflict: (msg: string) => {
+    const err = new Error(msg);
+    (err as any).status = 409;
+    return err;
+  },
   notFound: (msg: string) => {
     const err = new Error(msg);
     (err as any).status = 404;
@@ -506,6 +511,48 @@ describe("teamsService", () => {
       await expect(
         teamsService(db as any).addMember("missing", "a1", "member"),
       ).rejects.toThrow(/not found/i);
+    });
+
+    it("converts PG 23505 unique-violation to a 409 Conflict (P2)", async () => {
+      // Custom proxy: returns the team + dept-membership rows on selects, but
+      // throws a 23505 from the team_members insert. The service should
+      // catch that and rethrow a conflict() Error (status: 409).
+      let selectCalls = 0;
+      const db: any = {
+        select: () => ({
+          from: () => ({
+            where: () => {
+              const idx = selectCalls++;
+              if (idx === 0) {
+                // team lookup
+                return Promise.resolve([
+                  { id: "t1", parentProjectId: "p1" },
+                ]);
+              }
+              if (idx === 1) {
+                // dept-membership lookup: present
+                return Promise.resolve([
+                  { agentId: "a1", projectId: "p1" },
+                ]);
+              }
+              // (lead pre-check is skipped because we add as member)
+              return Promise.resolve([]);
+            },
+          }),
+        }),
+        insert: () => ({
+          values: () => ({
+            returning: () => {
+              const err = Object.assign(new Error("dup"), { code: "23505" });
+              throw err;
+            },
+          }),
+        }),
+      };
+
+      await expect(
+        teamsService(db).addMember("t1", "a1", "member"),
+      ).rejects.toMatchObject({ status: 409 });
     });
   });
 
