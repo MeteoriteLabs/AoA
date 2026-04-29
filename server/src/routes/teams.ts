@@ -23,6 +23,35 @@ import { logger } from "../middleware/logger.js";
 const log = logger.child({ route: "teams" });
 
 /**
+ * Activity-log helper that swallows errors. The main operation has already
+ * succeeded by the time this runs; a transient DB error here would otherwise
+ * cause the client to see a 500 + retry, double-applying the operation.
+ *
+ * (D3: pre-release polish — consistent across all team-route activity logs.)
+ */
+async function safeLogActivity(
+  db: Db,
+  params: Parameters<typeof logActivity>[1],
+): Promise<void> {
+  try {
+    await logActivity(db, params);
+  } catch (err) {
+    log.warn(
+      {
+        err:
+          err instanceof Error
+            ? { name: err.name, message: err.message }
+            : String(err),
+        action: params.action,
+        entityType: params.entityType,
+        entityId: params.entityId,
+      },
+      "activity log failed; main operation succeeded",
+    );
+  }
+}
+
+/**
  * HTTP routes for the new departmental Teams domain (Slice 1 / Task 1.10).
  *
  * Naming note: this factory is exported as `teamsRoutes` (plural) to
@@ -62,7 +91,7 @@ export function teamsRoutes(db: Db) {
       await assertRole(db, req, companyId, "founder", "team_lead");
       const result = await svc.create(companyId, req.body);
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      await safeLogActivity(db, {
         companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -120,7 +149,7 @@ export function teamsRoutes(db: Db) {
       await assertRole(db, req, existing.companyId, "founder", "team_lead");
       const result = await svc.update(id, req.body);
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      await safeLogActivity(db, {
         companyId: existing.companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -163,7 +192,7 @@ export function teamsRoutes(db: Db) {
       }
 
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      await safeLogActivity(db, {
         companyId: team.companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -189,7 +218,7 @@ export function teamsRoutes(db: Db) {
     await assertRole(db, req, existing.companyId, "founder", "team_lead");
     await svc.archive(id);
     const actor = getActorInfo(req);
-    await logActivity(db, {
+    await safeLogActivity(db, {
       companyId: existing.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
@@ -222,7 +251,7 @@ export function teamsRoutes(db: Db) {
       await assertRole(db, req, team.companyId, "founder", "team_lead");
       const result = await svc.addMember(id, req.body.agentId, req.body.role);
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      await safeLogActivity(db, {
         companyId: team.companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -246,7 +275,7 @@ export function teamsRoutes(db: Db) {
     await assertRole(db, req, team.companyId, "founder", "team_lead");
     await svc.removeMember(id, agentId);
     const actor = getActorInfo(req);
-    await logActivity(db, {
+    await safeLogActivity(db, {
       companyId: team.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
@@ -272,7 +301,7 @@ export function teamsRoutes(db: Db) {
       await assertRole(db, req, team.companyId, "founder", "team_lead");
       const result = await svc.updateMemberRole(id, agentId, req.body.role);
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      await safeLogActivity(db, {
         companyId: team.companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -310,7 +339,7 @@ export function teamsRoutes(db: Db) {
         ...req.body,
       });
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      await safeLogActivity(db, {
         companyId: team.companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -348,7 +377,7 @@ export function teamsRoutes(db: Db) {
         name: `${team.name} Coordination`,
         markdown: initial,
       });
-      await logActivity(db, {
+      await safeLogActivity(db, {
         companyId: team.companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -364,7 +393,7 @@ export function teamsRoutes(db: Db) {
 
     const sections = await scaffolder.regenerateAutoContent(id);
     const updated = await coordSvc.regenerateAutoSections(existing.id, sections);
-    await logActivity(db, {
+    await safeLogActivity(db, {
       companyId: team.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
