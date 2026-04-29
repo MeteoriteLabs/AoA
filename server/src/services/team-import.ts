@@ -346,10 +346,12 @@ export function teamImportService(db: Db) {
           team.id,
           manifest.description,
         );
+        // P2: derive `key` from teamId (unique per company) instead of the
+        // manifest name slug. Keeps consistency with `teamCoordinationService.upsert`.
         await tx.insert(teamCoordinations).values({
           companyId,
           teamId: team.id,
-          key: `${manifest.name}:coordination`,
+          key: `team-${team.id}:coordination`,
           slug: manifest.name,
           name: `${manifest.displayName ?? manifest.name} Coordination`,
           markdown: initialMarkdown,

@@ -40,12 +40,17 @@ export function teamCoordinationService(db: Db) {
       }
 
       const slug = generateTeamSlug(input.name);
+      // P2: derive `key` from teamId (always unique per company) rather than
+      // the name slug. Two teams with similar names previously generated the
+      // same slug → identical key → 23505 on the second insert. teamId is
+      // unique per companyId, so `team-${teamId}:coordination` collisions are
+      // impossible (one coordination row per team is correct).
       const inserted = await db
         .insert(teamCoordinations)
         .values({
           companyId,
           teamId: input.teamId,
-          key: `${slug}:coordination`,
+          key: `team-${input.teamId}:coordination`,
           slug,
           name: input.name,
           description: input.description,
