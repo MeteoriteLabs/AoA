@@ -4,6 +4,7 @@ import { teamCoordinations } from "@armyofagents/db";
 import type { CreateTeamCoordinationInput } from "@armyofagents/shared";
 import { generateTeamSlug } from "./team-slug.js";
 import { notFound } from "../errors.js";
+import { replaceAutoSection } from "./coordination-parser.js";
 
 export function teamCoordinationService(db: Db) {
   return {
@@ -61,6 +62,29 @@ export function teamCoordinationService(db: Db) {
         .where(eq(teamCoordinations.id, id))
         .returning();
       if (updated.length === 0) throw notFound(`coordination ${id} not found`);
+      return updated[0];
+    },
+
+    regenerateAutoSections: async (
+      coordinationId: string,
+      sections: Record<string, string>,
+    ) => {
+      const rows = await db
+        .select()
+        .from(teamCoordinations)
+        .where(eq(teamCoordinations.id, coordinationId));
+      if (rows.length === 0) throw notFound(`coordination ${coordinationId} not found`);
+
+      let markdown = rows[0].markdown;
+      for (const [name, content] of Object.entries(sections)) {
+        markdown = replaceAutoSection(markdown, name, content);
+      }
+
+      const updated = await db
+        .update(teamCoordinations)
+        .set({ markdown, updatedAt: new Date() })
+        .where(eq(teamCoordinations.id, coordinationId))
+        .returning();
       return updated[0];
     },
   };

@@ -83,3 +83,39 @@ describe("teamCoordinationService.archive", () => {
     expect(result.status).toBe("archived");
   });
 });
+
+describe("teamCoordinationService.regenerateAutoSections", () => {
+  it("replaces both members and routing sections, preserves user prose", async () => {
+    const original = `## Mission
+prose
+
+<!-- begin:auto:members -->
+old members
+<!-- end:auto:members -->
+
+<!-- begin:auto:routing -->
+old routing
+<!-- end:auto:routing -->`;
+
+    const db = createAgentDb({
+      selects: [[{ id: "tc1", teamId: "t1", markdown: original }]],
+      updates: [[{ id: "tc1", teamId: "t1", markdown: "updated" }]],
+    });
+    const svc = teamCoordinationService(db);
+    const result = await svc.regenerateAutoSections("tc1", {
+      members: "## Members\n- alice [LEAD]",
+      routing: "## Routing\n- default → @alice",
+    });
+    expect(result).toBeDefined();
+    expect(result.id).toBe("tc1");
+  });
+
+  it("throws notFound when coordination doesn't exist", async () => {
+    const db = createAgentDb({
+      selects: [[]],  // empty result
+    });
+    const svc = teamCoordinationService(db);
+    await expect(svc.regenerateAutoSections("nonexistent", { members: "x" }))
+      .rejects.toThrow(/not found/i);
+  });
+});
