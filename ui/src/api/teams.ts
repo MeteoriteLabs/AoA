@@ -81,6 +81,9 @@ export const teamsApi = {
 
   archive: (teamId: string) => api.delete<void>(`/teams/${teamId}`),
 
+  dismantle: (teamId: string) =>
+    api.delete<{ dismantledTeamId: string }>(`/teams/${teamId}/dismantle`),
+
   listMembers: (teamId: string) =>
     api.get<{ items: TeamMember[] }>(`/teams/${teamId}/members`),
 

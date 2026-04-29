@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { Download, Star, MoreHorizontal, Users } from "lucide-react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Download, Star, MoreHorizontal, Trash2, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs } from "@/components/ui/tabs";
@@ -14,6 +14,7 @@ import {
 import { teamsApi, type Team, type TeamMember } from "../api/teams";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -38,7 +39,10 @@ const TAB_ITEMS = [
 
 export function TeamDetail() {
   const { slug } = useParams<{ slug: string }>();
+  const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
+  const { pushToast } = useToast();
+  const queryClient = useQueryClient();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [searchParams, setSearchParams] = useSearchParams();
   const rawTab = searchParams.get("tab");
@@ -101,6 +105,34 @@ export function TeamDetail() {
     setSearchParams(nextParams);
   };
 
+  // Hard-delete the team. Schema cascades remove team_members +
+  // team_coordinations rows; agents survive. The dropdown item below is
+  // disabled until `team` is loaded, so the non-null assertion in mutationFn
+  // is safe (mutate() only fires after the user clicks).
+  const dismantleMut = useMutation({
+    mutationFn: () => teamsApi.dismantle(teamQuery.data!.id),
+    onSuccess: () => {
+      pushToast({
+        title: "Team dismantled",
+        body: teamQuery.data?.name,
+        tone: "success",
+      });
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.teams.list(selectedCompanyId),
+        });
+      }
+      navigate("/team");
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Dismantle failed",
+        body: (err as Error).message,
+        tone: "error",
+      });
+    },
+  });
+
   if (teamQuery.isLoading) return <PageSkeleton variant="detail" />;
   if (teamQuery.isError)
     return <EmptyState icon={Users} message="Team not found." />;
@@ -116,6 +148,13 @@ export function TeamDetail() {
     // The auth cookie is included automatically; the server's
     // Content-Disposition: attachment header makes the browser save the file.
     window.location.href = `/api/companies/${selectedCompanyId}/teams/${team.id}/export`;
+  }
+
+  function handleDismantle() {
+    const confirmed = window.confirm(
+      `Dismantle "${team.name}"? This deletes the team and its coordination but keeps the ${members.length} agent(s) in their department. This cannot be undone.`,
+    );
+    if (confirmed) dismantleMut.mutate();
   }
 
   return (
@@ -160,6 +199,14 @@ export function TeamDetail() {
               <DropdownMenuItem onClick={handleExport}>
                 <Download className="mr-2 h-3.5 w-3.5" />
                 Export as .team.yaml
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={handleDismantle}
+                className="text-destructive"
+                disabled={dismantleMut.isPending}
+              >
+                <Trash2 className="mr-2 h-3.5 w-3.5" />
+                {dismantleMut.isPending ? "Dismantling..." : "Dismantle team"}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

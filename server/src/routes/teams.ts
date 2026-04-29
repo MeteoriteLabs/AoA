@@ -239,6 +239,31 @@ export function teamsRoutes(db: Db) {
     res.status(204).end();
   });
 
+  // DELETE /teams/:id/dismantle (hard delete — cascades to team_members +
+  // team_coordinations). Agents survive. Founder escape hatch for "I imported
+  // the wrong team and want to undo it cleanly." For temporary hide, use the
+  // soft-delete `DELETE /teams/:id` route above.
+  router.delete("/teams/:id/dismantle", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    assertCompanyAccess(req, existing.companyId);
+    await assertRole(db, req, existing.companyId, "founder", "team_lead");
+    const result = await svc.dismantle(id);
+    const actor = getActorInfo(req);
+    await safeLogActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "team.dismantled",
+      entityType: "team",
+      entityId: id,
+      details: { name: existing.name, slug: existing.slug },
+    });
+    res.json(result);
+  });
+
   // GET /teams/:id/members
   router.get("/teams/:id/members", async (req, res) => {
     const id = req.params.id as string;

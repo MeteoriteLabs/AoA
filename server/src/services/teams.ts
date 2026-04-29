@@ -210,6 +210,28 @@ export function teamsService(db: Db) {
       return updated[0];
     },
 
+    /**
+     * Hard-delete a team. Schema cascades automatically remove team_members
+     * and team_coordinations rows (both have `onDelete: "cascade"` on
+     * `teams.id`). Agents survive — they were never owned by the team; they
+     * live independently in `agents` + `agent_projects`.
+     *
+     * Use this as the founder escape hatch for "I imported the wrong team and
+     * want to undo it cleanly." For temporary hide, use `archive()` instead.
+     */
+    dismantle: async (id: string): Promise<{ dismantledTeamId: string }> => {
+      const teamRows = await db
+        .select({ id: teams.id })
+        .from(teams)
+        .where(eq(teams.id, id));
+      if (teamRows.length === 0) throw notFound(`team ${id} not found`);
+
+      await db.delete(teams).where(eq(teams.id, id));
+      // Cascade handles team_members + team_coordinations.
+
+      return { dismantledTeamId: id };
+    },
+
     listMembers: async (teamId: string) => {
       return db
         .select()

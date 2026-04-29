@@ -416,6 +416,60 @@ describe("teamsService", () => {
     });
   });
 
+  describe("dismantle()", () => {
+    it("hard-deletes the team and returns the deleted teamId", async () => {
+      // Sequence: 1× select (existence probe) → 1× delete (hard-delete).
+      // Schema cascades handle team_members + team_coordinations; the
+      // service does NOT issue an explicit delete on those tables.
+      const db = createAgentDb({
+        selects: [[{ id: "t1" }]],
+        deletes: [[]],
+      });
+
+      const result = await teamsService(db as any).dismantle("t1");
+
+      expect(result).toEqual({ dismantledTeamId: "t1" });
+    });
+
+    it("throws notFound when team doesn't exist", async () => {
+      // Existence probe returns empty — service throws BEFORE issuing delete.
+      const db = createAgentDb({
+        selects: [[]],
+      });
+
+      await expect(
+        teamsService(db as any).dismantle("missing"),
+      ).rejects.toThrow(/not found/i);
+    });
+
+    it("issues exactly ONE delete (cascade contract — no explicit team_members or team_coordinations delete)", async () => {
+      // Verify the cascade contract: dismantle should rely on the schema's
+      // `onDelete: "cascade"` to remove team_members + team_coordinations,
+      // not a manual delete chain. Counting delete invocations protects
+      // against a regression where someone "helpfully" adds explicit
+      // deletes — those would race the cascade and could partially fail.
+      let deleteCalls = 0;
+      const db: any = {
+        select: () => ({
+          from: () => ({
+            where: () => Promise.resolve([{ id: "t1" }]),
+          }),
+        }),
+        delete: () => {
+          deleteCalls++;
+          return {
+            where: () => Promise.resolve([]),
+          };
+        },
+      };
+
+      const result = await teamsService(db).dismantle("t1");
+
+      expect(result).toEqual({ dismantledTeamId: "t1" });
+      expect(deleteCalls).toBe(1);
+    });
+  });
+
   describe("listMembers()", () => {
     it("returns members for team", async () => {
       const members = [
