@@ -201,7 +201,7 @@ Slice 10 (Marketplace UI) is deferred — separate spec when we ship publishing.
 | `packages/db/src/schema/index.ts` | Export new tables |
 | `packages/shared/src/index.ts` | Export team types |
 | `server/src/services/issues.ts` | Add `findMentionedHumans` (Slice 7) |
-| `server/src/services/heartbeat.ts` (or context-packaging equivalent) | Inject coordination.md into team-member prompts (Slice 6) |
+| `server/src/services/heartbeat.ts` | Inject team coordinations as skill-shaped entries into `context.skills` (Slice 6) — adapters materialize via existing skill machinery |
 | `server/src/index.ts` (or routes registry) | Mount new routes |
 | `ui/src/pages/TeamPage.tsx` | Render `TeamsSection` inside the Agents tab |
 | `ui/src/pages/OrgChart.tsx` | Render `TeamOrgOverlay` (Slice 4) |
@@ -4646,275 +4646,343 @@ Edit a team's manifest to add a routing rule (e.g., `match: "test"`, `mention: "
 
 ## Phase 4 — Runtime + Mentions
 
-### Slice 6: Heartbeat integration — extend `assembleContext()` directly
+### Slice 6: Heartbeat integration — extend `context.skills` injection in heartbeat.ts
 
-> ⚠ **HIGHEST-RISK SLICE.** This modifies `context-packaging.ts`, which runs on every heartbeat for every agent. A bug here can break every agent's runs system-wide. Three safety layers MUST all be in place: (1) feature-flag gate via `companies.enableTeams`, (2) defensive try/catch wrapping the new code, (3) explicit deployment gate before merge.
+> ⚠ **HIGHEST-RISK SLICE.** This modifies `heartbeat.ts`, which runs on every heartbeat for every agent. A bug here can break every agent's runs system-wide. Three safety layers MUST all be in place: (1) feature-flag gate via `companies.enableTeams`, (2) defensive try/catch wrapping the new code (mirrors existing skill-injection try/catch), (3) explicit deployment gate before merge.
 
-**Goal:** When an agent's heartbeat fires AND that agent's company has `enableTeams=true`, the agent's system prompt includes a "Team Coordination" section pulled from all team coordinations the agent belongs to. Respects `runtimeConfig.contextMode` (skipped if `minimal`). Failures isolated by try/catch — never break the prompt build.
+> ⚠ **CORRECTION (2026-04-29):** An earlier version of this slice targeted `contextPackagingService.assembleContext()` in `context-packaging.ts`. That function is NOT called by heartbeat — it only powers the "Open in LLM" markdown export endpoint. Verified by `git grep`. Heartbeat builds prompts via the `context.skills` injection pattern at `heartbeat.ts:2475-2491`. See `teams_plan_corrections.md` P-7 for the verified canonical pattern.
+
+**Goal:** When an agent's heartbeat fires AND that agent's company has `enableTeams=true`, the agent's `context.skills` array also includes synthetic skill-shaped entries representing the team coordinations for every team the agent belongs to. Adapters already materialize `context.skills` as files in a temp directory the CLI can access (via `--add-dir`), so the CLI discovers team coordinations the same way it discovers skills — no adapter changes needed. Respects `runtimeConfig.contextMode` (skipped if `minimal`, mirroring skill injection). Failures isolated by try/catch — never break the heartbeat run.
 
 **Worktree:** `teams-slice-6`. **Depends on:** Slice 1.
 
-> **Pattern source for the injection point:** [`server/src/services/context-packaging.ts:22-101`](../../../server/src/services/context-packaging.ts) — `contextPackagingService(db).assembleContext(companyId, issueId)` is the single function that builds the prompt for heartbeat runs. We extend this function directly rather than creating a separate helper.
+> **Pattern source for the injection point:** [`server/src/services/heartbeat.ts:2475-2491`](../../../server/src/services/heartbeat.ts) — the existing `try/catch` block that fetches `companySkillService.listRuntimeSkillEntries()` and assigns to `context.skills`. We extend this block to also fetch team coordinations and merge them into the same array before assignment. Adapter consumption happens at [`packages/adapters/claude-local/src/server/execute.ts:335-336, 384`](../../../packages/adapters/claude-local/src/server/execute.ts) — `dbSkills` reads from `context.skills`; `buildSkillsDir(dbSkills)` writes the markdown content to a temp directory; `args.push("--add-dir", skillsDir)` exposes the directory to the CLI.
 
 ---
 
-#### Task 6.1: Add Team Coordination section to `assembleContext()`
+#### Task 6.1: Inject team coordinations into `context.skills` in heartbeat.ts
 
 **Files:**
-- Modify: `server/src/services/context-packaging.ts`
-- Test: `server/src/__tests__/context-packaging-team-coordination.test.ts` (NEW — replaces the old `heartbeat-team-coordination.test.ts` from the original plan)
+- Modify: `server/src/services/heartbeat.ts` (extend the existing skill-injection try/catch block at lines ~2475-2491)
+- Test: `server/src/__tests__/heartbeat-team-coordination.test.ts` (NEW)
 
-- [ ] **Step 1: Read the existing `assembleContext()` to identify the insertion point**
+**Pattern:** Heartbeat already injects company skills via `context.skills = agentSkills` (line 2484). The adapter (`packages/adapters/claude-local/src/server/execute.ts:335-336, 384`) materializes `context.skills` as markdown files in a temp `skillsDir` and points the CLI at it with `--add-dir`. Team coordinations follow the SAME pattern: convert each coordination to a skill-shaped entry, append to the `agentSkills` array. Adapters require zero changes.
 
-Run: `cat server/src/services/context-packaging.ts | head -200`
-Locate: the `sectionLimits` map (~line 58) and the section assembly block. The new section goes BETWEEN agent-config and preferences sections.
+- [ ] **Step 1: Read the existing skill-injection block**
 
-- [ ] **Step 2: Extend `sectionLimits`**
+Run: `sed -n '2470,2495p' server/src/services/heartbeat.ts`
 
-In `context-packaging.ts`, find the `sectionLimits` object and add a `teamCoordinations` field per mode:
-
+You'll see:
 ```typescript
-const sectionLimits = {
-  minimal: { memory: 2, dependencies: 3, preferences: 1, teamCoordinations: 0 },
-  standard: { memory: 5, dependencies: 10, preferences: 5, teamCoordinations: 5 },
-  full: { memory: 20, dependencies: 30, preferences: 20, teamCoordinations: 10 },
-};
+// Fetch company skills attached to this agent and inject into context
+try {
+  const skillSvc = companySkillService(db);
+  const agentSkills = await skillSvc.listRuntimeSkillEntries(agent.companyId, agent.id);
+  logger.info(/* ... */);
+  if (agentSkills.length > 0) {
+    context.skills = agentSkills;
+  }
+} catch (err) {
+  logger.warn(/* ... */);
+}
 ```
 
-- [ ] **Step 3: Add the imports for new tables + companies feature flag**
+The new team coordination block goes **immediately after** this, in a separate `try/catch`. Reasons for separate (not extending the existing block):
+- Failure isolation: a team-coord query error must not break skill injection (and vice versa).
+- Different feature gates: skills always inject; team coords only when `enableTeams=true`.
 
-At the top of `context-packaging.ts`, extend the imports:
+- [ ] **Step 2: Add imports**
 
-```typescript
-import {
-  // ... existing imports
-  teamMembers,
-  teamCoordinations,
-  teams,
-} from "@armyofagents/db";
+At the top of `heartbeat.ts`, extend the existing `@armyofagents/db` import to also include `teamMembers`, `teamCoordinations`, `teams`. (`companies` is already imported.)
 
-import { logger } from "../middleware/logger.js";
-const log = logger.child({ service: "context-packaging" });
-```
+The skill-entry shape `RuntimeSkillEntry` is exported from `./company-skills.js`. Verify by `grep -n "export.*RuntimeSkillEntry" server/src/services/company-skills.ts`. If it's not exported, export it.
 
-(`companies` is already imported per the existing file.)
+- [ ] **Step 3: Add the team coordination injection block**
 
-- [ ] **Step 4: Add the Team Coordination section assembly with safety wrappers**
-
-Inside `assembleContext()`, AFTER the agent-config section assembly and BEFORE the preferences section, add:
+IMMEDIATELY AFTER the closing brace of the existing skill-injection try/catch (around line 2491), add:
 
 ```typescript
-// ===== Section: Team Coordination (Slice 6) =====
-// SAFETY: feature-flag gate + try/catch wrapper. Failures are silent — never break the prompt build.
-if (issue.assigneeAgentId && contextMode !== "minimal") {
-  try {
-    // Feature-flag gate: skip entirely unless company has opted in
-    const companyRow = await db
-      .select({ enableTeams: companies.enableTeams })
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((rows) => rows[0]);
+// Fetch team coordinations for any teams the agent belongs to and inject as
+// skill-shaped entries into context.skills. Adapters already materialize
+// context.skills as files in skillsDir, so the CLI discovers team coordinations
+// the same way it discovers skills — no adapter changes needed.
+//
+// THREE SAFETY LAYERS:
+//   1. Feature-flag gate (companies.enableTeams) — default false; existing companies unaffected.
+//   2. Try/catch isolates failures from heartbeat run — never throws.
+//   3. Append-only merge into context.skills — never clobbers prior skills.
+try {
+  const companyRow = await db
+    .select({ enableTeams: companies.enableTeams })
+    .from(companies)
+    .where(eq(companies.id, agent.companyId))
+    .then((rows) => rows[0]);
 
-    if (companyRow?.enableTeams) {
-      const memberships = await db
-        .select({ teamId: teamMembers.teamId })
-        .from(teamMembers)
-        .where(eq(teamMembers.agentId, issue.assigneeAgentId))
-        .limit(sectionLimits[contextMode as keyof typeof sectionLimits].teamCoordinations);
+  if (companyRow?.enableTeams) {
+    const memberships = await db
+      .select({ teamId: teamMembers.teamId })
+      .from(teamMembers)
+      .where(eq(teamMembers.agentId, agent.id))
+      .limit(10);
 
-      if (memberships.length > 0) {
-        const teamIds = memberships.map((m) => m.teamId);
+    if (memberships.length > 0) {
+      const teamIds = memberships.map((m) => m.teamId);
 
-        const coords = await db
-          .select({
-            teamId: teamCoordinations.teamId,
-            markdown: teamCoordinations.markdown,
-          })
-          .from(teamCoordinations)
-          .where(
-            and(
-              inArray(teamCoordinations.teamId, teamIds),
-              eq(teamCoordinations.status, "published"),
-            ),
-          );
+      const coords = await db
+        .select({
+          teamId: teamCoordinations.teamId,
+          markdown: teamCoordinations.markdown,
+        })
+        .from(teamCoordinations)
+        .where(
+          and(
+            inArray(teamCoordinations.teamId, teamIds),
+            eq(teamCoordinations.status, "published"),
+          ),
+        );
 
+      if (coords.length > 0) {
+        // Only fetch team names when at least one published coord exists (saves a query).
         const teamRows = await db
           .select({ id: teams.id, name: teams.name })
           .from(teams)
           .where(inArray(teams.id, teamIds));
         const teamNameById = new Map(teamRows.map((t) => [t.id, t.name]));
 
-        if (coords.length > 0) {
-          const block = "# Team Coordination\n\n" + coords
-            .map((c) => `## ${teamNameById.get(c.teamId) ?? "Team"}\n\n${c.markdown}`)
-            .join("\n\n");
-          sections.push(block);
-        }
+        const teamCoordEntries: RuntimeSkillEntry[] = coords.map((c) => ({
+          key: `team-coord-${c.teamId}`,
+          name: `${teamNameById.get(c.teamId) ?? "Team"} Coordination`,
+          markdown: c.markdown,
+          trustLevel: "trusted" as const,
+        }));
+
+        // Append-only merge — preserves any skills set by the prior block.
+        const existing = (context.skills as RuntimeSkillEntry[] | undefined) ?? [];
+        context.skills = [...existing, ...teamCoordEntries];
+
+        logger.info(
+          {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            teamCount: teamIds.length,
+            coordCount: coords.length,
+          },
+          "Injected team coordinations into context.skills",
+        );
       }
     }
-    // Feature-flag off → no section added. Prompt build continues unchanged.
-  } catch (err) {
-    log.warn(
-      { err, agentId: issue.assigneeAgentId, companyId },
-      "team coordination injection failed; continuing without team section",
-    );
-    // Don't push anything. Existing prompt is unchanged.
   }
+  // Feature-flag off → no-op. context.skills unchanged.
+} catch (err) {
+  // Sanitized error logging — never log raw err which may contain SQL/credentials.
+  logger.warn(
+    {
+      companyId: agent.companyId,
+      agentId: agent.id,
+      runId: run.id,
+      err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
+    },
+    "Failed to fetch team coordinations for agent run; continuing without team injection",
+  );
 }
 ```
 
 **Safety properties:**
-- Outer `if (issue.assigneeAgentId && contextMode !== "minimal")` skips work for unassigned tasks and minimal-context agents.
-- The `companyRow?.enableTeams` check ensures only opted-in companies run this code path.
-- The `try/catch` ensures any failure (DB error, missing row, query timeout) results in a warn log + the prompt building unchanged — never a thrown error.
+- Feature-flag query is the FIRST query inside try — no team table is touched if `enableTeams=false`.
+- Try/catch wraps everything (including the feature-flag query itself).
+- Append-only `[...existing, ...teamCoordEntries]` — prior `context.skills` (from the skill-injection block above) is preserved.
+- Sanitized error logging avoids leaking `err.stack` / SQL strings to disk.
+- Skip-on-empty at every level (`!enableTeams`, `memberships.length === 0`, `coords.length === 0`) — minimizes unnecessary work.
 
-- [ ] **Step 5: Write the failing integration test (T-5 from corrections plan)**
+- [ ] **Step 4: Write the test file**
+
+`server/src/__tests__/heartbeat-team-coordination.test.ts` — but heartbeat.ts is sprawling and integration-testing it directly is infeasible. Instead, **extract the team-coord injection logic into a small pure function** before testing.
+
+In heartbeat.ts, near the other heartbeat helpers (around line 499-575 area), add:
 
 ```typescript
-// server/src/__tests__/context-packaging-team-coordination.test.ts
+import type { RuntimeSkillEntry } from "./company-skills.js";
+
+/**
+ * Build skill-shaped entries from team coordinations the agent belongs to.
+ * Returns [] when the company has not enabled teams, or when the agent has no
+ * memberships, or when no published coordinations exist for those teams.
+ *
+ * Throws on DB error. Callers MUST wrap in try/catch — failures here cannot
+ * propagate to break the heartbeat run. See the call site in heartbeat for
+ * the canonical try/catch + sanitized warn-log pattern.
+ */
+export async function buildTeamCoordinationSkillEntries(
+  db: Db,
+  companyId: string,
+  agentId: string,
+): Promise<RuntimeSkillEntry[]> {
+  const companyRow = await db
+    .select({ enableTeams: companies.enableTeams })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .then((rows) => rows[0]);
+
+  if (!companyRow?.enableTeams) return [];
+
+  const memberships = await db
+    .select({ teamId: teamMembers.teamId })
+    .from(teamMembers)
+    .where(eq(teamMembers.agentId, agentId))
+    .limit(10);
+
+  if (memberships.length === 0) return [];
+  const teamIds = memberships.map((m) => m.teamId);
+
+  const coords = await db
+    .select({
+      teamId: teamCoordinations.teamId,
+      markdown: teamCoordinations.markdown,
+    })
+    .from(teamCoordinations)
+    .where(
+      and(
+        inArray(teamCoordinations.teamId, teamIds),
+        eq(teamCoordinations.status, "published"),
+      ),
+    );
+
+  if (coords.length === 0) return [];
+
+  const teamRows = await db
+    .select({ id: teams.id, name: teams.name })
+    .from(teams)
+    .where(inArray(teams.id, teamIds));
+  const teamNameById = new Map(teamRows.map((t) => [t.id, t.name]));
+
+  return coords.map((c) => ({
+    key: `team-coord-${c.teamId}`,
+    name: `${teamNameById.get(c.teamId) ?? "Team"} Coordination`,
+    markdown: c.markdown,
+    trustLevel: "trusted" as const,
+  }));
+}
+```
+
+The injection block at line 2491 then simplifies to:
+
+```typescript
+try {
+  const teamCoordEntries = await buildTeamCoordinationSkillEntries(db, agent.companyId, agent.id);
+  if (teamCoordEntries.length > 0) {
+    const existing = (context.skills as RuntimeSkillEntry[] | undefined) ?? [];
+    context.skills = [...existing, ...teamCoordEntries];
+    logger.info(/* ... */);
+  }
+} catch (err) {
+  logger.warn(/* sanitized */);
+}
+```
+
+Test cases (5):
+
+```typescript
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args) => args),
   eq: vi.fn((a, b) => ({ eq: [a, b] })),
-  desc: vi.fn((c) => ({ desc: c })),
-  sql: vi.fn(() => ({ sql: true })),
   inArray: vi.fn((c, v) => ({ inArray: [c, v] })),
-  or: vi.fn(() => ({})),
 }));
 
 vi.mock("@armyofagents/db", () => ({
-  issues: { id: "i_id", companyId: "i_cid", projectId: "i_pid", assigneeAgentId: "i_aid", goalId: "i_gid" },
-  companies: { id: "c_id", name: "c_n", description: "c_d", vision: "c_v", mission: "c_m", values: "c_va", enableTeams: "c_et" },
-  projects: { id: "p_id", name: "p_n" },
-  agents: { id: "a_id", runtimeConfig: "a_rc" },
-  memoryItems: { id: "m_id", companyId: "m_cid", status: "m_s", layer: "m_l", departmentId: "m_dep", priority: "m_pr", updatedAt: "m_u" },
-  goals: { id: "g_id" },
-  taskDependencies: { dependentIssueId: "td_did" },
-  artifacts: { id: "art_id" },
-  artifactVersions: { id: "av_id" },
+  companies: { id: "c_id", enableTeams: "c_et" },
   teamMembers: { agentId: "tm_a", teamId: "tm_t" },
   teamCoordinations: { teamId: "tc_t", markdown: "tc_md", status: "tc_s" },
   teams: { id: "t_id", name: "t_n" },
 }));
 
-import { contextPackagingService } from "../services/context-packaging.js";
-import { createDiscussionDb } from "./helpers/mock-db.js";
+import { buildTeamCoordinationSkillEntries } from "../services/heartbeat.js";
+import { createAgentDb } from "./helpers/mock-db.js";
 
-describe("context-packaging — Team Coordination injection (Slice 6)", () => {
-  it("includes Team Coordination section when company.enableTeams=true and agent is on a team", async () => {
-    const db = createDiscussionDb([
-      [{ id: "i1", companyId: "c1", projectId: "p1", assigneeAgentId: "a1", goalId: null }],   // issue
-      [{ runtimeConfig: { contextMode: "standard" } }],                                          // agent runtime config
-      [{ name: "Acme", description: "...", vision: null, mission: null, values: null }],        // company (basic)
-      [],                                                                                         // identity memory
-      [{ id: "p1", name: "Engineering", description: "..." }],                                  // project
-      [],                                                                                         // domain memory
-      [{ enableTeams: true }],                                                                    // companyRow.enableTeams query
-      [{ teamId: "t1" }],                                                                         // memberships
-      [{ teamId: "t1", markdown: "## Mission\nfrontend work" }],                                 // coords
-      [{ id: "t1", name: "Frontend Team" }],                                                      // team names
-      // ... remaining sections (deps, task, artifacts, agent config, prefs) — empty arrays
-      [], [], [], [], [],
+describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
+  it("returns 1 entry when enableTeams=true and agent on a team with published coord", async () => {
+    const db = createAgentDb([
+      [{ enableTeams: true }],                             // companies query
+      [{ teamId: "t1" }],                                  // memberships
+      [{ teamId: "t1", markdown: "# Team mission" }],      // coords
+      [{ id: "t1", name: "Frontend Team" }],               // team names
     ]);
-    const svc = contextPackagingService(db);
-    const result = await svc.assembleContext("c1", "i1");
-    expect(result.markdown).toContain("# Team Coordination");
-    expect(result.markdown).toContain("Frontend Team");
-    expect(result.markdown).toContain("frontend work");
+    const result = await buildTeamCoordinationSkillEntries(db, "c1", "a1");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({
+      key: "team-coord-t1",
+      name: "Frontend Team Coordination",
+      markdown: "# Team mission",
+      trustLevel: "trusted",
+    });
   });
 
-  it("OMITS Team Coordination section when company.enableTeams=false", async () => {
-    const db = createDiscussionDb([
-      [{ id: "i1", companyId: "c1", projectId: "p1", assigneeAgentId: "a1", goalId: null }],
-      [{ runtimeConfig: { contextMode: "standard" } }],
-      [{ name: "Acme" }],
-      [],
-      [{ id: "p1", name: "Eng" }],
-      [],
-      [{ enableTeams: false }],   // ← feature flag off
-      [], [], [], [], [], [], [],
-    ]);
-    const svc = contextPackagingService(db);
-    const result = await svc.assembleContext("c1", "i1");
-    expect(result.markdown).not.toContain("# Team Coordination");
+  it("returns [] when enableTeams=false (feature-flag gate)", async () => {
+    const db = createAgentDb([[{ enableTeams: false }]]);
+    const result = await buildTeamCoordinationSkillEntries(db, "c1", "a1");
+    expect(result).toEqual([]);
   });
 
-  it("OMITS Team Coordination when contextMode=minimal", async () => {
-    const db = createDiscussionDb([
-      [{ id: "i1", companyId: "c1", projectId: "p1", assigneeAgentId: "a1", goalId: null }],
-      [{ runtimeConfig: { contextMode: "minimal" } }],
-      [{ name: "Acme" }],
-      [],
-      [{ id: "p1", name: "Eng" }],
-      [], [], [], [], [], [], [],
-    ]);
-    const svc = contextPackagingService(db);
-    const result = await svc.assembleContext("c1", "i1");
-    expect(result.markdown).not.toContain("# Team Coordination");
-  });
-
-  it("OMITS Team Coordination when agent has no team memberships (even with flag on)", async () => {
-    const db = createDiscussionDb([
-      [{ id: "i1", companyId: "c1", projectId: "p1", assigneeAgentId: "a1", goalId: null }],
-      [{ runtimeConfig: { contextMode: "standard" } }],
-      [{ name: "Acme" }],
-      [],
-      [{ id: "p1", name: "Eng" }],
-      [],
+  it("returns [] when agent has no memberships", async () => {
+    const db = createAgentDb([
       [{ enableTeams: true }],
       [],   // ← no memberships
-      [], [], [], [], [], [],
     ]);
-    const svc = contextPackagingService(db);
-    const result = await svc.assembleContext("c1", "i1");
-    expect(result.markdown).not.toContain("# Team Coordination");
+    const result = await buildTeamCoordinationSkillEntries(db, "c1", "a1");
+    expect(result).toEqual([]);
   });
 
-  it("does NOT throw when DB query for coordination fails — logs warn and continues", async () => {
-    // Simulate a DB error during the coordination fetch by making the .then() reject
-    let queryIdx = 0;
-    const failOnQuery = 7; // the enableTeams query — make it throw
-    const db: any = {
-      select: () => ({
-        from: () => ({
-          where: () => ({
-            then: (fn: (rows: any[]) => any) => {
-              if (queryIdx++ === failOnQuery) {
-                return Promise.reject(new Error("simulated DB failure"));
-              }
-              return Promise.resolve(fn([]));
-            },
-            innerJoin: function () { return this; },
-            orderBy: function () { return this; },
-            limit: function () { return this; },
-          }),
-        }),
-      }),
-    };
-    const svc = contextPackagingService(db);
-    // Must not throw — the function should complete without the team section
-    const result = await svc.assembleContext("c1", "i1").catch((e) => ({ error: e }));
-    expect((result as any).error).toBeUndefined();
+  it("returns multiple entries for multiple teams with published coords", async () => {
+    const db = createAgentDb([
+      [{ enableTeams: true }],
+      [{ teamId: "t1" }, { teamId: "t2" }],
+      [
+        { teamId: "t1", markdown: "T1 doc" },
+        { teamId: "t2", markdown: "T2 doc" },
+      ],
+      [{ id: "t1", name: "Frontend" }, { id: "t2", name: "Backend" }],
+    ]);
+    const result = await buildTeamCoordinationSkillEntries(db, "c1", "a1");
+    expect(result).toHaveLength(2);
+    expect(result.map((r) => r.key).sort()).toEqual(["team-coord-t1", "team-coord-t2"]);
+  });
+
+  it("excludes drafts — only status='published' coords appear", async () => {
+    // 2 memberships but only 1 has a published coord (the other has a draft;
+    // the WHERE clause filters drafts out at the DB layer, so the mock returns 1).
+    const db = createAgentDb([
+      [{ enableTeams: true }],
+      [{ teamId: "t1" }, { teamId: "t2" }],
+      [{ teamId: "t1", markdown: "Published doc" }],   // only t1's published coord
+      [{ id: "t1", name: "Frontend" }, { id: "t2", name: "Backend" }],
+    ]);
+    const result = await buildTeamCoordinationSkillEntries(db, "c1", "a1");
+    expect(result).toHaveLength(1);
+    expect(result[0].key).toBe("team-coord-t1");
   });
 });
 ```
 
-- [ ] **Step 6: Run the test to verify pass**
+(Optional 6th test for defensive throw is unnecessary at the pure-function layer — the helper SHOULD propagate DB errors. The CALLER's try/catch in heartbeat.ts is what proves the heartbeat run won't break. That's an integration concern, not a unit-test concern.)
 
-Run: `pnpm -F @armyofagents/server vitest run context-packaging-team-coordination`
-Expected: PASS — 5 tests green (3 happy paths + 2 safety: feature flag off, no memberships).
+- [ ] **Step 5: Run the tests + verify**
 
-- [ ] **Step 7: Build server and verify nothing else broke**
+Run: `pnpm -F @armyofagents/server vitest run heartbeat-team-coordination`
+Expected: 5/5 pass.
 
-Run: `pnpm -F @armyofagents/server build && pnpm -F @armyofagents/server vitest run context-packaging`
-Expected: success on both. The existing `context-packaging.test.ts` tests must still pass.
+Run: `pnpm -F @armyofagents/server vitest run heartbeat`
+Expected: any existing heartbeat tests still pass (regression check).
 
-- [ ] **Step 8: Commit**
+Run: `pnpm -F @armyofagents/server build`
+Expected: clean.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add server/src/services/context-packaging.ts server/src/__tests__/context-packaging-team-coordination.test.ts
-git commit -m "feat(teams): extend assembleContext with Team Coordination section (flag-gated, defensive)"
+git add server/src/services/heartbeat.ts server/src/__tests__/heartbeat-team-coordination.test.ts
+git commit -m "feat(teams): inject team coordinations into context.skills during heartbeat (flag-gated, defensive)"
 ```
 
 ---
@@ -4926,44 +4994,50 @@ git commit -m "feat(teams): extend assembleContext with Team Coordination sectio
 - [ ] **Gate item 1:** All tests pass
 
 ```bash
-pnpm -F @armyofagents/server vitest run context-packaging
+pnpm -F @armyofagents/server vitest run heartbeat-team-coordination
+pnpm -F @armyofagents/server vitest run heartbeat
 pnpm -F @armyofagents/server vitest run team
 ```
-Expected: all green, including the 5 new tests in `context-packaging-team-coordination.test.ts`.
+Expected: all green, including the 5 new tests in `heartbeat-team-coordination.test.ts`. Existing heartbeat tests must still pass.
 
 - [ ] **Gate item 2:** Manual smoke with `enableTeams=false` — existing behavior unchanged
 
-Start a fresh local AoA instance with `enableTeams=false` (the default) on a test company. Trigger a heartbeat run for any existing agent. Inspect the heartbeat run's logged system prompt. Verify:
-- Prompt contains the existing 8 sections (company, dept, goal, deps, task, artifacts, agent config, preferences)
-- Prompt does NOT contain "# Team Coordination"
-- No warn/error logs from `context-packaging` service
-- Run completes successfully
+Start a fresh local AoA instance with `enableTeams=false` (the default) on a test company. Trigger a heartbeat run for any agent. Inspect the run's effective `context.skills` (logged via the existing `"Fetched company skills for agent run"` log line). Verify:
+- `context.skills` contains only the agent's company-skill entries (no `team-coord-*` keys).
+- No warn logs about team coordination injection.
+- The agent's CLI run completes successfully — workspace's `skillsDir` contains only the existing skill files.
 
 If any of the above fails, **do not proceed to Gate item 3.** Investigate first.
 
 - [ ] **Gate item 3:** Manual smoke with `enableTeams=true` — new behavior activates
 
-Toggle the test company's `enableTeams=true` via `PATCH /api/companies/:cid/enable-teams`. Create a team with at least one agent member (use the API directly via curl since UI lands in Slice 2). Trigger a heartbeat run for that agent. Verify:
-- Prompt contains "# Team Coordination" section
-- Prompt contains the team's name and coordination markdown
-- All 8 existing sections still present
-- No warn/error logs
-- Run completes successfully
+Toggle the test company's `enableTeams=true` via `PATCH /api/companies/:cid/enable-teams`. Create a team with at least one agent member (use the API directly via curl since UI lands in Slice 2). Add a published coordination doc via `PUT /teams/:id/coordination`. Trigger a heartbeat run for the agent. Verify:
+- `context.skills` array now contains an additional entry with `key: "team-coord-<teamId>"` and `name: "<TeamName> Coordination"`.
+- The agent's `skillsDir` contains a corresponding markdown file (named per the entry's `key`/`name`).
+- The CLI run picks up the team coordination — the agent's response references the coordination content when relevant to the task.
+- The new info log line `"Injected team coordinations into context.skills"` appears with `teamCount` and `coordCount` populated.
+- No warn logs about team coordination injection failure.
 
 - [ ] **Gate item 4:** Inspect server logs during both smokes
 
-`grep -E "warn|error" server.log | grep -i "team\|context"` should return zero unexpected entries.
+```bash
+grep -E "warn|error" server.log | grep -iE "team[- ]coord|skill"
+```
+Expected: zero unexpected entries. The success path logs `info "Injected team coordinations..."` only.
 
 - [ ] **Gate item 5:** PR review
 
-Open PR. Tag a reviewer who has read this corrections plan + the spec. They verify the safety wrappers are present and reasoning matches Part 5 of `teams_plan_corrections.md`.
+Open PR. Tag a reviewer who has read the corrections plan P-7 + the spec. They verify:
+- Three safety layers present (feature-flag query as first query inside try / try/catch wraps everything / append-only merge into `context.skills`).
+- Sanitized error logging (no raw `err.stack` reaching disk).
+- No adapter changes required (team coords ride on the existing skill-injection path).
 
 - [ ] **Gate item 6:** Add changeset
 
 ```bash
 pnpm changeset
 # minor bump for `aoa`. Description:
-# "Inject team coordination into agent system prompts during heartbeat. Feature-flag gated via companies.enableTeams. Defensive: failures cannot break heartbeat for any agent."
+# "Inject team coordinations into agent context during heartbeat as skill-shaped entries. Feature-flag gated via companies.enableTeams. Adapters materialize via existing skill machinery — no adapter changes. Defensive: failures cannot break heartbeat for any agent."
 ```
 
 - [ ] **Gate item 7:** Final commit + push + open PR
@@ -4971,28 +5045,36 @@ pnpm changeset
 ```bash
 git add .changeset/
 git commit -m "chore(changeset): add teams slice 6 entry"
-git push
-gh pr create --title "feat(teams): slice 6 — heartbeat coordination injection (flag-gated)" --body "$(cat <<'EOF'
+git push -u origin teams-slice-6
+gh pr create --base Porting1.1 --head teams-slice-6 --title "feat(teams): Slice 6 — heartbeat injection (team coordinations as skill entries, flag-gated)" --body "$(cat <<'EOF'
 ## Summary
-- Extend contextPackagingService.assembleContext() with a Team Coordination section
-- Section appears only when company.enableTeams=true AND agent is on at least one team
-- Respects runtimeConfig.contextMode (skipped if minimal)
-- Defensive try/catch — failures log warn and don't break prompt build
+- Extend the existing skill-injection block in `heartbeat.ts` (around line 2475-2491) to ALSO fetch team coordinations for the assigned agent and merge them into `context.skills` as skill-shaped entries.
+- Adapters (`claude-local`, `cursor-local`) already materialize `context.skills` as files in a temp directory exposed to the CLI via `--add-dir`. No adapter changes needed.
+- Each team coordination becomes a synthetic skill entry: `{ key: "team-coord-<teamId>", name: "<TeamName> Coordination", markdown, trustLevel: "trusted" }`.
+- Section appears only when `company.enableTeams=true` AND agent is on at least one team with a `status='published'` coordination.
+- Defensive try/catch — failures log a sanitized warn and continue without injection.
 
 ## Risk: HIGH
-This modifies the prompt-building function that runs for every heartbeat. Mitigations:
-1. Feature flag default false (existing companies unaffected)
-2. try/catch wrapper (failures don't propagate)
-3. Manual smoke tested with flag off (existing behavior unchanged) and flag on (new behavior activates)
+This modifies heartbeat.ts, which runs for every agent run. Mitigations:
+1. Feature flag default false (existing companies unaffected — verified by Gate item 2).
+2. Separate try/catch isolates team-coord failures from skill injection.
+3. Append-only merge — never clobbers prior `context.skills`.
+4. Sanitized error logging avoids leaking SQL/credentials to disk.
+5. Manual smoke tested with flag off (existing behavior unchanged) and flag on (new behavior activates).
 
 ## Test plan
-- [x] All `context-packaging*` tests pass (existing + new T-5 5 tests)
-- [x] Manual smoke with enableTeams=false: prompt unchanged, no warn logs
-- [x] Manual smoke with enableTeams=true: section appears, no warn logs
-- [x] Reviewed by [name] against corrections plan Part 5
+- [x] All `heartbeat*` tests pass (existing + new 5 tests in `heartbeat-team-coordination.test.ts`)
+- [x] All `team*` tests pass
+- [x] All 4 builds clean (db, shared, server, ui)
+- [x] Manual smoke with enableTeams=false: `context.skills` unchanged, no warn logs
+- [x] Manual smoke with enableTeams=true: `team-coord-*` entry appears, file materialized in `skillsDir`, CLI picks it up
+- [x] Reviewed against corrections plan P-7 and the three safety layers
+
+## What was deferred (carried as Slice 6 followups)
+- "Open in LLM" export endpoint (`assembleContext`) does NOT currently surface team coordinations. If we want feature parity between the human export and the agent runtime, that's a follow-up polish task.
 
 Spec: §6 (Heartbeat integration), Decision T-11
-Corrections: Part 4 (Heartbeat re-design), Part 5 Layer 2 + Layer 3
+Corrections: P-7 (verified injection point + skill-shaped entry pattern)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF

@@ -279,23 +279,46 @@ projectsApi.assignAgent(projectId, agentId, companyId?)
 
 ### P-7: Heartbeat prompt construction — the actual injection point
 
-**Source:** [`server/src/services/context-packaging.ts:22-101`](../../../server/src/services/context-packaging.ts).
+> ⚠ **CORRECTION (2026-04-29):** An earlier version of this section pointed at `contextPackagingService.assembleContext()`. **That function is NOT called by heartbeat.** It is called by exactly one route: `GET /companies/:cid/issues/:iid/context-package` — the "Open in LLM" button on the Task slide-over. Verified by `git grep` for `assembleContext` in `server/src/`. Heartbeat uses a different mechanism documented below.
 
-The function is **`contextPackagingService(db).assembleContext(companyId, issueId)`** returning `{ markdown, tokenEstimate }`. Sections (in order):
-1. Company identity (vision/mission/values + identity-layer memory)
-2. Department/project (with domain-layer memory scoped to the department)
-3. Goal + active_context-layer memory
-4. Task dependencies (incl. their artifacts)
-5. Task details
-6. Artifacts attached to the task
-7. Agent config + per-agent context mode
-8. Founder preferences
+**Source:** [`server/src/services/heartbeat.ts:2475-2491`](../../../server/src/services/heartbeat.ts).
 
-This single function is the ONE injection point for heartbeat agent runs — the resulting markdown is what gets passed to the adapter (via `--append-system-prompt-file` for claude-local).
+Heartbeat builds a `context` object incrementally and passes it to the adapter. Each adapter materializes the relevant fields appropriately. The skill injection block at lines 2475-2491 is the canonical pattern:
 
-**Implication for Slice 6:** instead of writing a separate `appendTeamCoordination(db, agentId, basePrompt)` helper as my plan said, the correction is to **extend `assembleContext()` itself with a new section for team coordination**. The team coordination doc should be added as a section in `context-packaging.ts` between sections 7 (agent config) and 8 (preferences) — call it section 7.5 "Team Coordination."
+```typescript
+// Fetch company skills attached to this agent and inject into context
+try {
+  const skillSvc = companySkillService(db);
+  const agentSkills = await skillSvc.listRuntimeSkillEntries(agent.companyId, agent.id);
+  if (agentSkills.length > 0) {
+    context.skills = agentSkills;
+  }
+} catch (err) {
+  logger.warn({ companyId, agentId, runId, err }, "Failed to fetch company skills for agent run; continuing without skill injection");
+}
+```
 
-`runtimeConfig.contextMode` already controls section sizes and which sections to include — extend the `sectionLimits` map accordingly.
+Each entry in `context.skills` is shaped `{ key, name, markdown, trustLevel, files? }`. The adapter then materializes these as markdown files in a temp directory and points the CLI at it via `--add-dir <skillsDir>` ([`packages/adapters/claude-local/src/server/execute.ts:335-336, 384`](../../../packages/adapters/claude-local/src/server/execute.ts)). The CLI discovers and loads them via its skills mechanism.
+
+**Why this matters for Slice 6:** team coordinations should follow the **exact same pattern** — converted to skill-shaped entries and appended to `context.skills`. NOT injected as a system-prompt markdown section. Reasons:
+- Adapters already handle `context.skills` materialization — no adapter changes needed.
+- Skill-style file injection avoids bloating every prompt with full coordination markdown.
+- CLI loads on-demand when relevant, matching the existing UX founders expect.
+
+**Implication for Slice 6:** extend the existing `try/catch` block at heartbeat.ts:2475-2491 to ALSO fetch team coordinations for the agent (when `companies.enableTeams=true`) and merge them as additional skill-shaped entries into the same `agentSkills` array before assigning to `context.skills`. The convention for the synthetic skill entry shape:
+
+```typescript
+{
+  key: `team-coord-${teamId}`,
+  name: `${teamName} Coordination`,
+  markdown: teamCoordinations.markdown,  // status='published' only
+  trustLevel: "trusted",                   // founders authored it
+}
+```
+
+`runtimeConfig.contextMode` is checked in the existing block (skill injection respects `minimal` mode). Apply the same gate.
+
+**Pre-existing function `assembleContext()`** in `context-packaging.ts` is the LLM-export endpoint, separate from heartbeat. Slice 6 does NOT touch it. (Whether the export endpoint should also surface team coordinations is a design question for a future polish task — explicitly out of scope.)
 
 ---
 
@@ -425,7 +448,7 @@ For each task in the existing `teams_plan.md` that needs change, this section li
 
 | Task | Issue | Correction |
 |---|---|---|
-| **6.1, 6.2, 6.3 (whole slice — biggest re-design)** | Created a separate `appendTeamCoordination` helper | **Re-design**: extend `contextPackagingService.assembleContext()` directly (P-7). Add a new section "Team Coordination" between agent-config and preferences sections. Same test surface — but tests live alongside existing `context-packaging.test.ts` (or wherever it currently is). |
+| **6.1 (heartbeat injection — biggest re-design, corrected 2026-04-29)** | Earlier corrections pointed at `contextPackagingService.assembleContext()`. That function only powers the "Open in LLM" export, not heartbeat. | **Re-design** per corrected P-7: extend the existing skill-injection `try/catch` block in `server/src/services/heartbeat.ts:2475-2491`. Fetch team coordinations for the agent, convert each to a skill-shaped entry (`{ key: "team-coord-${teamId}", name, markdown, trustLevel: "trusted" }`), and merge into `agentSkills` before `context.skills = agentSkills`. Adapters already handle materialization — no adapter changes needed. Three safety layers preserved: (1) feature-flag gate via `companies.enableTeams`, (2) try/catch wraps everything (mirrors existing skill injection), (3) outer guard via `contextMode !== "minimal"`. Tests in new `server/src/__tests__/heartbeat-team-coordination.test.ts`. |
 
 ### Slice 7 — @human resolver
 
@@ -582,6 +605,8 @@ describe("team routes mounting", () => {
 ---
 
 ### T-5: Heartbeat coordination injection — integration test against the real assembleContext
+
+> ⚠ **SUPERSEDED (2026-04-29):** This section's premise was wrong — `assembleContext()` is not the heartbeat injection point. The corrected test target is `server/src/__tests__/heartbeat-team-coordination.test.ts` exercising the new `buildTeamCoordinationSkillEntries()` helper extracted from `heartbeat.ts`. See corrected P-7 above and the rewritten Slice 6 in `teams_plan.md`. The test snippet below is preserved as a historical record of the wrong approach — DO NOT IMPLEMENT.
 
 **File:** `server/src/__tests__/context-packaging-team-coordination.test.ts` (NEW; **replaces** the original `heartbeat-team-coordination.test.ts` from Slice 6)
 
@@ -783,6 +808,8 @@ describe("findMentionedHumans wired at both issues.ts call sites", () => {
 ---
 
 ## Part 4 — Heartbeat Injection Re-design (the biggest correction)
+
+> ⚠ **SUPERSEDED (2026-04-29):** This entire Part 4 was based on the wrong assumption that `contextPackagingService.assembleContext()` is the heartbeat injection point. **It is not.** `assembleContext()` is only called by `GET /companies/:cid/issues/:iid/context-package` (the "Open in LLM" button), never by heartbeat. The actual heartbeat prompt build adds context fields piecemeal — see corrected P-7 above for the verified canonical pattern (extend the `context.skills` injection at `heartbeat.ts:2475-2491`). The content of Part 4 below is preserved as a historical record of the wrong premise — DO NOT IMPLEMENT.
 
 ### What the original plan said (Slice 6)
 
