@@ -651,12 +651,35 @@ export async function buildTeamCoordinationSkillEntries(
 
   // "Team" fallback covers a race where a team is deleted between the
   // memberships and teams queries — schema cascade makes this rare but possible.
-  return coords.map((c) => ({
-    key: `team-coord-${c.teamId}`,
-    name: `${teamNameById.get(c.teamId) ?? "Team"} Coordination`,
-    markdown: c.markdown,
-    trustLevel: c.trustLevel,
-  }));
+  return coords.map((c) => {
+    const teamName = teamNameById.get(c.teamId) ?? "Team";
+    // Prepend YAML frontmatter so Claude Code's skill-discovery mechanism
+    // registers the file correctly. Without `name` + `description`, the CLI
+    // either skips the file or registers it without enough metadata for the
+    // agent to know when to load it.
+    //
+    // Founder-authored coordination markdown (from team-scaffolder + the
+    // CoordinationEditor UI) does NOT include frontmatter — they're authoring
+    // a team contract, not a Claude skill. We synthesize the frontmatter here.
+    const frontmatter = [
+      "---",
+      `name: team-coord-${c.teamId}`,
+      "description: >",
+      `  Team coordination contract for the ${teamName} team. Read this any time`,
+      "  you need to understand how this team handles work, member roles, routing",
+      "  rules, escalation paths, or coordination conventions. Always relevant when",
+      "  working on tasks assigned via this team or coordinating with team members.",
+      "---",
+      "",
+      "",
+    ].join("\n");
+    return {
+      key: `team-coord-${c.teamId}`,
+      name: `${teamName} Coordination`,
+      markdown: frontmatter + c.markdown,
+      trustLevel: c.trustLevel,
+    };
+  });
 }
 
 export function heartbeatService(db: Db) {

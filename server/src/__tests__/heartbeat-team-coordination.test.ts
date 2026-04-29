@@ -117,12 +117,18 @@ describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
     const result = await buildTeamCoordinationSkillEntries(db as any, "c1", "a1");
 
     expect(result).toHaveLength(1);
-    expect(result[0]).toEqual({
-      key: "team-coord-t1",
-      name: "Frontend Team Coordination",
-      markdown: "# Team mission",
-      trustLevel: "markdown_only",
-    });
+    expect(result[0].key).toBe("team-coord-t1");
+    expect(result[0].name).toBe("Frontend Team Coordination");
+    expect(result[0].trustLevel).toBe("markdown_only");
+    // Verify the markdown is frontmatter-wrapped
+    expect(result[0].markdown).toMatch(/^---\nname: team-coord-t1\n/);
+    expect(result[0].markdown).toContain("description: >");
+    expect(result[0].markdown).toContain("Frontend Team");
+    // And verify the original body content is preserved AFTER the frontmatter
+    expect(result[0].markdown).toContain("# Team mission");
+    expect(result[0].markdown.indexOf("# Team mission")).toBeGreaterThan(
+      result[0].markdown.indexOf("---\n\n"),
+    );
   });
 
   it("returns [] when enableTeams=false (feature flag gate)", async () => {
@@ -178,8 +184,20 @@ describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
     const t2 = result.find((r) => r.key === "team-coord-t2");
     expect(t1?.name).toBe("Frontend Team Coordination");
     expect(t2?.name).toBe("Backend Team Coordination");
-    expect(t1?.markdown).toBe("# T1 mission");
-    expect(t2?.markdown).toBe("# T2 mission");
+    // Frontmatter wrap on each entry
+    expect(t1?.markdown).toMatch(/^---\nname: team-coord-t1\n/);
+    expect(t2?.markdown).toMatch(/^---\nname: team-coord-t2\n/);
+    expect(t1?.markdown).toContain("Frontend Team");
+    expect(t2?.markdown).toContain("Backend Team");
+    // Founder body content preserved AFTER the frontmatter
+    expect(t1?.markdown).toContain("# T1 mission");
+    expect(t2?.markdown).toContain("# T2 mission");
+    expect((t1?.markdown ?? "").indexOf("# T1 mission")).toBeGreaterThan(
+      (t1?.markdown ?? "").indexOf("---\n\n"),
+    );
+    expect((t2?.markdown ?? "").indexOf("# T2 mission")).toBeGreaterThan(
+      (t2?.markdown ?? "").indexOf("---\n\n"),
+    );
     expect(t1?.trustLevel).toBe("markdown_only");
     expect(t2?.trustLevel).toBe("markdown_only");
   });
@@ -204,12 +222,17 @@ describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
     const result = await buildTeamCoordinationSkillEntries(db as any, "c1", "a1");
 
     expect(result).toHaveLength(1);
-    expect(result[0]).toEqual({
-      key: "team-coord-t1",
-      name: "Frontend Team Coordination",
-      markdown: "# T1 published",
-      trustLevel: "markdown_only",
-    });
+    expect(result[0].key).toBe("team-coord-t1");
+    expect(result[0].name).toBe("Frontend Team Coordination");
+    expect(result[0].trustLevel).toBe("markdown_only");
+    // Frontmatter wrap, with the published body preserved
+    expect(result[0].markdown).toMatch(/^---\nname: team-coord-t1\n/);
+    expect(result[0].markdown).toContain("description: >");
+    expect(result[0].markdown).toContain("Frontend Team");
+    expect(result[0].markdown).toContain("# T1 published");
+    expect(result[0].markdown.indexOf("# T1 published")).toBeGreaterThan(
+      result[0].markdown.indexOf("---\n\n"),
+    );
   });
 
   it("preserves trustLevel from the DB column (pass-through, not hardcoded)", async () => {
@@ -230,5 +253,40 @@ describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]?.trustLevel).toBe("scripts_executables");
+    // Even with elevated trust the frontmatter wrap still happens
+    expect(result[0]?.markdown).toMatch(/^---\nname: team-coord-/);
+  });
+
+  it("wraps founder markdown with YAML frontmatter so Claude Code discovers the skill", async () => {
+    const founderMarkdown = "## Mission\nWe handle all UI work.\n\n## Scope\n- React components";
+    const db = createAgentDb({
+      selects: [
+        [{ enableTeams: true }],
+        [{ teamId: "t1" }],
+        [{ teamId: "t1", markdown: founderMarkdown, trustLevel: "markdown_only" }],
+        [{ id: "t1", name: "Frontend" }],
+      ],
+    });
+    const result = await buildTeamCoordinationSkillEntries(db as any, "c1", "a1");
+    expect(result).toHaveLength(1);
+
+    const md = result[0].markdown;
+
+    // Frontmatter delimiters
+    expect(md.startsWith("---\n")).toBe(true);
+    const closingIdx = md.indexOf("\n---\n", 4);  // closing --- after the opening one
+    expect(closingIdx).toBeGreaterThan(0);
+
+    // Frontmatter contains name matching the entry key
+    const fm = md.slice(4, closingIdx);  // content between the --- markers
+    expect(fm).toContain("name: team-coord-t1");
+    expect(fm).toContain("description: >");
+    // Description references the team name (so Claude knows what team)
+    expect(fm).toContain("Frontend");
+
+    // Founder body content preserved verbatim AFTER the frontmatter
+    const bodyStart = closingIdx + "\n---\n".length;
+    const body = md.slice(bodyStart).trimStart();
+    expect(body).toBe(founderMarkdown);
   });
 });
