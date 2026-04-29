@@ -155,6 +155,31 @@ describe("teamImportService.preview()", () => {
 
     expect(result.skillsToInstall).toEqual([]);
   });
+
+  it("rejects manifest with duplicate agent names (P2)", async () => {
+    // Two inline agents both named "alice" — the install path's
+    // agentIdByLocalName map would silently collapse them. Preview must
+    // reject the bad input with a 400-shaped error before hitting DB.
+    const DUPLICATE_NAMES_YAML = `
+schemaVersion: 1
+name: dup-team
+version: 1.0.0
+agents:
+  - name: alice
+    role: lead
+    skillKeys: []
+  - name: alice
+    role: member
+    skillKeys: []
+routing:
+  rules: []
+`;
+
+    const db = createAgentDb({});
+    await expect(
+      teamImportService(db as any).preview("co-1", DUPLICATE_NAMES_YAML),
+    ).rejects.toThrow(/duplicate agent names.*alice/);
+  });
 });
 
 // ── Install tests ────────────────────────────────────────────────────────────

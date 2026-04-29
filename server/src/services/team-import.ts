@@ -69,6 +69,23 @@ export function teamImportService(db: Db) {
         else if ("localName" in a) allNames.push(a.localName);
       }
 
+      // P2: reject manifests that declare two agents with the same name. The
+      // install path resolves names → agentIds via `agentIdByLocalName`,
+      // which silently overwrites duplicates and leaves the second agent
+      // unlinked. Catch the bad input here so the founder sees a clean 400
+      // before any DB lookups run.
+      const seen = new Set<string>();
+      const duplicates = new Set<string>();
+      for (const name of allNames) {
+        if (seen.has(name)) duplicates.add(name);
+        seen.add(name);
+      }
+      if (duplicates.size > 0) {
+        throw badRequest(
+          `manifest has duplicate agent names: ${[...duplicates].join(", ")}`,
+        );
+      }
+
       // Find collisions: agents in this company that already use one of these names.
       const existingAgents = allNames.length > 0
         ? await db
