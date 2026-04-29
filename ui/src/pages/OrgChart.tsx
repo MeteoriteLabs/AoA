@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { useNavigate } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueries } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
+import { teamsApi } from "../api/teams";
+import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -9,6 +11,15 @@ import { agentUrl } from "../lib/utils";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { TeamOrgOverlay } from "../components/team/TeamOrgOverlay";
+import { computeTeamBoxes, type LaidOutCard } from "../components/team/teamBoundingBox";
 import { Network } from "lucide-react";
 import type { Agent } from "@armyofagents/shared";
 import { displayAgentRole } from "@armyofagents/shared";
@@ -19,6 +30,16 @@ const CARD_H = 100;
 const GAP_X = 32;
 const GAP_Y = 80;
 const PADDING = 60;
+
+// Cycling color palette for team overlays
+const TEAM_COLORS = [
+  "#6366f1",
+  "#10b981",
+  "#f59e0b",
+  "#ef4444",
+  "#8b5cf6",
+  "#06b6d4",
+];
 
 // ── Tree layout types ───────────────────────────────────────────────────
 
@@ -161,14 +182,107 @@ export function OrgChart() {
     return m;
   }, [agents]);
 
+  // ── Department filter ────────────────────────────────────────────────
+  const [deptFilter, setDeptFilter] = useState<string>("all");
+
+  const projectsQuery = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const departments = useMemo(
+    () => (projectsQuery.data ?? []).filter((p) => p.type === "department"),
+    [projectsQuery.data],
+  );
+
+  const deptAgentsQuery = useQuery({
+    queryKey: queryKeys.projects.agents(deptFilter),
+    queryFn: () => projectsApi.listAgents(deptFilter, selectedCompanyId!),
+    enabled: !!selectedCompanyId && deptFilter !== "all",
+  });
+
+  // Prune the org tree to only show agents in the selected department.
+  const filteredOrgTree = useMemo<OrgNode[] | undefined>(() => {
+    if (deptFilter === "all" || !orgTree) return orgTree;
+    const allowed = new Set(
+      (deptAgentsQuery.data ?? []).map((a) => a.agentId),
+    );
+    function prune(nodes: OrgNode[]): OrgNode[] {
+      const result: OrgNode[] = [];
+      for (const n of nodes) {
+        const prunedChildren = prune(n.children);
+        if (allowed.has(n.id) || prunedChildren.length > 0) {
+          result.push({ ...n, children: prunedChildren });
+        }
+      }
+      return result;
+    }
+    return prune(orgTree);
+  }, [orgTree, deptFilter, deptAgentsQuery.data]);
+
+  // ── Teams + members for overlay ──────────────────────────────────────
+  const teamsQuery = useQuery({
+    queryKey: queryKeys.teams.list(selectedCompanyId!),
+    queryFn: () => teamsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const teamItems = useMemo(
+    () => teamsQuery.data?.items ?? [],
+    [teamsQuery.data],
+  );
+
+  const memberQueries = useQueries({
+    queries: teamItems.map((t) => ({
+      queryKey: queryKeys.teams.members(selectedCompanyId!, t.id),
+      queryFn: () => teamsApi.listMembers(t.id),
+      enabled: !!selectedCompanyId,
+    })),
+  });
+
+  const memberships = useMemo(() => {
+    const m = new Map<string, string>();
+    teamItems.forEach((t, idx) => {
+      const members = memberQueries[idx]?.data?.items ?? [];
+      for (const mem of members) m.set(mem.agentId, t.id);
+    });
+    return m;
+  }, [teamItems, memberQueries]);
+
+  const teamMetas = useMemo(
+    () =>
+      teamItems.map((t, idx) => ({
+        id: t.id,
+        name: t.name,
+        color: TEAM_COLORS[idx % TEAM_COLORS.length],
+      })),
+    [teamItems],
+  );
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Team" }]);
   }, [setBreadcrumbs]);
 
-  // Layout computation
-  const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
+  // Layout computation — uses filteredOrgTree so dept filter narrows the chart.
+  const layout = useMemo(
+    () => layoutForest(filteredOrgTree ?? []),
+    [filteredOrgTree],
+  );
   const allNodes = useMemo(() => flattenLayout(layout), [layout]);
   const edges = useMemo(() => collectEdges(layout), [layout]);
+
+  // Compute team bounding boxes from the laid-out cards.
+  const teamBoxes = useMemo(() => {
+    const cards: LaidOutCard[] = allNodes.map((n) => ({
+      agentId: n.id,
+      x: n.x,
+      y: n.y,
+      w: CARD_W,
+      h: CARD_H,
+    }));
+    return computeTeamBoxes(cards, memberships, teamMetas);
+  }, [allNodes, memberships, teamMetas]);
 
   // Compute SVG bounds
   const bounds = useMemo(() => {
@@ -277,6 +391,23 @@ export function OrgChart() {
       onMouseLeave={handleMouseUp}
       onWheel={handleWheel}
     >
+      {/* Toolbar (top-left): department filter */}
+      <div className="absolute top-3 left-3 z-10 flex gap-2 rounded bg-background/90 p-1 shadow-sm border border-border backdrop-blur">
+        <Select value={deptFilter} onValueChange={setDeptFilter}>
+          <SelectTrigger className="h-7 w-[180px] text-xs" aria-label="Filter by department">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All departments</SelectItem>
+            {departments.map((d) => (
+              <SelectItem key={d.id} value={d.id}>
+                {d.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
       {/* Zoom controls */}
       <div className="absolute top-3 right-3 z-10 flex flex-col gap-1">
         <button
@@ -371,6 +502,9 @@ export function OrgChart() {
           transformOrigin: "0 0",
         }}
       >
+        {/* Team overlay — drawn before the cards so it sits visually behind them */}
+        <TeamOrgOverlay boxes={teamBoxes} />
+
         {allNodes.map((node) => {
           const agent = agentMap.get(node.id);
           const dotColor = statusDotColor[node.status] ?? defaultDotColor;
