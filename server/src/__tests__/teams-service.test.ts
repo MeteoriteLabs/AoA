@@ -202,9 +202,12 @@ describe("teamsService", () => {
       // The first SELECT in this sequence is the P1 parent-project company
       // check (always returns one row); subsequent SELECTs are the slug
       // probes inside the retry loop.
+      //
+      // P1-4: the team insert now runs inside `db.transaction(...)`, so the
+      // mock provides a `transaction` field that delegates to the same proxy.
       let attempt = 0;
       let selectCalls = 0;
-      const db = {
+      const dbProxy: any = {
         select: () => ({
           from: () => ({
             where: () => {
@@ -238,9 +241,10 @@ describe("teamsService", () => {
             },
           }),
         }),
-      } as never;
+      };
+      dbProxy.transaction = async (cb: (tx: any) => Promise<any>) => cb(dbProxy);
 
-      const team = await teamsService(db).create("c1", {
+      const team = await teamsService(dbProxy).create("c1", {
         name: "QA Team",
         parentProjectId: "p1",
       });
@@ -264,6 +268,95 @@ describe("teamsService", () => {
           parentProjectId: "from-other-company",
         }),
       ).rejects.toThrow(/parent project.*not found in company/);
+    });
+
+    it("inserts team + member rows atomically when members provided (P1-4)", async () => {
+      // Sequence:
+      //   1. select projects (P1 cross-tenant guard) → 1 row
+      //   2. select agentProjects (dept-membership check for both members) → both present
+      //   3. select existing slugs (slug collision check) → []
+      //   4. tx.insert(teams).returning → [team]
+      //   5. tx.insert(teamMembers) → [member1, member2] (single batched insert)
+      const insertedTeam = {
+        id: "team-1",
+        companyId: "co-1",
+        parentProjectId: "p1",
+        name: "Frontend Team",
+        slug: "frontend-team",
+        manifest: {},
+      };
+      const db = createAgentDb({
+        selects: [
+          [{ id: "p1" }], // 1: P1 project check
+          [{ agentId: "a1" }, { agentId: "a2" }], // 2: both agents in dept
+          [], // 3: no slug collision
+        ],
+        inserts: [
+          [insertedTeam], // 4: team insert
+          [
+            { id: "tm1", teamId: "team-1", agentId: "a1", role: "lead" },
+            { id: "tm2", teamId: "team-1", agentId: "a2", role: "member" },
+          ], // 5: team_members batched insert
+        ],
+      });
+
+      const result = await teamsService(db as any).create("co-1", {
+        name: "Frontend Team",
+        parentProjectId: "p1",
+        members: [
+          { agentId: "a1", role: "lead" },
+          { agentId: "a2", role: "member" },
+        ],
+      });
+
+      expect(result).toEqual(insertedTeam);
+    });
+
+    it("rejects when a member is not in the parent department (P1-4)", async () => {
+      // Sequence:
+      //   1. select projects (P1) → 1 row
+      //   2. select agentProjects (dept check) → only a1 present, a2 missing
+      const db = createAgentDb({
+        selects: [
+          [{ id: "p1" }], // 1: P1 project check
+          [{ agentId: "a1" }], // 2: only a1 is in dept (a2 missing)
+        ],
+      });
+
+      await expect(
+        teamsService(db as any).create("co-1", {
+          name: "Frontend Team",
+          parentProjectId: "p1",
+          members: [
+            { agentId: "a1", role: "lead" },
+            { agentId: "a2", role: "member" },
+          ],
+        }),
+      ).rejects.toThrow(/agents not in parent department.*a2/);
+    });
+
+    it("rejects when more than one lead is provided (P1-4)", async () => {
+      // Sequence:
+      //   1. select projects (P1) → 1 row
+      //   2. select agentProjects → both present
+      //   (slug probe + insert never run; lead-count check throws first)
+      const db = createAgentDb({
+        selects: [
+          [{ id: "p1" }], // 1: P1 project check
+          [{ agentId: "a1" }, { agentId: "a2" }], // 2: both in dept
+        ],
+      });
+
+      await expect(
+        teamsService(db as any).create("co-1", {
+          name: "Frontend Team",
+          parentProjectId: "p1",
+          members: [
+            { agentId: "a1", role: "lead" },
+            { agentId: "a2", role: "lead" },
+          ],
+        }),
+      ).rejects.toThrow(/at most one lead per team, got 2/);
     });
   });
 

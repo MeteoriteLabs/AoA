@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { teams, teamMembers, agentProjects, projects } from "@armyofagents/db";
 import type {
@@ -63,12 +63,52 @@ export function teamsService(db: Db) {
         );
       }
 
+      // P1: when caller supplies inline members, validate them BEFORE the
+      // transaction. Failing fast lets us surface a clean error rather than
+      // entering the slug-retry loop and rolling back. We enforce:
+      //   - every agent is in the parent dept (Convention C-6)
+      //   - at most one lead (matches the partial unique index backstop)
+      const memberInputs = input.members ?? [];
+      if (memberInputs.length > 0) {
+        const agentIds = memberInputs.map((m) => m.agentId);
+        const deptMemberships = await db
+          .select({ agentId: agentProjects.agentId })
+          .from(agentProjects)
+          .where(
+            and(
+              inArray(agentProjects.agentId, agentIds),
+              eq(agentProjects.projectId, input.parentProjectId),
+            ),
+          );
+        const inDept = new Set(
+          deptMemberships.map((m: { agentId: string }) => m.agentId),
+        );
+        const missing = agentIds.filter((id) => !inDept.has(id));
+        if (missing.length > 0) {
+          throw badRequest(
+            `agents not in parent department: ${missing.join(", ")}`,
+          );
+        }
+
+        const leads = memberInputs.filter((m) => m.role === "lead");
+        if (leads.length > 1) {
+          throw badRequest(
+            `at most one lead per team, got ${leads.length}`,
+          );
+        }
+      }
+
       // Slug uniqueness is enforced by the (companyId, slug) unique index
       // (teams_company_slug_uq). Between the SELECT-existing-slugs probe
       // and the INSERT below, a concurrent transaction could win the race
       // and claim the slug we picked, causing PG to throw 23505. We retry
       // up to MAX_SLUG_RETRIES times — each retry re-reads the existing
       // slugs (the colliding row is now visible) and picks a fresh suffix.
+      //
+      // P1: when `memberInputs` is non-empty, the team insert + member
+      // inserts run inside ONE transaction per attempt — partial-success is
+      // impossible. Slug-retry restarts the entire transaction (cheap, since
+      // we expect 0 retries in the common case).
       const MAX_SLUG_RETRIES = 5;
       const baseSlug = generateTeamSlug(input.name);
       let lastError: unknown = null;
@@ -84,18 +124,33 @@ export function teamsService(db: Db) {
         );
 
         try {
-          const inserted = await db
-            .insert(teams)
-            .values({
-              companyId,
-              parentProjectId: input.parentProjectId,
-              name: input.name,
-              slug,
-              description: input.description,
-              manifest: input.manifest ?? {},
-            })
-            .returning();
-          return inserted[0];
+          const insertedTeam = await db.transaction(async (tx: any) => {
+            const teamInsert = await tx
+              .insert(teams)
+              .values({
+                companyId,
+                parentProjectId: input.parentProjectId,
+                name: input.name,
+                slug,
+                description: input.description,
+                manifest: input.manifest ?? {},
+              })
+              .returning();
+            const team = teamInsert[0];
+
+            if (memberInputs.length > 0) {
+              await tx.insert(teamMembers).values(
+                memberInputs.map((m) => ({
+                  teamId: team.id,
+                  agentId: m.agentId,
+                  role: m.role,
+                })),
+              );
+            }
+
+            return team;
+          });
+          return insertedTeam;
         } catch (err) {
           // PostgreSQL unique_violation = 23505. Drizzle wraps the underlying
           // pg/postgres-js error; the code may live on the cause chain.

@@ -97,8 +97,8 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
     mutationFn: async () => {
       // 1. Create any "new" agents first.
       // CRITICAL: agentsApi.create does NOT auto-add to agent_projects (verified in Task 1.10).
-      // We MUST explicitly call projectsApi.assignAgent next, otherwise teamsApi.addMember
-      // will fail server-side with "agent is not a member of the team's parent department."
+      // We MUST explicitly call projectsApi.assignAgent next, otherwise the team-create
+      // will fail server-side with "agents not in parent department."
       // (Convention C-6 from teams_plan_corrections.md)
       const created: Record<string, string> = {};
       for (const m of members.filter(
@@ -111,26 +111,28 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
         });
         created[m.tempId] = agent.id;
 
-        // CRITICAL — assign agent to parent dept BEFORE addMember (Convention C-6)
+        // CRITICAL — assign agent to parent dept BEFORE the team create
+        // sees this agent in its members payload (Convention C-6).
         await projectsApi.assignAgent(parentProjectId, agent.id);
       }
 
-      // 2. Create the team
+      // 2. Create the team WITH members in a single transactional request.
+      // P1-4: previously the UI made a POST /teams call followed by N
+      // POST /teams/:id/members calls in a loop, which left orphan teams
+      // with partial members on partial failure. The server now accepts
+      // an inline `members` array and inserts team + members atomically.
+      const memberPayload = members.map((m) => ({
+        agentId: m.kind === "existing" ? m.agentId : created[m.tempId]!,
+        role: m.role,
+      }));
       const team = await teamsApi.create(selectedCompanyId!, {
         name,
         parentProjectId,
         description: description || undefined,
+        members: memberPayload,
       });
 
-      // 3. Add members (existing agents already in agent_projects; new agents
-      //    were assigned above)
-      for (const m of members) {
-        const agentId =
-          m.kind === "existing" ? m.agentId : created[m.tempId]!;
-        await teamsApi.addMember(team.id, { agentId, role: m.role });
-      }
-
-      // 4. Trigger initial coordination.md scaffolding
+      // 3. Trigger initial coordination.md scaffolding
       // Soft-fail: if scaffolding fails, the team still exists. User can
       // retry from the team detail page via the "Regenerate" button.
       try {

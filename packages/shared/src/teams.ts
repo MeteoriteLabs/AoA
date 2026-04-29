@@ -112,6 +112,11 @@ export interface CreateTeamInput {
   parentProjectId: string;
   description?: string;
   manifest?: Partial<TeamManifest>;
+  // P1: optional inline members. When provided, the team-create + member
+  // inserts run in a single transaction so a partial-failure cannot leave an
+  // orphan team with missing members. When omitted, behavior matches the
+  // pre-P1 single-row insert.
+  members?: Array<{ agentId: string; role: TeamRole }>;
 }
 
 export interface UpdateTeamInput {
@@ -141,6 +146,17 @@ export const createTeamSchema = z.object({
   name: z.string().min(1).max(128),
   parentProjectId: z.string().uuid(),
   description: z.string().optional(),
+  // P1: optional inline members for atomic create. The server validates
+  // dept-membership + lead-uniqueness pre-transaction so partial failures
+  // produce clean error messages instead of rollback artifacts.
+  members: z
+    .array(
+      z.object({
+        agentId: z.string().uuid(),
+        role: TeamRoleSchema,
+      }),
+    )
+    .optional(),
 });
 
 export const updateTeamSchema = z.object({
