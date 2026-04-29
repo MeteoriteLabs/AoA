@@ -31,7 +31,10 @@ const GAP_X = 32;
 const GAP_Y = 80;
 const PADDING = 60;
 
-// Cycling color palette for team overlays
+// Cycling color palette for team overlays. Color assignment is keyed by a
+// stable hash of the team's id (see `hashStringToInt` below), not the team's
+// position in the list — adding/removing/reordering teams must not shuffle
+// every other team's color, since founders find that visually jarring.
 const TEAM_COLORS = [
   "#6366f1",
   "#10b981",
@@ -40,6 +43,25 @@ const TEAM_COLORS = [
   "#8b5cf6",
   "#06b6d4",
 ];
+
+/**
+ * Stable string-to-int hash. Used to key team-overlay colors by `team.id`
+ * so the color a given team renders with is deterministic across team
+ * roster changes — adding/removing one team won't recolor the others.
+ *
+ * Math.imul produces a 32-bit signed product (matching the classic
+ * Java/string-hash multiply-by-31 algorithm); `| 0` keeps the running
+ * accumulator in 32-bit signed range. We absolute-value the final result
+ * because callers `% TEAM_COLORS.length` and a negative input would
+ * produce a negative index.
+ */
+function hashStringToInt(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
 
 // ── Tree layout types ───────────────────────────────────────────────────
 
@@ -252,10 +274,13 @@ export function OrgChart() {
 
   const teamMetas = useMemo(
     () =>
-      teamItems.map((t, idx) => ({
+      teamItems.map((t) => ({
         id: t.id,
         name: t.name,
-        color: TEAM_COLORS[idx % TEAM_COLORS.length],
+        // Hash-based keying so a team's color is stable across roster changes
+        // (B2.1). Sequential `idx % TEAM_COLORS.length` would shuffle every
+        // team's color whenever another team is added/removed.
+        color: TEAM_COLORS[hashStringToInt(t.id) % TEAM_COLORS.length],
       })),
     [teamItems],
   );
@@ -302,30 +327,45 @@ export function OrgChart() {
   const [dragging, setDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
 
-  // Center the chart on first load
-  const hasInitialized = useRef(false);
-  useEffect(() => {
-    if (hasInitialized.current || allNodes.length === 0 || !containerRef.current) return;
-    hasInitialized.current = true;
-
+  // Compute the fit-to-container zoom + pan for the current bounds and apply
+  // it. Single source of truth — used by the initial-mount effect, the
+  // dept-filter-change effect (B2.2), and the "Fit" toolbar button.
+  const fitToContainer = useCallback(() => {
     const container = containerRef.current;
+    if (!container) return;
     const containerW = container.clientWidth;
     const containerH = container.clientHeight;
-
-    // Fit chart to container
     const scaleX = (containerW - 40) / bounds.width;
     const scaleY = (containerH - 40) / bounds.height;
     const fitZoom = Math.min(scaleX, scaleY, 1);
-
     const chartW = bounds.width * fitZoom;
     const chartH = bounds.height * fitZoom;
-
     setZoom(fitZoom);
     setPan({
       x: (containerW - chartW) / 2,
       y: (containerH - chartH) / 2,
     });
-  }, [allNodes, bounds]);
+  }, [bounds]);
+
+  // Center the chart on first load
+  const hasInitialized = useRef(false);
+  useEffect(() => {
+    if (hasInitialized.current || allNodes.length === 0 || !containerRef.current) return;
+    hasInitialized.current = true;
+    fitToContainer();
+  }, [allNodes, fitToContainer]);
+
+  // B2.2: re-fit the viewport whenever the dept filter changes. Pruning to a
+  // small dept can leave the visible nodes off-screen relative to the
+  // pre-filter pan/zoom; re-fitting keeps the user oriented. Skip the very
+  // first render — the initial-mount effect above handles that.
+  const lastFilterRef = useRef(deptFilter);
+  useEffect(() => {
+    if (lastFilterRef.current === deptFilter) return;
+    lastFilterRef.current = deptFilter;
+    if (!hasInitialized.current) return;
+    fitToContainer();
+  }, [deptFilter, fitToContainer]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
@@ -447,16 +487,7 @@ export function OrgChart() {
         <button
           className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-[10px] hover:bg-accent transition-colors"
           onClick={() => {
-            if (!containerRef.current) return;
-            const cW = containerRef.current.clientWidth;
-            const cH = containerRef.current.clientHeight;
-            const scaleX = (cW - 40) / bounds.width;
-            const scaleY = (cH - 40) / bounds.height;
-            const fitZoom = Math.min(scaleX, scaleY, 1);
-            const chartW = bounds.width * fitZoom;
-            const chartH = bounds.height * fitZoom;
-            setZoom(fitZoom);
-            setPan({ x: (cW - chartW) / 2, y: (cH - chartH) / 2 });
+            fitToContainer();
           }}
           title="Fit to screen"
           aria-label="Fit chart to screen"
@@ -502,7 +533,9 @@ export function OrgChart() {
           transformOrigin: "0 0",
         }}
       >
-        {/* Team overlay — drawn before the cards so it sits visually behind them */}
+        {/* Render BEFORE org nodes so overlays sit behind cards. Reordering
+            breaks the visual layering — team boxes would obscure the agent
+            cards they group, instead of framing them. */}
         <TeamOrgOverlay boxes={teamBoxes} />
 
         {allNodes.map((node) => {
