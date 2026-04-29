@@ -2,7 +2,7 @@ import type { Db } from "@armyofagents/db";
 import { teams, teamMembers, agents } from "@armyofagents/db";
 import { eq, inArray } from "drizzle-orm";
 import { stringify as stringifyYaml } from "yaml";
-import type { TeamManifest } from "@armyofagents/shared";
+import { TeamManifestSchema, type TeamManifest } from "@armyofagents/shared";
 import { notFound } from "../errors.js";
 
 /**
@@ -53,18 +53,21 @@ export function teamExportService(db: Db) {
           : [];
       const agentById = new Map(agentRows.map((a) => [a.id, a]));
 
-      const persistedManifest = team.manifest as {
-        routing?: TeamManifest["routing"];
-        skillDeps?: string[];
-        pluginDeps?: string[];
-      };
+      // P1-5: spread the full persisted manifest so any fields the schema
+      // defines (or future-defines) are preserved. Previously this method
+      // only rehydrated routing/skillDeps/pluginDeps, silently dropping
+      // workflowTemplates and memoryItems on export → re-import lost data.
+      // Order matters: spread first, then override the fields we always
+      // recompute (schemaVersion, name/slug, displayName, agents).
+      const stored = (team.manifest as Partial<TeamManifest>) ?? {};
 
       const manifest: TeamManifest = {
-        schemaVersion: 1,
-        name: team.slug,
-        version: team.templateVersion ?? "1.0.0",
+        ...stored,
+        schemaVersion: 1, // always force to current schema
+        name: team.slug, // canonical slug from the DB row
+        version: team.templateVersion ?? stored.version ?? "1.0.0",
         displayName: team.name,
-        description: team.description ?? undefined,
+        description: team.description ?? stored.description,
         agents: memberRows.map((m) => {
           const a = agentById.get(m.agentId);
           return {
@@ -73,15 +76,15 @@ export function teamExportService(db: Db) {
             skillKeys: (a?.skillKeys as string[] | undefined) ?? [],
           };
         }),
-        // Pull routing/skillDeps/pluginDeps from the persisted manifest blob —
-        // the import path put them there and we should round-trip them
-        // faithfully so downstream consumers don't lose data on re-import.
-        routing: persistedManifest.routing ?? { rules: [] },
-        skillDeps: persistedManifest.skillDeps,
-        pluginDeps: persistedManifest.pluginDeps,
+        routing: stored.routing ?? { rules: [] },
       };
 
-      return stringifyYaml(manifest);
+      // Validate the assembled shape before serializing. `.parse` (not
+      // `.safeParse`) — we want a loud failure if the persisted manifest
+      // is missing fields a future schema makes mandatory.
+      const validated = TeamManifestSchema.parse(manifest);
+
+      return stringifyYaml(validated);
     },
   };
 }

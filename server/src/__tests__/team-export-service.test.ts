@@ -134,4 +134,37 @@ describe("teamExportService.exportYaml()", () => {
       teamExportService(db as any).exportYaml("nonexistent"),
     ).rejects.toThrow(/team nonexistent not found/);
   });
+
+  it("preserves workflowTemplates and memoryItems from team.manifest (P1-5)", async () => {
+    // P1-5 fidelity contract: the export path used to only rehydrate
+    // routing/skillDeps/pluginDeps from team.manifest, silently dropping
+    // workflowTemplates and memoryItems on round-trip. Now we spread the
+    // entire stored manifest before applying overrides for the
+    // dynamically-computed fields (agents).
+    const teamWithExtras = {
+      ...TEAM_ROW,
+      manifest: {
+        routing: { rules: [{ match: "ui", mention: "@a" }] },
+        workflowTemplates: [{ $ref: "@aoa/test@1.0.0" }],
+        memoryItems: [
+          { layer: "domain", title: "X", body: "Y" },
+        ],
+      },
+    };
+    const db = createAgentDb({
+      selects: [
+        [teamWithExtras],
+        [{ teamId: "team-1", agentId: "agent-1", role: "lead" }],
+        [{ id: "agent-1", name: "alice", skillKeys: [] }],
+      ],
+    });
+
+    const yaml = await teamExportService(db as any).exportYaml("team-1");
+    const parsed = parseYaml(yaml);
+
+    expect(parsed.workflowTemplates).toEqual([{ $ref: "@aoa/test@1.0.0" }]);
+    expect(parsed.memoryItems).toEqual([
+      { layer: "domain", title: "X", body: "Y" },
+    ]);
+  });
 });
