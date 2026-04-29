@@ -169,8 +169,11 @@ export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScor
             <h2 className="text-sm font-bold">
               Individual agents <span className="ml-1 text-xs font-medium text-muted-foreground">0</span>
             </h2>
-            {/* TODO: filter to "Agents not on any team" once team-membership queries are wired more deeply (deferred per port plan). */}
-            <p className="mt-0.5 text-xs text-muted-foreground">Agents not on any team</p>
+            {/* Subtitle says "All agents" rather than "not on any team" to
+                match the unfiltered list shown below. Proper team-membership
+                filtering is deferred to v1.1 (would require fetching every
+                team's members). */}
+            <p className="mt-0.5 text-xs text-muted-foreground">All agents in this department</p>
           </header>
           <div className="flex items-center justify-center py-12 text-center">
             <div className="space-y-3">
@@ -201,8 +204,11 @@ export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScor
             <h2 className="text-sm font-bold">
               Individual agents <span className="ml-1 text-xs font-medium text-muted-foreground">{agents.length}</span>
             </h2>
-            {/* TODO: filter to "Agents not on any team" once team-membership queries are wired more deeply (deferred per port plan). */}
-            <p className="mt-0.5 text-xs text-muted-foreground">Agents not on any team</p>
+            {/* Subtitle says "All agents" rather than "not on any team" to
+                match the unfiltered list shown below. Proper team-membership
+                filtering is deferred to v1.1 (would require fetching every
+                team's members). */}
+            <p className="mt-0.5 text-xs text-muted-foreground">All agents in this department</p>
           </div>
           {permissions.isFounder && (
             <Button size="sm" variant="outline" onClick={openNewAgent}>

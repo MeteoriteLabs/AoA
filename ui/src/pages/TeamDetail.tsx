@@ -13,6 +13,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { teamsApi, type Team, type TeamMember } from "../api/teams";
 import { projectsApi } from "../api/projects";
+import { agentsApi } from "../api/agents";
+import type { Agent } from "@armyofagents/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -82,6 +84,24 @@ export function TeamDetail() {
     enabled: Boolean(selectedCompanyId),
   });
 
+  // Resolve agent IDs in the member list to their human-readable names.
+  // Company-wide list (rather than dept-scoped) keeps a single shared cache
+  // that the rest of the app already populates — and the count is small
+  // enough that the cost of fetching dept-scoped vs company-wide is a wash.
+  const agentsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.agents.list(selectedCompanyId)
+      : ["agents", "none"],
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+
+  const agentMap = useMemo(() => {
+    const m = new Map<string, Agent>();
+    for (const a of agentsQuery.data ?? []) m.set(a.id, a);
+    return m;
+  }, [agentsQuery.data]);
+
   const parentProjectName = useMemo(() => {
     if (!teamQuery.data || !projectsQuery.data) return null;
     return (
@@ -93,7 +113,7 @@ export function TeamDetail() {
   useEffect(() => {
     if (teamQuery.data) {
       setBreadcrumbs([
-        { label: "Team", href: "/team" },
+        { label: "Team", href: "/org" },
         { label: teamQuery.data.name },
       ]);
     }
@@ -122,7 +142,7 @@ export function TeamDetail() {
           queryKey: queryKeys.teams.list(selectedCompanyId),
         });
       }
-      navigate("/team");
+      navigate("/org");
     },
     onError: (err) => {
       pushToast({
@@ -177,7 +197,9 @@ export function TeamDetail() {
             <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
               <Star className="h-3 w-3 text-amber-500" aria-hidden="true" />
               <span className="sr-only">Lead: </span>
-              {lead ? lead.agentId : "No lead"}
+              {lead
+                ? (agentMap.get(lead.agentId)?.name ?? "Unknown agent")
+                : "No lead"}
               <span className="opacity-50">·</span>
               <span>
                 {members.length} member{members.length === 1 ? "" : "s"}
@@ -221,7 +243,9 @@ export function TeamDetail() {
         />
 
         <div className="mt-4">
-          {activeTab === "overview" && <OverviewTab team={team} members={members} />}
+          {activeTab === "overview" && (
+            <OverviewTab team={team} members={members} agentMap={agentMap} />
+          )}
           {activeTab === "coordination" && (
             <CoordinationEditor teamId={team.id} teamName={team.name} />
           )}
@@ -240,9 +264,10 @@ export function TeamDetail() {
 interface OverviewProps {
   team: Team;
   members: TeamMember[];
+  agentMap: Map<string, Agent>;
 }
 
-function OverviewTab({ members }: OverviewProps) {
+function OverviewTab({ members, agentMap }: OverviewProps) {
   return (
     <div className="grid grid-cols-3 gap-4">
       <section className="col-span-2 rounded-lg border bg-card p-4">
@@ -250,30 +275,34 @@ function OverviewTab({ members }: OverviewProps) {
         {members.length === 0 ? (
           <p className="text-xs text-muted-foreground">No members yet.</p>
         ) : (
-          members.map((m) => (
-            <div
-              key={m.id}
-              className={`mb-2 flex items-center gap-3 rounded-md p-2.5 ${
-                m.role === "lead"
-                  ? "border-l-[3px] border-l-indigo-500 bg-indigo-50/30 dark:bg-indigo-950/10"
-                  : "bg-muted/30"
-              }`}
-            >
-              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-sm">
-                <span aria-hidden="true">A</span>
+          members.map((m) => {
+            const agent = agentMap.get(m.agentId);
+            const displayName = agent?.name ?? "Unknown agent";
+            const avatarLetter = agent?.name?.charAt(0).toUpperCase() ?? "?";
+            return (
+              <div
+                key={m.id}
+                className={`mb-2 flex items-center gap-3 rounded-md p-2.5 ${
+                  m.role === "lead"
+                    ? "border-l-[3px] border-l-indigo-500 bg-indigo-50/30 dark:bg-indigo-950/10"
+                    : "bg-muted/30"
+                }`}
+              >
+                <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-sm">
+                  <span aria-hidden="true">{avatarLetter}</span>
+                </div>
+                <div className="flex-1">
+                  <span className="text-xs font-bold">{displayName}</span>
+                  {m.role === "lead" && (
+                    <span className="ml-2 inline-flex items-center gap-1 text-[9px] font-bold text-indigo-600">
+                      <Star className="h-2.5 w-2.5" aria-hidden="true" />
+                      LEAD
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className="flex-1">
-                {/* TODO: resolve agentId to agent name in a follow-up slice */}
-                <span className="text-xs font-bold">{m.agentId}</span>
-                {m.role === "lead" && (
-                  <span className="ml-2 inline-flex items-center gap-1 text-[9px] font-bold text-indigo-600">
-                    <Star className="h-2.5 w-2.5" aria-hidden="true" />
-                    LEAD
-                  </span>
-                )}
-              </div>
-            </div>
-          ))
+            );
+          })
         )}
       </section>
 
