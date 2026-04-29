@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex, check } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
 import type { TeamManifest } from "@armyofagents/shared";
@@ -24,5 +25,9 @@ export const teams = pgTable(
     companyIdx: index("teams_company_idx").on(table.companyId),
     parentProjectIdx: index("teams_parent_project_idx").on(table.parentProjectId),
     companySlugUq: uniqueIndex("teams_company_slug_uq").on(table.companyId, table.slug),
+    statusValid: check(
+      "teams_status_check",
+      sql`status IN ('active', 'archived')`,
+    ),
   }),
 );

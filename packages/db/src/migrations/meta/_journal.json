@@ -484,6 +484,13 @@
       "when": 1777417189109,
       "tag": "0068_early_bloodscream",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1777499580218,
+      "tag": "0069_wide_earthquake",
+      "breakpoints": true
     }
   ]
 }

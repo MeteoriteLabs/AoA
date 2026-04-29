@@ -1,0 +1,3 @@
+CREATE UNIQUE INDEX "team_coordinations_one_published_uq" ON "team_coordinations" USING btree ("team_id") WHERE status = 'published';--> statement-breakpoint
+ALTER TABLE "teams" ADD CONSTRAINT "teams_status_check" CHECK (status IN ('active', 'archived'));--> statement-breakpoint
+ALTER TABLE "team_coordinations" ADD CONSTRAINT "team_coordinations_status_check" CHECK (status IN ('draft', 'published', 'archived'));
