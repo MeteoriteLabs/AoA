@@ -51,6 +51,9 @@ export const teamsApi = {
   update: (teamId: string, patch: UpdateTeamInput) =>
     api.patch<Team>(`/teams/${teamId}`, patch),
 
+  updateManifest: (teamId: string, manifest: Record<string, unknown>) =>
+    api.put<Team>(`/teams/${teamId}/manifest`, manifest),
+
   archive: (teamId: string) => api.delete<void>(`/teams/${teamId}`),
 
   listMembers: (teamId: string) =>

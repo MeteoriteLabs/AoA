@@ -7,6 +7,7 @@ import type {
   TeamRole,
 } from "@armyofagents/shared";
 import { generateTeamSlug, ensureUniqueSlug } from "./team-slug.js";
+import { validateManifest } from "./team-manifest.js";
 import { badRequest, notFound } from "../errors.js";
 
 export function teamsService(db: Db) {
@@ -69,6 +70,19 @@ export function teamsService(db: Db) {
       const updated = await db
         .update(teams)
         .set({ ...patch, updatedAt: new Date() })
+        .where(eq(teams.id, id))
+        .returning();
+      if (updated.length === 0) throw notFound(`team ${id} not found`);
+      return updated[0];
+    },
+
+    updateManifest: async (id: string, manifest: unknown) => {
+      // Enforces invariants (regex compilation, schema shape) beyond what the
+      // route-level Zod validator covers. Throws on violation.
+      const validated = validateManifest(manifest);
+      const updated = await db
+        .update(teams)
+        .set({ manifest: validated, updatedAt: new Date() })
         .where(eq(teams.id, id))
         .returning();
       if (updated.length === 0) throw notFound(`team ${id} not found`);

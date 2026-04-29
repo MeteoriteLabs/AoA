@@ -6,6 +6,7 @@ import {
   addTeamsMemberSchema,
   updateTeamsMemberRoleSchema,
   upsertCoordinationSchema,
+  TeamManifestSchema,
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import {
@@ -107,6 +108,52 @@ export function teamsRoutes(db: Db) {
         entityType: "team",
         entityId: id,
         details: req.body,
+      });
+      res.json(result);
+    },
+  );
+
+  // PUT /teams/:id/manifest
+  //
+  // Replaces the team's manifest JSONB column wholesale. Cascades to
+  // regenerate the auto-managed sections of the team's coordination.md
+  // (so e.g. routing rule changes flow into the contract injected into
+  // agent system prompts). Skips the cascade silently if no coordination
+  // row exists yet — the dedicated `POST /teams/:id/coordination/regenerate`
+  // is the right call site to scaffold a fresh one.
+  router.put(
+    "/teams/:id/manifest",
+    validate(TeamManifestSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const team = await svc.getById(id);
+      assertCompanyAccess(req, team.companyId);
+      await assertRole(db, req, team.companyId, "founder", "team_lead");
+
+      const result = await svc.updateManifest(id, req.body);
+
+      // Cascade: refresh auto sections of coordination.md if one exists.
+      const existing = await coordSvc.getByTeam(id);
+      if (existing) {
+        const scaffolder = teamScaffolderService(db);
+        const sections = await scaffolder.regenerateAutoContent(id);
+        await coordSvc.regenerateAutoSections(existing.id, sections);
+      }
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: team.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "team.manifest_updated",
+        entityType: "team",
+        entityId: id,
+        details: {
+          schemaVersion: req.body.schemaVersion,
+          version: req.body.version,
+        },
       });
       res.json(result);
     },
