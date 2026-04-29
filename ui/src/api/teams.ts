@@ -4,6 +4,7 @@ import type {
   UpdateTeamInput,
   AddTeamMemberInput,
   TeamRole,
+  TeamManifest,
 } from "@armyofagents/shared";
 
 export interface Team {
@@ -35,6 +36,30 @@ export interface TeamCoordination {
   name: string;
   markdown: string;
   status: "draft" | "published" | "archived";
+}
+
+/**
+ * Mirrors `ImportPreview` from `server/src/services/team-import.ts`. The
+ * shape is set by the `_imports/preview` route — see Slice 8 / Task 8.1.
+ */
+export interface TeamImportPreview {
+  manifest: TeamManifest;
+  collisions: Array<{ kind: "agent" | "team"; name: string; existingId: string }>;
+  skillsToInstall: string[];
+  pluginsToInstall: string[];
+  workflowsToInstall: string[];
+}
+
+/**
+ * Body shape posted to `_imports/install`. Mirrors `ImportResolution` plus
+ * the raw YAML the server re-parses inside the transaction. See Slice 8 /
+ * Task 8.2 + 8.3.
+ */
+export interface TeamImportResolution {
+  yamlContent: string;
+  collisions: Record<string, "rename" | "replace" | "skip">;
+  parentProjectId: string;
+  renames?: Record<string, string>;
 }
 
 export const teamsApi = {
@@ -76,4 +101,19 @@ export const teamsApi = {
 
   regenerateCoordination: (teamId: string) =>
     api.post<TeamCoordination>(`/teams/${teamId}/coordination/regenerate`, {}),
+
+  previewImport: (companyId: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return api.postForm<TeamImportPreview>(
+      `/companies/${companyId}/teams/_imports/preview`,
+      fd,
+    );
+  },
+
+  installImport: (companyId: string, body: TeamImportResolution) =>
+    api.post<Team>(
+      `/companies/${companyId}/teams/_imports/install`,
+      body,
+    ),
 };
