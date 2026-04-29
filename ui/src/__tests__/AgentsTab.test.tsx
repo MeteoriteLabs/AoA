@@ -137,6 +137,12 @@ vi.mock("../components/NewAgentDialog", () => ({
   NewAgentDialog: () => null,
 }));
 
+// Mock TeamsSection — it has its own data fetching (teams + projects + members)
+// and is covered by its own tests. Stub it out so AgentsTab tests stay focused.
+vi.mock("../components/team/TeamsSection", () => ({
+  TeamsSection: () => <div data-testid="teams-section-stub" />,
+}));
+
 // --- Tests ---
 
 describe("AgentsTab", () => {
