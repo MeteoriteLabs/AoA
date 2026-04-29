@@ -56,6 +56,7 @@ vi.mock("drizzle-orm", () => ({
   eq: (..._args: unknown[]) => "eq",
   gt: (..._args: unknown[]) => "gt",
   inArray: (..._args: unknown[]) => "inArray",
+  ne: (..._args: unknown[]) => "ne",
   or: (..._args: unknown[]) => "or",
   sql: new Proxy(
     Object.assign(() => ({ as: () => "sql" }), { raw: () => ({ as: () => "sql" }) }),
@@ -288,5 +289,55 @@ describe("buildTeamCoordinationSkillEntries (Slice 6)", () => {
     const bodyStart = closingIdx + "\n---\n".length;
     const body = md.slice(bodyStart).trimStart();
     expect(body).toBe(founderMarkdown);
+  });
+
+  it("does not inject coordinations from archived teams (P1-D)", async () => {
+    // Defense-in-depth: an agent is on a team whose coordination row is still
+    // status='published' (data drift, manual SQL bypass, or a legacy row from
+    // before the archive cascade landed). The team itself is archived. The
+    // coords SELECT must JOIN `teams` and filter teams.status != 'archived',
+    // so the coords-query returns [] server-side — and the helper short-circuits
+    // to [] without ever issuing the team-names SELECT.
+    //
+    // The test asserts the implementation contract directly: the coords query
+    // chain must call .innerJoin (with the un-fixed code, no JOIN is issued and
+    // the assertion fails). It also asserts the result-shape contract: with the
+    // JOIN in place, when the DB returns [] (which it would for an archived
+    // team), the helper must return []. Both signals together prove the fix.
+    let innerJoinCalled = false;
+    let selectIdx = 0;
+    const sequenced: any[][] = [
+      [{ enableTeams: true }],   // 1: companies query
+      [{ teamId: "t1" }],        // 2: memberships query
+      [],                        // 3: coords query — what the JOIN'd query would return
+      // 4: teams-names query never runs (helper short-circuits when coords empty)
+    ];
+
+    function makeChain(getResult: () => any[]) {
+      const chain: Record<string, unknown> = {};
+      for (const m of [
+        "from", "where", "set", "values", "returning",
+        "leftJoin", "orderBy", "limit", "catch",
+      ]) {
+        chain[m] = (..._args: unknown[]) => chain;
+      }
+      chain.innerJoin = (..._args: unknown[]) => {
+        innerJoinCalled = true;
+        return chain;
+      };
+      chain.then = (resolve: (v: any[]) => unknown) =>
+        Promise.resolve(resolve(getResult()));
+      return chain;
+    }
+    const db: any = {
+      select: () => makeChain(() => sequenced[selectIdx++] ?? []),
+    };
+
+    const result = await buildTeamCoordinationSkillEntries(db, "c1", "a1");
+
+    // Implementation contract — the coords query must JOIN teams.
+    expect(innerJoinCalled).toBe(true);
+    // Result contract — archived team's coord must not surface.
+    expect(result).toHaveLength(0);
   });
 });

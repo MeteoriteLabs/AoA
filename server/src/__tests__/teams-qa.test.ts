@@ -37,6 +37,7 @@ vi.mock("drizzle-orm", () => {
     eq: vi.fn(passthrough),
     gt: vi.fn(passthrough),
     inArray: vi.fn(passthrough),
+    ne: vi.fn(passthrough),
     or: vi.fn(passthrough),
     sql: new Proxy(
       Object.assign(() => ({ as: () => "sql" }), { raw: () => ({ as: () => "sql" }) }),

@@ -40,6 +40,12 @@ vi.mock("@armyofagents/db", () => ({
     id: "projects_id",
     companyId: "projects_company_id",
   },
+  teamCoordinations: {
+    id: "team_coordinations_id",
+    teamId: "team_coordinations_team_id",
+    status: "team_coordinations_status",
+    updatedAt: "team_coordinations_updated_at",
+  },
 }));
 
 vi.mock("../errors.js", () => ({
@@ -413,6 +419,57 @@ describe("teamsService", () => {
       await expect(teamsService(db as any).archive("missing")).rejects.toThrow(
         /not found/i,
       );
+    });
+
+    it("cascades to coordination archive (P1-D)", async () => {
+      // P1-D: archiving the team must also flip the team's published
+      // coordination row to status='archived'. Without this cascade, the
+      // heartbeat injection (status='published' filter) would keep the
+      // coord live after archive and continue feeding it into every
+      // member agent's run. Test isolates the cascade by counting which
+      // table received the second UPDATE in the transaction.
+      let coordUpdateCalled = false;
+      const db: any = {
+        transaction: async (cb: (tx: any) => Promise<any>) => {
+          const tx: any = {
+            update: (table: any) => ({
+              set: () => ({
+                where: () => ({
+                  returning: () => {
+                    if (table?.id === "teams_id") {
+                      return Promise.resolve([
+                        { id: "t1", status: "archived" },
+                      ]);
+                    }
+                    if (table?.id === "team_coordinations_id") {
+                      coordUpdateCalled = true;
+                      return Promise.resolve([
+                        { id: "c1", status: "archived" },
+                      ]);
+                    }
+                    return Promise.resolve([]);
+                  },
+                  // The cascade UPDATE doesn't call `.returning()` — it's
+                  // best-effort. Resolve directly off `.where()` for that
+                  // path while still allowing `.returning()` for the
+                  // primary teams UPDATE.
+                  then: (resolve: (v: any[]) => unknown) => {
+                    if (table?.id === "team_coordinations_id") {
+                      coordUpdateCalled = true;
+                    }
+                    return Promise.resolve(resolve([]));
+                  },
+                }),
+              }),
+            }),
+          };
+          return cb(tx);
+        },
+      };
+
+      await teamsService(db).archive("t1");
+
+      expect(coordUpdateCalled).toBe(true);
     });
   });
 

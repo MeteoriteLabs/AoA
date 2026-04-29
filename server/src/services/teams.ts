@@ -1,6 +1,6 @@
 import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { teams, teamMembers, agentProjects, projects } from "@armyofagents/db";
+import { teams, teamMembers, agentProjects, projects, teamCoordinations } from "@armyofagents/db";
 import type {
   CreateTeamInput,
   UpdateTeamInput,
@@ -197,17 +197,38 @@ export function teamsService(db: Db) {
     },
 
     archive: async (id: string) => {
-      const updated = await db
-        .update(teams)
-        .set({
-          status: "archived",
-          archivedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(teams.id, id))
-        .returning();
-      if (updated.length === 0) throw notFound(`team ${id} not found`);
-      return updated[0];
+      // P1-D: archive cascades to the team's coordination. Without this,
+      // buildTeamCoordinationSkillEntries continues to inject the team's
+      // markdown into every member agent's heartbeat run because the
+      // coordination row stays status='published'.
+      return db.transaction(async (tx: any) => {
+        const updated = await tx
+          .update(teams)
+          .set({
+            status: "archived",
+            archivedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(teams.id, id))
+          .returning();
+        if (updated.length === 0) throw notFound(`team ${id} not found`);
+
+        // Cascade — best effort. If no coord row exists, the UPDATE affects 0
+        // rows and we don't care. If one exists, flipping it to archived stops
+        // injection. team_coordinations has no archivedAt column (only `teams`
+        // has one) — only updatedAt is touched here.
+        await tx
+          .update(teamCoordinations)
+          .set({ status: "archived", updatedAt: new Date() })
+          .where(
+            and(
+              eq(teamCoordinations.teamId, id),
+              eq(teamCoordinations.status, "published"),
+            ),
+          );
+
+        return updated[0];
+      });
     },
 
     /**

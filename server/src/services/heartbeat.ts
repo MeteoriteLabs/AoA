@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   agents,
@@ -634,10 +634,15 @@ export async function buildTeamCoordinationSkillEntries(
       trustLevel: teamCoordinations.trustLevel,
     })
     .from(teamCoordinations)
+    .innerJoin(teams, eq(teamCoordinations.teamId, teams.id))
     .where(
       and(
         inArray(teamCoordinations.teamId, teamIds),
         eq(teamCoordinations.status, "published"),
+        // P1-D defense-in-depth: even if a coordination row escapes the
+        // archive cascade in teamsService.archive (data drift, manual SQL,
+        // future bug), the team-level archive status hides it from injection.
+        ne(teams.status, "archived"),
       ),
     );
 
