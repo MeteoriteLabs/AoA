@@ -26,6 +26,29 @@ vi.mock("@armyofagents/db", () => ({
     name: "teams_name",
     slug: "teams_slug",
   },
+  teamMembers: {
+    id: "team_members_id",
+    teamId: "team_members_team_id",
+    agentId: "team_members_agent_id",
+    role: "team_members_role",
+  },
+  teamCoordinations: {
+    id: "team_coordinations_id",
+    teamId: "team_coordinations_team_id",
+  },
+  agentProjects: {
+    agentId: "agent_projects_agent_id",
+    projectId: "agent_projects_project_id",
+    companyId: "agent_projects_company_id",
+  },
+}));
+
+// Stub the scaffolder so install tests don't need to mock the deeper
+// scaffolder query chain; we only care that install reaches step 4.
+vi.mock("../services/team-scaffolder.js", () => ({
+  teamScaffolderService: () => ({
+    scaffoldInitial: vi.fn().mockResolvedValue("# scaffolded coordination\n"),
+  }),
 }));
 
 import { teamImportService } from "../services/team-import.js";
@@ -114,5 +137,146 @@ describe("teamImportService.preview()", () => {
     );
 
     expect(result.skillsToInstall).toEqual([]);
+  });
+});
+
+// ── Install tests ────────────────────────────────────────────────────────────
+//
+// Strategy: tests #1-#3 exercise the pre-transaction guards exhaustively
+// (skills missing, >1 lead, slug already taken). Test #4 is a smoke test
+// that confirms `install()` reaches `db.transaction(...)` on the happy path
+// and produces the expected return shape — we don't try to recreate the
+// full insert sequence inside the mock because the chain (insert agents,
+// insert agent_projects, insert team, insert team_members, insert
+// coordination) would make the test more about the mock than the code.
+// Slice 9's QA suite covers the live cascade end-to-end against a real DB.
+
+const TWO_LEADS_YAML = `
+schemaVersion: 1
+name: dual-lead-team
+version: 1.0.0
+agents:
+  - name: alice
+    role: lead
+    skillKeys: []
+  - name: bob
+    role: lead
+    skillKeys: []
+routing:
+  rules: []
+`;
+
+const HAPPY_PATH_YAML = `
+schemaVersion: 1
+name: happy-team
+version: 1.0.0
+displayName: Happy Team
+description: A test team
+agents:
+  - name: alice
+    role: lead
+    skillKeys: []
+routing:
+  rules: []
+`;
+
+describe("teamImportService.install()", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("refuses install when manifest requires uninstalled skills", async () => {
+    // Preview: no agent collisions, no installed skills → skill is missing.
+    const db = createAgentDb({
+      selects: [
+        [], // agents collision lookup
+        [], // companySkills lookup → none installed
+      ],
+    });
+
+    await expect(
+      teamImportService(db as any).install("co-1", VALID_YAML, {
+        collisions: {},
+        parentProjectId: "proj-1",
+      }),
+    ).rejects.toThrow(/requires skills not installed/);
+  });
+
+  it("refuses install when manifest declares more than one lead", async () => {
+    // Preview returns no missing skills (no skillDeps in this manifest).
+    const db = createAgentDb({
+      selects: [
+        [], // agents collision lookup
+      ],
+    });
+
+    await expect(
+      teamImportService(db as any).install("co-1", TWO_LEADS_YAML, {
+        collisions: {},
+        parentProjectId: "proj-1",
+      }),
+    ).rejects.toThrow(/at most one lead per team/);
+  });
+
+  it("refuses install when a team with the same slug already exists", async () => {
+    // Preview clean → then the slug-existence probe finds a row → throw.
+    const db = createAgentDb({
+      selects: [
+        [], // preview: agents collision lookup
+        [{ id: "existing-team-1" }], // slug already taken
+      ],
+    });
+
+    await expect(
+      teamImportService(db as any).install("co-1", HAPPY_PATH_YAML, {
+        collisions: {},
+        parentProjectId: "proj-1",
+      }),
+    ).rejects.toThrow(/already exists in this company/);
+  });
+
+  it("happy path: returns team id/slug/name/parentProjectId after cascade", async () => {
+    // Sequence:
+    //   1. preview → agents collision lookup → []
+    //   2. slug-existence probe → []
+    //   3. tx.insert(agents).returning → [{id: "new-agent-1"}]
+    //   4. tx.insert(agentProjects) → no return
+    //   5. tx.insert(teams).returning → [{id: "new-team-1", slug: "happy-team", name: "Happy Team", parentProjectId: "proj-1"}]
+    //   6. tx.insert(teamMembers) → no return
+    //   7. (scaffolder is stubbed at the module level, so it never queries)
+    //   8. tx.insert(teamCoordinations) → no return
+    const db = createAgentDb({
+      selects: [
+        [], // 1: preview agents collision
+        [], // 2: slug existence
+      ],
+      inserts: [
+        [{ id: "new-agent-1" }],   // 3: agents.returning
+        [],                          // 4: agentProjects
+        [
+          {
+            id: "new-team-1",
+            slug: "happy-team",
+            name: "Happy Team",
+            parentProjectId: "proj-1",
+          },
+        ], // 5: teams.returning
+        [], // 6: teamMembers
+        [], // 7: teamCoordinations
+      ],
+    });
+
+    const result = await teamImportService(db as any).install(
+      "co-1",
+      HAPPY_PATH_YAML,
+      { collisions: {}, parentProjectId: "proj-1" },
+    );
+
+    expect(result).toEqual({
+      id: "new-team-1",
+      slug: "happy-team",
+      name: "Happy Team",
+      parentProjectId: "proj-1",
+    });
   });
 });

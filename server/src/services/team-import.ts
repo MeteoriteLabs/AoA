@@ -1,19 +1,29 @@
 import type { Db } from "@armyofagents/db";
-import { agents, companySkills } from "@armyofagents/db";
+import {
+  agents,
+  companySkills,
+  teams,
+  teamMembers,
+  teamCoordinations,
+  agentProjects,
+} from "@armyofagents/db";
 import { and, eq, inArray } from "drizzle-orm";
 import { parseManifest } from "./team-manifest.js";
+import { teamScaffolderService } from "./team-scaffolder.js";
 import type { TeamManifest } from "@armyofagents/shared";
 
 /**
- * Slice 8 / Task 8.1: Team import service.
+ * Slice 8 / Tasks 8.1 + 8.2: Team import service.
  *
  * `preview(companyId, yamlContent)` parses the YAML manifest, detects
  * agent-name collisions against the company's existing agents, and lists
  * skills/plugins/workflows that aren't yet installed.
  *
- * `install(companyId, yamlContent, resolution)` is the transactional cascade
- * that creates agents, the team, members, and coordination row. v1 throws
- * with NotImplemented — Task 8.2 fills this in.
+ * `install(companyId, yamlContent, resolution)` runs the transactional
+ * cascade: creates agents (respecting collision resolution), inserts the
+ * team row, links members via `team_members`, and scaffolds the initial
+ * `team_coordinations` row. v1 refuses installs that require not-yet-
+ * installed skills (no marketplace fetch yet).
  */
 export interface ImportPreview {
   manifest: TeamManifest;
@@ -117,18 +127,220 @@ export function teamImportService(db: Db) {
     },
 
     /**
-     * Transactional cascade install. Replaced with full implementation in
-     * Task 8.2 — for now this is a stub that throws.
+     * Transactional cascade install. Runs `preview()` first to surface
+     * collisions + missing skills, then validates the import is safe
+     * (no missing skills, ≤1 lead, no slug collision) BEFORE entering the
+     * transaction so users get clean error messages instead of cryptic
+     * Postgres unique-constraint violations.
+     *
+     * Inside the transaction:
+     *  1. For each manifest agent: skip / reuse-on-replace / create-on-rename-or-new.
+     *     Newly-created agents are immediately linked to the parent dept via
+     *     `agent_projects` — this is required for the team_members insert to
+     *     satisfy the dept-membership invariant enforced by `addMember`.
+     *  2. Insert the `teams` row (slug = manifest.name; templateOrigin/Version
+     *     populated from the manifest so a future re-import can detect drift).
+     *  3. Insert `team_members` rows linking each non-skipped agent to the team.
+     *     The partial unique index `team_members_one_lead_uq` is the backstop
+     *     for the lead-count check.
+     *  4. Scaffold the initial `team_coordinations` row using the existing
+     *     scaffolder service — keeps content generation in one place.
+     *
+     * Returns the inserted team's id/slug/name/parentProjectId so the route
+     * handler can issue a redirect.
      */
     install: async (
-      _companyId: string,
-      _yamlContent: string,
-      _resolution: ImportResolution,
-    ): Promise<{ id: string; slug: string; name: string }> => {
-      // TODO(Task 8.2): implement transactional cascade install.
-      throw new Error(
-        "teamImportService.install not yet implemented (Task 8.2)",
+      companyId: string,
+      yamlContent: string,
+      resolution: ImportResolution,
+    ): Promise<{
+      id: string;
+      slug: string;
+      name: string;
+      parentProjectId: string;
+    }> => {
+      const preview = await teamImportService(db).preview(
+        companyId,
+        yamlContent,
       );
+      const { manifest } = preview;
+
+      // ===== Pre-transaction validations =====
+
+      // Refuse installs that need skills not on the company. v1 has no
+      // marketplace fetch — founder must install dependencies separately first.
+      if (preview.skillsToInstall.length > 0) {
+        throw new Error(
+          `manifest requires skills not installed in this company: ${preview.skillsToInstall.join(", ")}. Install them first via the Skills tab.`,
+        );
+      }
+
+      // Refuse manifests with >1 lead. The partial unique index would catch
+      // this as a 23505 inside the transaction, but we lift it to a clean
+      // pre-flight error so the founder sees a useful message.
+      const leadAgents = manifest.agents.filter((a) => a.role === "lead");
+      if (leadAgents.length > 1) {
+        throw new Error(
+          `manifest has ${leadAgents.length} agents with role 'lead' — at most one lead per team is allowed`,
+        );
+      }
+
+      // Same idea for the slug uniqueness constraint. TOCTOU window is
+      // acceptable for v1 (the unique index catches the race).
+      const existingTeam = await db
+        .select({ id: teams.id })
+        .from(teams)
+        .where(
+          and(
+            eq(teams.companyId, companyId),
+            eq(teams.slug, manifest.name),
+          ),
+        );
+      if (existingTeam.length > 0) {
+        throw new Error(
+          `a team with slug "${manifest.name}" already exists in this company`,
+        );
+      }
+
+      // ===== Transactional cascade =====
+
+      return db.transaction(async (tx: any) => {
+        // Step 1: resolve agents (skip / reuse / create)
+        const agentIdByLocalName = new Map<string, string>();
+
+        for (const a of manifest.agents) {
+          const isInline = "name" in a;
+          const wantedName = isInline ? a.name : a.localName;
+          const action = resolution.collisions[wantedName];
+
+          if (action === "skip") continue;
+
+          if (action === "replace") {
+            const collision = preview.collisions.find(
+              (c) => c.name === wantedName,
+            );
+            if (!collision) {
+              throw new Error(
+                `resolution says "replace" for ${wantedName} but no collision was found`,
+              );
+            }
+            // Ensure the reused agent is in the parent dept. If not, link
+            // it now — same invariant as creating a fresh agent below.
+            const deptCheck = await tx
+              .select()
+              .from(agentProjects)
+              .where(
+                and(
+                  eq(agentProjects.agentId, collision.existingId),
+                  eq(agentProjects.projectId, resolution.parentProjectId),
+                ),
+              );
+            if (deptCheck.length === 0) {
+              await tx.insert(agentProjects).values({
+                agentId: collision.existingId,
+                projectId: resolution.parentProjectId,
+                companyId,
+              });
+            }
+            agentIdByLocalName.set(wantedName, collision.existingId);
+            continue;
+          }
+
+          // No collision OR action === "rename" → create a fresh agent.
+          let agentName = wantedName;
+          if (action === "rename") {
+            agentName =
+              resolution.renames?.[wantedName] ?? `${wantedName}-imported`;
+          }
+
+          // Inline agents bring their own `skillKeys`. $ref agents pull from a
+          // registry (out of scope for v1); we default to an empty list and
+          // let the founder fix up the agent later.
+          const skillKeys = isInline ? (a.skillKeys ?? []) : [];
+
+          const inserted = await tx
+            .insert(agents)
+            .values({
+              companyId,
+              name: agentName,
+              role: "general",
+              skillKeys,
+              // claude_local matches the most common founder default. Schema
+              // default ("process") is also valid; we pick claude_local here
+              // so imported agents are usable on a fresh install without
+              // adapter reconfiguration.
+              adapterType: "claude_local",
+              status: "idle",
+            })
+            .returning();
+
+          const newAgentId = inserted[0].id;
+          agentIdByLocalName.set(wantedName, newAgentId);
+
+          // Link the new agent to the parent dept BEFORE we try to insert
+          // into team_members below — that insert mirrors `addMember`'s
+          // invariant requiring agent ∈ dept.
+          await tx.insert(agentProjects).values({
+            agentId: newAgentId,
+            projectId: resolution.parentProjectId,
+            companyId,
+          });
+        }
+
+        // Step 2: insert the team row
+        const teamInsert = await tx
+          .insert(teams)
+          .values({
+            companyId,
+            parentProjectId: resolution.parentProjectId,
+            name: manifest.displayName ?? manifest.name,
+            slug: manifest.name,
+            description: manifest.description ?? null,
+            manifest,
+            templateOrigin: `@${manifest.name}`,
+            templateVersion: manifest.version,
+          })
+          .returning();
+        const team = teamInsert[0];
+
+        // Step 3: link agents to the team via team_members.
+        // Skipped agents have no entry in `agentIdByLocalName`.
+        for (const a of manifest.agents) {
+          const wantedName = "name" in a ? a.name : a.localName;
+          const agentId = agentIdByLocalName.get(wantedName);
+          if (!agentId) continue;
+
+          await tx.insert(teamMembers).values({
+            teamId: team.id,
+            agentId,
+            role: a.role,
+          });
+        }
+
+        // Step 4: scaffold the coordination row.
+        // Drizzle transactions implement the same query interface as `Db`,
+        // so the cast is safe; the scaffolder only uses `select` operations.
+        const scaffolder = teamScaffolderService(tx as unknown as Db);
+        const initialMarkdown = await scaffolder.scaffoldInitial(
+          team.id,
+          manifest.description,
+        );
+        await tx.insert(teamCoordinations).values({
+          companyId,
+          teamId: team.id,
+          key: `${manifest.name}:coordination`,
+          slug: manifest.name,
+          name: `${manifest.displayName ?? manifest.name} Coordination`,
+          markdown: initialMarkdown,
+        });
+
+        return {
+          id: team.id,
+          slug: team.slug,
+          name: team.name,
+          parentProjectId: team.parentProjectId,
+        };
+      });
     },
   };
 }
