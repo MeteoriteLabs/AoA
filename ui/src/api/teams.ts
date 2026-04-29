@@ -70,4 +70,7 @@ export const teamsApi = {
 
   upsertCoordination: (teamId: string, name: string, markdown: string, description?: string) =>
     api.put<TeamCoordination>(`/teams/${teamId}/coordination`, { name, markdown, description }),
+
+  regenerateCoordination: (teamId: string) =>
+    api.post<TeamCoordination>(`/teams/${teamId}/coordination/regenerate`, {}),
 };

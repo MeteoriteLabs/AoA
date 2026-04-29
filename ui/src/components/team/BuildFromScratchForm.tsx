@@ -131,9 +131,22 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
       }
 
       // 4. Trigger initial coordination.md scaffolding
-      // TODO(Slice 3): Wire up `teamsApi.regenerateCoordination(team.id)` once the
-      // server route `POST /teams/:id/coordination/regenerate` ships. The team can
-      // be created without coordination — it's optional at this stage.
+      // Soft-fail: if scaffolding fails, the team still exists. User can
+      // retry from the team detail page via the "Regenerate" button.
+      try {
+        await teamsApi.regenerateCoordination(team.id);
+      } catch (err) {
+        console.warn(
+          "Coordination scaffolding failed for team",
+          team.id,
+          err,
+        );
+        pushToast({
+          title: "Team created",
+          body: "Coordination scaffolding deferred — open the team page to retry.",
+          tone: "warn",
+        });
+      }
 
       return team;
     },

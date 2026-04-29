@@ -11,6 +11,7 @@ import { validate } from "../middleware/validate.js";
 import {
   teamsService,
   teamCoordinationService,
+  teamScaffolderService,
   logActivity,
 } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -253,6 +254,59 @@ export function teamsRoutes(db: Db) {
       res.json(result);
     },
   );
+
+  // POST /teams/:id/coordination/regenerate
+  //
+  // If no coordination row exists yet for the team, scaffold the full
+  // initial markdown via `teamScaffolderService.scaffoldInitial` and
+  // create the row via `coordSvc.upsert`.
+  // If a coordination row already exists, regenerate just the auto:*
+  // section contents and apply via `coordSvc.regenerateAutoSections`.
+  router.post("/teams/:id/coordination/regenerate", async (req, res) => {
+    const id = req.params.id as string;
+    const team = await svc.getById(id);
+    assertCompanyAccess(req, team.companyId);
+    await assertRole(db, req, team.companyId, "founder", "team_lead");
+
+    const scaffolder = teamScaffolderService(db);
+    const existing = await coordSvc.getByTeam(id);
+    const actor = getActorInfo(req);
+
+    if (!existing) {
+      const initial = await scaffolder.scaffoldInitial(id);
+      const created = await coordSvc.upsert(team.companyId, {
+        teamId: id,
+        name: `${team.name} Coordination`,
+        markdown: initial,
+      });
+      await logActivity(db, {
+        companyId: team.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "team.coordination_scaffolded",
+        entityType: "team",
+        entityId: id,
+      });
+      res.json(created);
+      return;
+    }
+
+    const sections = await scaffolder.regenerateAutoContent(id);
+    const updated = await coordSvc.regenerateAutoSections(existing.id, sections);
+    await logActivity(db, {
+      companyId: team.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "team.coordination_regenerated",
+      entityType: "team",
+      entityId: id,
+    });
+    res.json(updated);
+  });
 
   return router;
 }
