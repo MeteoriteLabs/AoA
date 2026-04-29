@@ -130,10 +130,18 @@ export function teamsRoutes(db: Db) {
     const exportSvc = teamExportService(db);
     const yaml = await exportSvc.exportYaml(id);
 
+    // P2: defense-in-depth — slugs are produced by `generateTeamSlug` and
+    // currently match `[a-z0-9-]+`, but interpolating them raw into a
+    // header is a header-injection footgun if that contract ever loosens.
+    // Use the RFC 6266 / RFC 5987 `filename*=` form alongside the legacy
+    // `filename=` so modern browsers prefer the percent-encoded variant
+    // and older clients still get a usable name.
+    const filename = `${team.slug}.team.yaml`;
+    const safeName = encodeURIComponent(filename);
     res.setHeader("Content-Type", "application/x-yaml");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="${team.slug}.team.yaml"`,
+      `attachment; filename="${filename}"; filename*=UTF-8''${safeName}`,
     );
     res.send(yaml);
   });
