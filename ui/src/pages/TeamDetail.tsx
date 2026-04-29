@@ -163,11 +163,12 @@ export function TeamDetail() {
   const lead = members.find((m) => m.role === "lead");
 
   function handleExport() {
-    if (!selectedCompanyId) return;
     // Top-level navigation triggers the browser's native download flow.
     // The auth cookie is included automatically; the server's
     // Content-Disposition: attachment header makes the browser save the file.
-    window.location.href = `/api/companies/${selectedCompanyId}/teams/${team.id}/export`;
+    // Server route is `GET /teams/:id/export` (no `/companies/:companyId` prefix
+    // because the team UUID is globally unique across companies).
+    window.location.href = `/api/teams/${team.id}/export`;
   }
 
   function handleDismantle() {
