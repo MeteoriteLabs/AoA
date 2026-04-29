@@ -135,7 +135,9 @@ export interface CreateTeamCoordinationInput {
   teamId: string;
   name: string;
   markdown: string;
-  description?: string;
+  // C4: nullable so the upsert path can clear an existing description.
+  // Mirrors the upsertCoordinationSchema relaxation below.
+  description?: string | null;
 }
 
 // HTTP route validation schemas. Names use the prefix `teamsMember*` (plural)
@@ -177,5 +179,10 @@ export const updateTeamsMemberRoleSchema = z.object({
 export const upsertCoordinationSchema = z.object({
   name: z.string().min(1).max(256),
   markdown: z.string(),
-  description: z.string().optional(),
+  // C4: accept null so founders can clear an existing description. The DB
+  // column is `text` nullable, and `team-coordination.upsert` passes
+  // `description` straight through to `set` / `values` — null persists as
+  // NULL. Without `.nullable()`, `description: null` 400s at the route
+  // validator before the handler runs.
+  description: z.string().nullable().optional(),
 });

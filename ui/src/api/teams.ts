@@ -99,7 +99,7 @@ export const teamsApi = {
   getCoordination: (teamId: string) =>
     api.get<TeamCoordination | null>(`/teams/${teamId}/coordination`),
 
-  upsertCoordination: (teamId: string, name: string, markdown: string, description?: string) =>
+  upsertCoordination: (teamId: string, name: string, markdown: string, description?: string | null) =>
     api.put<TeamCoordination>(`/teams/${teamId}/coordination`, { name, markdown, description }),
 
   regenerateCoordination: (teamId: string) =>

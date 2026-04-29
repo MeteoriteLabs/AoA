@@ -53,6 +53,60 @@ describe("teamCoordinationService.upsert", () => {
     });
     expect(result.markdown).toBe("updated");
   });
+
+  it("accepts description: null to clear an existing description (C4)", async () => {
+    // Founder wants to clear a previously-set description. After the schema
+    // relaxed `.optional()` → `.nullable().optional()`, the service must
+    // pass `null` straight through to the DB write — the column is
+    // `text` nullable. Capture the update payload and assert null persists.
+    const updateSets: any[] = [];
+    let selectCalls = 0;
+    const db: any = {
+      transaction: async (cb: (tx: any) => any) => {
+        const tx: any = {
+          select: () => ({
+            from: () => ({
+              where: () => {
+                selectCalls++;
+                return Promise.resolve([
+                  { id: "tc1", teamId: "t1", status: "published", description: "old desc" },
+                ]);
+              },
+            }),
+          }),
+          update: () => ({
+            set: (vals: any) => {
+              updateSets.push(vals);
+              return {
+                where: () => ({
+                  returning: () =>
+                    Promise.resolve([
+                      { id: "tc1", teamId: "t1", description: null, markdown: "kept" },
+                    ]),
+                }),
+              };
+            },
+          }),
+        };
+        return cb(tx);
+      },
+    };
+
+    const svc = teamCoordinationService(db);
+    const result = await svc.upsert("c1", {
+      teamId: "t1",
+      name: "Frontend",
+      markdown: "kept",
+      description: null,
+    });
+
+    expect(result.description).toBeNull();
+    expect(selectCalls).toBe(1);
+    expect(updateSets).toHaveLength(1);
+    // Critical: the service must FORWARD null (not coerce to undefined).
+    // If it coerced, the update would silently leave the old description in place.
+    expect(updateSets[0].description).toBeNull();
+  });
 });
 
 describe("teamCoordinationService.getByTeam", () => {
