@@ -20,6 +20,9 @@ import {
   assets,
   projects,
   companySkills,
+  teamMembers,
+  teamCoordinations,
+  teams,
 } from "@armyofagents/db";
 import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -31,6 +34,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { companySkillService } from "./company-skills.js";
+import type { RuntimeSkillEntry } from "./company-skills.js";
 import { issueService as createIssueService } from "./issues.js";
 import { quotaWindowsService } from "./quota-windows.js";
 import { extractSkillMentionIds } from "@armyofagents/shared";
@@ -571,6 +575,88 @@ export function applyRunScopedMentionedSkillKeys<T extends Record<string, unknow
   const existing = readAoaSkillSyncPreference(config);
   const merged = Array.from(new Set([...(existing.desiredSkills ?? []), ...skillKeys]));
   return writeAoaSkillSyncPreference(config, merged) as T;
+}
+
+const MAX_TEAMS_PER_AGENT_HEARTBEAT = 10;
+
+/**
+ * Build skill-shaped entries from team coordinations the assigned agent belongs to.
+ *
+ * Returns [] when:
+ *   - The company has not enabled teams (companies.enableTeams = false).
+ *   - The agent has no team memberships.
+ *   - No published coordinations exist for those teams.
+ *
+ * Throws on DB error. Callers MUST wrap in try/catch — failures here cannot
+ * propagate to break the heartbeat run. See the call site in heartbeat for
+ * the canonical try/catch + sanitized warn-log pattern.
+ *
+ * Each returned entry is a synthetic skill that adapters materialize as a
+ * markdown file in skillsDir alongside the agent's normal skills. The CLI
+ * discovers and loads them via its skill mechanism.
+ */
+export async function buildTeamCoordinationSkillEntries(
+  db: Db,
+  companyId: string,
+  agentId: string,
+): Promise<RuntimeSkillEntry[]> {
+  const companyRow = await db
+    .select({ enableTeams: companies.enableTeams })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .then((rows) => rows[0]);
+
+  if (!companyRow?.enableTeams) return [];
+
+  const memberships = await db
+    .select({ teamId: teamMembers.teamId })
+    .from(teamMembers)
+    .where(eq(teamMembers.agentId, agentId))
+    .limit(MAX_TEAMS_PER_AGENT_HEARTBEAT);
+
+  if (memberships.length >= MAX_TEAMS_PER_AGENT_HEARTBEAT) {
+    // The cap is observable but doesn't fail the run. If this fires regularly,
+    // the cap should be raised or write-time validation should reject the (N+1)th
+    // team_members insert.
+    logger.warn(
+      { companyId, agentId, cap: MAX_TEAMS_PER_AGENT_HEARTBEAT },
+      "agent has reached team-coordination cap; further team coords (if any) will not be injected this run",
+    );
+  }
+
+  if (memberships.length === 0) return [];
+  const teamIds = memberships.map((m) => m.teamId);
+
+  const coords = await db
+    .select({
+      teamId: teamCoordinations.teamId,
+      markdown: teamCoordinations.markdown,
+      trustLevel: teamCoordinations.trustLevel,
+    })
+    .from(teamCoordinations)
+    .where(
+      and(
+        inArray(teamCoordinations.teamId, teamIds),
+        eq(teamCoordinations.status, "published"),
+      ),
+    );
+
+  if (coords.length === 0) return [];
+
+  const teamRows = await db
+    .select({ id: teams.id, name: teams.name })
+    .from(teams)
+    .where(inArray(teams.id, teamIds));
+  const teamNameById = new Map(teamRows.map((t) => [t.id, t.name]));
+
+  // "Team" fallback covers a race where a team is deleted between the
+  // memberships and teams queries — schema cascade makes this rare but possible.
+  return coords.map((c) => ({
+    key: `team-coord-${c.teamId}`,
+    name: `${teamNameById.get(c.teamId) ?? "Team"} Coordination`,
+    markdown: c.markdown,
+    trustLevel: c.trustLevel,
+  }));
 }
 
 export function heartbeatService(db: Db) {
@@ -2487,6 +2573,48 @@ export function heartbeatService(db: Db) {
         logger.warn(
           { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
           "Failed to fetch company skills for agent run; continuing without skill injection",
+        );
+      }
+
+      // Inject team coordinations as skill-shaped entries into context.skills.
+      // Adapters already materialize context.skills as files in skillsDir, so the
+      // CLI discovers team coordinations via its skill mechanism — no adapter
+      // changes needed.
+      //
+      // SAFETY:
+      //   1. Feature-flag gate (companies.enableTeams) is the first query inside try.
+      //   2. try/catch isolates failures — never breaks the heartbeat run.
+      //   3. Append-only merge into context.skills — preserves any prior skills.
+      //   4. Sanitized error logging — never logs raw err (may contain SQL/credentials).
+      try {
+        const teamCoordEntries = await buildTeamCoordinationSkillEntries(
+          db,
+          agent.companyId,
+          agent.id,
+        );
+        if (teamCoordEntries.length > 0) {
+          const prior = context.skills;
+          const existing: RuntimeSkillEntry[] = Array.isArray(prior) ? (prior as RuntimeSkillEntry[]) : [];
+          context.skills = [...existing, ...teamCoordEntries];
+          logger.info(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              coordCount: teamCoordEntries.length,
+            },
+            "Injected team coordinations into context.skills",
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
+          },
+          "Failed to fetch team coordinations for agent run; continuing without team injection",
         );
       }
 
