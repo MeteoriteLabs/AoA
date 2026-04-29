@@ -1,10 +1,16 @@
 import { useEffect, useMemo } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Star, MoreHorizontal, Users } from "lucide-react";
+import { Download, Star, MoreHorizontal, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { teamsApi, type Team, type TeamMember } from "../api/teams";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
@@ -104,6 +110,14 @@ export function TeamDetail() {
   const members = membersQuery.data?.items ?? [];
   const lead = members.find((m) => m.role === "lead");
 
+  function handleExport() {
+    if (!selectedCompanyId) return;
+    // Top-level navigation triggers the browser's native download flow.
+    // The auth cookie is included automatically; the server's
+    // Content-Disposition: attachment header makes the browser save the file.
+    window.location.href = `/api/companies/${selectedCompanyId}/teams/${team.id}/export`;
+  }
+
   return (
     <div className="p-5">
       <header className="mb-5 flex items-start justify-between">
@@ -136,9 +150,19 @@ export function TeamDetail() {
           <Button size="sm" variant="outline">
             Edit
           </Button>
-          <Button size="icon-sm" variant="outline" aria-label="More options">
-            <MoreHorizontal className="h-3.5 w-3.5" />
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="icon-sm" variant="outline" aria-label="More options">
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={handleExport}>
+                <Download className="mr-2 h-3.5 w-3.5" />
+                Export as .team.yaml
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
 
