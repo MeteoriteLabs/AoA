@@ -43,27 +43,59 @@ export function teamsService(db: Db) {
     },
 
     create: async (companyId: string, input: CreateTeamInput) => {
+      // Slug uniqueness is enforced by the (companyId, slug) unique index
+      // (teams_company_slug_uq). Between the SELECT-existing-slugs probe
+      // and the INSERT below, a concurrent transaction could win the race
+      // and claim the slug we picked, causing PG to throw 23505. We retry
+      // up to MAX_SLUG_RETRIES times — each retry re-reads the existing
+      // slugs (the colliding row is now visible) and picks a fresh suffix.
+      const MAX_SLUG_RETRIES = 5;
       const baseSlug = generateTeamSlug(input.name);
-      const existing = await db
-        .select({ slug: teams.slug })
-        .from(teams)
-        .where(eq(teams.companyId, companyId));
-      const slug = ensureUniqueSlug(
-        baseSlug,
-        new Set(existing.map((r: any) => r.slug)),
+      let lastError: unknown = null;
+
+      for (let attempt = 0; attempt < MAX_SLUG_RETRIES; attempt++) {
+        const existing = await db
+          .select({ slug: teams.slug })
+          .from(teams)
+          .where(eq(teams.companyId, companyId));
+        const slug = ensureUniqueSlug(
+          baseSlug,
+          new Set(existing.map((r: { slug: string }) => r.slug)),
+        );
+
+        try {
+          const inserted = await db
+            .insert(teams)
+            .values({
+              companyId,
+              parentProjectId: input.parentProjectId,
+              name: input.name,
+              slug,
+              description: input.description,
+              manifest: input.manifest ?? {},
+            })
+            .returning();
+          return inserted[0];
+        } catch (err) {
+          // PostgreSQL unique_violation = 23505. Drizzle wraps the underlying
+          // pg/postgres-js error; the code may live on the cause chain.
+          const code =
+            (err as { code?: string }).code ??
+            (err as { cause?: { code?: string } }).cause?.code;
+          if (code !== "23505") throw err;
+          lastError = err;
+          // Loop will re-fetch existing slugs and pick a new suffix.
+        }
+      }
+
+      // Exhausted retries — re-throw the last error so the caller sees a
+      // real DB error (not a generic "could not generate slug").
+      throw (
+        lastError ??
+        new Error(
+          `failed to generate unique slug for "${input.name}" after ${MAX_SLUG_RETRIES} attempts`,
+        )
       );
-      const inserted = await db
-        .insert(teams)
-        .values({
-          companyId,
-          parentProjectId: input.parentProjectId,
-          name: input.name,
-          slug,
-          description: input.description,
-          manifest: input.manifest ?? {},
-        })
-        .returning();
-      return inserted[0];
     },
 
     update: async (id: string, patch: UpdateTeamInput) => {

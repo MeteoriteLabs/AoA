@@ -182,6 +182,50 @@ describe("teamsService", () => {
 
       expect(result.slug).toBe("frontend-team-2");
     });
+
+    it("retries slug generation on PG 23505 collision", async () => {
+      // Simulates a TOCTOU race: between our SELECT-existing-slugs probe and
+      // the INSERT, a concurrent transaction wins the unique-slug lock. The
+      // first INSERT throws 23505; the retry re-fetches (now sees the
+      // colliding row) and picks a different suffix.
+      let attempt = 0;
+      const db = {
+        select: () => ({
+          from: () => ({
+            where: () => {
+              const result =
+                attempt === 0
+                  ? [] // first attempt: no existing slugs yet
+                  : [{ slug: "qa-team" }]; // second attempt: collider visible
+              return Promise.resolve(result);
+            },
+          }),
+        }),
+        insert: () => ({
+          values: (vals: { slug: string }) => ({
+            returning: () => {
+              if (attempt === 0) {
+                attempt++;
+                const err = Object.assign(new Error("duplicate key"), {
+                  code: "23505",
+                });
+                throw err;
+              }
+              return Promise.resolve([
+                { id: "t1", slug: vals.slug, name: "QA Team" },
+              ]);
+            },
+          }),
+        }),
+      } as never;
+
+      const team = await teamsService(db).create("c1", {
+        name: "QA Team",
+        parentProjectId: "p1",
+      });
+      expect(team.slug).not.toBe("qa-team"); // collision → suffix added
+      expect(attempt).toBe(1); // verified we retried exactly once
+    });
   });
 
   describe("update()", () => {
