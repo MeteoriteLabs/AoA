@@ -36,6 +36,10 @@ vi.mock("@armyofagents/db", () => ({
     agentId: "ap_agent_id",
     projectId: "ap_project_id",
   },
+  projects: {
+    id: "projects_id",
+    companyId: "projects_company_id",
+  },
 }));
 
 vi.mock("../errors.js", () => ({
@@ -147,7 +151,10 @@ describe("teamsService", () => {
         manifest: {},
       };
       const db = createAgentDb({
-        selects: [[]], // existing slug query: empty (no collisions)
+        selects: [
+          [{ id: "p1" }], // P1: parent-project company check
+          [], // existing slug query: empty (no collisions)
+        ],
         inserts: [[inserted]],
       });
 
@@ -171,7 +178,10 @@ describe("teamsService", () => {
         manifest: {},
       };
       const db = createAgentDb({
-        selects: [[{ slug: "frontend-team" }]], // existing slug: matches base
+        selects: [
+          [{ id: "p1" }], // P1: parent-project company check
+          [{ slug: "frontend-team" }], // existing slug: matches base
+        ],
         inserts: [[inserted]],
       });
 
@@ -188,15 +198,26 @@ describe("teamsService", () => {
       // the INSERT, a concurrent transaction wins the unique-slug lock. The
       // first INSERT throws 23505; the retry re-fetches (now sees the
       // colliding row) and picks a different suffix.
+      //
+      // The first SELECT in this sequence is the P1 parent-project company
+      // check (always returns one row); subsequent SELECTs are the slug
+      // probes inside the retry loop.
       let attempt = 0;
+      let selectCalls = 0;
       const db = {
         select: () => ({
           from: () => ({
             where: () => {
+              const callIdx = selectCalls++;
+              if (callIdx === 0) {
+                // P1: parent project lookup — always present.
+                return Promise.resolve([{ id: "p1" }]);
+              }
+              const slugProbeIdx = callIdx - 1;
               const result =
-                attempt === 0
-                  ? [] // first attempt: no existing slugs yet
-                  : [{ slug: "qa-team" }]; // second attempt: collider visible
+                slugProbeIdx === 0
+                  ? [] // first slug probe: no existing slugs yet
+                  : [{ slug: "qa-team" }]; // second slug probe: collider visible
               return Promise.resolve(result);
             },
           }),
@@ -225,6 +246,24 @@ describe("teamsService", () => {
       });
       expect(team.slug).not.toBe("qa-team"); // collision → suffix added
       expect(attempt).toBe(1); // verified we retried exactly once
+    });
+
+    it("rejects when parentProjectId belongs to another company (P1)", async () => {
+      // P1: cross-tenant guard. Caller specifies a project UUID that exists
+      // in some company but NOT in `companyId`. The project-check returns
+      // empty, so create() must throw badRequest before any insert runs.
+      const db = createAgentDb({
+        selects: [
+          [], // P1: parent-project company check returns empty
+        ],
+      });
+
+      await expect(
+        teamsService(db as any).create("c1", {
+          name: "Sneaky Team",
+          parentProjectId: "from-other-company",
+        }),
+      ).rejects.toThrow(/parent project.*not found in company/);
     });
   });
 

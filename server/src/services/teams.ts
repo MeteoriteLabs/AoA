@@ -1,6 +1,6 @@
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { teams, teamMembers, agentProjects } from "@armyofagents/db";
+import { teams, teamMembers, agentProjects, projects } from "@armyofagents/db";
 import type {
   CreateTeamInput,
   UpdateTeamInput,
@@ -43,6 +43,26 @@ export function teamsService(db: Db) {
     },
 
     create: async (companyId: string, input: CreateTeamInput) => {
+      // P1: Cross-tenant guard — verify the parent project belongs to the
+      // caller's company before writing. The FK only enforces
+      // `projects.id` existence, not `projects.companyId === teams.companyId`,
+      // so without this check a caller could supply another company's project
+      // UUID and create a cross-tenant team.
+      const projectCheck = await db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(
+          and(
+            eq(projects.id, input.parentProjectId),
+            eq(projects.companyId, companyId),
+          ),
+        );
+      if (projectCheck.length === 0) {
+        throw badRequest(
+          `parent project ${input.parentProjectId} not found in company ${companyId}`,
+        );
+      }
+
       // Slug uniqueness is enforced by the (companyId, slug) unique index
       // (teams_company_slug_uq). Between the SELECT-existing-slugs probe
       // and the INSERT below, a concurrent transaction could win the race

@@ -163,8 +163,9 @@ describe("Teams QA — happy-path end-to-end", () => {
 
   it("teamsService.create generates slug, inserts row, returns manifest shape", async () => {
     // teamsService.create() does:
-    //   1. select existing slugs (collision check)
-    //   2. insert teams row → returning() → row
+    //   1. select projects (P1 cross-tenant guard) — must return one row
+    //   2. select existing slugs (collision check)
+    //   3. insert teams row → returning() → row
     const inserted = {
       id: "team-1",
       companyId: "co-1",
@@ -175,7 +176,10 @@ describe("Teams QA — happy-path end-to-end", () => {
       manifest: {},
     };
     const db = createAgentDb({
-      selects: [[]], // no existing slugs
+      selects: [
+        [{ id: "proj-1" }], // P1: parent-project company check
+        [], // no existing slugs
+      ],
       inserts: [[inserted]],
     });
 

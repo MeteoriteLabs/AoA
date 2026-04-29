@@ -41,6 +41,23 @@ vi.mock("@armyofagents/db", () => ({
     projectId: "agent_projects_project_id",
     companyId: "agent_projects_company_id",
   },
+  projects: {
+    id: "projects_id",
+    companyId: "projects_company_id",
+  },
+}));
+
+vi.mock("../errors.js", () => ({
+  badRequest: (msg: string) => {
+    const err = new Error(msg);
+    (err as any).status = 400;
+    return err;
+  },
+  notFound: (msg: string) => {
+    const err = new Error(msg);
+    (err as any).status = 404;
+    return err;
+  },
 }));
 
 // Stub the scaffolder so install tests don't need to mock the deeper
@@ -239,20 +256,22 @@ describe("teamImportService.install()", () => {
     // Sequence:
     //   1. preview → agents collision lookup → []
     //   2. slug-existence probe → []
-    //   3. tx.insert(agents).returning → [{id: "new-agent-1"}]
-    //   4. tx.insert(agentProjects) → no return
-    //   5. tx.insert(teams).returning → [{id: "new-team-1", slug: "happy-team", name: "Happy Team", parentProjectId: "proj-1"}]
-    //   6. tx.insert(teamMembers) → no return
-    //   7. (scaffolder is stubbed at the module level, so it never queries)
-    //   8. tx.insert(teamCoordinations) → no return
+    //   3. P1 parent-project company check → [{id: "proj-1"}]
+    //   4. tx.insert(agents).returning → [{id: "new-agent-1"}]
+    //   5. tx.insert(agentProjects) → no return
+    //   6. tx.insert(teams).returning → [{id: "new-team-1", slug: "happy-team", name: "Happy Team", parentProjectId: "proj-1"}]
+    //   7. tx.insert(teamMembers) → no return
+    //   8. (scaffolder is stubbed at the module level, so it never queries)
+    //   9. tx.insert(teamCoordinations) → no return
     const db = createAgentDb({
       selects: [
         [], // 1: preview agents collision
         [], // 2: slug existence
+        [{ id: "proj-1" }], // 3: P1 parent-project company check
       ],
       inserts: [
-        [{ id: "new-agent-1" }],   // 3: agents.returning
-        [],                          // 4: agentProjects
+        [{ id: "new-agent-1" }],   // 4: agents.returning
+        [],                          // 5: agentProjects
         [
           {
             id: "new-team-1",
@@ -260,9 +279,9 @@ describe("teamImportService.install()", () => {
             name: "Happy Team",
             parentProjectId: "proj-1",
           },
-        ], // 5: teams.returning
-        [], // 6: teamMembers
-        [], // 7: teamCoordinations
+        ], // 6: teams.returning
+        [], // 7: teamMembers
+        [], // 8: teamCoordinations
       ],
     });
 
@@ -278,5 +297,26 @@ describe("teamImportService.install()", () => {
       name: "Happy Team",
       parentProjectId: "proj-1",
     });
+  });
+
+  it("refuses install when parentProjectId belongs to another company (P1)", async () => {
+    // Pre-tx sequence:
+    //   1. preview agents collision lookup → []
+    //   2. slug existence probe → []
+    //   3. P1 parent-project company check → [] (cross-tenant guard fails)
+    const db = createAgentDb({
+      selects: [
+        [], // 1: preview agents collision
+        [], // 2: slug existence
+        [], // 3: P1 parent-project company check returns empty
+      ],
+    });
+
+    await expect(
+      teamImportService(db as any).install("co-1", HAPPY_PATH_YAML, {
+        collisions: {},
+        parentProjectId: "from-other-company",
+      }),
+    ).rejects.toThrow(/parent project.*not found in company/);
   });
 });

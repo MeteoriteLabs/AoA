@@ -6,11 +6,13 @@ import {
   teamMembers,
   teamCoordinations,
   agentProjects,
+  projects,
 } from "@armyofagents/db";
 import { and, eq, inArray } from "drizzle-orm";
 import { parseManifest } from "./team-manifest.js";
 import { teamScaffolderService } from "./team-scaffolder.js";
 import type { TeamManifest } from "@armyofagents/shared";
+import { badRequest } from "../errors.js";
 
 /**
  * Slice 8 / Tasks 8.1 + 8.2: Team import service.
@@ -199,6 +201,25 @@ export function teamImportService(db: Db) {
       if (existingTeam.length > 0) {
         throw new Error(
           `a team with slug "${manifest.name}" already exists in this company`,
+        );
+      }
+
+      // P1: Cross-tenant guard — verify the parent project from the import
+      // resolution belongs to the caller's company before entering the
+      // transactional cascade. The FK only enforces `projects.id` existence,
+      // not company-tenancy.
+      const projectCheck = await db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(
+          and(
+            eq(projects.id, resolution.parentProjectId),
+            eq(projects.companyId, companyId),
+          ),
+        );
+      if (projectCheck.length === 0) {
+        throw badRequest(
+          `parent project ${resolution.parentProjectId} not found in company ${companyId}`,
         );
       }
 
