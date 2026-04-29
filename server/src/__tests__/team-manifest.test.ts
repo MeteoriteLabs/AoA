@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseManifest, serializeManifest, validateManifest } from "../services/team-manifest.js";
+import { TeamManifestSchema } from "@armyofagents/shared";
 
 const VALID_YAML = `
 schemaVersion: 1
@@ -90,5 +91,57 @@ describe("serializeManifest", () => {
     const yaml = serializeManifest(m1);
     const m2 = parseManifest(yaml);
     expect(m2).toEqual(m1);
+  });
+});
+
+describe("TeamManifestSchema regex ReDoS hardening", () => {
+  it("rejects pathological nested-quantifier regex patterns", () => {
+    // The classic ReDoS shape: nested quantifier with ambiguity.
+    const manifest = {
+      name: "qa",
+      description: "x",
+      schemaVersion: 1,
+      routing: {
+        rules: [{ match: "(a+)+$", mention: "@x" }],
+      },
+      agents: [],
+      version: "1.0.0",
+      displayName: "QA",
+    };
+
+    expect(() => TeamManifestSchema.parse(manifest)).toThrow(/regex|pattern/i);
+  });
+
+  it("rejects regex patterns over 256 characters", () => {
+    const longPattern = "a".repeat(257);
+    const manifest = {
+      name: "qa",
+      description: "x",
+      schemaVersion: 1,
+      routing: {
+        rules: [{ match: longPattern, mention: "@x" }],
+      },
+      agents: [],
+      version: "1.0.0",
+      displayName: "QA",
+    };
+
+    expect(() => TeamManifestSchema.parse(manifest)).toThrow(/256|length/i);
+  });
+
+  it("accepts simple, non-pathological patterns", () => {
+    const manifest = {
+      name: "qa",
+      description: "x",
+      schemaVersion: 1,
+      routing: {
+        rules: [{ match: "release|hotfix", mention: "@alice" }],
+      },
+      agents: [],
+      version: "1.0.0",
+      displayName: "QA",
+    };
+
+    expect(() => TeamManifestSchema.parse(manifest)).not.toThrow();
   });
 });

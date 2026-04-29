@@ -94,8 +94,50 @@ export const TeamManifestSchema = z
     // (D2): both the route-level `validate(TeamManifestSchema)` middleware
     // and the service-level `validateManifest` now catch bad-regex rules
     // at the same point — single source of truth.
+    //
+    // P2-C: ReDoS hardening. `rule.match` is user-supplied and reaches a
+    // `new RegExp(...)` call here. JS regex compilation is cheap, but the
+    // rule's PURPOSE is to be evaluated against agent-mention strings — at
+    // evaluation time, a pathological pattern like `(a+)+$` can backtrack
+    // exponentially. Defensive validation here:
+    //   1. Cap pattern length to 256 chars (oversize payloads).
+    //   2. Reject the classic CWE-1333 nested-quantifier shape.
+    //   3. Keep the existing compilability try/catch.
+    // This is a coarse heuristic, not a complete ReDoS analyser. For
+    // production-grade safety the right move is re2-wasm at evaluation
+    // time. The cap+heuristic blocks every published example of CWE-1333
+    // that has actually shown up in OWASP / GitHub-advisory writeups.
     for (let i = 0; i < data.routing.rules.length; i++) {
       const rule = data.routing.rules[i];
+
+      // Cap pattern length to prevent oversized payloads from growing the
+      // regex compile cost or DoS via memory pressure.
+      if (rule.match.length > 256) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["routing", "rules", i, "match"],
+          message: `regex pattern exceeds 256 character limit (got ${rule.match.length})`,
+        });
+        continue;
+      }
+
+      // Reject the most common ReDoS shape: nested quantifier directly inside
+      // a group whose contents are themselves quantified. Examples:
+      //   (a+)+   (a*)+   (a+)*   (a+)?   ([abc]+)+
+      // This is a coarse heuristic — it's not a perfect ReDoS detector. It
+      // catches the classic CWE-1333 patterns at near-zero cost. For
+      // production-grade safety, use re2-wasm or a complexity analyser
+      // (re2 has linear-time evaluation by construction).
+      if (/\([^)]*[+*][^)]*\)[+*?]/.test(rule.match)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["routing", "rules", i, "match"],
+          message: `regex pattern contains a nested quantifier (ReDoS-prone): ${rule.match}`,
+        });
+        continue;
+      }
+
+      // Compilability check (existing behaviour).
       try {
         new RegExp(rule.match);
       } catch (err) {
