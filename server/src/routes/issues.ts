@@ -698,6 +698,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
             },
           });
         }
+
+        // @human mention notifications — see issueService.notifyMentionedHumans for safety contract.
+        await svc.notifyMentionedHumans(issue.companyId, commentBody, issue.id, actor);
       }
 
       for (const [agentId, wakeup] of wakeups.entries()) {
@@ -1072,6 +1075,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
           },
         });
       }
+
+      // @human mention notifications — see issueService.notifyMentionedHumans for safety contract.
+      await svc.notifyMentionedHumans(issue.companyId, req.body.body, currentIssue.id, actor);
 
       for (const [agentId, wakeup] of wakeups.entries()) {
         heartbeat

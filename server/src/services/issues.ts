@@ -23,11 +23,13 @@ import {
 } from "@armyofagents/db";
 import { extractProjectMentionIds } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { dependencyService } from "./dependencies.js";
 import { heartbeatService } from "./heartbeat.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { deriveIssueUserContext } from "./issue-user-context.js";
 import { issueExecutionWorkspaceModeForPersistedWorkspace } from "./execution-workspace-policy.js";
+import { notificationService } from "./notifications.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -1461,6 +1463,117 @@ export function issueService(db: Db) {
         .innerJoin(userRoles, eq(userRoles.userId, authUsers.id))
         .where(eq(userRoles.companyId, companyId));
       return [...new Set(rows.filter((u) => tokens.has(u.name.toLowerCase())).map((u) => u.id))];
+    },
+
+    /**
+     * Resolve @human mentions in `body` and emit notification rows for matched
+     * users. Self-mention is skipped (a user @-mentioning themselves does NOT
+     * receive a notification). Notification inserts run in parallel with
+     * per-promise error isolation — one failure does not abort the batch.
+     *
+     * SAFETY:
+     *   1. Feature-flag gated via companies.enableTeams (queried internally)
+     *   2. Internal try/catch wraps the whole flow — never throws
+     *   3. Sanitized error logging (err.name + err.message only)
+     *   4. Best-effort: if a notification mid-batch fails, prior rows persist;
+     *      the catch logs and the rest of the batch still runs (per-promise catch)
+     *
+     * Note: `relatedEntityId` is the ISSUE id (not the comment id) so deep-links
+     * navigate to the task — the task page renders the comment inline.
+     *
+     * The mention-resolution regex+query is inlined here (not delegated to
+     * findMentionedHumans) so this helper stays self-contained and the
+     * existing helper is untouched. Future: extract a shared private
+     * `_resolveMentionedHumans` to dedupe — see Slice 9 followup.
+     *
+     * @returns the count of notification rows inserted (0 when flag off, no
+     * mentions, or the catch fired).
+     */
+    notifyMentionedHumans: async (
+      companyId: string,
+      body: string,
+      taskId: string,
+      actor: { actorType: string; actorId: string | null },
+    ): Promise<number> => {
+      try {
+        const companyRow = await db
+          .select({ enableTeams: companies.enableTeams })
+          .from(companies)
+          .where(eq(companies.id, companyId))
+          .then((rows) => rows[0]);
+
+        if (!companyRow?.enableTeams) return 0;
+
+        // Inline mirror of findMentionedHumans regex+query — kept local so the
+        // existing helper is untouched (per Slice 7 review constraint).
+        const re = /\B@([\w-]+)/g;
+        const tokens = new Set<string>();
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(body)) !== null) {
+          let token = m[1].toLowerCase();
+          if (token.endsWith("-h")) token = token.slice(0, -2);
+          tokens.add(token);
+        }
+        if (tokens.size === 0) return 0;
+
+        const rows = await db
+          .select({ id: authUsers.id, name: authUsers.name })
+          .from(authUsers)
+          .innerJoin(userRoles, eq(userRoles.userId, authUsers.id))
+          .where(eq(userRoles.companyId, companyId));
+        const mentionedIds = [
+          ...new Set(rows.filter((u) => tokens.has(u.name.toLowerCase())).map((u) => u.id)),
+        ];
+        if (mentionedIds.length === 0) return 0;
+
+        const notifSvc = notificationService(db);
+        const message = body.slice(0, 200);
+
+        // Parallel inserts with per-promise catch — one failure does not abort
+        // the batch. The outer catch is a backstop for anything outside the
+        // per-promise wrappers (e.g., the company/users queries above).
+        const results = await Promise.all(
+          mentionedIds.map(async (userId) => {
+            // Self-mention skip: a human @-mentioning themselves doesn't get notified.
+            // For agent actors, actorId is an agentId UUID and never matches a userId,
+            // so this comparison correctly never fires for agents.
+            if (actor.actorType === "user" && actor.actorId === userId) return false;
+            try {
+              await notifSvc.create(companyId, {
+                userId,
+                type: "mention",
+                title: "You were mentioned in a comment",
+                message,
+                relatedEntityType: "task",
+                relatedEntityId: taskId,
+              });
+              return true;
+            } catch (err) {
+              logger.warn(
+                {
+                  err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
+                  companyId,
+                  userId,
+                  taskId,
+                },
+                "@human mention notification failed for one recipient; batch continues",
+              );
+              return false;
+            }
+          }),
+        );
+        return results.filter(Boolean).length;
+      } catch (err) {
+        logger.warn(
+          {
+            err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
+            companyId,
+            taskId,
+          },
+          "@human mention notifications failed at outer try/catch; comment creation continues",
+        );
+        return 0;
+      }
     },
 
     findMentionedProjectIds: async (issueId: string) => {
