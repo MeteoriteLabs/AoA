@@ -107,6 +107,94 @@ describe("teamCoordinationService.upsert", () => {
     // If it coerced, the update would silently leave the old description in place.
     expect(updateSets[0].description).toBeNull();
   });
+
+  it("converts PG 23505 unique-violation on concurrent publish to 409", async () => {
+    // Simulate: SELECT inside tx returns no published row; INSERT throws 23505
+    // (the partial unique index team_coordinations_one_published_uq fired
+    // because a concurrent transaction won the race).
+    const db: any = {
+      transaction: async (cb: any) => {
+        const tx: any = {
+          select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+          insert: () => ({
+            values: () => ({
+              returning: () => {
+                const err = Object.assign(new Error("dup"), { code: "23505" });
+                throw err;
+              },
+            }),
+          }),
+        };
+        return cb(tx);
+      },
+    };
+
+    await expect(
+      teamCoordinationService(db).upsert("co-1", {
+        teamId: "t1",
+        name: "QA",
+        markdown: "## body",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("revives an archived coordination row instead of inserting a duplicate", async () => {
+    // Simulate: SELECT for published returns []; SELECT for archived returns
+    // an archived row; service should UPDATE that row back to status='published'
+    // rather than INSERT (which would 23505 on team_coordinations_company_key_uq
+    // because the key column is constant per team).
+    const archivedRow = {
+      id: "coord-archived",
+      teamId: "t1",
+      key: "team-t1:coordination",
+      status: "archived",
+    };
+    let updateCallCount = 0;
+    let insertCalled = false;
+
+    const db: any = {
+      transaction: async (cb: any) => {
+        let selectCalls = 0;
+        const tx: any = {
+          select: () => ({
+            from: () => ({
+              where: () => {
+                const idx = selectCalls++;
+                if (idx === 0) return Promise.resolve([]); // no published
+                if (idx === 1) return Promise.resolve([archivedRow]); // archived found
+                return Promise.resolve([]);
+              },
+            }),
+          }),
+          update: () => ({
+            set: () => ({
+              where: () => ({
+                returning: () => {
+                  updateCallCount++;
+                  return Promise.resolve([{ ...archivedRow, status: "published", name: "QA" }]);
+                },
+              }),
+            }),
+          }),
+          insert: () => {
+            insertCalled = true;
+            throw new Error("insert should not be called when archived row exists");
+          },
+        };
+        return cb(tx);
+      },
+    };
+
+    const result = await teamCoordinationService(db).upsert("co-1", {
+      teamId: "t1",
+      name: "QA",
+      markdown: "## body",
+    });
+
+    expect(insertCalled).toBe(false);
+    expect(updateCallCount).toBe(1);
+    expect(result).toMatchObject({ id: "coord-archived", status: "published" });
+  });
 });
 
 describe("teamCoordinationService.getByTeam", () => {

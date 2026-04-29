@@ -3,7 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { teamCoordinations } from "@armyofagents/db";
 import type { CreateTeamCoordinationInput } from "@armyofagents/shared";
 import { generateTeamSlug } from "./team-slug.js";
-import { notFound } from "../errors.js";
+import { notFound, conflict } from "../errors.js";
 import { replaceAutoSection } from "./coordination-parser.js";
 
 export function teamCoordinationService(db: Db) {
@@ -17,17 +17,17 @@ export function teamCoordinationService(db: Db) {
     },
 
     upsert: async (companyId: string, input: CreateTeamCoordinationInput) => {
-      // P2: wrap read-existing + insert-or-update in a single transaction to
-      // narrow the TOCTOU window where two concurrent upserts could each see
-      // "no published row" and both insert, producing two published
-      // coordination rows for the same team. The schema does not yet enforce
-      // single-published-per-team; followup work should add a partial unique
-      // index `(teamId) WHERE status = 'published'` (mirrors the
-      // `team_members_one_lead_uq` pattern from Slice 1) — the migration-
-      // level constraint is the proper fix. Until then the transaction wrap
-      // is the cheapest defense-in-depth.
-      return db.transaction(async (tx: any) => {
-        const existing = await tx
+      // P1-E + P1-F hardening:
+      //   - The partial unique index `team_coordinations_one_published_uq`
+      //     guarantees at most one published row per team; we map its 23505
+      //     to a clean 409 Conflict.
+      //   - The `key` column is constant per team (`team-${teamId}:coordination`)
+      //     and the FULL unique index `team_coordinations_company_key_uq` covers
+      //     it. So when no PUBLISHED row exists but an ARCHIVED row does,
+      //     we MUST update the archived row back to published instead of
+      //     inserting a fresh row (which would 23505 on the company-key index).
+      return db.transaction(async (tx) => {
+        const existingPublished = await tx
           .select()
           .from(teamCoordinations)
           .where(and(
@@ -35,7 +35,7 @@ export function teamCoordinationService(db: Db) {
             eq(teamCoordinations.status, "published"),
           ));
 
-        if (existing.length > 0) {
+        if (existingPublished.length > 0) {
           const updated = await tx
             .update(teamCoordinations)
             .set({
@@ -44,31 +44,63 @@ export function teamCoordinationService(db: Db) {
               markdown: input.markdown,
               updatedAt: new Date(),
             })
-            .where(eq(teamCoordinations.id, existing[0].id))
+            .where(eq(teamCoordinations.id, existingPublished[0].id))
             .returning();
           return updated[0];
         }
 
+        // No published row — check for an archived row to revive.
+        const existingArchived = await tx
+          .select()
+          .from(teamCoordinations)
+          .where(and(
+            eq(teamCoordinations.teamId, input.teamId),
+            eq(teamCoordinations.status, "archived"),
+          ));
+
+        if (existingArchived.length > 0) {
+          const revived = await tx
+            .update(teamCoordinations)
+            .set({
+              status: "published",
+              name: input.name,
+              description: input.description,
+              markdown: input.markdown,
+              updatedAt: new Date(),
+            })
+            .where(eq(teamCoordinations.id, existingArchived[0].id))
+            .returning();
+          return revived[0];
+        }
+
+        // Truly new — insert. Wrapped in try/catch so a concurrent insert losing
+        // the partial unique race surfaces as 409 not 500.
         const slug = generateTeamSlug(input.name);
-        // P2: derive `key` from teamId (always unique per company) rather
-        // than the name slug. Two teams with similar names previously
-        // generated the same slug → identical key → 23505 on the second
-        // insert. teamId is unique per companyId, so
-        // `team-${teamId}:coordination` collisions are impossible (one
-        // coordination row per team is correct).
-        const inserted = await tx
-          .insert(teamCoordinations)
-          .values({
-            companyId,
-            teamId: input.teamId,
-            key: `team-${input.teamId}:coordination`,
-            slug,
-            name: input.name,
-            description: input.description,
-            markdown: input.markdown,
-          })
-          .returning();
-        return inserted[0];
+        try {
+          const inserted = await tx
+            .insert(teamCoordinations)
+            .values({
+              companyId,
+              teamId: input.teamId,
+              key: `team-${input.teamId}:coordination`,
+              slug,
+              name: input.name,
+              description: input.description,
+              markdown: input.markdown,
+            })
+            .returning();
+          return inserted[0];
+        } catch (err) {
+          const code =
+            (err as { code?: string }).code ??
+            (err as { cause?: { code?: string } }).cause?.code;
+          if (code === "23505") {
+            throw conflict(
+              `coordination for team ${input.teamId} was just published by a concurrent request — retry to merge`,
+            );
+          }
+          throw err;
+        }
       });
     },
 
