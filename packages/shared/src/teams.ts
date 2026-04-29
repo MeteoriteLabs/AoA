@@ -52,41 +52,60 @@ export interface TeamManifest {
   memoryItems?: Array<{ layer: string; title: string; body: string }>;
 }
 
-export const TeamManifestSchema = z.object({
-  schemaVersion: z.literal(1),
-  name: z.string().min(1).max(64),
-  version: z.string().regex(/^\d+\.\d+\.\d+$/, "must be semver"),
-  displayName: z.string().optional(),
-  description: z.string().optional(),
-  agents: z.array(z.union([
-    z.object({
-      name: z.string().min(1),
-      role: TeamRoleSchema,
-      skillKeys: z.array(z.string()),
-      instructionsTemplate: z.string().optional(),
+export const TeamManifestSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    name: z.string().min(1).max(64),
+    version: z.string().regex(/^\d+\.\d+\.\d+$/, "must be semver"),
+    displayName: z.string().optional(),
+    description: z.string().optional(),
+    agents: z.array(z.union([
+      z.object({
+        name: z.string().min(1),
+        role: TeamRoleSchema,
+        skillKeys: z.array(z.string()),
+        instructionsTemplate: z.string().optional(),
+      }),
+      z.object({
+        $ref: z.string().regex(/^@[\w-]+\/[\w-]+@\d+\.\d+\.\d+$/),
+        localName: z.string().min(1),
+        role: TeamRoleSchema,
+      }),
+    ])),
+    routing: z.object({
+      defaultLead: z.string().optional(),
+      rules: z.array(z.object({
+        match: z.string(),
+        mention: z.string(),
+      })),
     }),
-    z.object({
-      $ref: z.string().regex(/^@[\w-]+\/[\w-]+@\d+\.\d+\.\d+$/),
-      localName: z.string().min(1),
-      role: TeamRoleSchema,
-    }),
-  ])),
-  routing: z.object({
-    defaultLead: z.string().optional(),
-    rules: z.array(z.object({
-      match: z.string(),
-      mention: z.string(),
-    })),
-  }),
-  skillDeps: z.array(z.string()).optional(),
-  pluginDeps: z.array(z.string()).optional(),
-  workflowTemplates: z.array(z.object({ $ref: z.string() })).optional(),
-  memoryItems: z.array(z.object({
-    layer: z.string(),
-    title: z.string(),
-    body: z.string(),
-  })).optional(),
-});
+    skillDeps: z.array(z.string()).optional(),
+    pluginDeps: z.array(z.string()).optional(),
+    workflowTemplates: z.array(z.object({ $ref: z.string() })).optional(),
+    memoryItems: z.array(z.object({
+      layer: z.string(),
+      title: z.string(),
+      body: z.string(),
+    })).optional(),
+  })
+  .superRefine((data, ctx) => {
+    // Validate regex compilability for routing rules at the schema layer
+    // (D2): both the route-level `validate(TeamManifestSchema)` middleware
+    // and the service-level `validateManifest` now catch bad-regex rules
+    // at the same point — single source of truth.
+    for (let i = 0; i < data.routing.rules.length; i++) {
+      const rule = data.routing.rules[i];
+      try {
+        new RegExp(rule.match);
+      } catch (err) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["routing", "rules", i, "match"],
+          message: `invalid regex: ${(err as Error).message}`,
+        });
+      }
+    }
+  });
 
 export interface CreateTeamInput {
   name: string;

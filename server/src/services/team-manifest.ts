@@ -16,13 +16,8 @@ export function validateManifest(raw: unknown): TeamManifest {
   if (!result.success) {
     throw new Error(`invalid manifest: ${result.error.message}`);
   }
-  for (const rule of result.data.routing.rules) {
-    try {
-      new RegExp(rule.match);
-    } catch (err) {
-      throw new Error(`invalid regex in routing rule "${rule.match}": ${(err as Error).message}`);
-    }
-  }
+  // Regex compilability is now validated by TeamManifestSchema.superRefine
+  // (D2: consolidates dual validation into the schema layer).
   return result.data;
 }
 
