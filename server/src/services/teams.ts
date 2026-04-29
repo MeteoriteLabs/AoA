@@ -203,6 +203,10 @@ export function teamsService(db: Db) {
         let insertedAgents: Array<{ id: string; name: string }> = [];
 
         if (newAgentInputs.length > 0) {
+          // P1-G atomicity: insert new agents inline. We deliberately skip the
+          // per-agent normalizations from POST /agents (adapter-config defaults,
+          // shortname collision check, AGENTS.md bundle, approval gate) for the
+          // fast team-build flow. Same precedent as team-import.install.
           insertedAgents = await tx
             .insert(agents)
             .values(
@@ -213,6 +217,7 @@ export function teamsService(db: Db) {
                 role: "general" as const,
                 title: a.title ?? null,
                 icon: a.icon ?? null,
+                skillKeys: a.skillKeys ?? [],
                 status: "idle" as const,
                 permissions: { canCreateAgents: false },
                 runtimeConfig: {},

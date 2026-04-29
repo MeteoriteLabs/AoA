@@ -129,6 +129,7 @@ export interface CreateTeamInput {
     role: TeamRole;
     title?: string | null;
     icon?: (typeof AGENT_ICON_NAMES)[number] | null;
+    skillKeys?: string[];
   }>;
 }
 
@@ -172,10 +173,21 @@ export const createTeamSchema = z.object({
       }),
     )
     .optional(),
-  // P1-G: optional inline new-agent specs. The service inserts agents +
-  // agent_projects + team + team_members atomically — any failure rolls
-  // back every preceding insert. The total lead count across `members`
-  // and `newAgents` is bounded by the at-most-one-lead invariant.
+  /**
+   * P1-G: optional inline new-agent specs. The service inserts agents +
+   * agent_projects + team + team_members atomically — any failure rolls
+   * back every preceding insert. The total lead count across `members`
+   * and `newAgents` is bounded by the at-most-one-lead invariant.
+   *
+   * NOTE: this path bypasses the regular agent-hire normalizations that
+   * `POST /companies/:cid/agents` performs (adapter-config defaults, secret
+   * resolution, shortname collision check, permission normalization,
+   * default AGENTS.md bundle, board-approval gate). This matches the
+   * precedent set by `teamImportService.install` for inline new agents.
+   * Founders using this path are committing to a "fast" team-build flow;
+   * advanced agent configuration should still go through the dedicated
+   * agent-hire route.
+   */
   newAgents: z
     .array(
       z.object({
@@ -184,6 +196,7 @@ export const createTeamSchema = z.object({
         role: TeamRoleSchema,
         title: z.string().nullable().optional(),
         icon: z.enum(AGENT_ICON_NAMES).nullable().optional(),
+        skillKeys: z.array(z.string()).optional(),
       }),
     )
     .optional(),

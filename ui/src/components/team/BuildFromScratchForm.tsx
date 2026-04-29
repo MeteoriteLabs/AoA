@@ -126,6 +126,11 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
           // server-side Zod re-validates against AGENT_ADAPTER_TYPES.
           adapterType: m.adapterType as AgentAdapterType,
           role: m.role,
+          // C1 follow-up: forward the comma-parsed Skills input from
+          // MemberRow. Without this, the input was silently dropped on the
+          // atomic newAgents path (the OLD per-agent loop wrote it via
+          // agentsApi.create; the new in-tx insert needs it explicit).
+          skillKeys: m.skillKeys ?? [],
         }));
 
       const team = await teamsApi.create(selectedCompanyId!, {

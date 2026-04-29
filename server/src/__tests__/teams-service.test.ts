@@ -400,6 +400,7 @@ describe("teamsService", () => {
       let agentInsertCalls = 0;
       let agentProjectInsertCalls = 0;
       let teamInsertCalls = 0;
+      let teamMembersInsertCalls = 0;
 
       const db: any = {
         select: vi.fn(() => ({
@@ -433,6 +434,10 @@ describe("teamsService", () => {
                     const err = Object.assign(new Error("dup slug"), { code: "23505" });
                     throw err;
                   }
+                  if (table?.id === "tm_id") {
+                    teamMembersInsertCalls++;
+                    return Promise.resolve([]);
+                  }
                   return Promise.resolve([]);
                 }),
               })),
@@ -462,6 +467,11 @@ describe("teamsService", () => {
       // is a Postgres-level guarantee outside our test scope.
       expect(agentInsertCalls).toBeGreaterThan(0);
       expect(teamInsertCalls).toBeGreaterThan(0);
+      // I3 follow-up: belt-and-braces against a future refactor that might
+      // silently reorder the inserts and write team_members BEFORE the team
+      // insert (which would defeat the whole-transaction rollback story for
+      // any half-committed team_members row depending on FK timing).
+      expect(teamMembersInsertCalls).toBe(0);
     });
   });
 
