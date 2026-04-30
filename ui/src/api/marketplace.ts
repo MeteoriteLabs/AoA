@@ -7,7 +7,12 @@
  * @see server/src/routes/marketplace.ts for endpoint implementation details.
  */
 
-import type { MarketplaceCatalogFile, CatalogSyncStatus } from "@armyofagents/shared";
+import type {
+  CatalogItem,
+  CatalogSyncStatus,
+  MarketplaceCatalogFile,
+  MarketplaceItemType,
+} from "@armyofagents/shared";
 import { api } from "./client";
 
 export const marketplaceApi = {
@@ -26,3 +31,90 @@ export const marketplaceApi = {
     );
   },
 };
+
+/** Filter catalog items by type. Pure function. */
+export function filterByType(
+  items: CatalogItem[],
+  type: MarketplaceItemType,
+): CatalogItem[] {
+  return items.filter((i) => i.type === type);
+}
+
+/** Filter catalog items by category. Pure function. */
+export function filterByCategory(
+  items: CatalogItem[],
+  category: string,
+): CatalogItem[] {
+  return items.filter((i) => i.category === category);
+}
+
+/**
+ * Substring search across name, description, tags. Case-insensitive.
+ * Empty/whitespace query returns input unchanged.
+ */
+export function searchItems(items: CatalogItem[], query: string): CatalogItem[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return items;
+  return items.filter((item) => {
+    if (item.name.toLowerCase().includes(q)) return true;
+    if (item.description.toLowerCase().includes(q)) return true;
+    if (item.tags.some((t) => t.toLowerCase().includes(q))) return true;
+    return false;
+  });
+}
+
+export type CatalogSortOption = "recent" | "name" | "trust";
+
+/**
+ * Sort catalog items. Returns new array.
+ *   recent: addedAt desc (newest first)
+ *   name: alphabetical asc
+ *   trust: verified > community > unverified, then alphabetical
+ */
+export function sortItems(
+  items: CatalogItem[],
+  sort: CatalogSortOption,
+): CatalogItem[] {
+  const TIER_RANK = { verified: 0, community: 1, unverified: 2 } as const;
+  const sorted = [...items];
+  if (sort === "recent") {
+    return sorted.sort((a, b) => b.addedAt.localeCompare(a.addedAt));
+  }
+  if (sort === "name") {
+    return sorted.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  return sorted.sort((a, b) => {
+    const r = TIER_RANK[a.trust.tier] - TIER_RANK[b.trust.tier];
+    if (r !== 0) return r;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/** Group items by type. Used in search results. */
+export function groupByType(
+  items: CatalogItem[],
+): Record<MarketplaceItemType, CatalogItem[]> {
+  return items.reduce(
+    (acc, item) => {
+      acc[item.type].push(item);
+      return acc;
+    },
+    { skill: [], agent: [], plugin: [], team: [] } as Record<
+      MarketplaceItemType,
+      CatalogItem[]
+    >,
+  );
+}
+
+/** Top N featured items (filter by featured===true, sort recent). */
+export function featuredItems(items: CatalogItem[], n = 6): CatalogItem[] {
+  return sortItems(
+    items.filter((i) => i.featured),
+    "recent",
+  ).slice(0, n);
+}
+
+/** Top N recently added items. */
+export function recentlyAddedItems(items: CatalogItem[], n = 6): CatalogItem[] {
+  return sortItems(items, "recent").slice(0, n);
+}
