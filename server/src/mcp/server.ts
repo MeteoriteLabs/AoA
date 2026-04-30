@@ -23,6 +23,7 @@ import { assertBoard, assertCompanyAccess, getActorInfo } from "../routes/authz.
 import {
   TOOL_DEFINITIONS,
   toolHandlers,
+  toolAllowedActors,
   type McpUserScope,
   type ToolContext,
   type ToolServices,
@@ -546,6 +547,20 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
         const handler = toolHandlers[params.name];
         if (!handler) {
           res.status(400).json(jsonRpcError(requestBody.id ?? null, -32601, "Tool not found"));
+          return;
+        }
+        // V2.6: per-tool actor-type gate. Tools listed in toolAllowedActors
+        // are restricted to the listed actor sources. Tools NOT in the map
+        // remain open to all authenticated actors (pre-V2.6 behavior).
+        const allowed = toolAllowedActors[params.name];
+        if (allowed && !allowed.includes(protocolActor.source)) {
+          res.status(403).json(
+            jsonRpcError(
+              requestBody.id ?? null,
+              -32003,
+              `Tool ${params.name} is not available for ${protocolActor.source} actors`,
+            ),
+          );
           return;
         }
         const ctx: ToolContext = {

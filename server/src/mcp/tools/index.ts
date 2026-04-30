@@ -1,4 +1,4 @@
-import { APPROVAL_STATUSES, APPROVAL_TYPES, ISSUE_STATUSES } from "@armyofagents/shared";
+import { APPROVAL_STATUSES, APPROVAL_TYPES, ISSUE_STATUSES, type McpActorType } from "@armyofagents/shared";
 import { readToolHandlers } from "./read-tools.js";
 import { writeToolHandlers } from "./write-tools.js";
 import { documentToolHandlers } from "./document-tools.js";
@@ -18,6 +18,34 @@ export const toolHandlers: Record<string, ToolHandler> = {
   ...writeToolHandlers,
   ...documentToolHandlers,
   ...approvalToolHandlers,
+};
+
+/**
+ * Per-tool actor-type gate.
+ *
+ * Tools NOT in this map are open to all actor types (existing pre-V2.6
+ * behavior). Tools listed here are restricted to the given actor sources.
+ *
+ * Used by mcp/server.ts at tool-dispatch time. A caller whose
+ * ProtocolActor.source is not in the allowed list gets a 403.
+ *
+ * Convention:
+ *   ALL_ACTORS = ["board", "agent", "commander", "mcp"]
+ *   Read tools (memory.search, memory.get): ALL_ACTORS — knowledge
+ *     should reach any authenticated caller.
+ *   Worker-write tools (memory.retain): ALL_ACTORS, but the handler
+ *     auto-approves only when the caller is an agent retaining to its
+ *     own personal scope.
+ *   Privileged write tools (future memory.create, memory.update):
+ *     ["board", "commander"] — only founder + commander, never worker
+ *     agents. (Reserved for follow-up commits.)
+ */
+const ALL_ACTORS: McpActorType[] = ["board", "agent", "commander", "mcp"];
+
+export const toolAllowedActors: Record<string, McpActorType[]> = {
+  "memory.search": ALL_ACTORS,
+  "memory.get": ALL_ACTORS,
+  "memory.retain": ALL_ACTORS,
 };
 
 export const TOOL_DEFINITIONS = [
@@ -141,6 +169,57 @@ export const TOOL_DEFINITIONS = [
         taskId: { type: "string" },
       },
       required: ["title", "content", "category"],
+    },
+  },
+  // V2.6: worker-facing memory tools — multi-pathway search, scope-checked
+  // get, and self-scope-aware retain. See toolAllowedActors above for gating.
+  {
+    name: "memory.search",
+    description:
+      "Search company memory using multi-pathway retrieval (semantic + keyword + temporal). Returns top-K items ranked by RRF + trust weighting, scoped to the caller's RBAC visibility.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        layer: { type: "string", enum: ["identity", "domain", "active_context", "working"] },
+        category: { type: "string" },
+        departmentId: { type: "string" },
+        projectId: { type: "string" },
+        limit: { type: "number", minimum: 1, maximum: 50 },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "memory.get",
+    description:
+      "Fetch a single approved memory item by id. Returns 404 when the item is outside the caller's RBAC scope.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+    },
+  },
+  {
+    name: "memory.retain",
+    description:
+      "Persist an observation to memory. When called by an agent actor with scopeToSelf=true, the item is auto-approved into that agent's personal scope. All other writes create a pending item awaiting founder review (Critical Rule #6).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        content: { type: "string" },
+        category: { type: "string" },
+        layer: { type: "string", enum: ["identity", "domain", "active_context", "working"] },
+        sourceContext: { type: "string" },
+        tags: { type: "array", items: { type: "string" } },
+        departmentId: { type: "string" },
+        projectId: { type: "string" },
+        goalId: { type: "string" },
+        taskId: { type: "string" },
+        scopeToSelf: { type: "boolean" },
+      },
+      required: ["title", "content", "category", "layer", "sourceContext"],
     },
   },
   {
