@@ -4,6 +4,7 @@ import { ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useCatalog } from "@/hooks/useCatalog";
 import { MarketplaceLayout } from "@/components/marketplace/MarketplaceLayout";
 import { TrustBadge } from "@/components/marketplace/TrustBadge";
@@ -83,7 +84,15 @@ export default function MarketplaceDetail() {
   if (!itemType) {
     return (
       <MarketplaceLayout breadcrumbs={[{ label: params.type ?? "?" }]}>
-        <p className="text-center py-12 text-lg">Unknown item type</p>
+        <div className="text-center py-12">
+          <p className="text-lg font-medium">Unknown item type</p>
+          <Link
+            to="/marketplace"
+            className="text-sm text-primary hover:underline mt-2 inline-block"
+          >
+            ← Back to marketplace
+          </Link>
+        </div>
       </MarketplaceLayout>
     );
   }
@@ -93,7 +102,13 @@ export default function MarketplaceDetail() {
       <MarketplaceLayout
         breadcrumbs={[{ label: TYPE_LABELS_PLURAL[itemType], to: `/marketplace/${itemType}` }]}
       >
-        <p className="text-muted-foreground">Loading…</p>
+        <div className="space-y-6 max-w-4xl">
+          <Skeleton className="h-10 w-64" />
+          <Skeleton className="h-4 w-96" />
+          <Skeleton className="h-4 w-80" />
+          <Separator />
+          <Skeleton className="h-40 w-full" />
+        </div>
       </MarketplaceLayout>
     );
   }
@@ -103,7 +118,18 @@ export default function MarketplaceDetail() {
       <MarketplaceLayout
         breadcrumbs={[{ label: TYPE_LABELS_PLURAL[itemType], to: `/marketplace/${itemType}` }]}
       >
-        <p className="text-destructive">Error: {error?.message ?? "Catalog unavailable"}</p>
+        <div className="text-center py-12">
+          <p className="text-lg font-medium">Could not load this item</p>
+          <p className="text-sm text-muted-foreground mt-2">
+            {error?.message ?? "Catalog unavailable"}
+          </p>
+          <Link
+            to={`/marketplace/${itemType}`}
+            className="text-sm text-primary hover:underline mt-3 inline-block"
+          >
+            ← Back to {TYPE_LABELS_PLURAL[itemType]}
+          </Link>
+        </div>
       </MarketplaceLayout>
     );
   }

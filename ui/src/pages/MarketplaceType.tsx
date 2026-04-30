@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import {
   Select,
   SelectContent,
@@ -7,6 +7,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useCatalog } from "@/hooks/useCatalog";
 import { CatalogCard } from "@/components/marketplace/CatalogCard";
 import { MarketplaceLayout } from "@/components/marketplace/MarketplaceLayout";
@@ -54,6 +55,12 @@ export default function MarketplaceType() {
       <MarketplaceLayout breadcrumbs={[{ label: typeParam ?? "?" }]}>
         <div className="text-center py-12">
           <p className="text-lg font-medium">Unknown item type: {typeParam}</p>
+          <Link
+            to="/marketplace"
+            className="text-sm text-primary hover:underline mt-2 inline-block"
+          >
+            ← Back to marketplace
+          </Link>
         </div>
       </MarketplaceLayout>
     );
@@ -64,7 +71,14 @@ export default function MarketplaceType() {
   if (isLoading) {
     return (
       <MarketplaceLayout breadcrumbs={[{ label: typeLabel }]}>
-        <p className="text-muted-foreground">Loading…</p>
+        <div className="space-y-6">
+          <Skeleton className="h-8 w-48" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-40" />
+            ))}
+          </div>
+        </div>
       </MarketplaceLayout>
     );
   }
@@ -72,7 +86,12 @@ export default function MarketplaceType() {
   if (error) {
     return (
       <MarketplaceLayout breadcrumbs={[{ label: typeLabel }]}>
-        <p className="text-destructive">Error: {error.message}</p>
+        <div className="text-center py-12">
+          <p className="text-lg font-medium">Could not load {typeLabel.toLowerCase()}</p>
+          <p className="text-sm text-muted-foreground mt-2">
+            {error.message || "Unknown error"}
+          </p>
+        </div>
       </MarketplaceLayout>
     );
   }
