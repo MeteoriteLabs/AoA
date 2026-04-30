@@ -803,6 +803,7 @@ export {
   type MarketplaceTrustTier,
   type MarketplaceItemType,
   type MarketplaceCatalogItem,
+  type CatalogItem,
   type MarketplaceCatalogFile,
   type CatalogSyncStatus,
 } from "./marketplace.js";
