@@ -122,6 +122,9 @@ export const queryKeys = {
     detail: (companyId: string, id: string) => ["memory", companyId, id] as const,
     versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"] as const,
     semanticSearch: (companyId: string, q: string) => ["memory", companyId, "semantic-search", q] as const,
+    // V2.6 Phase 3
+    retrievalsForIssue: (companyId: string, issueId: string) =>
+      ["memory", companyId, "retrievals", "issue", issueId] as const,
   },
   search: {
     global: (companyId: string, query: string, includeArchived = false) =>

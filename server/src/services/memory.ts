@@ -1,6 +1,6 @@
 import { and, eq, ilike, or, sql, desc } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, memoryItems, memoryItemVersions, suggestions } from "@armyofagents/db";
+import { agents, memoryItems, memoryItemVersions, memoryRetrievals, suggestions } from "@armyofagents/db";
 import { MEMORY_ITEM_LAYERS } from "@armyofagents/shared";
 import { generateEmbedding } from "./embeddings.js";
 import { resolveApiKey } from "../adapters/api-common.js";
@@ -1270,5 +1270,59 @@ export function memoryService(db: Db) {
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .returning(memoryItemsSelection())
         .then((rows) => rows[0] ?? null),
+
+    /**
+     * V2.6 Phase 3 — list memory_retrievals rows for an issue (across all
+     * its heartbeat runs), joined to memory_items so the UI can render the
+     * item title/layer/category alongside the per-call audit metadata.
+     *
+     * Powers the workspace right-panel MemorySection. Sorted newest-first.
+     * Item join is a LEFT JOIN — retrievals whose memory_items have been
+     * deleted still surface (with null fields) so the audit trail
+     * accurately reflects what happened, not what currently exists.
+     *
+     * Limit defaults to 100; UI typically renders ~30. Cap at 500 to
+     * prevent runaway responses if a noisy run audits hundreds of items.
+     */
+    listRetrievalsForIssue: async (
+      companyId: string,
+      issueId: string,
+      options: { limit?: number } = {},
+    ) => {
+      const limit = Math.min(options.limit ?? 100, 500);
+
+      return await db
+        .select({
+          id: memoryRetrievals.id,
+          companyId: memoryRetrievals.companyId,
+          agentId: memoryRetrievals.agentId,
+          runId: memoryRetrievals.runId,
+          taskId: memoryRetrievals.taskId,
+          triggeredBy: memoryRetrievals.triggeredBy,
+          query: memoryRetrievals.query,
+          itemId: memoryRetrievals.itemId,
+          similarityScore: memoryRetrievals.similarityScore,
+          rank: memoryRetrievals.rank,
+          shownToAgent: memoryRetrievals.shownToAgent,
+          createdAt: memoryRetrievals.createdAt,
+          // joined item fields (LEFT JOIN — null when item deleted)
+          itemTitle: memoryItems.title,
+          itemContent: memoryItems.content,
+          itemCategory: memoryItems.category,
+          itemLayer: memoryItems.layer,
+          itemStatus: memoryItems.status,
+          itemPinnedToSkill: memoryItems.pinnedToSkill,
+        })
+        .from(memoryRetrievals)
+        .leftJoin(memoryItems, eq(memoryRetrievals.itemId, memoryItems.id))
+        .where(
+          and(
+            eq(memoryRetrievals.companyId, companyId),
+            eq(memoryRetrievals.taskId, issueId),
+          ),
+        )
+        .orderBy(desc(memoryRetrievals.createdAt))
+        .limit(limit);
+    },
   };
 }
