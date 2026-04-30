@@ -3,6 +3,7 @@ import { useQuery, useQueries } from "@tanstack/react-query";
 import { Plus, ChevronDown, Users } from "lucide-react";
 import { teamsApi } from "../../api/teams";
 import { projectsApi } from "../../api/projects";
+import { agentsApi } from "../../api/agents";
 import { useCompany } from "../../context/CompanyContext";
 import { useNavigate } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -52,6 +53,20 @@ export function TeamsSection() {
     return map;
   }, [projectsQuery.data]);
 
+  // Fetch agents to resolve lead UUIDs to names (P3-B).
+  const agentsQuery = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none"],
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    staleTime: 60_000,
+  });
+
+  const agentNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const a of agentsQuery.data ?? []) map.set(a.id, a.name);
+    return map;
+  }, [agentsQuery.data]);
+
   // For each team, fetch its members to compute lead name + count
   const teams = teamsQuery.data?.items ?? [];
   const memberQueries = useQueries({
@@ -73,11 +88,11 @@ export function TeamsSection() {
         parentProjectName: projectsById.get(t.parentProjectId)?.name ?? "—",
         status: t.status,
         memberCount: members.length,
-        leadName: lead ? lead.agentId : "—", // TODO: resolve agent name in a follow-up
+        leadName: lead ? agentNameById.get(lead.agentId) ?? lead.agentId : "--",
         iconColor: TEAM_COLORS[idx % TEAM_COLORS.length],
       };
     });
-  }, [teams, memberQueries, projectsById]);
+  }, [teams, memberQueries, projectsById, agentNameById]);
 
   return (
     <section className="mb-7">

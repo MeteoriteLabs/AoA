@@ -681,6 +681,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
         for (const mentionedId of mentionedIds) {
           if (wakeups.has(mentionedId)) continue;
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
+          // P3-G: also check the persisted comment's authorAgentId — when an
+          // agent posts via local-board / user / service actor (e.g.
+          // local_trusted curl with no auth), actor.actorType isn't "agent"
+          // and the above check is bypassed, but authorAgentId correctly
+          // identifies the agent.
+          if (comment?.authorAgentId === mentionedId) continue;
           wakeups.set(mentionedId, {
             source: "automation",
             triggerDetail: "system",
@@ -1058,6 +1064,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       for (const mentionedId of mentionedIds) {
         if (wakeups.has(mentionedId)) continue;
         if (actorIsAgent && actor.actorId === mentionedId) continue;
+        // P3-G: also check the persisted comment's authorAgentId — when an
+        // agent posts via local-board / user / service actor (e.g.
+        // local_trusted curl with no auth), actorIsAgent is false and the
+        // above check is bypassed, but authorAgentId correctly identifies
+        // the agent.
+        if (comment?.authorAgentId === mentionedId) continue;
         wakeups.set(mentionedId, {
           source: "automation",
           triggerDetail: "system",

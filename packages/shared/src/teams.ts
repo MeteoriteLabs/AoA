@@ -177,7 +177,9 @@ export interface CreateTeamInput {
 
 export interface UpdateTeamInput {
   name?: string;
-  description?: string;
+  // P3-E: nullable so callers can clear an existing description. Matches
+  // updateTeamSchema and upsertCoordinationSchema.
+  description?: string | null;
   manifest?: TeamManifest;
   status?: TeamStatus;
 }
@@ -246,7 +248,9 @@ export const createTeamSchema = z.object({
 
 export const updateTeamSchema = z.object({
   name: z.string().min(1).max(128).optional(),
-  description: z.string().optional(),
+  // P3-E: accept null so the UI can clear an existing description. The DB
+  // column is nullable; mirrors `upsertCoordinationSchema.description` shape.
+  description: z.string().nullable().optional(),
   status: TeamStatusSchema.optional(),
 });
 
