@@ -5,6 +5,7 @@ import type { CascadeStepResult } from "@armyofagents/db";
 import type { CatalogItem, MarketplaceCatalogFile } from "@armyofagents/shared";
 import { fetchCatalogResource } from "./fetch-resource.js";
 import type { AgentTemplateBody } from "./types.js";
+import { resolveAgentNameConflict, resolveTeamSlugConflict } from "./conflict-resolver.js";
 
 export interface InstallTeamOpts {
   catalogItem: CatalogItem;            // type='team'
@@ -198,11 +199,16 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
       if (!agentItem) {
         throw new Error(`team.json references catalog agent not in catalog: ${teamAgent.templateOrigin}`);
       }
+      const resolvedAgentName = await resolveAgentNameConflict({
+        db: tx as unknown as Db,
+        companyId,
+        desiredName: teamAgent.name,
+      });
       const inserted = await tx
         .insert(agents)
         .values({
           companyId,
-          name: teamAgent.name,
+          name: resolvedAgentName,
           role: template.role ?? "general",
           title: template.title,
           icon: template.icon,
@@ -235,13 +241,18 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
     }
 
     // Insert team row
+    const resolvedSlug = await resolveTeamSlugConflict({
+      db: tx as unknown as Db,
+      companyId,
+      desiredSlug: teamBody.slug,
+    });
     const teamInserted = await tx
       .insert(teams)
       .values({
         companyId,
         parentProjectId: targetDepartmentId,
         name: catalogItem.name,
-        slug: teamBody.slug,
+        slug: resolvedSlug,
         description: teamBody.description ?? catalogItem.description,
         manifest: teamBody.manifest ?? {},
         templateOrigin: catalogItem.id,

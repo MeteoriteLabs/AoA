@@ -16,3 +16,5 @@ export { fetchCatalogResource, FETCH_TIMEOUT_MS } from "./fetch-resource.js";
 export * from "./operation-store.js";
 export { startInstallOperation, dispatchInstall } from "./orchestrator.js";
 export type { Installers, PublishLiveEventFn, StartInstallOpts, DispatchInstallOpts } from "./orchestrator.js";
+export { resolveAgentNameConflict, resolveTeamSlugConflict } from "./conflict-resolver.js";
+export type { ResolveAgentNameOpts, ResolveTeamSlugOpts } from "./conflict-resolver.js";

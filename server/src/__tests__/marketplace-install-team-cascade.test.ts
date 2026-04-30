@@ -10,6 +10,7 @@ vi.mock("@armyofagents/db", () => {
 vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
   and: () => Symbol("op:and"),
+  like: () => Symbol("op:like"),
 }));
 
 import { installTeam } from "../services/marketplace-install/team-installer.js";
@@ -96,11 +97,11 @@ describe("installTeam — Saga cascade", () => {
             return { returning: () => Promise.resolve([{ ...row, id: insertId }]) };
           },
         }),
+        // tx.select() is used by conflict-resolver inside the txn; return [] so
+        // every desired name/slug is treated as available (matches test intent).
         select: () => ({
           from: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([{ id: "dept-uuid-1", type: "department", companyId: "c1" }]),
-            }),
+            where: () => Promise.resolve([]),
           }),
         }),
       };

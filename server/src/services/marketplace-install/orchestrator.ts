@@ -29,6 +29,7 @@ import type { InstallRequest } from "./types.js";
 import type { InstallSkillOpts, InstallSkillResult } from "./skill-installer.js";
 import type { InstallAgentOpts, InstallAgentResult } from "./agent-installer.js";
 import type { InstallTeamOpts, InstallTeamResult } from "./team-installer.js";
+import { resolveAgentNameConflict } from "./conflict-resolver.js";
 
 export interface Installers {
   installSkill: (opts: InstallSkillOpts) => Promise<InstallSkillResult>;
@@ -121,8 +122,13 @@ export async function dispatchInstall(opts: DispatchInstallOpts): Promise<void> 
       const r = await installers.installSkill({ catalogItem, companyId: operation.companyId, db });
       resultEntityId = r.skillId;
     } else if (catalogItem.type === "agent") {
+      const resolvedName = await resolveAgentNameConflict({
+        db,
+        companyId: operation.companyId,
+        desiredName: catalogItem.name,
+      });
       const r = await installers.installAgent({
-        catalogItem, companyId: operation.companyId, db, desiredName: catalogItem.name,
+        catalogItem, companyId: operation.companyId, db, desiredName: resolvedName,
       });
       resultEntityId = r.agentId;
     } else if (catalogItem.type === "team") {
