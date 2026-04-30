@@ -40,7 +40,6 @@ describe("installMarketplacePlugin", () => {
   it("delegates to pluginLoader.installPlugin with packageName+version, then activates via lifecycle.load", async () => {
     const installPluginMock = vi.fn(async () => DISCOVERED);
     const getByKeyMock = vi.fn(async () => ({ id: "plug-uuid-1", pluginKey: "aoa.slack" }));
-    const getByIdMock = vi.fn(async () => ({ id: "plug-uuid-1", pluginKey: "aoa.slack", status: "ready" }));
     const lifecycleLoadMock = vi.fn(async () => {});
 
     const mockDb = {
@@ -53,7 +52,7 @@ describe("installMarketplacePlugin", () => {
       db: mockDb as any,
       pluginLoader: {
         installPlugin: installPluginMock,
-        registry: { getByKey: getByKeyMock, getById: getByIdMock },
+        registry: { getByKey: getByKeyMock },
         lifecycle: { load: lifecycleLoadMock },
       } as any,
     });
@@ -89,7 +88,7 @@ describe("installMarketplacePlugin", () => {
       db: mockDb as any,
       pluginLoader: {
         installPlugin: installPluginMock,
-        registry: { getByKey: vi.fn(), getById: vi.fn() },
+        registry: { getByKey: vi.fn() },
         lifecycle: { load: lifecycleLoadMock },
       } as any,
     });
@@ -125,10 +124,42 @@ describe("installMarketplacePlugin", () => {
         db: mockDb as any,
         pluginLoader: {
           installPlugin: installPluginMock,
-          registry: { getByKey: vi.fn(), getById: vi.fn() },
+          registry: { getByKey: vi.fn() },
           lifecycle: { load: vi.fn() },
         } as any,
       }),
     ).rejects.toThrow(/manifest is missing/i);
+  });
+
+  it("throws on version mismatch when same package installed at different version", async () => {
+    const installPluginMock = vi.fn();
+    const lifecycleLoadMock = vi.fn();
+    const mockDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([
+              { id: "existing-plug", packageName: "aoa-plugin-slack", version: "0.9.0", status: "ready" },
+            ]),
+          }),
+        }),
+      }),
+    };
+
+    await expect(
+      installMarketplacePlugin({
+        catalogItem: PLUGIN,
+        companyId: "c1",
+        db: mockDb as any,
+        pluginLoader: {
+          installPlugin: installPluginMock,
+          registry: { getByKey: vi.fn() },
+          lifecycle: { load: lifecycleLoadMock },
+        } as any,
+      }),
+    ).rejects.toThrow(/installed at version 0\.9\.0.*catalog requests 1\.0\.0/);
+
+    expect(installPluginMock).not.toHaveBeenCalled();
+    expect(lifecycleLoadMock).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { plugins } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
@@ -23,7 +23,6 @@ export interface PluginLoaderLike {
   }>;
   registry: {
     getByKey(pluginKey: string): Promise<{ id: string; pluginKey: string } | null>;
-    getById(pluginId: string): Promise<{ id: string; pluginKey: string; status?: string } | null>;
   };
   lifecycle: {
     load(pluginId: string): Promise<void>;
@@ -52,8 +51,9 @@ export interface InstallMarketplacePluginResult {
  *   3. registry.getByKey(discovered.manifest.id) → existing plugin row.
  *   4. lifecycle.load(existingPlugin.id) → transitions 'installed' → 'ready'.
  *
- * companyId is used only for idempotency lookup against the plugins table.
- * Once installed the plugin is instance-scoped (available to all companies).
+ * companyId is accepted for parity with other installers (installSkill, installAgent,
+ * installTeam) and for future audit logging. Plugin rows themselves are instance-scoped
+ * (no companyId column on plugins table) so the parameter does not affect installation.
  *
  * @throws Error if catalogItem.npm missing, manifest missing, or any step fails.
  */
@@ -69,20 +69,24 @@ export async function installMarketplacePlugin(
     throw new Error(`Plugin ${catalogItem.id} missing npm field — aggregator must populate npm.{packageName,version}`);
   }
 
-  // 1. Idempotency: is this package already installed at the target version?
+  // 1. Idempotency check (matches resolver classification at resolver.ts:95-111).
+  // plugins.pluginKey is uniqueIndex — at most one row per package. If the catalog
+  // version differs from the installed version, fail-fast (V1 has no upgrade flow;
+  // M.4 will add it).
   const existing = await db
     .select()
     .from(plugins)
-    .where(
-      and(
-        eq(plugins.packageName, catalogItem.npm.packageName),
-        eq(plugins.version, catalogItem.npm.version),
-      ),
-    )
+    .where(eq(plugins.packageName, catalogItem.npm.packageName))
     .limit(1);
 
   if (existing.length > 0) {
-    return { pluginId: existing[0].id, alreadyInstalled: true };
+    if (existing[0].version === catalogItem.npm.version) {
+      return { pluginId: existing[0].id, alreadyInstalled: true };
+    }
+    throw new Error(
+      `Plugin ${catalogItem.npm.packageName} installed at version ${existing[0].version}; ` +
+      `catalog requests ${catalogItem.npm.version}. Upgrade flow lands in M.4.`,
+    );
   }
 
   // 2. Delegate to existing pipeline (returns DiscoveredPlugin)
