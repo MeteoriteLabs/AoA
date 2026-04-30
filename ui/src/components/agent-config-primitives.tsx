@@ -25,7 +25,7 @@ export const help: Record<string, string> = {
   capabilities: "Describes what this agent can do. Shown in the org chart and used for task routing.",
   adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw webhook, spawned process, or generic HTTP webhook.",
   cwd: "Default working directory fallback for local adapters. Use an absolute path on the machine running AoA.",
-  promptTemplate: "The prompt sent to the agent on each heartbeat. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} variables.",
+  promptTemplate: "The prompt sent to the agent on each heartbeat. Supports {{ agent.id }} and {{ agent.name }} variables.",
   model: "Override the default model used by the adapter.",
   thinkingEffort: "Control model reasoning depth. Supported values vary by adapter/model.",
   chrome: "Enable Claude's Chrome integration by passing --chrome.",

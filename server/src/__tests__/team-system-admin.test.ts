@@ -160,7 +160,7 @@ describe("teamService.transferAdmin", () => {
   it("throws when current user is not system admin", async () => {
     const db = createSequenceDb({
       selects: [
-        // isCompanySystemAdmin → not admin
+        // isCompanySystemAdmin -> not admin
         [{ isSystemAdmin: false }],
       ],
     });
@@ -172,7 +172,7 @@ describe("teamService.transferAdmin", () => {
   it("throws when transferring to self", async () => {
     const db = createSequenceDb({
       selects: [
-        // isCompanySystemAdmin → is admin
+        // isCompanySystemAdmin -> is admin
         [{ isSystemAdmin: true }],
       ],
     });
@@ -184,11 +184,11 @@ describe("teamService.transferAdmin", () => {
   it("throws when target is not a founder", async () => {
     const db = createSequenceDb({
       selects: [
-        // isCompanySystemAdmin → is admin
+        // isCompanySystemAdmin -> is admin
         [{ isSystemAdmin: true }],
         // getUserRole for target: isInstanceAdmin
         [],
-        // getUserRole for target: userRoles → team_lead
+        // getUserRole for target: userRoles -> team_lead
         [{ role: "team_lead", projectId: "dept-1" }],
       ],
     });
@@ -201,11 +201,11 @@ describe("teamService.transferAdmin", () => {
     const updateSets: Record<string, unknown>[] = [];
     const db = createSequenceDb({
       selects: [
-        // isCompanySystemAdmin → is admin
+        // isCompanySystemAdmin -> is admin
         [{ isSystemAdmin: true }],
         // getUserRole for target: isInstanceAdmin
         [],
-        // getUserRole for target: userRoles → founder
+        // getUserRole for target: userRoles -> founder
         [{ role: "founder", projectId: null }],
       ],
     });

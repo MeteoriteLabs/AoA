@@ -80,10 +80,12 @@ export function NewAgentDialog() {
   });
 
   const isFirstAgent = !agents || agents.length === 0;
-  const effectiveRole = isFirstAgent ? "ceo" : role;
+  // First agent in a company auto-promotes to CXO tier (apex Chief of Staff).
+  // Was `"ceo"` before the role-enum cleanup.
+  const effectiveRole = isFirstAgent ? "cxo" : role;
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Auto-fill for Director
+  // Auto-fill the apex agent name for the first hire.
   useEffect(() => {
     if (newAgentOpen && isFirstAgent) {
       if (!name) setName("Director");

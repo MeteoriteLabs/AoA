@@ -34,32 +34,24 @@ export const AGENT_ADAPTER_TYPES = [
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
-export const AGENT_ROLES = [
-  "ceo",
-  "cto",
-  "cmo",
-  "cfo",
-  "engineer",
-  "designer",
-  "pm",
-  "qa",
-  "devops",
-  "researcher",
-  "general",
-] as const;
+// 3-tier model:
+//   - cxo:     apex executive. Apex CXO (no agent parent) is the de-facto
+//              "Chief of Staff" — computed live in the org-tree UI, not
+//              stored. CXO agents bypass the canCreateAgents permission
+//              gate and load the 4-file `cxo/` onboarding bundle.
+//   - lead:    manages a team or function. Loads the 4-file `lead/`
+//              onboarding bundle. Permission gate still enforced.
+//   - general: individual contributor. Loads the single `default/AGENTS.md`.
+//
+// Constraint: a `cxo` agent can only report to a user or root (enforced
+// in `services/agents.ts`). Mid-tier executives that real companies would
+// call CTO/CMO/CFO map to `lead` in this model.
+export const AGENT_ROLES = ["cxo", "lead", "general"] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
 export const AGENT_ROLE_LABELS: Record<string, string> = {
-  ceo: "Director",
-  cto: "CTO",
-  cmo: "CMO",
-  cfo: "CFO",
-  engineer: "Engineer",
-  designer: "Designer",
-  pm: "Product Manager",
-  qa: "QA",
-  devops: "DevOps",
-  researcher: "Researcher",
+  cxo: "Executive",
+  lead: "Lead",
   general: "General",
 } as const;
 

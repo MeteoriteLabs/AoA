@@ -90,13 +90,13 @@ describe("teamService.removeMember", () => {
   it("removes a team member and orphans children", async () => {
     const db = createSequenceDb({
       selects: [
-        // access.getMembership → found active membership
+        // access.getMembership -> found active membership
         [{ id: "mem-1", status: "active", principalType: "user", principalId: "user-2", companyId: "c1" }],
-        // isCompanySystemAdmin → not admin
+        // isCompanySystemAdmin -> not admin
         [{ isSystemAdmin: false }],
-        // isInstanceAdmin for getUserRole → not admin
+        // isInstanceAdmin for getUserRole -> not admin
         [],
-        // getUserRole → team_member role
+        // getUserRole -> team_member role
         [{ role: "team_member", projectId: null }],
       ],
       updates: [
@@ -122,7 +122,7 @@ describe("teamService.removeMember", () => {
   it("throws when member not found", async () => {
     const db = createSequenceDb({
       selects: [
-        // access.getMembership → not found
+        // access.getMembership -> not found
         [],
       ],
     });
@@ -134,19 +134,19 @@ describe("teamService.removeMember", () => {
   it("throws when trying to remove last founder", async () => {
     const db = createSequenceDb({
       selects: [
-        // access.getMembership → found
+        // access.getMembership -> found
         [{ id: "mem-1", status: "active", principalType: "user", principalId: "user-1", companyId: "c1" }],
-        // isCompanySystemAdmin → not admin
+        // isCompanySystemAdmin -> not admin
         [{ isSystemAdmin: false }],
-        // isInstanceAdmin for getUserRole → not admin
+        // isInstanceAdmin for getUserRole -> not admin
         [],
-        // getUserRole → founder
+        // getUserRole -> founder
         [{ role: "founder", projectId: null }],
-        // founderCount: userRoles query → only this founder
+        // founderCount: userRoles query -> only this founder
         [{ userId: "user-1" }],
         // founderCount: companyMemberships query (active users)
         [{ principalId: "user-1" }],
-        // founderCount: isInstanceAdmin for user-1 → not admin
+        // founderCount: isInstanceAdmin for user-1 -> not admin
         [],
       ],
     });
@@ -158,21 +158,21 @@ describe("teamService.removeMember", () => {
   it("allows removing a founder when other founders exist", async () => {
     const db = createSequenceDb({
       selects: [
-        // access.getMembership → found
+        // access.getMembership -> found
         [{ id: "mem-1", status: "active", principalType: "user", principalId: "user-1", companyId: "c1" }],
-        // isCompanySystemAdmin → not admin
+        // isCompanySystemAdmin -> not admin
         [{ isSystemAdmin: false }],
-        // isInstanceAdmin for getUserRole → not admin
+        // isInstanceAdmin for getUserRole -> not admin
         [],
-        // getUserRole → founder
+        // getUserRole -> founder
         [{ role: "founder", projectId: null }],
-        // founderCount: userRoles query → two founders
+        // founderCount: userRoles query -> two founders
         [{ userId: "user-1" }, { userId: "user-2" }],
         // founderCount: companyMemberships query
         [{ principalId: "user-1" }, { principalId: "user-2" }],
-        // founderCount: isInstanceAdmin for user-1 → no
+        // founderCount: isInstanceAdmin for user-1 -> no
         [],
-        // founderCount: isInstanceAdmin for user-2 → no
+        // founderCount: isInstanceAdmin for user-2 -> no
         [],
       ],
       updates: [[], []],
@@ -198,7 +198,7 @@ describe("teamService.updateUserRole", () => {
         [{ role: "team_member", projectId: null }],
         // ensureParent: check parent user exists
         [{ principalId: "user-1" }],
-        // assertNoCycle: lookup user-1 parent → root
+        // assertNoCycle: lookup user-1 parent -> root
         [{ parentType: null, parentId: null }],
         // post-update getUserRole: isInstanceAdmin
         [],

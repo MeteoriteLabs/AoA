@@ -1589,9 +1589,9 @@ export function DesignGuide() {
 function ReportsToSelectShowcase() {
   const showcaseTree: UnifiedOrgNode[] = [
     {
-      id: "agent-ceo",
-      name: "Claude Director",
-      role: "ceo",
+      id: "agent-cxo",
+      name: "Claude Chief of Staff",
+      role: "cxo",
       status: "active",
       nodeType: "agent",
       adapterType: "claude_local",
@@ -2045,7 +2045,7 @@ function SettingsTabsShowcase() {
                 companyIssuePrefix: "ACM",
                 agentName: "Alpha",
                 agentUrlKey: "alpha",
-                role: "engineer",
+                role: "general",
                 title: "Senior Engineer",
                 status: "active",
                 adapterType: "claude_local",
@@ -2061,7 +2061,7 @@ function SettingsTabsShowcase() {
                 companyIssuePrefix: "ACM",
                 agentName: "Bravo",
                 agentUrlKey: "bravo",
-                role: "pm",
+                role: "lead",
                 title: "Product Lead",
                 status: "active",
                 adapterType: "codex_local",
@@ -2091,7 +2091,7 @@ function SettingsTabsShowcase() {
                 companyIssuePrefix: "ACM",
                 agentName: "Alpha",
                 agentUrlKey: "alpha",
-                role: "engineer",
+                role: "general",
                 title: "Senior Engineer",
                 status: "active",
                 adapterType: "claude_local",
@@ -2772,12 +2772,12 @@ function CompanyImportShowcase() {
     targetCompanyId: null,
     targetCompanyName: "Acme Portable",
     collisionStrategy: "rename" as const,
-    selectedAgentSlugs: ["ceo", "cto"],
+    selectedAgentSlugs: ["cxo", "lead"],
     plan: {
       companyAction: "create" as const,
       agentPlans: [
-        { slug: "ceo", action: "create" as const, plannedName: "CEO", existingAgentId: null, reason: null },
-        { slug: "cto", action: "create" as const, plannedName: "CTO", existingAgentId: null, reason: null },
+        { slug: "cxo", action: "create" as const, plannedName: "Chief of Staff", existingAgentId: null, reason: null },
+        { slug: "lead", action: "create" as const, plannedName: "Eng Lead", existingAgentId: null, reason: null },
       ],
       projectPlans: [
         { slug: "eng", action: "create" as const, plannedName: "Engineering", existingProjectId: null, reason: null },
@@ -2798,19 +2798,19 @@ function CompanyImportShowcase() {
     plan: {
       ...cleanPreview.plan,
       agentPlans: [
-        { slug: "ceo", action: "create" as const, plannedName: "CEO", existingAgentId: null, reason: null },
-        { slug: "cto", action: "skip" as const, plannedName: "CTO", existingAgentId: "a-1", reason: "Slug already exists" },
+        { slug: "cxo", action: "create" as const, plannedName: "Chief of Staff", existingAgentId: null, reason: null },
+        { slug: "lead", action: "skip" as const, plannedName: "Eng Lead", existingAgentId: "a-1", reason: "Slug already exists" },
       ],
     },
     warnings: [
       { kind: "unknown_section" as const, section: "memory", message: "Unknown section: memory (12 items skipped)" },
-      { kind: "deprecated_field" as const, message: "PATH env var was omitted on agent ceo" },
+      { kind: "deprecated_field" as const, message: "PATH env var was omitted on agent cxo" },
     ],
     requiredSecrets: [
       {
         key: "GITHUB_TOKEN",
         description: "Required for git operations",
-        agentSlug: "ceo",
+        agentSlug: "cxo",
         providerHint: null,
       },
     ],

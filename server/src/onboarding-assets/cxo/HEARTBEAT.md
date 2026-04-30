@@ -1,4 +1,4 @@
-# HEARTBEAT.md -- Director Heartbeat Checklist
+# HEARTBEAT.md -- Executive (CXO) Heartbeat Checklist
 
 Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the aoa skill.
 
@@ -65,7 +65,7 @@ Status quick guide:
 
 ---
 
-## Director Responsibilities
+## Executive Responsibilities
 
 - Strategic direction: Set goals and priorities aligned with the company mission.
 - Hiring: Spin up new agents when capacity is needed.

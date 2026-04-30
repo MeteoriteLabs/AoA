@@ -48,12 +48,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => null);
-    throw new ApiError(
-      (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
-      res.status,
-      errorBody,
-    );
+    // B3.3: surface the most informative message available so save-failure
+    // toasts and other error UIs show what actually went wrong server-side
+    // rather than a generic "Request failed: 400". The AoA server emits
+    // `{ error: <msg> }` (see `server/src/middleware/error-handler.ts`); the
+    // `message` fallback is defensive against responses produced by routes
+    // that bypass the middleware or by upstream proxies.
+    const body = errorBody as { error?: string; message?: string } | null;
+    const msg = body?.error ?? body?.message ?? `Request failed: ${res.status}`;
+    throw new ApiError(msg, res.status, errorBody);
   }
+  // Codex P2-2: 204 No Content has an empty body. Calling res.json() on an
+  // empty body throws SyntaxError "Unexpected end of JSON input", which would
+  // surface to callers as a failed request despite the server having succeeded.
+  // Affects DELETE routes that respond with res.status(204).end() — e.g.
+  // archive (DELETE /teams/:id) and removeMember (DELETE /teams/:id/members/:agentId).
+  // Resolve as `undefined` (cast through `T`) so `api.delete<void>` works as
+  // intended and `api.delete<X>` callers see undefined rather than a parse error.
+  if (res.status === 204) return undefined as T;
   return res.json();
 }
 

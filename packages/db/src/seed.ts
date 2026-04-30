@@ -18,16 +18,16 @@ const [company] = await db
   })
   .returning();
 
-const [ceo] = await db
+const [chiefOfStaff] = await db
   .insert(agents)
   .values({
     companyId: company!.id,
-    name: "CEO Agent",
-    role: "ceo",
-    title: "Chief Executive Officer",
+    name: "Chief of Staff",
+    role: "cxo",
+    title: "Apex Executive",
     status: "idle",
     adapterType: "process",
-    adapterConfig: { command: "echo", args: ["hello from ceo"] },
+    adapterConfig: { command: "echo", args: ["hello from chief of staff"] },
     budgetMonthlyCents: 15000,
   })
   .returning();
@@ -40,9 +40,9 @@ const [engineer] = await db
     role: "engineer",
     title: "Software Engineer",
     status: "idle",
-    reportsTo: ceo!.id,
+    reportsTo: chiefOfStaff!.id,
     parentType: "agent",
-    parentId: ceo!.id,
+    parentId: chiefOfStaff!.id,
     adapterType: "process",
     adapterConfig: { command: "echo", args: ["hello from engineer"] },
     budgetMonthlyCents: 10000,
@@ -57,7 +57,7 @@ const [goal] = await db
     description: "Deliver first control plane release",
     level: "company",
     status: "active",
-    ownerAgentId: ceo!.id,
+    ownerAgentId: chiefOfStaff!.id,
   })
   .returning();
 
@@ -69,7 +69,7 @@ const [project] = await db
     name: "Control Plane MVP",
     description: "Implement core board + agent loop",
     status: "in_progress",
-    leadAgentId: ceo!.id,
+    leadAgentId: chiefOfStaff!.id,
   })
   .returning();
 
@@ -83,7 +83,7 @@ await db.insert(issues).values([
     status: "todo",
     priority: "high",
     assigneeAgentId: engineer!.id,
-    createdByAgentId: ceo!.id,
+    createdByAgentId: chiefOfStaff!.id,
   },
   {
     companyId: company!.id,
@@ -93,7 +93,7 @@ await db.insert(issues).values([
     description: "Pause agent at hard budget ceiling",
     status: "backlog",
     priority: "medium",
-    createdByAgentId: ceo!.id,
+    createdByAgentId: chiefOfStaff!.id,
   },
 ]);
 

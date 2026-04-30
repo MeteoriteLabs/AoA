@@ -27,6 +27,33 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
+/**
+ * Enforce: CXO-tier agents can only report to a human user or sit at the
+ * org root. They MUST NOT report to another agent.
+ *
+ * Why: CXO is the apex tier in the agent hierarchy. The "Chief of Staff"
+ * derivation in the org-tree UI assumes the topmost CXO is the founder's
+ * primary delegate; allowing CXOs to be parented under arbitrary agents
+ * inverts the hierarchy and produces a confusing org chart. Mid-tier
+ * leaders use `lead` (which has no parent constraint).
+ *
+ * Throws `unprocessable` (422) when violated.
+ *
+ * Exported so it can be unit-tested directly without DB mocking.
+ */
+export function assertCxoParentConstraint(
+  role: string | null | undefined,
+  parentType: string | null | undefined,
+): void {
+  if (role === "cxo" && parentType === "agent") {
+    throw unprocessable(
+      "CXO agents can only report to a human user or sit at the root of the " +
+      "org. Reassign their parent to a user (or null) before promoting to " +
+      "CXO, or downgrade to `lead` if they should report to another agent.",
+    );
+  }
+}
+
 function createToken() {
   return `pcp_${randomBytes(24).toString("hex")}`;
 }
@@ -265,6 +292,17 @@ export function agentService(db: Db) {
       data.parentId = data.reportsTo ?? null;
     }
 
+    // CXO parent constraint: must hold against the EFFECTIVE post-patch
+    // state. Either the role or the parent could be changing in this PATCH;
+    // we evaluate the merged result so that promoting `lead → cxo` while the
+    // agent still has an agent-typed parent fails cleanly.
+    {
+      const effectiveRole = (data.role ?? existing.role) as string;
+      const effectiveParentType =
+        data.parentType !== undefined ? (data.parentType as string | null) : existing.parentType;
+      assertCxoParentConstraint(effectiveRole, effectiveParentType);
+    }
+
     if (data.name !== undefined) {
       const previousShortname = normalizeAgentUrlKey(existing.name);
       const nextShortname = normalizeAgentUrlKey(data.name);
@@ -353,6 +391,9 @@ export function agentService(db: Db) {
       const parentType = (data.parentType ?? (data.reportsTo ? "agent" : null)) as EntityType | null;
       const parentId = data.parentId ?? data.reportsTo ?? null;
       const reportsTo = data.reportsTo ?? (parentType === "agent" ? parentId : null);
+
+      // CXO parent constraint: CXOs cannot report to another agent.
+      assertCxoParentConstraint(data.role, parentType);
 
       if (parentType && parentId) {
         await orgHierarchy.ensureParent(companyId, parentType, parentId);
@@ -665,6 +706,10 @@ export function agentService(db: Db) {
           nodeType: "agent",
           adapterType: row.adapterType,
           icon: row.icon ?? undefined,
+          // Surface parentType so the org-tree UI can compute the apex
+          // CXO (Chief of Staff) without a second fetch. Possible values:
+          // "agent" | "user" | null.
+          parentType: (row.parentType ?? null) as "agent" | "user" | null,
           children: [],
         };
         entries.push({ node, parentKey });

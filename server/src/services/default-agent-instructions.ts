@@ -2,14 +2,16 @@ import fs from "node:fs/promises";
 
 const DEFAULT_AGENT_BUNDLE_FILES = {
   default: ["AGENTS.md"],
-  ceo: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  cxo: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  lead: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
 
 const DEFAULT_AGENT_BUNDLE_DIRS: Record<DefaultAgentBundleRole, string> = {
   default: "default",
-  ceo: "director",
+  cxo: "cxo",
+  lead: "lead",
 };
 
 function resolveDefaultAgentBundleUrl(role: DefaultAgentBundleRole, fileName: string) {
@@ -28,6 +30,17 @@ export async function loadDefaultAgentInstructionsBundle(role: DefaultAgentBundl
   return Object.fromEntries(entries);
 }
 
+/**
+ * Map an agent's free-form `role` string to the bundle dir it should load.
+ *
+ * - `cxo`  → 4-file Executive bundle (`onboarding-assets/cxo/`)
+ * - `lead` → 4-file Lead bundle (`onboarding-assets/lead/`)
+ * - anything else (`general`, legacy `ceo`/`cto`/etc., empty string) → single
+ *   `onboarding-assets/default/AGENTS.md`. The defensive fallback keeps old
+ *   bundle imports and any orphan role values from breaking agent boot.
+ */
 export function resolveDefaultAgentInstructionsBundleRole(role: string): DefaultAgentBundleRole {
-  return role === "ceo" ? "ceo" : "default";
+  if (role === "cxo") return "cxo";
+  if (role === "lead") return "lead";
+  return "default";
 }

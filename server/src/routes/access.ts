@@ -1390,14 +1390,17 @@ type JoinRequestManagerCandidate = {
 export function resolveJoinRequestAgentManagerId(
   candidates: JoinRequestManagerCandidate[]
 ): string | null {
-  const ceoCandidates = candidates.filter(
-    (candidate) => candidate.role === "ceo"
+  // Route join requests to a CXO-tier agent (apex preferred, but any CXO is
+  // acceptable as a manager candidate). Was historically `=== "ceo"` before
+  // the role-enum cleanup.
+  const cxoCandidates = candidates.filter(
+    (candidate) => candidate.role === "cxo"
   );
-  if (ceoCandidates.length === 0) return null;
-  const rootCeo = ceoCandidates.find(
+  if (cxoCandidates.length === 0) return null;
+  const apexCxo = cxoCandidates.find(
     (candidate) => !candidate.parentId && candidate.reportsTo === null
   );
-  return (rootCeo ?? ceoCandidates[0] ?? null)?.id ?? null;
+  return (apexCxo ?? cxoCandidates[0] ?? null)?.id ?? null;
 }
 
 function isInviteTokenHashCollisionError(error: unknown) {

@@ -1,7 +1,13 @@
 import { useRef, useState, useMemo, useCallback, useEffect } from "react";
+import { useQuery, useQueries } from "@tanstack/react-query";
 import type { UnifiedOrgNode, TeamInviteSummary } from "@armyofagents/shared";
 import { AgentIcon } from "../AgentIconPicker";
 import { adapterLabels, roleLabels } from "../agent-config-primitives";
+import { teamsApi } from "../../api/teams";
+import { useCompany } from "../../context/CompanyContext";
+import { queryKeys } from "../../lib/queryKeys";
+import { TeamOrgOverlay } from "./TeamOrgOverlay";
+import { computeTeamBoxes, type LaidOutCard } from "./teamBoundingBox";
 import { Network, MoreVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ClickableDiv } from "../ui/clickable-div";
@@ -15,7 +21,15 @@ import {
 // Layout constants
 const CARD_W = 200;
 const CARD_H = 100;
-const GAP_X = 32;
+// Sibling gap is widened from the historical 32 to 64 so that two
+// sibling subtrees that happen to lead different teams (e.g. Maya and
+// Alice both reporting to TK, each leading their own team) get a
+// visible margin between their overlay boxes. Math: gap between two
+// adjacent team boxes = GAP_X - 2 × overlay PADDING (16) = 32 px.
+const GAP_X = 64;
+// Root-level gap is wider still so adjacent root subtrees get extra
+// breathing room. Math: ROOT_GAP_X - 2 × overlay PADDING (16) = 48 px.
+const ROOT_GAP_X = 80;
 const GAP_Y = 80;
 const PADDING = 60;
 
@@ -31,6 +45,9 @@ interface LayoutNode {
   adapterType?: string;
   icon?: string;
   pendingApproval?: boolean;
+  // Hierarchy — needed by the org-tree UI to compute the apex CXO
+  // (Chief of Staff badge): role==='cxo' && parentType in ('user', null).
+  parentType?: "agent" | "user" | null;
   // User fields
   avatarUrl?: string;
   userRole?: string;
@@ -53,7 +70,7 @@ export type OrgNodeAction =
   | { type: "resend-invite"; inviteId: string }
   | { type: "revoke-invite"; inviteId: string };
 
-// ── Layout algorithm (reused from OrgChart.tsx) ─────────────────────────
+// ── Layout algorithm — sole owner of the org-tree rendering ──────────────
 
 function subtreeWidth(node: UnifiedOrgNode): number {
   if (node.children.length === 0) return CARD_W;
@@ -87,6 +104,7 @@ function layoutTree(node: UnifiedOrgNode, x: number, y: number): LayoutNode {
     adapterType: node.adapterType,
     icon: node.icon,
     pendingApproval: node.pendingApproval,
+    parentType: node.parentType ?? null,
     avatarUrl: node.avatarUrl,
     userRole: node.userRole,
     departmentName: node.departmentName,
@@ -104,7 +122,10 @@ function layoutForest(roots: UnifiedOrgNode[]): LayoutNode[] {
   for (const root of roots) {
     const w = subtreeWidth(root);
     result.push(layoutTree(root, x, y));
-    x += w + GAP_X;
+    // Use ROOT_GAP_X (not GAP_X) between root subtrees so adjacent team
+    // overlay boxes have visible space between them. Siblings within a
+    // subtree still use GAP_X via `subtreeWidth` / `layoutTree`.
+    x += w + ROOT_GAP_X;
   }
   return result;
 }
@@ -142,6 +163,23 @@ const statusDotColor: Record<string, string> = {
   terminated: "#a3a3a3",
 };
 const defaultDotColor = "#a3a3a3";
+
+// ── Team overlay colors ──────────────────────────────────────────────────
+//
+// Stable team-overlay color palette. Keying by hash of `team.id` (rather
+// than list position) means adding/removing teams doesn't recolor the
+// others — adding/removing one team would otherwise shuffle every other
+// team's color, which founders find visually jarring.
+
+const TEAM_COLORS = ["#6366f1", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
+
+function hashStringToInt(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
 
 const ROLE_LABELS: Record<string, string> = {
   founder: "Founder",
@@ -209,6 +247,82 @@ export function OrgTreeTab({ orgTree, pendingInvites, onNodeClick, onNodeAction 
   const layout = useMemo(() => layoutForest(mergedTree), [mergedTree]);
   const allNodes = useMemo(() => flattenLayout(layout), [layout]);
   const edges = useMemo(() => collectEdges(layout), [layout]);
+
+  // ── Team overlay data ────────────────────────────────────────────────
+  //
+  // Each team draws as a dashed bounding box around its members. We fetch
+  // teams and their member rosters separately because `teamsApi.list`
+  // doesn't include members. `useQueries` scales with team count; both
+  // requests are cheap and read-only.
+  //
+  // Ghost (pending-invite) nodes use `ghost-...` ids that are never on a
+  // real `team_members` row, so `computeTeamBoxes` filters them out
+  // implicitly — no extra ghost handling needed here.
+  const { selectedCompanyId } = useCompany();
+
+  const teamsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.teams.list(selectedCompanyId)
+      : ["teams", "none"],
+    queryFn: () => teamsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+
+  const teamItems = useMemo(
+    () => teamsQuery.data?.items ?? [],
+    [teamsQuery.data],
+  );
+
+  const memberQueries = useQueries({
+    queries: teamItems.map((t) => ({
+      queryKey: selectedCompanyId
+        ? queryKeys.teams.members(selectedCompanyId, t.id)
+        : ["teams", "none", t.id, "members"],
+      queryFn: () => teamsApi.listMembers(t.id),
+      enabled: Boolean(selectedCompanyId),
+    })),
+  });
+
+  // Stable signature for memberships memo: `useQueries` returns a fresh
+  // array every render, so depending on it directly defeats the memo (new
+  // Map built each render). Depending on each query's `dataUpdatedAt`
+  // means we only rebuild the Map when underlying data actually changes.
+  const memberQueriesSignature = memberQueries
+    .map((q) => q.dataUpdatedAt)
+    .join(",");
+
+  const memberships = useMemo(() => {
+    const m = new Map<string, string>();
+    teamItems.forEach((t, idx) => {
+      const members = memberQueries[idx]?.data?.items ?? [];
+      for (const mem of members) m.set(mem.agentId, t.id);
+    });
+    return m;
+    // memberQueriesSignature captures the meaningful identity of memberQueries.
+    // Listing memberQueries directly would churn this memo on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [teamItems, memberQueriesSignature]);
+
+  const teamMetas = useMemo(
+    () =>
+      teamItems.map((t) => ({
+        id: t.id,
+        name: t.name,
+        color: TEAM_COLORS[hashStringToInt(t.id) % TEAM_COLORS.length]!,
+      })),
+    [teamItems],
+  );
+
+  const teamBoxes = useMemo(() => {
+    const cards: LaidOutCard[] = allNodes.map((n) => ({
+      agentId: n.id,
+      x: n.x,
+      y: n.y,
+      w: CARD_W,
+      h: CARD_H,
+    }));
+    return computeTeamBoxes(cards, memberships, teamMetas);
+  }, [allNodes, memberships, teamMetas]);
 
   const bounds = useMemo(() => {
     if (allNodes.length === 0) return { width: 800, height: 600 };
@@ -402,6 +516,12 @@ export function OrgTreeTab({ orgTree, pendingInvites, onNodeClick, onNodeAction 
           transformOrigin: "0 0",
         }}
       >
+        {/* Team overlay — render BEFORE the cards so the cards paint on
+            top of the dashed framing box rather than the box covering the
+            cards (later DOM siblings paint above earlier ones in normal
+            stacking flow). */}
+        <TeamOrgOverlay boxes={teamBoxes} />
+
         {allNodes.map((node) => {
           const isGhost = node.id.startsWith("ghost-");
           if (node.nodeType === "agent") {
@@ -429,6 +549,12 @@ function AgentNodeCard({
   onNodeAction?: (action: OrgNodeAction) => void;
 }) {
   const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+  // Apex CXO = "Chief of Staff": a CXO-tier agent reporting either to a
+  // human or to no one. Computed live from the role + parentType pair —
+  // not stored on the agent. See plan
+  // `docs/superpowers/plans/2026-04-30-agent-role-3-tier-cleanup.md`.
+  const isChiefOfStaff =
+    node.role === "cxo" && (node.parentType === "user" || node.parentType === null);
 
   return (
     <ClickableDiv
@@ -451,6 +577,14 @@ function AgentNodeCard({
       onClick={() => onClick(node.id, "agent")}
       aria-label={`View agent ${node.name}`}
     >
+      {isChiefOfStaff && (
+        <span
+          className="absolute -top-2.5 left-3 rounded bg-amber-500 text-white px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide shadow-sm"
+          aria-label="Chief of Staff (apex executive)"
+        >
+          ⭐ Chief of Staff
+        </span>
+      )}
       <div className="flex items-center px-4 py-3 gap-3">
         <div className="relative shrink-0">
           <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center">

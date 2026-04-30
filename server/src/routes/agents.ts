@@ -135,7 +135,9 @@ export function agentRoutes(db: Db) {
     }
 
     if (actorAgent.id === targetAgent.id) return;
-    if (actorAgent.role === "ceo") return;
+    // CXO-tier agents (apex Chief of Staff or any executive) can manage
+    // any agent in their company.
+    if (actorAgent.role === "cxo") return;
     const allowedByGrant = await access.hasPermission(
       targetAgent.companyId,
       "agent",
@@ -143,7 +145,7 @@ export function agentRoutes(db: Db) {
       "agents:create",
     );
     if (allowedByGrant || canCreateAgents(actorAgent)) return;
-    throw forbidden("Only CEO or agent creators can modify other agents");
+    throw forbidden("Only CXO or agent creators can modify other agents");
   }
 
   async function resolveCompanyIdForAgentReference(req: Request): Promise<string | null> {
@@ -949,8 +951,8 @@ export function agentRoutes(db: Db) {
         res.status(403).json({ error: "Forbidden" });
         return;
       }
-      if (actorAgent.role !== "ceo") {
-        res.status(403).json({ error: "Only CEO can manage permissions" });
+      if (actorAgent.role !== "cxo") {
+        res.status(403).json({ error: "Only CXO can manage permissions" });
         return;
       }
     }

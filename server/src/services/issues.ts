@@ -4,6 +4,7 @@ import {
   activityLog,
   agents,
   assets,
+  authUsers,
   companies,
   companyMemberships,
   executionWorkspaces,
@@ -18,14 +19,17 @@ import {
   projectWorkspaces,
   projects,
   taskDependencies,
+  userRoles,
 } from "@armyofagents/db";
 import { extractProjectMentionIds } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { dependencyService } from "./dependencies.js";
 import { heartbeatService } from "./heartbeat.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { deriveIssueUserContext } from "./issue-user-context.js";
 import { issueExecutionWorkspaceModeForPersistedWorkspace } from "./execution-workspace-policy.js";
+import { notificationService } from "./notifications.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -1424,6 +1428,191 @@ export function issueService(db: Db) {
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
       return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+    },
+
+    /**
+     * Resolve @username mentions to human user IDs in the same company.
+     *
+     * Pattern mirrors `findMentionedAgents` above:
+     *   - Regex extracts @-tokens from the body, stops at whitespace/punctuation.
+     *   - Tokens are lowercased.
+     *   - Tokens ending in "-h" have the suffix stripped — disambiguates from
+     *     agent mentions when both share a name (`@alice-h` = "the human alice").
+     *   - Matched against `authUsers.name` OR the email-local-part (the bit
+     *     before `@` in the email), both case-insensitive (C5). `authUsers.name`
+     *     is a free-form display name like "Alice Smith" — matching that
+     *     against `@alice` would fail. The email fallback is what most users
+     *     actually expect.
+     *
+     * Returns matching user IDs (text, not uuid — `authUsers.id` is text).
+     */
+    findMentionedHumans: async (companyId: string, body: string): Promise<string[]> => {
+      // Tighter token class than findMentionedAgents above — `\w` + `-` only.
+      // Stops cleanly at trailing punctuation like `;`, `)`, `:`, etc., which
+      // matters more for human display names than for agent slugs. Future:
+      // extract a shared MENTION_TOKEN_RE and unify both resolvers (followup).
+      const re = /\B@([\w-]+)/g;
+      const tokens = new Set<string>();
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(body)) !== null) {
+        let token = m[1].toLowerCase();
+        if (token.endsWith("-h")) token = token.slice(0, -2);
+        tokens.add(token);
+      }
+      if (tokens.size === 0) return [];
+      const rows = await db
+        .select({
+          id: authUsers.id,
+          name: authUsers.name,
+          // C5: pull email so we can match the local-part. authUsers.email is
+          // notNull at the schema level, so `u.email.split("@")[0]` is safe.
+          email: authUsers.email,
+        })
+        .from(authUsers)
+        .innerJoin(userRoles, eq(userRoles.userId, authUsers.id))
+        .where(eq(userRoles.companyId, companyId));
+      return [
+        ...new Set(
+          rows
+            .filter((u) => {
+              const nameMatch = tokens.has(u.name.toLowerCase());
+              const emailLocalPart = u.email.split("@")[0]?.toLowerCase() ?? "";
+              const emailMatch =
+                emailLocalPart.length > 0 && tokens.has(emailLocalPart);
+              return nameMatch || emailMatch;
+            })
+            .map((u) => u.id),
+        ),
+      ];
+    },
+
+    /**
+     * Resolve @human mentions in `body` and emit notification rows for matched
+     * users. Self-mention is skipped (a user @-mentioning themselves does NOT
+     * receive a notification). Notification inserts run in parallel with
+     * per-promise error isolation — one failure does not abort the batch.
+     *
+     * SAFETY:
+     *   1. Feature-flag gated via companies.enableTeams (queried internally)
+     *   2. Internal try/catch wraps the whole flow — never throws
+     *   3. Sanitized error logging (err.name + err.message only)
+     *   4. Best-effort: if a notification mid-batch fails, prior rows persist;
+     *      the catch logs and the rest of the batch still runs (per-promise catch)
+     *
+     * Note: `relatedEntityId` is the ISSUE id (not the comment id) so deep-links
+     * navigate to the task — the task page renders the comment inline.
+     *
+     * The mention-resolution regex+query is inlined here (not delegated to
+     * findMentionedHumans) so this helper stays self-contained and the
+     * existing helper is untouched. Future: extract a shared private
+     * `_resolveMentionedHumans` to dedupe — see Slice 9 followup.
+     *
+     * @returns the count of notification rows inserted (0 when flag off, no
+     * mentions, or the catch fired).
+     */
+    notifyMentionedHumans: async (
+      companyId: string,
+      body: string,
+      taskId: string,
+      actor: { actorType: string; actorId: string | null },
+    ): Promise<number> => {
+      try {
+        const companyRow = await db
+          .select({ enableTeams: companies.enableTeams })
+          .from(companies)
+          .where(eq(companies.id, companyId))
+          .then((rows) => rows[0]);
+
+        if (!companyRow?.enableTeams) return 0;
+
+        // Inline mirror of findMentionedHumans regex+query — kept local so the
+        // existing helper is untouched (per Slice 7 review constraint).
+        // C5: match against EITHER name OR email-local-part — this is the
+        // notification path that fires the actual user-visible alert, so it
+        // must mirror the helper's resolution logic.
+        const re = /\B@([\w-]+)/g;
+        const tokens = new Set<string>();
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(body)) !== null) {
+          let token = m[1].toLowerCase();
+          if (token.endsWith("-h")) token = token.slice(0, -2);
+          tokens.add(token);
+        }
+        if (tokens.size === 0) return 0;
+
+        const rows = await db
+          .select({
+            id: authUsers.id,
+            name: authUsers.name,
+            email: authUsers.email,
+          })
+          .from(authUsers)
+          .innerJoin(userRoles, eq(userRoles.userId, authUsers.id))
+          .where(eq(userRoles.companyId, companyId));
+        const mentionedIds = [
+          ...new Set(
+            rows
+              .filter((u) => {
+                const nameMatch = tokens.has(u.name.toLowerCase());
+                const emailLocalPart =
+                  u.email.split("@")[0]?.toLowerCase() ?? "";
+                const emailMatch =
+                  emailLocalPart.length > 0 && tokens.has(emailLocalPart);
+                return nameMatch || emailMatch;
+              })
+              .map((u) => u.id),
+          ),
+        ];
+        if (mentionedIds.length === 0) return 0;
+
+        const notifSvc = notificationService(db);
+        const message = body.slice(0, 200);
+
+        // Parallel inserts with per-promise catch — one failure does not abort
+        // the batch. The outer catch is a backstop for anything outside the
+        // per-promise wrappers (e.g., the company/users queries above).
+        const results = await Promise.all(
+          mentionedIds.map(async (userId) => {
+            // Self-mention skip: a human @-mentioning themselves doesn't get notified.
+            // For agent actors, actorId is an agentId UUID and never matches a userId,
+            // so this comparison correctly never fires for agents.
+            if (actor.actorType === "user" && actor.actorId === userId) return false;
+            try {
+              await notifSvc.create(companyId, {
+                userId,
+                type: "mention",
+                title: "You were mentioned in a comment",
+                message,
+                relatedEntityType: "task",
+                relatedEntityId: taskId,
+              });
+              return true;
+            } catch (err) {
+              logger.warn(
+                {
+                  err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
+                  companyId,
+                  userId,
+                  taskId,
+                },
+                "@human mention notification failed for one recipient; batch continues",
+              );
+              return false;
+            }
+          }),
+        );
+        return results.filter(Boolean).length;
+      } catch (err) {
+        logger.warn(
+          {
+            err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
+            companyId,
+            taskId,
+          },
+          "@human mention notifications failed at outer try/catch; comment creation continues",
+        );
+        return 0;
+      }
     },
 
     findMentionedProjectIds: async (issueId: string) => {

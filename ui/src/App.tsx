@@ -30,6 +30,7 @@ import { Commander } from "./pages/Commander";
 import { DesignGuide } from "./pages/DesignGuide";
 import { Costs } from "./pages/Costs";
 import { TeamPage } from "./pages/TeamPage";
+import { TeamDetail } from "./pages/TeamDetail";
 import { HumanDetail } from "./pages/HumanDetail";
 import { ActiveAgents } from "./pages/ActiveAgents";
 import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
@@ -124,6 +125,7 @@ function boardRoutes() {
       <Route path="settings/internal-agent" element={<Navigate to="../settings/commander" replace />} />
       <Route path="company/settings" element={<Navigate to="../settings" replace />} />
       <Route path="org" element={<TeamPage />} />
+      <Route path="team/teams/:slug" element={<TeamDetail />} />
       <Route path="team/:userId" element={<HumanDetail />} />
       <Route path="team/:userId/:tab" element={<HumanDetail />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
@@ -288,6 +290,7 @@ export function App() {
           <Route path="budget" element={<UnprefixedBoardRedirect />} />
           <Route path="projects" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
+          <Route path="team/teams/:slug" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />

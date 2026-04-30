@@ -64,6 +64,14 @@ type EmbeddedPostgresCtor = new (opts: {
   password: string;
   port: number;
   persistent: boolean;
+  /**
+   * Flags forwarded to `initdb` when the cluster is first created. Used to
+   * force UTF-8 encoding so non-Latin-1 characters (right-arrow `→`, em-dashes,
+   * emoji, CJK) can be stored. On Windows, the default initdb takes the OS
+   * locale (WIN1252), and INSERTs of UTF-8-only chars then fail with
+   * `character with byte sequence … has no equivalent in encoding "WIN1252"`.
+   */
+  initdbFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
@@ -335,6 +343,15 @@ if (config.databaseUrl) {
       password: "paperclip",
       port,
       persistent: true,
+      // Force UTF-8 encoding + locale=C at cluster creation. Without this,
+      // initdb takes the OS locale (WIN1252 on Windows) and the cluster
+      // physically rejects UTF-8-only characters in INSERTs/UPDATEs. Locale=C
+      // gives byte-sort ORDER BY semantics; that's the safest default for an
+      // application-layer database where collation rarely matters.
+      // Only applied on first cluster creation; existing clusters keep their
+      // initial encoding (an existing WIN1252 cluster needs to be re-init'd
+      // or pg_dump/restore'd to switch to UTF-8).
+      initdbFlags: ["--encoding=UTF8", "--locale=C"],
       onLog: appendEmbeddedPostgresLog,
       onError: appendEmbeddedPostgresLog,
     });
