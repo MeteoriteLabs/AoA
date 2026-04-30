@@ -52,6 +52,10 @@ import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { PluginPage } from "./pages/PluginPage";
 import { PluginSettings } from "./pages/PluginSettings";
+import Marketplace from "./pages/Marketplace";
+import MarketplaceType from "./pages/MarketplaceType";
+import MarketplaceDetail from "./pages/MarketplaceDetail";
+import MarketplaceSearch from "./pages/MarketplaceSearch";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -277,6 +281,10 @@ export function App() {
           <Route path="instance/settings" element={<InstanceSettingsPage />} />
           <Route path="instance/settings/plugins/:pluginId" element={<PluginSettings />} />
           <Route path="instance/access" element={<InstanceAccessPage />} />
+          <Route path="marketplace" element={<Marketplace />} />
+          <Route path="marketplace/search" element={<MarketplaceSearch />} />
+          <Route path="marketplace/:type" element={<MarketplaceType />} />
+          <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />

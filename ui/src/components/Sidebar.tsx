@@ -12,6 +12,7 @@ import {
   Repeat,
   ChevronsLeft,
   Shield,
+  Store,
   Puzzle,
   DollarSign,
   FolderGit2,
@@ -138,6 +139,7 @@ export function Sidebar() {
             collapsed={collapsed}
           />
           <SidebarNavItem to="/commander" label="Commander" icon={Shield} collapsed={collapsed} />
+          <SidebarNavItem to="/marketplace" label="Marketplace" icon={Store} collapsed={collapsed} noPrefix />
         </div>
 
         {/* WORK section */}
