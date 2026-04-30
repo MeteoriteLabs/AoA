@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight, Store } from "lucide-react";
+import { SearchTypeahead } from "./SearchTypeahead";
 
 export interface MarketplaceLayoutProps {
   /** Optional breadcrumb segments after "Marketplace". */
   breadcrumbs?: Array<{ label: string; to?: string }>;
-  /** Right-aligned slot for actions like search input. Defaults to nothing for now (M.3a.G adds search). */
+  /** Right-aligned slot for actions. Defaults to <SearchTypeahead />. Pass `null` to suppress. */
   actions?: ReactNode;
   children: ReactNode;
 }
@@ -39,7 +40,7 @@ export function MarketplaceLayout({ breadcrumbs = [], actions, children }: Marke
             </span>
           ))}
         </nav>
-        {actions && <div className="flex items-center gap-2">{actions}</div>}
+        <div className="flex items-center gap-2">{actions ?? <SearchTypeahead />}</div>
       </header>
       <main className="flex-1 overflow-auto px-6 py-6">{children}</main>
     </div>
