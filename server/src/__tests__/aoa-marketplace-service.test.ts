@@ -120,9 +120,9 @@ describe("MarketplaceCatalogService", () => {
         Promise.resolve({ ...VALID_CATALOG, schemaVersion: "99.0.0" }),
     }) as any;
 
-    // First select: writeCache(null) -> readCache() returns [] (no existing row)
-    // Second select: readCache() at end of catch returns [] (no fallback)
-    const { db } = makeDb([[], []]);
+    // writeCache(null) -> readCache() returns [] (no existing row, so no update, returns null)
+    // writeCache returns null -> no bundled snapshot -> sync returns null
+    const { db } = makeDb([[]]);
 
     const service = new MarketplaceCatalogService({
       db,
@@ -138,9 +138,9 @@ describe("MarketplaceCatalogService", () => {
   it("falls back to bundled snapshot on CDN failure", async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error("network down"));
 
-    // First call: writeCache(null) -> readCache() returns [] (no existing row, so no update)
-    // Second call: readCache() in catch returns [] (triggers bundled path)
-    const { db, inserted } = makeDb([[], []]);
+    // writeCache(null) -> readCache() returns [] (no existing row, so no update, returns null)
+    // writeCache returns null -> triggers bundled snapshot path
+    const { db, inserted } = makeDb([[]]);
 
     const service = new MarketplaceCatalogService({
       db,

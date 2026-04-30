@@ -17,7 +17,7 @@ export const marketplaceCatalogCache = pgTable("marketplace_catalog_cache", {
   lastSyncedAt: timestamp("last_synced_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-  lastSyncStatus: text("last_sync_status").notNull(), // "success" | "failure"
+  lastSyncStatus: text("last_sync_status").$type<"success" | "failure">().notNull(),
   lastSyncError: text("last_sync_error"),
-  source: text("source").notNull(), // "cdn" | "bundled"
+  source: text("source").$type<"cdn" | "bundled">().notNull(),
 });
