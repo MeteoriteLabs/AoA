@@ -103,10 +103,11 @@ export const TeamManifestSchema = z
     //   1. Cap pattern length to 256 chars (oversize payloads).
     //   2. Reject the classic CWE-1333 nested-quantifier shape.
     //   3. Keep the existing compilability try/catch.
-    // This is a coarse heuristic, not a complete ReDoS analyser. For
+    // This is a coarse heuristic, not a complete ReDoS analyser. Known
+    // bypasses are documented inline at the regex below; for
     // production-grade safety the right move is re2-wasm at evaluation
-    // time. The cap+heuristic blocks every published example of CWE-1333
-    // that has actually shown up in OWASP / GitHub-advisory writeups.
+    // time. (Today rule.match is only embedded as text — see the
+    // detailed I2 comment at the heuristic itself.)
     for (let i = 0; i < data.routing.rules.length; i++) {
       const rule = data.routing.rules[i];
 
