@@ -56,7 +56,17 @@ export const MarketplaceCatalogItemSchema = z.object({
     adapter: z.string(),
     url: z.string(),
     locator: z.string(),
+    commitSha: z.string().optional(), // git SHA at aggregation time
   }),
+  // Only present on plugin items, mirrors plugin.npm.{packageName,version}
+  npm: z
+    .object({
+      packageName: z.string(),
+      version: z.string(),
+    })
+    .optional(),
+  // Only present on snapshot items (skill/agent/team), commit-pinned URL to fetchable file
+  resourceUrl: z.string().optional(),
   trust: z.object({
     tier: MarketplaceTrustTierSchema,
     source: z.string(),
@@ -94,6 +104,9 @@ export const MarketplaceCatalogItemSchema = z.object({
   featured: z.boolean().optional(),
 });
 export type MarketplaceCatalogItem = z.infer<typeof MarketplaceCatalogItemSchema>;
+
+// Alias for ergonomic imports throughout marketplace-install services
+export type CatalogItem = MarketplaceCatalogItem;
 
 export const MarketplaceCatalogFileSchema = z.object({
   schemaVersion: z.string(),

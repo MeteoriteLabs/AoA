@@ -540,6 +540,13 @@
       "when": 1777873339732,
       "tag": "0076_archive_extracted_memory_items",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1777545600000,
+      "tag": "0072_marketplace_install_operations",
+      "breakpoints": true
     }
   ]
 }

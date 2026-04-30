@@ -244,6 +244,10 @@ export const LIVE_EVENT_TYPES = [
   "memory.folder.updated",
   "memory.folder.deleted",
   "memory.import.progress",
+  // Marketplace install (M.2)
+  "marketplace.install.started",
+  "marketplace.install.completed",
+  "marketplace.install.failed",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
