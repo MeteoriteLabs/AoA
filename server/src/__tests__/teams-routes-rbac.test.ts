@@ -90,6 +90,11 @@ function makeTeam() {
     parentProjectId: DEPT_A,
     name: "Engineering Team",
     slug: "engineering",
+    // Task 11 / P3-D: install service now returns `warnings: string[]` on
+    // every result. The install route reads `team.warnings.length` for log
+    // telemetry and `team.warnings ?? []` in the response body. Without
+    // `warnings` here the install route throws TypeError → 500.
+    warnings: [] as string[],
   };
 }
 
