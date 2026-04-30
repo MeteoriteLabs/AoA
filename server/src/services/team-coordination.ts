@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { teamCoordinations } from "@armyofagents/db";
 import type { CreateTeamCoordinationInput } from "@armyofagents/shared";
 import { generateTeamSlug } from "./team-slug.js";
+import { isUniqueViolation } from "./db-errors.js";
 import { notFound, conflict } from "../errors.js";
 import { replaceAutoSection } from "./coordination-parser.js";
 
@@ -101,10 +102,7 @@ export function teamCoordinationService(db: Db) {
             }
             return revived[0];
           } catch (err) {
-            const code =
-              (err as { code?: string }).code ??
-              (err as { cause?: { code?: string } }).cause?.code;
-            if (code === "23505") {
+            if (isUniqueViolation(err)) {
               throw conflict(
                 `coordination for team ${input.teamId} was just published by a concurrent request — retry to merge`,
               );
@@ -131,10 +129,7 @@ export function teamCoordinationService(db: Db) {
             .returning();
           return inserted[0];
         } catch (err) {
-          const code =
-            (err as { code?: string }).code ??
-            (err as { cause?: { code?: string } }).cause?.code;
-          if (code === "23505") {
+          if (isUniqueViolation(err)) {
             throw conflict(
               `coordination for team ${input.teamId} was just published by a concurrent request — retry to merge`,
             );

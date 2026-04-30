@@ -8,6 +8,7 @@ import type {
 } from "@armyofagents/shared";
 import { generateTeamSlug, ensureUniqueSlug } from "./team-slug.js";
 import { validateManifest } from "./team-manifest.js";
+import { isUniqueViolation } from "./db-errors.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 
 /**
@@ -77,10 +78,7 @@ export async function insertTeamWithUniqueSlug(
         .returning();
       return inserted[0];
     } catch (err) {
-      const code =
-        (err as { code?: string }).code ??
-        (err as { cause?: { code?: string } }).cause?.code;
-      if (code !== "23505") throw err;
+      if (!isUniqueViolation(err)) throw err;
       // Loop will re-fetch existing slugs (the colliding row is now
       // visible in this tx's snapshot or in subsequent reads) and pick a
       // fresh suffix.
@@ -414,10 +412,7 @@ export function teamsService(db: Db) {
           .returning();
         return inserted[0];
       } catch (err) {
-        const code =
-          (err as { code?: string }).code ??
-          (err as { cause?: { code?: string } }).cause?.code;
-        if (code === "23505") {
+        if (isUniqueViolation(err)) {
           throw conflict(
             `agent ${agentId} is already a member of team ${teamId}`,
           );
@@ -512,10 +507,7 @@ export function teamsService(db: Db) {
           if (updated.length === 0) throw notFound(`membership not found`);
           return updated[0];
         } catch (err) {
-          const code =
-            (err as { code?: string }).code ??
-            (err as { cause?: { code?: string } }).cause?.code;
-          if (code === "23505") {
+          if (isUniqueViolation(err)) {
             throw conflict(
               `concurrent lead change for team ${teamId} — retry`,
             );
