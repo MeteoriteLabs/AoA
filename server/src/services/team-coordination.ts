@@ -44,8 +44,20 @@ export function teamCoordinationService(db: Db) {
               markdown: input.markdown,
               updatedAt: new Date(),
             })
-            .where(eq(teamCoordinations.id, existingPublished[0].id))
+            .where(and(
+              eq(teamCoordinations.id, existingPublished[0].id),
+              // C1: re-check status in the WHERE — if a concurrent tx archived
+              // the row between our SELECT and this UPDATE, updated.length === 0
+              // and we surface a clean 409 rather than silently overwriting an
+              // archived row with new content.
+              eq(teamCoordinations.status, "published"),
+            ))
             .returning();
+          if (updated.length === 0) {
+            throw conflict(
+              `coordination for team ${input.teamId} was just archived by a concurrent request — retry`,
+            );
+          }
           return updated[0];
         }
 
@@ -59,18 +71,46 @@ export function teamCoordinationService(db: Db) {
           ));
 
         if (existingArchived.length > 0) {
-          const revived = await tx
-            .update(teamCoordinations)
-            .set({
-              status: "published",
-              name: input.name,
-              description: input.description,
-              markdown: input.markdown,
-              updatedAt: new Date(),
-            })
-            .where(eq(teamCoordinations.id, existingArchived[0].id))
-            .returning();
-          return revived[0];
+          // C2: wrap the revive UPDATE in 23505 handling AND re-check status in
+          // the WHERE. Two race shapes are possible:
+          //   1. Concurrent tx revived this same archived row first → our
+          //      WHERE-by-id-AND-status='archived' returns 0 rows → 409.
+          //   2. Concurrent tx archived this row + inserted a NEW published row
+          //      for the same team → our UPDATE flips the archived row to
+          //      published, but the partial unique index fires because there's
+          //      now two published rows for the same team → 23505 → 409.
+          try {
+            const revived = await tx
+              .update(teamCoordinations)
+              .set({
+                status: "published",
+                name: input.name,
+                description: input.description,
+                markdown: input.markdown,
+                updatedAt: new Date(),
+              })
+              .where(and(
+                eq(teamCoordinations.id, existingArchived[0].id),
+                eq(teamCoordinations.status, "archived"),
+              ))
+              .returning();
+            if (revived.length === 0) {
+              throw conflict(
+                `coordination for team ${input.teamId} was just revived by a concurrent request — retry`,
+              );
+            }
+            return revived[0];
+          } catch (err) {
+            const code =
+              (err as { code?: string }).code ??
+              (err as { cause?: { code?: string } }).cause?.code;
+            if (code === "23505") {
+              throw conflict(
+                `coordination for team ${input.teamId} was just published by a concurrent request — retry to merge`,
+              );
+            }
+            throw err;
+          }
         }
 
         // Truly new — insert. Wrapped in try/catch so a concurrent insert losing
