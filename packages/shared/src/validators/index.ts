@@ -109,6 +109,21 @@ export {
   type UpdateMemoryItem,
   type SuggestMemoryUpdate,
   type SuggestMemoryArchive,
+  // V2.6: memory infrastructure
+  memoryProfileSchema,
+  memoryWriteCapabilitiesSchema,
+  createMemoryRelationSchema,
+  memoryRetrievalRowSchema,
+  memoryExtractionProgressSchema,
+  createMemoryExtractionSchema,
+  createMemoryExtractionBatchSchema,
+  type MemoryProfile,
+  type MemoryWriteCapabilities,
+  type CreateMemoryRelation,
+  type MemoryRetrievalRow,
+  type MemoryExtractionProgress,
+  type CreateMemoryExtraction,
+  type CreateMemoryExtractionBatch,
 } from "./memory.js";
 
 export {

@@ -261,8 +261,87 @@ export const MEMORY_ITEM_CATEGORIES = [
   "context",
   "insight",
   "preference",
+  "procedure",
+  "policy",
 ] as const;
 export type MemoryItemCategory = (typeof MEMORY_ITEM_CATEGORIES)[number];
+
+// V2.6: relations between memory items (graph edges).
+export const MEMORY_RELATION_KINDS = [
+  "supersedes",
+  "related_to",
+  "applies_to",
+  "conflicts_with",
+  "derived_from",
+] as const;
+export type MemoryRelationKind = (typeof MEMORY_RELATION_KINDS)[number];
+
+// V2.6: per-call retrieval audit triggers.
+export const MEMORY_RETRIEVAL_TRIGGERS = [
+  "auto",                  // pre-run injection at heartbeat start
+  "agent_search",          // worker agent called memory.search
+  "agent_get",             // worker agent called memory.get
+  "skill_materialize",     // pinned-item skill synthesis
+  "commander_query",       // commander tool query
+] as const;
+export type MemoryRetrievalTrigger = (typeof MEMORY_RETRIEVAL_TRIGGERS)[number];
+
+// V2.6: extraction pipeline input types.
+export const MEMORY_EXTRACTION_INPUT_TYPES = [
+  "text",
+  "pdf",
+  "docx",
+  "url",
+  "audio",
+  "image",
+  "video",
+] as const;
+export type MemoryExtractionInputType = (typeof MEMORY_EXTRACTION_INPUT_TYPES)[number];
+
+// V2.6: extraction job status.
+export const MEMORY_EXTRACTION_STATUSES = [
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+] as const;
+export type MemoryExtractionStatus = (typeof MEMORY_EXTRACTION_STATUSES)[number];
+
+// V2.6: extraction batch status (groups multi-file uploads).
+export const MEMORY_EXTRACTION_BATCH_STATUSES = [
+  "queued",
+  "running",
+  "completed",
+  "cancelled",
+] as const;
+export type MemoryExtractionBatchStatus = (typeof MEMORY_EXTRACTION_BATCH_STATUSES)[number];
+
+// V2.6: MCP actor types — controls which tools an actor can call.
+//   "board"     — founder session (existing)
+//   "agent"     — worker agent CLI subprocess (new)
+//   "commander" — internal-agent + sub-agents (new, when commander goes CLI)
+//   "mcp"       — external MCP API key (existing)
+export const MCP_ACTOR_TYPES = ["board", "agent", "commander", "mcp"] as const;
+export type McpActorType = (typeof MCP_ACTOR_TYPES)[number];
+
+// V2.6: per-agent memory profile — controls scope filtering and skill materialization.
+// Stored under agent.runtimeConfig.memoryProfile. See memoryProfileSchema in validators/memory.ts.
+export const MEMORY_RECALL_BUDGETS = ["low", "mid", "high"] as const;
+export type MemoryRecallBudget = (typeof MEMORY_RECALL_BUDGETS)[number];
+
+export const MEMORY_RECALL_BUDGET_LIMITS: Record<MemoryRecallBudget, number> = {
+  low: 3,
+  mid: 10,
+  high: 25,
+};
+
+export const MEMORY_SCOPE_FILTERS = ["self", "department", "all"] as const;
+export type MemoryScopeFilter = (typeof MEMORY_SCOPE_FILTERS)[number];
+
+// V2.6: future-reserved write capability scopes (curator-class agents).
+export const MEMORY_WRITE_SCOPES = ["department", "task_chain", "active_context"] as const;
+export type MemoryWriteScope = (typeof MEMORY_WRITE_SCOPES)[number];
 
 export const MEMORY_ITEM_SOURCES = [
   "brief",
