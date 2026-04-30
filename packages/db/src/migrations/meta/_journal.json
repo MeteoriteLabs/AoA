@@ -498,6 +498,13 @@
       "when": 1777590000000,
       "tag": "0070_agent_role_3_tier",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1777583424634,
+      "tag": "0071_amazing_khan",
+      "breakpoints": true
     }
   ]
 }

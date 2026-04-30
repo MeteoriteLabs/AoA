@@ -7,6 +7,7 @@ import {
   integer,
   timestamp,
   jsonb,
+  boolean,
   index,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
@@ -14,6 +15,7 @@ import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { issues } from "./issues.js";
 import { artifacts } from "./artifacts.js";
+import { agents } from "./agents.js";
 import { memoryItemVersions } from "./memory_item_versions.js";
 
 /**
@@ -62,6 +64,16 @@ export const memoryItems = pgTable(
     embedding: vector("embedding"),
     // V2: Retry persistence — prevents infinite retry loops for failed embeddings
     embeddingRetries: integer("embedding_retries").notNull().default(0),
+    // V2.6: agent-personal memory scope. Set when an agent retains an item to its own bucket.
+    // Items with agentId set are visible only to that agent + founder/team_lead in that scope.
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+    // V2.6: trust signal for retrieval ranking. Bumped on shownToAgent + founder validate +
+    // observer pattern confirmation. Default 1 (creation counts as one validation).
+    validationCount: integer("validation_count").notNull().default(1),
+    lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
+    // V2.6: marks the item for eager skill-file delivery to scoped agents (Tier 1 push).
+    // Materialized into the synthesized "company-knowledge" skill at run start.
+    pinnedToSkill: boolean("pinned_to_skill").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -72,5 +84,9 @@ export const memoryItems = pgTable(
     companyLayerStatusIdx: index("memory_items_company_layer_status_idx").on(table.companyId, table.layer, table.status),
     goalActiveContextIdx: index("memory_items_goal_active_context_idx").on(table.goalId, table.expiresAt),
     taskWorkingIdx: index("memory_items_task_working_idx").on(table.taskId),
+    // V2.6: scope by agent for agent-personal memory retrieval.
+    agentScopeIdx: index("memory_items_agent_scope_idx").on(table.companyId, table.agentId, table.status),
+    // V2.6: surface pinned items quickly for skill materialization.
+    pinnedSkillIdx: index("memory_items_pinned_skill_idx").on(table.companyId, table.pinnedToSkill, table.status),
   }),
 );
