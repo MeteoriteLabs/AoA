@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PluginRecord } from "@armyofagents/shared";
 import { Link } from "@/lib/router";
-import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
+import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Store, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
@@ -317,6 +317,12 @@ export function PluginManager() {
               <p className="text-xs text-muted-foreground mt-1">
                 Install a plugin to extend functionality.
               </p>
+              <Button asChild variant="outline" size="sm" className="mt-4">
+                <Link to="/marketplace/plugin">
+                  <Store className="h-4 w-4 mr-1.5" />
+                  Browse Marketplace
+                </Link>
+              </Button>
             </CardContent>
           </Card>
         ) : (

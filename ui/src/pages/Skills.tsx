@@ -52,6 +52,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  Store,
   Trash2,
 } from "lucide-react";
 
@@ -528,12 +529,21 @@ function SkillList({
   });
 
   if (filteredSkills.length === 0) {
-    const emptyMessage = skillFilter.trim().length > 0
+    const isFiltered = skillFilter.trim().length > 0;
+    const emptyMessage = isFiltered
       ? "No skills match this filter."
       : "No custom skills yet. Built-in skills (like aoa-create-agent) are managed by the underlying CLI tool and aren't shown here.";
     return (
       <div className="px-4 py-6 text-sm text-muted-foreground">
-        {emptyMessage}
+        <p>{emptyMessage}</p>
+        {!isFiltered && (
+          <Button asChild variant="outline" size="sm" className="mt-3">
+            <Link to="/marketplace/skill">
+              <Store className="h-4 w-4 mr-1.5" />
+              Browse Marketplace
+            </Link>
+          </Button>
+        )}
       </div>
     );
   }
