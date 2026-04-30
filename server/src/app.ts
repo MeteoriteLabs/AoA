@@ -69,8 +69,10 @@ import { adapterRoutes } from "./routes/adapters.js";
 import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { createMarketplaceRouter } from "./routes/marketplace.js";
+import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js";
 import { MarketplaceCatalogService } from "./services/aoa-marketplace.js";
 import { pluginLoader } from "./services/plugin-loader.js";
+import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
 import { createPluginStreamBus } from "./services/plugin-stream-bus.js";
@@ -325,6 +327,49 @@ export async function createApp(
   });
   marketplaceCatalogService.startSyncLoop();
   api.use("/marketplace", createMarketplaceRouter({ service: marketplaceCatalogService }));
+
+  // Marketplace install routes (per-company, M.2.G).
+  // Mounted under /api/companies/:companyId/marketplace, matching the per-company
+  // URL prefix pattern used by routes/teams.ts. Plugin installs require a live
+  // pluginLoader/registry/lifecycle wired here at the route layer because the
+  // loader instance is created in this scope (above) and not exported.
+  //
+  // The PluginLoaderLike adapter narrows the real loader/registry/lifecycle
+  // surface to just what marketplace needs (PluginInstaller's contract), which
+  // also handles the manifest type widening (PaperclipPluginManifestV1 ->
+  // { id; [key: string]: unknown }) and the lifecycle.load return-value shrink
+  // (PluginRecord -> void).
+  const marketplacePluginRegistry = pluginRegistryService(db);
+  api.use(
+    "/companies/:companyId/marketplace",
+    createMarketplaceInstallRouter({
+      db,
+      catalogService: marketplaceCatalogService,
+      pluginLoader: {
+        installPlugin: async (opts) => {
+          const discovered = await loaderInst.installPlugin(opts);
+          return {
+            packagePath: discovered.packagePath,
+            packageName: discovered.packageName,
+            version: discovered.version,
+            source: discovered.source,
+            manifest: discovered.manifest as { id: string; [key: string]: unknown } | null,
+          };
+        },
+        registry: {
+          getByKey: async (pluginKey) => {
+            const row = await marketplacePluginRegistry.getByKey(pluginKey);
+            return row ? { id: row.id, pluginKey: row.pluginKey } : null;
+          },
+        },
+        lifecycle: {
+          load: async (pluginId) => {
+            await lifecycleMgr.load(pluginId);
+          },
+        },
+      },
+    }),
+  );
 
   app.use("/api", api);
 

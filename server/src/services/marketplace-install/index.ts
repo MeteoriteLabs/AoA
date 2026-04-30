@@ -13,3 +13,6 @@ export type {
   PluginLoaderLike,
 } from "./plugin-installer.js";
 export { fetchCatalogResource, FETCH_TIMEOUT_MS } from "./fetch-resource.js";
+export * from "./operation-store.js";
+export { startInstallOperation, dispatchInstall } from "./orchestrator.js";
+export type { Installers, PublishLiveEventFn, StartInstallOpts, DispatchInstallOpts } from "./orchestrator.js";

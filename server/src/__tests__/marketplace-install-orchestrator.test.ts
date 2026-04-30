@@ -1,0 +1,144 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+vi.mock("@armyofagents/db", () => {
+  const tableProxy = new Proxy({}, { get: () => Symbol("col") });
+  return {
+    marketplaceInstallOperations: tableProxy,
+    plugins: tableProxy, agents: tableProxy, teams: tableProxy,
+    companySkills: tableProxy, projects: tableProxy,
+  };
+});
+vi.mock("drizzle-orm", () => ({
+  eq: () => Symbol("op:eq"),
+  and: () => Symbol("op:and"),
+  gt: () => Symbol("op:gt"),
+}));
+
+import { startInstallOperation, dispatchInstall } from "../services/marketplace-install/orchestrator.js";
+import type { CatalogItem, MarketplaceCatalogFile } from "@armyofagents/shared";
+
+const SKILL: CatalogItem = {
+  id: "skill:aoa-curated/code-review", type: "skill", name: "Code Review", description: "...", version: "1.0.0",
+  source: { adapter: "aoa-curated", url: "...", locator: "...", commitSha: "abc" },
+  resourceUrl: "https://.../SKILL.md",
+  content: { inline: "# Code Review" },
+  trust: { tier: "verified", source: "aoa-curated" }, status: "active",
+  addedAt: "2026-04-30T00:00:00Z", category: "engineering", tags: [],
+};
+const CATALOG: MarketplaceCatalogFile = {
+  schemaVersion: "1.0.0", generatedAt: "2026-04-30T00:00:00Z", itemCount: 1, items: [SKILL],
+};
+
+describe("startInstallOperation", () => {
+  let insertedOps: any[] = [];
+  const mockDb = {
+    insert: () => ({
+      values: (row: any) => {
+        insertedOps.push(row);
+        return { returning: () => Promise.resolve([{ ...row, id: "op-uuid-1" }]) };
+      },
+    }),
+    select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) }),
+  };
+
+  beforeEach(() => { insertedOps = []; });
+
+  it("creates an operation row with status=pending", async () => {
+    const op = await startInstallOperation({
+      request: { catalogItemId: SKILL.id, targetDepartmentId: "dept-1" },
+      catalogItem: SKILL, companyId: "c1", requestedByUserId: "u1", db: mockDb as any,
+    });
+    expect(insertedOps).toHaveLength(1);
+    expect(insertedOps[0].status).toBe("pending");
+    expect(insertedOps[0].catalogItemId).toBe(SKILL.id);
+    expect(insertedOps[0].itemType).toBe("skill");
+    expect(insertedOps[0].targetDepartmentId).toBe("dept-1");
+    expect(op.id).toBe("op-uuid-1");
+  });
+
+  it("idempotency: returns existing op if idempotencyKey matches in last 24h", async () => {
+    const dbWithExisting = {
+      ...mockDb,
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{ id: "existing-op", status: "success", idempotencyKey: "abc" }]),
+          }),
+        }),
+      }),
+    };
+    const op = await startInstallOperation({
+      request: { catalogItemId: SKILL.id, idempotencyKey: "abc" },
+      catalogItem: SKILL, companyId: "c1", requestedByUserId: "u1", db: dbWithExisting as any,
+    });
+    expect(insertedOps).toHaveLength(0);
+    expect(op.id).toBe("existing-op");
+  });
+});
+
+describe("findOperationById", () => {
+  it("returns the row when company matches", async () => {
+    const { findOperationById } = await import("../services/marketplace-install/operation-store.js");
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{ id: "op-1", companyId: "c1", status: "success" }]),
+          }),
+        }),
+      }),
+    };
+    const op = await findOperationById(db as any, "op-1", "c1");
+    expect(op?.id).toBe("op-1");
+  });
+
+  it("returns null when operation belongs to different company (RBAC isolation)", async () => {
+    const { findOperationById } = await import("../services/marketplace-install/operation-store.js");
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([]),
+          }),
+        }),
+      }),
+    };
+    const op = await findOperationById(db as any, "op-1", "wrong-company");
+    expect(op).toBeNull();
+  });
+});
+
+describe("dispatchInstall", () => {
+  it("calls installSkill for skill items + updates operation row to success", async () => {
+    const installSkillMock = vi.fn(async () => ({ skillId: "skill-uuid-1" }));
+    const updateOp = vi.fn(async () => {});
+    const publish = vi.fn();
+
+    await dispatchInstall({
+      operation: { id: "op-uuid-1", catalogItemId: SKILL.id, itemType: "skill", companyId: "c1", targetDepartmentId: "dept-1" } as any,
+      catalogItem: SKILL, catalog: CATALOG, db: {} as any,
+      installers: { installSkill: installSkillMock, installAgent: vi.fn(), installTeam: vi.fn(), installMarketplacePlugin: vi.fn() },
+      updateOperation: updateOp, publishLiveEvent: publish,
+    });
+
+    expect(installSkillMock).toHaveBeenCalled();
+    expect(updateOp).toHaveBeenCalledWith("op-uuid-1", expect.objectContaining({ status: "success", resultEntityId: "skill-uuid-1" }));
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "marketplace.install.completed" }));
+  });
+
+  it("on installer error, updates operation to failure + publishes failed event", async () => {
+    const installSkillMock = vi.fn(async () => { throw new Error("fetch failed"); });
+    const updateOp = vi.fn(async () => {});
+    const publish = vi.fn();
+
+    await dispatchInstall({
+      operation: { id: "op-uuid-1", catalogItemId: SKILL.id, itemType: "skill", companyId: "c1" } as any,
+      catalogItem: SKILL, catalog: CATALOG, db: {} as any,
+      installers: { installSkill: installSkillMock, installAgent: vi.fn(), installTeam: vi.fn(), installMarketplacePlugin: vi.fn() },
+      updateOperation: updateOp, publishLiveEvent: publish,
+    });
+
+    expect(updateOp).toHaveBeenCalledWith("op-uuid-1", expect.objectContaining({ status: "failure", errorMessage: "fetch failed" }));
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "marketplace.install.failed" }));
+  });
+});
