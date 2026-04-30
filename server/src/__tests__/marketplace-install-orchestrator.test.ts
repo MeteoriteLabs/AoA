@@ -170,4 +170,44 @@ describe("dispatchInstall", () => {
       errorMessage: expect.stringMatching(/targetDepartmentId/),
     }));
   });
+
+  it("publishes started event before installer runs", async () => {
+    const events: any[] = [];
+    const publish = vi.fn((e) => events.push(e));
+    const installSkillMock = vi.fn(async () => {
+      // Capture event order: started must come before installer's resolution
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("marketplace.install.started");
+      return { skillId: "s1" };
+    });
+
+    await dispatchInstall({
+      operation: { id: "op-1", catalogItemId: SKILL.id, itemType: "skill", companyId: "c1", targetDepartmentId: "d1" } as any,
+      catalogItem: SKILL,
+      catalog: CATALOG,
+      db: {} as any,
+      installers: { installSkill: installSkillMock, installAgent: vi.fn(), installTeam: vi.fn(), installPlugin: vi.fn() },
+      updateOperation: vi.fn(),
+      publishLiveEvent: publish,
+    });
+
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe("marketplace.install.started");
+    expect(events[1].type).toBe("marketplace.install.completed");
+  });
+
+  it("events carry companyId for per-company SSE routing", async () => {
+    const publish = vi.fn();
+    await dispatchInstall({
+      operation: { id: "op-1", catalogItemId: SKILL.id, itemType: "skill", companyId: "specific-co", targetDepartmentId: "d1" } as any,
+      catalogItem: SKILL,
+      catalog: CATALOG,
+      db: {} as any,
+      installers: { installSkill: async () => ({ skillId: "s1" }), installAgent: vi.fn(), installTeam: vi.fn(), installPlugin: vi.fn() },
+      updateOperation: vi.fn(),
+      publishLiveEvent: publish,
+    });
+
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ companyId: "specific-co" }));
+  });
 });
