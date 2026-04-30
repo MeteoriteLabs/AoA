@@ -59,6 +59,8 @@ import { filesystemRoutes } from "./routes/filesystem.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { createMarketplaceRouter } from "./routes/marketplace.js";
+import { MarketplaceCatalogService } from "./services/aoa-marketplace.js";
 import { pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
@@ -279,6 +281,28 @@ export async function createApp(
     streamBus,
   }));
   api.use(pluginCompanySettingsRoutes(db));
+
+  // Marketplace catalog service + routes
+  const marketplaceCatalogService = new MarketplaceCatalogService({
+    db,
+    bundledSnapshotProvider: async () => {
+      // Lazy import to avoid bundling issues.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // Cast via unknown: TypeScript infers JSON literal types (e.g. status: string)
+      // that don't satisfy the branded union, but the service validates via Zod anyway.
+      try {
+        const snapshot = await import("../../ui/src/aoa-marketplace-snapshot.json", {
+          with: { type: "json" },
+        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return snapshot.default as any;
+      } catch {
+        return null;
+      }
+    },
+  });
+  marketplaceCatalogService.startSyncLoop();
+  api.use("/marketplace", createMarketplaceRouter({ service: marketplaceCatalogService }));
 
   app.use("/api", api);
 
