@@ -90,3 +90,6 @@ export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginLogs } from "./plugin_logs.js";
 export { pluginState } from "./plugin_state.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
+
+// Marketplace
+export { marketplaceCatalogCache } from "./marketplace_catalog_cache.js";
