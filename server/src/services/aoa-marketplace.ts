@@ -81,10 +81,9 @@ export class MarketplaceCatalogService {
       return parsed;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      await this.writeCache(null, "cdn", "failure", message);
+      const cached = await this.writeCache(null, "cdn", "failure", message);
 
       // Fall back to bundled snapshot if cache is empty
-      const cached = await this.readCache();
       if (!cached) {
         const bundled = await this.bundledSnapshotProvider();
         if (bundled) {
@@ -105,12 +104,22 @@ export class MarketplaceCatalogService {
       .limit(1);
     if (rows.length === 0) return null;
     const row = rows[0];
-    return {
+
+    // Validate the cached JSON before returning.
+    // Schema drift / corruption between writes (older app version) would otherwise
+    // serve unvalidated JSONB to API clients in M.1.K.
+    const candidate = {
       schemaVersion: row.schemaVersion,
       generatedAt: row.generatedAt.toISOString(),
       itemCount: row.itemCount,
-      items: (row.catalogJson as MarketplaceCatalogFile).items,
+      items: (row.catalogJson as { items?: unknown }).items ?? [],
     };
+    const parsed = MarketplaceCatalogFileSchema.safeParse(candidate);
+    if (!parsed.success) {
+      console.warn("readCache: cached catalog failed schema validation:", parsed.error.message);
+      return null;
+    }
+    return parsed.data;
   }
 
   async getStatus(): Promise<CatalogSyncStatus | null> {
@@ -123,9 +132,9 @@ export class MarketplaceCatalogService {
     const row = rows[0];
     return {
       lastSyncedAt: row.lastSyncedAt.toISOString(),
-      lastSyncStatus: row.lastSyncStatus as "success" | "failure",
+      lastSyncStatus: row.lastSyncStatus,
       lastSyncError: row.lastSyncError,
-      source: row.source as "cdn" | "bundled",
+      source: row.source,
       schemaVersion: row.schemaVersion,
       itemCount: row.itemCount,
     };
@@ -136,7 +145,7 @@ export class MarketplaceCatalogService {
     source: "cdn" | "bundled",
     status: "success" | "failure",
     error: string | null,
-  ): Promise<void> {
+  ): Promise<MarketplaceCatalogFile | null> {
     if (!catalog) {
       // Failed sync — only update the status row (preserve existing catalog if any)
       const existing = await this.readCache();
@@ -150,7 +159,7 @@ export class MarketplaceCatalogService {
           })
           .where(eq(marketplaceCatalogCache.id, 1));
       }
-      return;
+      return existing;
     }
 
     // Upsert the singleton row
@@ -180,5 +189,6 @@ export class MarketplaceCatalogService {
           source,
         },
       });
+    return catalog;
   }
 }
