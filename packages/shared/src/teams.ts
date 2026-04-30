@@ -122,12 +122,22 @@ export const TeamManifestSchema = z
       }
 
       // Reject the most common ReDoS shape: nested quantifier directly inside
-      // a group whose contents are themselves quantified. Examples:
+      // a group whose contents are themselves quantified. Examples that ARE
+      // caught:
       //   (a+)+   (a*)+   (a+)*   (a+)?   ([abc]+)+
-      // This is a coarse heuristic — it's not a perfect ReDoS detector. It
-      // catches the classic CWE-1333 patterns at near-zero cost. For
-      // production-grade safety, use re2-wasm or a complexity analyser
-      // (re2 has linear-time evaluation by construction).
+      //
+      // I2 (comprehensive-review fixup): this is a coarse heuristic. KNOWN
+      // BYPASSES — the heuristic does NOT catch:
+      //   (a+){10,}     — braced quantifier (curly-brace shapes)
+      //   (a|aa)+       — alternation overlap
+      //   ((a+))+       — double-wrapped group
+      //   [a-z]+(?=…)   — lookahead with quantifier
+      //
+      // Today (this commit's HEAD), `rule.match` is only embedded as text
+      // in scaffolder markdown — never compiled to a runtime evaluator —
+      // so the bypasses are inert. THE FIRST FEATURE THAT WIRES rule.match
+      // INTO A REAL EVALUATOR MUST replace this heuristic with re2-wasm or
+      // a proper static-analysis pass; do not trust this check alone.
       if (/\([^)]*[+*][^)]*\)[+*?]/.test(rule.match)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
