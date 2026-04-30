@@ -178,12 +178,28 @@ export function teamImportService(db: Db) {
       slug: string;
       name: string;
       parentProjectId: string;
+      /**
+       * Task 11 / P3-D: non-fatal side effects worth surfacing to the
+       * founder. The 'replace' resolution branch silently grants the
+       * existing agent dept membership when they aren't already in the
+       * parent dept -- the founder doesn't expect that, so we collect
+       * the change here and the route relays it to the UI as a toast.
+       *
+       * Always present (empty array on the no-side-effects path) so
+       * downstream callers don't have to null-check.
+       */
+      warnings: string[];
     }> => {
       const preview = await teamImportService(db).preview(
         companyId,
         yamlContent,
       );
       const { manifest } = preview;
+
+      // Task 11 / P3-D: collected as we walk the agent resolution loop
+      // inside the transaction. Returned alongside the team metadata so
+      // the route can echo it back on the response body.
+      const warnings: string[] = [];
 
       // ===== Pre-transaction validations =====
 
@@ -282,6 +298,14 @@ export function teamImportService(db: Db) {
                 projectId: resolution.parentProjectId,
                 companyId,
               });
+              // Task 11 / P3-D: 'replace' on a cross-dept agent silently
+              // expands their dept membership. The founder picked
+              // 'replace' expecting in-place reuse; this is a side
+              // effect they should see. Non-fatal -- the install still
+              // completes, but the warning lands as a toast in the UI.
+              warnings.push(
+                `Agent "${wantedName}" (existing, id=${collision.existingId}) was not previously a member of department ${resolution.parentProjectId}. The 'replace' action added them to this department.`,
+              );
             }
             agentIdByLocalName.set(wantedName, collision.existingId);
             continue;
@@ -392,6 +416,7 @@ export function teamImportService(db: Db) {
           slug: team.slug,
           name: team.name,
           parentProjectId: team.parentProjectId,
+          warnings,
         };
       });
     },

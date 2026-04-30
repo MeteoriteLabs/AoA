@@ -161,11 +161,30 @@ export function teamImportsRoutes(db: Db) {
       });
 
       log.info(
-        { companyId, teamId: team.id, slug: team.slug },
+        {
+          companyId,
+          teamId: team.id,
+          slug: team.slug,
+          // Task 11 / P3-D: log the count so operators can correlate UI
+          // toasts with server logs without leaking the human-readable
+          // body (which embeds agent names + ids).
+          warningCount: team.warnings.length,
+        },
         "imported team",
       );
 
-      res.status(201).json(team);
+      // Explicit response shape (Task 11 / P3-D): include `warnings`
+      // alongside the team metadata so the founder sees side effects
+      // like the silent dept-grant on 'replace'. Always present (empty
+      // array on no-side-effects path) so the UI can iterate without
+      // null-checks.
+      res.status(201).json({
+        id: team.id,
+        slug: team.slug,
+        name: team.name,
+        parentProjectId: team.parentProjectId,
+        warnings: team.warnings ?? [],
+      });
     },
   );
 

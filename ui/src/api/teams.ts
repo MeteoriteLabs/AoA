@@ -120,8 +120,26 @@ export const teamsApi = {
   },
 
   installImport: (companyId: string, body: TeamImportResolution) =>
-    api.post<Team>(
+    api.post<TeamImportInstallResult>(
       `/companies/${companyId}/teams/_imports/install`,
       body,
     ),
 };
+
+/**
+ * Response shape for the install endpoint. Mirrors the explicit JSON
+ * payload set in `routes/team-imports.ts` -- a flat subset of the team
+ * row plus a `warnings` array.
+ *
+ * Task 11 / P3-D: `warnings` surfaces non-fatal install side effects
+ * (e.g. 'replace' silently granting dept membership). Always present
+ * (server normalizes to []) so consumers can iterate without
+ * null-checks.
+ */
+export interface TeamImportInstallResult {
+  id: string;
+  slug: string;
+  name: string;
+  parentProjectId: string;
+  warnings: string[];
+}

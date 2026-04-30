@@ -328,6 +328,7 @@ describe("teamImportService.install()", () => {
       slug: "happy-team",
       name: "Happy Team",
       parentProjectId: "proj-1",
+      warnings: [],
     });
   });
 
@@ -350,6 +351,126 @@ describe("teamImportService.install()", () => {
         parentProjectId: "from-other-company",
       }),
     ).rejects.toThrow(/parent project.*not found in company/);
+  });
+
+  it("emits a warning when 'replace' silently grants dept membership (P3-D)", async () => {
+    // Task 11 / P3-D (upgraded to P2 by review): when the founder picks
+    // 'replace' for an existing-agent collision and that agent is NOT in
+    // the parent department, the install path silently inserts an
+    // agent_projects row to satisfy the dept-membership invariant. The
+    // founder doesn't expect 'replace' to mutate dept membership -- it
+    // sounds like an in-place reuse. Surface a warning string so the UI
+    // can show what happened.
+    //
+    // Sequence:
+    //   Pre-tx
+    //     1. preview agents collision lookup -> [{id, name: "alice"}]
+    //     2. slug-existence probe -> []
+    //     3. P1 parent-project company check -> [{id: "proj-1"}]
+    //   In-tx
+    //     4. deptCheck for replace agent -> []  (NOT in parent dept)
+    //     5. helper's existing-slugs probe -> []
+    //   Inserts (in-tx)
+    //     1. agentProjects (silent grant) -> []
+    //     2. teams.returning (via helper) -> [{...}]
+    //     3. teamMembers -> []
+    //     4. teamCoordinations -> []
+    const db = createAgentDb({
+      selects: [
+        [{ id: "agent-existing-1", name: "alice" }], // 1: preview collision
+        [], // 2: slug existence
+        [{ id: "proj-1" }], // 3: P1 project check
+        [], // 4: deptCheck -> empty (agent NOT in dept, triggers grant)
+        [], // 5: helper's existing-slugs probe
+      ],
+      inserts: [
+        [], // 1: agentProjects (silent grant)
+        [
+          {
+            id: "new-team-1",
+            slug: "happy-team",
+            name: "Happy Team",
+            parentProjectId: "proj-1",
+          },
+        ], // 2: teams.returning
+        [], // 3: teamMembers
+        [], // 4: teamCoordinations
+      ],
+    });
+
+    const result = await teamImportService(db as any).install(
+      "co-1",
+      HAPPY_PATH_YAML,
+      {
+        collisions: { alice: "replace" },
+        parentProjectId: "proj-1",
+      },
+    );
+
+    expect(result.warnings).toBeDefined();
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/alice.*department/i),
+      ]),
+    );
+    // The agent id should also appear in the warning so the message is
+    // debuggable, not just human-readable.
+    expect(result.warnings.some((w: string) => w.includes("agent-existing-1"))).toBe(
+      true,
+    );
+  });
+
+  it("does NOT emit a warning when 'replace' agent is already in parent dept", async () => {
+    // Counter-test for the warning above: when the existing agent IS
+    // already in the parent department, the install path skips the
+    // agent_projects insert and emits no warning.
+    //
+    // Sequence:
+    //   Pre-tx
+    //     1. preview agents collision lookup -> [{id, name: "alice"}]
+    //     2. slug-existence probe -> []
+    //     3. P1 parent-project company check -> [{id: "proj-1"}]
+    //   In-tx
+    //     4. deptCheck for replace agent -> [{...}] (already in dept)
+    //     5. helper's existing-slugs probe -> []
+    const db = createAgentDb({
+      selects: [
+        [{ id: "agent-existing-1", name: "alice" }], // 1: preview collision
+        [], // 2: slug existence
+        [{ id: "proj-1" }], // 3: P1 project check
+        [
+          {
+            agentId: "agent-existing-1",
+            projectId: "proj-1",
+            companyId: "co-1",
+          },
+        ], // 4: deptCheck -> agent already in dept (no grant needed)
+        [], // 5: helper's existing-slugs probe
+      ],
+      inserts: [
+        [
+          {
+            id: "new-team-1",
+            slug: "happy-team",
+            name: "Happy Team",
+            parentProjectId: "proj-1",
+          },
+        ], // 1: teams.returning (no agentProjects insert this time)
+        [], // 2: teamMembers
+        [], // 3: teamCoordinations
+      ],
+    });
+
+    const result = await teamImportService(db as any).install(
+      "co-1",
+      HAPPY_PATH_YAML,
+      {
+        collisions: { alice: "replace" },
+        parentProjectId: "proj-1",
+      },
+    );
+
+    expect(result.warnings).toEqual([]);
   });
 
   it("converts PG 23505 on slug race during install to 409 (P1-C)", async () => {

@@ -81,6 +81,24 @@ export function ImportPreviewDialog({
         body: team.name,
         tone: "success",
       });
+      // Task 11 / P3-D: surface non-fatal install side effects (e.g.
+      // 'replace' silently granting dept membership) as separate
+      // warning toasts. Server always returns an array (possibly
+      // empty), so a length check is sufficient.
+      if (team.warnings && team.warnings.length > 0) {
+        for (const warning of team.warnings) {
+          pushToast({
+            title: "Import warning",
+            body: warning,
+            tone: "warn",
+            // Lift the warn TTL above the default so the founder has
+            // time to read the dept-grant message before it
+            // disappears -- the default warn TTL (8s) clamps within
+            // the toast context's MIN/MAX bounds.
+            ttlMs: 12000,
+          });
+        }
+      }
       queryClient.invalidateQueries({
         queryKey: queryKeys.teams.list(selectedCompanyId!),
       });
