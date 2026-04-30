@@ -35,6 +35,7 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { companySkillService } from "./company-skills.js";
 import type { RuntimeSkillEntry } from "./company-skills.js";
+import { buildPinnedMemorySkillEntries } from "./memory-skill-sync.js";
 import { issueService as createIssueService } from "./issues.js";
 import { quotaWindowsService } from "./quota-windows.js";
 import { extractSkillMentionIds } from "@armyofagents/shared";
@@ -2643,6 +2644,49 @@ export function heartbeatService(db: Db) {
             err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
           },
           "Failed to fetch team coordinations for agent run; continuing without team injection",
+        );
+      }
+
+      // V2.6 Phase 2: synthesize a `company-knowledge` skill from founder-pinned
+      // memory items and inject it as a skill-shaped entry alongside the others.
+      // Resolution: agent's memoryProfile.pinnedSkillItems config drives which
+      // items get materialized (department inheritance + per-agent additions/
+      // removals). See server/src/services/memory-skill-sync.ts for the algo.
+      //
+      // SAFETY:
+      //   1. try/catch isolates failures — never breaks the heartbeat run.
+      //   2. Append-only merge into context.skills — preserves prior skills.
+      //   3. Sanitized error logging — never logs raw err (may contain
+      //      SQL/credentials).
+      try {
+        const pinnedMemoryEntries = await buildPinnedMemorySkillEntries(
+          db,
+          agent.companyId,
+          agent.id,
+        );
+        if (pinnedMemoryEntries.length > 0) {
+          const prior = context.skills;
+          const existing: RuntimeSkillEntry[] = Array.isArray(prior) ? (prior as RuntimeSkillEntry[]) : [];
+          context.skills = [...existing, ...pinnedMemoryEntries];
+          logger.info(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              pinnedSkillCount: pinnedMemoryEntries.length,
+            },
+            "Injected pinned memory items as company-knowledge skill",
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
+          },
+          "Failed to synthesize pinned-memory skill for agent run; continuing without",
         );
       }
 
