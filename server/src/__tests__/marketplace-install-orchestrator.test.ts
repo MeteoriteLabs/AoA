@@ -117,7 +117,7 @@ describe("dispatchInstall", () => {
     await dispatchInstall({
       operation: { id: "op-uuid-1", catalogItemId: SKILL.id, itemType: "skill", companyId: "c1", targetDepartmentId: "dept-1" } as any,
       catalogItem: SKILL, catalog: CATALOG, db: {} as any,
-      installers: { installSkill: installSkillMock, installAgent: vi.fn(), installTeam: vi.fn(), installMarketplacePlugin: vi.fn() },
+      installers: { installSkill: installSkillMock, installAgent: vi.fn(), installTeam: vi.fn(), installPlugin: vi.fn() },
       updateOperation: updateOp, publishLiveEvent: publish,
     });
 
@@ -134,11 +134,40 @@ describe("dispatchInstall", () => {
     await dispatchInstall({
       operation: { id: "op-uuid-1", catalogItemId: SKILL.id, itemType: "skill", companyId: "c1" } as any,
       catalogItem: SKILL, catalog: CATALOG, db: {} as any,
-      installers: { installSkill: installSkillMock, installAgent: vi.fn(), installTeam: vi.fn(), installMarketplacePlugin: vi.fn() },
+      installers: { installSkill: installSkillMock, installAgent: vi.fn(), installTeam: vi.fn(), installPlugin: vi.fn() },
       updateOperation: updateOp, publishLiveEvent: publish,
     });
 
     expect(updateOp).toHaveBeenCalledWith("op-uuid-1", expect.objectContaining({ status: "failure", errorMessage: "fetch failed" }));
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "marketplace.install.failed" }));
+  });
+
+  it("throws when team install missing targetDepartmentId", async () => {
+    const installTeamMock = vi.fn();
+    const updateOp = vi.fn(async () => {});
+    const publish = vi.fn();
+
+    const TEAM_ITEM = { ...SKILL, id: "team:test", type: "team" as const };
+
+    await dispatchInstall({
+      operation: { id: "op-uuid-1", catalogItemId: TEAM_ITEM.id, itemType: "team", companyId: "c1", targetDepartmentId: null } as any,
+      catalogItem: TEAM_ITEM,
+      catalog: { ...CATALOG, items: [TEAM_ITEM] },
+      db: {} as any,
+      installers: {
+        installSkill: vi.fn(),
+        installAgent: vi.fn(),
+        installTeam: installTeamMock,
+        installPlugin: vi.fn(),
+      },
+      updateOperation: updateOp,
+      publishLiveEvent: publish,
+    });
+
+    expect(installTeamMock).not.toHaveBeenCalled();
+    expect(updateOp).toHaveBeenCalledWith("op-uuid-1", expect.objectContaining({
+      status: "failure",
+      errorMessage: expect.stringMatching(/targetDepartmentId/),
+    }));
   });
 });

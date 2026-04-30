@@ -9,17 +9,16 @@
  * All routes require board-level auth (assertBoard).
  * Per-company auth enforced via assertCompanyAccess on req.params.companyId.
  *
- * Plugin installs require pluginLoader injection (not available to the
- * orchestrator), so the route handler dispatches them through a local
- * `runPluginInstall` helper instead of `dispatchInstall`. Other types
- * (skill / agent / team) flow through the standard orchestrator path.
+ * All install types (skill / agent / team / plugin) flow through `dispatchInstall`.
+ * The route layer pre-curries `installPlugin` (and the team installer's
+ * `installPlugin` cascade hook) with `pluginLoader`, which is route-layer
+ * scoped and not available to the orchestrator.
  */
 
 import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "@armyofagents/db";
 import type { MarketplaceCatalogService } from "../services/aoa-marketplace.js";
-import type { CatalogItem } from "@armyofagents/shared";
 import { resolveInstallPlan } from "../services/marketplace-install/resolver.js";
 import {
   startInstallOperation,
@@ -29,9 +28,7 @@ import {
   installTeam,
   installMarketplacePlugin,
   findOperationById,
-  updateOperation,
   type Installers,
-  type OperationRow,
 } from "../services/marketplace-install/index.js";
 import type { PluginLoaderLike } from "../services/marketplace-install/plugin-installer.js";
 import { publishLiveEvent } from "../services/live-events.js";
@@ -118,30 +115,26 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       request, catalogItem, companyId, requestedByUserId: userId, db,
     });
 
-    if (catalogItem.type === "plugin") {
-      void runPluginInstall(operation, catalogItem, companyId, db, pluginLoader);
-    } else {
-      const installers: Installers = {
-        installSkill,
-        installAgent,
-        installTeam: (opts) =>
-          installTeam({
-            ...opts,
-            installPlugin: async (pluginOpts) => {
-              const r = await installMarketplacePlugin({
-                catalogItem: pluginOpts.catalogItem,
-                companyId: pluginOpts.companyId,
-                db: pluginOpts.db,
-                pluginLoader,
-              });
-              return { pluginId: r.pluginId, alreadyInstalled: r.alreadyInstalled };
-            },
-          }),
-        installMarketplacePlugin: (opts) => installMarketplacePlugin({ ...opts, pluginLoader }),
-      };
+    const installers: Installers = {
+      installSkill,
+      installAgent,
+      installTeam: (opts) =>
+        installTeam({
+          ...opts,
+          installPlugin: async (pluginOpts) => {
+            const r = await installMarketplacePlugin({
+              catalogItem: pluginOpts.catalogItem,
+              companyId: pluginOpts.companyId,
+              db: pluginOpts.db,
+              pluginLoader,
+            });
+            return { pluginId: r.pluginId, alreadyInstalled: r.alreadyInstalled };
+          },
+        }),
+      installPlugin: (opts) => installMarketplacePlugin({ ...opts, pluginLoader }),
+    };
 
-      void dispatchInstall({ operation, catalogItem, catalog, db, installers, publishLiveEvent });
-    }
+    void dispatchInstall({ operation, catalogItem, catalog, db, installers, publishLiveEvent });
 
     res.status(202).json({ operationId: operation.id, status: operation.status });
   });
@@ -164,44 +157,4 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
   });
 
   return router;
-}
-
-/**
- * Plugin-install path. Mirrors `dispatchInstall` but injects pluginLoader
- * (which is route-layer scoped — not available to the orchestrator).
- */
-async function runPluginInstall(
-  operation: OperationRow,
-  catalogItem: CatalogItem,
-  companyId: string,
-  db: Db,
-  pluginLoader: PluginLoaderLike,
-): Promise<void> {
-  publishLiveEvent({
-    companyId,
-    type: "marketplace.install.started",
-    payload: { operationId: operation.id, catalogItemId: catalogItem.id },
-  });
-  try {
-    await updateOperation(db, operation.id, { status: "running" });
-    const result = await installMarketplacePlugin({ catalogItem, companyId, db, pluginLoader });
-    await updateOperation(db, operation.id, {
-      status: "success", resultEntityId: result.pluginId, completedAt: new Date(),
-    });
-    publishLiveEvent({
-      companyId,
-      type: "marketplace.install.completed",
-      payload: { operationId: operation.id, catalogItemId: catalogItem.id, resultEntityId: result.pluginId },
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    await updateOperation(db, operation.id, {
-      status: "failure", errorMessage: message, completedAt: new Date(),
-    });
-    publishLiveEvent({
-      companyId,
-      type: "marketplace.install.failed",
-      payload: { operationId: operation.id, catalogItemId: catalogItem.id, error: message },
-    });
-  }
 }
