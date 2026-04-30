@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// ── Mocks ────────────────────────────────────────────────────────────────────
+// -- Mocks --------------------------------------------------------------------
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
@@ -89,7 +89,7 @@ vi.mock("../errors.js", () => ({
 import { teamsService } from "../services/teams.js";
 import { createAgentDb } from "./helpers/mock-db.js";
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// -- Tests --------------------------------------------------------------------
 
 describe("teamsService", () => {
   beforeEach(() => {
@@ -244,7 +244,7 @@ describe("teamsService", () => {
             where: () => {
               const callIdx = selectCalls++;
               if (callIdx === 0) {
-                // P1: parent project lookup — always present.
+                // P1: parent project lookup -- always present.
                 return Promise.resolve([{ id: "p1" }]);
               }
               const slugProbeIdx = callIdx - 1;
@@ -279,7 +279,7 @@ describe("teamsService", () => {
         name: "QA Team",
         parentProjectId: "p1",
       });
-      expect(team.slug).not.toBe("qa-team"); // collision → suffix added
+      expect(team.slug).not.toBe("qa-team"); // collision -> suffix added
       expect(attempt).toBe(1); // verified we retried exactly once
     });
 
@@ -303,11 +303,11 @@ describe("teamsService", () => {
 
     it("inserts team + member rows atomically when members provided (P1-4)", async () => {
       // Sequence:
-      //   1. select projects (P1 cross-tenant guard) → 1 row
-      //   2. select agentProjects (dept-membership check for both members) → both present
-      //   3. select existing slugs (slug collision check) → []
-      //   4. tx.insert(teams).returning → [team]
-      //   5. tx.insert(teamMembers) → [member1, member2] (single batched insert)
+      //   1. select projects (P1 cross-tenant guard) -> 1 row
+      //   2. select agentProjects (dept-membership check for both members) -> both present
+      //   3. select existing slugs (slug collision check) -> []
+      //   4. tx.insert(teams).returning -> [team]
+      //   5. tx.insert(teamMembers) -> [member1, member2] (single batched insert)
       const insertedTeam = {
         id: "team-1",
         companyId: "co-1",
@@ -345,8 +345,8 @@ describe("teamsService", () => {
 
     it("rejects when a member is not in the parent department (P1-4)", async () => {
       // Sequence:
-      //   1. select projects (P1) → 1 row
-      //   2. select agentProjects (dept check) → only a1 present, a2 missing
+      //   1. select projects (P1) -> 1 row
+      //   2. select agentProjects (dept check) -> only a1 present, a2 missing
       const db = createAgentDb({
         selects: [
           [{ id: "p1" }], // 1: P1 project check
@@ -368,8 +368,8 @@ describe("teamsService", () => {
 
     it("rejects when more than one lead is provided (P1-4)", async () => {
       // Sequence:
-      //   1. select projects (P1) → 1 row
-      //   2. select agentProjects → both present
+      //   1. select projects (P1) -> 1 row
+      //   2. select agentProjects -> both present
       //   (slug probe + insert never run; lead-count check throws first)
       const db = createAgentDb({
         selects: [
@@ -441,7 +441,7 @@ describe("teamsService", () => {
           try {
             return await cb(tx);
           } catch (err) {
-            // Simulate Postgres transaction rollback — re-raise.
+            // Simulate Postgres transaction rollback -- re-raise.
             throw err;
           }
         },
@@ -469,7 +469,7 @@ describe("teamsService", () => {
       //
       // Using insertSpy.mock.calls.filter rather than a counter increment in
       // .returning() because production code calls
-      // tx.insert(teamMembers).values(rows) WITHOUT .returning() — a counter
+      // tx.insert(teamMembers).values(rows) WITHOUT .returning() -- a counter
       // inside .returning() would never fire and the assertion would pass
       // vacuously even if the regression occurred. mock.calls.filter counts
       // every insert(table) call regardless of how the chain continues.
@@ -558,7 +558,7 @@ describe("teamsService", () => {
                     }
                     return Promise.resolve([]);
                   },
-                  // The cascade UPDATE doesn't call `.returning()` — it's
+                  // The cascade UPDATE doesn't call `.returning()` -- it's
                   // best-effort. Resolve directly off `.where()` for that
                   // path while still allowing `.returning()` for the
                   // primary teams UPDATE.
@@ -584,7 +584,7 @@ describe("teamsService", () => {
 
   describe("dismantle()", () => {
     it("hard-deletes the team and returns the deleted teamId", async () => {
-      // Sequence: 1× select (existence probe) → 1× delete (hard-delete).
+      // Sequence: 1x select (existence probe) -> 1x delete (hard-delete).
       // Schema cascades handle team_members + team_coordinations; the
       // service does NOT issue an explicit delete on those tables.
       const db = createAgentDb({
@@ -598,7 +598,7 @@ describe("teamsService", () => {
     });
 
     it("throws notFound when team doesn't exist", async () => {
-      // Existence probe returns empty — service throws BEFORE issuing delete.
+      // Existence probe returns empty -- service throws BEFORE issuing delete.
       const db = createAgentDb({
         selects: [[]],
       });
@@ -608,12 +608,12 @@ describe("teamsService", () => {
       ).rejects.toThrow(/not found/i);
     });
 
-    it("issues exactly ONE delete (cascade contract — no explicit team_members or team_coordinations delete)", async () => {
+    it("issues exactly ONE delete (cascade contract -- no explicit team_members or team_coordinations delete)", async () => {
       // Verify the cascade contract: dismantle should rely on the schema's
       // `onDelete: "cascade"` to remove team_members + team_coordinations,
       // not a manual delete chain. Counting delete invocations protects
       // against a regression where someone "helpfully" adds explicit
-      // deletes — those would race the cascade and could partially fail.
+      // deletes -- those would race the cascade and could partially fail.
       let deleteCalls = 0;
       const db: any = {
         select: () => ({
@@ -888,7 +888,7 @@ describe("teamsService", () => {
     });
 
     it("converts PG 23505 on concurrent lead promotion to 409", async () => {
-      // P1-B: updateMemberRole(role: "lead") — the partial unique index
+      // P1-B: updateMemberRole(role: "lead") -- the partial unique index
       // team_members_one_lead_uq guarantees at most one lead per team. If
       // two concurrent transactions both demote then promote, the second
       // one's UPDATE-to-lead loses the race and throws 23505. The service

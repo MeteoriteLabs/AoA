@@ -93,7 +93,7 @@ function makeTeam() {
     // Task 11 / P3-D: install service now returns `warnings: string[]` on
     // every result. The install route reads `team.warnings.length` for log
     // telemetry and `team.warnings ?? []` in the response body. Without
-    // `warnings` here the install route throws TypeError → 500.
+    // `warnings` here the install route throws TypeError -> 500.
     warnings: [] as string[],
   };
 }
@@ -121,7 +121,7 @@ async function createApp() {
   return app;
 }
 
-describe("Teams routes — RBAC dept-scope (P1-A)", () => {
+describe("Teams routes -- RBAC dept-scope (P1-A)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTeamsService.getById.mockResolvedValue(makeTeam());
@@ -142,10 +142,10 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
   // For each write route, drive a request that should reach the RBAC gate
   // and assert the gate sees the right (companyId, parentProjectId) pair.
   // We don't care about the response shape (other handlers are mocked out)
-  // — only that `assertDepartmentAccess` was called with the team's actual
+  // -- only that `assertDepartmentAccess` was called with the team's actual
   // `parentProjectId`.
 
-  it("POST /companies/:companyId/teams — gates on req.body.parentProjectId", async () => {
+  it("POST /companies/:companyId/teams -- gates on req.body.parentProjectId", async () => {
     const app = await createApp();
     const res = await request(app)
       .post(`/api/companies/${COMPANY_ID}/teams`)
@@ -166,7 +166,7 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
     );
   });
 
-  it("PATCH /teams/:id — gates on team.parentProjectId", async () => {
+  it("PATCH /teams/:id -- gates on team.parentProjectId", async () => {
     const app = await createApp();
     const res = await request(app)
       .patch(`/api/teams/${TEAM_ID}`)
@@ -181,7 +181,7 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
     );
   });
 
-  it("PUT /teams/:id/manifest — gates on team.parentProjectId", async () => {
+  it("PUT /teams/:id/manifest -- gates on team.parentProjectId", async () => {
     const app = await createApp();
     const res = await request(app)
       .put(`/api/teams/${TEAM_ID}/manifest`)
@@ -193,7 +193,7 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
       });
 
     // Manifest validate may 400 if our shape is too thin. The crucial
-    // check is whether the dept-access gate fired BEFORE that — and it
+    // check is whether the dept-access gate fired BEFORE that -- and it
     // does, since assertRole/assertDepartmentAccess run before the
     // service call. If validation rejects the body before the route
     // handler executes, the gate won't be called; in that case relax to
@@ -212,7 +212,7 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
     }
   });
 
-  it("DELETE /teams/:id (archive) — gates on team.parentProjectId", async () => {
+  it("DELETE /teams/:id (archive) -- gates on team.parentProjectId", async () => {
     const app = await createApp();
     const res = await request(app).delete(`/api/teams/${TEAM_ID}`);
 
@@ -225,7 +225,7 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
     );
   });
 
-  it("DELETE /teams/:id/dismantle — gates on team.parentProjectId", async () => {
+  it("DELETE /teams/:id/dismantle -- gates on team.parentProjectId", async () => {
     const app = await createApp();
     const res = await request(app).delete(`/api/teams/${TEAM_ID}/dismantle`);
 
@@ -238,7 +238,7 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
     );
   });
 
-  it("POST /teams/:id/members — gates on team.parentProjectId", async () => {
+  it("POST /teams/:id/members -- gates on team.parentProjectId", async () => {
     const app = await createApp();
     const res = await request(app)
       .post(`/api/teams/${TEAM_ID}/members`)
@@ -253,7 +253,7 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
     );
   });
 
-  it("DELETE /teams/:id/members/:agentId — gates on team.parentProjectId", async () => {
+  it("DELETE /teams/:id/members/:agentId -- gates on team.parentProjectId", async () => {
     const app = await createApp();
     const res = await request(app).delete(
       `/api/teams/${TEAM_ID}/members/agent-1`,
@@ -268,7 +268,7 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
     );
   });
 
-  it("PATCH /teams/:id/members/:agentId — gates on team.parentProjectId", async () => {
+  it("PATCH /teams/:id/members/:agentId -- gates on team.parentProjectId", async () => {
     const app = await createApp();
     const res = await request(app)
       .patch(`/api/teams/${TEAM_ID}/members/agent-1`)
@@ -283,7 +283,7 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
     );
   });
 
-  it("PUT /teams/:id/coordination — gates on team.parentProjectId", async () => {
+  it("PUT /teams/:id/coordination -- gates on team.parentProjectId", async () => {
     const app = await createApp();
     const res = await request(app)
       .put(`/api/teams/${TEAM_ID}/coordination`)
@@ -297,13 +297,13 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
         DEPT_A,
       );
     } else {
-      // validate() body-shape rejection — structural test below catches
+      // validate() body-shape rejection -- structural test below catches
       // a missing gate at the source-code level.
       expect(res.status).toBeGreaterThanOrEqual(400);
     }
   });
 
-  it("POST /teams/:id/coordination/regenerate — gates on team.parentProjectId", async () => {
+  it("POST /teams/:id/coordination/regenerate -- gates on team.parentProjectId", async () => {
     const app = await createApp();
     const res = await request(app).post(
       `/api/teams/${TEAM_ID}/coordination/regenerate`,
@@ -318,7 +318,7 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
     );
   });
 
-  it("POST /companies/:companyId/teams/_imports/preview — gates on req.body.parentProjectId", async () => {
+  it("POST /companies/:companyId/teams/_imports/preview -- gates on req.body.parentProjectId", async () => {
     const app = await createApp();
     const res = await request(app)
       .post(`/api/companies/${COMPANY_ID}/teams/_imports/preview`)
@@ -333,7 +333,7 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
     );
   });
 
-  it("POST /companies/:companyId/teams/_imports/install — gates on req.body.parentProjectId", async () => {
+  it("POST /companies/:companyId/teams/_imports/install -- gates on req.body.parentProjectId", async () => {
     const app = await createApp();
     const res = await request(app)
       .post(`/api/companies/${COMPANY_ID}/teams/_imports/install`)
@@ -353,7 +353,7 @@ describe("Teams routes — RBAC dept-scope (P1-A)", () => {
   });
 });
 
-describe("Teams routes — RBAC source structure (P1-A backstop)", () => {
+describe("Teams routes -- RBAC source structure (P1-A backstop)", () => {
   // These are cheap "didn't forget" checks against the source files.
   // They're orthogonal to the behavioral tests above: even if a future
   // refactor accidentally short-circuits the call site (e.g. wraps it in
