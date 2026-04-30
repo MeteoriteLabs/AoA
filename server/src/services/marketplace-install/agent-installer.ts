@@ -1,8 +1,8 @@
 import type { Db } from "@armyofagents/db";
 import { agents } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
-
-const FETCH_TIMEOUT_MS = 30_000;
+import { fetchCatalogResource } from "./fetch-resource.js";
+import type { AgentTemplateBody } from "./types.js";
 
 export interface InstallAgentOpts {
   catalogItem: CatalogItem;
@@ -15,25 +15,20 @@ export interface InstallAgentResult {
   agentId: string;
 }
 
-interface AgentTemplateBody {
-  role?: string;
-  title?: string;
-  icon?: string;
-  adapterType?: string;
-  adapterConfig?: Record<string, unknown>;
-  runtimeConfig?: Record<string, unknown>;
-  permissions?: Record<string, unknown>;
-  skillKeys?: string[];
-  capabilities?: string;
-  budgetMonthlyCents?: number;
-}
-
 /**
  * Install an agent catalog item into a company's agents table.
  *
  * Fetches the agent.json from resourceUrl (commit-pinned), parses it,
  * and writes a new agents row with templateOrigin = catalogItemId,
  * templateVersion = catalog version.
+ *
+ * **Hire-approval gate:** This installer creates the agent in `status: "idle"`
+ * (immediately active), bypassing the standard `requireBoardApprovalForNewAgents`
+ * flow used by POST /agents. This is intentional for V1 marketplace installs:
+ * the user explicitly clicked Install (which itself requires board auth), so
+ * the install action serves as the approval. Cascading team installs follow
+ * the same convention. If this becomes a concern, the orchestrator can be
+ * enhanced to honor the gate per-company in V1.x.
  *
  * The `db` argument may be a transaction handle. The function performs a
  * single insert and is safe to call inside a parent transaction.
@@ -49,17 +44,8 @@ export async function installAgent(opts: InstallAgentOpts): Promise<InstallAgent
   if (catalogItem.type !== "agent") {
     throw new Error(`installAgent called with non-agent item: ${catalogItem.id}`);
   }
-  if (!catalogItem.resourceUrl) {
-    throw new Error(`Agent ${catalogItem.id} has no resourceUrl`);
-  }
 
-  const res = await fetch(catalogItem.resourceUrl, {
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch agent template: HTTP ${res.status} from ${catalogItem.resourceUrl}`);
-  }
-  const bodyText = await res.text();
+  const bodyText = await fetchCatalogResource(catalogItem, "agent template");
   let template: AgentTemplateBody;
   try {
     template = JSON.parse(bodyText) as AgentTemplateBody;
@@ -76,7 +62,7 @@ export async function installAgent(opts: InstallAgentOpts): Promise<InstallAgent
       title: template.title,
       icon: template.icon,
       status: "idle",
-      capabilities: template.capabilities ?? null,
+      capabilities: template.capabilities,  // schema column is nullable; undefined → null
       adapterType: template.adapterType ?? "process",
       adapterConfig: template.adapterConfig ?? {},
       runtimeConfig: template.runtimeConfig ?? {},
@@ -85,6 +71,12 @@ export async function installAgent(opts: InstallAgentOpts): Promise<InstallAgent
       skillKeys: template.skillKeys ?? [],
       templateOrigin: catalogItem.id,
       templateVersion: catalogItem.version,
+      metadata: {
+        catalogCategory: catalogItem.category,
+        catalogTags: catalogItem.tags,
+        catalogTrustTier: catalogItem.trust.tier,
+        installedAt: new Date().toISOString(),
+      },
     })
     .returning();
 

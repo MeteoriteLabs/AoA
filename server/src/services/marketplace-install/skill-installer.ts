@@ -1,8 +1,7 @@
 import type { Db } from "@armyofagents/db";
 import { companySkills } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
-
-const FETCH_TIMEOUT_MS = 30_000;
+import { fetchCatalogResource } from "./fetch-resource.js";
 
 export interface InstallSkillOpts {
   catalogItem: CatalogItem;
@@ -73,17 +72,6 @@ export async function installSkill(opts: InstallSkillOpts): Promise<InstallSkill
 }
 
 async function loadSkillContent(item: CatalogItem): Promise<string> {
-  if (item.content?.inline) {
-    return item.content.inline;
-  }
-  if (!item.resourceUrl) {
-    throw new Error(`Skill ${item.id} has no content source (neither inline nor resourceUrl)`);
-  }
-  const res = await fetch(item.resourceUrl, {
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch skill content: HTTP ${res.status} from ${item.resourceUrl}`);
-  }
-  return await res.text();
+  if (item.content?.inline) return item.content.inline;
+  return await fetchCatalogResource(item, "skill content");
 }

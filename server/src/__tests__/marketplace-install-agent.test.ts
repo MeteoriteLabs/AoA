@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@armyofagents/db", () => {
   const tableProxy = new Proxy({}, { get: () => Symbol("col") });
-  return { agents: tableProxy, companySkills: tableProxy };
+  return { agents: tableProxy };
 });
 vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
@@ -84,7 +84,7 @@ describe("installAgent", () => {
     const broken: CatalogItem = { ...AGENT_TEMPLATE, resourceUrl: undefined };
     await expect(
       installAgent({ catalogItem: broken, companyId: "c1", db: mockDb as any, desiredName: "X" }),
-    ).rejects.toThrow(/no resourceUrl/i);
+    ).rejects.toThrow(/has no resourceUrl/);
   });
 
   it("throws if agent.json is invalid JSON", async () => {
@@ -92,5 +92,54 @@ describe("installAgent", () => {
     await expect(
       installAgent({ catalogItem: AGENT_TEMPLATE, companyId: "c1", db: mockDb as any, desiredName: "X" }),
     ).rejects.toThrow(/parse|json/i);
+  });
+
+  it("throws when HTTP fetch returns non-ok", async () => {
+    global.fetch = vi.fn(async () => ({ ok: false, status: 404 })) as any;
+    await expect(
+      installAgent({ catalogItem: AGENT_TEMPLATE, companyId: "c1", db: mockDb as any, desiredName: "X" }),
+    ).rejects.toThrow(/HTTP 404/);
+  });
+
+  it("uses schema defaults when agent.json fields are missing", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true, status: 200,
+      text: async () => JSON.stringify({ title: "Minimal Agent" }),  // only title set
+    })) as any;
+
+    await installAgent({
+      catalogItem: AGENT_TEMPLATE,
+      companyId: "c1",
+      db: mockDb as any,
+      desiredName: "Minimal",
+    });
+
+    expect(insertedRow.role).toBe("general");
+    expect(insertedRow.adapterType).toBe("process");
+    expect(insertedRow.skillKeys).toEqual([]);
+    expect(insertedRow.adapterConfig).toEqual({});
+    expect(insertedRow.runtimeConfig).toEqual({});
+    expect(insertedRow.permissions).toEqual({});
+    expect(insertedRow.budgetMonthlyCents).toBe(0);
+  });
+
+  it("sets metadata with catalog provenance", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true, status: 200, text: async () => AGENT_JSON_BODY,
+    })) as any;
+
+    await installAgent({
+      catalogItem: AGENT_TEMPLATE,
+      companyId: "c1",
+      db: mockDb as any,
+      desiredName: "Engineer",
+    });
+
+    expect(insertedRow.metadata).toEqual(expect.objectContaining({
+      catalogCategory: "engineering",
+      catalogTags: [],
+      catalogTrustTier: "verified",
+    }));
+    expect(insertedRow.metadata.installedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 });

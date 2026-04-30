@@ -102,7 +102,7 @@ describe("installSkill", () => {
     const broken: CatalogItem = { ...SKILL_INLINE, content: undefined, resourceUrl: undefined };
     await expect(
       installSkill({ catalogItem: broken, companyId: "c1", db: mockDb as any }),
-    ).rejects.toThrow(/no content source/i);
+    ).rejects.toThrow(/no resourceUrl/i);
   });
 
   it("always uses trustLevel 'markdown_only' for marketplace skills", async () => {

@@ -47,4 +47,21 @@ export interface InstallContext {
   idempotencyKey?: string;
 }
 
+/**
+ * Wire format the catalog aggregator produces for agent.json.
+ * Mirrored here as a local source-of-truth for the AoA install pipeline.
+ */
+export interface AgentTemplateBody {
+  role?: string;
+  title?: string;
+  icon?: string;
+  adapterType?: string;
+  adapterConfig?: Record<string, unknown>;
+  runtimeConfig?: Record<string, unknown>;
+  permissions?: Record<string, unknown>;
+  skillKeys?: string[];
+  capabilities?: string;
+  budgetMonthlyCents?: number;
+}
+
 export type { CascadeStepResult };
