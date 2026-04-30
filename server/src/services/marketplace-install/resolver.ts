@@ -48,7 +48,7 @@ export async function resolveInstallPlan(opts: ResolveOpts): Promise<InstallPlan
         if (!required) {
           throw new Error(`Required catalog item not found: ${req.id} (required by ${item.id})`);
         }
-        queue.push(required);
+        if (!visited.has(required.id)) queue.push(required);
       }
     }
   }
@@ -82,7 +82,7 @@ interface ClassifyResult {
   reason?: string;
 }
 
-async function classifyAction(opts: {
+export async function classifyAction(opts: {
   item: CatalogItem;
   db: Db;
   companyId: string;
@@ -91,7 +91,7 @@ async function classifyAction(opts: {
 
   if (item.type === "plugin") {
     if (!item.npm) {
-      return { action: "fail-version-mismatch", reason: "plugin item missing npm field" };
+      throw new Error(`Catalog defect: plugin item ${item.id} missing required 'npm' field`);
     }
     // Plugins are instance-scoped (no companyId column) — see packages/db/src/schema/plugins.ts.
     // Idempotency check is global: is this packageName installed anywhere in the instance?
@@ -165,5 +165,5 @@ async function classifyAction(opts: {
   }
 
   // Should be unreachable if catalog schema is enforced
-  return { action: "fail-version-mismatch", reason: `Unknown item type: ${(item as any).type}` };
+  throw new Error(`Unknown item type: ${(item as { type: string }).type} (item id: ${item.id})`);
 }

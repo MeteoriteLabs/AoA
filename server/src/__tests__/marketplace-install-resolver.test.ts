@@ -17,117 +17,23 @@ vi.mock("drizzle-orm", () => ({
   and: () => Symbol("op:and"),
 }));
 
-import { resolveInstallPlan } from "../services/marketplace-install/resolver.js";
-import type { CatalogItem } from "@armyofagents/shared";
-
-const SLACK_PLUGIN: CatalogItem = {
-  id: "plugin:aoa-curated/aoa-plugin-slack",
-  type: "plugin",
-  name: "Slack",
-  description: "Slack integration",
-  version: "1.0.0",
-  source: { adapter: "aoa-curated", url: "https://...", locator: "plugins/aoa-plugin-slack", commitSha: "abc123" },
-  npm: { packageName: "aoa-plugin-slack", version: "1.0.0" },
-  trust: { tier: "verified", source: "aoa-curated" },
-  status: "active",
-  addedAt: "2026-04-30T00:00:00Z",
-  capabilities: [],
-  category: "integrations",
-  tags: [],
-};
-
-const ENGINEER_TEAM: CatalogItem = {
-  id: "team:aoa-curated/engineering",
-  type: "team",
-  name: "Engineering Team",
-  description: "Standard engineering team template",
-  version: "1.0.0",
-  source: { adapter: "aoa-curated", url: "https://...", locator: "content/teams/engineering", commitSha: "abc123" },
-  resourceUrl: "https://raw.githubusercontent.com/.../abc123/content/teams/engineering/team.json",
-  trust: { tier: "verified", source: "aoa-curated" },
-  status: "active",
-  addedAt: "2026-04-30T00:00:00Z",
-  category: "engineering",
-  tags: [],
-  requires: [
-    { type: "agent", id: "agent:aoa-curated/engineer" },
-    { type: "skill", id: "skill:aoa-curated/code-review" },
-    { type: "plugin", id: "plugin:aoa-curated/aoa-plugin-github-issues" },
-  ],
-};
-
-// Concrete fixtures for the items ENGINEER_TEAM requires. Resolver throws
-// "Required catalog item not found" if these are missing.
-const REQUIRED_AGENT: CatalogItem = {
-  id: "agent:aoa-curated/engineer",
-  type: "agent",
-  name: "Engineer",
-  description: "Senior engineer agent",
-  version: "1.0.0",
-  source: { adapter: "aoa-curated", url: "https://...", locator: "content/agents/engineer", commitSha: "abc123" },
-  resourceUrl: "https://raw.githubusercontent.com/.../abc123/content/agents/engineer/agent.json",
-  trust: { tier: "verified", source: "aoa-curated" },
-  status: "active",
-  addedAt: "2026-04-30T00:00:00Z",
-  category: "engineering",
-  tags: [],
-};
-
-const REQUIRED_SKILL: CatalogItem = {
-  id: "skill:aoa-curated/code-review",
-  type: "skill",
-  name: "Code Review",
-  description: "Code review skill",
-  version: "1.0.0",
-  source: { adapter: "aoa-curated", url: "https://...", locator: "content/skills/code-review", commitSha: "abc123" },
-  resourceUrl: "https://raw.githubusercontent.com/.../abc123/content/skills/code-review/SKILL.md",
-  content: { inline: "# Code Review" },
-  trust: { tier: "verified", source: "aoa-curated" },
-  status: "active",
-  addedAt: "2026-04-30T00:00:00Z",
-  category: "engineering",
-  tags: [],
-};
-
-const REQUIRED_PLUGIN: CatalogItem = {
-  id: "plugin:aoa-curated/aoa-plugin-github-issues",
-  type: "plugin",
-  name: "GitHub Issues",
-  description: "GitHub issues integration",
-  version: "1.0.0",
-  source: { adapter: "aoa-curated", url: "https://...", locator: "plugins/aoa-plugin-github-issues", commitSha: "abc123" },
-  npm: { packageName: "aoa-plugin-github-issues", version: "1.0.0" },
-  trust: { tier: "verified", source: "aoa-curated" },
-  status: "active",
-  addedAt: "2026-04-30T00:00:00Z",
-  capabilities: [],
-  category: "integrations",
-  tags: [],
-};
-
-const CATALOG = {
-  schemaVersion: "1.0.0",
-  generatedAt: "2026-04-30T00:00:00Z",
-  itemCount: 5,
-  items: [SLACK_PLUGIN, ENGINEER_TEAM, REQUIRED_AGENT, REQUIRED_SKILL, REQUIRED_PLUGIN],
-};
+import { classifyAction, resolveInstallPlan } from "../services/marketplace-install/resolver.js";
+import {
+  SLACK_PLUGIN,
+  ENGINEER_TEAM,
+  REQUIRED_AGENT,
+  REQUIRED_SKILL,
+  FULL_CATALOG,
+  mockEmptyDb,
+  mockDbWithRow,
+} from "./__fixtures__/marketplace-catalog.js";
 
 describe("resolveInstallPlan", () => {
   it("returns single-step plan for a leaf item (plugin) not yet installed", async () => {
-    const mockDb = {
-      select: () => ({
-        from: () => ({
-          where: () => ({
-            limit: () => Promise.resolve([]),  // no rows
-          }),
-        }),
-      }),
-    };
-
     const plan = await resolveInstallPlan({
       catalogItemId: SLACK_PLUGIN.id,
-      catalog: CATALOG,
-      db: mockDb as any,
+      catalog: FULL_CATALOG,
+      db: mockEmptyDb() as any,
       companyId: "c1",
     });
 
@@ -139,20 +45,10 @@ describe("resolveInstallPlan", () => {
   });
 
   it("expands team install into plugin + skills + agents cascade", async () => {
-    const mockDb = {
-      select: () => ({
-        from: () => ({
-          where: () => ({
-            limit: () => Promise.resolve([]),
-          }),
-        }),
-      }),
-    };
-
     const plan = await resolveInstallPlan({
       catalogItemId: ENGINEER_TEAM.id,
-      catalog: CATALOG,
-      db: mockDb as any,
+      catalog: FULL_CATALOG,
+      db: mockEmptyDb() as any,
       companyId: "c1",
     });
 
@@ -164,22 +60,12 @@ describe("resolveInstallPlan", () => {
   });
 
   it("marks plugin as skip-already-installed if at same version", async () => {
-    const mockDb = {
-      select: () => ({
-        from: () => ({
-          where: () => ({
-            limit: () => Promise.resolve([
-              { id: "plugin-row-1", packageName: "aoa-plugin-slack", version: "1.0.0", status: "ready" },
-            ]),
-          }),
-        }),
-      }),
-    };
+    const db = mockDbWithRow({ id: "plugin-row-1", packageName: "aoa-plugin-slack", version: "1.0.0", status: "ready" });
 
     const plan = await resolveInstallPlan({
       catalogItemId: SLACK_PLUGIN.id,
-      catalog: CATALOG,
-      db: mockDb as any,
+      catalog: FULL_CATALOG,
+      db: db as any,
       companyId: "c1",
     });
 
@@ -187,14 +73,89 @@ describe("resolveInstallPlan", () => {
   });
 
   it("throws on unknown catalogItemId", async () => {
-    const mockDb = { select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) }) };
     await expect(
       resolveInstallPlan({
         catalogItemId: "unknown:item",
-        catalog: CATALOG,
-        db: mockDb as any,
+        catalog: FULL_CATALOG,
+        db: mockEmptyDb() as any,
         companyId: "c1",
       }),
     ).rejects.toThrow(/not found/i);
+  });
+});
+
+describe("classifyAction", () => {
+  // Plugin
+  it("plugin: returns install-new when not installed", async () => {
+    const r = await classifyAction({ item: SLACK_PLUGIN, db: mockEmptyDb() as any, companyId: "c1" });
+    expect(r.action).toBe("install-new");
+  });
+  it("plugin: returns fail-version-mismatch when different version installed", async () => {
+    const db = mockDbWithRow({ id: "p1", packageName: "aoa-plugin-slack", version: "0.9.0", status: "ready" });
+    const r = await classifyAction({ item: SLACK_PLUGIN, db: db as any, companyId: "c1" });
+    expect(r.action).toBe("fail-version-mismatch");
+    expect(r.reason).toContain("0.9.0");
+  });
+  it("plugin: throws on missing npm field (catalog defect)", async () => {
+    const broken = { ...SLACK_PLUGIN, npm: undefined };
+    await expect(
+      classifyAction({ item: broken as any, db: mockEmptyDb() as any, companyId: "c1" }),
+    ).rejects.toThrow(/missing required 'npm' field/);
+  });
+
+  // Skill
+  it("skill: returns install-new when not installed", async () => {
+    const r = await classifyAction({ item: REQUIRED_SKILL, db: mockEmptyDb() as any, companyId: "c1" });
+    expect(r.action).toBe("install-new");
+  });
+  it("skill: returns skip-already-installed when same version installed", async () => {
+    const db = mockDbWithRow({ id: "s1", sourceRef: "1.0.0", sourceLocator: REQUIRED_SKILL.id });
+    const r = await classifyAction({ item: REQUIRED_SKILL, db: db as any, companyId: "c1" });
+    expect(r.action).toBe("skip-already-installed");
+  });
+  it("skill: returns fail-version-mismatch when different version installed", async () => {
+    const db = mockDbWithRow({ id: "s1", sourceRef: "0.5.0", sourceLocator: REQUIRED_SKILL.id });
+    const r = await classifyAction({ item: REQUIRED_SKILL, db: db as any, companyId: "c1" });
+    expect(r.action).toBe("fail-version-mismatch");
+  });
+
+  // Agent
+  it("agent: returns install-new when not installed", async () => {
+    const r = await classifyAction({ item: REQUIRED_AGENT, db: mockEmptyDb() as any, companyId: "c1" });
+    expect(r.action).toBe("install-new");
+  });
+  it("agent: returns skip-already-installed when same version installed", async () => {
+    const db = mockDbWithRow({ id: "a1", templateOrigin: REQUIRED_AGENT.id, templateVersion: "1.0.0" });
+    const r = await classifyAction({ item: REQUIRED_AGENT, db: db as any, companyId: "c1" });
+    expect(r.action).toBe("skip-already-installed");
+  });
+  it("agent: returns fail-version-mismatch when different version installed", async () => {
+    const db = mockDbWithRow({ id: "a1", templateOrigin: REQUIRED_AGENT.id, templateVersion: "0.5.0" });
+    const r = await classifyAction({ item: REQUIRED_AGENT, db: db as any, companyId: "c1" });
+    expect(r.action).toBe("fail-version-mismatch");
+  });
+
+  // Team
+  it("team: returns install-new when not installed", async () => {
+    const r = await classifyAction({ item: ENGINEER_TEAM, db: mockEmptyDb() as any, companyId: "c1" });
+    expect(r.action).toBe("install-new");
+  });
+  it("team: returns skip-already-installed when same version installed", async () => {
+    const db = mockDbWithRow({ id: "t1", templateOrigin: ENGINEER_TEAM.id, templateVersion: "1.0.0" });
+    const r = await classifyAction({ item: ENGINEER_TEAM, db: db as any, companyId: "c1" });
+    expect(r.action).toBe("skip-already-installed");
+  });
+  it("team: returns fail-version-mismatch when different version installed", async () => {
+    const db = mockDbWithRow({ id: "t1", templateOrigin: ENGINEER_TEAM.id, templateVersion: "0.5.0" });
+    const r = await classifyAction({ item: ENGINEER_TEAM, db: db as any, companyId: "c1" });
+    expect(r.action).toBe("fail-version-mismatch");
+  });
+
+  // Unknown type
+  it("throws on unknown item type", async () => {
+    const broken = { ...SLACK_PLUGIN, type: "unknown-type" as any };
+    await expect(
+      classifyAction({ item: broken, db: mockEmptyDb() as any, companyId: "c1" }),
+    ).rejects.toThrow(/Unknown item type/);
   });
 });
