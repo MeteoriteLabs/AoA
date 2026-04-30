@@ -12,7 +12,6 @@ export interface InstallSkillOpts {
 
 export interface InstallSkillResult {
   skillId: string;
-  alreadyExisted: false;
 }
 
 /**
@@ -20,12 +19,15 @@ export interface InstallSkillResult {
  *
  * - Uses inline content if present (faster, no network).
  * - Falls back to HTTP GET on resourceUrl (commit-pinned by aggregator).
- * - Stores sourceType=marketplace, sourceLocator=catalogItemId, sourceRef=version
+ * - Stores sourceType=catalog, sourceLocator=catalogItemId, sourceRef=version
  *   so future updates and idempotency checks can find the row.
  *
  * Idempotency check (whether a skill is already installed) belongs in the
  * orchestrator, not here. This function blindly inserts; caller must
  * check first.
+ *
+ * The `db` argument may be a transaction handle. The function performs a
+ * single insert and is safe to call inside a parent transaction.
  *
  * @throws Error if neither inline content nor resourceUrl is present, or HTTP fetch fails.
  */
@@ -50,21 +52,24 @@ export async function installSkill(opts: InstallSkillOpts): Promise<InstallSkill
       name: catalogItem.name,
       description: catalogItem.description,
       markdown,
-      sourceType: "marketplace",
+      sourceType: "catalog",  // reuses existing catalog source type — marketplace is a catalog
       sourceLocator: catalogItem.id,
       sourceRef: catalogItem.version,
-      trustLevel: catalogItem.trust.tier === "verified" ? "verified" : "markdown_only",
+      // Marketplace skills are markdown-only (no file inventory). Catalog provenance
+      // (verified/community/unverified) is stored in metadata.catalogTrustTier for display.
+      trustLevel: "markdown_only",
       compatibility: "compatible",
       fileInventory: [],
       metadata: {
         catalogCategory: catalogItem.category,
         catalogTags: catalogItem.tags,
+        catalogTrustTier: catalogItem.trust.tier,  // verified | community | unverified — for UI badge
         installedAt: new Date().toISOString(),
       },
     })
     .returning();
 
-  return { skillId: inserted[0].id, alreadyExisted: false };
+  return { skillId: inserted[0].id };
 }
 
 async function loadSkillContent(item: CatalogItem): Promise<string> {

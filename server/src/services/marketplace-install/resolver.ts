@@ -117,7 +117,7 @@ export async function classifyAction(opts: {
       .where(
         and(
           eq(companySkills.companyId, companyId),
-          eq(companySkills.sourceType, "marketplace"),
+          eq(companySkills.sourceType, "catalog"),
           eq(companySkills.sourceLocator, item.id),
         ),
       )

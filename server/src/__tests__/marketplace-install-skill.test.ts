@@ -63,7 +63,7 @@ describe("installSkill", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(insertedRow.markdown).toBe("# Code Review\n\nAlways check for memory leaks.");
-    expect(insertedRow.sourceType).toBe("marketplace");
+    expect(insertedRow.sourceType).toBe("catalog");
     expect(insertedRow.sourceLocator).toBe("skill:aoa-curated/code-review");
     expect(insertedRow.sourceRef).toBe("1.0.0");
     expect(result.skillId).toBe("skill-uuid-1");
@@ -103,5 +103,21 @@ describe("installSkill", () => {
     await expect(
       installSkill({ catalogItem: broken, companyId: "c1", db: mockDb as any }),
     ).rejects.toThrow(/no content source/i);
+  });
+
+  it("always uses trustLevel 'markdown_only' for marketplace skills", async () => {
+    global.fetch = vi.fn() as any;
+    await installSkill({ catalogItem: SKILL_INLINE, companyId: "c1", db: mockDb as any });
+    expect(insertedRow.trustLevel).toBe("markdown_only");
+    expect(insertedRow.metadata.catalogTrustTier).toBe("verified");
+
+    // Even community/unverified skills get markdown_only (catalog tier stored separately).
+    const COMMUNITY_SKILL: CatalogItem = {
+      ...SKILL_INLINE,
+      trust: { tier: "community", source: "community" },
+    };
+    await installSkill({ catalogItem: COMMUNITY_SKILL, companyId: "c1", db: mockDb as any });
+    expect(insertedRow.trustLevel).toBe("markdown_only");
+    expect(insertedRow.metadata.catalogTrustTier).toBe("community");
   });
 });
