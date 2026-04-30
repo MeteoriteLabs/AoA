@@ -2,10 +2,13 @@ import { describe, it, expect, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import { createMarketplaceRouter } from "../routes/marketplace.js";
+import { HttpError } from "../errors.js";
 
 vi.mock("../routes/authz.js", () => ({
-  assertBoard: (_req: any) => {
-    // No-op: allow all requests through in tests
+  assertBoard: (req: any) => {
+    if (req?.actor?.type !== "board") {
+      throw new HttpError(403, "Board access required");
+    }
   },
 }));
 
@@ -66,10 +69,35 @@ describe("marketplace routes", () => {
       next();
     });
     app.use("/api/marketplace", createMarketplaceRouter({ service }));
+    app.use((err: any, _req: any, res: any, _next: any) => {
+      res.status(err.status ?? 500).json({ error: err.message });
+    });
 
     const res = await request(app).post("/api/marketplace/catalog/sync");
     expect(res.status).toBe(200);
     expect(res.body.itemCount).toBe(0);
+  });
+
+  it("POST /catalog/sync returns 403 for non-board actor", async () => {
+    const service = {
+      readCache: async () => null,
+      sync: async () => null,
+      getStatus: async () => null,
+    } as any;
+
+    const app = express();
+    app.use(express.json());
+    app.use((req: any, _res, next) => {
+      req.actor = { type: "agent" }; // not board
+      next();
+    });
+    app.use("/api/marketplace", createMarketplaceRouter({ service }));
+    app.use((err: any, _req: any, res: any, _next: any) => {
+      res.status(err.status ?? 500).json({ error: err.message });
+    });
+
+    const res = await request(app).post("/api/marketplace/catalog/sync");
+    expect(res.status).toBe(403);
   });
 
   it("GET /catalog/status returns sync metadata", async () => {
