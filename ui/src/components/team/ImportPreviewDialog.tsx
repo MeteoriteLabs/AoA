@@ -99,8 +99,21 @@ export function ImportPreviewDialog({
           });
         }
       }
+      // C3 (comprehensive-review fixup): import installs may create new
+      // agents (rename / no-collision branches) and grants dept membership
+      // (replace branch). Match BuildFromScratchForm's invalidation set so
+      // the dept-detail page and agents list refetch after install.
       queryClient.invalidateQueries({
         queryKey: queryKeys.teams.list(selectedCompanyId!),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.list(selectedCompanyId!),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.list(selectedCompanyId!),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.agents(parentProjectId),
       });
       onOpenChange(false);
       navigate(`/team/teams/${team.slug}`);

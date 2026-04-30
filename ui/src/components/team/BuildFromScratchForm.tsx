@@ -174,6 +174,13 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
       queryClient.invalidateQueries({
         queryKey: queryKeys.projects.list(selectedCompanyId!),
       });
+      // C3 (comprehensive-review fixup): the dept-detail page reads
+      // queryKeys.projects.agents(projectId) for its agent dropdown — this
+      // cache is independent of agents.list and projects.list and was
+      // missed in the original Task 6 invalidation set.
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.agents(parentProjectId),
+      });
       pushToast({
         title: "Team created",
         body: `"${team.name}" is ready.`,
