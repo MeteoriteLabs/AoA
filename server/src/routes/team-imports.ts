@@ -168,7 +168,12 @@ export function teamImportsRoutes(db: Db) {
           // Task 11 / P3-D: log the count so operators can correlate UI
           // toasts with server logs without leaking the human-readable
           // body (which embeds agent names + ids).
-          warningCount: team.warnings.length,
+          // L12 (comprehensive-review fixup): match the response body's
+          // `?? []` defense (line 186). If the service ever returns an
+          // unmodelled shape (test mock drift, future regression), this
+          // log line shouldn't be the thing that throws TypeError -> 500
+          // before the response is sent.
+          warningCount: team.warnings?.length ?? 0,
         },
         "imported team",
       );
