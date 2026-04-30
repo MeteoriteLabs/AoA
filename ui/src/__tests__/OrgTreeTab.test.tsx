@@ -24,6 +24,28 @@ vi.mock("@/lib/utils", () => ({
   cn: (...args: any[]) => args.filter(Boolean).join(" "),
 }));
 
+// OrgTreeTab now reads `selectedCompanyId` from CompanyContext to fetch
+// teams + memberships for the team-overlay box. The shared test wrapper
+// (test-utils.tsx) provides QueryClient + Router but intentionally NOT
+// CompanyProvider — wiring the real provider here would require auth
+// setup we don't need. With `selectedCompanyId: null` both team queries
+// are disabled (their `enabled: Boolean(selectedCompanyId)` short-circuits
+// to false), so the overlay simply doesn't render. None of the existing
+// test assertions touch the overlay, so this is a clean no-op.
+vi.mock("../context/CompanyContext", () => ({
+  useCompany: () => ({
+    selectedCompanyId: null,
+    selectedCompany: null,
+    companies: [],
+    selectionSource: "bootstrap",
+    loading: false,
+    error: null,
+    setSelectedCompanyId: vi.fn(),
+    reloadCompanies: vi.fn().mockResolvedValue(undefined),
+    createCompany: vi.fn().mockResolvedValue({}),
+  }),
+}));
+
 // --- Fixtures ---
 
 function makeAgentNode(overrides: Partial<UnifiedOrgNode> = {}): UnifiedOrgNode {

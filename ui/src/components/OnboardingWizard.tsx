@@ -164,7 +164,7 @@ export function OnboardingWizard() {
     const isLocal = ["claude_local", "codex_local", "opencode_local", "cursor", "hermes_local", "gemini_local"].includes(adapterType);
     if (!isLocal) return;
     const sep = rootFolder.includes("\\") ? "\\" : "/";
-    const slug = agentName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "ceo";
+    const slug = agentName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "cxo";
     setCwd(`${rootFolder}${sep}agents${sep}${slug}`);
   }, [step, rootFolder, agentName, adapterType, cwdManuallyEdited, cwd]);
 
@@ -453,7 +453,9 @@ export function OnboardingWizard() {
 
       const agent = await agentsApi.create(createdCompanyId, {
         name: agentName.trim(),
-        role: "ceo",
+        // First-onboarded agent in a brand-new company is the apex CXO
+        // (Chief of Staff). Was `"ceo"` before the role-enum cleanup.
+        role: "cxo",
         adapterType,
         adapterConfig: { ...buildAdapterConfig(), ...(agentCwd ? { cwd: agentCwd } : {}) },
         runtimeConfig: {
