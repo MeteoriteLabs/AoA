@@ -119,7 +119,7 @@ async function upsertPendingUpdate(
   if (compareVersions(data.latestVersion, data.currentVersion) <= 0) return;
 
   // Two-step: insert ignoring conflict, then update only if still pending
-  await db
+  const inserted = await db
     .insert(marketplacePendingUpdates)
     .values({
       companyId,
@@ -130,12 +130,15 @@ async function upsertPendingUpdate(
       latestVersion: data.latestVersion,
       status: "pending",
     })
-    .onConflictDoNothing();
+    .onConflictDoNothing()
+    .returning({ id: marketplacePendingUpdates.id });
 
-  // Fire-and-forget notification for new pending update rows
-  void marketplaceNotifications
-    .updateAvailable(db, companyId, data.catalogItemName, data.currentVersion, data.latestVersion)
-    .catch((err) => logger.error({ err }, "marketplace: failed to emit update_available notification"));
+  // Only notify on genuine new detection
+  if (inserted.length > 0) {
+    void marketplaceNotifications
+      .updateAvailable(db, companyId, data.catalogItemName, data.currentVersion, data.latestVersion)
+      .catch((err) => logger.error({ err }, "marketplace: failed to emit update_available notification"));
+  }
 
   await db
     .update(marketplacePendingUpdates)
