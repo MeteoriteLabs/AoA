@@ -55,6 +55,23 @@ export function canInstallType(
   return false; // team_member
 }
 
+/**
+ * Resolve the install access decision for a role + type + settings combination.
+ * Returns:
+ *   "allow"   — proceed with install
+ *   "request" — team_member with request permission: return 202
+ *   "deny"    — insufficient permissions: return 403
+ */
+export function resolveInstallDecision(
+  role: string,
+  type: string,
+  settings: { allowTeamLeadPlugins: boolean; teamMemberCanRequestInstall: boolean },
+): "allow" | "request" | "deny" {
+  if (canInstallType(role, type, settings.allowTeamLeadPlugins)) return "allow";
+  if (role === "team_member" && settings.teamMemberCanRequestInstall) return "request";
+  return "deny";
+}
+
 const InstallRequestSchema = z.object({
   catalogItemId: z.string().min(1),
   targetDepartmentId: z.string().uuid().optional(),
@@ -137,15 +154,15 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       const effectiveRole = await permissionService(db).getEffectiveRole(companyId, userId);
       const settings = await marketplaceSettingsService(db).get(companyId);
 
-      if (!canInstallType(effectiveRole, catalogItem.type, settings.allowTeamLeadPlugins)) {
-        // team_member may request install if the setting allows it
-        if (effectiveRole === "team_member" && settings.teamMemberCanRequestInstall) {
-          res.status(202).json({
-            queued: true,
-            message: "Install request submitted. A founder will review it.",
-          });
-          return;
-        }
+      const decision = resolveInstallDecision(effectiveRole, catalogItem.type, settings);
+      if (decision === "request") {
+        res.status(202).json({
+          queued: true,
+          message: "Install request submitted. A founder will review it.",
+        });
+        return;
+      }
+      if (decision === "deny") {
         res.status(403).json({ error: `Insufficient permissions to install ${catalogItem.type}` });
         return;
       }

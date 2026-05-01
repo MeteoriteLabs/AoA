@@ -31,7 +31,7 @@ vi.mock("@armyofagents/db", () => {
 });
 
 // Pure function import — no drizzle calls in canInstallType
-import { canInstallType } from "../routes/marketplace-installs.js";
+import { canInstallType, resolveInstallDecision } from "../routes/marketplace-installs.js";
 
 describe("canInstallType", () => {
   it("founder can install all types", () => {
@@ -58,5 +58,25 @@ describe("canInstallType", () => {
   it("team_member cannot install anything", () => {
     expect(canInstallType("team_member", "skill", false)).toBe(false);
     expect(canInstallType("team_member", "plugin", true)).toBe(false);
+  });
+});
+
+describe("resolveInstallDecision", () => {
+  it("returns 'allow' when canInstallType passes", () => {
+    expect(resolveInstallDecision("founder", "plugin", { allowTeamLeadPlugins: false, teamMemberCanRequestInstall: false })).toBe("allow");
+    expect(resolveInstallDecision("team_lead", "skill", { allowTeamLeadPlugins: false, teamMemberCanRequestInstall: false })).toBe("allow");
+  });
+
+  it("returns 'request' for team_member when teamMemberCanRequestInstall=true", () => {
+    expect(resolveInstallDecision("team_member", "skill", { allowTeamLeadPlugins: false, teamMemberCanRequestInstall: true })).toBe("request");
+    expect(resolveInstallDecision("team_member", "plugin", { allowTeamLeadPlugins: true, teamMemberCanRequestInstall: true })).toBe("request");
+  });
+
+  it("returns 'deny' for team_member when teamMemberCanRequestInstall=false", () => {
+    expect(resolveInstallDecision("team_member", "skill", { allowTeamLeadPlugins: false, teamMemberCanRequestInstall: false })).toBe("deny");
+  });
+
+  it("returns 'deny' for team_lead trying to install plugin without allowTeamLeadPlugins", () => {
+    expect(resolveInstallDecision("team_lead", "plugin", { allowTeamLeadPlugins: false, teamMemberCanRequestInstall: false })).toBe("deny");
   });
 });
