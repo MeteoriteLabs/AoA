@@ -33,6 +33,27 @@ import {
 import type { PluginLoaderLike } from "../services/marketplace-install/plugin-installer.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { permissionService } from "../services/permissions.js";
+import { marketplaceSettingsService } from "../services/marketplace-settings.js";
+
+/**
+ * Check if a user role can install a given catalog item type.
+ * @param role - effective user role ('founder' | 'team_lead' | 'team_member')
+ * @param type - catalog item type ('skill' | 'agent' | 'team' | 'plugin')
+ * @param allowTeamLeadPlugins - from company marketplace settings
+ */
+export function canInstallType(
+  role: string,
+  type: string,
+  allowTeamLeadPlugins: boolean,
+): boolean {
+  if (role === "founder") return true;
+  if (role === "team_lead") {
+    if (type === "plugin") return allowTeamLeadPlugins;
+    return true; // skill, agent, team
+  }
+  return false; // team_member
+}
 
 const InstallRequestSchema = z.object({
   catalogItemId: z.string().min(1),
@@ -104,6 +125,30 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
     if (!catalogItem) {
       res.status(404).json({ error: `Catalog item not found: ${request.catalogItemId}` });
       return;
+    }
+
+    // RBAC check — skip for local_implicit actors (full access by design) and instance admins
+    // Agent actors (type !== "board") also bypass — they use separate permission paths
+    if (
+      req.actor.type === "board" &&
+      req.actor.source !== "local_implicit" &&
+      !req.actor.isInstanceAdmin
+    ) {
+      const effectiveRole = await permissionService(db).getEffectiveRole(companyId, userId);
+      const settings = await marketplaceSettingsService(db).get(companyId);
+
+      if (!canInstallType(effectiveRole, catalogItem.type, settings.allowTeamLeadPlugins)) {
+        // team_member may request install if the setting allows it
+        if (effectiveRole === "team_member" && settings.teamMemberCanRequestInstall) {
+          res.status(202).json({
+            queued: true,
+            message: "Install request submitted. A founder will review it.",
+          });
+          return;
+        }
+        res.status(403).json({ error: `Insufficient permissions to install ${catalogItem.type}` });
+        return;
+      }
     }
 
     if (catalogItem.type !== "plugin" && !request.targetDepartmentId) {

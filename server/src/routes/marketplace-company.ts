@@ -17,6 +17,7 @@ import { type Db, marketplacePendingUpdates, companySkills } from "@armyofagents
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { marketplaceSettingsService } from "../services/marketplace-settings.js";
 import { computeSectionDiff, applyMergeDecisions } from "../services/marketplace-merge.js";
+import { marketplaceNotifications } from "../services/marketplace-notifications.js";
 import type { MarketplaceCatalogFile } from "@armyofagents/shared";
 
 export interface MarketplaceCompanyRoutesDeps {
@@ -248,12 +249,31 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     res.json({ ok: true });
   });
 
-  // ── Request install (stub — filled in Task 10) ────────────────────────────
+  // ── Request install ────────────────────────────────────────────────────────
 
   router.post("/request-install", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
     assertCompanyAccess(req, companyId);
+
+    const { catalogItemId } = req.body as { catalogItemId?: string };
+    if (!catalogItemId) {
+      res.status(400).json({ error: "catalogItemId is required" });
+      return;
+    }
+
+    // Look up catalog item name for the notification
+    const catalogSvc = deps.catalogService as { readCache(): Promise<MarketplaceCatalogFile | null> };
+    const catalog = await catalogSvc.readCache();
+    const catalogItem = catalog?.items.find((i) => i.id === catalogItemId);
+    const itemName = catalogItem?.name ?? catalogItemId;
+
+    // Notify founders of the install request (reuses install_completed notification
+    // with a "request:" prefix so founders can distinguish in their inbox)
+    void marketplaceNotifications
+      .installCompleted(db, companyId, `Install request: ${itemName}`, "request")
+      .catch(() => {});
+
     res.status(202).json({ queued: true });
   });
 
