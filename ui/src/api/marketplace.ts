@@ -15,6 +15,49 @@ import type {
 } from "@armyofagents/shared";
 import { api } from "./client";
 
+// M.3b: Install flow types — wired to backend endpoints from M.2.
+
+export interface InstallRequest {
+  catalogItemId: string;
+  targetDepartmentId?: string;
+  idempotencyKey?: string;
+}
+
+export interface InstallOperation {
+  id: string;
+  companyId: string;
+  catalogItemId: string;
+  itemType: "plugin" | "skill" | "agent" | "team";
+  targetDepartmentId: string | null;
+  status: "pending" | "running" | "success" | "failure";
+  resultEntityId: string | null;
+  errorMessage: string | null;
+  cascadeResults: unknown[] | null;
+  startedAt: string;
+  completedAt: string | null;
+  createdAt: string;
+}
+
+export interface InstallPlanStep {
+  catalogItemId: string;
+  itemType: "plugin" | "skill" | "agent" | "team";
+  name: string;
+  version: string;
+  action: "install-new" | "skip-already-installed" | "fail-version-mismatch";
+  reason?: string;
+}
+
+export interface InstallPlan {
+  rootItem: { id: string; name: string; type: string; version: string };
+  steps: InstallPlanStep[];
+  conflicts: Array<{
+    catalogItemId: string;
+    kind: "name-collision" | "adapter-mismatch" | "model-unavailable";
+    detail: string;
+    resolution: "auto-suffix" | "fail-fast" | "warn-and-proceed";
+  }>;
+}
+
 export const marketplaceApi = {
   async getCatalog(): Promise<MarketplaceCatalogFile> {
     return api.get<MarketplaceCatalogFile>("/marketplace/catalog");
@@ -28,6 +71,34 @@ export const marketplaceApi = {
     return api.post<{ itemCount: number; status: CatalogSyncStatus }>(
       "/marketplace/catalog/sync",
       {},
+    );
+  },
+
+  async resolvePlan(
+    companyId: string,
+    catalogItemId: string,
+  ): Promise<InstallPlan> {
+    return api.get<InstallPlan>(
+      `/companies/${companyId}/marketplace/resolve/${catalogItemId}`,
+    );
+  },
+
+  async install(
+    companyId: string,
+    request: InstallRequest,
+  ): Promise<{ operationId: string; status: string }> {
+    return api.post<{ operationId: string; status: string }>(
+      `/companies/${companyId}/marketplace/install`,
+      request,
+    );
+  },
+
+  async getOperation(
+    companyId: string,
+    operationId: string,
+  ): Promise<InstallOperation> {
+    return api.get<InstallOperation>(
+      `/companies/${companyId}/marketplace/install/${operationId}`,
     );
   },
 };
