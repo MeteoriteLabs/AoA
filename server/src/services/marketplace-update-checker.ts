@@ -13,6 +13,8 @@ import {
   companies,
   companySkills,
 } from "@armyofagents/db";
+import { marketplaceNotifications } from "./marketplace-notifications.js";
+import { logger } from "../middleware/logger.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure utility functions (exported for unit testing)
@@ -129,6 +131,11 @@ async function upsertPendingUpdate(
       status: "pending",
     })
     .onConflictDoNothing();
+
+  // Fire-and-forget notification for new pending update rows
+  void marketplaceNotifications
+    .updateAvailable(db, companyId, data.catalogItemName, data.currentVersion, data.latestVersion)
+    .catch((err) => logger.error({ err }, "marketplace: failed to emit update_available notification"));
 
   await db
     .update(marketplacePendingUpdates)

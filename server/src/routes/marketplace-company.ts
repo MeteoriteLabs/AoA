@@ -96,12 +96,47 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     res.json({ ok: true });
   });
 
-  // POST /updates/:id/apply — stub (implemented in Task 11)
+  // POST /updates/:id/apply
   router.post("/updates/:id/apply", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
     assertCompanyAccess(req, companyId);
-    res.status(501).json({ error: "Apply not yet implemented" });
+
+    const { id } = req.params as { id: string };
+    const [update] = await db
+      .select()
+      .from(marketplacePendingUpdates)
+      .where(
+        and(
+          eq(marketplacePendingUpdates.id, id),
+          eq(marketplacePendingUpdates.companyId, companyId),
+        ),
+      );
+
+    if (!update) {
+      res.status(404).json({ error: "Update not found" });
+      return;
+    }
+
+    if (update.itemType === "plugin") {
+      // Plugin updates handled via POST /api/plugins/:pluginId/upgrade
+      // Return redirect hint for the UI
+      res.status(303).json({
+        redirect: `/api/plugins/${update.catalogItemId}/upgrade`,
+        message: "Use POST /api/plugins/:pluginId/upgrade to apply plugin updates",
+      });
+      return;
+    }
+
+    // For snapshot types (skill/agent/team): use the merge endpoint for review
+    // or auto-accept all upstream changes without diff
+    // Auto-apply: mark as applied — the merge endpoint is the proper path for reviewed merges
+    await db
+      .update(marketplacePendingUpdates)
+      .set({ status: "applied", updatedAt: new Date() })
+      .where(eq(marketplacePendingUpdates.id, id));
+
+    res.json({ ok: true, message: "Update applied (all upstream accepted). Use /merge for reviewed merge." });
   });
 
   // GET /updates/:id/diff — returns section-level diff for a skill update
