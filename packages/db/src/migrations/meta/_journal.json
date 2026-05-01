@@ -561,6 +561,13 @@
       "when": 1746057600000,
       "tag": "0074_marketplace_pending_updates",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1746057700000,
+      "tag": "0075_plugin_version_snapshots",
+      "breakpoints": true
     }
   ]
 }

@@ -51,6 +51,7 @@ import type { ToolRunContext } from "@armyofagents/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@armyofagents/plugin-sdk";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
+import { pluginRollbackService } from "../services/plugin-rollback.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -2215,6 +2216,87 @@ export function pluginRoutes(
       health,
       checkedAt: new Date().toISOString(),
     });
+  });
+
+  // ===========================================================================
+  // Plugin version history and rollback routes
+  // ===========================================================================
+
+  /**
+   * GET /api/plugins/:pluginId/version-history
+   *
+   * List saved version snapshots for a plugin (oldest first).
+   * These snapshots are saved before each upgrade and can be used
+   * to roll back to a previous version.
+   *
+   * Response: PluginVersionSnapshot[]
+   * Errors: 404 if plugin not found
+   */
+  router.get("/plugins/:pluginId/version-history", async (req, res) => {
+    assertBoard(req);
+    const { pluginId } = req.params;
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const rollback = pluginRollbackService(db);
+    const snaps = await rollback.listSnapshots(plugin.id);
+    res.json(snaps);
+  });
+
+  /**
+   * POST /api/plugins/:pluginId/rollback
+   *
+   * Roll back a plugin to its most recent saved version snapshot.
+   *
+   * Re-installs the previous version using the saved packageName and version.
+   * Returns 404 if no snapshot is available.
+   *
+   * Response: PluginRecord (updated plugin after rollback)
+   * Errors:
+   * - 404 if plugin not found or no rollback snapshot available
+   * - 400 if re-installation fails
+   */
+  router.post("/plugins/:pluginId/rollback", async (req, res) => {
+    assertBoard(req);
+    const { pluginId } = req.params;
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const rollback = pluginRollbackService(db);
+    const target = await rollback.getRollbackTarget(plugin.id);
+    if (!target) {
+      res.status(404).json({ error: "No rollback snapshot available" });
+      return;
+    }
+
+    try {
+      // Re-install the previous version
+      await loader.installPlugin({
+        packageName: target.packageName,
+        version: target.version,
+      });
+      await lifecycle.load(plugin.id);
+      const updated = await registry.getById(plugin.id);
+      await logPluginMutationActivity(req, "plugin.rolledback", plugin.id, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        previousVersion: plugin.version,
+        rolledBackTo: target.version,
+      });
+      publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "rolledback" } });
+      res.json(updated);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ error: `Rollback failed: ${message}` });
+    }
   });
 
   return router;
