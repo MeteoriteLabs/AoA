@@ -20,6 +20,9 @@ import {
   RotateCcw,
   Eye,
   Pencil,
+  Pin,
+  Sparkles,
+  ChevronLeft,
 } from "lucide-react";
 import {
   MEMORY_ITEM_CATEGORIES,
@@ -43,6 +46,10 @@ import { memoryApi } from "../api/memory";
 import { projectsApi } from "../api/projects";
 import { goalsApi } from "../api/goals";
 import { issuesApi } from "../api/issues";
+import {
+  memoryStarterTemplatesApi,
+  type MemoryStarterTemplate,
+} from "../api/memoryStarterTemplates";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -179,6 +186,7 @@ export function Memory() {
     searchParams.get("item") ?? searchParams.get("selected"),
   );
   const [createOpen, setCreateOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Memory" }]);
@@ -325,6 +333,16 @@ export function Memory() {
           </Button>
         </div>
 
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setTemplatesOpen(true)}
+          className="gap-1.5"
+        >
+          <Sparkles className="h-3.5 w-3.5" />
+          Starter templates
+        </Button>
+
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -437,13 +455,16 @@ export function Memory() {
 
           {/* Items list */}
           {allItems.length === 0 ? (
-            <EmptyState
-              icon={Brain}
-              message="No memory items found"
-              description="Memory stores decisions, references, and context that your agents use to produce better work."
-              action="Add to Memory"
-              onAction={() => setCreateOpen(true)}
-              entityColor="var(--entity-memory)"
+            <MemoryEmptyState
+              hasActiveFilters={
+                categoryFilter !== "all" ||
+                statusFilter !== "all" ||
+                departmentFilter !== "all" ||
+                layerFilter !== "all" ||
+                search.trim().length > 0
+              }
+              onAddItem={() => setCreateOpen(true)}
+              onBrowseTemplates={() => setTemplatesOpen(true)}
             />
           ) : viewMode === "layer" ? (
             <LayerView
@@ -500,6 +521,15 @@ export function Memory() {
         companyId={selectedCompanyId}
         departments={departments}
         canCreate={permissions.canEditIdentityMemory}
+      />
+
+      {/* Starter templates dialog */}
+      <StarterTemplatesDialog
+        open={templatesOpen}
+        onOpenChange={setTemplatesOpen}
+        companyId={selectedCompanyId}
+        departments={departments}
+        onApplied={() => invalidateMemoryQueries()}
       />
     </div>
   );
@@ -781,6 +811,24 @@ function MemoryCard({
               >
                 {LAYER_LABELS[item.layer]}
               </Badge>
+            )}
+            {(item as MemoryItem & { pinnedToSkill?: boolean }).pinnedToSkill && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] px-1.5 py-0 gap-0.5 border-violet-300 text-violet-700 dark:border-violet-700 dark:text-violet-400"
+                    >
+                      <Pin className="h-2.5 w-2.5" />
+                      pinned
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Pinned to skills — agents always receive this item in their skill context</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             )}
             {item.currentVersionId && (
               <Badge variant="outline" className="text-[10px] px-1.5 py-0 gap-0.5">
@@ -1877,5 +1925,311 @@ function CreateMemoryDialog({
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ── Memory Empty State ────────────────────────────────────────────────────────
+
+function MemoryEmptyState({
+  hasActiveFilters,
+  onAddItem,
+  onBrowseTemplates,
+}: {
+  hasActiveFilters: boolean;
+  onAddItem: () => void;
+  onBrowseTemplates: () => void;
+}) {
+  if (hasActiveFilters) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
+        <Brain className="h-8 w-8 text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">No memory items match the current filters</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-border bg-muted/20 p-6 flex flex-col items-center gap-4 text-center">
+        <div className="rounded-full bg-violet-100 dark:bg-violet-900/30 p-3">
+          <Brain className="h-6 w-6 text-violet-600 dark:text-violet-400" />
+        </div>
+        <div className="space-y-1">
+          <p className="text-sm font-medium">Your memory palace is empty</p>
+          <p className="text-xs text-muted-foreground max-w-sm">
+            Memory stores decisions, preferences, and standards that your agents use to produce
+            consistent, on-brand work. Start from scratch or seed it with a starter template.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={onAddItem}>
+            <Plus className="h-3.5 w-3.5 mr-1.5" />
+            Add item
+          </Button>
+          <Button size="sm" onClick={onBrowseTemplates} className="gap-1.5">
+            <Sparkles className="h-3.5 w-3.5" />
+            Browse starter templates
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Starter Templates Dialog ──────────────────────────────────────────────────
+
+const FUNCTION_TYPE_LABELS: Record<string, string> = {
+  software_development: "Engineering",
+  marketing: "Marketing",
+  product_management: "Product",
+  sales: "Sales",
+  customer_support: "Support",
+  design: "Design",
+  finance: "Finance",
+  operations: "Operations",
+  people_ops: "People & HR",
+  legal: "Legal",
+  data_analytics: "Data",
+  general: "General",
+};
+
+function StarterTemplatesDialog({
+  open,
+  onOpenChange,
+  companyId,
+  departments,
+  onApplied,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  companyId: string;
+  departments: Project[];
+  onApplied: () => void;
+}) {
+  const [selectedTemplate, setSelectedTemplate] = useState<MemoryStarterTemplate | null>(null);
+  const [departmentId, setDepartmentId] = useState<string>("none");
+  const [appliedIds, setAppliedIds] = useState<Set<string>>(new Set());
+
+  const { data: templates, isLoading } = useQuery({
+    queryKey: queryKeys.memory.starterTemplates(companyId),
+    queryFn: () => memoryStarterTemplatesApi.list(companyId),
+    enabled: open && !!companyId,
+    staleTime: Infinity,
+  });
+
+  const applyMutation = useMutation({
+    mutationFn: ({ templateId }: { templateId: string }) =>
+      memoryStarterTemplatesApi.apply(companyId, templateId, {
+        departmentId: departmentId !== "none" ? departmentId : null,
+      }),
+    onSuccess: (result, { templateId }) => {
+      onApplied();
+      setAppliedIds((prev) => new Set([...prev, templateId]));
+      if (!result.alreadyApplied) {
+        setSelectedTemplate(null);
+      }
+    },
+  });
+
+  // Reset selection when dialog closes
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) {
+      setSelectedTemplate(null);
+      setDepartmentId("none");
+    }
+    onOpenChange(newOpen);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          {selectedTemplate ? (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedTemplate(null)}
+                className="rounded-md p-1 hover:bg-muted transition-colors"
+                aria-label="Back to templates"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <div>
+                <DialogTitle className="text-base">{selectedTemplate.name} template</DialogTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">{selectedTemplate.description}</p>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <DialogTitle className="text-base">Memory starter templates</DialogTitle>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Seed your memory with opinionated defaults for your team. You can edit anything after applying.
+              </p>
+            </div>
+          )}
+          <DialogDescription className="sr-only">
+            Browse and apply memory starter templates for your departments
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="overflow-y-auto flex-1 min-h-0 -mx-1 px-1">
+          {selectedTemplate ? (
+            <TemplateDetailView
+              template={selectedTemplate}
+              departments={departments}
+              departmentId={departmentId}
+              onDepartmentChange={setDepartmentId}
+              isApplying={applyMutation.isPending}
+              alreadyApplied={appliedIds.has(selectedTemplate.id)}
+              onApply={() => applyMutation.mutate({ templateId: selectedTemplate.id })}
+            />
+          ) : isLoading ? (
+            <div className="grid grid-cols-2 gap-3 py-2">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="h-24 rounded-lg border border-border bg-muted/30 animate-pulse" />
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 py-2">
+              {(templates ?? []).map((template) => (
+                <button
+                  key={template.id}
+                  type="button"
+                  onClick={() => setSelectedTemplate(template)}
+                  className="rounded-lg border border-border bg-card p-4 text-left hover:bg-accent/40 hover:border-primary/30 transition-colors relative"
+                >
+                  {appliedIds.has(template.id) && (
+                    <span className="absolute top-2 right-2">
+                      <Badge
+                        variant="secondary"
+                        className="text-[10px] px-1.5 py-0 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                      >
+                        <Check className="h-2.5 w-2.5 mr-0.5" />
+                        applied
+                      </Badge>
+                    </span>
+                  )}
+                  <div className="text-xs font-medium text-muted-foreground mb-1">
+                    {FUNCTION_TYPE_LABELS[template.functionType] ?? template.functionType}
+                  </div>
+                  <div className="text-sm font-semibold">{template.name}</div>
+                  <div className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                    {template.description}
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-2">
+                    {template.items.length} items
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function TemplateDetailView({
+  template,
+  departments,
+  departmentId,
+  onDepartmentChange,
+  isApplying,
+  alreadyApplied,
+  onApply,
+}: {
+  template: MemoryStarterTemplate;
+  departments: Project[];
+  departmentId: string;
+  onDepartmentChange: (id: string) => void;
+  isApplying: boolean;
+  alreadyApplied: boolean;
+  onApply: () => void;
+}) {
+  return (
+    <div className="space-y-4 py-2">
+      {/* Department scope picker */}
+      <div className="flex items-center gap-3">
+        <Label className="shrink-0 text-sm">Scope to department</Label>
+        <Select value={departmentId} onValueChange={onDepartmentChange}>
+          <SelectTrigger className="h-8 text-sm flex-1">
+            <SelectValue placeholder="Company-wide (no department)" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">Company-wide (no department)</SelectItem>
+            {departments.map((d) => (
+              <SelectItem key={d.id} value={d.id}>
+                {d.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          size="sm"
+          onClick={onApply}
+          disabled={isApplying || alreadyApplied}
+          className="shrink-0"
+        >
+          {isApplying ? (
+            "Applying..."
+          ) : alreadyApplied ? (
+            <>
+              <Check className="h-3.5 w-3.5 mr-1.5" />
+              Applied
+            </>
+          ) : (
+            <>
+              <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+              Apply template
+            </>
+          )}
+        </Button>
+      </div>
+
+      {alreadyApplied && (
+        <div className="text-xs text-muted-foreground p-2 rounded-md bg-muted/30 border border-border">
+          This template has already been applied to this company. You can apply it again by choosing a different department scope.
+        </div>
+      )}
+
+      {/* Items preview */}
+      <div className="space-y-2">
+        <p className="text-xs text-muted-foreground font-medium">
+          {template.items.length} items that will be added
+        </p>
+        {template.items.map((item, i) => (
+          <div
+            key={i}
+            className="rounded-md border border-border bg-card px-3 py-2.5 space-y-1"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">{item.title}</span>
+              <Badge
+                variant="secondary"
+                className={cn(
+                  "text-[10px] px-1.5 py-0 capitalize",
+                  CATEGORY_COLORS[item.category as MemoryItemCategory] ?? "",
+                )}
+              >
+                {item.category}
+              </Badge>
+            </div>
+            <p className="text-xs text-muted-foreground line-clamp-2">{item.content}</p>
+            {item.tags && item.tags.length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap">
+                {item.tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
