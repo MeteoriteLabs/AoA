@@ -105,3 +105,4 @@ export { fileImportJobs } from "./file_import_jobs.js";
 export { marketplaceCatalogCache } from "./marketplace_catalog_cache.js";
 export { marketplaceInstallOperations, type CascadeStepResult } from "./marketplace_install_operations.js";
 export { marketplaceCompanySettings } from "./marketplace_company_settings.js";
+export { marketplacePendingUpdates } from "./marketplace_pending_updates.js";

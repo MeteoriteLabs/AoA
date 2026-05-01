@@ -17,6 +17,7 @@ import {
   type MarketplaceCatalogFile,
   type CatalogSyncStatus,
 } from "@armyofagents/shared";
+import { runUpdateCheck } from "./marketplace-update-checker.js";
 
 const DEFAULT_CDN_URL =
   "https://meteoritelabs.github.io/aoa-marketplace-cdn/catalog.json";
@@ -78,6 +79,10 @@ export class MarketplaceCatalogService {
         );
       }
       await this.writeCache(parsed, "cdn", "success", null);
+      // Fire-and-forget update check after successful catalog sync
+      void runUpdateCheck(this.db, parsed.items).catch((err) =>
+        console.error({ err }, "marketplace update check failed after sync"),
+      );
       return parsed;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

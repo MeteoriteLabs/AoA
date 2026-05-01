@@ -554,6 +554,13 @@
       "when": 1746057600000,
       "tag": "0073_marketplace_company_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1746057600000,
+      "tag": "0074_marketplace_pending_updates",
+      "breakpoints": true
     }
   ]
 }
