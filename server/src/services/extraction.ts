@@ -664,8 +664,9 @@ export function extractionService(db: Db) {
           deptList,
         );
         return await callLLM(systemPrompt, rawText, db, companyId);
-      } catch {
-        // LLM unavailable or quota exceeded — caller uses chunking fallback
+      } catch (err) {
+        // LLM unavailable or quota exceeded — caller falls back to paragraph chunking
+        logger.warn({ err, companyId }, "extractFromRawText: LLM call failed, falling back to chunking");
         return [];
       }
     },

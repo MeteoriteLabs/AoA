@@ -18,6 +18,9 @@ import type { Db } from "@armyofagents/db";
 import { fileImportJobs, memoryItems } from "@armyofagents/db";
 import type { StorageService } from "../storage/types.js";
 import { extractionService, type ExtractedItem } from "./extraction.js";
+import { logger } from "../middleware/logger.js";
+
+const log = logger.child({ service: "file-import" });
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -188,6 +191,7 @@ async function extractItemsFromText(
     // Filter out "task" type — file imports create memory items, not issues
     const items = extracted
       .filter((item: ExtractedItem) => item.type !== "task")
+      .filter((item: ExtractedItem) => item.description.trim().length > 0) // skip blank content
       .map((item: ExtractedItem): MemoryItemInsert => ({
         companyId: job.companyId,
         title: item.title,
@@ -335,6 +339,7 @@ async function processOneJob(
       })
       .where(eq(fileImportJobs.id, job.id));
   } catch (err) {
+    log.warn({ err, jobId: job.id, companyId: job.companyId }, "file import job failed");
     const newRetryCount = job.retryCount + 1;
     if (newRetryCount > MAX_RETRIES) {
       await db
