@@ -22,7 +22,7 @@ import type { MarketplaceCatalogFile } from "@armyofagents/shared";
 
 export interface MarketplaceCompanyRoutesDeps {
   db: Db;
-  catalogService: { readCache(): Promise<MarketplaceCatalogFile | null> } | unknown;
+  catalogService: { readCache(): Promise<MarketplaceCatalogFile | null> };
 }
 
 export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDeps): Router {
@@ -183,8 +183,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     }
 
     // Fetch latest from catalog
-    const catalogSvc = deps.catalogService as { readCache(): Promise<MarketplaceCatalogFile | null> };
-    const catalog = await catalogSvc.readCache();
+    const catalog = await deps.catalogService.readCache();
     const catalogItem = catalog?.items.find((i) => i.id === update.catalogItemId);
     if (!catalogItem?.resourceUrl) {
       res.status(503).json({ error: "Catalog item resource URL not available" });
@@ -250,8 +249,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
-    const catalogSvc = deps.catalogService as { readCache(): Promise<MarketplaceCatalogFile | null> };
-    const catalog = await catalogSvc.readCache();
+    const catalog = await deps.catalogService.readCache();
     const catalogItem = catalog?.items.find((i) => i.id === update.catalogItemId);
     if (!catalogItem?.resourceUrl) {
       res.status(503).json({ error: "Catalog resource URL not available" });
@@ -298,8 +296,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     }
 
     // Look up catalog item name for the notification
-    const catalogSvc = deps.catalogService as { readCache(): Promise<MarketplaceCatalogFile | null> };
-    const catalog = await catalogSvc.readCache();
+    const catalog = await deps.catalogService.readCache();
     const catalogItem = catalog?.items.find((i) => i.id === catalogItemId);
     const itemName = catalogItem?.name ?? catalogItemId;
 
