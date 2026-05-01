@@ -97,3 +97,4 @@ export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginLogs } from "./plugin_logs.js";
 export { pluginState } from "./plugin_state.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
+export { fileImportJobs } from "./file_import_jobs.js";
