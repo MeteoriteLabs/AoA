@@ -46,6 +46,7 @@ import { feedbackRoutes } from "./routes/feedback.js";
 import { memoryLifecycleRoutes } from "./routes/memory-lifecycle.js";
 import { memoryRetrievalsRoutes } from "./routes/memory-retrievals.js";
 import { memoryStarterTemplatesRoutes } from "./routes/memory-starter-templates.js";
+import { fileImportRoutes } from "./routes/file-import.js";
 import { suggestionRoutes } from "./routes/suggestions.js";
 import { contextPackagingRoutes } from "./routes/context-packaging.js";
 import { mcpServerRoutes } from "./mcp/server.js";
@@ -191,6 +192,7 @@ export async function createApp(
   api.use(memoryLifecycleRoutes(db));
   api.use(memoryRetrievalsRoutes(db));
   api.use(memoryStarterTemplatesRoutes(db));
+  api.use(fileImportRoutes(db, opts.storageService));
   api.use(teamRoutes(db));
   api.use(suggestionRoutes(db));
   api.use(contextPackagingRoutes(db));

@@ -121,3 +121,5 @@ export { createPluginToolRegistry, TOOL_NAMESPACE_SEPARATOR } from "./plugin-too
 export type { PluginToolRegistry } from "./plugin-tool-registry.js";
 export { createPluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 export type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
+
+export { fileImportService, processFileImportQueue, resetStuckJobs } from "./file-import.js";

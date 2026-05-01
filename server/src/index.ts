@@ -25,7 +25,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService, routineService } from "./services/index.js";
+import { heartbeatService, routineService, processFileImportQueue, resetStuckJobs } from "./services/index.js";
 import { probeDbCapabilities } from "./services/db-capabilities.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
@@ -592,6 +592,18 @@ if (config.heartbeatSchedulerEnabled) {
       });
   }, config.heartbeatSchedulerIntervalMs);
 }
+
+// File import queue worker
+void resetStuckJobs(db as any).catch((err) =>
+  logger.warn({ err }, "resetStuckJobs on startup failed"),
+);
+const FILE_IMPORT_INTERVAL_MS = 15_000;
+setInterval(() => {
+  void processFileImportQueue(db as any, storageService).catch((err) =>
+    logger.warn({ err }, "processFileImportQueue tick failed"),
+  );
+}, FILE_IMPORT_INTERVAL_MS);
+void processFileImportQueue(db as any, storageService).catch(() => {}); // immediate first tick
 
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
