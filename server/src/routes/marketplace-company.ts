@@ -177,7 +177,12 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     assertCompanyAccess(req, companyId);
 
     const { id } = req.params as { id: string };
-    const { decisions } = req.body as { decisions: Record<string, "mine" | "theirs"> };
+    const { decisions } = req.body as { decisions?: Record<string, "mine" | "theirs"> };
+
+    if (!decisions || typeof decisions !== "object" || Array.isArray(decisions)) {
+      res.status(400).json({ error: "decisions must be an object" });
+      return;
+    }
 
     const [update] = await db
       .select()

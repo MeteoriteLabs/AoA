@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,12 @@ export function MergeDiffPane({ sections, onChange }: MergeDiffPaneProps) {
     }
     return init;
   });
+
+  useEffect(() => {
+    onChange(decisions);
+    // Only run on mount — decisions is stable from useState initializer
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function pick(header: string, choice: "mine" | "theirs") {
     const next = { ...decisions, [header]: choice };
