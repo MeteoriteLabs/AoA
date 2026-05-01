@@ -16,6 +16,7 @@ import {
   Puzzle,
   DollarSign,
   FolderGit2,
+  ArrowUpCircle,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
@@ -30,6 +31,7 @@ import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { pluginsApi } from "../api/plugins";
 import { queryKeys } from "../lib/queryKeys";
 import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
+import { usePendingUpdates } from "../hooks/usePendingUpdates";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -44,6 +46,10 @@ export function Sidebar() {
     enabled: !!selectedCompanyId,
   });
   const liveRunCount = useLiveAgentCount();
+  const { data: pendingUpdates } = usePendingUpdates();
+  const pendingUpdatesCount = (pendingUpdates ?? []).filter(
+    (u) => u.status === "pending" || u.status === "conflict",
+  ).length;
   const { data: pluginContributions } = useQuery({
     queryKey: queryKeys.plugins.uiContributions,
     queryFn: () => pluginsApi.listUiContributions(),
@@ -140,6 +146,15 @@ export function Sidebar() {
           />
           <SidebarNavItem to="/commander" label="Commander" icon={Shield} collapsed={collapsed} />
           <SidebarNavItem to="/marketplace" label="Marketplace" icon={Store} collapsed={collapsed} noPrefix />
+          {pendingUpdatesCount > 0 && (
+            <SidebarNavItem
+              to="/marketplace-updates"
+              label={`Updates (${pendingUpdatesCount})`}
+              icon={ArrowUpCircle}
+              badge={pendingUpdatesCount}
+              collapsed={collapsed}
+            />
+          )}
         </div>
 
         {/* WORK section */}
