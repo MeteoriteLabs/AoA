@@ -60,7 +60,10 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
 
   // ── Request install (stub — filled in Task 10) ────────────────────────────
 
-  router.post("/request-install", async (_req, res) => {
+  router.post("/request-install", async (req, res) => {
+    assertBoard(req);
+    const companyId = (req.params as Record<string, string>).companyId;
+    assertCompanyAccess(req, companyId);
     res.status(202).json({ queued: true });
   });
 
