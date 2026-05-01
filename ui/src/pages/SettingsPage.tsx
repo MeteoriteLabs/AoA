@@ -16,6 +16,11 @@ import { goalsApi } from "../api/goals";
 import { mcpApi } from "../api/mcp";
 import { pluginsApi, type CompanyPluginSetting } from "../api/plugins";
 import { internalAgentApi } from "../api/internal-agent";
+import {
+  useMarketplaceSettings,
+  usePatchMarketplaceSettings,
+} from "../hooks/useMarketplaceSettings";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, formatTokens, budgetProgressColor } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -65,6 +70,7 @@ const SETTINGS_TABS = [
   { value: "activity", label: "Activity" },
   { value: "integrations", label: "Integrations" },
   { value: "plugins", label: "Plugins" },
+  { value: "marketplace", label: "Marketplace" },
 ];
 
 // ─── Agent snippet helpers (from CompanySettings.tsx) ─────────────────
@@ -1630,7 +1636,201 @@ export function SettingsPage() {
         <TabsContent value="plugins">
           <PluginsSection />
         </TabsContent>
+
+        <TabsContent value="marketplace">
+          {selectedCompany ? (
+            <MarketplaceSettingsTab companyId={selectedCompany.id} />
+          ) : (
+            <div className="text-sm text-muted-foreground">
+              No company selected.
+            </div>
+          )}
+        </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+// ─── Marketplace Settings Tab ─────────────────────────────────────────
+function MarketplaceSettingsTab({ companyId }: { companyId: string }) {
+  const { data: settings, isLoading } = useMarketplaceSettings(companyId);
+  const patch = usePatchMarketplaceSettings(companyId);
+  const { pushToast } = useToast();
+
+  async function applyPatch(p: Parameters<typeof patch.mutateAsync>[0]) {
+    try {
+      await patch.mutateAsync(p);
+    } catch (err) {
+      pushToast({
+        title: "Failed to save marketplace setting",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    }
+  }
+
+  if (isLoading) {
+    return <PageSkeleton variant="list" />;
+  }
+
+  if (!settings) {
+    return (
+      <div className="text-sm text-muted-foreground">
+        Unable to load marketplace settings.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Section 1 — Updates */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Updates
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <Field
+            label="Plugin update policy"
+            hint="How plugin updates are applied when a new version is available."
+          >
+            <Select
+              value={settings.pluginUpdatePolicy}
+              onValueChange={(v) =>
+                applyPatch({
+                  pluginUpdatePolicy: v as typeof settings.pluginUpdatePolicy,
+                })
+              }
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto_patch">Auto (patch only)</SelectItem>
+                <SelectItem value="auto_minor">
+                  Auto (patch + minor)
+                </SelectItem>
+                <SelectItem value="notify_all">Notify only</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <ToggleField
+            label="Skill updates"
+            hint="Auto-apply skill updates when available."
+            checked={settings.skillUpdatePolicy === "auto"}
+            onChange={(v) =>
+              applyPatch({ skillUpdatePolicy: v ? "auto" : "notify" })
+            }
+          />
+          <ToggleField
+            label="Agent updates"
+            hint="Auto-apply agent updates when available."
+            checked={settings.agentUpdatePolicy === "auto"}
+            onChange={(v) =>
+              applyPatch({ agentUpdatePolicy: v ? "auto" : "notify" })
+            }
+          />
+          <ToggleField
+            label="Team updates"
+            hint="Auto-apply team updates when available."
+            checked={settings.teamUpdatePolicy === "auto"}
+            onChange={(v) =>
+              applyPatch({ teamUpdatePolicy: v ? "auto" : "notify" })
+            }
+          />
+        </div>
+      </div>
+
+      {/* Section 2 — Access */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Access
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <ToggleField
+            label="Show trust badges"
+            hint="Display trust tier badges (verified / community / unverified) on catalog items."
+            checked={settings.showTrustBadges}
+            onChange={(v) => applyPatch({ showTrustBadges: v })}
+          />
+          <ToggleField
+            label="Show source info"
+            hint="Display publisher and source repository links on catalog items."
+            checked={settings.showSourceInfo}
+            onChange={(v) => applyPatch({ showSourceInfo: v })}
+          />
+          <ToggleField
+            label="Team leads can install plugins"
+            hint="Allow team leads to install plugins directly without founder approval."
+            checked={settings.allowTeamLeadPlugins}
+            onChange={(v) => applyPatch({ allowTeamLeadPlugins: v })}
+          />
+          <ToggleField
+            label="Team members can request installs"
+            hint="Allow team members to submit install requests for founder or team lead review."
+            checked={settings.teamMemberCanRequestInstall}
+            onChange={(v) => applyPatch({ teamMemberCanRequestInstall: v })}
+          />
+          <ToggleField
+            label="Require founder approval"
+            hint="All marketplace installs require explicit founder approval before proceeding."
+            checked={settings.requireFounderApproval}
+            onChange={(v) => applyPatch({ requireFounderApproval: v })}
+          />
+        </div>
+      </div>
+
+      {/* Section 3 — Catalog refresh */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Catalog Refresh
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <Field
+            label="Catalog refresh interval"
+            hint="How often the marketplace catalog is re-fetched from the CDN."
+          >
+            <Select
+              value={String(settings.catalogRefreshHours)}
+              onValueChange={(v) =>
+                applyPatch({
+                  catalogRefreshHours: Number(v) as 6 | 12 | 24,
+                })
+              }
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="6">Every 6 hours</SelectItem>
+                <SelectItem value="12">Every 12 hours</SelectItem>
+                <SelectItem value="24">Every 24 hours</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field
+            label="Update check interval"
+            hint="How often installed items are checked for new versions."
+          >
+            <Select
+              value={String(settings.updateCheckHours)}
+              onValueChange={(v) =>
+                applyPatch({
+                  updateCheckHours: Number(v) as 6 | 12 | 24,
+                })
+              }
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="6">Every 6 hours</SelectItem>
+                <SelectItem value="12">Every 12 hours</SelectItem>
+                <SelectItem value="24">Every 24 hours</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        </div>
+      </div>
     </div>
   );
 }

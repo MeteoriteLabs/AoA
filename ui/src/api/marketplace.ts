@@ -12,7 +12,10 @@ import type {
   CatalogSyncStatus,
   MarketplaceCatalogFile,
   MarketplaceItemType,
+  MarketplaceSettings,
 } from "@armyofagents/shared";
+
+export type { MarketplaceSettings };
 import { api } from "./client";
 
 // M.3b: Install flow types — wired to backend endpoints from M.2.
@@ -99,6 +102,22 @@ export const marketplaceApi = {
   ): Promise<InstallOperation> {
     return api.get<InstallOperation>(
       `/companies/${companyId}/marketplace/install/${operationId}`,
+    );
+  },
+
+  async getSettings(companyId: string): Promise<MarketplaceSettings> {
+    return api.get<MarketplaceSettings>(
+      `/companies/${companyId}/marketplace/settings`,
+    );
+  },
+
+  async patchSettings(
+    companyId: string,
+    patch: Partial<MarketplaceSettings>,
+  ): Promise<MarketplaceSettings> {
+    return api.patch<MarketplaceSettings>(
+      `/companies/${companyId}/marketplace/settings`,
+      patch,
     );
   },
 };
