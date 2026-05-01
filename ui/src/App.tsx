@@ -56,6 +56,7 @@ import Marketplace from "./pages/Marketplace";
 import MarketplaceType from "./pages/MarketplaceType";
 import MarketplaceDetail from "./pages/MarketplaceDetail";
 import MarketplaceSearch from "./pages/MarketplaceSearch";
+import MarketplaceUpdates from "./pages/MarketplaceUpdates";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -188,6 +189,7 @@ function boardRoutes() {
       <Route path="workspaces" element={<WorkspacesList />} />
       <Route path="workspaces/:workspaceId" element={<WorkspaceView />} />
       <Route path="plugins/:pluginId" element={<PluginPage />} />
+      <Route path="marketplace-updates" element={<MarketplaceUpdates />} />
     </>
   );
 }

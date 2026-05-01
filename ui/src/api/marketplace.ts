@@ -13,7 +13,10 @@ import type {
   MarketplaceCatalogFile,
   MarketplaceItemType,
   MarketplaceSettings,
+  PendingUpdate,
 } from "@armyofagents/shared";
+
+export type { PendingUpdate };
 
 export type { MarketplaceSettings };
 import { api } from "./client";
@@ -118,6 +121,34 @@ export const marketplaceApi = {
     return api.patch<MarketplaceSettings>(
       `/companies/${companyId}/marketplace/settings`,
       patch,
+    );
+  },
+
+  async getUpdates(companyId: string, type?: string): Promise<PendingUpdate[]> {
+    const path = type
+      ? `/companies/${companyId}/marketplace/updates?type=${type}`
+      : `/companies/${companyId}/marketplace/updates`;
+    return api.get<PendingUpdate[]>(path);
+  },
+
+  async dismissUpdate(companyId: string, updateId: string): Promise<void> {
+    await api.post<{ ok: boolean }>(
+      `/companies/${companyId}/marketplace/updates/${updateId}/dismiss`,
+      {},
+    );
+  },
+
+  async applyUpdate(companyId: string, updateId: string): Promise<void> {
+    await api.post<{ error: string }>(
+      `/companies/${companyId}/marketplace/updates/${updateId}/apply`,
+      {},
+    );
+  },
+
+  async requestInstall(companyId: string, catalogItemId: string): Promise<void> {
+    await api.post<{ queued: boolean }>(
+      `/companies/${companyId}/marketplace/request-install`,
+      { catalogItemId },
     );
   },
 };
