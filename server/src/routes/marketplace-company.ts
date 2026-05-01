@@ -221,6 +221,11 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
+    if (Object.keys(decisions).length === 0) {
+      res.status(400).json({ error: "decisions must not be empty" });
+      return;
+    }
+
     const [update] = await db
       .select()
       .from(marketplacePendingUpdates)

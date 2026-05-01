@@ -117,7 +117,7 @@ describe("upsertPendingUpdate", () => {
       latestVersion: "1.1.0",
     });
     // Flush microtasks so the fire-and-forget promise runs
-    await Promise.resolve();
+    await new Promise((resolve) => process.nextTick(resolve));
     expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledOnce();
     expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledWith(
       db,
@@ -137,7 +137,7 @@ describe("upsertPendingUpdate", () => {
       currentVersion: "1.0.0",
       latestVersion: "1.1.0",
     });
-    await Promise.resolve();
+    await new Promise((resolve) => process.nextTick(resolve));
     expect(marketplaceNotifications.updateAvailable).not.toHaveBeenCalled();
   });
 
@@ -150,7 +150,7 @@ describe("upsertPendingUpdate", () => {
       currentVersion: "1.1.0",
       latestVersion: "1.0.0", // older — should early-return
     });
-    await Promise.resolve();
+    await new Promise((resolve) => process.nextTick(resolve));
     expect(marketplaceNotifications.updateAvailable).not.toHaveBeenCalled();
   });
 });
