@@ -51,6 +51,7 @@ import type { ToolRunContext } from "@armyofagents/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@armyofagents/plugin-sdk";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
+import { logger } from "../middleware/logger.js";
 import { pluginRollbackService } from "../services/plugin-rollback.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -1475,6 +1476,16 @@ export function pluginRoutes(
       return;
     }
 
+    // M4.D7: Save a snapshot of the current version BEFORE upgrading so we can
+    // auto-revert if the upgrade fails.
+    const rollback = pluginRollbackService(db);
+    await rollback.saveSnapshot(
+      plugin.id,
+      plugin.version,
+      plugin.packageName,
+      plugin.manifestJson,
+    );
+
     try {
       // Upgrade the plugin - this would typically:
       // 1. Download the new version
@@ -1492,6 +1503,23 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
       res.json(result);
     } catch (err) {
+      // M4.D7 self-healing: upgrade failed — auto-revert to the snapshot we just saved.
+      const target = await rollback.getRollbackTarget(plugin.id).catch(() => null);
+      if (target) {
+        try {
+          await loader.installPlugin({ packageName: target.packageName, version: target.version });
+          await lifecycle.load(plugin.id);
+          logger.info(
+            { pluginId: plugin.id, revertedTo: target.version },
+            "plugin.upgrade: auto-reverted after failed upgrade",
+          );
+        } catch (revertErr) {
+          logger.error(
+            { err: revertErr, pluginId: plugin.id },
+            "plugin.upgrade: auto-revert also failed — plugin may be in broken state",
+          );
+        }
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
