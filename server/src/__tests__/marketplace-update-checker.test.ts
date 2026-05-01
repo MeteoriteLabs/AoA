@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 // Install stubs before the SUT import to prevent the drizzle ESM cycle.
@@ -30,7 +30,14 @@ vi.mock("@armyofagents/db", () => {
   };
 });
 
-import { compareVersions, isUpdateAvailable } from "../services/marketplace-update-checker.js";
+vi.mock("../services/marketplace-notifications.js", () => ({
+  marketplaceNotifications: {
+    updateAvailable: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+import { compareVersions, isUpdateAvailable, upsertPendingUpdate } from "../services/marketplace-update-checker.js";
+import { marketplaceNotifications } from "../services/marketplace-notifications.js";
 
 describe("compareVersions", () => {
   it("returns 1 when latest > current", () => {
@@ -75,5 +82,75 @@ describe("isUpdateAvailable", () => {
   it("returns false when versions are equal", () => {
     expect(isUpdateAvailable("1.0.0", "1.0.0", "notify")).toBe(false);
     expect(isUpdateAvailable("1.0.0", "1.0.0", "auto_minor")).toBe(false);
+  });
+});
+
+describe("upsertPendingUpdate", () => {
+  function makeDb(insertRows: Array<{ id: string }>) {
+    return {
+      insert: () => ({
+        values: () => ({
+          onConflictDoNothing: () => ({
+            returning: () => Promise.resolve(insertRows),
+          }),
+        }),
+      }),
+      update: () => ({
+        set: () => ({
+          where: () => Promise.resolve([]),
+        }),
+      }),
+    } as unknown as Parameters<typeof upsertPendingUpdate>[0];
+  }
+
+  beforeEach(() => {
+    vi.mocked(marketplaceNotifications.updateAvailable).mockClear();
+  });
+
+  it("fires updateAvailable notification when a new row is inserted", async () => {
+    const db = makeDb([{ id: "new-uuid" }]);
+    await upsertPendingUpdate(db, "company-1", {
+      catalogItemId: "item-1",
+      catalogItemName: "My Skill",
+      itemType: "skill",
+      currentVersion: "1.0.0",
+      latestVersion: "1.1.0",
+    });
+    // Flush microtasks so the fire-and-forget promise runs
+    await Promise.resolve();
+    expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledOnce();
+    expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledWith(
+      db,
+      "company-1",
+      "My Skill",
+      "1.0.0",
+      "1.1.0",
+    );
+  });
+
+  it("does NOT fire updateAvailable notification when the row already exists (conflict)", async () => {
+    const db = makeDb([]); // onConflictDoNothing returned nothing
+    await upsertPendingUpdate(db, "company-1", {
+      catalogItemId: "item-1",
+      catalogItemName: "My Skill",
+      itemType: "skill",
+      currentVersion: "1.0.0",
+      latestVersion: "1.1.0",
+    });
+    await Promise.resolve();
+    expect(marketplaceNotifications.updateAvailable).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call DB when latestVersion <= currentVersion", async () => {
+    const db = makeDb([{ id: "should-not-be-called" }]);
+    await upsertPendingUpdate(db, "company-1", {
+      catalogItemId: "item-1",
+      catalogItemName: "My Skill",
+      itemType: "skill",
+      currentVersion: "1.1.0",
+      latestVersion: "1.0.0", // older — should early-return
+    });
+    await Promise.resolve();
+    expect(marketplaceNotifications.updateAvailable).not.toHaveBeenCalled();
   });
 });

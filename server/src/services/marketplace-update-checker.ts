@@ -105,7 +105,7 @@ async function checkCompany(db: Db, catalogItems: CatalogItem[], companyId: stri
   }
 }
 
-async function upsertPendingUpdate(
+export async function upsertPendingUpdate(
   db: Db,
   companyId: string,
   data: {
