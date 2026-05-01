@@ -598,14 +598,16 @@ void resetStuckJobs(db as any).catch((err) =>
   logger.warn({ err }, "resetStuckJobs on startup failed"),
 );
 const FILE_IMPORT_INTERVAL_MS = 15_000;
+let fileImportTickInFlight = false;
 setInterval(() => {
-  void processFileImportQueue(db as any, storageService).catch((err) =>
-    logger.warn({ err }, "processFileImportQueue tick failed"),
-  );
+  if (fileImportTickInFlight) return;
+  fileImportTickInFlight = true;
+  void processFileImportQueue(db as any, storageService)
+    .catch((err) => logger.warn({ err }, "processFileImportQueue tick failed"))
+    .finally(() => { fileImportTickInFlight = false; });
 }, FILE_IMPORT_INTERVAL_MS);
-void processFileImportQueue(db as any, storageService).catch((err) =>
-  logger.warn({ err }, "processFileImportQueue immediate tick failed"),
-); // immediate first tick
+// No immediate first tick — the first interval fires at T+15s, which is acceptable
+// since resetStuckJobs already ran synchronously above
 
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;

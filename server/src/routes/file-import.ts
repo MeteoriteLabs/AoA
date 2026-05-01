@@ -18,7 +18,7 @@ const MAX_FILE_SIZE_BYTES =
 
 export function fileImportRoutes(db: Db, storageService: StorageService) {
   const router = Router();
-  const svc = fileImportService(db, storageService);
+  const svc = fileImportService(db);
 
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -78,7 +78,7 @@ export function fileImportRoutes(db: Db, storageService: StorageService) {
         const safeName = path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, "_");
 
         // Upload file to StorageService; use the canonical objectKey it returns
-        const namespace = `file-imports/${companyId}/${Date.now()}-${safeName}`;
+        const namespace = `imports/${Date.now()}-${safeName}`;
         const stored = await storageService.putFile({
           companyId,
           namespace,

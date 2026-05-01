@@ -225,7 +225,7 @@ export interface CreateJobInput {
   defaultCategory?: string;
 }
 
-export function fileImportService(db: Db, _storageService: StorageService) {
+export function fileImportService(db: Db) {
   return {
     createJob: async (input: CreateJobInput) => {
       const [job] = await db
