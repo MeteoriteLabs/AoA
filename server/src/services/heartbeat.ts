@@ -36,6 +36,8 @@ import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } fr
 import { companySkillService } from "./company-skills.js";
 import type { RuntimeSkillEntry } from "./company-skills.js";
 import { buildPinnedMemorySkillEntries } from "./memory-skill-sync.js";
+import { memoryService, type MultiPathSearchResult } from "./memory.js";
+import { recordMemoryRetrievals } from "./memory-retrieval-audit.js";
 import { issueService as createIssueService } from "./issues.js";
 import { quotaWindowsService } from "./quota-windows.js";
 import { extractSkillMentionIds } from "@armyofagents/shared";
@@ -771,137 +773,68 @@ export function heartbeatService(db: Db) {
 
   const CONTEXT_MODE_LIMITS: Record<string, number> = { minimal: 3, standard: 10, full: 25 };
 
-  async function fetchMemoryContext(companyId: string, issueId: string | null, contextMode: string = "standard") {
+  async function fetchMemoryContext(
+    companyId: string,
+    issueId: string | null,
+    contextMode: string = "standard",
+    auditContext?: { agentId?: string | null; runId?: string | null },
+  ) {
     const itemLimit = CONTEXT_MODE_LIMITS[contextMode] ?? 10;
+
     // Fetch company info (name/description — vision/mission added in V2)
     const company = await db
-      .select({
-        name: companies.name,
-        description: companies.description,
-      })
+      .select({ name: companies.name, description: companies.description })
       .from(companies)
       .where(eq(companies.id, companyId))
       .then((rows) => rows[0] ?? null);
 
-    // Determine issue's department/project and get title+description for semantic ranking
-    let issueProjectId: string | null = null;
+    // Resolve task text used by the semantic + keyword pathways
     let issueText: string | null = null;
     if (issueId) {
       const issueRow = await db
-        .select({
-          projectId: issues.projectId,
-          title: issues.title,
-          description: issues.description,
-        })
+        .select({ title: issues.title, description: issues.description })
         .from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
       if (issueRow) {
-        issueProjectId = issueRow.projectId;
         issueText = [issueRow.title, issueRow.description].filter(Boolean).join("\n");
       }
     }
 
-    // Query approved memory items:
-    // - company-wide preferences (category='preference')
-    // - department-scoped items matching the task's project/department
-    // Priority: preferences first, then department-specific, then recent
-    // Cap based on contextMode (minimal=3, standard=10, full=25)
-    const conditions = [
-      eq(memoryItems.companyId, companyId),
-      eq(memoryItems.status, "approved"),
-    ];
+    // Multi-pathway retrieval: semantic + keyword + temporal fused via RRF,
+    // then trust-weighted (validationCount + recency). Replaces the old manual
+    // pgvector query + preference-category fallback with a single unified call.
+    const memorySvc = memoryService(db);
+    const items: MultiPathSearchResult[] = await memorySvc
+      .searchMultiPath(companyId, issueText ?? "", { limit: itemLimit })
+      .catch((err) => {
+        logger.warn(
+          { companyId, issueId, err },
+          "searchMultiPath failed in fetchMemoryContext; returning empty memory",
+        );
+        return [] as MultiPathSearchResult[];
+      });
 
-    const scopeConditions = issueProjectId
-      ? or(
-          eq(memoryItems.category, "preference"),
-          eq(memoryItems.departmentId, issueProjectId),
-          eq(memoryItems.projectId, issueProjectId),
-        )
-      : eq(memoryItems.category, "preference");
-
-    // Try semantic ranking when task has text and we can generate embeddings
-    if (issueText) {
-      try {
-        const { resolveApiKey: resolveKey } = await import("../adapters/api-common.js");
-        const { generateEmbedding: genEmbed } = await import("./embeddings.js");
-        const apiKey = await resolveKey(companyId, "openai");
-        const queryEmbedding = await genEmbed(issueText, apiKey);
-        const vectorStr = `[${queryEmbedding.join(",")}]`;
-
-        // Check if any items in scope have embeddings
-        const embeddedCount = await db
-          .select({ count: sql<number>`count(*)` })
-          .from(memoryItems)
-          .where(
-            and(
-              ...conditions,
-              scopeConditions,
-              sql`${memoryItems.embedding} IS NOT NULL`,
-            ),
-          )
-          .then((rows) => Number(rows[0]?.count ?? 0));
-
-        if (embeddedCount > 0) {
-          // Fetch items ranked by semantic similarity to the task
-          const items = await db
-            .select({
-              title: memoryItems.title,
-              content: memoryItems.content,
-              category: memoryItems.category,
-              tags: memoryItems.tags,
-            })
-            .from(memoryItems)
-            .where(
-              and(
-                ...conditions,
-                scopeConditions,
-                sql`${memoryItems.embedding} IS NOT NULL`,
-              ),
-            )
-            .orderBy(
-              // preferences first (0), then others (1)
-              sql`CASE WHEN ${memoryItems.category} = 'preference' THEN 0 ELSE 1 END`,
-              sql`${memoryItems.embedding} <=> ${vectorStr}::vector`,
-            )
-            .limit(itemLimit);
-
-          return {
-            company: company
-              ? { name: company.name, description: company.description }
-              : null,
-            memory: items.map((item) => ({
-              title: item.title,
-              content: item.content,
-              category: item.category,
-              tags: item.tags ?? [],
-            })),
-          };
-        }
-      } catch {
-        // Fall through to priority + recency ranking
-      }
+    // Audit: fire-and-forget — one row per item → memory_retrievals table.
+    // Powers the "Auto-retrieved" group in the workspace Memory section.
+    if (items.length > 0 && issueId) {
+      recordMemoryRetrievals(db, {
+        companyId,
+        agentId: auditContext?.agentId ?? null,
+        runId: auditContext?.runId ?? null,
+        taskId: issueId,
+        triggeredBy: "auto",
+        query: issueText ?? null,
+        items: items.map((item, i) => ({
+          id: item.id,
+          rank: i + 1,
+          similarityScore: item.similarity,
+          shownToAgent: true,
+        })),
+      }).catch(() => {});
     }
 
-    // Fallback: rank by priority + recency (original behavior)
-    const items = await db
-      .select({
-        id: memoryItems.id,
-        title: memoryItems.title,
-        content: memoryItems.content,
-        category: memoryItems.category,
-        tags: memoryItems.tags,
-      })
-      .from(memoryItems)
-      .where(and(...conditions, scopeConditions))
-      .orderBy(
-        // preferences first (0), then others (1)
-        sql`CASE WHEN ${memoryItems.category} = 'preference' THEN 0 ELSE 1 END`,
-        desc(memoryItems.updatedAt),
-      )
-      .limit(itemLimit);
-
-    // Batch update accessedAt for all served items (after assembly, not per-item)
+    // Batch-touch accessedAt so temporal pathway recency decay stays accurate
     const servedIds = items.map((item) => item.id);
     if (servedIds.length > 0) {
       db.update(memoryItems)
@@ -914,9 +847,7 @@ export function heartbeatService(db: Db) {
     }
 
     return {
-      company: company
-        ? { name: company.name, description: company.description }
-        : null,
+      company: company ? { name: company.name, description: company.description } : null,
       memory: items.map((item) => ({
         title: item.title,
         content: item.content,
@@ -2341,7 +2272,12 @@ export function heartbeatService(db: Db) {
     if (injectCompanyContext) {
       try {
         const agentContextMode = (agentRc.contextMode as string) ?? "standard";
-        const memoryContext = await fetchMemoryContext(agent.companyId, issueId, agentContextMode);
+        const memoryContext = await fetchMemoryContext(
+          agent.companyId,
+          issueId,
+          agentContextMode,
+          { agentId: agent.id, runId: run.id },
+        );
         if (memoryContext.company) {
           context.company = memoryContext.company;
         }
