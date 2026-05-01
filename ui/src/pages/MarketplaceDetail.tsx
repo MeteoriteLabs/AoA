@@ -9,6 +9,8 @@ import { useCatalog } from "@/hooks/useCatalog";
 import { MarketplaceLayout } from "@/components/marketplace/MarketplaceLayout";
 import { TrustBadge } from "@/components/marketplace/TrustBadge";
 import { ReadmeRender } from "@/components/marketplace/ReadmeRender";
+import { PluginInstallModal } from "@/components/marketplace/install/PluginInstallModal";
+import { SnapshotInstallModal } from "@/components/marketplace/install/SnapshotInstallModal";
 import {
   TYPE_ICONS,
   TYPE_LABELS,
@@ -30,8 +32,10 @@ import {
  *   - README — inline content if present, else HTTP fetch from resourceUrl
  *   - Source link to commit-pinned repo URL
  *
- * Install is stubbed in M.3a — clicking shows a coming-soon toast that
- * auto-dismisses after 3s. Real install flow ships in M.3b.
+ * Install dispatches to type-specific modals (M.3b.H):
+ *   - plugin → PluginInstallModal (instance-scoped, no company picker)
+ *   - skill/agent/team → SnapshotInstallModal (company + dept picker)
+ * The modals own their toast + polling lifecycle.
  */
 export default function MarketplaceDetail() {
   const params = useParams<{ type: string; slug: string; "*": string }>();
@@ -45,7 +49,7 @@ export default function MarketplaceDetail() {
   const { data: catalog, isLoading, error } = useCatalog();
   const [readmeText, setReadmeText] = useState<string | null>(null);
   const [readmeError, setReadmeError] = useState<string | null>(null);
-  const [showInstallToast, setShowInstallToast] = useState(false);
+  const [installModalOpen, setInstallModalOpen] = useState(false);
 
   const item = useMemo(() => {
     if (!catalog || !catalogItemId) return null;
@@ -73,13 +77,6 @@ export default function MarketplaceDetail() {
       .then((text) => setReadmeText(text))
       .catch((err) => setReadmeError(err.message));
   }, [item]);
-
-  // Auto-dismiss install toast after 3s
-  useEffect(() => {
-    if (!showInstallToast) return;
-    const t = setTimeout(() => setShowInstallToast(false), 3000);
-    return () => clearTimeout(t);
-  }, [showInstallToast]);
 
   if (!itemType) {
     return (
@@ -179,7 +176,7 @@ export default function MarketplaceDetail() {
               ))}
             </div>
           </div>
-          <Button onClick={() => setShowInstallToast(true)}>Install</Button>
+          <Button onClick={() => setInstallModalOpen(true)}>Install</Button>
         </div>
 
         <Separator />
@@ -238,16 +235,19 @@ export default function MarketplaceDetail() {
         )}
       </div>
 
-      {showInstallToast && (
-        <div
-          role="status"
-          className="fixed bottom-4 right-4 bg-foreground text-background px-4 py-3 rounded-lg shadow-lg max-w-sm"
-        >
-          <p className="text-sm font-medium">Install support coming in M.3b</p>
-          <p className="text-xs opacity-80 mt-1">
-            Backend install endpoints are ready. UI install modals ship in the next phase.
-          </p>
-        </div>
+      {installModalOpen && item.type === "plugin" && (
+        <PluginInstallModal
+          item={item}
+          open={installModalOpen}
+          onOpenChange={setInstallModalOpen}
+        />
+      )}
+      {installModalOpen && item.type !== "plugin" && (
+        <SnapshotInstallModal
+          item={item}
+          open={installModalOpen}
+          onOpenChange={setInstallModalOpen}
+        />
       )}
     </MarketplaceLayout>
   );

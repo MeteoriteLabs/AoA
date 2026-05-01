@@ -7,20 +7,32 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import MarketplaceDetail from "@/pages/MarketplaceDetail";
 import { marketplaceApi } from "@/api/marketplace";
 import { FULL_CATALOG } from "@/__tests__/__fixtures__/marketplace-catalog";
+import { ToastProvider } from "@/components/marketplace/toast/ToastProvider";
+import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
 
 vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>("@/api/marketplace");
   return { ...actual, marketplaceApi: { getCatalog: vi.fn() } };
 });
 
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({
+    selectedCompanyId: "c1",
+    companies: [{ id: "c1", name: "Acme", status: "active" }],
+  }),
+}));
+
 function wrap(initialPath: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[initialPath]}>
-        <Routes>
-          <Route path="/marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
-        </Routes>
+        <ToastProvider>
+          <Routes>
+            <Route path="/marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
+          </Routes>
+          <InstallToastSlot />
+        </ToastProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -61,7 +73,7 @@ describe("MarketplaceDetail", () => {
     expect(screen.getByText("issues.read")).toBeInTheDocument();
   });
 
-  it("Install button shows M.3b coming-soon toast", async () => {
+  it("Install button opens install modal", async () => {
     vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
     wrap("/marketplace/plugin/aoa-curated/aoa-plugin-slack");
 
@@ -70,9 +82,11 @@ describe("MarketplaceDetail", () => {
         screen.getByRole("heading", { level: 1, name: "Slack" }),
       ).toBeInTheDocument(),
     );
+    // Before opening, the only "Install" button is the page-level CTA.
     const installBtn = screen.getByRole("button", { name: /install/i });
     await userEvent.click(installBtn);
-    await waitFor(() => expect(screen.getByText(/coming in M\.3b/i)).toBeInTheDocument());
+    // Modal title appears once dialog mounts.
+    await waitFor(() => expect(screen.getByText("Install Slack")).toBeInTheDocument());
   });
 
   it("renders 404 for unknown item id", async () => {
