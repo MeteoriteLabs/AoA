@@ -30,6 +30,7 @@ import type { InstallSkillOpts, InstallSkillResult } from "./skill-installer.js"
 import type { InstallAgentOpts, InstallAgentResult } from "./agent-installer.js";
 import type { InstallTeamOpts, InstallTeamResult } from "./team-installer.js";
 import { resolveAgentNameConflict } from "./conflict-resolver.js";
+import { marketplaceNotifications } from "../marketplace-notifications.js";
 
 export interface Installers {
   installSkill: (opts: InstallSkillOpts) => Promise<InstallSkillResult>;
@@ -160,6 +161,10 @@ export async function dispatchInstall(opts: DispatchInstallOpts): Promise<void> 
       type: "marketplace.install.completed",
       payload: { operationId: operation.id, catalogItemId: catalogItem.id, resultEntityId },
     });
+
+    void marketplaceNotifications
+      .installCompleted(db, operation.companyId, catalogItem.name, operation.id)
+      .catch((err) => logger.error({ err }, "marketplace notification failed"));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error(
@@ -174,5 +179,9 @@ export async function dispatchInstall(opts: DispatchInstallOpts): Promise<void> 
       type: "marketplace.install.failed",
       payload: { operationId: operation.id, catalogItemId: catalogItem.id, error: message },
     });
+
+    void marketplaceNotifications
+      .installFailed(db, operation.companyId, catalogItem.name, message)
+      .catch((err) => logger.error({ err }, "marketplace notification failed"));
   }
 }

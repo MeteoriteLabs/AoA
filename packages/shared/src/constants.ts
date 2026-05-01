@@ -248,6 +248,9 @@ export const LIVE_EVENT_TYPES = [
   "marketplace.install.started",
   "marketplace.install.completed",
   "marketplace.install.failed",
+  // Marketplace update (M.4)
+  "marketplace.update.completed",
+  "marketplace.update.failed",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
