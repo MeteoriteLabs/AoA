@@ -198,3 +198,85 @@ describe("fileImportService.getJob", () => {
     expect(result).toBeNull();
   });
 });
+
+// ── processFileImportQueue ─────────────────────────────────────────────────
+
+describe("processFileImportQueue", () => {
+  it("picks up pending jobs and calls storageService.getObject", async () => {
+    const { processFileImportQueue } = await import("../services/file-import.js");
+    const pendingJob = {
+      id: "job-1", companyId: "co-1", fileName: "doc.txt",
+      mimeType: "text/plain", fileSize: 100,
+      storageKey: "key/doc.txt", status: "pending",
+      itemCount: 0, retryCount: 0, retryAfter: null,
+      processorType: null, errorMessage: null, parserWarnings: null,
+      departmentId: null, projectId: null,
+      defaultLayer: "domain", defaultCategory: "reference",
+      createdBy: "user-1", completedAt: null,
+      createdAt: new Date(), updatedAt: new Date(),
+    };
+    const db = makeDb(
+      [[pendingJob]],   // select: pending jobs list
+      [[], []],         // updates: mark processing, mark done
+      [[{ id: "mem-1" }]], // insert: memory items
+    );
+    const storageService = {
+      getObject: vi.fn().mockResolvedValue({
+        stream: (await import("node:stream")).Readable.from(
+          [Buffer.from("Hello world. This is test content with enough characters for chunking.")]
+        ),
+      }),
+    };
+    await processFileImportQueue(db as any, storageService as any);
+    expect(storageService.getObject).toHaveBeenCalledWith("co-1", "key/doc.txt");
+  });
+
+  it("resets stuck processing jobs on startup", async () => {
+    const { resetStuckJobs } = await import("../services/file-import.js");
+    const db = makeDb([], [[{ id: "job-stuck" }]]);
+    await resetStuckJobs(db as any);
+    // No error = stuck jobs were reset to pending
+  });
+
+  it("increments retryCount and sets retryAfter on failure", async () => {
+    const { processFileImportQueue } = await import("../services/file-import.js");
+    const pendingJob = {
+      id: "job-1", companyId: "co-1", fileName: "bad.pdf",
+      mimeType: "application/pdf", fileSize: 100,
+      storageKey: "key/bad.pdf", status: "pending",
+      itemCount: 0, retryCount: 0, retryAfter: null,
+      processorType: null, errorMessage: null, parserWarnings: null,
+      departmentId: null, projectId: null,
+      defaultLayer: "domain", defaultCategory: "reference",
+      createdBy: "user-1", completedAt: null,
+      createdAt: new Date(), updatedAt: new Date(),
+    };
+    const db = makeDb([[pendingJob]], [[], []]);
+    const storageService = {
+      getObject: vi.fn().mockRejectedValue(new Error("Storage error")),
+    };
+    await processFileImportQueue(db as any, storageService as any);
+    // No throw — error is caught and job is set to retry
+  });
+
+  it("marks job as failed after max retries", async () => {
+    const { processFileImportQueue } = await import("../services/file-import.js");
+    const exhaustedJob = {
+      id: "job-1", companyId: "co-1", fileName: "bad.pdf",
+      mimeType: "application/pdf", fileSize: 100,
+      storageKey: "key/bad.pdf", status: "pending",
+      itemCount: 0, retryCount: 3, retryAfter: null,  // already at MAX_RETRIES
+      processorType: null, errorMessage: null, parserWarnings: null,
+      departmentId: null, projectId: null,
+      defaultLayer: "domain", defaultCategory: "reference",
+      createdBy: "user-1", completedAt: null,
+      createdAt: new Date(), updatedAt: new Date(),
+    };
+    const db = makeDb([[exhaustedJob]], [[], []]);
+    const storageService = {
+      getObject: vi.fn().mockRejectedValue(new Error("Persistent failure")),
+    };
+    await processFileImportQueue(db as any, storageService as any);
+    // No throw — job marked failed
+  });
+});

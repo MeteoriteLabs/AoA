@@ -258,3 +258,102 @@ export function fileImportService(db: Db, _storageService: StorageService) {
     },
   };
 }
+
+// ── Worker ────────────────────────────────────────────────────────────────
+
+/** Called once on server startup to recover jobs stuck in "processing" from a crash. */
+export async function resetStuckJobs(db: Db): Promise<void> {
+  await db
+    .update(fileImportJobs)
+    .set({ status: "pending", retryAfter: null, updatedAt: new Date() })
+    .where(eq(fileImportJobs.status, "processing"));
+}
+
+/** One worker tick — process up to WORKER_BATCH_SIZE pending jobs. */
+export async function processFileImportQueue(
+  db: Db,
+  storageService: StorageService,
+): Promise<void> {
+  const now = new Date();
+
+  const jobs = await db
+    .select()
+    .from(fileImportJobs)
+    .where(
+      and(
+        eq(fileImportJobs.status, "pending"),
+        or(
+          isNull(fileImportJobs.retryAfter),
+          lte(fileImportJobs.retryAfter, now),
+        ),
+      ),
+    )
+    .orderBy(fileImportJobs.createdAt)
+    .limit(WORKER_BATCH_SIZE);
+
+  await Promise.allSettled(jobs.map((job) => processOneJob(db, storageService, job)));
+}
+
+async function processOneJob(
+  db: Db,
+  storageService: StorageService,
+  job: typeof fileImportJobs.$inferSelect,
+): Promise<void> {
+  // Mark processing
+  await db
+    .update(fileImportJobs)
+    .set({ status: "processing", updatedAt: new Date() })
+    .where(eq(fileImportJobs.id, job.id));
+
+  try {
+    // Stage 1: fetch file from storage and extract text
+    const stored = await storageService.getObject(job.companyId, job.storageKey);
+    const buffer = await streamToBuffer(stored.stream);
+    const { text, warnings } = await extractTextFromBuffer(buffer, job.mimeType);
+
+    // Stage 2: extract memory items (LLM path or chunking fallback)
+    const { items, processorType } = await extractItemsFromText(text, job, db);
+
+    // Bulk insert memory items
+    if (items.length > 0) {
+      await db.insert(memoryItems).values(items);
+    }
+
+    // Mark done
+    await db
+      .update(fileImportJobs)
+      .set({
+        status: "done",
+        processorType,
+        itemCount: items.length,
+        parserWarnings: warnings.length > 0 ? warnings : null,
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(fileImportJobs.id, job.id));
+  } catch (err) {
+    const newRetryCount = job.retryCount + 1;
+    if (newRetryCount > MAX_RETRIES) {
+      await db
+        .update(fileImportJobs)
+        .set({
+          status: "failed",
+          errorMessage: err instanceof Error ? err.message : String(err),
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(fileImportJobs.id, job.id));
+    } else {
+      const backoffMs = RETRY_BACKOFF_MS[newRetryCount - 1] ?? WORKER_INTERVAL_MS;
+      await db
+        .update(fileImportJobs)
+        .set({
+          status: "pending",
+          retryCount: newRetryCount,
+          retryAfter: new Date(Date.now() + backoffMs),
+          updatedAt: new Date(),
+        })
+        .where(eq(fileImportJobs.id, job.id));
+    }
+  }
+}
