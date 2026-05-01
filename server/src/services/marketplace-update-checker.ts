@@ -19,7 +19,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function compareVersions(latest: string, current: string): number {
-  const parse = (v: string) => v.split(".").map((p) => parseInt(p, 10) || 0);
+  const parse = (v: string) => v.replace(/^v/, "").split(".").map((p) => parseInt(p, 10) || 0);
   const [lMaj, lMin, lPat] = parse(latest);
   const [cMaj, cMin, cPat] = parse(current);
   if (lMaj !== cMaj) return lMaj! > cMaj! ? 1 : -1;
@@ -95,6 +95,9 @@ async function checkCompany(db: Db, catalogItems: CatalogItem[], companyId: stri
         latestVersion: catalogEntry.version,
       });
     }
+    // TODO: Add agent + team template checks when templateOrigin/templateVersion
+    // columns are added to those schemas. Plugins are instance-scoped and handled
+    // separately when plugin update tracking is wired in Task 6.
   } catch (err) {
     console.error({ err, companyId }, "marketplace-update-checker: error checking company");
   }

@@ -62,4 +62,18 @@ describe("isUpdateAvailable", () => {
     expect(isUpdateAvailable("1.0.0", "2.0.0", "notify")).toBe(true);
     expect(isUpdateAvailable("1.0.0", "1.1.0", "notify")).toBe(true);
   });
+
+  it("auto_patch: allows patch, blocks minor and major", () => {
+    // Patch update: same major.minor, different patch — allowed
+    expect(isUpdateAvailable("1.0.0", "1.0.1", "auto_patch")).toBe(true);
+    // Minor update: same major, different minor — blocked
+    expect(isUpdateAvailable("1.0.0", "1.1.0", "auto_patch")).toBe(false);
+    // Major update: blocked
+    expect(isUpdateAvailable("1.0.0", "2.0.0", "auto_patch")).toBe(false);
+  });
+
+  it("returns false when versions are equal", () => {
+    expect(isUpdateAvailable("1.0.0", "1.0.0", "notify")).toBe(false);
+    expect(isUpdateAvailable("1.0.0", "1.0.0", "auto_minor")).toBe(false);
+  });
 });
