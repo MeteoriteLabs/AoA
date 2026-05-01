@@ -20,6 +20,7 @@ import {
   issueApprovalService,
   issueService,
   logActivity,
+  memoryLifecycleService,
   projectService,
   routineService,
 } from "../services/index.js";
@@ -628,6 +629,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
       void routineService(db)
         .syncRunStatusForIssue(issue.id)
         .catch((err) => logger.warn({ err, issueId: issue.id }, "syncRunStatusForIssue failed"));
+    }
+
+    // Archive working-layer memory items scoped to this task when it reaches terminal state
+    if (issue.status === "done" || issue.status === "cancelled") {
+      void memoryLifecycleService(db)
+        .onTaskCompleted(issue.companyId, issue.id)
+        .catch((err) => logger.warn({ err, issueId: issue.id }, "onTaskCompleted memory lifecycle failed"));
     }
 
     let comment = null;
