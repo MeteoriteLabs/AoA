@@ -7,17 +7,21 @@
  * GET  /updates           — list pending updates
  * POST /updates/:id/dismiss — dismiss a pending update
  * POST /updates/:id/apply   — apply a pending update (stub, filled in Task 11)
+ * GET  /updates/:id/diff  — returns section-level diff for a skill update
+ * POST /updates/:id/merge — apply merge decisions and save merged content
  * POST /request-install   — team_member install request (stub, filled in Task 10)
  */
 import { Router } from "express";
 import { and, eq, ne } from "drizzle-orm";
-import { type Db, marketplacePendingUpdates } from "@armyofagents/db";
+import { type Db, marketplacePendingUpdates, companySkills } from "@armyofagents/db";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { marketplaceSettingsService } from "../services/marketplace-settings.js";
+import { computeSectionDiff, applyMergeDecisions } from "../services/marketplace-merge.js";
+import type { MarketplaceCatalogFile } from "@armyofagents/shared";
 
 export interface MarketplaceCompanyRoutesDeps {
   db: Db;
-  catalogService: unknown; // typed properly in later tasks
+  catalogService: { readCache(): Promise<MarketplaceCatalogFile | null> } | unknown;
 }
 
 export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDeps): Router {
@@ -97,6 +101,146 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     const companyId = (req.params as Record<string, string>).companyId;
     assertCompanyAccess(req, companyId);
     res.status(501).json({ error: "Apply not yet implemented" });
+  });
+
+  // GET /updates/:id/diff — returns section-level diff for a skill update
+  router.get("/updates/:id/diff", async (req, res) => {
+    assertBoard(req);
+    const companyId = (req.params as Record<string, string>).companyId;
+    assertCompanyAccess(req, companyId);
+
+    const { id } = req.params as { id: string };
+    const [update] = await db
+      .select()
+      .from(marketplacePendingUpdates)
+      .where(
+        and(
+          eq(marketplacePendingUpdates.id, id),
+          eq(marketplacePendingUpdates.companyId, companyId),
+        ),
+      );
+
+    if (!update) {
+      res.status(404).json({ error: "Update not found" });
+      return;
+    }
+
+    if (update.itemType !== "skill") {
+      res.status(400).json({ error: "Section diff only supported for skill updates" });
+      return;
+    }
+
+    // Get current installed skill content
+    const [skill] = await db
+      .select({ markdown: companySkills.markdown })
+      .from(companySkills)
+      .where(
+        and(
+          eq(companySkills.companyId, companyId),
+          eq(companySkills.sourceLocator, update.catalogItemId),
+        ),
+      );
+
+    if (!skill) {
+      res.status(404).json({ error: "Installed skill not found" });
+      return;
+    }
+
+    // Fetch latest from catalog
+    const catalogSvc = deps.catalogService as { readCache(): Promise<MarketplaceCatalogFile | null> };
+    const catalog = await catalogSvc.readCache();
+    const catalogItem = catalog?.items.find((i) => i.id === update.catalogItemId);
+    if (!catalogItem?.resourceUrl) {
+      res.status(503).json({ error: "Catalog item resource URL not available" });
+      return;
+    }
+
+    try {
+      const upstreamRes = await fetch(catalogItem.resourceUrl as string, {
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!upstreamRes.ok) throw new Error(`Fetch failed: ${upstreamRes.status}`);
+      const upstreamContent = await upstreamRes.text();
+
+      const diff = computeSectionDiff(skill.markdown ?? "", upstreamContent);
+      res.json({ diff, currentVersion: update.currentVersion, latestVersion: update.latestVersion });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: `Failed to fetch upstream content: ${message}` });
+    }
+  });
+
+  // POST /updates/:id/merge — apply merge decisions and save
+  router.post("/updates/:id/merge", async (req, res) => {
+    assertBoard(req);
+    const companyId = (req.params as Record<string, string>).companyId;
+    assertCompanyAccess(req, companyId);
+
+    const { id } = req.params as { id: string };
+    const { decisions } = req.body as { decisions: Record<string, "mine" | "theirs"> };
+
+    const [update] = await db
+      .select()
+      .from(marketplacePendingUpdates)
+      .where(
+        and(
+          eq(marketplacePendingUpdates.id, id),
+          eq(marketplacePendingUpdates.companyId, companyId),
+        ),
+      );
+
+    if (!update || update.itemType !== "skill") {
+      res.status(404).json({ error: "Update not found or not a skill" });
+      return;
+    }
+
+    const [skill] = await db
+      .select({ id: companySkills.id, markdown: companySkills.markdown })
+      .from(companySkills)
+      .where(
+        and(
+          eq(companySkills.companyId, companyId),
+          eq(companySkills.sourceLocator, update.catalogItemId),
+        ),
+      );
+
+    if (!skill) {
+      res.status(404).json({ error: "Installed skill not found" });
+      return;
+    }
+
+    const catalogSvc = deps.catalogService as { readCache(): Promise<MarketplaceCatalogFile | null> };
+    const catalog = await catalogSvc.readCache();
+    const catalogItem = catalog?.items.find((i) => i.id === update.catalogItemId);
+    if (!catalogItem?.resourceUrl) {
+      res.status(503).json({ error: "Catalog resource URL not available" });
+      return;
+    }
+
+    const upstreamRes = await fetch(catalogItem.resourceUrl as string, {
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!upstreamRes.ok) {
+      res.status(502).json({ error: "Failed to fetch upstream content" });
+      return;
+    }
+    const upstreamContent = await upstreamRes.text();
+    const diff = computeSectionDiff(skill.markdown ?? "", upstreamContent);
+    const merged = applyMergeDecisions(diff, decisions);
+
+    // Save merged content + update sourceRef to latestVersion
+    await db
+      .update(companySkills)
+      .set({ markdown: merged, sourceRef: update.latestVersion })
+      .where(eq(companySkills.id, skill.id));
+
+    // Mark update as applied
+    await db
+      .update(marketplacePendingUpdates)
+      .set({ status: "applied", updatedAt: new Date() })
+      .where(eq(marketplacePendingUpdates.id, id));
+
+    res.json({ ok: true });
   });
 
   // ── Request install (stub — filled in Task 10) ────────────────────────────

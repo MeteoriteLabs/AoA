@@ -2,9 +2,11 @@ import { useState } from "react";
 import { usePendingUpdates, useDismissUpdate } from "@/hooks/usePendingUpdates";
 import { UpdateCard } from "@/components/marketplace/UpdateCard";
 import { MarketplaceLayout } from "@/components/marketplace/MarketplaceLayout";
+import { SnapshotUpdateModal } from "@/components/marketplace/SnapshotUpdateModal";
 import { CheckCircle } from "lucide-react";
 import type { PendingUpdate } from "@/api/marketplace";
 import { useToast } from "@/context/ToastContext";
+import { useCompany } from "@/context/CompanyContext";
 
 const TYPE_LABELS: Record<string, string> = {
   skill: "Skills",
@@ -17,7 +19,9 @@ export default function MarketplaceUpdates() {
   const { data: updates, isLoading } = usePendingUpdates();
   const dismiss = useDismissUpdate();
   const { pushToast } = useToast();
+  const { selectedCompany } = useCompany();
   const [dismissingId, setDismissingId] = useState<string | null>(null);
+  const [reviewUpdate, setReviewUpdate] = useState<PendingUpdate | null>(null);
 
   if (isLoading) {
     return (
@@ -52,41 +56,53 @@ export default function MarketplaceUpdates() {
   }
 
   return (
-    <MarketplaceLayout breadcrumbs={[{ label: "Updates" }]} actions={null}>
-      <div className="space-y-6 max-w-3xl mx-auto">
-        <div>
-          <h1 className="text-lg font-semibold">Updates</h1>
-          <p className="text-sm text-muted-foreground">
-            Pending updates for installed catalog items
-          </p>
-        </div>
-        {Object.entries(grouped).map(([type, items]) => (
-          <div key={type}>
-            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-              {TYPE_LABELS[type] ?? type} &middot; {items.length}
-            </h3>
-            <div className="space-y-2">
-              {items.map((update) => (
-                <UpdateCard
-                  key={update.id}
-                  update={update}
-                  onDismiss={async () => {
-                    setDismissingId(update.id);
-                    try {
-                      await dismiss.mutateAsync(update.id);
-                    } catch (err) {
-                      pushToast({ title: "Failed to dismiss update", body: err instanceof Error ? err.message : undefined, tone: "error" });
-                    } finally {
-                      setDismissingId(null);
-                    }
-                  }}
-                  isPending={dismissingId === update.id}
-                />
-              ))}
-            </div>
+    <>
+      <MarketplaceLayout breadcrumbs={[{ label: "Updates" }]} actions={null}>
+        <div className="space-y-6 max-w-3xl mx-auto">
+          <div>
+            <h1 className="text-lg font-semibold">Updates</h1>
+            <p className="text-sm text-muted-foreground">
+              Pending updates for installed catalog items
+            </p>
           </div>
-        ))}
-      </div>
-    </MarketplaceLayout>
+          {Object.entries(grouped).map(([type, items]) => (
+            <div key={type}>
+              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                {TYPE_LABELS[type] ?? type} &middot; {items.length}
+              </h3>
+              <div className="space-y-2">
+                {items.map((update) => (
+                  <UpdateCard
+                    key={update.id}
+                    update={update}
+                    onDismiss={async () => {
+                      setDismissingId(update.id);
+                      try {
+                        await dismiss.mutateAsync(update.id);
+                      } catch (err) {
+                        pushToast({ title: "Failed to dismiss update", body: err instanceof Error ? err.message : undefined, tone: "error" });
+                      } finally {
+                        setDismissingId(null);
+                      }
+                    }}
+                    onReview={update.itemType !== "plugin" ? () => setReviewUpdate(update) : undefined}
+                    isPending={dismissingId === update.id}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </MarketplaceLayout>
+      {reviewUpdate && selectedCompany && (
+        <SnapshotUpdateModal
+          open
+          onClose={() => setReviewUpdate(null)}
+          companyId={selectedCompany.id}
+          updateId={reviewUpdate.id}
+          itemName={reviewUpdate.catalogItemName}
+        />
+      )}
+    </>
   );
 }
