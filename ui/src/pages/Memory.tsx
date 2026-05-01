@@ -221,7 +221,7 @@ export function Memory() {
       setImportJobId(null);
       setImportingFileName(null);
     }
-  }, [importJob?.status]);
+  }, [importJob?.status, importJob?.itemCount, importJob?.errorMessage, pushToast, queryClient, selectedCompanyId, importingFileName]);
 
   async function handleFileImport(file: File) {
     if (!selectedCompanyId) return;
