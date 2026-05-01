@@ -60,3 +60,23 @@ describe("extractionService.extractFromRawText", () => {
     expect(result).toEqual([]);
   });
 });
+
+// ── extractTextFromBuffer ───────────────────────────────────────────────────
+
+describe("extractTextFromBuffer", () => {
+  it("extracts plain text from TXT buffer", async () => {
+    const { extractTextFromBuffer } = await import("../services/file-import.js");
+    const buffer = Buffer.from("Hello world\n\nSecond paragraph.");
+    const result = await extractTextFromBuffer(buffer, "text/plain");
+    expect(result.text).toBe("Hello world\n\nSecond paragraph.");
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("throws for unsupported MIME type", async () => {
+    const { extractTextFromBuffer } = await import("../services/file-import.js");
+    const buffer = Buffer.from("data");
+    await expect(
+      extractTextFromBuffer(buffer, "image/jpeg")
+    ).rejects.toThrow("Unsupported MIME type");
+  });
+});
