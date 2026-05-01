@@ -101,7 +101,7 @@ async function checkCompany(db: Db, catalogItems: CatalogItem[], companyId: stri
     // columns are added to those schemas. Plugins are instance-scoped and handled
     // separately when plugin update tracking is wired in Task 6.
   } catch (err) {
-    console.error({ err, companyId }, "marketplace-update-checker: error checking company");
+    logger.error({ err, companyId }, "marketplace-update-checker: error checking company");
   }
 }
 

@@ -18,6 +18,7 @@ import {
   type CatalogSyncStatus,
 } from "@armyofagents/shared";
 import { runUpdateCheck } from "./marketplace-update-checker.js";
+import { logger } from "../middleware/logger.js";
 
 const DEFAULT_CDN_URL =
   "https://meteoritelabs.github.io/aoa-marketplace-cdn/catalog.json";
@@ -46,11 +47,11 @@ export class MarketplaceCatalogService {
   startSyncLoop(): void {
     if (this.syncTimer) return;
     void this.sync().catch((err) =>
-      console.error("Initial catalog sync failed:", err),
+      logger.error({ err }, "marketplace: initial catalog sync failed"),
     );
     this.syncTimer = setInterval(() => {
       void this.sync().catch((err) =>
-        console.error("Catalog sync failed:", err),
+        logger.error({ err }, "marketplace: catalog sync failed"),
       );
     }, SYNC_INTERVAL_MS);
   }
@@ -81,7 +82,7 @@ export class MarketplaceCatalogService {
       await this.writeCache(parsed, "cdn", "success", null);
       // Fire-and-forget update check after successful catalog sync
       void runUpdateCheck(this.db, parsed.items).catch((err) =>
-        console.error({ err }, "marketplace update check failed after sync"),
+        logger.error({ err }, "marketplace: update check failed after sync"),
       );
       return parsed;
     } catch (err) {
@@ -121,7 +122,7 @@ export class MarketplaceCatalogService {
     };
     const parsed = MarketplaceCatalogFileSchema.safeParse(candidate);
     if (!parsed.success) {
-      console.warn("readCache: cached catalog failed schema validation:", parsed.error.message);
+      logger.warn({ err: parsed.error }, "marketplace: cached catalog failed schema validation");
       return null;
     }
     return parsed.data;
