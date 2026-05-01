@@ -44,5 +44,6 @@ describe("mergeWithDefaults", () => {
   it("ignores unknown keys", () => {
     const result = mergeWithDefaults({ unknownKey: "oops" } as any);
     expect(result).toEqual(MARKETPLACE_SETTINGS_DEFAULTS);
+    expect("unknownKey" in result).toBe(false);
   });
 });

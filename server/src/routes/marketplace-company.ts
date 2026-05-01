@@ -20,6 +20,7 @@ export interface MarketplaceCompanyRoutesDeps {
 export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDeps): Router {
   const { db } = deps;
   const router = Router({ mergeParams: true });
+  const svc = marketplaceSettingsService(db);
 
   // ── Settings ──────────────────────────────────────────────────────────────
 
@@ -28,7 +29,6 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     const companyId = (req.params as Record<string, string>).companyId;
     assertCompanyAccess(req, companyId);
 
-    const svc = marketplaceSettingsService(db);
     const settings = await svc.get(companyId);
     res.json(settings);
   });
@@ -44,7 +44,6 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
-    const svc = marketplaceSettingsService(db);
     const updated = await svc.patch(companyId, patch);
     res.json(updated);
   });

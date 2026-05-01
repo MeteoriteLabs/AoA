@@ -30,28 +30,20 @@ export function marketplaceSettingsService(db: Db) {
       return mergeWithDefaults(stored);
     },
 
-    async patch(companyId: string, patch: Partial<MarketplaceSettings>): Promise<MarketplaceSettings> {
+    async patch(companyId: string, patch: Record<string, unknown>): Promise<MarketplaceSettings> {
       const current = await this.get(companyId);
       const merged: Record<string, unknown> = { ...current };
       for (const [key, value] of Object.entries(patch)) {
         if (ALLOWED_KEYS.has(key)) merged[key] = value;
       }
 
-      const existing = await db
-        .select({ id: marketplaceCompanySettings.id })
-        .from(marketplaceCompanySettings)
-        .where(eq(marketplaceCompanySettings.companyId, companyId));
-
-      if (existing.length > 0) {
-        await db
-          .update(marketplaceCompanySettings)
-          .set({ settings: merged, updatedAt: new Date() })
-          .where(eq(marketplaceCompanySettings.companyId, companyId));
-      } else {
-        await db
-          .insert(marketplaceCompanySettings)
-          .values({ companyId, settings: merged });
-      }
+      await db
+        .insert(marketplaceCompanySettings)
+        .values({ companyId, settings: merged })
+        .onConflictDoUpdate({
+          target: marketplaceCompanySettings.companyId,
+          set: { settings: merged, updatedAt: new Date() },
+        });
 
       return mergeWithDefaults(merged);
     },
