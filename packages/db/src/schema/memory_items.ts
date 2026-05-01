@@ -17,6 +17,7 @@ import { issues } from "./issues.js";
 import { artifacts } from "./artifacts.js";
 import { agents } from "./agents.js";
 import { memoryItemVersions } from "./memory_item_versions.js";
+import { fileImportJobs } from "./file_import_jobs.js";
 
 /**
  * Custom Drizzle type for pgvector's `vector(N)` column.
@@ -74,6 +75,10 @@ export const memoryItems = pgTable(
     // V2.6: marks the item for eager skill-file delivery to scoped agents (Tier 1 push).
     // Materialized into the synthesized "company-knowledge" skill at run start.
     pinnedToSkill: boolean("pinned_to_skill").notNull().default(false),
+    // V2.6: tracks which file import job created this item (nullable — most items are not file-imported)
+    importJobId: uuid("import_job_id").references(() => fileImportJobs.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
