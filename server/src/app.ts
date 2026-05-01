@@ -70,6 +70,7 @@ import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { createMarketplaceRouter } from "./routes/marketplace.js";
 import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js";
+import { createMarketplaceCompanyRouter } from "./routes/marketplace-company.js";
 import { MarketplaceCatalogService } from "./services/aoa-marketplace.js";
 import { pluginLoader } from "./services/plugin-loader.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
@@ -368,6 +369,13 @@ export async function createApp(
           },
         },
       },
+    }),
+  );
+  api.use(
+    "/companies/:companyId/marketplace",
+    createMarketplaceCompanyRouter({
+      db,
+      catalogService: marketplaceCatalogService,
     }),
   );
 

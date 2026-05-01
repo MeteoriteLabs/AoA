@@ -798,6 +798,7 @@ export {
   MarketplaceCatalogItemSchema,
   MarketplaceCatalogFileSchema,
   isSchemaVersionSupported,
+  MARKETPLACE_SETTINGS_DEFAULTS,
   type MarketplaceCategory,
   type MarketplaceTag,
   type MarketplaceTrustTier,
@@ -806,6 +807,10 @@ export {
   type CatalogItem,
   type MarketplaceCatalogFile,
   type CatalogSyncStatus,
+  type MarketplaceSettings,
+  type PendingUpdateStatus,
+  type PendingUpdateType,
+  type PendingUpdate,
 } from "./marketplace.js";
 export {
   ROUTINE_VARIABLE_NAME_PATTERN,

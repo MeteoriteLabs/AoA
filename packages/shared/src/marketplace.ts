@@ -129,3 +129,52 @@ export function isSchemaVersionSupported(version: string): boolean {
   // Strict V1: only 1.0.0 supported.
   return version === CATALOG_SCHEMA_VERSION_MIN;
 }
+
+export interface MarketplaceSettings {
+  // Section 1: Updates
+  pluginUpdatePolicy: "auto_patch" | "auto_minor" | "notify_all";
+  skillUpdatePolicy: "auto" | "notify";
+  agentUpdatePolicy: "auto" | "notify";
+  teamUpdatePolicy: "auto" | "notify";
+  // Section 2: Access
+  showTrustBadges: boolean;
+  showSourceInfo: boolean;
+  allowTeamLeadPlugins: boolean;
+  teamMemberCanRequestInstall: boolean;
+  requireFounderApproval: boolean;
+  // Section 3: Catalog refresh
+  catalogRefreshHours: 6 | 12 | 24;
+  updateCheckHours: 6 | 12 | 24;
+  updateWindow: "anytime" | "off_hours" | "weekends";
+}
+
+export const MARKETPLACE_SETTINGS_DEFAULTS: MarketplaceSettings = {
+  pluginUpdatePolicy: "auto_minor",
+  skillUpdatePolicy: "notify",
+  agentUpdatePolicy: "notify",
+  teamUpdatePolicy: "notify",
+  showTrustBadges: true,
+  showSourceInfo: true,
+  allowTeamLeadPlugins: false,
+  teamMemberCanRequestInstall: false,
+  requireFounderApproval: false,
+  catalogRefreshHours: 6,
+  updateCheckHours: 24,
+  updateWindow: "anytime",
+};
+
+export type PendingUpdateStatus = "pending" | "dismissed" | "applied" | "conflict";
+export type PendingUpdateType = "skill" | "agent" | "team" | "plugin";
+
+export interface PendingUpdate {
+  id: string;
+  companyId: string;
+  catalogItemId: string;
+  catalogItemName: string;
+  itemType: PendingUpdateType;
+  currentVersion: string;
+  latestVersion: string;
+  status: PendingUpdateStatus;
+  detectedAt: string;
+  updatedAt: string;
+}
