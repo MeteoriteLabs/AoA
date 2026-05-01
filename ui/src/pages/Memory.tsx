@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "@/lib/router";
 import {
@@ -23,6 +23,7 @@ import {
   Pin,
   Sparkles,
   ChevronLeft,
+  Upload,
 } from "lucide-react";
 import {
   MEMORY_ITEM_CATEGORIES,
@@ -43,6 +44,7 @@ import {
   type Issue,
 } from "@armyofagents/shared";
 import { memoryApi } from "../api/memory";
+import { fileImportApi } from "../api/fileImport";
 import { projectsApi } from "../api/projects";
 import { goalsApi } from "../api/goals";
 import { issuesApi } from "../api/issues";
@@ -52,6 +54,7 @@ import {
 } from "../api/memoryStarterTemplates";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -174,6 +177,7 @@ export function Memory() {
   const queryClient = useQueryClient();
   const { permissions } = useTeamAccess(selectedCompanyId);
   const [searchParams] = useSearchParams();
+  const { pushToast } = useToast();
 
   const [search, setSearch] = useState(searchParams.get("q") ?? "");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
@@ -187,6 +191,50 @@ export function Memory() {
   );
   const [createOpen, setCreateOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importJobId, setImportJobId] = useState<string | null>(null);
+  const [importingFileName, setImportingFileName] = useState<string | null>(null);
+
+  // Poll job status while import is in flight
+  const { data: importJob } = useQuery({
+    queryKey: queryKeys.memory.importJob(selectedCompanyId ?? "", importJobId ?? "__none__"),
+    queryFn: () => fileImportApi.getJob(selectedCompanyId!, importJobId!),
+    enabled: !!importJobId && !!selectedCompanyId,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data || data.status === "pending" || data.status === "processing") return 3_000;
+      return false;
+    },
+  });
+
+  // React to job completion/failure
+  useEffect(() => {
+    if (!importJob) return;
+    if (importJob.status === "done") {
+      pushToast({ title: `${importJob.itemCount} items added to Pending review from "${importingFileName}"`, tone: "success" });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.memory.pending(selectedCompanyId!) });
+      setImportJobId(null);
+      setImportingFileName(null);
+    } else if (importJob.status === "failed") {
+      pushToast({ title: `Import failed: ${importJob.errorMessage ?? "Unknown error"}`, tone: "error" });
+      setImportJobId(null);
+      setImportingFileName(null);
+    }
+  }, [importJob?.status]);
+
+  async function handleFileImport(file: File) {
+    if (!selectedCompanyId) return;
+    setImportingFileName(file.name);
+    try {
+      const { jobId } = await fileImportApi.upload(selectedCompanyId, file);
+      setImportJobId(jobId);
+      pushToast({ title: `Importing "${file.name}"…`, tone: "info" });
+    } catch (err) {
+      pushToast({ title: err instanceof Error ? err.message : "Failed to start import", tone: "error" });
+      setImportingFileName(null);
+    }
+  }
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Memory" }]);
@@ -332,6 +380,29 @@ export function Memory() {
             Flat
           </Button>
         </div>
+
+        {/* Hidden file input for import */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf,.docx,.txt"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) void handleFileImport(file);
+            e.target.value = "";
+          }}
+        />
+
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={!!importJobId}
+        >
+          <Upload className="h-4 w-4 mr-1" />
+          {importJobId ? "Importing…" : "Import from file"}
+        </Button>
 
         <Button
           size="sm"
