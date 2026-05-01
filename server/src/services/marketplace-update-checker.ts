@@ -133,21 +133,22 @@ export async function upsertPendingUpdate(
     .onConflictDoNothing()
     .returning({ id: marketplacePendingUpdates.id });
 
-  // Only notify on genuine new detection
   if (inserted.length > 0) {
+    // New row — notify founders of available update
     void marketplaceNotifications
       .updateAvailable(db, companyId, data.catalogItemName, data.currentVersion, data.latestVersion)
       .catch((err) => logger.error({ err }, "marketplace: failed to emit update_available notification"));
+  } else {
+    // Existing pending row — bump latestVersion in case it has advanced since last check
+    await db
+      .update(marketplacePendingUpdates)
+      .set({ latestVersion: data.latestVersion, updatedAt: new Date() })
+      .where(
+        and(
+          eq(marketplacePendingUpdates.companyId, companyId),
+          eq(marketplacePendingUpdates.catalogItemId, data.catalogItemId),
+          eq(marketplacePendingUpdates.status, "pending"),
+        ),
+      );
   }
-
-  await db
-    .update(marketplacePendingUpdates)
-    .set({ latestVersion: data.latestVersion, updatedAt: new Date() })
-    .where(
-      and(
-        eq(marketplacePendingUpdates.companyId, companyId),
-        eq(marketplacePendingUpdates.catalogItemId, data.catalogItemId),
-        eq(marketplacePendingUpdates.status, "pending"),
-      ),
-    );
 }
