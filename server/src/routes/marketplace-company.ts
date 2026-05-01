@@ -128,15 +128,11 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
-    // For snapshot types (skill/agent/team): use the merge endpoint for review
-    // or auto-accept all upstream changes without diff
-    // Auto-apply: mark as applied — the merge endpoint is the proper path for reviewed merges
-    await db
-      .update(marketplacePendingUpdates)
-      .set({ status: "applied", updatedAt: new Date() })
-      .where(eq(marketplacePendingUpdates.id, id));
-
-    res.json({ ok: true, message: "Update applied (all upstream accepted). Use /merge for reviewed merge." });
+    // For snapshot types (skill/agent/team): use POST /updates/:id/merge for reviewed merges.
+    // Direct auto-apply is not implemented at V1.
+    res.status(501).json({
+      error: "Direct apply not supported for skill/agent/team updates. Use POST /updates/:id/merge for reviewed merge.",
+    });
   });
 
   // GET /updates/:id/diff — returns section-level diff for a skill update
@@ -216,6 +212,12 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
 
     if (!decisions || typeof decisions !== "object" || Array.isArray(decisions)) {
       res.status(400).json({ error: "decisions must be an object" });
+      return;
+    }
+
+    const invalidDecision = Object.values(decisions).find((v) => v !== "mine" && v !== "theirs");
+    if (invalidDecision !== undefined) {
+      res.status(400).json({ error: `Invalid decision value "${String(invalidDecision)}" — must be "mine" or "theirs"` });
       return;
     }
 
