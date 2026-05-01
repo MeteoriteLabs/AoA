@@ -80,3 +80,62 @@ describe("extractTextFromBuffer", () => {
     ).rejects.toThrow("Unsupported MIME type");
   });
 });
+
+// ── chunkTextToParagraphs ──────────────────────────────────────────────────
+
+const mockJob = {
+  id: "job-1",
+  companyId: "co-1",
+  fileName: "handbook.pdf",
+  defaultLayer: "domain",
+  defaultCategory: "reference",
+  departmentId: null,
+  projectId: null,
+  createdBy: "user-1",
+} as any;
+
+describe("chunkTextToParagraphs", () => {
+  it("splits on double newline", async () => {
+    const { chunkTextToParagraphs } = await import("../services/file-import.js");
+    const text = "First paragraph.\n\nSecond paragraph with enough content here.";
+    const items = chunkTextToParagraphs(text, mockJob);
+    expect(items).toHaveLength(2);
+  });
+
+  it("drops chunks under 30 chars", async () => {
+    const { chunkTextToParagraphs } = await import("../services/file-import.js");
+    const text = "Short.\n\nThis is a proper paragraph with enough content.";
+    const items = chunkTextToParagraphs(text, mockJob);
+    expect(items).toHaveLength(1);
+    expect(items[0].content).toContain("proper paragraph");
+  });
+
+  it("merges consecutive short chunks under 100 chars", async () => {
+    const { chunkTextToParagraphs } = await import("../services/file-import.js");
+    // Two chunks each 40 chars → merged into one
+    const text = "A".repeat(40) + "\n\n" + "B".repeat(40);
+    const items = chunkTextToParagraphs(text, mockJob);
+    expect(items).toHaveLength(1);
+  });
+
+  it("sets correct metadata on each item", async () => {
+    const { chunkTextToParagraphs } = await import("../services/file-import.js");
+    const text = "This is a well-formed paragraph with enough content to pass the minimum length check.";
+    const items = chunkTextToParagraphs(text, mockJob);
+    expect(items[0].status).toBe("pending");
+    expect(items[0].source).toBe("import");
+    expect(items[0].sourceContext).toBe("file:handbook.pdf");
+    expect(items[0].importJobId).toBe("job-1");
+    expect(items[0].companyId).toBe("co-1");
+    expect(items[0].layer).toBe("domain");
+    expect(items[0].category).toBe("reference");
+  });
+
+  it("title is first sentence truncated to 80 chars", async () => {
+    const { chunkTextToParagraphs } = await import("../services/file-import.js");
+    const longSentence = "A".repeat(100) + ". More content here.";
+    const items = chunkTextToParagraphs(longSentence, mockJob);
+    expect(items[0].title.length).toBeLessThanOrEqual(81); // 80 + ellipsis
+    expect(items[0].title.endsWith("…")).toBe(true);
+  });
+});

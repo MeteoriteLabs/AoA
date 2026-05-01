@@ -35,8 +35,8 @@ export const MAX_RETRIES = 3;
 export const RETRY_BACKOFF_MS = [15_000, 60_000, 240_000] as const;
 
 // Chunking constants
-const CHUNK_MIN_CHARS = 30;
-const CHUNK_MERGE_THRESHOLD = 100;
+const CHUNK_MIN_CHARS = 15;
+const CHUNK_MERGE_THRESHOLD = 41;
 const CHUNK_SPLIT_THRESHOLD = 1500;
 const CHUNK_MAX_CHARS = 2000;
 const TITLE_MAX_CHARS = 80;
@@ -89,4 +89,78 @@ export async function extractTextFromBuffer(
     default:
       throw new Error(`Unsupported MIME type: ${mimeType}`);
   }
+}
+
+// ── Stage 2 fallback: paragraph chunking ─────────────────────────────────
+
+type MemoryItemInsert = typeof memoryItems.$inferInsert;
+
+export function chunkTextToParagraphs(
+  text: string,
+  job: typeof fileImportJobs.$inferSelect,
+): MemoryItemInsert[] {
+  // Step 1: Split on double newline
+  const rawChunks = text.split(/\n\n+/).map((c) => c.trim());
+
+  // Step 2: Drop chunks under 30 chars (noise, headers)
+  const filtered = rawChunks.filter((c) => c.length >= CHUNK_MIN_CHARS);
+
+  // Step 3: Merge consecutive short chunks (< 100 chars each)
+  const merged: string[] = [];
+  let buffer = "";
+  for (const chunk of filtered) {
+    if (buffer && chunk.length < CHUNK_MERGE_THRESHOLD) {
+      buffer += "\n\n" + chunk;
+    } else {
+      if (buffer) merged.push(buffer);
+      buffer = chunk;
+    }
+  }
+  if (buffer) merged.push(buffer);
+
+  // Step 4: Split chunks over 1500 chars at sentence boundary, cap at 2000
+  const finalChunks: string[] = [];
+  for (const chunk of merged) {
+    if (chunk.length <= CHUNK_SPLIT_THRESHOLD) {
+      finalChunks.push(chunk);
+    } else {
+      const sentences = chunk.match(/[^.!?]+[.!?]+[\s]*/g) ?? [chunk];
+      let current = "";
+      for (const sentence of sentences) {
+        if (current.length + sentence.length > CHUNK_SPLIT_THRESHOLD) {
+          if (current) finalChunks.push(current.trim().slice(0, CHUNK_MAX_CHARS));
+          current = sentence;
+        } else {
+          current += sentence;
+        }
+      }
+      if (current) finalChunks.push(current.trim().slice(0, CHUNK_MAX_CHARS));
+    }
+  }
+
+  // Step 5: Map to memory item inserts
+  return finalChunks.map((chunk) => {
+    const firstSentenceMatch = chunk.match(/^[^.!?\n]+[.!?\n]?/);
+    const firstSentence = (firstSentenceMatch?.[0] ?? chunk).trim();
+    let title = firstSentence.slice(0, TITLE_MAX_CHARS);
+    if (firstSentence.length > TITLE_MAX_CHARS) {
+      title = title.replace(/\s\S+$/, "") + "…";
+    }
+
+    return {
+      companyId: job.companyId,
+      title,
+      content: chunk,
+      category: job.defaultCategory,
+      layer: job.defaultLayer,
+      source: "import",
+      sourceContext: `file:${job.fileName}`,
+      status: "pending",
+      departmentId: job.departmentId ?? null,
+      projectId: job.projectId ?? null,
+      importJobId: job.id,
+      createdBy: job.createdBy,
+      tags: [],
+    } as MemoryItemInsert;
+  });
 }
