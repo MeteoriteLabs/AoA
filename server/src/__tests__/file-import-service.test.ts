@@ -97,7 +97,9 @@ const mockJob = {
 describe("chunkTextToParagraphs", () => {
   it("splits on double newline", async () => {
     const { chunkTextToParagraphs } = await import("../services/file-import.js");
-    const text = "First paragraph.\n\nSecond paragraph with enough content here.";
+    const para1 = "A".repeat(110);
+    const para2 = "B".repeat(110);
+    const text = para1 + "\n\n" + para2;
     const items = chunkTextToParagraphs(text, mockJob);
     expect(items).toHaveLength(2);
   });
@@ -112,7 +114,7 @@ describe("chunkTextToParagraphs", () => {
 
   it("merges consecutive short chunks under 100 chars", async () => {
     const { chunkTextToParagraphs } = await import("../services/file-import.js");
-    // Two chunks each 40 chars → merged into one
+    // Two chunks each under 100 chars → merged into one
     const text = "A".repeat(40) + "\n\n" + "B".repeat(40);
     const items = chunkTextToParagraphs(text, mockJob);
     expect(items).toHaveLength(1);

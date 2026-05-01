@@ -35,8 +35,8 @@ export const MAX_RETRIES = 3;
 export const RETRY_BACKOFF_MS = [15_000, 60_000, 240_000] as const;
 
 // Chunking constants
-const CHUNK_MIN_CHARS = 15;
-const CHUNK_MERGE_THRESHOLD = 41;
+const CHUNK_MIN_CHARS = 30;
+const CHUNK_MERGE_THRESHOLD = 100;
 const CHUNK_SPLIT_THRESHOLD = 1500;
 const CHUNK_MAX_CHARS = 2000;
 const TITLE_MAX_CHARS = 80;
