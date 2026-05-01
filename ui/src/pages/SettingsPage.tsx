@@ -1657,9 +1657,10 @@ function MarketplaceSettingsTab({ companyId }: { companyId: string }) {
   const patch = usePatchMarketplaceSettings(companyId);
   const { pushToast } = useToast();
 
-  async function applyPatch(p: Parameters<typeof patch.mutateAsync>[0]) {
+  const applyPatch = useCallback(async (p: Parameters<typeof patch.mutateAsync>[0]) => {
     try {
       await patch.mutateAsync(p);
+      pushToast({ title: "Marketplace setting saved", tone: "success" });
     } catch (err) {
       pushToast({
         title: "Failed to save marketplace setting",
@@ -1667,7 +1668,7 @@ function MarketplaceSettingsTab({ companyId }: { companyId: string }) {
         tone: "error",
       });
     }
-  }
+  }, [patch, pushToast]);
 
   if (isLoading) {
     return <PageSkeleton variant="list" />;

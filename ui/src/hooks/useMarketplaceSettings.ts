@@ -18,5 +18,8 @@ export function usePatchMarketplaceSettings(companyId: string | undefined) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["marketplace", "settings", companyId] });
     },
+    onError: (err: Error) => {
+      console.error("Marketplace settings patch failed:", err);
+    },
   });
 }
