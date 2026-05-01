@@ -2285,6 +2285,10 @@ export function pluginRoutes(
       });
       await lifecycle.load(plugin.id);
       const updated = await registry.getById(plugin.id);
+      if (!updated) {
+        res.status(500).json({ error: "Plugin not found after rollback" });
+        return;
+      }
       await logPluginMutationActivity(req, "plugin.rolledback", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
