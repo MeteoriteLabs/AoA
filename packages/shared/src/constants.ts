@@ -634,6 +634,11 @@ export const NOTIFICATION_TYPES = [
   "internal_agent.reminder",
   "internal_agent.proactive",
   "internal_agent.action_result",
+  "marketplace.install_completed",
+  "marketplace.install_failed",
+  "marketplace.update_available",
+  "marketplace.update_completed",
+  "marketplace.update_failed",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
