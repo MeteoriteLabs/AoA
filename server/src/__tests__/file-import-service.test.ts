@@ -140,6 +140,17 @@ describe("chunkTextToParagraphs", () => {
     expect(items[0].title.length).toBeLessThanOrEqual(81); // 80 + ellipsis
     expect(items[0].title.endsWith("…")).toBe(true);
   });
+
+  it("does not emit chunks shorter than 30 chars after sentence splitting", async () => {
+    const { chunkTextToParagraphs } = await import("../services/file-import.js");
+    // Construct a paragraph whose first "sentence" is 1502 chars so the splitter kicks in,
+    // followed by the short sentence "OK." (3 chars).
+    // Without the fix, "OK." becomes a standalone 3-char chunk.
+    const longSentence = "A".repeat(1501) + ".";
+    const text = longSentence + " OK.";
+    const items = chunkTextToParagraphs(text, mockJob);
+    expect(items.every((item) => String(item.content).length >= 30)).toBe(true);
+  });
 });
 
 // ── fileImportService ──────────────────────────────────────────────────────

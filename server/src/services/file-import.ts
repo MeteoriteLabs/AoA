@@ -138,8 +138,11 @@ export function chunkTextToParagraphs(
     }
   }
 
-  // Step 5: Map to memory item inserts
-  return finalChunks.map((chunk) => {
+  // Step 5: Filter residual sub-minimum chunks (sentence splitter can emit these),
+  // then map to memory item inserts
+  return finalChunks
+    .filter((c) => c.length >= CHUNK_MIN_CHARS)
+    .map((chunk) => {
     const firstSentenceMatch = chunk.match(/^[^.!?\n]+[.!?\n]?/);
     const firstSentence = (firstSentenceMatch?.[0] ?? chunk).trim();
     let title = firstSentence.slice(0, TITLE_MAX_CHARS);
