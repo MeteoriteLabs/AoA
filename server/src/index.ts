@@ -603,7 +603,9 @@ setInterval(() => {
     logger.warn({ err }, "processFileImportQueue tick failed"),
   );
 }, FILE_IMPORT_INTERVAL_MS);
-void processFileImportQueue(db as any, storageService).catch(() => {}); // immediate first tick
+void processFileImportQueue(db as any, storageService).catch((err) =>
+  logger.warn({ err }, "processFileImportQueue immediate tick failed"),
+); // immediate first tick
 
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;

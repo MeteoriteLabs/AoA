@@ -1,3 +1,4 @@
+import path from "node:path";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import type { Db } from "@armyofagents/db";
@@ -73,11 +74,14 @@ export function fileImportRoutes(db: Db, storageService: StorageService) {
         const { departmentId, projectId, defaultLayer, defaultCategory } =
           req.body as Record<string, string | undefined>;
 
-        // Upload file to StorageService
-        const storageKey = `file-imports/${companyId}/${Date.now()}-${file.originalname}`;
-        await storageService.putFile({
+        // Sanitize filename to prevent path traversal in the storage key
+        const safeName = path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, "_");
+
+        // Upload file to StorageService; use the canonical objectKey it returns
+        const namespace = `file-imports/${companyId}/${Date.now()}-${safeName}`;
+        const stored = await storageService.putFile({
           companyId,
-          namespace: storageKey,
+          namespace,
           originalFilename: file.originalname,
           contentType: file.mimetype,
           body: file.buffer,
@@ -89,7 +93,7 @@ export function fileImportRoutes(db: Db, storageService: StorageService) {
           fileName: file.originalname,
           mimeType: file.mimetype,
           fileSize: file.size,
-          storageKey,
+          storageKey: stored.objectKey,  // use canonical key from storage provider
           createdBy: actor.actorId,
           departmentId: departmentId ?? null,
           projectId: projectId ?? null,
