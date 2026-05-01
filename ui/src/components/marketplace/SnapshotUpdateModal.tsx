@@ -11,13 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { MergeDiffPane } from "./MergeDiffPane";
 import { useToast } from "@/context/ToastContext";
-
-interface SectionDiff {
-  header: string;
-  state: "unchanged" | "changed" | "added" | "removed";
-  mine: string;
-  theirs: string;
-}
+import type { SectionDiff } from "./types.js";
 
 interface DiffResponse {
   diff: SectionDiff[];

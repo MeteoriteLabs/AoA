@@ -2,13 +2,7 @@ import { useState, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-
-interface SectionDiff {
-  header: string;
-  state: "unchanged" | "changed" | "added" | "removed";
-  mine: string;
-  theirs: string;
-}
+import type { SectionDiff } from "./types.js";
 
 interface MergeDiffPaneProps {
   sections: SectionDiff[];
