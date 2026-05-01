@@ -41,9 +41,12 @@ function buildApp() {
   const app = express();
   app.use(express.json());
 
-  // Inject board actor on every request
+  // Inject board actor on every request.
+  // source: "local_implicit" bypasses the RBAC gate added in M.4.M so this
+  // test suite can focus on install mechanics rather than permission logic
+  // (RBAC is covered separately by marketplace-rbac.test.ts).
   app.use((req, _res, next) => {
-    (req as any).actor = { type: "board", source: "test", userId: "u1", companyId: "c1" };
+    (req as any).actor = { type: "board", source: "local_implicit", userId: "u1", companyId: "c1" };
     next();
   });
 

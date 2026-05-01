@@ -307,10 +307,11 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     const catalogItem = catalog?.items.find((i) => i.id === catalogItemId);
     const itemName = catalogItem?.name ?? catalogItemId;
 
-    // Notify founders of the install request (reuses install_completed notification
-    // with a "request:" prefix so founders can distinguish in their inbox)
+    const requestingUserId = req.actor.userId ?? "unknown";
+
+    // Notify founders of the install request via the distinct install_requested type
     void marketplaceNotifications
-      .installCompleted(db, companyId, `Install request: ${itemName}`, "request")
+      .installRequested(db, companyId, itemName, requestingUserId)
       .catch(() => {});
 
     res.status(202).json({ queued: true });

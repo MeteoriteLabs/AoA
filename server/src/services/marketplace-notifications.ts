@@ -4,6 +4,7 @@
  * Emits notifications to company founders for marketplace events:
  * - marketplace.install_completed
  * - marketplace.install_failed
+ * - marketplace.install_requested
  * - marketplace.update_available
  * - marketplace.update_completed
  * - marketplace.update_failed
@@ -63,6 +64,14 @@ export const marketplaceNotifications = {
       message: "Marketplace install completed successfully.",
       relatedEntityType: "marketplace_operation",
       relatedEntityId: operationId,
+    }),
+
+  installRequested: (db: Db, companyId: string, catalogItemName: string, requestingUserId: string) =>
+    notifyFounders(db, companyId, {
+      type: "marketplace.install_requested",
+      title: `Install requested: ${catalogItemName}`,
+      message: `User ${requestingUserId} requested installation of ${catalogItemName}.`,
+      relatedEntityType: "marketplace_operation",
     }),
 
   installFailed: (db: Db, companyId: string, catalogItemName: string, error: string) =>

@@ -248,6 +248,7 @@ export const LIVE_EVENT_TYPES = [
   "marketplace.install.started",
   "marketplace.install.completed",
   "marketplace.install.failed",
+  "marketplace.install_requested",
   // Marketplace update (M.4)
   "marketplace.update.completed",
   "marketplace.update.failed",
@@ -656,6 +657,7 @@ export const NOTIFICATION_TYPES = [
   "internal_agent.action_result",
   "marketplace.install_completed",
   "marketplace.install_failed",
+  "marketplace.install_requested",
   "marketplace.update_available",
   "marketplace.update_completed",
   "marketplace.update_failed",
