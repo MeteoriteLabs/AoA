@@ -17,7 +17,7 @@ import mammoth from "mammoth";
 import type { Db } from "@armyofagents/db";
 import { fileImportJobs, memoryItems } from "@armyofagents/db";
 import type { StorageService } from "../storage/types.js";
-import { extractionService } from "./extraction.js";
+import { extractionService, type ExtractedItem } from "./extraction.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -163,4 +163,98 @@ export function chunkTextToParagraphs(
       tags: [],
     } as MemoryItemInsert;
   });
+}
+
+// ── Stage 2: extractItemsFromText (THE SEAM) ─────────────────────────────
+//
+// TODO: Commander sub-agent extraction — when the Commander sub-agent
+// architecture lands for Discussions, swap this function here.
+// processorType will be "commander_extraction" in that path.
+
+async function extractItemsFromText(
+  text: string,
+  job: typeof fileImportJobs.$inferSelect,
+  db: Db,
+): Promise<{ items: MemoryItemInsert[]; processorType: string }> {
+  // Attempt LLM extraction via extractionService
+  const extracted = await extractionService(db)
+    .extractFromRawText(job.companyId, text)
+    .catch(() => []);
+
+  if (extracted.length > 0) {
+    // Filter out "task" type — file imports create memory items, not issues
+    const items = extracted
+      .filter((item: ExtractedItem) => item.type !== "task")
+      .map((item: ExtractedItem): MemoryItemInsert => ({
+        companyId: job.companyId,
+        title: item.title,
+        content: item.description,   // ExtractedItem uses 'description'; memory uses 'content'
+        category: item.type,         // decision/insight/context/reference/preference
+        layer: item.layer ?? job.defaultLayer,
+        source: "import",
+        sourceContext: `file:${job.fileName}`,
+        status: "pending",
+        departmentId: job.departmentId ?? null,
+        projectId: job.projectId ?? null,
+        importJobId: job.id,
+        createdBy: job.createdBy,
+        tags: [],
+      }));
+    return { items, processorType: "llm_extraction" };
+  }
+
+  // Fallback: paragraph chunking (no LLM required)
+  return {
+    items: chunkTextToParagraphs(text, job),
+    processorType: "text_chunking",
+  };
+}
+
+// ── fileImportService CRUD ────────────────────────────────────────────────
+
+export interface CreateJobInput {
+  companyId: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  storageKey: string;
+  createdBy: string;
+  departmentId?: string | null;
+  projectId?: string | null;
+  defaultLayer?: string;
+  defaultCategory?: string;
+}
+
+export function fileImportService(db: Db, _storageService: StorageService) {
+  return {
+    createJob: async (input: CreateJobInput) => {
+      const [job] = await db
+        .insert(fileImportJobs)
+        .values({
+          companyId: input.companyId,
+          fileName: input.fileName,
+          mimeType: input.mimeType,
+          fileSize: input.fileSize,
+          storageKey: input.storageKey,
+          createdBy: input.createdBy,
+          departmentId: input.departmentId ?? null,
+          projectId: input.projectId ?? null,
+          defaultLayer: input.defaultLayer ?? "domain",
+          defaultCategory: input.defaultCategory ?? "reference",
+          status: "pending",
+        })
+        .returning();
+      return job;
+    },
+
+    getJob: async (companyId: string, jobId: string) => {
+      const rows = await db
+        .select()
+        .from(fileImportJobs)
+        .where(
+          and(eq(fileImportJobs.id, jobId), eq(fileImportJobs.companyId, companyId)),
+        );
+      return rows[0] ?? null;
+    },
+  };
 }

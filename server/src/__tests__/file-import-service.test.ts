@@ -141,3 +141,60 @@ describe("chunkTextToParagraphs", () => {
     expect(items[0].title.endsWith("…")).toBe(true);
   });
 });
+
+// ── fileImportService ──────────────────────────────────────────────────────
+
+function makeDb(selects: unknown[][] = [], updates: unknown[][] = [], inserts: unknown[][] = []) {
+  let si = 0, ui = 0, ii = 0;
+  const makeChain = (getResult: () => unknown[]) => {
+    const c: Record<string, unknown> = {};
+    for (const m of ["from","where","set","values","returning","orderBy","limit"]) {
+      c[m] = (..._a: unknown[]) => c;
+    }
+    c.then = (resolve: (v: unknown[]) => unknown) => Promise.resolve(resolve(getResult()));
+    return c;
+  };
+  return {
+    select: (..._a: unknown[]) => makeChain(() => selects[si++] ?? []),
+    update: (..._a: unknown[]) => makeChain(() => updates[ui++] ?? []),
+    insert: (..._a: unknown[]) => makeChain(() => inserts[ii++] ?? []),
+  };
+}
+
+describe("fileImportService.createJob", () => {
+  it("inserts a job and returns it", async () => {
+    const { fileImportService } = await import("../services/file-import.js");
+    const job = { id: "job-1", companyId: "co-1", fileName: "doc.pdf", mimeType: "application/pdf", fileSize: 1000, storageKey: "key/doc.pdf", status: "pending", itemCount: 0, retryCount: 0, defaultLayer: "domain", defaultCategory: "reference", createdBy: "user-1", retryAfter: null, processorType: null, errorMessage: null, parserWarnings: null, departmentId: null, projectId: null, completedAt: null, createdAt: new Date(), updatedAt: new Date() };
+    const db = makeDb([], [], [[job]]);
+    const storageService = {} as any;
+    const svc = fileImportService(db as any, storageService);
+    const result = await svc.createJob({
+      companyId: "co-1",
+      fileName: "doc.pdf",
+      mimeType: "application/pdf",
+      fileSize: 1000,
+      storageKey: "key/doc.pdf",
+      createdBy: "user-1",
+    });
+    expect(result.id).toBe("job-1");
+  });
+});
+
+describe("fileImportService.getJob", () => {
+  it("returns job by id", async () => {
+    const { fileImportService } = await import("../services/file-import.js");
+    const job = { id: "job-1", status: "done", itemCount: 5 };
+    const db = makeDb([[job]]);
+    const svc = fileImportService(db as any, {} as any);
+    const result = await svc.getJob("co-1", "job-1");
+    expect(result?.id).toBe("job-1");
+  });
+
+  it("returns null when not found", async () => {
+    const { fileImportService } = await import("../services/file-import.js");
+    const db = makeDb([[]]); // empty result
+    const svc = fileImportService(db as any, {} as any);
+    const result = await svc.getJob("co-1", "nonexistent");
+    expect(result).toBeNull();
+  });
+});
