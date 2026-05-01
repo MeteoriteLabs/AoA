@@ -27,7 +27,7 @@ export function pluginRollbackService(db: Db) {
         pluginId,
         version,
         packageName,
-        manifestJson: manifestJson as any,
+        manifestJson,
       });
 
       // Trim to MAX_SNAPSHOTS
