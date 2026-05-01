@@ -25,7 +25,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService, routineService, processFileImportQueue, resetStuckJobs } from "./services/index.js";
+import { heartbeatService, routineService, processFileImportQueue, resetStuckJobs, WORKER_INTERVAL_MS } from "./services/index.js";
 import { probeDbCapabilities } from "./services/db-capabilities.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
@@ -597,7 +597,6 @@ if (config.heartbeatSchedulerEnabled) {
 void resetStuckJobs(db as any).catch((err) =>
   logger.warn({ err }, "resetStuckJobs on startup failed"),
 );
-const FILE_IMPORT_INTERVAL_MS = 15_000;
 let fileImportTickInFlight = false;
 setInterval(() => {
   if (fileImportTickInFlight) return;
@@ -605,7 +604,7 @@ setInterval(() => {
   void processFileImportQueue(db as any, storageService)
     .catch((err) => logger.warn({ err }, "processFileImportQueue tick failed"))
     .finally(() => { fileImportTickInFlight = false; });
-}, FILE_IMPORT_INTERVAL_MS);
+}, WORKER_INTERVAL_MS);
 // No immediate first tick — the first interval fires at T+15s, which is acceptable
 // since resetStuckJobs already ran synchronously above
 

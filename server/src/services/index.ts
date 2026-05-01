@@ -122,4 +122,4 @@ export type { PluginToolRegistry } from "./plugin-tool-registry.js";
 export { createPluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 export type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 
-export { fileImportService, processFileImportQueue, resetStuckJobs } from "./file-import.js";
+export { fileImportService, processFileImportQueue, resetStuckJobs, WORKER_INTERVAL_MS } from "./file-import.js";

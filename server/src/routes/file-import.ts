@@ -3,15 +3,11 @@ import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import type { Db } from "@armyofagents/db";
 import type { StorageService } from "../storage/types.js";
-import { fileImportService } from "../services/file-import.js";
+import { fileImportService, SUPPORTED_MIME_TYPES } from "../services/file-import.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 
-const SUPPORTED_MIME_TYPES = new Set([
-  "application/pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "text/plain",
-]);
+const SUPPORTED_MIME_TYPES_SET = new Set<string>(SUPPORTED_MIME_TYPES);
 
 const MAX_FILE_SIZE_BYTES =
   Number(process.env.AOA_FILE_MAX_BYTES) || 50 * 1024 * 1024;
@@ -64,7 +60,7 @@ export function fileImportRoutes(db: Db, storageService: StorageService) {
           return;
         }
 
-        if (!SUPPORTED_MIME_TYPES.has(file.mimetype)) {
+        if (!SUPPORTED_MIME_TYPES_SET.has(file.mimetype)) {
           res.status(400).json({
             error: `Unsupported file type: ${file.mimetype}. Supported: PDF, DOCX, TXT`,
           });
