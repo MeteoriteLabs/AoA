@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
+import { PluginRollbackButton } from "@/components/marketplace/PluginRollbackButton";
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -412,6 +413,10 @@ export function PluginManager() {
                         >
                           <Power className={cn("h-4 w-4", plugin.status === "ready" ? "text-green-600" : "")} />
                         </Button>
+                        <PluginRollbackButton
+                          pluginId={plugin.id}
+                          currentVersion={plugin.manifestJson.version ?? plugin.version}
+                        />
                         <Button
                           variant="outline"
                           size="icon-sm"
