@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { usePendingUpdates, useDismissUpdate } from "@/hooks/usePendingUpdates";
 import { UpdateCard } from "@/components/marketplace/UpdateCard";
 import { MarketplaceLayout } from "@/components/marketplace/MarketplaceLayout";
 import { CheckCircle } from "lucide-react";
 import type { PendingUpdate } from "@/api/marketplace";
+import { useToast } from "@/context/ToastContext";
 
 const TYPE_LABELS: Record<string, string> = {
   skill: "Skills",
@@ -14,6 +16,8 @@ const TYPE_LABELS: Record<string, string> = {
 export default function MarketplaceUpdates() {
   const { data: updates, isLoading } = usePendingUpdates();
   const dismiss = useDismissUpdate();
+  const { pushToast } = useToast();
+  const [dismissingId, setDismissingId] = useState<string | null>(null);
 
   if (isLoading) {
     return (
@@ -66,8 +70,17 @@ export default function MarketplaceUpdates() {
                 <UpdateCard
                   key={update.id}
                   update={update}
-                  onDismiss={() => dismiss.mutate(update.id)}
-                  isPending={dismiss.isPending}
+                  onDismiss={async () => {
+                    setDismissingId(update.id);
+                    try {
+                      await dismiss.mutateAsync(update.id);
+                    } catch (err) {
+                      pushToast({ title: "Failed to dismiss update", body: err instanceof Error ? err.message : undefined, tone: "error" });
+                    } finally {
+                      setDismissingId(null);
+                    }
+                  }}
+                  isPending={dismissingId === update.id}
                 />
               ))}
             </div>
