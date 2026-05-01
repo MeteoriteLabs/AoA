@@ -91,7 +91,7 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Install {item.name}</DialogTitle>
           <DialogDescription>{item.description}</DialogDescription>
