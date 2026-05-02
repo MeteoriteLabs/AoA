@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { MarkdownEditorView } from "./MarkdownEditorView";
 import { MemoryApprovalActions } from "../MemoryApprovalActions";
+import { MemoryItemActions } from "../MemoryItemActions";
 
 interface MarkdownItemViewerProps {
   companyId: string;
@@ -83,47 +84,63 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
   const i = item as MemoryItem & {
     layer?: string | null;
     pinnedToSkill?: boolean;
+    folderPath?: string;
+    departmentId?: string | null;
+    founderPinnedToTop?: boolean;
   };
 
   return (
     <div className="h-full flex flex-col">
       <div className="px-6 pt-6 pb-3 border-b border-border">
-        <div className="flex items-center gap-2 text-[10px] mb-2">
-          {i.status && (
-            <span
-              className={cn(
-                "px-2 py-0.5 rounded font-medium uppercase tracking-wider",
-                STATUS_PILL[i.status] ?? "bg-muted text-muted-foreground",
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            {/* chips row */}
+            <div className="flex items-center gap-2 text-[10px] mb-2">
+              {i.status && (
+                <span
+                  className={cn(
+                    "px-2 py-0.5 rounded font-medium uppercase tracking-wider",
+                    STATUS_PILL[i.status] ?? "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {i.status}
+                </span>
               )}
-            >
-              {i.status}
-            </span>
-          )}
-          {i.layer && (
-            <span
-              className={cn(
-                "px-2 py-0.5 rounded font-medium uppercase tracking-wider",
-                LAYER_PILL[i.layer] ?? "bg-muted text-muted-foreground",
+              {i.layer && (
+                <span
+                  className={cn(
+                    "px-2 py-0.5 rounded font-medium uppercase tracking-wider",
+                    LAYER_PILL[i.layer] ?? "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {i.layer.replace("_", " ")}
+                </span>
               )}
-            >
-              {i.layer.replace("_", " ")}
-            </span>
-          )}
-          {i.category && (
-            <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground uppercase tracking-wider font-medium">
-              {i.category}
-            </span>
-          )}
-          {i.pinnedToSkill && (
-            <span
-              className="inline-flex items-center gap-1 text-muted-foreground"
-              title="Pinned to skill"
-            >
-              <Pin className="h-3 w-3" />
-            </span>
-          )}
+              {i.category && (
+                <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground uppercase tracking-wider font-medium">
+                  {i.category}
+                </span>
+              )}
+              {i.pinnedToSkill && (
+                <span
+                  className="inline-flex items-center gap-1 text-muted-foreground"
+                  title="Pinned to skill"
+                >
+                  <Pin className="h-3 w-3" />
+                </span>
+              )}
+            </div>
+            <h1 className="text-xl font-semibold">{i.title}</h1>
+          </div>
+          <MemoryItemActions
+            companyId={companyId}
+            itemId={itemId}
+            currentFolderPath={i.folderPath ?? ""}
+            currentDepartmentId={i.departmentId ?? null}
+            founderPinnedToTop={i.founderPinnedToTop ?? false}
+          />
         </div>
-        <h1 className="text-xl font-semibold">{i.title}</h1>
+        {/* toggle row */}
         <div className="flex items-center gap-2 mt-3">
           <Button
             size="sm"
@@ -144,6 +161,7 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
             Edit
           </Button>
         </div>
+        {/* approval row */}
         {i.status === "pending" && (
           <div className="mt-2">
             <MemoryApprovalActions companyId={companyId} itemId={itemId} />
