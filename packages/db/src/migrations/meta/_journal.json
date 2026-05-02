@@ -526,6 +526,13 @@
       "when": 1746198000000,
       "tag": "0074_memory_folder_path_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1777718392042,
+      "tag": "0075_seed_existing_companies_and_departments",
+      "breakpoints": true
     }
   ]
 }
