@@ -39,6 +39,7 @@ tmp/
 *.tmp
 .vscode/
 .claude/settings.local.json
+.claude/worktrees/
 .paperclip-local/
 .worktrees/
 docs/superpowers/
