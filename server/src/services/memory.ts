@@ -8,6 +8,7 @@ import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { getDbCapabilities } from "./db-capabilities.js";
 import { buildMemoryInsert, memoryItemsSelection } from "./memory-projection.js";
+import { publishLiveEvent } from "./live-events.js";
 
 const log = logger.child({ service: "memory" });
 
@@ -1332,6 +1333,13 @@ export function memoryService(db: Db) {
         .set({ folderPath: path, updatedAt: new Date() })
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .returning();
+      if (row) {
+        publishLiveEvent({
+          type: "memory.item.moved",
+          companyId,
+          payload: { item: row },
+        });
+      }
       return row ?? null;
     },
 
@@ -1341,6 +1349,13 @@ export function memoryService(db: Db) {
         .set({ founderPinnedToTop: pinned, updatedAt: new Date() })
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .returning();
+      if (row) {
+        publishLiveEvent({
+          type: "memory.item.updated",
+          companyId,
+          payload: { item: row },
+        });
+      }
       return row ?? null;
     },
   };

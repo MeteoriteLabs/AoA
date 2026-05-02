@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { memoryAssets } from "@armyofagents/db";
 import { normalizeMemoryFolderPath } from "@armyofagents/shared";
 import { logger } from "../middleware/logger.js";
+import { publishLiveEvent } from "./live-events.js";
 
 const log = logger.child({ service: "memory-assets" });
 
@@ -73,6 +74,11 @@ export function memoryAssetsService(db: Db) {
           extractedItemCount: 0,
         })
         .returning();
+      publishLiveEvent({
+        type: "memory.asset.created",
+        companyId: input.companyId,
+        payload: { asset: row },
+      });
       return row;
     },
 
@@ -86,6 +92,13 @@ export function memoryAssetsService(db: Db) {
         .set(next)
         .where(and(eq(memoryAssets.id, id), eq(memoryAssets.companyId, companyId)))
         .returning();
+      if (row) {
+        publishLiveEvent({
+          type: "memory.asset.updated",
+          companyId,
+          payload: { asset: row },
+        });
+      }
       return row ?? null;
     },
 
@@ -93,6 +106,11 @@ export function memoryAssetsService(db: Db) {
       await db
         .delete(memoryAssets)
         .where(and(eq(memoryAssets.id, id), eq(memoryAssets.companyId, companyId)));
+      publishLiveEvent({
+        type: "memory.asset.deleted",
+        companyId,
+        payload: { id },
+      });
     },
 
     incrementExtractedCount: async (id: string, companyId: string, delta: number): Promise<void> => {
