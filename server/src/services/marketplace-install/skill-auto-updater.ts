@@ -29,6 +29,11 @@ export function isWithinUpdateWindow(setting: UpdateWindow, now: Date = new Date
     case "anytime":   return true;
     case "off_hours": return hour < 8 || hour >= 20;
     case "weekends":  return day === 0 || day === 6;
+    default: {
+      const _exhaustive: never = setting;
+      logger.error({ setting: _exhaustive }, "marketplace: unknown updateWindow setting, defaulting to false");
+      return false;
+    }
   }
 }
 

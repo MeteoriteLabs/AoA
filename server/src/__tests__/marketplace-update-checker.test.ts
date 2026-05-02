@@ -239,4 +239,46 @@ describe("runUpdateCheck — auto policy", () => {
     // Both skills attempted; second succeeds
     expect(applySkillUpdate).toHaveBeenCalledTimes(2);
   });
+
+  it("processes remaining companies even when one company's checkCompany throws", async () => {
+    // Two companies — first one throws at settings fetch, second should still be processed
+    let companySelectCall = 0;
+    const twoCompanyDb = {
+      select: () => {
+        companySelectCall++;
+        if (companySelectCall === 1) {
+          // companies list
+          return { from: () => Promise.resolve([{ id: "c1" }, { id: "c2" }]) };
+        }
+        // skill rows for whichever company's checkCompany is running
+        return { from: () => ({ where: () => Promise.resolve([{ sourceLocator: SKILL_CATALOG_ITEM.id, sourceRef: "1.0.0" }]) }) };
+      },
+      insert: () => ({
+        values: () => ({
+          onConflictDoNothing: () => ({
+            returning: () => Promise.resolve([{ id: "upd-1" }]),
+          }),
+        }),
+      }),
+      update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
+    };
+
+    let settingsCallCount = 0;
+    vi.mocked(marketplaceSettingsService).mockImplementation(() => ({
+      get: vi.fn().mockImplementation(() => {
+        settingsCallCount++;
+        if (settingsCallCount === 1) {
+          // First company — throw to simulate a settings fetch failure
+          return Promise.reject(new Error("Settings DB error for c1"));
+        }
+        // Second company — return valid settings
+        return Promise.resolve({ skillUpdatePolicy: "auto", updateWindow: "anytime" });
+      }),
+    } as any));
+
+    await runUpdateCheck(twoCompanyDb as any, [SKILL_CATALOG_ITEM]);
+
+    // applySkillUpdate should have been called for company c2 (despite c1 failing)
+    expect(applySkillUpdate).toHaveBeenCalledOnce();
+  });
 });

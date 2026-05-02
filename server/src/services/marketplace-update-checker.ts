@@ -46,7 +46,11 @@ export async function runUpdateCheck(db: Db, catalogItems: CatalogItem[]): Promi
   const allCompanies = await db.select({ id: companies.id }).from(companies);
 
   for (const company of allCompanies) {
-    await checkCompany(db, catalogItems, company.id);
+    try {
+      await checkCompany(db, catalogItems, company.id);
+    } catch (err) {
+      logger.error({ err, companyId: company.id }, "marketplace-update-checker: error processing company");
+    }
   }
 }
 
