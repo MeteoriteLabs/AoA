@@ -40,6 +40,16 @@ export function memoryItemsSelection(hasVector?: boolean) {
     accessedAt: memoryItems.accessedAt,
     currentVersionId: memoryItems.currentVersionId,
     embeddingRetries: memoryItems.embeddingRetries,
+    // V2.6 (memory branch Phase 0): agent-personal scope + extraction tracking
+    agentId: memoryItems.agentId,
+    validationCount: memoryItems.validationCount,
+    lastValidatedAt: memoryItems.lastValidatedAt,
+    pinnedToSkill: memoryItems.pinnedToSkill,
+    importJobId: memoryItems.importJobId,
+    // Phase 6.0: explorer tree
+    folderPath: memoryItems.folderPath,
+    lastAccessedByUserId: memoryItems.lastAccessedByUserId,
+    founderPinnedToTop: memoryItems.founderPinnedToTop,
     createdAt: memoryItems.createdAt,
     updatedAt: memoryItems.updatedAt,
   };
@@ -73,6 +83,16 @@ const MEMORY_COLUMN_MAP: Record<string, string> = {
   currentVersionId: "current_version_id",
   embedding: "embedding",
   embeddingRetries: "embedding_retries",
+  // V2.6 (memory branch Phase 0): agent-personal scope + extraction tracking
+  agentId: "agent_id",
+  validationCount: "validation_count",
+  lastValidatedAt: "last_validated_at",
+  pinnedToSkill: "pinned_to_skill",
+  importJobId: "import_job_id",
+  // Phase 6.0: explorer tree
+  folderPath: "folder_path",
+  lastAccessedByUserId: "last_accessed_by_user_id",
+  founderPinnedToTop: "founder_pinned_to_top",
   createdAt: "created_at",
   updatedAt: "updated_at",
 };

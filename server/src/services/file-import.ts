@@ -19,6 +19,8 @@ import { fileImportJobs, memoryItems } from "@armyofagents/db";
 import type { StorageService } from "../storage/types.js";
 import { extractionService, type ExtractedItem } from "./extraction.js";
 import { logger } from "../middleware/logger.js";
+import { buildMemoryInsert } from "./memory-projection.js";
+import { getDbCapabilities } from "./db-capabilities.js";
 
 const log = logger.child({ service: "file-import" });
 
@@ -324,9 +326,19 @@ async function processOneJob(
     // Atomically insert memory items and mark done.
     // Prevents duplicate items if the server crashes between the two writes
     // (resetStuckJobs would reset to 'pending' and re-run the job).
+    //
+    // We use buildMemoryInsert (memory-projection.ts) instead of Drizzle's
+    // .insert(memoryItems).values() because Drizzle 0.38 enumerates every
+    // schema column in the INSERT (filling unspecified ones with DEFAULT) so
+    // ON CONFLICT / RETURNING slots match. When pgvector is unavailable the
+    // physical schema lacks the `embedding` column, and Drizzle's emitted SQL
+    // 500s with "column embedding does not exist" even though we set no value.
+    // buildMemoryInsert tracks the runtime capability and emits only the
+    // columns that actually exist.
+    const hasVector = getDbCapabilities().hasVectorSupport;
     await db.transaction(async (tx) => {
-      if (items.length > 0) {
-        await tx.insert(memoryItems).values(items);
+      for (const item of items) {
+        await buildMemoryInsert(tx as unknown as Db, item as Record<string, unknown>, hasVector);
       }
       await tx
         .update(fileImportJobs)
