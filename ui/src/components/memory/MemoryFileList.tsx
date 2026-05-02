@@ -23,6 +23,7 @@ interface MemoryFileListProps {
   departmentId: string | null;
   selectedItemId: string | null;
   selectedItemType: "memory_item" | "asset" | null;
+  searchQuery?: string;
 }
 
 interface ListRow {
@@ -70,6 +71,7 @@ export function MemoryFileList({
   departmentId,
   selectedItemId,
   selectedItemType,
+  searchQuery,
 }: MemoryFileListProps) {
   const navigate = useNavigate();
   const { selectedCompany } = useCompany();
@@ -123,6 +125,17 @@ export function MemoryFileList({
     );
   }, [itemsQuery.data, assetsQuery.data, folderPath]);
 
+  const filteredRows = useMemo(() => {
+    if (!searchQuery?.trim()) return rows;
+    const q = searchQuery.toLowerCase();
+    return rows.filter(
+      (r) =>
+        r.name.toLowerCase().includes(q) ||
+        (r.category ?? "").toLowerCase().includes(q) ||
+        (r.mimeType ?? "").toLowerCase().includes(q),
+    );
+  }, [rows, searchQuery]);
+
   function selectRow(row: ListRow) {
     const params = new URLSearchParams(window.location.search);
     params.set("item", row.id);
@@ -145,7 +158,7 @@ export function MemoryFileList({
       <div className="flex items-center px-3 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground gap-2">
         <span className="truncate">{folderPath}</span>
         <span className="flex-1" />
-        <span className="text-[10px] text-muted-foreground">{rows.length}</span>
+        <span className="text-[10px] text-muted-foreground">{filteredRows.length}</span>
       </div>
       <div className="flex-1 overflow-auto">
         {isLoading ? (
@@ -154,12 +167,12 @@ export function MemoryFileList({
             <Skeleton className="h-12 w-full" />
             <Skeleton className="h-12 w-full" />
           </div>
-        ) : rows.length === 0 ? (
+        ) : filteredRows.length === 0 ? (
           <div className="px-3 py-6 text-xs text-muted-foreground text-center">
             No items in this folder
           </div>
         ) : (
-          rows.map((row) => {
+          filteredRows.map((row) => {
             const Icon = iconForRow(row);
             const isSel =
               row.id === selectedItemId && row.kind === selectedItemType;

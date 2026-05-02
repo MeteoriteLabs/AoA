@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "@/lib/router";
 import { Brain } from "lucide-react";
 import { Group, Panel, Separator } from "react-resizable-panels";
@@ -6,6 +6,7 @@ import { MemoryTree } from "../components/memory/MemoryTree";
 import { MemoryFileList } from "../components/memory/MemoryFileList";
 import { MemoryViewer } from "../components/memory/MemoryViewer";
 import { MemoryUploadButton } from "../components/memory/MemoryUploadButton";
+import { MemoryScopedSearch } from "../components/memory/MemoryScopedSearch";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -23,6 +24,8 @@ export function MemoryExplorer() {
     | "asset"
     | null;
 
+  const [searchQuery, setSearchQuery] = useState("");
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Memory" }, { label: "Explorer" }]);
     setEntityColor("var(--entity-memory)");
@@ -39,6 +42,8 @@ export function MemoryExplorer() {
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-end gap-2 px-3 py-2 border-b border-border bg-card/30">
+        <MemoryScopedSearch value={searchQuery} onChange={setSearchQuery} />
+        <span className="flex-1" />
         <MemoryUploadButton
           companyId={selectedCompanyId}
           departmentId={departmentId}
@@ -80,6 +85,7 @@ export function MemoryExplorer() {
             departmentId={departmentId}
             selectedItemId={selectedItemId}
             selectedItemType={selectedItemType}
+            searchQuery={searchQuery}
           />
         </Panel>
         <Separator
