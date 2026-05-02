@@ -20,6 +20,7 @@ import { Goals } from "./pages/Goals";
 import { GoalDetail } from "./pages/GoalDetail";
 import { Memory } from "./pages/Memory";
 import { MemoryExplorer } from "./pages/MemoryExplorer";
+import { MemoryHome } from "./pages/MemoryHome";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Inbox } from "./pages/Inbox";
@@ -165,8 +166,9 @@ function boardRoutes() {
       <Route path="briefs/:briefId" element={<Navigate to="/discussions" replace />} />
       <Route path="debriefs" element={<Navigate to="/discussions" replace />} />
       <Route path="active-agents" element={<ActiveAgents />} />
-      {/* Phase 6: new explorer is the default at /memory; old filter-list page kept at /memory/legacy as a safety net for one minor version. */}
-      <Route path="memory" element={<MemoryExplorer />} />
+      {/* Phase 6.1d: home at /memory, explorer at /memory/explore, legacy kept as safety net. */}
+      <Route path="memory" element={<MemoryHome />} />
+      <Route path="memory/explore" element={<MemoryExplorer />} />
       <Route path="memory/legacy" element={<Memory />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />
