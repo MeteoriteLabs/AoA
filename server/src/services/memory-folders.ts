@@ -2,7 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { memoryFolders } from "@armyofagents/db";
 import { normalizeMemoryFolderPath } from "@armyofagents/shared";
-import { getSeedFoldersForFunctionType } from "./memory-folder-seeds.js";
+import { getSeedFoldersForFunctionType, COMPANY_SEED_FOLDERS } from "./memory-folder-seeds.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 
@@ -163,4 +163,35 @@ export async function seedFoldersOnDepartmentCreate(
     departmentSlug: input.project.urlKey,
     functionType: input.project.functionType,
   });
+}
+
+/**
+ * Phase 6.0 polish: seed the Company root folder for a new company. Best-effort
+ * — duplicate key violations (from a re-run on a company that already has the
+ * folder) are caught and ignored. The unique index on (companyId, path)
+ * provides the idempotency guarantee at the DB level.
+ */
+export async function seedCompanyRootFolder(
+  svc: MemoryFoldersService,
+  input: { companyId: string },
+): Promise<void> {
+  const seed = COMPANY_SEED_FOLDERS[0];
+  if (!seed) return;
+  try {
+    await svc.create({
+      companyId: input.companyId,
+      departmentId: null,
+      path: seed.path,
+      displayName: seed.displayName,
+      icon: seed.icon ?? null,
+      seedKey: seed.seedKey,
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("memory_folders_unique_path_per_company")) {
+      // Already seeded — fine. Best-effort idempotence.
+      return;
+    }
+    throw err;
+  }
 }

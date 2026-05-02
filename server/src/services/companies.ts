@@ -1,5 +1,7 @@
 import { eq, count } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
+import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
+import { logger } from "../middleware/logger.js";
 import {
   companies,
   agents,
@@ -81,7 +83,13 @@ export function companyService(db: Db) {
           .insert(companies)
           .values({ ...data, issuePrefix: candidate })
           .returning();
-        return rows[0];
+        const company = rows[0];
+        await seedCompanyRootFolder(memoryFoldersService(db), {
+          companyId: company.id,
+        }).catch((err: unknown) => {
+          logger.warn({ err, companyId: company.id }, "memory company-root folder seeding failed");
+        });
+        return company;
       } catch (error) {
         if (!isIssuePrefixConflict(error)) throw error;
       }
