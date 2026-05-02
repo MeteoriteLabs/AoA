@@ -19,6 +19,7 @@ import { Issues } from "./pages/Issues";
 import { Goals } from "./pages/Goals";
 import { GoalDetail } from "./pages/GoalDetail";
 import { Memory } from "./pages/Memory";
+import { MemoryExplorer } from "./pages/MemoryExplorer";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Inbox } from "./pages/Inbox";
@@ -165,6 +166,7 @@ function boardRoutes() {
       <Route path="debriefs" element={<Navigate to="/discussions" replace />} />
       <Route path="active-agents" element={<ActiveAgents />} />
       <Route path="memory" element={<Memory />} />
+      <Route path="memory/explore" element={<MemoryExplorer />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
