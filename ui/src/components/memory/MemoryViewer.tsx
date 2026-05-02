@@ -7,6 +7,7 @@ import { PdfFileViewer } from "./viewers/PdfFileViewer";
 import { ImageFileViewer } from "./viewers/ImageFileViewer";
 import { VideoFileViewer } from "./viewers/VideoFileViewer";
 import { GenericFileViewer } from "./viewers/GenericFileViewer";
+import { DocxFileViewer } from "./viewers/DocxFileViewer";
 import { memoryAssetsApi } from "../../api/memoryAssets";
 import { queryKeys } from "../../lib/queryKeys";
 
@@ -31,6 +32,7 @@ function AssetViewerSlot({ companyId, assetId }: { companyId: string; assetId: s
     );
   }
   const mt = asset.mimeType;
+  const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
   if (mt === "application/pdf") {
     return <PdfFileViewer companyId={companyId} assetId={assetId} />;
   }
@@ -39,6 +41,9 @@ function AssetViewerSlot({ companyId, assetId }: { companyId: string; assetId: s
   }
   if (mt.startsWith("video/")) {
     return <VideoFileViewer companyId={companyId} assetId={assetId} />;
+  }
+  if (mt === DOCX_MIME) {
+    return <DocxFileViewer companyId={companyId} assetId={assetId} />;
   }
   return <GenericFileViewer companyId={companyId} assetId={assetId} />;
 }

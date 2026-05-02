@@ -30,6 +30,10 @@ export const memoryAssetsApi = {
     return `/api/companies/${companyId}/memory/assets/${id}/content`;
   },
 
+  /** Returns the URL the browser can hit to fetch a server-rendered HTML view of the asset (DOCX today). */
+  renderUrl: (companyId: string, id: string): string =>
+    `/api/companies/${companyId}/memory/assets/${id}/render`,
+
   update: async (
     companyId: string,
     id: string,
