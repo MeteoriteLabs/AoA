@@ -25,7 +25,7 @@ export default function MarketplaceUpdates() {
 
   if (isLoading) {
     return (
-      <MarketplaceLayout breadcrumbs={[{ label: "Updates" }]} actions={null}>
+      <MarketplaceLayout breadcrumbs={[{ label: "Updates" }]} actions={undefined}>
         <div className="p-8 text-sm text-muted-foreground">Loading updates...</div>
       </MarketplaceLayout>
     );
@@ -43,7 +43,7 @@ export default function MarketplaceUpdates() {
 
   if (pending.length === 0) {
     return (
-      <MarketplaceLayout breadcrumbs={[{ label: "Updates" }]} actions={null}>
+      <MarketplaceLayout breadcrumbs={[{ label: "Updates" }]} actions={undefined}>
         <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
           <CheckCircle className="h-8 w-8 text-muted-foreground" />
           <p className="text-sm font-medium">All up to date</p>
@@ -57,7 +57,7 @@ export default function MarketplaceUpdates() {
 
   return (
     <>
-      <MarketplaceLayout breadcrumbs={[{ label: "Updates" }]} actions={null}>
+      <MarketplaceLayout breadcrumbs={[{ label: "Updates" }]} actions={undefined}>
         <div className="space-y-6 max-w-3xl mx-auto">
           <div>
             <h1 className="text-lg font-semibold">Updates</h1>

@@ -126,7 +126,7 @@ export default function Marketplace() {
   // ── Loading ──────────────────────────────────────────────────────────────
   if (isLoading) {
     return (
-      <MarketplaceLayout actions={null}>
+      <MarketplaceLayout actions={undefined}>
         <div className="max-w-5xl mx-auto px-8 py-8 space-y-6">
           <Skeleton className="h-24 w-2/3" />
           <Skeleton className="h-11 w-full" />
@@ -143,7 +143,7 @@ export default function Marketplace() {
 
   if (error) {
     return (
-      <MarketplaceLayout actions={null}>
+      <MarketplaceLayout actions={undefined}>
         <div className="text-center py-20">
           <p className="text-lg font-medium">Could not load the marketplace</p>
           <p className="text-sm text-muted-foreground mt-2">{error.message || "Unknown error"}</p>
@@ -154,7 +154,7 @@ export default function Marketplace() {
 
   // ── Page ─────────────────────────────────────────────────────────────────
   return (
-    <MarketplaceLayout actions={null}>
+    <MarketplaceLayout actions={undefined}>
       <div className="max-w-5xl mx-auto px-8 py-8">
 
         {/* Hero */}
