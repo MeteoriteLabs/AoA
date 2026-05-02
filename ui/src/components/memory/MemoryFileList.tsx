@@ -65,6 +65,12 @@ function formatRelative(isoOrDate: string): string {
   return `${Math.floor(days / 365)}y`;
 }
 
+function folderLabel(path: string): string {
+  if (path === "__pinned") return "📌 Pinned";
+  if (path === "__pending") return "📋 Pending Review";
+  return path;
+}
+
 export function MemoryFileList({
   companyId,
   folderPath,
@@ -76,6 +82,9 @@ export function MemoryFileList({
   const navigate = useNavigate();
   const { selectedCompany } = useCompany();
   const companyPrefix = selectedCompany?.issuePrefix ?? "";
+
+  const isVirtualFolder =
+    folderPath === "__pinned" || folderPath === "__pending";
 
   const itemsQuery = useQuery({
     queryKey: [...queryKeys.memory.list(companyId), { folderPath, departmentId }],
@@ -94,36 +103,54 @@ export function MemoryFileList({
         departmentId: departmentId ?? undefined,
         folderPath,
       }),
-    enabled: Boolean(folderPath),
+    enabled: Boolean(folderPath) && !isVirtualFolder,
   });
 
   const rows = useMemo<ListRow[]>(() => {
-    const items = (itemsQuery.data ?? [])
-      .filter((it: MemoryItem) => (it as MemoryItem & { folderPath?: string }).folderPath === folderPath)
-      .map<ListRow>((it: MemoryItem) => ({
+    const allItems = (itemsQuery.data ?? []) as Array<
+      MemoryItem & {
+        folderPath?: string;
+        founderPinnedToTop?: boolean;
+      }
+    >;
+
+    const items = allItems
+      .filter((it) => {
+        if (folderPath === "__pinned") return it.founderPinnedToTop === true;
+        if (folderPath === "__pending") return it.status === "pending";
+        return it.folderPath === folderPath;
+      })
+      .map<ListRow>((it) => ({
         kind: "memory_item",
         id: it.id,
         name: it.title,
         category: it.category,
         status: it.status,
-        modifiedAt: typeof it.updatedAt === "string" ? it.updatedAt : new Date(it.updatedAt).toISOString(),
+        modifiedAt:
+          typeof it.updatedAt === "string"
+            ? it.updatedAt
+            : new Date(it.updatedAt).toISOString(),
         raw: it,
       }));
 
-    const assets = (assetsQuery.data ?? []).map<ListRow>((a: MemoryAssetRecord) => ({
-      kind: "asset",
-      id: a.id,
-      name: a.fileName,
-      mimeType: a.mimeType,
-      status: undefined,
-      modifiedAt: a.updatedAt,
-      raw: a,
-    }));
+    // Virtual folders show items only — assets don't have pin/approval state.
+    const assets = isVirtualFolder
+      ? []
+      : (assetsQuery.data ?? []).map<ListRow>((a: MemoryAssetRecord) => ({
+          kind: "asset",
+          id: a.id,
+          name: a.fileName,
+          mimeType: a.mimeType,
+          status: undefined,
+          modifiedAt: a.updatedAt,
+          raw: a,
+        }));
 
     return [...items, ...assets].sort(
-      (a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime(),
+      (a, b) =>
+        new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime(),
     );
-  }, [itemsQuery.data, assetsQuery.data, folderPath]);
+  }, [itemsQuery.data, assetsQuery.data, folderPath, isVirtualFolder]);
 
   const filteredRows = useMemo(() => {
     if (!searchQuery?.trim()) return rows;
@@ -156,7 +183,7 @@ export function MemoryFileList({
   return (
     <div className="h-full flex flex-col bg-card/30">
       <div className="flex items-center px-3 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground gap-2">
-        <span className="truncate">{folderPath}</span>
+        <span className="truncate">{folderLabel(folderPath)}</span>
         <span className="flex-1" />
         <span className="text-[10px] text-muted-foreground">{filteredRows.length}</span>
       </div>

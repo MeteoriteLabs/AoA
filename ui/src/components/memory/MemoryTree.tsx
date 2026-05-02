@@ -3,7 +3,8 @@ import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { ChevronLeft } from "lucide-react";
-import type { MemoryFolderRecord, Project } from "@armyofagents/shared";
+import type { MemoryFolderRecord, MemoryItem, Project } from "@armyofagents/shared";
+import { memoryApi } from "../../api/memory";
 import { memoryFoldersApi } from "../../api/memoryFolders";
 import { projectsApi } from "../../api/projects";
 import { queryKeys } from "../../lib/queryKeys";
@@ -52,6 +53,12 @@ export function MemoryTree({
     queryFn: () => projectsApi.list(companyId),
   });
 
+  const { data: items } = useQuery({
+    queryKey: queryKeys.memory.list(companyId),
+    queryFn: () => memoryApi.list(companyId, {}),
+    enabled: Boolean(companyId),
+  });
+
   const departments = useMemo<Project[]>(
     () =>
       (projects ?? []).filter(
@@ -60,10 +67,20 @@ export function MemoryTree({
     [projects],
   );
 
-  const tree = useMemo(() => buildTree(folders ?? [], departments), [
-    folders,
-    departments,
-  ]);
+  const counts = useMemo(() => {
+    const all = (items ?? []) as Array<
+      MemoryItem & { founderPinnedToTop?: boolean }
+    >;
+    return {
+      pinned: all.filter((it) => it.founderPinnedToTop === true).length,
+      pending: all.filter((it) => it.status === "pending").length,
+    };
+  }, [items]);
+
+  const tree = useMemo(
+    () => buildTree(folders ?? [], departments, counts),
+    [folders, departments, counts],
+  );
 
   function toggleExpand(key: string) {
     setExpanded((prev) => {
@@ -138,6 +155,7 @@ export function MemoryTree({
 function buildTree(
   folders: MemoryFolderRecord[],
   departments: Project[],
+  counts: { pinned: number; pending: number },
 ): TreeNode[] {
   const companyFolders = folders.filter((f) => f.departmentId === null);
   const deptFolderGroups = new Map<string, MemoryFolderRecord[]>();
@@ -155,9 +173,20 @@ function buildTree(
     key: "__pinned",
     label: "Pinned",
     icon: "📌",
+    count: counts.pinned > 0 ? counts.pinned : undefined,
     depth: 0,
     hasChildren: false,
     target: { folder: "__pinned", dept: null },
+  });
+
+  top.push({
+    key: "__pending",
+    label: "Pending Review",
+    icon: "📋",
+    count: counts.pending > 0 ? counts.pending : undefined,
+    depth: 0,
+    hasChildren: false,
+    target: { folder: "__pending", dept: null },
   });
 
   const companyRoot = companyFolders.find((f) => f.path === "Company");
