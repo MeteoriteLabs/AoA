@@ -6,6 +6,7 @@ import {
   suggestMemoryUpdateSchema,
   updateMemoryItemSchema,
 } from "@armyofagents/shared";
+import { z } from "zod";
 import { validate } from "../middleware/validate.js";
 import { forbidden } from "../errors.js";
 import { memoryService, logActivity } from "../services/index.js";
@@ -537,6 +538,64 @@ export function memoryRoutes(db: Db) {
     }
     res.json(item);
   });
+
+  // Phase 6: tree move + pin-to-top
+  router.patch(
+    "/companies/:companyId/memory/items/:id/move",
+    async (req, res, next) => {
+      try {
+        const companyId = req.params.companyId as string;
+        const id = req.params.id as string;
+        assertCompanyAccess(req, companyId);
+        const parsed = z
+          .object({ folderPath: z.string().min(1).max(512) })
+          .safeParse(req.body);
+        if (!parsed.success) {
+          res.status(400).json({ error: parsed.error.flatten() });
+          return;
+        }
+        // Validate path shape via the same rules folders use.
+        const { memoryFolderUpdateSchema } = await import("@armyofagents/shared");
+        const pathOnly = memoryFolderUpdateSchema.pick({ path: true }).safeParse({ path: parsed.data.folderPath });
+        if (!pathOnly.success) {
+          res.status(400).json({ error: pathOnly.error.flatten() });
+          return;
+        }
+        const updated = await svc.moveItem(id, companyId, parsed.data.folderPath);
+        if (!updated) {
+          res.status(404).json({ error: "Memory item not found" });
+          return;
+        }
+        res.json(updated);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/memory/items/:id/pin-to-top",
+    async (req, res, next) => {
+      try {
+        const companyId = req.params.companyId as string;
+        const id = req.params.id as string;
+        assertCompanyAccess(req, companyId);
+        const parsed = z.object({ pinned: z.boolean() }).safeParse(req.body);
+        if (!parsed.success) {
+          res.status(400).json({ error: parsed.error.flatten() });
+          return;
+        }
+        const updated = await svc.setPinnedToTop(id, companyId, parsed.data.pinned);
+        if (!updated) {
+          res.status(404).json({ error: "Memory item not found" });
+          return;
+        }
+        res.json(updated);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
   return router;
 }
