@@ -41,4 +41,29 @@ export const memoryAssetsApi = {
   remove: async (companyId: string, id: string): Promise<void> => {
     return api.delete(`/companies/${companyId}/memory/assets/${id}`);
   },
+
+  upload: async (
+    companyId: string,
+    file: File,
+    params: { departmentId?: string; folderPath?: string } = {},
+  ): Promise<{ asset: MemoryAssetRecord; jobId: string }> => {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (params.departmentId) formData.append("departmentId", params.departmentId);
+    if (params.folderPath) formData.append("folderPath", params.folderPath);
+    const r = await fetch(`/api/companies/${companyId}/memory/assets/upload`, {
+      method: "POST",
+      body: formData,
+      credentials: "include",
+    });
+    if (!r.ok) {
+      let msg = `Upload failed (HTTP ${r.status})`;
+      try {
+        const j = await r.json();
+        if (j.error) msg = j.error;
+      } catch {}
+      throw new Error(msg);
+    }
+    return r.json();
+  },
 };

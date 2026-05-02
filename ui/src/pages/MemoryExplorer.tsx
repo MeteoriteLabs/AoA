@@ -5,6 +5,7 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { MemoryTree } from "../components/memory/MemoryTree";
 import { MemoryFileList } from "../components/memory/MemoryFileList";
 import { MemoryViewer } from "../components/memory/MemoryViewer";
+import { MemoryUploadButton } from "../components/memory/MemoryUploadButton";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -37,6 +38,13 @@ export function MemoryExplorer() {
 
   return (
     <div className="h-full flex flex-col">
+      <div className="flex items-center justify-end gap-2 px-3 py-2 border-b border-border bg-card/30">
+        <MemoryUploadButton
+          companyId={selectedCompanyId}
+          departmentId={departmentId}
+          folderPath={folderPath}
+        />
+      </div>
       <Group
         orientation="horizontal"
         id="memory-explorer-panes"
