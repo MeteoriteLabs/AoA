@@ -24,3 +24,14 @@ export async function fetchCatalogResource(item: CatalogItem, kind: string): Pro
   }
   return await res.text();
 }
+
+/**
+ * Resolve skill content from a catalog item.
+ * Returns inline content if present (no network call), otherwise fetches from resourceUrl.
+ *
+ * Used by both the initial install flow and the auto-updater.
+ */
+export async function loadSkillContent(item: CatalogItem): Promise<string> {
+  if (item.content?.inline) return item.content.inline;
+  return fetchCatalogResource(item, "skill content");
+}

@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companySkills } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
-import { fetchCatalogResource } from "./fetch-resource.js";
+import { loadSkillContent } from "./fetch-resource.js";
 
 export interface InstallSkillOpts {
   catalogItem: CatalogItem;
@@ -92,9 +92,4 @@ export async function installSkill(opts: InstallSkillOpts): Promise<InstallSkill
     .returning();
 
   return { skillId: inserted[0].id };
-}
-
-async function loadSkillContent(item: CatalogItem): Promise<string> {
-  if (item.content?.inline) return item.content.inline;
-  return await fetchCatalogResource(item, "skill content");
 }
