@@ -181,6 +181,12 @@ export async function createApp(
   api.use(goalRoutes(db));
   api.use(teamsRoutes(db));
   api.use(teamImportsRoutes(db));
+  // Phase 6.0: memory-folders and memory-assets routes MUST mount before
+  // memoryRoutes because the latter has /memory/:id which would otherwise
+  // catch /memory/folders and /memory/assets (treating "folders"/"assets"
+  // as a UUID and 500ing).
+  api.use(memoryFoldersRoutes({ db }));
+  api.use(memoryAssetsRoutes({ db, storageService: opts.storageService }));
   api.use(memoryRoutes(db));
   api.use(searchRoutes(db));
   api.use(debriefRoutes(db));
@@ -195,8 +201,6 @@ export async function createApp(
   api.use(memoryRetrievalsRoutes(db));
   api.use(memoryStarterTemplatesRoutes(db));
   api.use(fileImportRoutes(db, opts.storageService));
-  api.use(memoryFoldersRoutes({ db }));
-  api.use(memoryAssetsRoutes({ db, storageService: opts.storageService }));
   api.use(teamRoutes(db));
   api.use(suggestionRoutes(db));
   api.use(contextPackagingRoutes(db));

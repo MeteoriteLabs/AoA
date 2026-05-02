@@ -17,23 +17,16 @@ ON CONFLICT (company_id, path) DO NOTHING;
 -- ── 2. Department-scoped seed folders ────────────────────────────────────────
 -- For each department (projects with type='department'), insert the appropriate
 -- seed-folder set based on its functionType. Path is derived as
--- `<deptSlug>/<seedFolder>` where deptSlug is `urlKey` if non-null, else
--- regexp_replace(lower(name), '[^a-z0-9]+', '-', 'g') trimmed of leading/trailing
--- dashes (matches the Phase 6.0 0074 backfill convention).
+-- `<deptSlug>/<seedFolder>` where deptSlug = trim(both '-' from
+-- regexp_replace(lower(p.name), '[^a-z0-9]+', '-', 'g')) — same normalization
+-- as deriveProjectUrlKey() in TS, and same approach 0074 uses. The projects
+-- table has no stored url_key column; urlKey is computed at the service layer.
 
 WITH dept_slugs AS (
   SELECT
     p.id,
     p.company_id,
-    COALESCE(
-      NULLIF(p.url_key, ''),
-      regexp_replace(
-        regexp_replace(lower(p.name), '[^a-z0-9]+', '-', 'g'),
-        '^-+|-+$',
-        '',
-        'g'
-      )
-    ) AS slug,
+    trim(both '-' from regexp_replace(lower(p.name), '[^a-z0-9]+', '-', 'g')) AS slug,
     p.function_type
   FROM projects p
   WHERE p.type = 'department'
