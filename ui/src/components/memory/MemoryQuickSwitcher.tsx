@@ -35,21 +35,9 @@ export function MemoryQuickSwitcher() {
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
 
-  // Global ⌘K binding — only open when a company is selected
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      // Cmd-K on macOS, Ctrl-K elsewhere
-      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
-        if (!selectedCompanyId) return;
-        e.preventDefault();
-        setOpen((v) => !v);
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selectedCompanyId]);
-
-  // Listen for the home-page input dispatching a custom event to open us
+  // Opens via the MemoryHome button dispatching `memory:open-quick-switcher`.
+  // ⌘K stays with the global CommandPalette (cross-entity search) — this overlay
+  // is memory-scoped and reachable from MemoryHome only.
   useEffect(() => {
     function onOpen() {
       if (!selectedCompanyId) return;
@@ -151,7 +139,6 @@ export function MemoryQuickSwitcher() {
             className="border-0 focus-visible:ring-0 px-0 h-8 text-sm"
             aria-label="Quick switcher search"
           />
-          <span className="text-[10px] text-muted-foreground font-mono">⌘K</span>
         </div>
         <div className="max-h-80 overflow-auto py-1">
           {results.length === 0 ? (

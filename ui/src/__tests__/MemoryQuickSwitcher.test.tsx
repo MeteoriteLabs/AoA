@@ -42,11 +42,9 @@ function renderSwitcher() {
 describe("MemoryQuickSwitcher", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("opens on Cmd+K and shows results", async () => {
-    const user = userEvent.setup();
+  it("opens via the custom event from MemoryHome and shows results", async () => {
     renderSwitcher();
-    // Fire Cmd+K
-    await user.keyboard("{Meta>}k{/Meta}");
+    window.dispatchEvent(new CustomEvent("memory:open-quick-switcher"));
     await waitFor(() => expect(screen.getByPlaceholderText(/Search memory items/i)).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText("Auth strategy")).toBeInTheDocument());
     expect(screen.getByText("Brand voice")).toBeInTheDocument();
@@ -55,16 +53,17 @@ describe("MemoryQuickSwitcher", () => {
   it("filters results as you type", async () => {
     const user = userEvent.setup();
     renderSwitcher();
-    await user.keyboard("{Meta>}k{/Meta}");
+    window.dispatchEvent(new CustomEvent("memory:open-quick-switcher"));
     const input = await screen.findByPlaceholderText(/Search memory items/i);
     await user.type(input, "auth");
     await waitFor(() => expect(screen.getByText("Auth strategy")).toBeInTheDocument());
     expect(screen.queryByText("Brand voice")).not.toBeInTheDocument();
   });
 
-  it("opens via the custom event from MemoryHome", async () => {
+  it("does not open on Cmd+K (that key belongs to the global CommandPalette)", async () => {
+    const user = userEvent.setup();
     renderSwitcher();
-    window.dispatchEvent(new CustomEvent("memory:open-quick-switcher"));
-    await waitFor(() => expect(screen.getByPlaceholderText(/Search memory items/i)).toBeInTheDocument());
+    await user.keyboard("{Meta>}k{/Meta}");
+    expect(screen.queryByPlaceholderText(/Search memory items/i)).not.toBeInTheDocument();
   });
 });

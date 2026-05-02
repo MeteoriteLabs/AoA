@@ -103,7 +103,7 @@ export function MemoryHome() {
           aria-haspopup="dialog"
           className="w-full flex items-center gap-2 pl-9 pr-3 h-10 rounded-md border border-input bg-background text-sm text-muted-foreground text-left hover:bg-accent/30 transition-colors"
         >
-          Search across all memory… (or press ⌘K)
+          Quick-jump to a memory item or file…
         </button>
       </div>
 
