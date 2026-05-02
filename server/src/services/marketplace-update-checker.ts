@@ -6,7 +6,7 @@
  *
  * Called after catalog sync completes and on startup.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   marketplacePendingUpdates,
@@ -158,7 +158,6 @@ export async function upsertPendingUpdate(
 ): Promise<{ inserted: boolean }> {
   if (compareVersions(data.latestVersion, data.currentVersion) <= 0) return { inserted: false };
 
-  // Two-step: insert ignoring conflict, then update only if still pending
   const inserted = await db
     .insert(marketplacePendingUpdates)
     .values({
@@ -174,21 +173,65 @@ export async function upsertPendingUpdate(
     .returning({ id: marketplacePendingUpdates.id });
 
   if (inserted.length > 0) {
-    // New row inserted — caller decides whether to notify or auto-apply
+    // Fresh row — caller decides whether to notify or auto-apply
     return { inserted: true };
   }
 
-  // Existing pending row — bump latestVersion in case it has advanced since last check
-  await db
-    .update(marketplacePendingUpdates)
-    .set({ latestVersion: data.latestVersion, updatedAt: new Date() })
+  // Conflict: a row already exists for this (companyId, catalogItemId).
+  // Read its current status to decide what to do.
+  const [existing] = await db
+    .select({
+      status: marketplacePendingUpdates.status,
+      latestVersion: marketplacePendingUpdates.latestVersion,
+    })
+    .from(marketplacePendingUpdates)
     .where(
       and(
         eq(marketplacePendingUpdates.companyId, companyId),
         eq(marketplacePendingUpdates.catalogItemId, data.catalogItemId),
-        eq(marketplacePendingUpdates.status, "pending"),
+      ),
+    )
+    .limit(1);
+
+  if (!existing) return { inserted: false }; // race: row disappeared between conflict and read
+
+  if (existing.status === "pending") {
+    // Still pending — bump latestVersion if the catalog has advanced further
+    if (compareVersions(data.latestVersion, existing.latestVersion) > 0) {
+      await db
+        .update(marketplacePendingUpdates)
+        .set({ latestVersion: data.latestVersion, updatedAt: new Date() })
+        .where(
+          and(
+            eq(marketplacePendingUpdates.companyId, companyId),
+            eq(marketplacePendingUpdates.catalogItemId, data.catalogItemId),
+            eq(marketplacePendingUpdates.status, "pending"),
+          ),
+        );
+    }
+    return { inserted: false };
+  }
+
+  // Row is "applied" or "dismissed" — re-open it for the incoming catalog version.
+  // The prior dismiss/apply was for an older version; this is a genuinely new release.
+  await db
+    .update(marketplacePendingUpdates)
+    .set({
+      status: "pending",
+      currentVersion: data.currentVersion,
+      latestVersion: data.latestVersion,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(marketplacePendingUpdates.companyId, companyId),
+        eq(marketplacePendingUpdates.catalogItemId, data.catalogItemId),
+        or(
+          eq(marketplacePendingUpdates.status, "applied"),
+          eq(marketplacePendingUpdates.status, "dismissed"),
+        ),
       ),
     );
 
-  return { inserted: false };
+  return { inserted: true }; // treat re-opened row as new → caller notifies / auto-applies
 }

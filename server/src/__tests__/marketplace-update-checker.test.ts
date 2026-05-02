@@ -11,6 +11,7 @@ vi.mock("@armyofagents/db", () => {
 vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("eq"),
   and: () => Symbol("and"),
+  or: () => Symbol("or"),
 }));
 vi.mock("../services/marketplace-notifications.js", () => ({
   marketplaceNotifications: {
@@ -93,6 +94,30 @@ function buildMockDb({
   };
 }
 
+/** Minimal mock DB for testing upsertPendingUpdate directly. */
+function buildUpsertDb({
+  insertReturning = [] as Array<{ id: string }>,
+  existingRow = null as { status: string; latestVersion: string } | null,
+} = {}) {
+  return {
+    insert: () => ({
+      values: () => ({
+        onConflictDoNothing: () => ({
+          returning: () => Promise.resolve(insertReturning),
+        }),
+      }),
+    }),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve(existingRow ? [existingRow] : []),
+        }),
+      }),
+    }),
+    update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
+  };
+}
+
 // ─── compareVersions ──────────────────────────────────────────────────────────
 
 describe("compareVersions", () => {
@@ -112,7 +137,7 @@ describe("compareVersions", () => {
 
 describe("upsertPendingUpdate", () => {
   it("returns { inserted: false } when latest version is not newer than current", async () => {
-    const db = buildMockDb();
+    const db = buildUpsertDb();
     const result = await upsertPendingUpdate(db as any, "c1", {
       catalogItemId: "skill:x",
       catalogItemName: "X",
@@ -124,7 +149,7 @@ describe("upsertPendingUpdate", () => {
   });
 
   it("returns { inserted: true } when a new row is inserted", async () => {
-    const db = buildMockDb({ insertReturning: [{ id: "upd-1" }] });
+    const db = buildUpsertDb({ insertReturning: [{ id: "upd-1" }] });
     const result = await upsertPendingUpdate(db as any, "c1", {
       catalogItemId: "skill:x",
       catalogItemName: "X",
@@ -135,8 +160,47 @@ describe("upsertPendingUpdate", () => {
     expect(result).toEqual({ inserted: true });
   });
 
-  it("returns { inserted: false } on conflict (row already exists)", async () => {
-    const db = buildMockDb({ insertReturning: [] }); // empty = conflict
+  it("returns { inserted: false } on conflict when existing row is still pending", async () => {
+    const db = buildUpsertDb({ existingRow: { status: "pending", latestVersion: "1.1.0" } });
+    const result = await upsertPendingUpdate(db as any, "c1", {
+      catalogItemId: "skill:x",
+      catalogItemName: "X",
+      itemType: "skill",
+      currentVersion: "1.0.0",
+      latestVersion: "1.1.0",
+    });
+    expect(result).toEqual({ inserted: false });
+  });
+
+  it("returns { inserted: true } when existing row is applied — re-opens for new catalog version", async () => {
+    // Bug scenario: v1.1 was auto-applied. v1.2 arrives. Must re-open.
+    const db = buildUpsertDb({ existingRow: { status: "applied", latestVersion: "1.1.0" } });
+    const result = await upsertPendingUpdate(db as any, "c1", {
+      catalogItemId: "skill:x",
+      catalogItemName: "X",
+      itemType: "skill",
+      currentVersion: "1.1.0",
+      latestVersion: "1.2.0",
+    });
+    expect(result).toEqual({ inserted: true });
+  });
+
+  it("returns { inserted: true } when existing row is dismissed — re-opens for new catalog version", async () => {
+    // Dismiss was for v1.1; v1.2 is a different release and should re-notify.
+    const db = buildUpsertDb({ existingRow: { status: "dismissed", latestVersion: "1.1.0" } });
+    const result = await upsertPendingUpdate(db as any, "c1", {
+      catalogItemId: "skill:x",
+      catalogItemName: "X",
+      itemType: "skill",
+      currentVersion: "1.1.0",
+      latestVersion: "1.2.0",
+    });
+    expect(result).toEqual({ inserted: true });
+  });
+
+  it("returns { inserted: false } when row disappears after conflict (race condition)", async () => {
+    // existingRow: null means the SELECT returns [] — very rare race.
+    const db = buildUpsertDb({ existingRow: null });
     const result = await upsertPendingUpdate(db as any, "c1", {
       catalogItemId: "skill:x",
       catalogItemName: "X",
