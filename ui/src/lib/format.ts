@@ -3,6 +3,13 @@
  *
  * Lifted from `components/memory/viewers/GenericFileViewer.tsx` so multiple
  * memory components can share it (drawer + viewers).
+ *
+ * Note: `components/workspace/workspace-utils.tsx` has a separate `formatBytes`
+ * with different formatting (stops at MB, no GB tier). The two are deliberately
+ * NOT unified — workspace renders agent-output diffs where bytes are always
+ * present and large; memory renders user-uploaded files where sub-1KB is real
+ * and GB is plausible. If you find yourself "fixing" one to match the other,
+ * stop and check the call sites.
  */
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
