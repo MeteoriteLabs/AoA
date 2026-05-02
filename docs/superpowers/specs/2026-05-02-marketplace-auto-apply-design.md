@@ -184,7 +184,7 @@ async function upsertPendingUpdate(...): Promise<{ inserted: boolean }>
 ### `checkCompany` new flow
 
 ```
-settings = marketplaceSettingsService(db).get(companyId)  // read ONCE per company
+settings = await marketplaceSettingsService(db).get(companyId)  // read ONCE per company
 
 for each catalog-installed skill:
   try:
@@ -194,6 +194,8 @@ for each catalog-installed skill:
     if settings.skillUpdatePolicy === "auto"
       AND isWithinUpdateWindow(settings.updateWindow)
       :
+        // Note: skill.customized is re-checked inside the transaction in applySkillUpdate
+        // (not pre-checked here, to avoid acting on stale data from the initial query)
         try:
           await applySkillUpdate({ ..., catalogItem })
           // updateCompleted fired inside applySkillUpdate
