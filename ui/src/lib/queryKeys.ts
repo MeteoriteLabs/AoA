@@ -130,6 +130,30 @@ export const queryKeys = {
       ["memory", companyId, "starter-templates"] as const,
     importJob: (companyId: string, jobId: string) =>
       ["memory", companyId, "import-job", jobId] as const,
+    folders: {
+      list: (companyId: string, departmentId?: string) =>
+        ["memory", "folders", companyId, departmentId ?? "_all"] as const,
+    },
+    assets: {
+      list: (
+        companyId: string,
+        params?: {
+          departmentId?: string;
+          folderPath?: string;
+          mimeType?: string;
+        },
+      ) =>
+        [
+          "memory",
+          "assets",
+          companyId,
+          params?.departmentId ?? "_all",
+          params?.folderPath ?? "_all",
+          params?.mimeType ?? "_all",
+        ] as const,
+      detail: (companyId: string, id: string) =>
+        ["memory", "assets", companyId, "detail", id] as const,
+    },
   },
   search: {
     global: (companyId: string, query: string, includeArchived = false) =>
