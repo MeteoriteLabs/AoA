@@ -15,7 +15,6 @@ import {
   Puzzle,
   DollarSign,
   FolderGit2,
-  FolderTree,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
@@ -160,7 +159,6 @@ export function Sidebar() {
         <SidebarSection label="Company" collapsed={collapsed}>
           <SidebarNavItem to="/objectives" label="Objectives" icon={Compass} collapsed={collapsed} />
           <SidebarNavItem to="/memory" label="Memory" icon={Brain} entityColor="var(--entity-memory)" collapsed={collapsed} />
-          <SidebarNavItem to="/memory/explore" label="Memory Explorer" icon={FolderTree} collapsed={collapsed} />
           <SidebarNavItem to="/org" label="Team" icon={Users} collapsed={collapsed} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} collapsed={collapsed} />
           <SidebarNavItem to="/budget" label="Budget" icon={DollarSign} collapsed={collapsed} />

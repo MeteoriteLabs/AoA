@@ -165,8 +165,9 @@ function boardRoutes() {
       <Route path="briefs/:briefId" element={<Navigate to="/discussions" replace />} />
       <Route path="debriefs" element={<Navigate to="/discussions" replace />} />
       <Route path="active-agents" element={<ActiveAgents />} />
-      <Route path="memory" element={<Memory />} />
-      <Route path="memory/explore" element={<MemoryExplorer />} />
+      {/* Phase 6: new explorer is the default at /memory; old filter-list page kept at /memory/legacy as a safety net for one minor version. */}
+      <Route path="memory" element={<MemoryExplorer />} />
+      <Route path="memory/legacy" element={<Memory />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
