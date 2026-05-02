@@ -1,7 +1,7 @@
 import { and, eq, ilike, or, sql, desc } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, memoryItems, memoryItemVersions, memoryRetrievals, suggestions } from "@armyofagents/db";
-import { MEMORY_ITEM_LAYERS } from "@armyofagents/shared";
+import { MEMORY_ITEM_LAYERS, normalizeMemoryFolderPath } from "@armyofagents/shared";
 import { generateEmbedding } from "./embeddings.js";
 import { resolveApiKey } from "../adapters/api-common.js";
 import { logger } from "../middleware/logger.js";
@@ -1323,6 +1323,25 @@ export function memoryService(db: Db) {
         )
         .orderBy(desc(memoryRetrievals.createdAt))
         .limit(limit);
+    },
+
+    moveItem: async (id: string, companyId: string, folderPath: string) => {
+      const path = normalizeMemoryFolderPath(folderPath);
+      const [row] = await db
+        .update(memoryItems)
+        .set({ folderPath: path, updatedAt: new Date() })
+        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
+        .returning();
+      return row ?? null;
+    },
+
+    setPinnedToTop: async (id: string, companyId: string, pinned: boolean) => {
+      const [row] = await db
+        .update(memoryItems)
+        .set({ founderPinnedToTop: pinned, updatedAt: new Date() })
+        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
+        .returning();
+      return row ?? null;
     },
   };
 }
