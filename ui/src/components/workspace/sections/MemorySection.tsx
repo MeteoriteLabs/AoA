@@ -22,7 +22,7 @@ import { queryKeys } from "../../../lib/queryKeys";
  *   - SKILL-MATERIALIZED: pinned-memory skill synthesis (Phase 2).
  *     Collapsed by default to keep the section compact.
  *
- * Click any item → navigate to /<companyPrefix>/memory?item=<id> (the
+ * Click any item → navigate to /<companyPrefix>/memory/explore?item=<id> (the
  * Memory page reads ?item to select-and-open the detail view).
  */
 
@@ -195,7 +195,7 @@ function RetrievalRow({ row, companyPrefix }: { row: MemoryRetrievalRowApi; comp
   const title = row.itemTitle ?? "(item deleted)";
   const isDeleted = !row.itemTitle;
   const sim = row.similarityScore ? Math.round(parseFloat(row.similarityScore) * 100) : null;
-  const href = row.itemId ? `/${companyPrefix}/memory?item=${row.itemId}` : null;
+  const href = row.itemId ? `/${companyPrefix}/memory/explore?item=${row.itemId}` : null;
 
   const content = (
     <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50 transition-colors">

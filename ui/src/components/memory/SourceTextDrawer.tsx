@@ -46,7 +46,7 @@ export function SourceTextDrawer({
     const params = new URLSearchParams(window.location.search);
     params.set("item", asset.id);
     params.set("type", "asset");
-    navigate(`/${companyPrefix}/memory?${params.toString()}`);
+    navigate(`/${companyPrefix}/memory/explore?${params.toString()}`);
     onOpenChange(false);
   }
 

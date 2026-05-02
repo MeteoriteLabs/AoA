@@ -137,7 +137,7 @@ describe("MemorySection", () => {
     expect(await screen.findByText("(item deleted)")).toBeInTheDocument();
   });
 
-  it("links each row to /<companyPrefix>/memory?item=<id> when itemId present", async () => {
+  it("links each row to /<companyPrefix>/memory/explore?item=<id> when itemId present", async () => {
     listForIssue.mockResolvedValue([
       row({ itemId: "item-77", itemTitle: "Linked item" }),
     ]);
@@ -147,7 +147,7 @@ describe("MemorySection", () => {
     );
 
     await screen.findByText("Linked item");
-    const link = container.querySelector('a[href="/acme/memory?item=item-77"]');
+    const link = container.querySelector('a[href="/acme/memory/explore?item=item-77"]');
     expect(link).toBeInTheDocument();
   });
 });

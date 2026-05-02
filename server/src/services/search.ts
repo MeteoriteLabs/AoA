@@ -579,7 +579,7 @@ export function searchService(db: Db) {
           type: "memory" as const,
           title: row.title,
           subtitle: excerpt(row.subtitle),
-          href: `/memory?item=${encodeURIComponent(row.id)}`,
+          href: `/memory/explore?item=${encodeURIComponent(row.id)}`,
           score: toFiniteScore(row.score),
           status: row.status,
           departmentName: row.departmentName,
