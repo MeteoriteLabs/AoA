@@ -11,6 +11,8 @@ import {
 } from "@armyofagents/shared";
 import { conflict } from "../errors.js";
 import { isRepoOnlySentinel } from "./heartbeat.js";
+import { logger } from "../middleware/logger.js";
+import { memoryFoldersService, seedFoldersOnDepartmentCreate } from "./memory-folders.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -289,6 +291,20 @@ export function projectService(db: Db) {
       if (ids && ids.length > 0) {
         await syncGoalLinks(db, row.id, companyId, ids);
       }
+
+      // Best-effort: seed default memory folders for new departments.
+      await seedFoldersOnDepartmentCreate(memoryFoldersService(db), {
+        companyId,
+        project: {
+          id: row.id,
+          type: row.type,
+          name: row.name,
+          urlKey: deriveProjectUrlKey(row.name, row.id),
+          functionType: row.functionType ?? null,
+        },
+      }).catch((err: unknown) => {
+        logger.warn({ err, projectId: row.id }, "memory folder seeding failed");
+      });
 
       const [withGoals] = await attachGoals(db, [row]);
       const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];

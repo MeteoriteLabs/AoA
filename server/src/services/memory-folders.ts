@@ -143,3 +143,24 @@ export function memoryFoldersService(db: Db) {
 }
 
 export type MemoryFoldersService = ReturnType<typeof memoryFoldersService>;
+
+interface SeedHookProject {
+  id: string;
+  type: string;
+  name: string;
+  urlKey: string;
+  functionType: string | null;
+}
+
+export async function seedFoldersOnDepartmentCreate(
+  svc: MemoryFoldersService,
+  input: { companyId: string; project: SeedHookProject },
+): Promise<void> {
+  if (input.project.type !== "department") return;
+  await svc.seedForDepartment({
+    companyId: input.companyId,
+    departmentId: input.project.id,
+    departmentSlug: input.project.urlKey,
+    functionType: input.project.functionType,
+  });
+}
