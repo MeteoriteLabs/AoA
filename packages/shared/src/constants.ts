@@ -231,6 +231,18 @@ export const LIVE_EVENT_TYPES = [
   "budget.policy_updated",
   "budget.incident_created",
   "budget.incident_resolved",
+  // Phase 6: Memory page real-time updates
+  "memory.item.created",
+  "memory.item.updated",
+  "memory.item.moved",
+  "memory.item.deleted",
+  "memory.asset.created",
+  "memory.asset.updated",
+  "memory.asset.deleted",
+  "memory.folder.created",
+  "memory.folder.updated",
+  "memory.folder.deleted",
+  "memory.import.progress",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
