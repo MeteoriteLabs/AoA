@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Pin, Eye, Pencil } from "lucide-react";
+import { Pin, Eye, Pencil, ExternalLink } from "lucide-react";
 import type { MemoryItem } from "@armyofagents/shared";
 import { memoryApi } from "../../../api/memory";
 import { queryKeys } from "../../../lib/queryKeys";
@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { MarkdownEditorView } from "./MarkdownEditorView";
 import { MemoryApprovalActions } from "../MemoryApprovalActions";
 import { MemoryItemActions } from "../MemoryItemActions";
+import { SourceTextDrawer } from "../SourceTextDrawer";
 
 interface MarkdownItemViewerProps {
   companyId: string;
@@ -44,6 +45,7 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
 
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<"preview" | "edit">("preview");
+  const [sourceOpen, setSourceOpen] = useState(false);
 
   useEffect(() => {
     if (item) {
@@ -87,10 +89,13 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
     folderPath?: string;
     departmentId?: string | null;
     founderPinnedToTop?: boolean;
+    importJobId?: string | null;
   };
 
+  const importJobId = i.importJobId ?? null;
+
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col relative overflow-hidden">
       <div className="px-6 pt-6 pb-3 border-b border-border">
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
@@ -183,6 +188,31 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
               ? "Editing — saving will create a new version pending approval"
               : "Editing draft"
           }
+        />
+      )}
+
+      {importJobId && (
+        <div className="border-t border-border px-6 py-2 text-xs flex items-center gap-2 bg-card/30">
+          <span className="text-muted-foreground">Extracted from a source file</span>
+          <span className="flex-1" />
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setSourceOpen(true)}
+            className="h-7 gap-1"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Show source
+          </Button>
+        </div>
+      )}
+
+      {importJobId && (
+        <SourceTextDrawer
+          open={sourceOpen}
+          onOpenChange={setSourceOpen}
+          companyId={companyId}
+          importJobId={importJobId}
         />
       )}
     </div>
