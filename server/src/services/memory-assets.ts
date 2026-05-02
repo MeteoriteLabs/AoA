@@ -120,8 +120,7 @@ export function memoryAssetsService(db: Db) {
           extractedItemCount: sql`${memoryAssets.extractedItemCount} + ${delta}`,
           updatedAt: new Date(),
         })
-        .where(and(eq(memoryAssets.id, id), eq(memoryAssets.companyId, companyId)))
-        .returning();
+        .where(and(eq(memoryAssets.id, id), eq(memoryAssets.companyId, companyId)));
     },
   };
 }

@@ -31,10 +31,10 @@ function createMockDb() {
     }),
     update: () => ({
       set: (patch: Record<string, unknown>) => ({
-        where: () => ({
-          returning: async () => {
+        where: () => {
+          // Apply the patch to the first row (simulating db side-effect)
+          const apply = (): Array<Record<string, unknown>> => {
             if (assets.length === 0) return [];
-            // Special handling: if patch.extractedItemCount is the sql() object, simulate increment.
             const incrementOp = patch.extractedItemCount as { op?: string; values?: unknown[] } | undefined;
             if (incrementOp && typeof incrementOp === "object" && incrementOp.op === "sql") {
               const currentCount = (assets[0].extractedItemCount as number) ?? 0;
@@ -44,8 +44,12 @@ function createMockDb() {
               assets[0] = { ...assets[0], ...patch };
             }
             return [assets[0]];
-          },
-        }),
+          };
+          const promise = Promise.resolve().then(() => { apply(); });
+          return Object.assign(promise, {
+            returning: async () => apply(),
+          });
+        },
       }),
     }),
     delete: () => ({ where: async () => { assets.splice(0); } }),

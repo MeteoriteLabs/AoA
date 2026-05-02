@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Db } from "@armyofagents/db";
 import {
   createMemoryItemSchema,
+  memoryFolderUpdateSchema,
   suggestMemoryArchiveSchema,
   suggestMemoryUpdateSchema,
   updateMemoryItemSchema,
@@ -547,18 +548,18 @@ export function memoryRoutes(db: Db) {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
         assertCompanyAccess(req, companyId);
-        const parsed = z
-          .object({ folderPath: z.string().min(1).max(512) })
-          .safeParse(req.body);
+        const moveBodySchema = z.object({
+          folderPath: z.string().min(1).max(512),
+        });
+        const parsed = moveBodySchema.safeParse(req.body);
         if (!parsed.success) {
           res.status(400).json({ error: parsed.error.flatten() });
           return;
         }
-        // Validate path shape via the same rules folders use.
-        const { memoryFolderUpdateSchema } = await import("@armyofagents/shared");
-        const pathOnly = memoryFolderUpdateSchema.pick({ path: true }).safeParse({ path: parsed.data.folderPath });
-        if (!pathOnly.success) {
-          res.status(400).json({ error: pathOnly.error.flatten() });
+        // Validate path shape via the shared validator.
+        const pathCheck = memoryFolderUpdateSchema.pick({ path: true }).safeParse({ path: parsed.data.folderPath });
+        if (!pathCheck.success) {
+          res.status(400).json({ error: pathCheck.error.flatten() });
           return;
         }
         const updated = await svc.moveItem(id, companyId, parsed.data.folderPath);
