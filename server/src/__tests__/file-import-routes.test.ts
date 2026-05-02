@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import supertest from "supertest";
 
@@ -13,17 +13,19 @@ vi.mock("../middleware/rbac.js", () => ({
   assertRole: vi.fn().mockResolvedValue(undefined),
 }));
 
-const mockCreateJob = vi.fn().mockResolvedValue({ id: "job-1", fileName: "doc.pdf" });
-const mockGetJob = vi.fn().mockResolvedValue({
-  id: "job-1",
-  status: "done",
-  fileName: "doc.pdf",
-  itemCount: 5,
-  errorMessage: null,
-  parserWarnings: null,
-  createdAt: new Date("2025-01-01T00:00:00Z"),
-  completedAt: new Date("2025-01-01T00:01:00Z"),
-});
+const { mockCreateJob, mockGetJob } = vi.hoisted(() => ({
+  mockCreateJob: vi.fn().mockResolvedValue({ id: "job-1", fileName: "doc.pdf" }),
+  mockGetJob: vi.fn().mockResolvedValue({
+    id: "job-1",
+    status: "done",
+    fileName: "doc.pdf",
+    itemCount: 5,
+    errorMessage: null,
+    parserWarnings: null,
+    createdAt: new Date("2025-01-01T00:00:00Z"),
+    completedAt: new Date("2025-01-01T00:01:00Z"),
+  }),
+}));
 
 vi.mock("../services/file-import.js", () => ({
   SUPPORTED_MIME_TYPES: [
@@ -51,6 +53,23 @@ async function makeApp() {
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  // Re-stub default return values cleared by clearAllMocks
+  mockCreateJob.mockResolvedValue({ id: "job-1", fileName: "doc.pdf" });
+  mockGetJob.mockResolvedValue({
+    id: "job-1",
+    status: "done",
+    fileName: "doc.pdf",
+    itemCount: 5,
+    errorMessage: null,
+    parserWarnings: null,
+    createdAt: new Date("2025-01-01T00:00:00Z"),
+    completedAt: new Date("2025-01-01T00:01:00Z"),
+  });
+  mockStorageService.putFile.mockResolvedValue({ objectKey: "imports/123-doc.pdf" });
+});
 
 describe("fileImportRoutes contract", () => {
   it("exports a fileImportRoutes factory function", async () => {
