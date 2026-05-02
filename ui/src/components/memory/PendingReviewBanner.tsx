@@ -26,6 +26,7 @@ export function PendingReviewBanner({ companyId }: PendingReviewBannerProps) {
   const { data: items } = useQuery({
     queryKey: queryKeys.memory.list(companyId),
     queryFn: () => memoryApi.list(companyId, {}),
+    enabled: Boolean(companyId),
   });
 
   const pending = (items ?? []).filter((it: MemoryItem) => it.status === "pending");

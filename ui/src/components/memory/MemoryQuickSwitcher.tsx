@@ -35,25 +35,29 @@ export function MemoryQuickSwitcher() {
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
 
-  // Global ⌘K binding
+  // Global ⌘K binding — only open when a company is selected
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       // Cmd-K on macOS, Ctrl-K elsewhere
       if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        if (!selectedCompanyId) return;
         e.preventDefault();
         setOpen((v) => !v);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [selectedCompanyId]);
 
   // Listen for the home-page input dispatching a custom event to open us
   useEffect(() => {
-    function onOpen() { setOpen(true); }
+    function onOpen() {
+      if (!selectedCompanyId) return;
+      setOpen(true);
+    }
     window.addEventListener("memory:open-quick-switcher", onOpen);
     return () => window.removeEventListener("memory:open-quick-switcher", onOpen);
-  }, []);
+  }, [selectedCompanyId]);
 
   // Reset state when reopened
   useEffect(() => {
@@ -108,6 +112,7 @@ export function MemoryQuickSwitcher() {
   useEffect(() => { setActiveIdx(0); }, [query]);
 
   function selectRow(row: ResultRow) {
+    if (!selectedCompanyId || !companyPrefix) return;
     const params = new URLSearchParams();
     if (row.folderPath) params.set("folder", row.folderPath);
     if (row.departmentId) params.set("dept", row.departmentId);

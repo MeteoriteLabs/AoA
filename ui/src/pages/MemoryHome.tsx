@@ -1,7 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Brain, Pin, Building2, Search } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import { Brain, Pin, Building2, Search, type LucideIcon } from "lucide-react";
 import { memoryApi } from "../api/memory";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
@@ -52,7 +51,7 @@ export function MemoryHome() {
     const pinnedCount = items.filter((it) => it.founderPinnedToTop).length;
     const companyCount = items.filter((it) => it.departmentId === null && it.layer === "identity").length;
 
-    const tiles: Array<{ key: string; label: string; icon?: typeof Pin | string; itemCount: number; pendingCount: number; to: string }> = [
+    const tiles: Array<{ key: string; label: string; icon?: LucideIcon | string; itemCount: number; pendingCount: number; to: string }> = [
       {
         key: "pinned",
         label: "Pinned",
@@ -95,19 +94,17 @@ export function MemoryHome() {
       {/* Pending review banner — self-hides when zero */}
       <PendingReviewBanner companyId={selectedCompanyId} />
 
-      {/* Search input — placeholder for ⌘K hint */}
+      {/* Search trigger — styled as an input but rendered as a button for a11y */}
       <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          placeholder="Search across all memory… (or press ⌘K)"
-          className="pl-9 h-10"
-          onFocus={(e) => {
-            // Trigger ⌘K overlay instead of inline filtering on home; matches the brainstorm spec.
-            e.target.blur();
-            window.dispatchEvent(new CustomEvent("memory:open-quick-switcher"));
-          }}
-          readOnly
-        />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new CustomEvent("memory:open-quick-switcher"))}
+          aria-haspopup="dialog"
+          className="w-full flex items-center gap-2 pl-9 pr-3 h-10 rounded-md border border-input bg-background text-sm text-muted-foreground text-left hover:bg-accent/30 transition-colors"
+        >
+          Search across all memory… (or press ⌘K)
+        </button>
       </div>
 
       {/* Department tiles */}

@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { FileText, File as FileIcon, Image as ImageIcon, FileType } from "lucide-react";
@@ -21,8 +22,17 @@ interface RecentRow {
   departmentId?: string | null;
 }
 
+/** Returns a fallback ISO string if `value` can't be parsed to a finite timestamp. */
+function toSafeIso(value: string | Date | null | undefined): string {
+  if (value == null) return new Date(0).toISOString();
+  const t = typeof value === "string" ? new Date(value).getTime() : (value as Date).getTime();
+  return Number.isFinite(t) ? (typeof value === "string" ? value : (value as Date).toISOString()) : new Date(0).toISOString();
+}
+
 function formatRelative(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
+  const parsed = new Date(iso).getTime();
+  if (!Number.isFinite(parsed)) return "recently";
+  const ms = Date.now() - parsed;
   const days = Math.floor(ms / (1000 * 60 * 60 * 24));
   if (days < 1) return "today";
   if (days < 7) return `${days}d`;
@@ -44,12 +54,12 @@ export function MemoryRecentsStrip({ companyId }: MemoryRecentsStripProps) {
     queryFn: () => memoryAssetsApi.list(companyId),
   });
 
-  const rows: RecentRow[] = [
+  const rows: RecentRow[] = useMemo(() => [
     ...((itemsQuery.data ?? []) as MemoryItem[]).map<RecentRow>((it) => ({
       kind: "memory_item",
       id: it.id,
       name: it.title,
-      modifiedAt: typeof it.updatedAt === "string" ? it.updatedAt : new Date(it.updatedAt).toISOString(),
+      modifiedAt: toSafeIso(it.updatedAt as string | Date | null | undefined),
       folderPath: (it as MemoryItem & { folderPath?: string }).folderPath,
       departmentId: (it as MemoryItem & { departmentId?: string | null }).departmentId,
     })),
@@ -57,14 +67,14 @@ export function MemoryRecentsStrip({ companyId }: MemoryRecentsStripProps) {
       kind: "asset",
       id: a.id,
       name: a.fileName,
-      modifiedAt: a.updatedAt,
+      modifiedAt: toSafeIso(a.updatedAt),
       mimeType: a.mimeType,
       folderPath: a.folderPath,
       departmentId: a.departmentId,
     })),
   ]
     .sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime())
-    .slice(0, 10);
+    .slice(0, 10), [itemsQuery.data, assetsQuery.data]);
 
   function iconFor(row: RecentRow) {
     if (row.kind === "memory_item") return FileText;
