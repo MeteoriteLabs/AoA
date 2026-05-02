@@ -2,12 +2,12 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useNavigate } from "@/lib/router";
 import { ArrowLeft, ChevronRight, Store } from "lucide-react";
-import { SearchTypeahead } from "./SearchTypeahead";
+import { CompanySelector } from "./CompanySelector";
 
 export interface MarketplaceLayoutProps {
   /** Optional breadcrumb segments after "Marketplace". */
   breadcrumbs?: Array<{ label: string; to?: string }>;
-  /** Right-aligned slot for actions. Defaults to <SearchTypeahead />. Pass `null` to suppress. */
+  /** Right-aligned slot for actions. Defaults to <CompanySelector />. Pass `null` to suppress. */
   actions?: ReactNode;
   children: ReactNode;
 }
@@ -53,7 +53,7 @@ export function MarketplaceLayout({ breadcrumbs = [], actions, children }: Marke
             </span>
           ))}
         </nav>
-        <div className="flex items-center gap-2 shrink-0">{actions !== undefined ? actions : <SearchTypeahead />}</div>
+        <div className="flex items-center gap-2 shrink-0">{actions !== undefined ? actions : <CompanySelector />}</div>
       </header>
       <main className="flex-1 overflow-auto px-6 py-6">{children}</main>
     </div>
