@@ -169,14 +169,14 @@ export function MemoryFileList({
                 onClick={() => selectRow(row)}
                 className={cn(
                   "grid grid-cols-[24px_1fr_60px] gap-2 items-center px-3 py-2 border-b border-border cursor-pointer text-xs",
-                  "hover:bg-muted/40",
+                  "hover:bg-muted/40 transition-colors duration-100",
                   isSel && "bg-primary/10",
                 )}
               >
                 <Icon className="h-4 w-4 text-muted-foreground" />
                 <div className="min-w-0">
                   <div className="font-medium truncate">{row.name}</div>
-                  <div className="text-[10px] text-muted-foreground truncate">
+                  <div className="text-[11px] text-muted-foreground truncate">
                     {row.kind === "memory_item"
                       ? row.category ?? "memory item"
                       : row.mimeType ?? "file"}
@@ -187,7 +187,7 @@ export function MemoryFileList({
                 {row.status && (
                   <span
                     className={cn(
-                      "text-[10px] px-2 py-0.5 rounded text-center font-medium",
+                      "text-[10px] px-1.5 py-0.5 rounded text-center font-medium tracking-[0.06em]",
                       STATUS_COLORS[row.status] ?? "bg-muted text-muted-foreground",
                     )}
                   >

@@ -104,7 +104,7 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
               {i.status && (
                 <span
                   className={cn(
-                    "px-2 py-0.5 rounded font-medium uppercase tracking-wider",
+                    "px-1.5 py-0.5 rounded font-medium uppercase tracking-[0.06em]",
                     STATUS_PILL[i.status] ?? "bg-muted text-muted-foreground",
                   )}
                 >
@@ -114,7 +114,7 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
               {i.layer && (
                 <span
                   className={cn(
-                    "px-2 py-0.5 rounded font-medium uppercase tracking-wider",
+                    "px-1.5 py-0.5 rounded font-medium uppercase tracking-[0.06em]",
                     LAYER_PILL[i.layer] ?? "bg-muted text-muted-foreground",
                   )}
                 >
@@ -122,7 +122,7 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
                 </span>
               )}
               {i.category && (
-                <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground uppercase tracking-wider font-medium">
+                <span className="px-1.5 py-0.5 rounded bg-muted text-muted-foreground uppercase tracking-[0.06em] font-medium">
                   {i.category}
                 </span>
               )}
@@ -174,7 +174,7 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
         )}
       </div>
       {mode === "preview" ? (
-        <div className="flex-1 overflow-auto px-6 py-5 prose prose-sm dark:prose-invert max-w-none">
+        <div className="flex-1 overflow-auto px-6 py-5 prose prose-sm dark:prose-invert max-w-none prose-headings:font-semibold prose-p:leading-relaxed">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{i.content}</ReactMarkdown>
         </div>
       ) : (

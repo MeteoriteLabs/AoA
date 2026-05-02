@@ -72,7 +72,7 @@ export function ExtractsSidebar({ companyId, importJobId }: ExtractsSidebarProps
                   {it.status && (
                     <span
                       className={cn(
-                        "text-[10px] px-1.5 py-0.5 rounded font-medium uppercase tracking-wider",
+                        "text-[10px] px-1.5 py-0.5 rounded font-medium uppercase tracking-[0.06em]",
                         STATUS_COLOR[it.status] ?? "bg-muted text-muted-foreground",
                       )}
                     >

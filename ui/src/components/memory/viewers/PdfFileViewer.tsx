@@ -44,7 +44,7 @@ export function PdfFileViewer({ companyId, assetId }: PdfFileViewerProps) {
   return (
     <div className="h-full flex">
       <div className="flex-1 flex flex-col">
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-border text-xs bg-card/30">
+        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border text-[11px] bg-card/30">
           <span className="font-medium truncate flex-1">{asset.fileName}</span>
           <Button
             size="sm"

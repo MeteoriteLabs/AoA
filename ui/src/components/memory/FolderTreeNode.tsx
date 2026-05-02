@@ -36,8 +36,8 @@ export function FolderTreeNode({
       aria-selected={selected}
       onClick={onSelect}
       className={cn(
-        "group flex items-center gap-1 py-1 pr-2 cursor-pointer text-xs leading-tight select-none",
-        "hover:bg-muted/40",
+        "group flex items-center gap-1 py-1.5 pr-2 cursor-pointer text-xs leading-snug select-none",
+        "hover:bg-muted/60 transition-colors duration-100",
         selected && "bg-primary/10 text-primary",
         tintClass,
       )}
