@@ -290,9 +290,12 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     const diff = computeSectionDiff(skill.markdown ?? "", upstreamContent);
     const merged = applyMergeDecisions(diff, decisions);
 
-    // Save merged content + update sourceRef to latestVersion
+    // Save merged content + update sourceRef to latestVersion.
     // customized=true marks that the founder made deliberate merge decisions,
     // preventing the auto-updater from overwriting their work in future cycles.
+    // TODO(hardening): wrap both updates below in a single transaction so a server crash
+    // between the two writes cannot leave the skill updated but the pending row stuck as
+    // "pending" forever (no sweep currently clears orphaned pending rows).
     await db
       .update(companySkills)
       .set({ markdown: merged, sourceRef: update.latestVersion, customized: true, updatedAt: new Date() })

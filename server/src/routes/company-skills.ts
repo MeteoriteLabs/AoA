@@ -139,7 +139,10 @@ export function companySkillRoutes(db: Db) {
         String(req.body.content ?? ""),
       );
 
-      // Mark the skill as customized so the auto-updater skips it in future runs
+      // Mark the skill as customized so the auto-updater skips it in future runs.
+      // TODO(hardening): wrap svc.updateFile() + this update in a single transaction so a
+      // server crash between the two writes cannot leave the skill with new content but
+      // customized=false (which would allow the auto-updater to overwrite the founder's edit).
       await db.update(companySkills).set({ customized: true }).where(eq(companySkills.id, skillId));
 
       const actor = getActorInfo(req);
