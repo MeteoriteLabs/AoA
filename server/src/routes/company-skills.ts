@@ -1,5 +1,6 @@
 import { Router, type Request } from "express";
-import type { Db } from "@armyofagents/db";
+import { type Db, companySkills } from "@armyofagents/db";
+import { eq } from "drizzle-orm";
 import {
   companySkillCreateSchema,
   companySkillFileUpdateSchema,
@@ -137,6 +138,9 @@ export function companySkillRoutes(db: Db) {
         String(req.body.path ?? ""),
         String(req.body.content ?? ""),
       );
+
+      // Mark the skill as customized so the auto-updater skips it in future runs
+      await db.update(companySkills).set({ customized: true }).where(eq(companySkills.id, skillId));
 
       const actor = getActorInfo(req);
       await logActivity(db, {
