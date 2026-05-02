@@ -84,6 +84,26 @@ export const memoryApi = {
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/restore`, {}),
   touchAccessedAt: (companyId: string, id: string) =>
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/touch`, {}),
+  moveItem: async (
+    companyId: string,
+    id: string,
+    folderPath: string,
+  ): Promise<MemoryItem> => {
+    return api.patch<MemoryItem>(
+      `/companies/${companyId}/memory/items/${id}/move`,
+      { folderPath },
+    );
+  },
+  setPinnedToTop: async (
+    companyId: string,
+    id: string,
+    pinned: boolean,
+  ): Promise<MemoryItem> => {
+    return api.patch<MemoryItem>(
+      `/companies/${companyId}/memory/items/${id}/pin-to-top`,
+      { pinned },
+    );
+  },
   searchSemantic: (
     companyId: string,
     q: string,
