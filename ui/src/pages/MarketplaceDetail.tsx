@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 import { useCatalog } from "@/hooks/useCatalog";
 import { MarketplaceLayout } from "@/components/marketplace/MarketplaceLayout";
 import { TrustBadge } from "@/components/marketplace/TrustBadge";
@@ -17,30 +18,20 @@ import {
   TYPE_LABELS_PLURAL,
   pathToItemType,
 } from "@/lib/marketplace-constants";
+import type { MarketplaceItemType } from "@armyofagents/shared";
 
-/**
- * Detail page for a single catalog item: /marketplace/{type}/{slug}
- *
- * Slug may contain slashes (e.g. "aoa-curated/aoa-plugin-slack"), so the
- * route is declared with a splat (`:slug/*`). We re-join the splat tail
- * here to recover the full slug → catalog id ("{type}:{slug}").
- *
- * Sections:
- *   - Header: type + version + trust + tags + Install button
- *   - Capabilities (plugins) — list of {id, description}
- *   - Dependencies (teams/agents) — list of catalog IDs
- *   - README — inline content if present, else HTTP fetch from resourceUrl
- *   - Source link to commit-pinned repo URL
- *
- * Install dispatches to type-specific modals (M.3b.H):
- *   - plugin → PluginInstallModal (instance-scoped, no company picker)
- *   - skill/agent/team → SnapshotInstallModal (company + dept picker)
- * The modals own their toast + polling lifecycle.
- */
+const CAP_PREVIEW = 8;
+
+const TYPE_AVATAR_BG: Record<MarketplaceItemType, string> = {
+  plugin: "bg-violet-500/15 text-violet-400",
+  skill:  "bg-teal-500/15   text-teal-400",
+  agent:  "bg-blue-500/15   text-blue-400",
+  team:   "bg-amber-500/15  text-amber-400",
+};
+
 export default function MarketplaceDetail() {
   const params = useParams<{ type: string; slug: string; "*": string }>();
   const itemType = params.type ? pathToItemType(params.type) : null;
-  // Splat preserves slashes — combine slug + rest if rest non-empty.
   const slugSegment = params.slug ?? "";
   const restPath = params["*"] ?? "";
   const fullSlug = restPath ? `${slugSegment}/${restPath}` : slugSegment;
@@ -50,13 +41,13 @@ export default function MarketplaceDetail() {
   const [readmeText, setReadmeText] = useState<string | null>(null);
   const [readmeError, setReadmeError] = useState<string | null>(null);
   const [installModalOpen, setInstallModalOpen] = useState(false);
+  const [showAllCaps, setShowAllCaps] = useState(false);
 
   const item = useMemo(() => {
     if (!catalog || !catalogItemId) return null;
     return catalog.items.find((i) => i.id === catalogItemId) ?? null;
   }, [catalog, catalogItemId]);
 
-  // Fetch README (inline preferred, else HTTP)
   useEffect(() => {
     if (!item) return;
     if (item.content?.inline) {
@@ -78,6 +69,11 @@ export default function MarketplaceDetail() {
       .catch((err) => setReadmeError(err.message));
   }, [item]);
 
+  const typeBreadcrumb = (type: MarketplaceItemType) => ({
+    label: TYPE_LABELS_PLURAL[type],
+    to: `/marketplace?type=${type}`,
+  });
+
   if (!itemType) {
     return (
       <MarketplaceLayout breadcrumbs={[{ label: params.type ?? "?" }]}>
@@ -96,9 +92,7 @@ export default function MarketplaceDetail() {
 
   if (isLoading) {
     return (
-      <MarketplaceLayout
-        breadcrumbs={[{ label: TYPE_LABELS_PLURAL[itemType], to: `/marketplace/${itemType}` }]}
-      >
+      <MarketplaceLayout breadcrumbs={[typeBreadcrumb(itemType)]}>
         <div className="space-y-6 max-w-4xl">
           <Skeleton className="h-10 w-64" />
           <Skeleton className="h-4 w-96" />
@@ -112,16 +106,14 @@ export default function MarketplaceDetail() {
 
   if (error || !catalog) {
     return (
-      <MarketplaceLayout
-        breadcrumbs={[{ label: TYPE_LABELS_PLURAL[itemType], to: `/marketplace/${itemType}` }]}
-      >
+      <MarketplaceLayout breadcrumbs={[typeBreadcrumb(itemType)]}>
         <div className="text-center py-12">
           <p className="text-lg font-medium">Could not load this item</p>
           <p className="text-sm text-muted-foreground mt-2">
             {error?.message ?? "Catalog unavailable"}
           </p>
           <Link
-            to={`/marketplace/${itemType}`}
+            to={`/marketplace?type=${itemType}`}
             className="text-sm text-primary hover:underline mt-3 inline-block"
           >
             ← Back to {TYPE_LABELS_PLURAL[itemType]}
@@ -133,13 +125,11 @@ export default function MarketplaceDetail() {
 
   if (!item) {
     return (
-      <MarketplaceLayout
-        breadcrumbs={[{ label: TYPE_LABELS_PLURAL[itemType], to: `/marketplace/${itemType}` }]}
-      >
+      <MarketplaceLayout breadcrumbs={[typeBreadcrumb(itemType)]}>
         <div className="text-center py-12">
           <p className="text-lg font-medium">Item not found: {catalogItemId}</p>
           <Link
-            to={`/marketplace/${itemType}`}
+            to={`/marketplace?type=${itemType}`}
             className="text-sm text-primary hover:underline mt-2 inline-block"
           >
             ← Back to {TYPE_LABELS_PLURAL[itemType]}
@@ -150,54 +140,122 @@ export default function MarketplaceDetail() {
   }
 
   const Icon = TYPE_ICONS[item.type];
+  const caps = item.capabilities ?? [];
+  const visibleCaps = showAllCaps ? caps : caps.slice(0, CAP_PREVIEW);
+  const hiddenCapsCount = caps.length - CAP_PREVIEW;
 
   return (
     <MarketplaceLayout
       breadcrumbs={[
-        { label: TYPE_LABELS_PLURAL[item.type], to: `/marketplace/${item.type}` },
+        typeBreadcrumb(item.type),
         { label: item.name },
       ]}
     >
-      <div className="space-y-8 max-w-4xl">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
-              <Icon className="h-4 w-4" />
-              <span>{TYPE_LABELS[item.type]}</span>
-              <span>·</span>
-              <Badge variant="outline" className="text-xs">v{item.version}</Badge>
+      <div className="max-w-4xl space-y-8">
+
+        {/* ── Hero ───────────────────────────────────────────────────────────── */}
+        <div className="flex flex-col lg:flex-row gap-8">
+
+          {/* Left: avatar + info */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start gap-4 mb-4">
+              <div className={cn(
+                "w-16 h-16 rounded-2xl flex items-center justify-center text-2xl font-bold shrink-0",
+                TYPE_AVATAR_BG[item.type],
+              )}>
+                {item.name.charAt(0).toUpperCase()}
+              </div>
+              <div className="min-w-0 pt-1">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span>{TYPE_LABELS[item.type]}</span>
+                  <span>·</span>
+                  <Badge variant="outline" className="text-xs">v{item.version}</Badge>
+                </div>
+                <h1 className="text-2xl font-bold leading-tight">{item.name}</h1>
+              </div>
             </div>
-            <h1 className="text-3xl font-semibold">{item.name}</h1>
-            <p className="text-muted-foreground mt-2">{item.description}</p>
-            <div className="flex items-center gap-2 mt-3 flex-wrap">
+            <p className="text-muted-foreground mb-4">{item.description}</p>
+            <div className="flex items-center gap-2 flex-wrap">
               <TrustBadge tier={item.trust.tier} />
               {item.tags.map((tag) => (
                 <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
               ))}
             </div>
           </div>
-          <Button onClick={() => setInstallModalOpen(true)}>Install</Button>
+
+          {/* Right: install card */}
+          <div className="lg:w-60 shrink-0">
+            <div className="border rounded-xl p-5 bg-card space-y-4">
+              <div>
+                <p className="text-[10px] font-semibold tracking-widest uppercase text-muted-foreground mb-1">
+                  Version
+                </p>
+                <p className="text-sm font-medium">v{item.version}</p>
+              </div>
+              {item.source.url && (
+                <div>
+                  <p className="text-[10px] font-semibold tracking-widest uppercase text-muted-foreground mb-1">
+                    Source
+                  </p>
+                  <a
+                    href={item.source.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-primary hover:underline inline-flex items-center gap-1"
+                  >
+                    View on GitHub <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+              )}
+              <Button className="w-full" onClick={() => setInstallModalOpen(true)}>
+                Install
+              </Button>
+            </div>
+          </div>
         </div>
 
         <Separator />
 
-        {item.capabilities && item.capabilities.length > 0 && (
+        {/* ── Capabilities ───────────────────────────────────────────────────── */}
+        {caps.length > 0 && (
           <section>
-            <h2 className="text-xl font-semibold mb-3">Capabilities</h2>
-            <ul className="space-y-2">
-              {item.capabilities.map((cap) => (
-                <li key={cap.id} className="text-sm">
-                  <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{cap.id}</code>
-                  <span className="text-muted-foreground ml-2">— {cap.description}</span>
-                </li>
+            <h2 className="text-lg font-semibold mb-3">
+              Capabilities
+              <span className="ml-2 text-sm font-normal text-muted-foreground">
+                ({caps.length})
+              </span>
+            </h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {visibleCaps.map((cap) => (
+                <div
+                  key={cap.id}
+                  className="flex items-start gap-2 bg-muted/40 rounded-lg px-3 py-2.5"
+                >
+                  <code className="text-[11px] bg-background border rounded px-1.5 py-0.5 shrink-0 mt-0.5 leading-snug">
+                    {cap.id}
+                  </code>
+                  <span className="text-xs text-muted-foreground leading-relaxed">
+                    {cap.description}
+                  </span>
+                </div>
               ))}
-            </ul>
+            </div>
+            {hiddenCapsCount > 0 && (
+              <button
+                className="mt-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setShowAllCaps(!showAllCaps)}
+              >
+                {showAllCaps ? "Show less" : `Show ${hiddenCapsCount} more`}
+              </button>
+            )}
           </section>
         )}
 
+        {/* ── Dependencies ───────────────────────────────────────────────────── */}
         {item.requires && item.requires.length > 0 && (
           <section>
-            <h2 className="text-xl font-semibold mb-3">Dependencies</h2>
+            <h2 className="text-lg font-semibold mb-3">Dependencies</h2>
             <ul className="space-y-1">
               {item.requires.map((req) => (
                 <li key={req.id} className="text-sm">
@@ -208,8 +266,9 @@ export default function MarketplaceDetail() {
           </section>
         )}
 
+        {/* ── README ─────────────────────────────────────────────────────────── */}
         <section>
-          <h2 className="text-xl font-semibold mb-3">README</h2>
+          <h2 className="text-lg font-semibold mb-3">README</h2>
           {readmeError ? (
             <p className="text-sm text-destructive">Could not load README: {readmeError}</p>
           ) : readmeText === null ? (
@@ -218,21 +277,6 @@ export default function MarketplaceDetail() {
             <ReadmeRender source={readmeText} />
           )}
         </section>
-
-        {item.source.url && (
-          <section>
-            <h2 className="text-xl font-semibold mb-3">Source</h2>
-            <a
-              href={item.source.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-sm text-primary hover:underline inline-flex items-center gap-1"
-            >
-              {item.source.url}
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          </section>
-        )}
       </div>
 
       {installModalOpen && item.type === "plugin" && (
