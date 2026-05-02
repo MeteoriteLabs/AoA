@@ -127,6 +127,17 @@ export {
 } from "./memory.js";
 
 export {
+  memoryFolderCreateSchema,
+  memoryFolderUpdateSchema,
+  normalizeMemoryFolderPath,
+} from "./memory-folder.js";
+
+export {
+  memoryAssetUpdateSchema,
+  memoryAssetMoveSchema,
+} from "./memory-asset.js";
+
+export {
   createDebriefSchema,
   mcpDebriefSchema,
   updateDebriefSchema,
