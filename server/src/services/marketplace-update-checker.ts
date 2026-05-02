@@ -38,22 +38,6 @@ export function compareVersions(latest: string, current: string): number {
   return 0;
 }
 
-type UpdatePolicy = "auto_patch" | "auto_minor" | "notify_all" | "auto" | "notify";
-
-export function isUpdateAvailable(current: string, latest: string, policy: UpdatePolicy): boolean {
-  if (compareVersions(latest, current) <= 0) return false;
-
-  if (policy === "auto" || policy === "notify" || policy === "notify_all") return true;
-
-  const [lMaj, lMin] = latest.split(".").map(Number);
-  const [cMaj, cMin] = current.split(".").map(Number);
-
-  if (policy === "auto_minor") return lMaj === cMaj;
-  if (policy === "auto_patch") return lMaj === cMaj && lMin === cMin;
-
-  return true;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Main checker
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,9 +54,7 @@ async function checkCompany(db: Db, catalogItems: CatalogItem[], companyId: stri
   try {
     const catalogMap = new Map<string, { version: string; name: string; type: string }>();
     for (const item of catalogItems) {
-      if (item.version) {
-        catalogMap.set(item.id, { version: item.version, name: item.name, type: item.type });
-      }
+      catalogMap.set(item.id, { version: item.version, name: item.name, type: item.type });
     }
 
     // Read settings once per company — not per skill
