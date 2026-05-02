@@ -21,11 +21,11 @@ export type UpdateWindow = MarketplaceSettings["updateWindow"];
  * @param window - The update window setting from company marketplace settings.
  * @param now - Defaults to new Date(). Pass a fixed date in tests.
  */
-export function isWithinUpdateWindow(window: UpdateWindow, now: Date = new Date()): boolean {
+export function isWithinUpdateWindow(setting: UpdateWindow, now: Date = new Date()): boolean {
   const hour = now.getUTCHours();
   const day = now.getUTCDay(); // 0 = Sunday, 6 = Saturday
 
-  switch (window) {
+  switch (setting) {
     case "anytime":   return true;
     case "off_hours": return hour < 8 || hour >= 20;
     case "weekends":  return day === 0 || day === 6;

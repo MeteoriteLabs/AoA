@@ -12,7 +12,9 @@ export type {
   InstallMarketplacePluginResult,
   PluginLoaderLike,
 } from "./plugin-installer.js";
-export { fetchCatalogResource, FETCH_TIMEOUT_MS } from "./fetch-resource.js";
+export { fetchCatalogResource, loadSkillContent, FETCH_TIMEOUT_MS } from "./fetch-resource.js";
+export { isWithinUpdateWindow, applySkillUpdate, SkillCustomizedError, SkillDeletedError } from "./skill-auto-updater.js";
+export type { UpdateWindow } from "./skill-auto-updater.js";
 export * from "./operation-store.js";
 export { startInstallOperation, dispatchInstall } from "./orchestrator.js";
 export type { Installers, PublishLiveEventFn, StartInstallOpts, DispatchInstallOpts } from "./orchestrator.js";
