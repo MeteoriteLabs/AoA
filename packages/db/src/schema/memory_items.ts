@@ -107,9 +107,10 @@ export const memoryItems = pgTable(
       table.departmentId,
       table.folderPath,
     ),
-    foundersPinnedIdx: index("memory_items_founder_pinned_idx").on(
+    founderPinnedIdx: index("memory_items_founder_pinned_idx").on(
       table.companyId,
       table.founderPinnedToTop,
+      table.status,
     ),
   }),
 );
