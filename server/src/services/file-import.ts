@@ -321,23 +321,25 @@ async function processOneJob(
     // Stage 2: extract memory items (LLM path or chunking fallback)
     const { items, processorType } = await extractItemsFromText(text, job, db);
 
-    // Bulk insert memory items
-    if (items.length > 0) {
-      await db.insert(memoryItems).values(items);
-    }
-
-    // Mark done
-    await db
-      .update(fileImportJobs)
-      .set({
-        status: "done",
-        processorType,
-        itemCount: items.length,
-        parserWarnings: warnings.length > 0 ? warnings : null,
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(fileImportJobs.id, job.id));
+    // Atomically insert memory items and mark done.
+    // Prevents duplicate items if the server crashes between the two writes
+    // (resetStuckJobs would reset to 'pending' and re-run the job).
+    await db.transaction(async (tx) => {
+      if (items.length > 0) {
+        await tx.insert(memoryItems).values(items);
+      }
+      await tx
+        .update(fileImportJobs)
+        .set({
+          status: "done",
+          processorType,
+          itemCount: items.length,
+          parserWarnings: warnings.length > 0 ? warnings : null,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(fileImportJobs.id, job.id));
+    });
   } catch (err) {
     log.warn({ err, jobId: job.id, companyId: job.companyId }, "file import job failed");
     const newRetryCount = job.retryCount + 1;

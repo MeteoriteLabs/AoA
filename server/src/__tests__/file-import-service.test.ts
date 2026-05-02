@@ -165,11 +165,13 @@ function makeDb(selects: unknown[][] = [], updates: unknown[][] = [], inserts: u
     c.then = (resolve: (v: unknown[]) => unknown) => Promise.resolve(resolve(getResult()));
     return c;
   };
-  return {
+  const db: Record<string, unknown> = {
     select: (..._a: unknown[]) => makeChain(() => selects[si++] ?? []),
     update: (..._a: unknown[]) => makeChain(() => updates[ui++] ?? []),
     insert: (..._a: unknown[]) => makeChain(() => inserts[ii++] ?? []),
+    transaction: async (fn: (tx: unknown) => Promise<void>) => fn(db),
   };
+  return db;
 }
 
 describe("fileImportService.createJob", () => {
