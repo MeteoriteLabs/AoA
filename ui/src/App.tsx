@@ -36,6 +36,7 @@ import { TeamDetail } from "./pages/TeamDetail";
 import { HumanDetail } from "./pages/HumanDetail";
 import { ActiveAgents } from "./pages/ActiveAgents";
 import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
+import { MemoryQuickSwitcher } from "./components/memory/MemoryQuickSwitcher";
 import { Discussions } from "./pages/Discussions";
 import { DiscussionDetail } from "./pages/DiscussionDetail";
 import { Skills } from "./pages/Skills";
@@ -311,6 +312,7 @@ export function App() {
       </Routes>
       <OnboardingWizard />
       <DiscussionCaptureModal />
+      <MemoryQuickSwitcher />
     </>
   );
 }
