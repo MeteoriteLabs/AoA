@@ -104,6 +104,12 @@ export function memoryAssetsUploadRoutes(opts: RoutesOptions) {
         });
 
         const actor = getActorInfo(req);
+        // Phase 6.1c: actorId is "local-board" in local_trusted mode (synthetic
+        // actor, not a UUID). The uploaded_by_user_id column is UUID-typed —
+        // only set it when the actor really is a user (UUID-shaped).
+        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const userId = actor.actorId && UUID_RE.test(actor.actorId) ? actor.actorId : null;
+
         const job = await fileImport.createJob({
           companyId,
           fileName: file.originalname,
@@ -126,7 +132,7 @@ export function memoryAssetsUploadRoutes(opts: RoutesOptions) {
           fileSize: file.size,
           storageKey: stored.objectKey,
           importJobId: job.id,
-          uploadedByUserId: actor.actorId ?? null,
+          uploadedByUserId: userId,
         });
 
         res.status(201).json({ asset, jobId: job.id });
