@@ -50,6 +50,7 @@ import { fileImportRoutes } from "./routes/file-import.js";
 import { memoryFoldersRoutes } from "./routes/memory-folders.js";
 import { memoryAssetsRoutes } from "./routes/memory-assets.js";
 import { memoryAssetsUploadRoutes } from "./routes/memory-assets-upload.js";
+import { memoryAssetRenderRoutes } from "./routes/memory-asset-render.js";
 import { suggestionRoutes } from "./routes/suggestions.js";
 import { contextPackagingRoutes } from "./routes/context-packaging.js";
 import { mcpServerRoutes } from "./mcp/server.js";
@@ -189,6 +190,7 @@ export async function createApp(
   api.use(memoryFoldersRoutes({ db }));
   api.use(memoryAssetsRoutes({ db, storageService: opts.storageService }));
   api.use(memoryAssetsUploadRoutes({ db, storageService: opts.storageService }));
+  api.use(memoryAssetRenderRoutes({ db, storageService: opts.storageService }));
   api.use(memoryRoutes(db));
   api.use(searchRoutes(db));
   api.use(debriefRoutes(db));
