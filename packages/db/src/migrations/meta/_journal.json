@@ -568,6 +568,13 @@
       "when": 1746057700000,
       "tag": "0075_plugin_version_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1746144000000,
+      "tag": "0076_customized_company_skills",
+      "breakpoints": true
     }
   ]
 }

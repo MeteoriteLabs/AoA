@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex,
+  pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex, boolean,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
@@ -23,6 +23,7 @@ export const companySkills = pgTable(
       .notNull()
       .default([]),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    customized: boolean("customized").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
