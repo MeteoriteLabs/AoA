@@ -1,4 +1,55 @@
-// T3 stub — full implementation in T4.
-export function GenericFileViewer(_props: { companyId: string; assetId: string }) {
-  return <div className="h-full flex items-center justify-center text-xs text-muted-foreground">Generic file viewer (Phase 6.1c T4)</div>;
+import { useQuery } from "@tanstack/react-query";
+import { File as FileIcon, Download, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { memoryAssetsApi } from "../../../api/memoryAssets";
+import { queryKeys } from "../../../lib/queryKeys";
+import { ExtractsSidebar } from "../ExtractsSidebar";
+
+interface GenericFileViewerProps {
+  companyId: string;
+  assetId: string;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+export function GenericFileViewer({ companyId, assetId }: GenericFileViewerProps) {
+  const { data: asset } = useQuery({
+    queryKey: queryKeys.memory.assets.detail(companyId, assetId),
+    queryFn: () => memoryAssetsApi.get(companyId, assetId),
+  });
+  const url = memoryAssetsApi.contentUrl(companyId, assetId);
+
+  if (!asset) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex">
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8">
+        <FileIcon className="h-16 w-16 text-muted-foreground opacity-50" />
+        <div className="text-lg font-medium">{asset.fileName}</div>
+        <div className="text-xs text-muted-foreground">
+          {asset.mimeType} · {formatBytes(asset.fileSize)}
+        </div>
+        <Button asChild>
+          <a href={url} download={asset.fileName} className="gap-2">
+            <Download className="h-4 w-4" />
+            Download
+          </a>
+        </Button>
+      </div>
+      {asset.importJobId && (
+        <ExtractsSidebar companyId={companyId} importJobId={asset.importJobId} />
+      )}
+    </div>
+  );
 }
