@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ExternalLink } from "lucide-react";
+import { ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -243,10 +243,14 @@ export default function MarketplaceDetail() {
             </div>
             {hiddenCapsCount > 0 && (
               <button
-                className="mt-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full border border-border text-xs text-muted-foreground hover:text-foreground hover:border-muted-foreground transition-all"
                 onClick={() => setShowAllCaps(!showAllCaps)}
               >
-                {showAllCaps ? "Show less" : `Show ${hiddenCapsCount} more`}
+                {showAllCaps ? (
+                  <><ChevronUp className="h-3 w-3" /> Show less</>
+                ) : (
+                  <><ChevronDown className="h-3 w-3" /> Show {hiddenCapsCount} more</>
+                )}
               </button>
             )}
           </section>

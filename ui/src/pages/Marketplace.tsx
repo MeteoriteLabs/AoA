@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { BookOpen, Bot, Plug, Search, Users } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -7,6 +7,7 @@ import { useCatalog } from "@/hooks/useCatalog";
 import { CatalogCard } from "@/components/marketplace/CatalogCard";
 import { MarketplaceLayout } from "@/components/marketplace/MarketplaceLayout";
 import { filterByType } from "@/api/marketplace";
+import { TYPE_LABELS_PLURAL } from "@/lib/marketplace-constants";
 import type { MarketplaceItemType, MarketplaceCategory } from "@armyofagents/shared";
 
 // ─── Type pill config ────────────────────────────────────────────────────────
@@ -79,6 +80,19 @@ export default function Marketplace() {
   const [selectedCategory, setSelectedCategory] = useState<MarketplaceCategory | null>(null);
   const [sortOrder,        setSortOrder]         = useState<SortOrder>("popular");
   const [search,           setSearch]            = useState("");
+
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   const items = catalog?.items ?? [];
 
@@ -165,6 +179,7 @@ export default function Marketplace() {
         <div className="relative mb-5">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <input
+            ref={searchRef}
             type="text"
             placeholder="Search skills, agents, teams, plugins…"
             value={search}
@@ -180,6 +195,7 @@ export default function Marketplace() {
         <div className="grid grid-cols-4 gap-2.5 mb-4">
           {TYPES.map(({ type, label, Icon }) => {
             const isActive = selectedType === type;
+            const isEmpty = !isActive && (typeCounts[type] ?? 0) === 0;
             return (
               <button
                 key={type}
@@ -187,7 +203,7 @@ export default function Marketplace() {
                 onClick={() => setSelectedType(isActive ? null : type)}
                 className={cn(
                   "flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-border bg-card text-left transition-all",
-                  TYPE_COLORS[type],
+                  isEmpty ? "opacity-40 cursor-default" : TYPE_COLORS[type],
                 )}
               >
                 <span className={cn("w-7 h-7 rounded-md flex items-center justify-center shrink-0", TYPE_ICON_BG[type])}>
@@ -225,8 +241,8 @@ export default function Marketplace() {
                 </span>
               </button>
 
-              {/* Category chips */}
-              {CATEGORIES.map(({ category, label, emoji }) => {
+              {/* Category chips — only show categories that have at least one item */}
+              {CATEGORIES.filter(({ category }) => (categoryCounts[category] ?? 0) > 0).map(({ category, label, emoji }) => {
                 const count = categoryCounts[category] ?? 0;
                 const isActive = selectedCategory === category;
                 return (
@@ -282,6 +298,11 @@ export default function Marketplace() {
               <div className="text-center py-20 text-muted-foreground">
                 <p className="font-medium">Catalog is syncing…</p>
                 <p className="text-sm mt-1">Items will appear here once the catalog finishes loading.</p>
+              </div>
+            ) : selectedType && (typeCounts[selectedType] ?? 0) === 0 ? (
+              <div className="text-center py-20 text-muted-foreground">
+                <p className="font-medium">No {TYPE_LABELS_PLURAL[selectedType]} in the catalog yet</p>
+                <p className="text-sm mt-1">Check back soon — more are on the way.</p>
               </div>
             ) : (
               <div className="text-center py-20 text-muted-foreground">
