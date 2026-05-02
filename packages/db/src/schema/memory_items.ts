@@ -79,6 +79,15 @@ export const memoryItems = pgTable(
     importJobId: uuid("import_job_id").references(() => fileImportJobs.id, {
       onDelete: "set null",
     }),
+    // Phase 6: tree path within the dept's memory hierarchy. Empty string = dept root.
+    // POSIX-style with `/` separators. e.g. "Engineering/Decisions" or "Company".
+    folderPath: text("folder_path").notNull().default(""),
+    // Phase 6: tracks which user last opened this item in the explorer (for Recents on home).
+    // Distinct from accessedAt (used by staleness detection).
+    lastAccessedByUserId: uuid("last_accessed_by_user_id"),
+    // Phase 6: drives the virtual "Pinned" folder at the top of the tree.
+    // NOT the same as pinnedToSkill (which materializes into agent skill files).
+    founderPinnedToTop: boolean("founder_pinned_to_top").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -93,5 +102,14 @@ export const memoryItems = pgTable(
     agentScopeIdx: index("memory_items_agent_scope_idx").on(table.companyId, table.agentId, table.status),
     // V2.6: surface pinned items quickly for skill materialization.
     pinnedSkillIdx: index("memory_items_pinned_skill_idx").on(table.companyId, table.pinnedToSkill, table.status),
+    folderPathIdx: index("memory_items_folder_path_idx").on(
+      table.companyId,
+      table.departmentId,
+      table.folderPath,
+    ),
+    foundersPinnedIdx: index("memory_items_founder_pinned_idx").on(
+      table.companyId,
+      table.founderPinnedToTop,
+    ),
   }),
 );
