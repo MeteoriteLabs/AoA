@@ -17,7 +17,7 @@ export interface MarketplaceLayoutProps {
  */
 export function MarketplaceLayout({ breadcrumbs = [], actions, children }: MarketplaceLayoutProps) {
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-screen">
       <header className="border-b px-6 py-4 flex items-center justify-between gap-4">
         <nav className="flex items-center gap-2 text-sm">
           <Link
@@ -40,7 +40,7 @@ export function MarketplaceLayout({ breadcrumbs = [], actions, children }: Marke
             </span>
           ))}
         </nav>
-        <div className="flex items-center gap-2">{actions ?? <SearchTypeahead />}</div>
+        <div className="flex items-center gap-2">{actions !== undefined ? actions : <SearchTypeahead />}</div>
       </header>
       <main className="flex-1 overflow-auto px-6 py-6">{children}</main>
     </div>
