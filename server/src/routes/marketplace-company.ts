@@ -291,9 +291,11 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     const merged = applyMergeDecisions(diff, decisions);
 
     // Save merged content + update sourceRef to latestVersion
+    // customized=true marks that the founder made deliberate merge decisions,
+    // preventing the auto-updater from overwriting their work in future cycles.
     await db
       .update(companySkills)
-      .set({ markdown: merged, sourceRef: update.latestVersion })
+      .set({ markdown: merged, sourceRef: update.latestVersion, customized: true, updatedAt: new Date() })
       .where(eq(companySkills.id, skill.id));
 
     // Mark update as applied
