@@ -53,19 +53,24 @@ describe("SnapshotInstallModal — skill", () => {
     ] as any);
   });
 
-  it("renders skill detail + dept picker (no company picker since only 1 active company)", async () => {
+  it("renders skill detail without a dept picker (skills don't require a department)", async () => {
     wrap(<SnapshotInstallModal item={CODE_REVIEW_SKILL} open onOpenChange={() => {}} />);
     expect(screen.getByText("Install Code Review")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByLabelText("Install to department")).toBeInTheDocument());
-    // No "Install to company" picker
+    // Wait for the component to fully settle (company auto-pick effect)
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Install$/ })).toBeInTheDocument());
+    // Skills don't require a department — no dept picker shown
+    expect(screen.queryByLabelText("Install to department")).not.toBeInTheDocument();
+    // No company picker either (only 1 active company)
     expect(screen.queryByLabelText("Install to company")).not.toBeInTheDocument();
   });
 
-  it("Install button disabled until department selected", async () => {
+  it("Install button is enabled immediately for skills (no department required)", async () => {
     wrap(<SnapshotInstallModal item={CODE_REVIEW_SKILL} open onOpenChange={() => {}} />);
-    await waitFor(() => expect(screen.getByLabelText("Install to department")).toBeInTheDocument());
-    const installBtn = screen.getByRole("button", { name: /^Install$/ });
-    expect(installBtn).toBeDisabled();
+    // With 1 active company auto-selected and no dept required, Install should be enabled at once
+    await waitFor(() => {
+      const installBtn = screen.getByRole("button", { name: /^Install$/ });
+      expect(installBtn).not.toBeDisabled();
+    });
   });
 });
 

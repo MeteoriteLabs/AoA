@@ -1,3 +1,4 @@
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companySkills } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
@@ -11,6 +12,7 @@ export interface InstallSkillOpts {
 
 export interface InstallSkillResult {
   skillId: string;
+  alreadyInstalled?: boolean;
 }
 
 /**
@@ -21,9 +23,9 @@ export interface InstallSkillResult {
  * - Stores sourceType=catalog, sourceLocator=catalogItemId, sourceRef=version
  *   so future updates and idempotency checks can find the row.
  *
- * Idempotency check (whether a skill is already installed) belongs in the
- * orchestrator, not here. This function blindly inserts; caller must
- * check first.
+ * Includes an idempotency guard: returns `alreadyInstalled: true` if the same
+ * version is already installed; throws a clean error if a different version
+ * exists (use the update flow to upgrade instead of re-installing).
  *
  * The `db` argument may be a transaction handle. The function performs a
  * single insert and is safe to call inside a parent transaction.
@@ -37,10 +39,31 @@ export async function installSkill(opts: InstallSkillOpts): Promise<InstallSkill
     throw new Error(`installSkill called with non-skill item: ${catalogItem.id} (type=${catalogItem.type})`);
   }
 
+  const key = catalogItem.id; // catalog ID is the unique skill key
+
+  // ── Idempotency guard ────────────────────────────────────────────────────
+  // Check before inserting so callers receive a clean result instead of a
+  // raw Postgres unique-constraint violation on (companyId, key).
+  const existing = await db
+    .select({ id: companySkills.id, sourceRef: companySkills.sourceRef })
+    .from(companySkills)
+    .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, key)))
+    .limit(1);
+
+  if (existing.length > 0) {
+    if (existing[0].sourceRef === catalogItem.version) {
+      // Same version already installed — treat as success, nothing to do.
+      return { skillId: existing[0].id, alreadyInstalled: true };
+    }
+    throw new Error(
+      `Skill ${key} is already installed at version ${existing[0].sourceRef}; ` +
+      `catalog version is ${catalogItem.version}. Use the update flow to upgrade.`,
+    );
+  }
+
   const markdown = await loadSkillContent(catalogItem);
 
   const slug = catalogItem.id.split("/").pop() ?? catalogItem.id;
-  const key = catalogItem.id;  // catalog ID doubles as the unique skill key
 
   const inserted = await db
     .insert(companySkills)

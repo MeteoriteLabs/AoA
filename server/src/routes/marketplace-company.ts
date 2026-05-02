@@ -12,6 +12,7 @@
  * POST /request-install   — team_member install request (stub, filled in Task 10)
  */
 import { Router } from "express";
+import { z } from "zod";
 import { and, eq, ne } from "drizzle-orm";
 import { type Db, marketplacePendingUpdates, companySkills } from "@armyofagents/db";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
@@ -24,6 +25,21 @@ export interface MarketplaceCompanyRoutesDeps {
   db: Db;
   catalogService: { readCache(): Promise<MarketplaceCatalogFile | null> };
 }
+
+const MarketplaceSettingsPatchSchema = z.object({
+  pluginUpdatePolicy:          z.enum(["auto_patch", "auto_minor", "notify_all"]).optional(),
+  skillUpdatePolicy:           z.enum(["auto", "notify"]).optional(),
+  agentUpdatePolicy:           z.enum(["auto", "notify"]).optional(),
+  teamUpdatePolicy:            z.enum(["auto", "notify"]).optional(),
+  showTrustBadges:             z.boolean().optional(),
+  showSourceInfo:              z.boolean().optional(),
+  allowTeamLeadPlugins:        z.boolean().optional(),
+  teamMemberCanRequestInstall: z.boolean().optional(),
+  requireFounderApproval:      z.boolean().optional(),
+  catalogRefreshHours:         z.union([z.literal(6), z.literal(12), z.literal(24)]).optional(),
+  updateCheckHours:            z.union([z.literal(6), z.literal(12), z.literal(24)]).optional(),
+  updateWindow:                z.enum(["anytime", "off_hours", "weekends"]).optional(),
+});
 
 export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDeps): Router {
   const { db } = deps;
@@ -46,13 +62,13 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     const companyId = (req.params as Record<string, string>).companyId;
     assertCompanyAccess(req, companyId);
 
-    const patch = req.body as Record<string, unknown>;
-    if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
-      res.status(400).json({ error: "Request body must be a settings object" });
+    const parsed = MarketplaceSettingsPatchSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid settings", details: parsed.error.flatten() });
       return;
     }
 
-    const updated = await svc.patch(companyId, patch);
+    const updated = await svc.patch(companyId, parsed.data);
     res.json(updated);
   });
 

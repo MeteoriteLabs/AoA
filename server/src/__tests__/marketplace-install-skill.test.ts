@@ -38,7 +38,16 @@ const SKILL_FETCH: CatalogItem = {
 
 describe("installSkill", () => {
   let insertedRow: any = null;
+
+  // Default mockDb: select returns [] (no existing install), insert succeeds.
   const mockDb = {
+    select: (_fields?: any) => ({
+      from: (_table: any) => ({
+        where: (_cond: any) => ({
+          limit: (_n: number) => Promise.resolve([]),
+        }),
+      }),
+    }),
     insert: () => ({
       values: (row: any) => {
         insertedRow = row;
@@ -119,5 +128,49 @@ describe("installSkill", () => {
     await installSkill({ catalogItem: COMMUNITY_SKILL, companyId: "c1", db: mockDb as any });
     expect(insertedRow.trustLevel).toBe("markdown_only");
     expect(insertedRow.metadata.catalogTrustTier).toBe("community");
+  });
+});
+
+describe("installSkill — idempotency", () => {
+  it("returns alreadyInstalled: true when the same version is already installed", async () => {
+    const idempotentDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            // Simulate existing row at same version
+            limit: () => Promise.resolve([{ id: "existing-uuid", sourceRef: "1.0.0" }]),
+          }),
+        }),
+      }),
+    };
+
+    const result = await installSkill({
+      catalogItem: SKILL_INLINE, // version: "1.0.0"
+      companyId: "c1",
+      db: idempotentDb as any,
+    });
+
+    expect(result).toEqual({ skillId: "existing-uuid", alreadyInstalled: true });
+  });
+
+  it("throws a clean error when a different version is already installed", async () => {
+    const conflictDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            // Simulate existing row at an older version
+            limit: () => Promise.resolve([{ id: "existing-uuid", sourceRef: "0.9.0" }]),
+          }),
+        }),
+      }),
+    };
+
+    await expect(
+      installSkill({
+        catalogItem: SKILL_INLINE, // version: "1.0.0" vs existing "0.9.0"
+        companyId: "c1",
+        db: conflictDb as any,
+      }),
+    ).rejects.toThrow(/already installed at version 0\.9\.0/);
   });
 });

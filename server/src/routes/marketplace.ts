@@ -18,7 +18,8 @@ export function createMarketplaceRouter(deps: MarketplaceRoutesDeps): Router {
   const { service } = deps;
   const router = Router();
 
-  router.get("/catalog", async (_req, res) => {
+  router.get("/catalog", async (req, res) => {
+    assertBoard(req);
     const catalog = await service.readCache();
     if (!catalog) {
       res.status(503).json({ error: "Catalog not yet synced" });
@@ -37,7 +38,8 @@ export function createMarketplaceRouter(deps: MarketplaceRoutesDeps): Router {
     res.json({ status: await service.getStatus(), itemCount: catalog.itemCount });
   });
 
-  router.get("/catalog/status", async (_req, res) => {
+  router.get("/catalog/status", async (req, res) => {
+    assertBoard(req);
     const status = await service.getStatus();
     if (!status) {
       res.status(404).json({ error: "No catalog cached yet" });

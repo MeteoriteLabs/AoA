@@ -28,7 +28,11 @@ describe("marketplace routes", () => {
     } as any;
 
     const app = express();
+    app.use((req: any, _res, next) => { req.actor = { type: "board" }; next(); });
     app.use("/api/marketplace", createMarketplaceRouter({ service }));
+    app.use((err: any, _req: any, res: any, _next: any) => {
+      res.status(err.status ?? 500).json({ error: err.message });
+    });
 
     const res = await request(app).get("/api/marketplace/catalog");
     expect(res.status).toBe(503);
@@ -42,7 +46,11 @@ describe("marketplace routes", () => {
     } as any;
 
     const app = express();
+    app.use((req: any, _res, next) => { req.actor = { type: "board" }; next(); });
     app.use("/api/marketplace", createMarketplaceRouter({ service }));
+    app.use((err: any, _req: any, res: any, _next: any) => {
+      res.status(err.status ?? 500).json({ error: err.message });
+    });
 
     const res = await request(app).get("/api/marketplace/catalog");
     expect(res.status).toBe(200);
@@ -114,7 +122,11 @@ describe("marketplace routes", () => {
     } as any;
 
     const app = express();
+    app.use((req: any, _res, next) => { req.actor = { type: "board" }; next(); });
     app.use("/api/marketplace", createMarketplaceRouter({ service }));
+    app.use((err: any, _req: any, res: any, _next: any) => {
+      res.status(err.status ?? 500).json({ error: err.message });
+    });
 
     const res = await request(app).get("/api/marketplace/catalog/status");
     expect(res.status).toBe(200);

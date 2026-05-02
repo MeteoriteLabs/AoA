@@ -168,7 +168,7 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       }
     }
 
-    if (catalogItem.type !== "plugin" && !request.targetDepartmentId) {
+    if ((catalogItem.type === "agent" || catalogItem.type === "team") && !request.targetDepartmentId) {
       res.status(400).json({ error: `targetDepartmentId required for ${catalogItem.type} installs` });
       return;
     }

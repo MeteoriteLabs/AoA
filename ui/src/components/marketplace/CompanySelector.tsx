@@ -18,6 +18,27 @@ function avatarStyle(brandColor: string | null | undefined): React.CSSProperties
   };
 }
 
+// ─── Avatar sub-component ────────────────────────────────────────────────────
+
+interface AvatarProps {
+  company: {
+    name: string | null | undefined;
+    brandColor: string | null | undefined;
+    issuePrefix: string;
+  };
+}
+
+function Avatar({ company }: AvatarProps) {
+  return (
+    <span
+      className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold shrink-0 bg-violet-500/15 text-violet-400"
+      style={avatarStyle(company.brandColor)}
+    >
+      {initials(company.name, company.issuePrefix)}
+    </span>
+  );
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 /**
@@ -38,18 +59,6 @@ export function CompanySelector() {
   if (!selectedCompany) return null;
 
   const isMulti = activeCompanies.length > 1;
-
-  // ── Avatar sub-element ───────────────────────────────────────────────────
-  function Avatar({ company }: { company: typeof selectedCompany }) {
-    return (
-      <span
-        className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold shrink-0 bg-violet-500/15 text-violet-400"
-        style={avatarStyle(company.brandColor)}
-      >
-        {initials(company.name, company.issuePrefix)}
-      </span>
-    );
-  }
 
   // ── Single company — static badge ────────────────────────────────────────
   if (!isMulti) {

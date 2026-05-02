@@ -35,7 +35,17 @@ const SKILL = {
   addedAt: "2026-04-30T00:00:00Z", category: "engineering", tags: [],
 };
 
-const CATALOG = { schemaVersion: "1.0.0", generatedAt: "2026-04-30T00:00:00Z", itemCount: 1, items: [SKILL] };
+// Agent items require a targetDepartmentId; skills do not.
+const AGENT = {
+  id: "agent:aoa-curated/engineer", type: "agent", name: "Engineer", description: "...", version: "1.0.0",
+  source: { adapter: "aoa-curated", url: "...", locator: "...", commitSha: "abc" },
+  resourceUrl: "https://.../AGENT.json",
+  content: undefined,
+  trust: { tier: "verified", source: "aoa-curated" }, status: "active",
+  addedAt: "2026-04-30T00:00:00Z", category: "engineering", tags: [],
+};
+
+const CATALOG = { schemaVersion: "1.0.0", generatedAt: "2026-04-30T00:00:00Z", itemCount: 2, items: [SKILL, AGENT] };
 
 function buildApp() {
   const app = express();
@@ -88,10 +98,20 @@ describe("POST /api/companies/:companyId/marketplace/install", () => {
     expect(res.body.operationId).toBe("op-1");
   });
 
-  it("returns 400 when targetDepartmentId missing for snapshot install", async () => {
+  it("returns 202 for skill install without targetDepartmentId (skills don't require a dept)", async () => {
+    // Fix 5: skills should install successfully without a department.
     const res = await request(buildApp())
       .post(`/api/companies/${C_ID}/marketplace/install`)
       .send({ catalogItemId: SKILL.id });
+    expect(res.status).toBe(202);
+    expect(res.body.operationId).toBeDefined();
+  });
+
+  it("returns 400 when targetDepartmentId missing for agent installs", async () => {
+    // Agents (and teams) require a targetDepartmentId.
+    const res = await request(buildApp())
+      .post(`/api/companies/${C_ID}/marketplace/install`)
+      .send({ catalogItemId: AGENT.id });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/targetDepartmentId/);
   });

@@ -82,7 +82,9 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
     }
   }, [opStatus, pendingToastId, update, item.name]);
 
-  const canInstall = !!companyId && !!deptId;
+  // Skills don't require a department — only agent/team installs do.
+  const needsDept = item.type === "agent" || item.type === "team";
+  const canInstall = !!companyId && (!needsDept || !!deptId);
 
   const handleInstall = async () => {
     if (!canInstall || !companyId) return;
@@ -92,7 +94,7 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
     try {
       const result = await installMutation.mutateAsync({
         catalogItemId: item.id,
-        targetDepartmentId: deptId!,
+        ...(needsDept && deptId ? { targetDepartmentId: deptId } : {}),
       });
       setPendingOpId(result.operationId);
     } catch (err) {
@@ -121,7 +123,7 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
           </div>
 
           <CompanyPicker value={companyId} onChange={setCompanyId} />
-          <DepartmentPicker companyId={companyId} value={deptId} onChange={setDeptId} />
+          {needsDept && <DepartmentPicker companyId={companyId} value={deptId} onChange={setDeptId} />}
 
           {isTeam && plan && plan.steps.length > 1 && <CascadeTreePreview plan={plan} />}
         </div>
