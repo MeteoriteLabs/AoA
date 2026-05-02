@@ -53,7 +53,7 @@ import { InviteLandingPage } from "./pages/InviteLanding";
 import { PluginPage } from "./pages/PluginPage";
 import { PluginSettings } from "./pages/PluginSettings";
 import Marketplace from "./pages/Marketplace";
-import MarketplaceType from "./pages/MarketplaceType";
+import { Navigate as RawNavigate, useParams as useRawParams } from "react-router-dom";
 import MarketplaceDetail from "./pages/MarketplaceDetail";
 import MarketplaceSearch from "./pages/MarketplaceSearch";
 import MarketplaceUpdates from "./pages/MarketplaceUpdates";
@@ -262,6 +262,12 @@ function NoCompaniesStartPage({ autoOpen = true }: { autoOpen?: boolean }) {
   );
 }
 
+/** Redirect /marketplace/:type → /marketplace?type={type} without company-prefix logic. */
+function MarketplaceTypeRedirect() {
+  const { type } = useRawParams<{ type: string }>();
+  return <RawNavigate to={`/marketplace${type ? `?type=${type}` : ""}`} replace />;
+}
+
 export function App() {
   return (
     <>
@@ -285,7 +291,7 @@ export function App() {
           <Route path="instance/access" element={<InstanceAccessPage />} />
           <Route path="marketplace" element={<Marketplace />} />
           <Route path="marketplace/search" element={<MarketplaceSearch />} />
-          <Route path="marketplace/:type" element={<MarketplaceType />} />
+          <Route path="marketplace/:type" element={<MarketplaceTypeRedirect />} />
           <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
