@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { MarkdownEditorView } from "./MarkdownEditorView";
+import { MemoryApprovalActions } from "../MemoryApprovalActions";
 
 interface MarkdownItemViewerProps {
   companyId: string;
@@ -143,6 +144,11 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
             Edit
           </Button>
         </div>
+        {i.status === "pending" && (
+          <div className="mt-2">
+            <MemoryApprovalActions companyId={companyId} itemId={itemId} />
+          </div>
+        )}
       </div>
       {mode === "preview" ? (
         <div className="flex-1 overflow-auto px-6 py-5 prose prose-sm dark:prose-invert max-w-none">

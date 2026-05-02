@@ -73,4 +73,22 @@ describe("MarkdownItemViewer (Phase 6.1b)", () => {
       expect(screen.getByRole("button", { name: /^save$/i })).toBeInTheDocument(),
     );
   });
+
+  it("pending items show Approve and Reject buttons", async () => {
+    const memory = await import("../api/memory");
+    vi.mocked(memory.memoryApi.get).mockResolvedValueOnce({
+      id: "i-1",
+      title: "Pending item",
+      content: "Pending content",
+      status: "pending",
+      category: "decision",
+      layer: "domain",
+      pinnedToSkill: false,
+    } as never);
+    renderViewer();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /approve/i })).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /reject/i })).toBeInTheDocument();
+  });
 });
