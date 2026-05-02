@@ -11,6 +11,8 @@ import { cn } from "@/lib/utils";
 export interface TrustBadgeProps {
   tier: keyof typeof TRUST_TIER_CONFIG;
   className?: string;
+  /** Show the tier label text. Defaults to true. Pass false for compact (stars-only) display. */
+  showLabel?: boolean;
 }
 
 /**
@@ -19,9 +21,9 @@ export interface TrustBadgeProps {
  * Accessibility:
  *   - Color (visible) + star count (visible) + sr-only description (screen reader)
  *   - Tooltip provides hover/focus context
- *   - Tier name is the visible label
+ *   - Tier name is the visible label (hidden in compact mode)
  */
-export function TrustBadge({ tier, className }: TrustBadgeProps) {
+export function TrustBadge({ tier, className, showLabel = true }: TrustBadgeProps) {
   const config = TRUST_TIER_CONFIG[tier];
 
   return (
@@ -40,7 +42,7 @@ export function TrustBadge({ tier, className }: TrustBadgeProps) {
                 <Star key={i} className="h-3 w-3 fill-current" />
               ))}
             </span>
-            {config.label}
+            {showLabel && config.label}
             <span className="sr-only">{config.description}</span>
           </span>
         </TooltipTrigger>

@@ -93,7 +93,7 @@ export default function MarketplaceDetail() {
   if (isLoading) {
     return (
       <MarketplaceLayout breadcrumbs={[typeBreadcrumb(itemType)]}>
-        <div className="space-y-6 max-w-4xl">
+        <div className="space-y-6 max-w-4xl mx-auto">
           <Skeleton className="h-10 w-64" />
           <Skeleton className="h-4 w-96" />
           <Skeleton className="h-4 w-80" />
@@ -151,7 +151,7 @@ export default function MarketplaceDetail() {
         { label: item.name },
       ]}
     >
-      <div className="max-w-4xl space-y-8">
+      <div className="max-w-4xl mx-auto space-y-8">
 
         {/* ── Hero ───────────────────────────────────────────────────────────── */}
         <div className="flex flex-col lg:flex-row gap-8">

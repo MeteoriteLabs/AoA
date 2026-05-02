@@ -28,16 +28,16 @@ export function CatalogCard({ item }: CatalogCardProps) {
     <div>
       <Link
         to={detailUrl(item)}
-        className="block hover:no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg"
+        className="block hover:no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-xl"
       >
-        <Card className="h-full transition-colors hover:bg-accent/50">
+        <Card className="h-full transition-colors hover:bg-accent/50 rounded-xl border-border/60">
           <CardHeader className="pb-2">
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <span className="text-sm text-muted-foreground">{typeLabel}</span>
               </div>
-              <TrustBadge tier={item.trust.tier} className="shrink-0" />
+              <TrustBadge tier={item.trust.tier} showLabel={false} className="shrink-0" />
             </div>
             <h3 className="text-base font-semibold mt-2 line-clamp-1">{item.name}</h3>
           </CardHeader>
@@ -57,7 +57,6 @@ export function CatalogCard({ item }: CatalogCardProps) {
                 ))}
               </div>
               <Button
-                variant="outline"
                 size="sm"
                 className="text-xs h-7 px-2.5 shrink-0"
                 onClick={(e) => {
