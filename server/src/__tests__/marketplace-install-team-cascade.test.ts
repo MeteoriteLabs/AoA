@@ -94,14 +94,28 @@ describe("installTeam — Saga cascade", () => {
               teamMemberInserts.push(row);
             }
             const insertId = `${skillInserts.length + agentInserts.length + teamInserts.length + teamMemberInserts.length}-uuid`;
-            return { returning: () => Promise.resolve([{ ...row, id: insertId }]) };
+            return {
+              // Skills go through .onConflictDoNothing().returning()
+              onConflictDoNothing: () => ({
+                returning: (_cols?: any) => Promise.resolve([{ id: insertId }]),
+              }),
+              // Other inserts (agents, teams, team_members) use .returning() directly
+              returning: () => Promise.resolve([{ ...row, id: insertId }]),
+            };
           },
         }),
-        // tx.select() is used by conflict-resolver inside the txn; return [] so
-        // every desired name/slug is treated as available (matches test intent).
+        // tx.select() used by conflict-resolver (returns [] = no conflict) AND
+        // by the new skill-exists fallback lookup (needs .limit())
         select: () => ({
           from: () => ({
-            where: () => Promise.resolve([]),
+            where: () => {
+              const rows: any[] = [];
+              // Thenable for conflict-resolver (awaits .where() directly)
+              // AND has .limit() for the skill lookup
+              return Object.assign(Promise.resolve(rows), {
+                limit: (_n: number) => Promise.resolve(rows),
+              });
+            },
           }),
         }),
       };
@@ -201,5 +215,77 @@ describe("installTeam — Saga cascade", () => {
 
     // Plugin install was called BEFORE the txn failed — it stays
     expect(pluginInstalls).toHaveLength(1);
+  });
+
+  it("phase 3: skips skill install if skill already exists, completes rest of install", async () => {
+    let skillOnConflictCalled = false;
+
+    // mockDbSkillExists has its own local insert-tracking arrays (localAgentInserts etc.)
+    // that intentionally shadow the outer beforeEach arrays. This keeps the happy-path
+    // arrays clean. Assertions in this test use result.cascadeResults directly, not the
+    // outer arrays, to avoid confusion.
+    const mockDbSkillExists = {
+      ...mockDb,
+      transaction: async (cb: (tx: any) => Promise<any>) => {
+        const localAgentInserts: any[] = [];
+        const localTeamInserts: any[] = [];
+        const localTeamMemberInserts: any[] = [];
+
+        const tx = {
+          insert: (_table: any) => ({
+            values: (row: any) => {
+              const isSkill = row.markdown !== undefined;
+              if (!isSkill) {
+                if (row.adapterType !== undefined || row.skillKeys !== undefined) localAgentInserts.push(row);
+                else if (row.parentProjectId !== undefined || row.manifest !== undefined) localTeamInserts.push(row);
+                else if (row.teamId !== undefined && row.agentId !== undefined) localTeamMemberInserts.push(row);
+                const id = `${localAgentInserts.length + localTeamInserts.length + localTeamMemberInserts.length}-uuid`;
+                return {
+                  onConflictDoNothing: () => ({ returning: (_cols?: any) => Promise.resolve([{ id }]) }),
+                  returning: () => Promise.resolve([{ ...row, id }]),
+                };
+              }
+              // Skill — simulate unique conflict (already installed)
+              skillOnConflictCalled = true;
+              return {
+                onConflictDoNothing: () => ({
+                  returning: (_cols?: any) => Promise.resolve([]), // empty = conflict
+                }),
+              };
+            },
+          }),
+          select: () => ({
+            from: () => ({
+              where: () =>
+                Object.assign(Promise.resolve([]), {
+                  limit: (_n: number) => Promise.resolve([{ id: "existing-skill-uuid" }]),
+                }),
+            }),
+          }),
+        };
+        return cb(tx);
+      },
+    };
+
+    const result = await installTeam({
+      catalogItem: TEAM,
+      catalog: CATALOG,
+      companyId: "c1",
+      targetDepartmentId: "dept-uuid-1",
+      db: mockDbSkillExists as any,
+      installPlugin: mockPluginInstaller,
+    });
+
+    // onConflictDoNothing was invoked for the skill insert
+    expect(skillOnConflictCalled).toBe(true);
+
+    // Cascade result for the skill must be "skipped" with the existing skill's id
+    const skillResult = result.cascadeResults.find((r) => r.step === "skill-install");
+    expect(skillResult).toBeDefined();
+    expect(skillResult?.status).toBe("skipped");
+    expect(skillResult?.resultEntityId).toBe("existing-skill-uuid");
+
+    // Team was still created despite the skipped skill
+    expect(result.teamId).toBeDefined();
   });
 });

@@ -153,10 +153,10 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
   // ====== Phase 3: Atomic team body (single Postgres txn) ======
   const phase3Start = Date.now();
   const teamRow = await db.transaction(async (tx) => {
-    // Insert skills (M.2.C corrected fields: sourceType="catalog", trustLevel="markdown_only")
+    // Insert skills — idempotent: skip if the skill is already installed
     for (const skillItem of requiredSkillItems) {
       const slug = skillItem.id.split("/").pop() ?? skillItem.id;
-      const inserted = await tx
+      const insertedRows = await tx
         .insert(companySkills)
         .values({
           companyId,
@@ -178,14 +178,37 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
             installedAt,
           },
         })
-        .returning();
-      cascadeResults.push({
-        step: "skill-install",
-        itemId: skillItem.id,
-        status: "success",
-        resultEntityId: inserted[0].id,
-        durationMs: 0,
-      });
+        .onConflictDoNothing()
+        .returning({ id: companySkills.id });
+
+      if (insertedRows.length === 0) {
+        // Skill already installed — look up its id for the cascade record.
+        // If the row disappeared between the INSERT conflict and this SELECT (concurrent DELETE),
+        // throw so the transaction rolls back rather than recording a misleading skipped entry.
+        const [existing] = await tx
+          .select({ id: companySkills.id })
+          .from(companySkills)
+          .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, skillItem.id)))
+          .limit(1);
+        if (!existing) {
+          throw new Error(`Skill conflict detected but row not found: ${skillItem.id}`);
+        }
+        cascadeResults.push({
+          step: "skill-install",
+          itemId: skillItem.id,
+          status: "skipped",
+          resultEntityId: existing.id,
+          durationMs: 0,
+        });
+      } else {
+        cascadeResults.push({
+          step: "skill-install",
+          itemId: skillItem.id,
+          status: "success",
+          resultEntityId: insertedRows[0].id,
+          durationMs: 0,
+        });
+      }
     }
 
     // Insert agents (one per entry in team.json's agents array)
