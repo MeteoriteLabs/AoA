@@ -220,12 +220,15 @@ Founder triggers via kebab → "Change layer". Free movement between any two lay
 
 ## 10. Schema impact
 
-**No structural migration.** All required columns already exist:
-- `memory_folders.seedKey` — deletion protection.
-- `memory_items.layer` / `goalId` / `taskId` / `expiresAt` / `folderPath` — already in V2 schema.
-- `memory_item_versions` — already wires up audit trail.
+**No migration.** All required columns and indexes already exist:
+- `memory_folders.seedKey` — deletion protection metadata.
+- `memory_items.layer` / `goalId` / `taskId` / `expiresAt` / `folderPath` — V2 schema columns.
+- `memory_items_folder_path_idx` — B-tree index on `(companyId, folderPath)` already in `memory_items.ts:105`. Sufficient for prefix queries via `LIKE '<path>/%'`.
+- `memory_item_versions` — audit trail table ships, version writer service exists.
 
-**One small index added in Phase 6.2b** for the MCP `folderPath` prefix query — a B-tree index on `memory_items(companyId, folderPath)`. One-line `pgTable` index addition + Drizzle migration.
+**Behavioral changes (no schema impact):**
+- The existing `DELETE /memory/folders/:id` route + service unconditionally deletes today. Phase 6.2b adds a `seedKey IS NULL` precondition (returns 403 with "Cannot delete seeded folder" otherwise) and a reparenting pass for child items + sub-folders.
+- A new `MemoryScope` shared type (in `packages/shared/src/types/memory.ts`) consolidates today's ad-hoc filter args used in MCP tools. The current `FindSimilarScope` interface only has `layer`; the new shared type adds `departmentId / folderPath / goalId / taskId`. Existing call sites refactored in 6.2b.
 
 **Existing data:** items with `folderPath: "engineering/Decisions"` (etc., from seeded subfolders) keep their value. The new tree just doesn't render that path level — items appear in their dept's flat list grouped by category. The seeded `memory_folders` rows remain for historical / MCP-path-resolution purposes; they're simply not surfaced as tree nodes.
 
@@ -288,7 +291,34 @@ The redesign is too large for a single slice. Three planned slices, sized like P
 
 Each slice ships independently and is mergeable. No slice depends on a later slice's UI being shipped.
 
-## 14. Risks + open questions
+## 14. Test plan per slice
+
+**Existing baseline:** 20 memory-related server tests + 6 memory UI tests. Strong coverage of the V2 schema, folder seeds, asset routes, file-import without pgvector, lifecycle / archival, projection, multipath retrieval. All slices below extend this pattern (one test file per source file touched).
+
+### Phase 6.2a tests
+- **`MemoryTreeV2.test.tsx`** — virtual folder rendering (Pinned / Pending / Recent / Archived counts), default expansion (Identity + Domain expanded; Active + Working collapsed), goal nodes with 0-item display, ancestor-chain auto-expand on selection.
+- **`LayerTilesPanel.test.tsx`** — tile counts match item-by-layer aggregation; pending counts surface; click → navigate to `/memory/explore?layer=<id>`.
+- **`expiresAtChip.test.tsx`** — color tier transitions at the documented thresholds (>7d / ≤7d / ≤1d / expired).
+- **`MemoryFileList.test.tsx` extension** — collapsible category groups; default-expand top-3 by count; expanded state preserved per scope.
+- **Browser smoke** — full layout verification (4 panes, resize, collapse, Home dashboard renders, layer click navigation works).
+
+### Phase 6.2b tests
+- **`memory-folders-service.test.ts` extension** — `remove()` rejects when `seedKey IS NOT NULL`, with explicit "cannot delete seeded folder" error; reparenting moves child items' `folderPath` to parent on delete; recursive sub-folder reparenting one-level-up.
+- **`memory-folders-routes.test.ts` extension** — DELETE returns 403 on seeded folder; DELETE returns 200 + reparented items on user folder.
+- **`memory-mcp-folder-scope.test.ts`** (new) — `MemoryScope.folderPath` filter exact + prefix match (`Engineering/Q3 Planning` includes `Engineering/Q3 Planning/OKR Drafts`).
+- **`CreateUserFolderDialog.test.tsx`** (new) — slug derivation, conflict rejection, parent-path inheritance.
+- **MCP scope type unit test** — `MemoryScope` AND-ing semantics, backward compat (passing only `layer` works).
+
+### Phase 6.2c tests
+- **`memory-change-layer.test.ts`** (new server) — field clearing per transition (Working→other clears taskId; Active→other clears goalId+expiresAt); version-row creation with correct changelog note; folderPath cleared on layer change.
+- **`ChangeLayerDialog.test.tsx`** (new UI) — per-layer prompt rendering (taskId for Working, goalId+expiresAt for Active, departmentId for Domain), confirmation flow, dialog dismissal preserves state.
+- **Browser smoke** — change-layer flow end-to-end on each transition.
+
+### Test infrastructure expectations
+- All new server tests use the existing mock pattern from `server/src/__tests__/` (Proxy-based `@armyofagents/db` stub, sequence-based mock DBs). No drizzle-orm ESM cycle workarounds needed beyond the established pattern.
+- All new UI tests use vitest + React Testing Library + `MemoryRouter` + `QueryClientProvider`, mocking `../api/*` and `../context/CompanyContext`. No new infra.
+
+## 15. Risks + open questions
 
 - **Default category-group expansion** (top-3 by count) is a guess. Will need usage observation; may switch to "all expanded" or "remember per-scope expansion state".
 - **Working layer flat list** with no task subtree may be confusing if a single task chain has many items. Punt: revisit if user feedback complains.
@@ -296,7 +326,7 @@ Each slice ships independently and is mergeable. No slice depends on a later sli
 - **MCP `folderPath` performance** — prefix matching on a `text` column is a sequential scan unless we add a B-tree index. Index addition is a 1-line schema bump in 6.2b.
 - **Migration of legacy `engineering/Decisions` folder paths** — left as-is. Founders can re-organize manually. Do not auto-migrate (risk of breaking existing item ↔ folder associations they relied on).
 
-## 15. Appendix — visual reference
+## 16. Appendix — visual reference
 
 ASCII layout of the explorer with Home selected:
 
