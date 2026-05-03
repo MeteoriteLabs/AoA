@@ -57,6 +57,7 @@ import { MemoryFileList } from "../components/memory/MemoryFileList";
 function renderList(props: {
   folderPath: string;
   departmentId: string | null;
+  layer?: string | null;
 }) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -68,6 +69,7 @@ function renderList(props: {
           companyId="co-1"
           folderPath={props.folderPath}
           departmentId={props.departmentId}
+          layer={props.layer}
           selectedItemId={null}
           selectedItemType={null}
         />
@@ -111,6 +113,8 @@ describe("MemoryFileList — virtual folders (Phase 6.1e)", () => {
 });
 
 describe("MemoryFileList — category grouping (Phase 6.2a)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
   it("groups items by category", async () => {
     renderList({
       folderPath: "engineering/Decisions",
@@ -168,5 +172,113 @@ describe("MemoryFileList — category grouping (Phase 6.2a)", () => {
     await waitFor(() => expect(screen.getByText("Active item")).toBeInTheDocument(), { timeout: 10000 });
     expect(screen.getByText(/expires in 5d/i)).toBeInTheDocument();
     vi.useRealTimers();
+  });
+});
+
+describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("__recent shows items updated in last 14 days, excludes archived", async () => {
+    const { memoryApi } = await import("../api/memory");
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-05-03T00:00:00Z"));
+    // recent = updated within 14 days of 2026-05-03 = after 2026-04-19
+    // old = updated before 2026-04-19
+    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        id: "i-recent",
+        title: "Recent item",
+        category: "decision",
+        status: "approved",
+        updatedAt: "2026-05-01T00:00:00Z", // 2 days ago — within 14d
+        folderPath: "any",
+        founderPinnedToTop: false,
+      },
+      {
+        id: "i-archived",
+        title: "Archived item",
+        category: "decision",
+        status: "archived",
+        updatedAt: "2026-05-02T00:00:00Z", // within 14d but archived — must be excluded
+        folderPath: "any",
+        founderPinnedToTop: false,
+      },
+      {
+        id: "i-old",
+        title: "Old item",
+        category: "context",
+        status: "approved",
+        updatedAt: "2026-03-01T00:00:00Z", // 63 days ago — outside 14d
+        folderPath: "any",
+        founderPinnedToTop: false,
+      },
+    ]);
+    renderList({ folderPath: "__recent", departmentId: null });
+    await waitFor(() =>
+      expect(screen.getByText("Recent item")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Archived item")).not.toBeInTheDocument();
+    expect(screen.queryByText("Old item")).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("__archived shows only items with status=archived", async () => {
+    const { memoryApi } = await import("../api/memory");
+    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        id: "i-archived",
+        title: "Archived item",
+        category: "decision",
+        status: "archived",
+        updatedAt: "2026-04-10T00:00:00Z",
+        folderPath: "any",
+        founderPinnedToTop: false,
+      },
+      {
+        id: "i-approved",
+        title: "Approved item",
+        category: "reference",
+        status: "approved",
+        updatedAt: "2026-05-01T00:00:00Z",
+        folderPath: "any",
+        founderPinnedToTop: false,
+      },
+    ]);
+    renderList({ folderPath: "__archived", departmentId: null });
+    await waitFor(() =>
+      expect(screen.getByText("Archived item")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Approved item")).not.toBeInTheDocument();
+  });
+
+  it("layer-only URL (no folder, no dept) filters by layer", async () => {
+    const { memoryApi } = await import("../api/memory");
+    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        id: "i-domain",
+        title: "Domain item",
+        category: "reference",
+        status: "approved",
+        layer: "domain",
+        updatedAt: "2026-05-01T00:00:00Z",
+        folderPath: "",
+        founderPinnedToTop: false,
+      },
+      {
+        id: "i-identity",
+        title: "Identity item",
+        category: "decision",
+        status: "approved",
+        layer: "identity",
+        updatedAt: "2026-05-01T00:00:00Z",
+        folderPath: "",
+        founderPinnedToTop: false,
+      },
+    ]);
+    renderList({ folderPath: "", departmentId: null, layer: "domain" });
+    await waitFor(() =>
+      expect(screen.getByText("Domain item")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Identity item")).not.toBeInTheDocument();
   });
 });

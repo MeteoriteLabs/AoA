@@ -94,6 +94,7 @@ export function MemoryExplorer() {
               companyId={selectedCompanyId}
               folderPath={folderPath}
               departmentId={departmentId}
+              layer={layer ?? null}
               selectedItemId={selectedItemId}
               selectedItemType={selectedItemType}
               searchQuery={searchQuery}

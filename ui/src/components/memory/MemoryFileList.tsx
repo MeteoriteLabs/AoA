@@ -22,6 +22,7 @@ interface MemoryFileListProps {
   companyId: string;
   folderPath: string;
   departmentId: string | null;
+  layer?: string | null;
   selectedItemId: string | null;
   selectedItemType: "memory_item" | "asset" | null;
   searchQuery?: string;
@@ -66,16 +67,28 @@ function formatRelative(isoOrDate: string): string {
   return `${Math.floor(days / 365)}y`;
 }
 
-function folderLabel(path: string): string {
-  if (path === "__pinned") return "📌 Pinned";
-  if (path === "__pending") return "📋 Pending Review";
-  return path;
+function folderLabel(folderPath: string, layer?: string | null): string {
+  if (folderPath === "__pinned") return "📌 Pinned";
+  if (folderPath === "__pending") return "📋 Pending Review";
+  if (folderPath === "__recent") return "🕒 Recent (last 14 days)";
+  if (folderPath === "__archived") return "📦 Archived";
+  if (!folderPath && layer) {
+    const labels: Record<string, string> = {
+      identity: "🪪 Identity",
+      domain: "🏢 Domain",
+      active_context: "🎯 Active Context",
+      working: "⚡ Working",
+    };
+    return labels[layer] ?? layer;
+  }
+  return folderPath;
 }
 
 export function MemoryFileList({
   companyId,
   folderPath,
   departmentId,
+  layer,
   selectedItemId,
   selectedItemType,
   searchQuery,
@@ -85,13 +98,18 @@ export function MemoryFileList({
   const companyPrefix = selectedCompany?.issuePrefix ?? "";
 
   const isVirtualFolder =
-    folderPath === "__pinned" || folderPath === "__pending";
+    folderPath === "__pinned" ||
+    folderPath === "__pending" ||
+    folderPath === "__recent" ||
+    folderPath === "__archived";
+
+  const isLayerOnly = !folderPath && !departmentId && Boolean(layer);
 
   const itemsQuery = useQuery({
     queryKey: [...queryKeys.memory.list(companyId), { folderPath, departmentId }],
     queryFn: () =>
       memoryApi.list(companyId, departmentId ? { departmentId } : {}),
-    enabled: Boolean(folderPath),
+    enabled: Boolean(folderPath) || isLayerOnly,
   });
 
   const assetsQuery = useQuery({
@@ -104,7 +122,7 @@ export function MemoryFileList({
         departmentId: departmentId ?? undefined,
         folderPath,
       }),
-    enabled: Boolean(folderPath) && !isVirtualFolder,
+    enabled: Boolean(folderPath) && !isVirtualFolder && !isLayerOnly,
   });
 
   const rows = useMemo<ListRow[]>(() => {
@@ -112,13 +130,22 @@ export function MemoryFileList({
       MemoryItem & {
         folderPath?: string;
         founderPinnedToTop?: boolean;
+        layer?: string | null;
       }
     >;
 
+    const recentCutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
     const items = allItems
       .filter((it) => {
         if (folderPath === "__pinned") return it.founderPinnedToTop === true;
         if (folderPath === "__pending") return it.status === "pending";
+        if (folderPath === "__recent") {
+          if (it.status === "archived") return false;
+          const t = new Date(it.updatedAt).getTime();
+          return Number.isFinite(t) && t >= recentCutoff;
+        }
+        if (folderPath === "__archived") return it.status === "archived";
+        if (isLayerOnly) return it.layer === layer;
         return it.folderPath === folderPath;
       })
       .map<ListRow>((it) => ({
@@ -134,8 +161,8 @@ export function MemoryFileList({
         raw: it,
       }));
 
-    // Virtual folders show items only — assets don't have pin/approval state.
-    const assets = isVirtualFolder
+    // Virtual folders and layer-only views show items only — assets don't have pin/approval state.
+    const assets = isVirtualFolder || isLayerOnly
       ? []
       : (assetsQuery.data ?? []).map<ListRow>((a: MemoryAssetRecord) => ({
           kind: "asset",
@@ -151,7 +178,7 @@ export function MemoryFileList({
       (a, b) =>
         new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime(),
     );
-  }, [itemsQuery.data, assetsQuery.data, folderPath, isVirtualFolder]);
+  }, [itemsQuery.data, assetsQuery.data, folderPath, isVirtualFolder, isLayerOnly, layer]);
 
   const filteredRows = useMemo(() => {
     if (!searchQuery?.trim()) return rows;
@@ -258,7 +285,7 @@ export function MemoryFileList({
 
   const isLoading = itemsQuery.isLoading || assetsQuery.isLoading;
 
-  if (!folderPath) {
+  if (!folderPath && !isLayerOnly) {
     return (
       <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
         Select a folder to see its contents
@@ -269,7 +296,7 @@ export function MemoryFileList({
   return (
     <div className="h-full flex flex-col bg-card/30">
       <div className="flex items-center px-3 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground gap-2">
-        <span className="truncate">{folderLabel(folderPath)}</span>
+        <span className="truncate">{folderLabel(folderPath, layer)}</span>
         <span className="flex-1" />
         <span className="text-[10px] text-muted-foreground">{filteredRows.length}</span>
       </div>

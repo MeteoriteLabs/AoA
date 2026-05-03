@@ -36,8 +36,7 @@ interface TreeNode {
   children?: TreeNode[];
 }
 
-const LAYER_KEYS = ["identity", "domain", "active_context", "working"] as const;
-type LayerKey = (typeof LAYER_KEYS)[number];
+type LayerKey = "identity" | "domain" | "active_context" | "working";
 
 const LAYER_META: Record<LayerKey, { label: string; icon: string }> = {
   identity: { label: "Identity", icon: "🪪" },
@@ -127,9 +126,7 @@ export function MemoryTree({
       if (it.founderPinnedToTop) pinned += 1;
       if (it.status === "pending") pending += 1;
       if (it.status === "archived") archived += 1;
-      const updatedAtMs = new Date(
-        typeof it.updatedAt === "string" ? it.updatedAt : it.updatedAt,
-      ).getTime();
+      const updatedAtMs = new Date(it.updatedAt).getTime();
       if (Number.isFinite(updatedAtMs) && updatedAtMs >= recentCutoff && it.status !== "archived") {
         recent += 1;
       }
