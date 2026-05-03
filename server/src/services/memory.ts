@@ -1327,12 +1327,13 @@ export function memoryService(db: Db) {
     },
 
     moveItem: async (id: string, companyId: string, folderPath: string) => {
+      const caps = getDbCapabilities();
       const path = normalizeMemoryFolderPath(folderPath);
       const [row] = await db
         .update(memoryItems)
         .set({ folderPath: path, updatedAt: new Date() })
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
-        .returning();
+        .returning(memoryItemsSelection(caps.hasVectorSupport));
       if (row) {
         publishLiveEvent({
           type: "memory.item.moved",
@@ -1344,11 +1345,12 @@ export function memoryService(db: Db) {
     },
 
     setPinnedToTop: async (id: string, companyId: string, pinned: boolean) => {
+      const caps = getDbCapabilities();
       const [row] = await db
         .update(memoryItems)
         .set({ founderPinnedToTop: pinned, updatedAt: new Date() })
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
-        .returning();
+        .returning(memoryItemsSelection(caps.hasVectorSupport));
       if (row) {
         publishLiveEvent({
           type: "memory.item.updated",
@@ -1357,6 +1359,113 @@ export function memoryService(db: Db) {
         });
       }
       return row ?? null;
+    },
+
+    changeLayer: async (
+      id: string,
+      companyId: string,
+      input: {
+        newLayer: "identity" | "domain" | "active_context" | "working";
+        departmentId?: string | null;
+        goalId?: string | null;
+        taskId?: string | null;
+        expiresAt?: Date | null;
+      },
+    ) => {
+      const VALID_LAYERS = ["identity", "domain", "active_context", "working"];
+      if (!VALID_LAYERS.includes(input.newLayer)) {
+        throw new Error(`Invalid layer: ${input.newLayer}`);
+      }
+
+      // Step 1: Fetch current item state.
+      const caps = getDbCapabilities();
+      const [target] = await db
+        .select(memoryItemsSelection(caps.hasVectorSupport))
+        .from(memoryItems)
+        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)));
+
+      if (!target) return null;
+
+      const fromLayer = target.layer ?? "domain"; // default to domain if null
+      const toLayer = input.newLayer;
+
+      // Step 2: Validate transition requirements.
+      if (toLayer === "active_context" && !input.goalId) {
+        throw new Error("goalId required for active_context layer");
+      }
+      if (toLayer === "working" && !input.taskId) {
+        throw new Error("taskId required for working layer");
+      }
+
+      // Step 3: Compute field mutations per transition rules:
+      //   - any → working      : set taskId; clear goalId+expiresAt
+      //   - any → active_context: set goalId+expiresAt; clear taskId
+      //   - any → domain       : clear taskId+goalId+expiresAt; departmentId from input or keep current
+      //   - any → identity     : clear taskId+goalId+expiresAt+departmentId
+      //   - folderPath always cleared (item moves layers; folder-tree position resets)
+      const patch: Record<string, unknown> = {
+        layer: toLayer,
+        folderPath: "",
+        updatedAt: new Date(),
+      };
+
+      if (toLayer === "working") {
+        patch.taskId = input.taskId;
+        patch.goalId = null;
+        patch.expiresAt = null;
+        patch.departmentId = input.departmentId ?? (target as Record<string, unknown>).departmentId;
+      } else if (toLayer === "active_context") {
+        patch.goalId = input.goalId;
+        patch.expiresAt = input.expiresAt ?? null;
+        patch.taskId = null;
+        patch.departmentId = input.departmentId ?? (target as Record<string, unknown>).departmentId;
+      } else if (toLayer === "domain") {
+        patch.departmentId = input.departmentId ?? (target as Record<string, unknown>).departmentId;
+        patch.taskId = null;
+        patch.goalId = null;
+        patch.expiresAt = null;
+      } else if (toLayer === "identity") {
+        patch.taskId = null;
+        patch.goalId = null;
+        patch.expiresAt = null;
+        patch.departmentId = null;
+      }
+
+      // Step 4: Apply the update.
+      const [updated] = await db
+        .update(memoryItems)
+        .set(patch)
+        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
+        .returning(memoryItemsSelection(caps.hasVectorSupport));
+
+      // Step 5: Write a memory_item_versions row for audit trail.
+      // The schema has: memoryItemId, versionNumber, content, status, createdBy.
+      // We store the changelog as the content field with a descriptive prefix.
+      const changelog = `layer changed: ${fromLayer} → ${toLayer}`;
+      const [latest] = await db
+        .select({ versionNumber: memoryItemVersions.versionNumber })
+        .from(memoryItemVersions)
+        .where(eq(memoryItemVersions.memoryItemId, id))
+        .orderBy(desc(memoryItemVersions.versionNumber))
+        .limit(1);
+      const nextVersion = (latest?.versionNumber ?? 0) + 1;
+
+      await db.insert(memoryItemVersions).values({
+        memoryItemId: id,
+        versionNumber: nextVersion,
+        content: changelog,
+        status: "approved",
+        createdBy: "system",
+      });
+
+      // Step 6: Publish LiveEvent.
+      publishLiveEvent({
+        type: "memory.item.layer-changed",
+        companyId,
+        payload: { item: updated, fromLayer, toLayer },
+      });
+
+      return updated ?? null;
     },
   };
 }

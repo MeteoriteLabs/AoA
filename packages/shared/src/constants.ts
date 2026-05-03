@@ -236,6 +236,7 @@ export const LIVE_EVENT_TYPES = [
   "memory.item.updated",
   "memory.item.moved",
   "memory.item.deleted",
+  "memory.item.layer-changed",
   "memory.asset.created",
   "memory.asset.updated",
   "memory.asset.deleted",
