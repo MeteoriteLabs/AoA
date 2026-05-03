@@ -1,6 +1,6 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { memoryFolders } from "@armyofagents/db";
+import { memoryFolders, memoryItems } from "@armyofagents/db";
 import { normalizeMemoryFolderPath } from "@armyofagents/shared";
 import { getSeedFoldersForFunctionType, COMPANY_SEED_FOLDERS } from "./memory-folder-seeds.js";
 import { logger } from "../middleware/logger.js";
@@ -120,26 +120,51 @@ export function memoryFoldersService(db: Db) {
         ? target.path.slice(0, target.path.lastIndexOf("/"))
         : "";
 
-      // Step 4: Reparent items. Any memory_item whose folderPath starts with the
-      //         deleted folder's path gets prefix-rewritten.
-      //   newPath = parentPath + path.substring(target.path.length)
-      // For an item at exactly target.path: substring("") => newPath = parentPath
-      // For an item deeper: substring("/OKRs/...") => newPath = parentPath + "/OKRs/..."
-      await db.execute(
-        sql`UPDATE memory_items
-            SET folder_path = ${parentPath} || SUBSTRING(folder_path FROM ${target.path.length + 1})
-            WHERE company_id = ${companyId}
-              AND (folder_path = ${target.path}
-                   OR folder_path LIKE ${target.path + "/%"})`,
-      );
+      // Step 4: Reparent items. Fetch all affected rows in JS, compute the
+      //         new folderPath, and update each. SQL's SUBSTRING+|| approach
+      //         had a parameter-typing edge case in drizzle's sql template
+      //         that produced NULL. JS rewrite is bulletproof and the row
+      //         counts here are always small (single dept's items).
+      const affectedItems = await db
+        .select({ id: memoryItems.id, folderPath: memoryItems.folderPath })
+        .from(memoryItems)
+        .where(
+          and(
+            eq(memoryItems.companyId, companyId),
+            // folder_path = target.path OR folder_path LIKE target.path/%
+            sql`(${memoryItems.folderPath} = ${target.path} OR ${memoryItems.folderPath} LIKE ${target.path + "/%"})`,
+          ),
+        );
+      for (const row of affectedItems) {
+        const remainder =
+          row.folderPath === target.path
+            ? ""
+            : row.folderPath.slice(target.path.length); // includes leading "/"
+        const newPath = parentPath + remainder;
+        await db
+          .update(memoryItems)
+          .set({ folderPath: newPath })
+          .where(eq(memoryItems.id, row.id));
+      }
 
-      // Step 5: Reparent sub-folder rows (same prefix-rewrite for memory_folders.path).
-      await db.execute(
-        sql`UPDATE memory_folders
-            SET path = ${parentPath} || SUBSTRING(path FROM ${target.path.length + 1})
-            WHERE company_id = ${companyId}
-              AND path LIKE ${target.path + "/%"}`,
-      );
+      // Step 5: Reparent sub-folder rows. Same JS approach.
+      const affectedFolders = await db
+        .select({ id: memoryFolders.id, path: memoryFolders.path })
+        .from(memoryFolders)
+        .where(
+          and(
+            eq(memoryFolders.companyId, companyId),
+            sql`${memoryFolders.path} LIKE ${target.path + "/%"}`,
+          ),
+        );
+      for (const row of affectedFolders) {
+        const remainder = row.path.slice(target.path.length); // always starts with "/"
+        const newPath = parentPath + remainder;
+        await db
+          .update(memoryFolders)
+          .set({ path: newPath })
+          .where(eq(memoryFolders.id, row.id));
+      }
 
       // Step 6: Delete the target folder row itself.
       await db
