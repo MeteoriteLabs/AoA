@@ -143,6 +143,7 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
             currentFolderPath={i.folderPath ?? ""}
             currentDepartmentId={i.departmentId ?? null}
             founderPinnedToTop={i.founderPinnedToTop ?? false}
+            item={item}
           />
         </div>
         {/* toggle row */}

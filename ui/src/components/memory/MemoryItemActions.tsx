@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, FolderInput, Pin, PinOff } from "lucide-react";
+import { MoreHorizontal, FolderInput, Pin, PinOff, Layers } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,6 +13,8 @@ import { memoryApi } from "../../api/memory";
 import { queryKeys } from "../../lib/queryKeys";
 import { useToast } from "../../context/ToastContext";
 import { MoveToFolderDialog } from "./MoveToFolderDialog";
+import { ChangeLayerDialog } from "./ChangeLayerDialog";
+import type { MemoryItem } from "@armyofagents/shared";
 
 interface MemoryItemActionsProps {
   companyId: string;
@@ -20,6 +22,7 @@ interface MemoryItemActionsProps {
   currentFolderPath: string;
   currentDepartmentId: string | null;
   founderPinnedToTop: boolean;
+  item: MemoryItem;
 }
 
 export function MemoryItemActions({
@@ -28,10 +31,12 @@ export function MemoryItemActions({
   currentFolderPath,
   currentDepartmentId,
   founderPinnedToTop,
+  item,
 }: MemoryItemActionsProps) {
   const qc = useQueryClient();
   const { pushToast } = useToast();
   const [moveOpen, setMoveOpen] = useState(false);
+  const [changeLayerOpen, setChangeLayerOpen] = useState(false);
 
   function invalidateAll() {
     void qc.invalidateQueries({ queryKey: queryKeys.memory.detail(companyId, itemId) });
@@ -72,6 +77,10 @@ export function MemoryItemActions({
             <FolderInput className="h-3.5 w-3.5" />
             Move to folder…
           </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setChangeLayerOpen(true)} className="gap-2">
+            <Layers className="h-3.5 w-3.5" />
+            Change layer
+          </DropdownMenuItem>
           <DropdownMenuItem
             onClick={() => pin.mutate()}
             disabled={pin.isPending}
@@ -101,6 +110,12 @@ export function MemoryItemActions({
           setMoveOpen(false);
           invalidateAll();
         }}
+      />
+      <ChangeLayerDialog
+        companyId={companyId}
+        open={changeLayerOpen}
+        onOpenChange={setChangeLayerOpen}
+        item={item}
       />
     </>
   );
