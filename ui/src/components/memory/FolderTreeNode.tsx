@@ -65,7 +65,7 @@ export function FolderTreeNode({
         {Icon ? <Icon className="h-3.5 w-3.5" /> : (typeof icon === "string" ? icon : "📁")}
       </span>
       <span className="truncate flex-1">{label}</span>
-      {count !== undefined && count > 0 && (
+      {count !== undefined && (
         <span className="text-[10px] text-muted-foreground tabular-nums">
           {count}
         </span>
