@@ -281,4 +281,52 @@ describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
     );
     expect(screen.queryByText("Identity item")).not.toBeInTheDocument();
   });
+
+  it("dept-only URL (no folder, dept set) shows all items in that dept", async () => {
+    // Mock items in different folder paths within the same dept,
+    // plus an item in a different dept
+    const { memoryApi } = await import("../api/memory");
+    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        id: "i-1",
+        title: "Eng decision",
+        category: "decision",
+        status: "approved",
+        layer: "domain",
+        departmentId: "d-eng",
+        folderPath: "engineering/Decisions",
+        founderPinnedToTop: false,
+        updatedAt: "2026-05-01T00:00:00Z",
+      },
+      {
+        id: "i-2",
+        title: "Eng reference",
+        category: "reference",
+        status: "approved",
+        layer: "domain",
+        departmentId: "d-eng",
+        folderPath: "engineering/References",
+        founderPinnedToTop: false,
+        updatedAt: "2026-05-02T00:00:00Z",
+      },
+      {
+        id: "i-3",
+        title: "Marketing decision",
+        category: "decision",
+        status: "approved",
+        layer: "domain",
+        departmentId: "d-mkt",
+        folderPath: "marketing/Decisions",
+        founderPinnedToTop: false,
+        updatedAt: "2026-05-03T00:00:00Z",
+      },
+    ]);
+    renderList({ folderPath: "", departmentId: "d-eng" });
+    await waitFor(() =>
+      expect(screen.getByText("Eng decision")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Eng reference")).toBeInTheDocument();
+    // Marketing item NOT shown
+    expect(screen.queryByText("Marketing decision")).not.toBeInTheDocument();
+  });
 });

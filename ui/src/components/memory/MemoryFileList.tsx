@@ -67,7 +67,7 @@ function formatRelative(isoOrDate: string): string {
   return `${Math.floor(days / 365)}y`;
 }
 
-function folderLabel(folderPath: string, layer?: string | null): string {
+function folderLabel(folderPath: string, layer?: string | null, deptOnly?: boolean): string {
   if (folderPath === "__pinned") return "📌 Pinned";
   if (folderPath === "__pending") return "📋 Pending Review";
   if (folderPath === "__recent") return "🕒 Recent (last 14 days)";
@@ -81,6 +81,7 @@ function folderLabel(folderPath: string, layer?: string | null): string {
     };
     return labels[layer] ?? layer;
   }
+  if (deptOnly) return "📁 Department";
   return folderPath;
 }
 
@@ -105,24 +106,27 @@ export function MemoryFileList({
 
   const isLayerOnly = !folderPath && !departmentId && Boolean(layer);
 
+  const isDeptOnly =
+    !folderPath && Boolean(departmentId) && !isVirtualFolder;
+
   const itemsQuery = useQuery({
     queryKey: [...queryKeys.memory.list(companyId), { folderPath, departmentId }],
     queryFn: () =>
       memoryApi.list(companyId, departmentId ? { departmentId } : {}),
-    enabled: Boolean(folderPath) || isLayerOnly,
+    enabled: Boolean(folderPath) || isLayerOnly || isDeptOnly,
   });
 
   const assetsQuery = useQuery({
     queryKey: queryKeys.memory.assets.list(companyId, {
       departmentId: departmentId ?? undefined,
-      folderPath,
+      folderPath: isDeptOnly ? undefined : folderPath,
     }),
     queryFn: () =>
       memoryAssetsApi.list(companyId, {
         departmentId: departmentId ?? undefined,
-        folderPath,
+        folderPath: isDeptOnly ? undefined : folderPath,
       }),
-    enabled: Boolean(folderPath) && !isVirtualFolder && !isLayerOnly,
+    enabled: (Boolean(folderPath) && !isVirtualFolder && !isLayerOnly) || isDeptOnly,
   });
 
   const rows = useMemo<ListRow[]>(() => {
@@ -146,6 +150,7 @@ export function MemoryFileList({
         }
         if (folderPath === "__archived") return it.status === "archived";
         if (isLayerOnly) return it.layer === layer;
+        if (isDeptOnly) return (it as unknown as { departmentId?: string | null }).departmentId === departmentId;
         return it.folderPath === folderPath;
       })
       .map<ListRow>((it) => ({
@@ -178,7 +183,7 @@ export function MemoryFileList({
       (a, b) =>
         new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime(),
     );
-  }, [itemsQuery.data, assetsQuery.data, folderPath, isVirtualFolder, isLayerOnly, layer]);
+  }, [itemsQuery.data, assetsQuery.data, folderPath, isVirtualFolder, isLayerOnly, isDeptOnly, layer, departmentId]);
 
   const filteredRows = useMemo(() => {
     if (!searchQuery?.trim()) return rows;
@@ -285,7 +290,7 @@ export function MemoryFileList({
 
   const isLoading = itemsQuery.isLoading || assetsQuery.isLoading;
 
-  if (!folderPath && !isLayerOnly) {
+  if (!folderPath && !isLayerOnly && !isDeptOnly) {
     return (
       <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
         Select a folder to see its contents
@@ -296,7 +301,7 @@ export function MemoryFileList({
   return (
     <div className="h-full flex flex-col bg-card/30">
       <div className="flex items-center px-3 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground gap-2">
-        <span className="truncate">{folderLabel(folderPath, layer)}</span>
+        <span className="truncate">{folderLabel(folderPath, layer, isDeptOnly)}</span>
         <span className="flex-1" />
         <span className="text-[10px] text-muted-foreground">{filteredRows.length}</span>
       </div>

@@ -203,6 +203,6 @@ describe("MemoryTree (Phase 6.2a)", () => {
     expect(navigateMock).toHaveBeenCalled();
     const lastCall = navigateMock.mock.calls[navigateMock.mock.calls.length - 1][0];
     expect(lastCall).toMatch(/dept=d-eng/);
-    expect(lastCall).toMatch(/folder=engineering/);
+    expect(lastCall).not.toMatch(/folder=/);  // dept-only, no folder param
   });
 });

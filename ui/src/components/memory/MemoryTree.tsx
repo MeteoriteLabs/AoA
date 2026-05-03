@@ -380,7 +380,7 @@ function buildTree({
       count: deptCount, // always show, even 0
       depth: 1,
       hasChildren: false,
-      target: { folder: slug, dept: dept.id },
+      target: { folder: "", dept: dept.id },
     });
   }
   top.push({
