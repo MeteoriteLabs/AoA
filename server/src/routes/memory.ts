@@ -598,5 +598,44 @@ export function memoryRoutes(db: Db) {
     },
   );
 
+  router.post(
+    "/companies/:companyId/memory/items/:id/change-layer",
+    async (req, res, next) => {
+      try {
+        const companyId = req.params.companyId as string;
+        const id = req.params.id as string;
+        assertCompanyAccess(req, companyId);
+        const bodySchema = z.object({
+          newLayer: z.enum(["identity", "domain", "active_context", "working"]),
+          departmentId: z.string().nullable().optional(),
+          goalId: z.string().nullable().optional(),
+          taskId: z.string().nullable().optional(),
+          expiresAt: z
+            .union([z.string().datetime(), z.date(), z.null()])
+            .optional()
+            .transform((v) => (typeof v === "string" ? new Date(v) : v ?? null)),
+        });
+        const parsed = bodySchema.safeParse(req.body);
+        if (!parsed.success) {
+          res.status(400).json({ error: parsed.error.flatten() });
+          return;
+        }
+        const updated = await svc.changeLayer(id, companyId, parsed.data);
+        if (!updated) {
+          res.status(404).json({ error: "Memory item not found" });
+          return;
+        }
+        res.json(updated);
+      } catch (err) {
+        const e = err as Error;
+        if (/required/i.test(e.message) || /invalid layer/i.test(e.message)) {
+          res.status(400).json({ error: e.message });
+          return;
+        }
+        next(err);
+      }
+    },
+  );
+
   return router;
 }

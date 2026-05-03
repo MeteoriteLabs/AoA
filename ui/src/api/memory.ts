@@ -104,6 +104,28 @@ export const memoryApi = {
       { pinned },
     );
   },
+  changeLayer: async (
+    companyId: string,
+    id: string,
+    input: {
+      newLayer: "identity" | "domain" | "active_context" | "working";
+      departmentId?: string | null;
+      goalId?: string | null;
+      taskId?: string | null;
+      expiresAt?: string | Date | null;
+    },
+  ): Promise<MemoryItem> => {
+    return api.post<MemoryItem>(
+      `/companies/${companyId}/memory/items/${id}/change-layer`,
+      {
+        ...input,
+        expiresAt:
+          input.expiresAt instanceof Date
+            ? input.expiresAt.toISOString()
+            : input.expiresAt ?? null,
+      },
+    );
+  },
   searchSemantic: (
     companyId: string,
     q: string,

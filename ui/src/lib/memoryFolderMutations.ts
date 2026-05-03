@@ -5,6 +5,7 @@ import type {
   MemoryFolderUpdateInput,
 } from "@armyofagents/shared";
 import { memoryFoldersApi } from "../api/memoryFolders";
+import { memoryApi } from "../api/memory";
 import { queryKeys } from "./queryKeys";
 
 /**
@@ -44,6 +45,22 @@ export function useDeleteFolderMutation(companyId: string) {
       qc.invalidateQueries({ queryKey: queryKeys.memory.folders.list(companyId) });
       // Items' folderPath changed for reparented items — invalidate the company-wide
       // memory list (consumed by tree counts, file list, home dashboard).
+      qc.invalidateQueries({ queryKey: queryKeys.memory.list(companyId) });
+    },
+  });
+}
+
+export function useChangeLayerMutation(companyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      input,
+    }: {
+      id: string;
+      input: Parameters<typeof memoryApi.changeLayer>[2];
+    }) => memoryApi.changeLayer(companyId, id, input),
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.memory.list(companyId) });
     },
   });
