@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 
@@ -106,5 +107,66 @@ describe("MemoryFileList — virtual folders (Phase 6.1e)", () => {
     );
     expect(screen.getByText("Other item")).toBeInTheDocument();
     expect(screen.queryByText("Pending item")).not.toBeInTheDocument();
+  });
+});
+
+describe("MemoryFileList — category grouping (Phase 6.2a)", () => {
+  it("groups items by category", async () => {
+    renderList({
+      folderPath: "engineering/Decisions",
+      departmentId: "d-eng",
+    });
+    await waitFor(() =>
+      expect(screen.getByText("Pinned item")).toBeInTheDocument(),
+    );
+    // The mock fixture has decision + context categories.
+    // getAllByText used because the folder path "engineering/Decisions" also contains "Decisions"
+    const decisionTexts = screen.getAllByText(/^Decisions$/i);
+    expect(decisionTexts.length).toBeGreaterThan(0);
+  });
+
+  it("collapses group on header click", async () => {
+    const user = userEvent.setup();
+    renderList({
+      folderPath: "engineering/Decisions",
+      departmentId: "d-eng",
+    });
+    await waitFor(() => screen.getByText("Pinned item"));
+    // Find the "Decisions" group header button
+    const headerButtons = screen.getAllByRole("button", { expanded: true });
+    // Click the first expanded group header to collapse it
+    const decisionsHeader = headerButtons.find((b) =>
+      /Decisions/i.test(b.textContent || ""),
+    );
+    expect(decisionsHeader).toBeDefined();
+    await user.click(decisionsHeader!);
+    expect(decisionsHeader!.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("renders ExpiresAtChip on active_context items with expiresAt", async () => {
+    // The default fixture doesn't have expiresAt — re-mock with one
+    const { memoryApi } = await import("../api/memory");
+    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        id: "i-active",
+        title: "Active item",
+        category: "context",
+        status: "approved",
+        layer: "active_context",
+        updatedAt: "2026-05-01T00:00:00Z",
+        folderPath: "engineering/Decisions",
+        founderPinnedToTop: false,
+        expiresAt: "2026-05-08T12:00:00Z", // 5 days from NOW (2026-05-03)
+      },
+    ]);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-05-03T12:00:00Z"));
+    renderList({
+      folderPath: "engineering/Decisions",
+      departmentId: "d-eng",
+    });
+    await waitFor(() => expect(screen.getByText("Active item")).toBeInTheDocument(), { timeout: 10000 });
+    expect(screen.getByText(/expires in 5d/i)).toBeInTheDocument();
+    vi.useRealTimers();
   });
 });

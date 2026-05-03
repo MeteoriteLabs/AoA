@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import {
@@ -16,6 +16,7 @@ import { queryKeys } from "../../lib/queryKeys";
 import { useCompany } from "../../context/CompanyContext";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { ExpiresAtChip } from "./ExpiresAtChip";
 
 interface MemoryFileListProps {
   companyId: string;
@@ -163,6 +164,91 @@ export function MemoryFileList({
     );
   }, [rows, searchQuery]);
 
+  // Phase 6.2a: collapsible category groups.
+  // Group keys are MemoryItemCategory values + "asset" for files (which don't have a category).
+  type GroupKey =
+    | "decision"
+    | "reference"
+    | "insight"
+    | "preference"
+    | "procedure"
+    | "policy"
+    | "context"
+    | "asset";
+
+  const CATEGORY_LABEL: Record<GroupKey, string> = {
+    decision: "Decisions",
+    reference: "References",
+    insight: "Insights",
+    preference: "Preferences",
+    procedure: "Procedures",
+    policy: "Policies",
+    context: "Context",
+    asset: "Files",
+  };
+
+  const CATEGORY_ORDER: GroupKey[] = [
+    "decision",
+    "reference",
+    "policy",
+    "procedure",
+    "insight",
+    "preference",
+    "context",
+    "asset",
+  ];
+
+  interface CategoryGroup {
+    key: GroupKey;
+    label: string;
+    rows: ListRow[];
+  }
+
+  const groupedRows = useMemo<CategoryGroup[]>(() => {
+    const buckets = new Map<GroupKey, ListRow[]>();
+    for (const row of filteredRows) {
+      const k: GroupKey =
+        row.kind === "asset" ? "asset" : ((row.category ?? "context") as GroupKey);
+      const list = buckets.get(k) ?? [];
+      list.push(row);
+      buckets.set(k, list);
+    }
+    // Build groups in CATEGORY_ORDER, skipping empties.
+    return CATEGORY_ORDER.map<CategoryGroup>((k) => ({
+      key: k,
+      label: CATEGORY_LABEL[k],
+      rows: buckets.get(k) ?? [],
+    })).filter((g) => g.rows.length > 0);
+  }, [filteredRows]);
+
+  // Default-expanded set: top 3 groups by row count.
+  // Persisted per-scope so collapse state survives folder switches.
+  const defaultExpanded = useMemo(() => {
+    const sorted = [...groupedRows].sort((a, b) => b.rows.length - a.rows.length);
+    return new Set(sorted.slice(0, 3).map((g) => g.key));
+  }, [groupedRows]);
+
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<GroupKey>>(new Set());
+  // Recompute initial state when scope changes (folderPath/dept changes the rows).
+  useEffect(() => {
+    // Mark as collapsed everything NOT in defaultExpanded
+    const next = new Set<GroupKey>();
+    for (const g of groupedRows) {
+      if (!defaultExpanded.has(g.key)) next.add(g.key);
+    }
+    setCollapsedGroups(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderPath, departmentId]);
+
+  function toggleGroup(key: GroupKey) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   function selectRow(row: ListRow) {
     const params = new URLSearchParams(window.location.search);
     params.set("item", row.id);
@@ -194,46 +280,66 @@ export function MemoryFileList({
             <Skeleton className="h-12 w-full" />
             <Skeleton className="h-12 w-full" />
           </div>
-        ) : filteredRows.length === 0 ? (
-          <div className="px-3 py-6 text-xs text-muted-foreground text-center">
+        ) : groupedRows.length === 0 ? (
+          <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
             No items in this folder
           </div>
         ) : (
-          filteredRows.map((row) => {
-            const Icon = iconForRow(row);
-            const isSel =
-              row.id === selectedItemId && row.kind === selectedItemType;
+          groupedRows.map((group) => {
+            const isCollapsed = collapsedGroups.has(group.key);
             return (
-              <div
-                key={`${row.kind}-${row.id}`}
-                onClick={() => selectRow(row)}
-                className={cn(
-                  "grid grid-cols-[24px_1fr_60px] gap-2 items-center px-3 py-2 border-b border-border cursor-pointer text-xs",
-                  "hover:bg-muted/40 transition-colors duration-100",
-                  isSel && "bg-primary/10",
-                )}
-              >
-                <Icon className="h-4 w-4 text-muted-foreground" />
-                <div className="min-w-0">
-                  <div className="font-medium truncate">{row.name}</div>
-                  <div className="text-[11px] text-muted-foreground truncate">
-                    {row.kind === "memory_item"
-                      ? row.category ?? "memory item"
-                      : row.mimeType ?? "file"}
-                    {" · "}
-                    {formatRelative(row.modifiedAt)}
-                  </div>
-                </div>
-                {row.status && (
-                  <span
-                    className={cn(
-                      "text-[10px] px-1.5 py-0.5 rounded text-center font-medium tracking-[0.06em]",
-                      STATUS_COLORS[row.status] ?? "bg-muted text-muted-foreground",
-                    )}
-                  >
-                    {row.status}
+              <div key={group.key} className="border-b border-border last:border-b-0">
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.key)}
+                  className="w-full flex items-center gap-1.5 px-3 py-1.5 hover:bg-muted/40 transition-colors text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
+                  aria-expanded={!isCollapsed}
+                >
+                  <span className="inline-block w-3 text-center">
+                    {isCollapsed ? "▶" : "▼"}
                   </span>
-                )}
+                  <span>{group.label}</span>
+                  <span className="text-muted-foreground/60">({group.rows.length})</span>
+                </button>
+                {!isCollapsed &&
+                  group.rows.map((row) => {
+                    const Icon = iconForRow(row);
+                    const isSelected =
+                      row.id === selectedItemId && row.kind === selectedItemType;
+                    const expiresAt =
+                      row.kind === "memory_item"
+                        ? (row.raw as MemoryItem & { expiresAt?: Date | string | null }).expiresAt ?? null
+                        : null;
+                    return (
+                      <button
+                        key={`${row.kind}-${row.id}`}
+                        onClick={() => selectRow(row)}
+                        className={cn(
+                          "w-full text-left flex items-center gap-2 pl-7 pr-3 py-2 text-xs transition-colors",
+                          isSelected
+                            ? "bg-primary/10 text-primary"
+                            : "hover:bg-muted/40",
+                        )}
+                      >
+                        <Icon className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                        <span className="flex-1 truncate">{row.name}</span>
+                        {row.status && (
+                          <span
+                            className={cn(
+                              "text-[10px] px-1.5 py-0.5 rounded",
+                              STATUS_COLORS[row.status] ?? "",
+                            )}
+                          >
+                            {row.status}
+                          </span>
+                        )}
+                        <ExpiresAtChip expiresAt={expiresAt} />
+                        <span className="text-muted-foreground tabular-nums text-[10px]">
+                          {formatRelative(row.modifiedAt)}
+                        </span>
+                      </button>
+                    );
+                  })}
               </div>
             );
           })
