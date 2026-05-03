@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { PanelLeftOpen, PanelRightOpen } from "lucide-react";
 
 interface CollapsedRailProps {
   onExpand: () => void;
@@ -10,7 +10,9 @@ interface CollapsedRailProps {
  * collapsed. Clicking expands the pane back to its previous size.
  */
 export function CollapsedRail({ onExpand, direction }: CollapsedRailProps) {
-  const Icon = direction === "right" ? ChevronRight : ChevronLeft;
+  // direction="right" means the rail sits on the LEFT of the screen
+  // (it's the collapsed tree pane), so the icon is the "open left panel" affordance
+  const Icon = direction === "right" ? PanelLeftOpen : PanelRightOpen;
   return (
     <button
       type="button"

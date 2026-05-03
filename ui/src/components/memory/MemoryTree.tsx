@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import { ChevronLeft } from "lucide-react";
+import { PanelLeftClose } from "lucide-react";
 import type {
   MemoryFolderRecord,
   MemoryItem,
@@ -259,7 +259,7 @@ export function MemoryTree({
           aria-label="Collapse folders pane"
           disabled={!onCollapseRequest}
         >
-          <ChevronLeft className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+          <PanelLeftClose className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
         </button>
       </div>
       <div className="flex-1 overflow-auto py-1">
@@ -385,18 +385,30 @@ function buildTree({
     const slug = dept.urlKey ?? "";
     const deptCount = counts.byDeptDomain.get(dept.id) ?? 0;
     const deptFolders = deptFolderGroups.get(dept.id) ?? [];
-    // Phase 6.2a: per spec §3, dept's seeded subfolders are NOT shown in tree.
-    // We keep this loop for forward-compat with 6.2b user folders.
-    // For now we keep children empty; user folders show up in 6.2b.
-    void deptFolders;
+    const children: TreeNode[] = deptFolders
+      .filter((f) => {
+        const parts = f.path.split("/");
+        return parts.length === 2 && parts[0] === slug;
+      })
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map<TreeNode>((f) => ({
+        key: `dept-${dept.id}-${f.id}`,
+        label: f.displayName,
+        icon: f.icon ?? "📂",
+        depth: 2,
+        hasChildren: false,
+        target: { folder: f.path, dept: dept.id },
+      }));
+
     domainChildren.push({
       key: `dept-${dept.id}`,
       label: dept.name,
       icon: "📁",
       count: deptCount, // always show, even 0
       depth: 1,
-      hasChildren: false,
+      hasChildren: children.length > 0,
       target: { folder: "", dept: dept.id },
+      children,
     });
   }
   top.push({

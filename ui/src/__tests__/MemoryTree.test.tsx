@@ -140,6 +140,8 @@ describe("MemoryTree (Phase 6.2a)", () => {
     expect(screen.getByText("Marketing")).toBeInTheDocument();
     // Active/Working collapsed -> goal "Ship in EU" not visible
     expect(screen.queryByText("Ship in EU")).not.toBeInTheDocument();
+    // Depts are collapsed by default -> seeded subfolders not visible
+    expect(screen.queryByText("Decisions")).not.toBeInTheDocument();
   });
 
   it("Active Context expansion shows only goals with status='active'", async () => {
@@ -206,5 +208,18 @@ describe("MemoryTree (Phase 6.2a)", () => {
     const lastCall = navigateMock.mock.calls[navigateMock.mock.calls.length - 1][0];
     expect(lastCall).toMatch(/dept=d-eng/);
     expect(lastCall).not.toMatch(/folder=/);  // dept-only, no folder param
+  });
+
+  it("expanding a department reveals its seeded subfolders", async () => {
+    const user = userEvent.setup();
+    renderTree();
+    await waitFor(() => screen.getByText("Engineering"));
+    // Initially collapsed - "Decisions" shouldn't be visible
+    expect(screen.queryByText("Decisions")).not.toBeInTheDocument();
+    // Click Engineering to expand (it both navigates AND toggles expansion)
+    const engNode = screen.getByText("Engineering").closest("div");
+    expect(engNode).not.toBeNull();
+    await user.click(engNode!);
+    await waitFor(() => expect(screen.getByText("Decisions")).toBeInTheDocument());
   });
 });

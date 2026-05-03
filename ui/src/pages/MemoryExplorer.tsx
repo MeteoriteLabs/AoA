@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "@/lib/router";
-import { Brain, ChevronRight } from "lucide-react";
+import { Brain, PanelRightClose } from "lucide-react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { MemoryTree } from "../components/memory/MemoryTree";
@@ -149,7 +149,7 @@ export function MemoryExplorer() {
                 className="absolute top-2 right-2 p-1 rounded hover:bg-accent/50"
                 aria-label="Collapse viewer"
               >
-                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                <PanelRightClose className="h-3.5 w-3.5 text-muted-foreground" />
               </button>
               <div>
                 <div className="text-2xl mb-2">📊</div>
