@@ -22,6 +22,9 @@ interface MemoryTreeProps {
   companyId: string;
   selectedFolderPath: string;
   selectedDepartmentId: string | null;
+  selectedLayer: string | null;
+  selectedGoalId: string | null;
+  onCollapseRequest?: () => void;
 }
 
 interface TreeNode {
@@ -54,6 +57,9 @@ export function MemoryTree({
   companyId,
   selectedFolderPath,
   selectedDepartmentId,
+  selectedLayer,
+  selectedGoalId,
+  onCollapseRequest,
 }: MemoryTreeProps) {
   const navigate = useNavigate();
   const { selectedCompany } = useCompany();
@@ -172,7 +178,7 @@ export function MemoryTree({
       }
       return next;
     });
-  }, [selectedFolderPath, selectedDepartmentId]);
+  }, [selectedFolderPath, selectedDepartmentId, selectedLayer, selectedGoalId]);
 
   function toggleExpand(key: string) {
     setExpanded((prev) => {
@@ -210,8 +216,10 @@ export function MemoryTree({
   function isSelected(target: TreeNode["target"]): boolean {
     if (!target) return false;
     return (
-      target.folder === selectedFolderPath &&
-      (target.dept ?? null) === (selectedDepartmentId ?? null)
+      (target.folder ?? "") === selectedFolderPath &&
+      (target.dept ?? null) === selectedDepartmentId &&
+      (target.layer ?? null) === selectedLayer &&
+      (target.goal ?? null) === selectedGoalId
     );
   }
 
@@ -244,7 +252,15 @@ export function MemoryTree({
       <div className="flex items-center px-2 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground">
         <span>Folders</span>
         <span className="flex-1" />
-        <ChevronLeft className="h-3 w-3 opacity-50" />
+        <button
+          type="button"
+          onClick={onCollapseRequest}
+          className="p-1 rounded hover:bg-accent/50 transition-colors"
+          aria-label="Collapse folders pane"
+          disabled={!onCollapseRequest}
+        >
+          <ChevronLeft className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+        </button>
       </div>
       <div className="flex-1 overflow-auto py-1">
         {isLoading ? (

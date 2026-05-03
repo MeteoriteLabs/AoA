@@ -90,7 +90,7 @@ export function LayerTilesPanel({ companyId }: LayerTilesPanelProps) {
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-3">
         Layers
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
         {LAYERS.map((layer) => {
           const c = counts[layer.key];
           const itemLabel = c.total === 1 ? "item" : "items";

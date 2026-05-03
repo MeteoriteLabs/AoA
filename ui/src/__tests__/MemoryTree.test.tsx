@@ -90,7 +90,7 @@ vi.mock("../context/CompanyContext", () => ({
 import { MemoryTree } from "../components/memory/MemoryTree";
 
 function renderTree(
-  selected: { folder?: string; dept?: string | null } = {},
+  selected: { folder?: string; dept?: string | null; layer?: string | null; goal?: string | null } = {},
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -100,6 +100,8 @@ function renderTree(
           companyId="co-1"
           selectedFolderPath={selected.folder ?? ""}
           selectedDepartmentId={selected.dept ?? null}
+          selectedLayer={selected.layer ?? null}
+          selectedGoalId={selected.goal ?? null}
         />
       </MemoryRouter>
     </QueryClientProvider>,

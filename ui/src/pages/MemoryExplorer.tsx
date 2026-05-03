@@ -1,13 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "@/lib/router";
-import { Brain } from "lucide-react";
+import { Brain, ChevronRight } from "lucide-react";
 import { Group, Panel, Separator } from "react-resizable-panels";
+import type { PanelImperativeHandle } from "react-resizable-panels";
 import { MemoryTree } from "../components/memory/MemoryTree";
 import { MemoryFileList } from "../components/memory/MemoryFileList";
 import { MemoryViewer } from "../components/memory/MemoryViewer";
 import { MemoryUploadButton } from "../components/memory/MemoryUploadButton";
 import { MemoryScopedSearch } from "../components/memory/MemoryScopedSearch";
 import { MemoryHomeDashboard } from "../components/memory/MemoryHomeDashboard";
+import { CollapsedRail } from "../components/memory/CollapsedRail";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -20,6 +22,7 @@ export function MemoryExplorer() {
   const folderPath = searchParams.get("folder") ?? "";
   const departmentId = searchParams.get("dept") ?? null;
   const layer = searchParams.get("layer");
+  const goalId = searchParams.get("goal");
   const selectedItemId = searchParams.get("item");
   const selectedItemType = searchParams.get("type") as
     | "memory_item"
@@ -31,6 +34,11 @@ export function MemoryExplorer() {
     !folderPath && !departmentId && !layer && !selectedItemId;
 
   const [searchQuery, setSearchQuery] = useState("");
+
+  const treePanelRef = useRef<PanelImperativeHandle>(null);
+  const viewerPanelRef = useRef<PanelImperativeHandle>(null);
+  const [treeCollapsed, setTreeCollapsed] = useState(false);
+  const [viewerCollapsed, setViewerCollapsed] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Memory" }, { label: "Explorer" }]);
@@ -68,13 +76,27 @@ export function MemoryExplorer() {
           defaultSize={20}
           minSize="12%"
           maxSize="35%"
+          collapsible
+          collapsedSize="3%"
+          panelRef={treePanelRef}
+          onResize={(size) => setTreeCollapsed(size.asPercentage <= 4)}
           className="border-r border-border"
         >
-          <MemoryTree
-            companyId={selectedCompanyId}
-            selectedFolderPath={folderPath}
-            selectedDepartmentId={departmentId}
-          />
+          {treeCollapsed ? (
+            <CollapsedRail
+              onExpand={() => treePanelRef.current?.expand()}
+              direction="right"
+            />
+          ) : (
+            <MemoryTree
+              companyId={selectedCompanyId}
+              selectedFolderPath={folderPath}
+              selectedDepartmentId={departmentId}
+              selectedLayer={layer ?? null}
+              selectedGoalId={goalId ?? null}
+              onCollapseRequest={() => treePanelRef.current?.collapse()}
+            />
+          )}
         </Panel>
         <Separator
           id="memory-explorer-sep-1"
@@ -108,10 +130,27 @@ export function MemoryExplorer() {
         <Panel
           id="memory-explorer-viewer"
           defaultSize={isHomeSelected ? 25 : 52}
-          minSize="20%"
+          minSize="15%"
+          collapsible
+          collapsedSize="3%"
+          panelRef={viewerPanelRef}
+          onResize={(size) => setViewerCollapsed(size.asPercentage <= 4)}
         >
-          {isHomeSelected ? (
-            <div className="h-full flex items-center justify-center bg-muted/10 text-xs text-muted-foreground p-6 text-center">
+          {viewerCollapsed ? (
+            <CollapsedRail
+              onExpand={() => viewerPanelRef.current?.expand()}
+              direction="left"
+            />
+          ) : isHomeSelected ? (
+            <div className="relative h-full flex items-center justify-center bg-muted/10 text-xs text-muted-foreground p-6 text-center">
+              <button
+                type="button"
+                onClick={() => viewerPanelRef.current?.collapse()}
+                className="absolute top-2 right-2 p-1 rounded hover:bg-accent/50"
+                aria-label="Collapse viewer"
+              >
+                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+              </button>
               <div>
                 <div className="text-2xl mb-2">📊</div>
                 <div className="font-medium mb-1">Memory graph view</div>
