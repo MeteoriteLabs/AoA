@@ -234,31 +234,72 @@ Founder triggers via kebab → "Change layer". Free movement between any two lay
 
 If a founder wants to move legacy items into a user folder, the existing kebab → "Move to folder" action handles it (already shipped in Phase 6.1b).
 
-## 11. MCP tool extension shape
+## 11. MCP scope + access model
 
-Affects: `memory.search`, `memory.list`, `memory.suggest`, and the resource endpoints under `MemoryResource`.
+The memory service is consumed by three caller classes. Two get full company access; one gets a scope-restricted view by default. Scope is both a **filter param the caller can pass** and a **permission ceiling enforced by the service based on caller identity**.
+
+### 11.1 Three consumer classes, three default scopes
+
+| Consumer | Default access | Identity passed |
+|---|---|---|
+| **External MCP** (`/companies/:cid/mcp`) | Full company DB. All layers, all depts, all folders. | `mcp_api_keys` Bearer token → `actor = "mcp"` |
+| **Commander** (internal-agent) | Full company DB. Founder's assistant — sees everything. | board session → `actor = "board"` |
+| **Worker agent** (heartbeat-driven adapter) | Restricted: Identity (all) + Domain[its.departmentId] + Working[its.taskChain] + tagged-shared (future). | heartbeat context → `actor = "agent"` with `agentId` + `departmentId` |
+
+The first two are admin-grade callers — they're trusted with full reads and the founder controls who has the keys. The worker agent is *not* admin-grade — it's an autonomous executor that should only see what's relevant to its current job.
+
+### 11.2 Service-layer enforcement
+
+Every memory query takes an `actorContext` argument (derived from auth middleware, not caller-supplied):
 
 ```typescript
-// Today (post-Phase-6):
-type MemoryScope = {
-  layer?: 'identity' | 'domain' | 'active_context' | 'working';
-  departmentId?: string;
-};
+type ActorContext =
+  | { kind: 'mcp'; companyId: string }                     // external MCP, full
+  | { kind: 'board'; companyId: string; userId: string }   // Commander, full
+  | { kind: 'agent'; companyId: string; agentId: string;
+      departmentId: string | null; taskChainIds: string[] }; // worker, scoped
+```
 
-// Phase 6.2:
-type MemoryScope = {
+The service computes an **effective scope** by intersecting:
+1. The caller's permission ceiling (from `actorContext.kind`).
+2. The caller-supplied `MemoryScope` filter (optional narrowing).
+
+Worker agents passing a `MemoryScope` can only narrow within their ceiling — passing `departmentId: <other-dept>` returns empty + logs a warning. They cannot escalate.
+
+### 11.3 The unified `MemoryScope` type
+
+Used as the optional narrowing filter. Net new in Phase 6.2b — replaces today's ad-hoc `FindSimilarScope` (which only has `layer`).
+
+```typescript
+// packages/shared/src/types/memory.ts
+export type MemoryScope = {
   layer?: 'identity' | 'domain' | 'active_context' | 'working';
   departmentId?: string;
   folderPath?: string;          // exact + prefix match: '<path>' or '<path>/%'
-  goalId?: string;              // for active_context
-  taskId?: string;              // for working
+  goalId?: string;              // narrows active_context
+  taskId?: string;              // narrows working
 };
 ```
 
-Filter semantics:
-- All provided scope fields are AND-ed.
+Semantics:
+- All provided fields are AND-ed.
 - `folderPath` is prefix-inclusive (`Engineering/Q3 Planning` includes `Engineering/Q3 Planning/OKR Drafts`).
-- Backward compatible: existing callers passing only `layer` + `departmentId` keep working.
+- Backward compatible: existing callers passing only `{ layer }` keep working.
+
+### 11.4 Tools affected
+
+Phase 6.2b updates these tool surfaces to:
+1. Accept the unified `MemoryScope` filter.
+2. Honor the caller's permission ceiling.
+
+- **External MCP tools** (in `server/src/mcp/`): `memory.search`, `memory.list`, `memory.suggest`, the `MemoryResource` endpoint.
+- **Commander tools** (in `server/src/services/internal-agent/tools/memory.ts` or similar): same triplet.
+- **Worker agent context** (in `server/src/services/heartbeat-context.ts` or wherever the package is built): the heartbeat-built memory items pre-filtered against the worker's ceiling. No code change at *call sites* — the change is enforcement in the memory service itself, which heartbeat already routes through.
+
+### 11.5 Future work (out of 6.2 scope)
+
+- **Tagged sharing.** Founder tags an Active Context or Working item with `sharedWithAgentIds: uuid[]` (or shared with a tag like `agent:engineer`) — workers see those items even outside their default ceiling. Schema: 1-line column add, opt-in. UX: `Share with agent…` action in the kebab menu.
+- **Read audit log.** When a worker accesses memory outside its task context, log it for the founder to review. Not implemented in 6.2 — relies on a future audit infrastructure.
 
 ## 12. Sidebar entry + routing
 
@@ -279,10 +320,10 @@ The redesign is too large for a single slice. Three planned slices, sized like P
 **Touch:** `MemoryTreeV2`, `LayerTilesPanel`, route swap to embed home in explorer, file-list category grouping, empty states, `expiresAt` chip.
 **Tasks:** 5–6, similar shape to 6.1d (1000-line plan).
 
-### Phase 6.2b — User folder CRUD + MCP scoping
-**Goal:** Full create / rename / delete for user folders. MCP `folderPath` parameter.
-**Touch:** `CreateUserFolderDialog`, kebab menu extensions on tree nodes, `memoryFoldersService.deleteUserFolder`, MCP scope schema update + tool routing.
-**Tasks:** 4–5.
+### Phase 6.2b — User folder CRUD + MCP scoping + access model
+**Goal:** Full create / rename / delete for user folders. Unified `MemoryScope` type. Per-caller permission ceiling enforcement.
+**Touch:** `CreateUserFolderDialog`, kebab menu extensions on tree nodes, `memoryFoldersService` (seedKey enforcement + reparenting on delete), `MemoryScope` shared type, `ActorContext` derivation in route middleware, memory service enforcement layer, MCP tool + Commander tool + heartbeat-context refactor to route through enforcement.
+**Tasks:** 6–7. **Larger than other slices** — this is the bulk of the security/architecture work.
 
 ### Phase 6.2c — Item movement + polish
 **Goal:** ChangeLayerDialog. Audit trail wiring. Soft-warn for deep nesting. Final polish pass.
@@ -305,9 +346,16 @@ Each slice ships independently and is mergeable. No slice depends on a later sli
 ### Phase 6.2b tests
 - **`memory-folders-service.test.ts` extension** — `remove()` rejects when `seedKey IS NOT NULL`, with explicit "cannot delete seeded folder" error; reparenting moves child items' `folderPath` to parent on delete; recursive sub-folder reparenting one-level-up.
 - **`memory-folders-routes.test.ts` extension** — DELETE returns 403 on seeded folder; DELETE returns 200 + reparented items on user folder.
-- **`memory-mcp-folder-scope.test.ts`** (new) — `MemoryScope.folderPath` filter exact + prefix match (`Engineering/Q3 Planning` includes `Engineering/Q3 Planning/OKR Drafts`).
+- **`memory-scope-filter.test.ts`** (new) — `MemoryScope.folderPath` filter exact + prefix match (`Engineering/Q3 Planning` includes `Engineering/Q3 Planning/OKR Drafts`); AND-ing semantics; backward compat (passing only `{ layer }` works).
+- **`memory-access-ceiling.test.ts`** (new) — **the security tests**:
+  - External MCP actor: full access — passing `{ layer: 'domain', departmentId: <any> }` returns matching items across all depts.
+  - Commander actor: full access — same.
+  - Worker actor with `agentId + departmentId`: passing no scope returns Identity (all) + Domain (own dept) + Working (own task chain). Active Context excluded by default.
+  - Worker actor escalation attempt: passing `{ departmentId: <foreign-dept> }` returns empty + emits a warning log entry.
+  - Worker actor narrowing within ceiling: passing `{ folderPath: 'Engineering/Q3 Planning' }` when own dept is engineering returns only those items.
+  - Tagged-sharing future hook: confirm the `sharedWithAgentIds` field is queried but no items match (until the future shipping).
 - **`CreateUserFolderDialog.test.tsx`** (new) — slug derivation, conflict rejection, parent-path inheritance.
-- **MCP scope type unit test** — `MemoryScope` AND-ing semantics, backward compat (passing only `layer` works).
+- **`heartbeat-context.test.ts` extension** — verify the worker's pre-baked memory list now flows through the access-ceiling code path; existing memory-in-context behavior preserved.
 
 ### Phase 6.2c tests
 - **`memory-change-layer.test.ts`** (new server) — field clearing per transition (Working→other clears taskId; Active→other clears goalId+expiresAt); version-row creation with correct changelog note; folderPath cleared on layer change.
