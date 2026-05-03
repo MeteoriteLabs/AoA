@@ -12,6 +12,7 @@ import {
 import type { MemoryItem, MemoryAssetRecord } from "@armyofagents/shared";
 import { memoryApi } from "../../api/memory";
 import { memoryAssetsApi } from "../../api/memoryAssets";
+import { projectsApi } from "../../api/projects";
 import { queryKeys } from "../../lib/queryKeys";
 import { useCompany } from "../../context/CompanyContext";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -67,7 +68,7 @@ function formatRelative(isoOrDate: string): string {
   return `${Math.floor(days / 365)}y`;
 }
 
-function folderLabel(folderPath: string, layer?: string | null, deptOnly?: boolean): string {
+function folderLabel(folderPath: string, layer?: string | null, deptOnly?: boolean, deptName?: string): string {
   if (folderPath === "__pinned") return "📌 Pinned";
   if (folderPath === "__pending") return "📋 Pending Review";
   if (folderPath === "__recent") return "🕒 Recent (last 14 days)";
@@ -81,6 +82,7 @@ function folderLabel(folderPath: string, layer?: string | null, deptOnly?: boole
     };
     return labels[layer] ?? layer;
   }
+  if (deptOnly && deptName) return `📁 ${deptName}`;
   if (deptOnly) return "📁 Department";
   return folderPath;
 }
@@ -128,6 +130,13 @@ export function MemoryFileList({
       }),
     enabled: (Boolean(folderPath) && !isVirtualFolder && !isLayerOnly) || isDeptOnly,
   });
+
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(companyId),
+    queryFn: () => projectsApi.list(companyId),
+    enabled: Boolean(companyId) && Boolean(departmentId),
+  });
+  const deptName = projects?.find((p) => p.id === departmentId)?.name;
 
   const rows = useMemo<ListRow[]>(() => {
     const allItems = (itemsQuery.data ?? []) as Array<
@@ -301,7 +310,7 @@ export function MemoryFileList({
   return (
     <div className="h-full flex flex-col bg-card/30">
       <div className="flex items-center px-3 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground gap-2">
-        <span className="truncate">{folderLabel(folderPath, layer, isDeptOnly)}</span>
+        <span className="truncate">{folderLabel(folderPath, layer, isDeptOnly, deptName)}</span>
         <span className="flex-1" />
         <span className="text-[10px] text-muted-foreground">{filteredRows.length}</span>
       </div>

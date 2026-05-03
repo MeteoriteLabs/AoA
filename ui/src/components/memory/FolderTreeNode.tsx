@@ -15,6 +15,8 @@ interface FolderTreeNodeProps {
   tintClass?: string;
   /** Optional rightSlot rendered at the end of the row. Used for the kebab menu in 6.2b. */
   actions?: ReactNode;
+  /** Optional native browser tooltip shown on hover (e.g. deep-nesting soft-warn). */
+  tooltip?: string;
 }
 
 export function FolderTreeNode({
@@ -29,6 +31,7 @@ export function FolderTreeNode({
   onSelect,
   tintClass,
   actions,
+  tooltip,
 }: FolderTreeNodeProps) {
   const indent = depth * 12 + 8;
   const Icon = typeof icon === "function" ? (icon as LucideIcon) : null;
@@ -39,6 +42,7 @@ export function FolderTreeNode({
       aria-expanded={hasChildren ? expanded : undefined}
       aria-selected={selected}
       onClick={onSelect}
+      title={tooltip}
       className={cn(
         "group flex items-center gap-1 py-1.5 pr-2 cursor-pointer text-xs leading-snug select-none",
         "hover:bg-muted/60 transition-colors duration-100",

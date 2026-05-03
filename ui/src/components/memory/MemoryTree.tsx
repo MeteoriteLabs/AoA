@@ -41,6 +41,8 @@ interface TreeNode {
   /** When set, click navigates here. When null, clicking only toggles expand. */
   target: { folder: string; dept: string | null; layer?: string; goal?: string } | null;
   children?: TreeNode[];
+  /** Optional soft-warn shown as a native browser tooltip on hover (e.g. deep-nesting). */
+  tooltip?: string;
 }
 
 type LayerKey = "identity" | "domain" | "active_context" | "working";
@@ -349,6 +351,7 @@ export function MemoryTree({
           onToggleExpand={() => toggleExpand(node.key)}
           onSelect={() => selectNode(node)}
           actions={actions}
+          tooltip={node.tooltip}
         />
         {isExpanded &&
           node.children &&
@@ -652,6 +655,10 @@ function buildFolderChildren({
       depth,
       hasChildren: false, // Filled in recursively below.
       target: { folder: f.path, dept: departmentId },
+      tooltip:
+        depth > 6 && f.seedKey === null
+          ? "Deep nesting can make items hard to find — consider tags or splitting into a sibling folder"
+          : undefined,
       children: buildFolderChildren({
         parentPath: f.path,
         allFolders,

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { Loader2, PanelRightClose } from "lucide-react";
 import { MarkdownItemViewer } from "./viewers/MarkdownItemViewer";
 import { MemoryFolderSummary } from "./MemoryFolderSummary";
 import { MemoryEmptyViewer } from "./MemoryEmptyViewer";
@@ -10,12 +10,14 @@ import { GenericFileViewer } from "./viewers/GenericFileViewer";
 import { DocxFileViewer } from "./viewers/DocxFileViewer";
 import { memoryAssetsApi } from "../../api/memoryAssets";
 import { queryKeys } from "../../lib/queryKeys";
+import { Button } from "@/components/ui/button";
 
 interface MemoryViewerProps {
   companyId: string;
   selectedItemId: string | null;
   selectedItemType: "memory_item" | "asset" | null;
   folderPath: string;
+  onCollapse?: () => void;
 }
 
 function AssetViewerSlot({ companyId, assetId }: { companyId: string; assetId: string }) {
@@ -53,24 +55,43 @@ export function MemoryViewer({
   selectedItemId,
   selectedItemType,
   folderPath,
+  onCollapse,
 }: MemoryViewerProps) {
+  let inner: React.ReactNode;
   if (selectedItemId && selectedItemType === "memory_item") {
-    return <MarkdownItemViewer companyId={companyId} itemId={selectedItemId} />;
-  }
-
-  if (selectedItemId && selectedItemType === "asset") {
-    return <AssetViewerSlot companyId={companyId} assetId={selectedItemId} />;
-  }
-
-  if (folderPath) {
-    return (
+    inner = <MarkdownItemViewer companyId={companyId} itemId={selectedItemId} />;
+  } else if (selectedItemId && selectedItemType === "asset") {
+    inner = <AssetViewerSlot companyId={companyId} assetId={selectedItemId} />;
+  } else if (folderPath) {
+    inner = (
       <MemoryFolderSummary
         companyId={companyId}
         folderPath={folderPath}
         departmentId={null}
       />
     );
+  } else {
+    inner = <MemoryEmptyViewer />;
   }
 
-  return <MemoryEmptyViewer />;
+  return (
+    <div className="h-full flex flex-col">
+      {onCollapse && (
+        <div className="flex items-center justify-end px-2 py-1 border-b border-border">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onCollapse}
+            aria-label="Collapse viewer"
+            className="h-6 w-6"
+          >
+            <PanelRightClose className="h-3.5 w-3.5 text-muted-foreground" />
+          </Button>
+        </div>
+      )}
+      <div className="flex-1 min-h-0 overflow-auto">
+        {inner}
+      </div>
+    </div>
+  );
 }

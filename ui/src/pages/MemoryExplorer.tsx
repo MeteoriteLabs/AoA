@@ -163,6 +163,7 @@ export function MemoryExplorer() {
               selectedItemId={selectedItemId}
               selectedItemType={selectedItemType}
               folderPath={folderPath}
+              onCollapse={() => viewerPanelRef.current?.collapse()}
             />
           )}
         </Panel>
