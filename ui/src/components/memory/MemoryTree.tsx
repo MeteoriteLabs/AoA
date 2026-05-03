@@ -17,6 +17,10 @@ import { queryKeys } from "../../lib/queryKeys";
 import { useCompany } from "../../context/CompanyContext";
 import { FolderTreeNode } from "./FolderTreeNode";
 import { Skeleton } from "@/components/ui/skeleton";
+import { CreateFolderDialog } from "./CreateFolderDialog";
+import { RenameFolderDialog } from "./RenameFolderDialog";
+import { DeleteFolderDialog } from "./DeleteFolderDialog";
+import { MemoryFolderActionsMenu, type MemoryFolderNodeKind } from "./MemoryFolderActionsMenu";
 
 interface MemoryTreeProps {
   companyId: string;
@@ -68,6 +72,14 @@ export function MemoryTree({
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set(DEFAULT_EXPANDED),
   );
+
+  // Phase 6.2b dialog state.
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createDialogParent, setCreateDialogParent] = useState<TreeNode | null>(null);
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [renameDialogFolder, setRenameDialogFolder] = useState<MemoryFolderRecord | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteDialogFolder, setDeleteDialogFolder] = useState<MemoryFolderRecord | null>(null);
 
   const { data: folders, isLoading: foldersLoading } = useQuery({
     queryKey: queryKeys.memory.folders.list(companyId),
@@ -223,8 +235,107 @@ export function MemoryTree({
     );
   }
 
+  // Phase 6.2b helpers — folder CRUD dialog open/close.
+
+  function nodeToFolder(node: TreeNode): MemoryFolderRecord | null {
+    if (!node.key.startsWith("folder-")) return null;
+    const id = node.key.slice("folder-".length);
+    return (folders ?? []).find((f) => f.id === id) ?? null;
+  }
+
+  function openCreate(node: TreeNode) {
+    setCreateDialogParent(node);
+    setCreateDialogOpen(true);
+  }
+
+  function openRename(node: TreeNode) {
+    const f = nodeToFolder(node);
+    if (!f) return;
+    setRenameDialogFolder(f);
+    setRenameDialogOpen(true);
+  }
+
+  function openDelete(node: TreeNode) {
+    const f = nodeToFolder(node);
+    if (!f) return;
+    setDeleteDialogFolder(f);
+    setDeleteDialogOpen(true);
+  }
+
+  function getParentPathForCreate(node: TreeNode | null): {
+    path: string;
+    departmentId: string | null;
+    displayPath: string;
+  } | null {
+    if (!node) return null;
+    // Folder node: use its own path as parent for the new subfolder.
+    if (node.key.startsWith("folder-")) {
+      const f = nodeToFolder(node);
+      if (!f) return null;
+      return {
+        path: f.path,
+        departmentId: f.departmentId,
+        displayPath: f.path,
+      };
+    }
+    // Department: parent path = dept slug, departmentId = node's dept id.
+    if (node.key.startsWith("dept-") && !node.key.includes("-folder-")) {
+      const deptId = node.key.slice("dept-".length);
+      const dept = departments.find((d) => d.id === deptId);
+      if (!dept) return null;
+      return {
+        path: dept.urlKey ?? "",
+        departmentId: dept.id,
+        displayPath: `Domain / ${dept.name}`,
+      };
+    }
+    // Company root: parent path = "Company", departmentId = null.
+    if (node.key === "__company") {
+      return { path: "Company", departmentId: null, displayPath: "Identity / Company" };
+    }
+    // Goal: not yet supported for folder creation in v1.
+    return null;
+  }
+
+  function getNodeKind(node: TreeNode): MemoryFolderNodeKind | null {
+    // Layer headers: no kebab.
+    if (node.key.startsWith("__layer-")) return null;
+    // Cross-cutting shortcuts: no kebab.
+    if (
+      ["__home", "__pinned", "__pending", "__recent", "__archived"].includes(node.key)
+    ) {
+      return null;
+    }
+    // Active Context goal: scope (allows new subfolder in v2+).
+    // For v1 scope: show no kebab on goals (folders under goals not supported yet).
+    if (node.key.startsWith("__goal-")) return null;
+    // Department: scope
+    if (node.key.startsWith("dept-") && !node.key.match(/^folder-/)) return "scope";
+    // Company root: scope
+    if (node.key === "__company") return "scope";
+    // Folder rows (key starts with "folder-"): determine seeded vs user from the matching record.
+    if (node.key.startsWith("folder-")) {
+      const folderId = node.key.slice("folder-".length);
+      const f = (folders ?? []).find((x) => x.id === folderId);
+      if (!f) return null;
+      return f.seedKey !== null ? "seededFolder" : "userFolder";
+    }
+    return null;
+  }
+
   function renderNode(node: TreeNode): ReactNode {
     const isExpanded = expanded.has(node.key);
+    const kind = getNodeKind(node);
+    const actions =
+      kind === null ? null : (
+        <MemoryFolderActionsMenu
+          nodeKind={kind}
+          onCreate={() => openCreate(node)}
+          onRename={() => openRename(node)}
+          onChangeIcon={() => openRename(node)}
+          onDelete={() => openDelete(node)}
+        />
+      );
     return (
       <div key={node.key}>
         <FolderTreeNode
@@ -237,6 +348,7 @@ export function MemoryTree({
           hasChildren={node.hasChildren}
           onToggleExpand={() => toggleExpand(node.key)}
           onSelect={() => selectNode(node)}
+          actions={actions}
         />
         {isExpanded &&
           node.children &&
@@ -273,6 +385,56 @@ export function MemoryTree({
           tree.map((node) => renderNode(node))
         )}
       </div>
+      {/* Phase 6.2b dialogs */}
+      {createDialogOpen && createDialogParent && (() => {
+        const p = getParentPathForCreate(createDialogParent);
+        if (!p) return null;
+        return (
+          <CreateFolderDialog
+            companyId={companyId}
+            open={createDialogOpen}
+            onOpenChange={setCreateDialogOpen}
+            parentPath={p.path}
+            parentDisplayPath={p.displayPath}
+            parentDepartmentId={p.departmentId}
+          />
+        );
+      })()}
+      {renameDialogFolder && (
+        <RenameFolderDialog
+          companyId={companyId}
+          open={renameDialogOpen}
+          onOpenChange={setRenameDialogOpen}
+          folder={renameDialogFolder}
+        />
+      )}
+      {deleteDialogFolder && (() => {
+        const f = deleteDialogFolder;
+        const parentPath = f.path.includes("/")
+          ? f.path.slice(0, f.path.lastIndexOf("/"))
+          : "";
+        // Compute child counts for the confirmation message.
+        const childItemCount = ((items ?? []) as Array<{ folderPath?: string }>)
+          .filter(
+            (it) =>
+              it.folderPath === f.path ||
+              (it.folderPath ?? "").startsWith(f.path + "/"),
+          ).length;
+        const childFolderCount = (folders ?? [])
+          .filter((g) => g.path !== f.path && g.path.startsWith(f.path + "/"))
+          .length;
+        return (
+          <DeleteFolderDialog
+            companyId={companyId}
+            open={deleteDialogOpen}
+            onOpenChange={setDeleteDialogOpen}
+            folder={f}
+            parentDisplayPath={parentPath || "(root)"}
+            childItemCount={childItemCount}
+            childFolderCount={childFolderCount}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -351,13 +513,20 @@ function buildTree({
   const companyRoot = companyFolders.find((f) => f.path === "Company");
   const identityChildren: TreeNode[] = [];
   if (companyRoot) {
+    const companyChildren = buildFolderChildren({
+      parentPath: "Company",
+      allFolders: companyFolders,
+      depth: 2,
+      departmentId: null,
+    });
     identityChildren.push({
       key: "__company",
       label: companyRoot.displayName,
       icon: companyRoot.icon ?? "🏛️",
       depth: 1,
-      hasChildren: false,
+      hasChildren: companyChildren.length > 0,
       target: { folder: "Company", dept: null },
+      children: companyChildren,
     });
   }
   top.push({
@@ -371,7 +540,7 @@ function buildTree({
     children: identityChildren,
   });
 
-  // Domain layer (departments + their seeded subfolders).
+  // Domain layer (departments + their seeded subfolders + user folders).
   const deptFolderGroups = new Map<string, MemoryFolderRecord[]>();
   for (const f of folders) {
     if (f.departmentId !== null) {
@@ -385,20 +554,12 @@ function buildTree({
     const slug = dept.urlKey ?? "";
     const deptCount = counts.byDeptDomain.get(dept.id) ?? 0;
     const deptFolders = deptFolderGroups.get(dept.id) ?? [];
-    const children: TreeNode[] = deptFolders
-      .filter((f) => {
-        const parts = f.path.split("/");
-        return parts.length === 2 && parts[0] === slug;
-      })
-      .sort((a, b) => a.sortOrder - b.sortOrder)
-      .map<TreeNode>((f) => ({
-        key: `dept-${dept.id}-${f.id}`,
-        label: f.displayName,
-        icon: f.icon ?? "📂",
-        depth: 2,
-        hasChildren: false,
-        target: { folder: f.path, dept: dept.id },
-      }));
+    const children = buildFolderChildren({
+      parentPath: slug,
+      allFolders: deptFolders,
+      depth: 2,
+      departmentId: dept.id,
+    });
 
     domainChildren.push({
       key: `dept-${dept.id}`,
@@ -455,4 +616,51 @@ function buildTree({
   });
 
   return top;
+}
+
+function buildFolderChildren({
+  parentPath,
+  allFolders,
+  depth,
+  departmentId,
+}: {
+  parentPath: string;
+  allFolders: MemoryFolderRecord[];
+  depth: number;
+  departmentId: string | null;
+}): TreeNode[] {
+  // Direct children: folders whose path is exactly `<parentPath>/<one-segment>`.
+  const directChildren = allFolders.filter((f) => {
+    if (!f.path.startsWith(parentPath + "/")) return false;
+    const remainder = f.path.slice(parentPath.length + 1);
+    return !remainder.includes("/");
+  });
+
+  return directChildren
+    .sort((a, b) => {
+      // Seeded folders first (preserves natural ordering), then user folders alphabetically.
+      const aSeed = a.seedKey !== null;
+      const bSeed = b.seedKey !== null;
+      if (aSeed !== bSeed) return aSeed ? -1 : 1;
+      if (aSeed) return a.sortOrder - b.sortOrder;
+      return a.displayName.localeCompare(b.displayName);
+    })
+    .map<TreeNode>((f) => ({
+      key: `folder-${f.id}`,
+      label: f.displayName,
+      icon: f.icon ?? "📂",
+      depth,
+      hasChildren: false, // Filled in recursively below.
+      target: { folder: f.path, dept: departmentId },
+      children: buildFolderChildren({
+        parentPath: f.path,
+        allFolders,
+        depth: depth + 1,
+        departmentId,
+      }),
+    }))
+    .map((node) => ({
+      ...node,
+      hasChildren: (node.children?.length ?? 0) > 0,
+    }));
 }

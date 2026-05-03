@@ -33,6 +33,17 @@ vi.mock("../api/memoryFolders", () => ({
         sortOrder: 0,
         seedKey: "decisions",
       },
+      // Phase 6.2b: user folder under engineering
+      {
+        id: "f-eng-q3",
+        companyId: "co-1",
+        departmentId: "d-eng",
+        path: "engineering/q3-planning",
+        displayName: "Q3 Planning",
+        icon: "📂",
+        sortOrder: 100,
+        seedKey: null,
+      },
     ]),
   },
 }));
@@ -221,5 +232,17 @@ describe("MemoryTree (Phase 6.2a)", () => {
     expect(engNode).not.toBeNull();
     await user.click(engNode!);
     await waitFor(() => expect(screen.getByText("Decisions")).toBeInTheDocument());
+  });
+
+  it("renders user folders alongside seeded folders under a dept", async () => {
+    const user = userEvent.setup();
+    renderTree();
+    await waitFor(() => screen.getByText("Engineering"));
+    // Expand Engineering
+    const eng = screen.getByText("Engineering").closest("div");
+    expect(eng).not.toBeNull();
+    await user.click(eng!);
+    await waitFor(() => expect(screen.getByText("Decisions")).toBeInTheDocument());
+    expect(screen.getByText("Q3 Planning")).toBeInTheDocument();
   });
 });
