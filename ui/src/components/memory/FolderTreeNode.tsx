@@ -1,4 +1,5 @@
 import { ChevronRight, ChevronDown, type LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 interface FolderTreeNodeProps {
@@ -12,6 +13,8 @@ interface FolderTreeNodeProps {
   onToggleExpand: () => void;
   onSelect: () => void;
   tintClass?: string;
+  /** Optional rightSlot rendered at the end of the row. Used for the kebab menu in 6.2b. */
+  actions?: ReactNode;
 }
 
 export function FolderTreeNode({
@@ -25,6 +28,7 @@ export function FolderTreeNode({
   onToggleExpand,
   onSelect,
   tintClass,
+  actions,
 }: FolderTreeNodeProps) {
   const indent = depth * 12 + 8;
   const Icon = typeof icon === "function" ? (icon as LucideIcon) : null;
@@ -70,6 +74,7 @@ export function FolderTreeNode({
           {count}
         </span>
       )}
+      {actions}
     </div>
   );
 }
