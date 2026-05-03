@@ -94,6 +94,9 @@ export function memoryFoldersRoutes(opts: RoutesOptions) {
         await svc.remove(id, companyId);
         res.status(204).end();
       } catch (err) {
+        if ((err as Error & { code?: string }).code === "FOLDER_IS_SEEDED") {
+          return res.status(403).json({ error: "Cannot delete seeded folder" });
+        }
         next(err);
       }
     },

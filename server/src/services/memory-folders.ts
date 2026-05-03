@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { memoryFolders } from "@armyofagents/db";
 import { normalizeMemoryFolderPath } from "@armyofagents/shared";
@@ -93,13 +93,64 @@ export function memoryFoldersService(db: Db) {
     },
 
     remove: async (id: string, companyId: string): Promise<void> => {
+      // Step 1: Look up the folder. If not found, silently no-op (idempotent).
+      const targets = await db
+        .select()
+        .from(memoryFolders)
+        .where(and(eq(memoryFolders.id, id), eq(memoryFolders.companyId, companyId)));
+
+      const target = targets[0];
+      if (!target) {
+        // Already gone — silent success.
+        return;
+      }
+
+      // Step 2: Enforce seedKey IS NULL — refuse to delete seeded folders.
+      if (target.seedKey !== null) {
+        const err = new Error("Cannot delete seeded folder");
+        (err as Error & { code?: string }).code = "FOLDER_IS_SEEDED";
+        throw err;
+      }
+
+      // Step 3: Compute parent path. e.g.
+      //   "engineering/Q3"        -> "engineering"
+      //   "engineering/Q3/OKRs"   -> "engineering/Q3"
+      //   "Company"               -> ""  (top-level — safe-guard)
+      const parentPath = target.path.includes("/")
+        ? target.path.slice(0, target.path.lastIndexOf("/"))
+        : "";
+
+      // Step 4: Reparent items. Any memory_item whose folderPath starts with the
+      //         deleted folder's path gets prefix-rewritten.
+      //   newPath = parentPath + path.substring(target.path.length)
+      // For an item at exactly target.path: substring("") => newPath = parentPath
+      // For an item deeper: substring("/OKRs/...") => newPath = parentPath + "/OKRs/..."
+      await db.execute(
+        sql`UPDATE memory_items
+            SET folder_path = ${parentPath} || SUBSTRING(folder_path FROM ${target.path.length + 1})
+            WHERE company_id = ${companyId}
+              AND (folder_path = ${target.path}
+                   OR folder_path LIKE ${target.path + "/%"})`,
+      );
+
+      // Step 5: Reparent sub-folder rows (same prefix-rewrite for memory_folders.path).
+      await db.execute(
+        sql`UPDATE memory_folders
+            SET path = ${parentPath} || SUBSTRING(path FROM ${target.path.length + 1})
+            WHERE company_id = ${companyId}
+              AND path LIKE ${target.path + "/%"}`,
+      );
+
+      // Step 6: Delete the target folder row itself.
       await db
         .delete(memoryFolders)
         .where(and(eq(memoryFolders.id, id), eq(memoryFolders.companyId, companyId)));
+
+      // Step 7: Publish LiveEvent.
       publishLiveEvent({
         type: "memory.folder.deleted",
         companyId,
-        payload: { id },
+        payload: { id, path: target.path, reparented: true },
       });
     },
 
