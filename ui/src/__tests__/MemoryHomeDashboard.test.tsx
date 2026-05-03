@@ -19,35 +19,24 @@ vi.mock("../api/memory", () => ({
 vi.mock("../api/memoryAssets", () => ({
   memoryAssetsApi: { list: vi.fn(async () => []) },
 }));
-vi.mock("../api/projects", () => ({
-  projectsApi: {
-    list: vi.fn(async () => [
-      { id: "d-eng", type: "department", name: "Engineering", archivedAt: null, urlKey: "engineering" },
-      { id: "d-mkt", type: "department", name: "Marketing", archivedAt: null, urlKey: "marketing" },
-    ]),
-  },
-}));
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "co-1", selectedCompany: { issuePrefix: "co1" } }),
 }));
-vi.mock("../context/BreadcrumbContext", () => ({
-  useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn(), setSubtitle: vi.fn(), setEntityColor: vi.fn() }),
-}));
 
-import { MemoryHome } from "../pages/MemoryHome";
+import { MemoryHomeDashboard } from "../components/memory/MemoryHomeDashboard";
 
 function renderHome() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
-        <MemoryHome />
+        <MemoryHomeDashboard companyId="co-1" />
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-describe("MemoryHome (Phase 6.1d)", () => {
+describe("MemoryHomeDashboard (Phase 6.2a)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("renders pending banner when there are pending items", async () => {
@@ -55,12 +44,12 @@ describe("MemoryHome (Phase 6.1d)", () => {
     await waitFor(() => expect(screen.getByText(/1 item waiting for your review/i)).toBeInTheDocument());
   });
 
-  it("renders department tiles", async () => {
+  it("renders 4 layer tiles", async () => {
     renderHome();
-    await waitFor(() => expect(screen.getByText("Engineering")).toBeInTheDocument());
-    expect(screen.getByText("Marketing")).toBeInTheDocument();
-    expect(screen.getByText("Pinned")).toBeInTheDocument();
-    expect(screen.getByText("Company")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Identity")).toBeInTheDocument());
+    expect(screen.getByText("Domain")).toBeInTheDocument();
+    expect(screen.getByText("Active Context")).toBeInTheDocument();
+    expect(screen.getByText("Working")).toBeInTheDocument();
   });
 
   it("renders recents", async () => {

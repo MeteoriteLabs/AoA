@@ -7,6 +7,7 @@ import { MemoryFileList } from "../components/memory/MemoryFileList";
 import { MemoryViewer } from "../components/memory/MemoryViewer";
 import { MemoryUploadButton } from "../components/memory/MemoryUploadButton";
 import { MemoryScopedSearch } from "../components/memory/MemoryScopedSearch";
+import { MemoryHomeDashboard } from "../components/memory/MemoryHomeDashboard";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -18,11 +19,16 @@ export function MemoryExplorer() {
 
   const folderPath = searchParams.get("folder") ?? "";
   const departmentId = searchParams.get("dept") ?? null;
+  const layer = searchParams.get("layer");
   const selectedItemId = searchParams.get("item");
   const selectedItemType = searchParams.get("type") as
     | "memory_item"
     | "asset"
     | null;
+
+  // Phase 6.2a: synthetic Home selection — no folder, no dept, no layer, no item.
+  const isHomeSelected =
+    !folderPath && !departmentId && !layer && !selectedItemId;
 
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -41,15 +47,17 @@ export function MemoryExplorer() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center justify-end gap-2 px-3 py-2 border-b border-border bg-card/30">
-        <MemoryScopedSearch value={searchQuery} onChange={setSearchQuery} />
-        <span className="flex-1" />
-        <MemoryUploadButton
-          companyId={selectedCompanyId}
-          departmentId={departmentId}
-          folderPath={folderPath}
-        />
-      </div>
+      {!isHomeSelected && (
+        <div className="flex items-center justify-end gap-2 px-3 py-2 border-b border-border bg-card/30">
+          <MemoryScopedSearch value={searchQuery} onChange={setSearchQuery} />
+          <span className="flex-1" />
+          <MemoryUploadButton
+            companyId={selectedCompanyId}
+            departmentId={departmentId}
+            folderPath={folderPath}
+          />
+        </div>
+      )}
       <Group
         orientation="horizontal"
         id="memory-explorer-panes"
@@ -74,19 +82,23 @@ export function MemoryExplorer() {
         />
         <Panel
           id="memory-explorer-list"
-          defaultSize={28}
+          defaultSize={isHomeSelected ? 55 : 28}
           minSize="20%"
-          maxSize="45%"
+          maxSize={isHomeSelected ? "70%" : "45%"}
           className="border-r border-border"
         >
-          <MemoryFileList
-            companyId={selectedCompanyId}
-            folderPath={folderPath}
-            departmentId={departmentId}
-            selectedItemId={selectedItemId}
-            selectedItemType={selectedItemType}
-            searchQuery={searchQuery}
-          />
+          {isHomeSelected ? (
+            <MemoryHomeDashboard companyId={selectedCompanyId} />
+          ) : (
+            <MemoryFileList
+              companyId={selectedCompanyId}
+              folderPath={folderPath}
+              departmentId={departmentId}
+              selectedItemId={selectedItemId}
+              selectedItemType={selectedItemType}
+              searchQuery={searchQuery}
+            />
+          )}
         </Panel>
         <Separator
           id="memory-explorer-sep-2"
@@ -94,15 +106,25 @@ export function MemoryExplorer() {
         />
         <Panel
           id="memory-explorer-viewer"
-          defaultSize={52}
-          minSize="30%"
+          defaultSize={isHomeSelected ? 25 : 52}
+          minSize="20%"
         >
-          <MemoryViewer
-            companyId={selectedCompanyId}
-            selectedItemId={selectedItemId}
-            selectedItemType={selectedItemType}
-            folderPath={folderPath}
-          />
+          {isHomeSelected ? (
+            <div className="h-full flex items-center justify-center bg-muted/10 text-xs text-muted-foreground p-6 text-center">
+              <div>
+                <div className="text-2xl mb-2">📊</div>
+                <div className="font-medium mb-1">Memory graph view</div>
+                <div className="opacity-70">Coming soon</div>
+              </div>
+            </div>
+          ) : (
+            <MemoryViewer
+              companyId={selectedCompanyId}
+              selectedItemId={selectedItemId}
+              selectedItemType={selectedItemType}
+              folderPath={folderPath}
+            />
+          )}
         </Panel>
       </Group>
     </div>
