@@ -9,8 +9,9 @@ export interface UseOperationStatusOpts {
 }
 
 /**
- * Poll an install operation's status until terminal (success/failure).
+ * Poll an install operation's status until terminal (success/failure/requested).
  * Refetches every 2s while pending/running. Stops via refetchInterval=false on terminal.
+ * "requested" is terminal — the install was queued for founder approval, not dispatched.
  */
 export function useOperationStatus(
   opts: UseOperationStatusOpts,
@@ -23,7 +24,7 @@ export function useOperationStatus(
     refetchInterval: (query) => {
       const data = query.state.data;
       if (!data) return POLL_INTERVAL_MS;
-      if (data.status === "success" || data.status === "failure") return false;
+      if (data.status === "success" || data.status === "failure" || data.status === "requested") return false;
       return POLL_INTERVAL_MS;
     },
   });

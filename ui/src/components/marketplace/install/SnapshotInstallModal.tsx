@@ -71,6 +71,10 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
       update(pendingToastId, { status: "success", message: `Installed ${item.name}` });
       setPendingOpId(null);
       setPendingToastId(null);
+    } else if (opStatus.status === "requested") {
+      update(pendingToastId, { status: "success", message: `Request submitted — a founder will review ${item.name}` });
+      setPendingOpId(null);
+      setPendingToastId(null);
     } else if (opStatus.status === "failure") {
       update(pendingToastId, {
         status: "failure",
