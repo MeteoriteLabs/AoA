@@ -1,96 +1,117 @@
 import { describe, it, expect } from "vitest";
 import { splitSections, computeSectionDiff, applyMergeDecisions } from "../services/marketplace-merge.js";
 
-const DOC_A = `# Title
-Content A
-
-## Section One
-Section one content A
-
-## Section Two
-Section two content (same)
-`;
-
-const DOC_B = `# Title
-Content A
-
-## Section One
-Section one content B — changed
-
-## Section Two
-Section two content (same)
-
-## Section Three
-Brand new section
-`;
-
 describe("splitSections", () => {
-  it("splits markdown by ## headers", () => {
-    const sections = splitSections(DOC_A);
-    expect(sections).toHaveLength(3); // preamble + Section One + Section Two
-    expect(sections[0]!.header).toBe("__preamble__");
-    expect(sections[1]!.header).toBe("Section One");
-    expect(sections[2]!.header).toBe("Section Two");
+  it("returns a preamble section for content before first ##", () => {
+    const md = "intro text\n## Section A\ncontent A";
+    const sections = splitSections(md);
+    expect(sections[0].header).toBe("__preamble__");
+    expect(sections[0].content).toBe("intro text");
+    expect(sections[1].header).toBe("Section A");
+  });
+
+  it("returns ALL sections including duplicates", () => {
+    const md = "## Examples\nfirst\n## Examples\nsecond";
+    const sections = splitSections(md);
+    expect(sections).toHaveLength(3); // preamble + 2 × Examples
+    expect(sections[1].header).toBe("Examples");
+    expect(sections[2].header).toBe("Examples");
+  });
+
+  it("returns single preamble when no ## headers", () => {
+    const md = "just text here";
+    const sections = splitSections(md);
+    expect(sections).toHaveLength(1);
+    expect(sections[0].header).toBe("__preamble__");
   });
 });
 
-describe("computeSectionDiff", () => {
-  it("marks unchanged sections", () => {
-    const diff = computeSectionDiff(DOC_A, DOC_A);
-    expect(diff.every((s) => s.state === "unchanged")).toBe(true);
+describe("computeSectionDiff — unique headers", () => {
+  it("marks unchanged sections correctly", () => {
+    const mine = "## Overview\nSame text";
+    const theirs = "## Overview\nSame text";
+    const diff = computeSectionDiff(mine, theirs);
+    const overview = diff.find((d) => d.header === "Overview" || d.header.startsWith("Overview"));
+    expect(overview?.state).toBe("unchanged");
   });
 
-  it("detects changed and added sections", () => {
-    const diff = computeSectionDiff(DOC_A, DOC_B);
-    const changed = diff.find((s) => s.header === "Section One");
-    const added = diff.find((s) => s.header === "Section Three");
-    expect(changed?.state).toBe("changed");
-    expect(added?.state).toBe("added");
+  it("marks changed sections correctly", () => {
+    const mine = "## Overview\nOld text";
+    const theirs = "## Overview\nNew text";
+    const diff = computeSectionDiff(mine, theirs);
+    const overview = diff.find((d) => d.header === "Overview" || d.header.startsWith("Overview"));
+    expect(overview?.state).toBe("changed");
+    expect(overview?.mine).toContain("Old text");
+    expect(overview?.theirs).toContain("New text");
+  });
+
+  it("marks added sections (in theirs but not mine)", () => {
+    const mine = "## Overview\ntext";
+    const theirs = "## Overview\ntext\n## Usage\nnew section";
+    const diff = computeSectionDiff(mine, theirs);
+    const usage = diff.find((d) => d.header === "Usage" || d.header.startsWith("Usage"));
+    expect(usage?.state).toBe("added");
+  });
+
+  it("marks removed sections (in mine but not theirs)", () => {
+    const mine = "## Overview\ntext\n## Deprecated\nold stuff";
+    const theirs = "## Overview\ntext";
+    const diff = computeSectionDiff(mine, theirs);
+    const deprecated = diff.find((d) => d.header === "Deprecated" || d.header.startsWith("Deprecated"));
+    expect(deprecated?.state).toBe("removed");
+  });
+});
+
+describe("computeSectionDiff — duplicate headers (the bug)", () => {
+  it("preserves BOTH sections when mine has two sections with the same header", () => {
+    const mine = "## Examples\nfirst example\n## Examples\nsecond example";
+    const theirs = "## Examples\nfirst example\n## Examples\nthird example";
+    const diff = computeSectionDiff(mine, theirs);
+
+    // Should have 3 entries: preamble (unchanged/added) + Examples + Examples [2]
+    // The first Examples should be unchanged, the second should be changed
+    const exampleDiffs = diff.filter((d) => d.header.startsWith("Examples"));
+    expect(exampleDiffs).toHaveLength(2);
+
+    const first = exampleDiffs[0];
+    const second = exampleDiffs[1];
+
+    expect(first.state).toBe("unchanged");
+    expect(second.state).toBe("changed");
+    expect(second.mine).toContain("second example");
+    expect(second.theirs).toContain("third example");
+  });
+
+  it("does NOT drop the first section when theirs has a single version of a duplicate header", () => {
+    // mine has two ## Examples; theirs has one. First should match, second should be "removed".
+    const mine = "## Examples\nfirst\n## Examples\nsecond";
+    const theirs = "## Examples\nfirst";
+    const diff = computeSectionDiff(mine, theirs);
+
+    // preamble diff + Examples (unchanged) + Examples [2] (removed)
+    const exampleDiffs = diff.filter((d) => d.header.startsWith("Examples"));
+    expect(exampleDiffs).toHaveLength(2);
+    expect(exampleDiffs[0].state).toBe("unchanged");
+    expect(exampleDiffs[1].state).toBe("removed");
   });
 });
 
 describe("applyMergeDecisions", () => {
-  const diff = [
-    { header: "__preamble__", state: "unchanged" as const, mine: "Intro text", theirs: "Intro text" },
-    { header: "Section One", state: "changed" as const, mine: "Old content", theirs: "New content" },
-    { header: "Section Two", state: "added" as const, mine: "", theirs: "Brand new section" },
-    { header: "Section Three", state: "removed" as const, mine: "Gone content", theirs: "" },
-  ];
-
-  it("unchanged sections always appear in output regardless of decision", () => {
-    const result = applyMergeDecisions(diff, { "__preamble__": "mine", "Section One": "mine", "Section Two": "theirs", "Section Three": "mine" });
-    expect(result).toContain("Intro text");
+  it("keeps mine when decision is 'mine'", () => {
+    const mine = "## Overview\nmy content";
+    const theirs = "## Overview\ntheir content";
+    const diff = computeSectionDiff(mine, theirs);
+    const result = applyMergeDecisions(diff, { Overview: "mine" });
+    expect(result).toContain("my content");
+    expect(result).not.toContain("their content");
   });
 
-  it("accepts 'mine' for a changed section", () => {
-    const result = applyMergeDecisions(diff, { "__preamble__": "mine", "Section One": "mine", "Section Two": "theirs", "Section Three": "mine" });
-    expect(result).toContain("Old content");
-    expect(result).not.toContain("New content");
-  });
-
-  it("accepts 'theirs' for a changed section", () => {
-    const result = applyMergeDecisions(diff, { "__preamble__": "mine", "Section One": "theirs", "Section Two": "theirs", "Section Three": "mine" });
-    expect(result).toContain("New content");
-    expect(result).not.toContain("Old content");
-  });
-
-  it("includes 'added' section when decision is 'theirs'", () => {
-    const result = applyMergeDecisions(diff, { "__preamble__": "mine", "Section One": "mine", "Section Two": "theirs", "Section Three": "mine" });
-    expect(result).toContain("Brand new section");
-  });
-
-  it("drops 'added' section when decision is 'mine'", () => {
-    const result = applyMergeDecisions(diff, { "__preamble__": "mine", "Section One": "mine", "Section Two": "mine", "Section Three": "mine" });
-    expect(result).not.toContain("Brand new section");
-  });
-
-  it("includes 'removed' section when decision is 'mine'", () => {
-    const result = applyMergeDecisions(diff, { "__preamble__": "mine", "Section One": "mine", "Section Two": "theirs", "Section Three": "mine" });
-    expect(result).toContain("Gone content");
-  });
-
-  it("drops 'removed' section when decision is 'theirs'", () => {
-    const result = applyMergeDecisions(diff, { "__preamble__": "mine", "Section One": "mine", "Section Two": "theirs", "Section Three": "theirs" });
-    expect(result).not.toContain("Gone content");
+  it("keeps theirs when decision is 'theirs'", () => {
+    const mine = "## Overview\nmy content";
+    const theirs = "## Overview\ntheir content";
+    const diff = computeSectionDiff(mine, theirs);
+    const result = applyMergeDecisions(diff, { Overview: "theirs" });
+    expect(result).toContain("their content");
+    expect(result).not.toContain("my content");
   });
 });

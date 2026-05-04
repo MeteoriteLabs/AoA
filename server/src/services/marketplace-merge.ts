@@ -45,11 +45,29 @@ export function splitSections(markdown: string): Section[] {
 }
 
 /**
+ * Make section headers unique within an array by appending " [2]", " [3]", etc.
+ * to repeated headers. This ensures duplicate ## headings in a markdown file
+ * are each independently tracked in the diff Map, rather than the later one
+ * silently overwriting the earlier one.
+ *
+ * The n-th occurrence of a header in mine is matched against the n-th occurrence
+ * in theirs, which is the best-effort alignment for docs with repeated headings.
+ */
+export function deduplicateHeaders(sections: Section[]): Section[] {
+  const counts = new Map<string, number>();
+  return sections.map((s) => {
+    const count = (counts.get(s.header) ?? 0) + 1;
+    counts.set(s.header, count);
+    return count === 1 ? s : { ...s, header: `${s.header} [${count}]` };
+  });
+}
+
+/**
  * Compute a section-level diff between two markdown documents.
  */
 export function computeSectionDiff(mine: string, theirs: string): SectionDiff[] {
-  const mineSections = new Map(splitSections(mine).map((s) => [s.header, s]));
-  const theirSections = new Map(splitSections(theirs).map((s) => [s.header, s]));
+  const mineSections = new Map(deduplicateHeaders(splitSections(mine)).map((s) => [s.header, s]));
+  const theirSections = new Map(deduplicateHeaders(splitSections(theirs)).map((s) => [s.header, s]));
 
   const result: SectionDiff[] = [];
 
