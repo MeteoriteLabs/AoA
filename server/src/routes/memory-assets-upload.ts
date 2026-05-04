@@ -2,7 +2,7 @@ import path from "node:path";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import type { Db } from "@armyofagents/db";
-import { fileImportService, SUPPORTED_MIME_TYPES } from "../services/file-import.js";
+import { SUPPORTED_MIME_TYPES } from "../services/file-import.js";
 import { memoryAssetsService } from "../services/memory-assets.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -25,7 +25,6 @@ const MAX_FILE_SIZE_BYTES =
 
 interface RoutesOptions {
   db?: Db;
-  fileImportService?: ReturnType<typeof fileImportService>;
   assetsService?: ReturnType<typeof memoryAssetsService>;
   storage?: { putFile: (input: unknown) => Promise<{ objectKey: string; byteSize: number; sha256: string }> };
   storageService?: StorageService;
@@ -33,7 +32,6 @@ interface RoutesOptions {
 
 export function memoryAssetsUploadRoutes(opts: RoutesOptions) {
   const router = Router();
-  const fileImport = opts.fileImportService ?? fileImportService(opts.db!);
   const assets = opts.assetsService ?? memoryAssetsService(opts.db!);
   const storage = opts.storage ?? opts.storageService;
 
@@ -110,19 +108,9 @@ export function memoryAssetsUploadRoutes(opts: RoutesOptions) {
         const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         const userId = actor.actorId && UUID_RE.test(actor.actorId) ? actor.actorId : null;
 
-        const job = await fileImport.createJob({
-          companyId,
-          fileName: file.originalname,
-          mimeType: file.mimetype,
-          fileSize: file.size,
-          storageKey: stored.objectKey,
-          createdBy: actor.actorId ?? "unknown",
-          departmentId: departmentId ?? null,
-          projectId: null,
-          defaultLayer: "domain",
-          defaultCategory: "reference",
-        });
-
+        // Phase 6.2e: uploads create assets only — no auto-extraction. The
+        // founder (or a future Commander sub-agent) is responsible for
+        // turning files into curated memory items via an explicit action.
         const asset = await assets.create({
           companyId,
           departmentId: departmentId ?? null,
@@ -131,11 +119,11 @@ export function memoryAssetsUploadRoutes(opts: RoutesOptions) {
           mimeType: file.mimetype,
           fileSize: file.size,
           storageKey: stored.objectKey,
-          importJobId: job.id,
+          importJobId: null,
           uploadedByUserId: userId,
         });
 
-        res.status(201).json({ asset, jobId: job.id });
+        res.status(201).json({ asset });
       } catch (err) {
         next(err);
       }

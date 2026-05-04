@@ -14,8 +14,7 @@ vi.mock("../middleware/rbac.js", () => ({
 }));
 
 // Stub service modules to break the drizzle-orm ESM cycle
-const { mockCreateJob, mockAssetsCreate } = vi.hoisted(() => ({
-  mockCreateJob: vi.fn().mockResolvedValue({ id: "job-1", storageKey: "k", fileName: "x.pdf" }),
+const { mockAssetsCreate } = vi.hoisted(() => ({
   mockAssetsCreate: vi.fn().mockImplementation(async (input: unknown) => ({ id: "a-1", ...(input as object) })),
 }));
 
@@ -25,9 +24,6 @@ vi.mock("../services/file-import.js", () => ({
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "text/plain",
   ],
-  fileImportService: vi.fn(() => ({
-    createJob: mockCreateJob,
-  })),
 }));
 
 vi.mock("../services/memory-assets.js", () => ({
@@ -59,7 +55,6 @@ async function buildApp() {
 describe("memory-assets upload route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockCreateJob.mockResolvedValue({ id: "job-1", storageKey: "k", fileName: "x.pdf" });
     mockAssetsCreate.mockImplementation(async (input: unknown) => ({ id: "a-1", ...(input as object) }));
     mockStorage.putFile.mockResolvedValue({
       objectKey: "co-1/file-imports/abc-x.pdf",
@@ -68,7 +63,7 @@ describe("memory-assets upload route", () => {
     });
   });
 
-  it("uploads a file, creates a job and asset row, and returns both", async () => {
+  it("uploads a file, creates an asset row, and returns it (no job created)", async () => {
     const app = await buildApp();
 
     const res = await request(app)
@@ -85,11 +80,10 @@ describe("memory-assets upload route", () => {
       fileName: "x.pdf",
       mimeType: "application/pdf",
       folderPath: "Engineering/Files",
-      importJobId: "job-1",
+      importJobId: null,
     });
-    expect(res.body.jobId).toBe("job-1");
+    expect(res.body.jobId).toBeUndefined();
     expect(mockStorage.putFile).toHaveBeenCalled();
-    expect(mockCreateJob).toHaveBeenCalled();
     expect(mockAssetsCreate).toHaveBeenCalled();
   });
 
@@ -105,6 +99,6 @@ describe("memory-assets upload route", () => {
       });
 
     expect(res.status).toBe(400);
-    expect(mockCreateJob).not.toHaveBeenCalled();
+    expect(mockAssetsCreate).not.toHaveBeenCalled();
   });
 });
