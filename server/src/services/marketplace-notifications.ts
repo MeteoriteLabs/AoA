@@ -66,13 +66,13 @@ export const marketplaceNotifications = {
       relatedEntityId: operationId,
     }),
 
-  installRequested: (db: Db, companyId: string, catalogItemName: string, requestingUserId: string, operationId: string) =>
+  installRequested: (db: Db, companyId: string, catalogItemName: string, requestingUserId: string, operationId?: string) =>
     notifyFounders(db, companyId, {
       type: "marketplace.install_requested",
       title: `Install requested: ${catalogItemName}`,
       message: `User ${requestingUserId} requested installation of ${catalogItemName}.`,
       relatedEntityType: "marketplace_operation",
-      relatedEntityId: operationId,
+      ...(operationId ? { relatedEntityId: operationId } : {}),
     }),
 
   installFailed: (db: Db, companyId: string, catalogItemName: string, error: string) =>
