@@ -1,6 +1,12 @@
 import type { CompanyPortabilityManifest } from "@armyofagents/shared";
 
+// Current 3-tier enum (AGENT_ROLES in @armyofagents/shared) takes precedence.
+// Legacy entries (ceo/cto/cmo/cfo/engineer/...) remain for backward
+// compatibility with bundles exported before the role-enum cleanup.
 const ROLE_LABELS: Record<string, string> = {
+  cxo: "Executive",
+  lead: "Lead",
+  general: "General",
   ceo: "CEO",
   cto: "CTO",
   cmo: "CMO",
@@ -11,7 +17,6 @@ const ROLE_LABELS: Record<string, string> = {
   qa: "QA",
   devops: "DevOps",
   researcher: "Researcher",
-  general: "General",
 };
 
 function roleLabel(role: string): string {

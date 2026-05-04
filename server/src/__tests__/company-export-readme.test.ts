@@ -105,8 +105,8 @@ describe("generateReadme", () => {
       ],
     });
     const readme = generateReadme(manifest);
-    // Roll-up: 1 cxo + 2 Engineers
-    expect(readme).toMatch(/cxo\s*\|\s*1/);
+    // Roll-up: 1 cxo (labeled "Executive") + 2 Engineers
+    expect(readme).toMatch(/Executive\s*\|\s*1/);
     expect(readme).toMatch(/Engineer\s*\|\s*2/);
     // Agents table has all three
     expect(readme).toContain("Ada");
