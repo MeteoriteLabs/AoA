@@ -1,6 +1,5 @@
 import { Router, type Request } from "express";
-import { type Db, companySkills } from "@armyofagents/db";
-import { eq } from "drizzle-orm";
+import { type Db } from "@armyofagents/db";
 import {
   companySkillCreateSchema,
   companySkillFileUpdateSchema,
@@ -139,11 +138,8 @@ export function companySkillRoutes(db: Db) {
         String(req.body.content ?? ""),
       );
 
-      // Mark the skill as customized so the auto-updater skips it in future runs.
-      // TODO(hardening): wrap svc.updateFile() + this update in a single transaction so a
-      // server crash between the two writes cannot leave the skill with new content but
-      // customized=false (which would allow the auto-updater to overwrite the founder's edit).
-      await db.update(companySkills).set({ customized: true }).where(eq(companySkills.id, skillId));
+      // customized=true is written inside svc.updateFile() for all paths:
+      // atomically with markdown for SKILL.md, standalone for other files.
 
       const actor = getActorInfo(req);
       await logActivity(db, {
