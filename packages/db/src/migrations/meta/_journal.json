@@ -533,6 +533,13 @@
       "when": 1777718392042,
       "tag": "0075_seed_existing_companies_and_departments",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1777873339732,
+      "tag": "0076_archive_extracted_memory_items",
+      "breakpoints": true
     }
   ]
 }
