@@ -68,8 +68,11 @@ describe("signalRunningProcess (integration)", () => {
         // Signal the whole group with SIGTERM.
         signalRunningProcess({ child, processGroupId }, "SIGTERM");
 
-        // Wait up to 2 seconds for both to die.
-        await waitForDeath([child.pid!, grandchildPid], 2000);
+        // Wait up to 5 seconds for both to die. Bash signal-dispatch on a
+        // hot-loaded CI runner can take >1s; 5s gives comfortable headroom
+        // without hiding a real failure (the test exits as soon as both
+        // PIDs are reaped, typically <500ms locally).
+        await waitForDeath([child.pid!, grandchildPid], 5000);
 
         expect(isAlive(child.pid!)).toBe(false);
         expect(isAlive(grandchildPid)).toBe(false);
