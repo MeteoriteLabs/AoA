@@ -620,11 +620,48 @@ export function memoryRoutes(db: Db) {
           res.status(400).json({ error: parsed.error.flatten() });
           return;
         }
-        const updated = await svc.changeLayer(id, companyId, parsed.data);
+        // Phase 6.2c follow-up: a layer change is effectively a re-classification
+        // / re-approval at a different layer (e.g. promoting a working note to a
+        // domain policy). Match the approve/reject pattern and gate on the
+        // SAME role check (founder, or team_lead for the destination dept).
+        const existing = await svc.getById(companyId, id);
+        if (!existing) {
+          res.status(404).json({ error: "Memory item not found" });
+          return;
+        }
+        await assertMemoryApproval(db, req, companyId, {
+          layer: parsed.data.newLayer,
+          departmentId:
+            parsed.data.departmentId !== undefined
+              ? parsed.data.departmentId
+              : existing.departmentId,
+        });
+        const actor = getActorInfo(req);
+        const updated = await svc.changeLayer(id, companyId, {
+          ...parsed.data,
+          actorId: actor.actorId ?? null,
+        });
         if (!updated) {
           res.status(404).json({ error: "Memory item not found" });
           return;
         }
+        // Phase 6.2c follow-up: record the layer change in the activity log so
+        // it surfaces on the Activity page alongside approve/reject.
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "memory.layer_changed",
+          entityType: "memory_item",
+          entityId: updated.id,
+          details: {
+            title: updated.title,
+            fromLayer: existing.layer,
+            toLayer: parsed.data.newLayer,
+          },
+        });
         res.json(updated);
       } catch (err) {
         const e = err as Error;

@@ -112,32 +112,8 @@ export function MemoryFileList({
   const isDeptOnly =
     !folderPath && Boolean(departmentId) && !isVirtualFolder;
 
-  const itemsQuery = useQuery({
-    queryKey: [...queryKeys.memory.list(companyId), { folderPath, departmentId }],
-    queryFn: () =>
-      memoryApi.list(companyId, departmentId ? { departmentId } : {}),
-    enabled: Boolean(folderPath) || isLayerOnly || isDeptOnly,
-  });
-
-  const assetsQuery = useQuery({
-    queryKey: queryKeys.memory.assets.list(companyId, {
-      departmentId: departmentId ?? undefined,
-      folderPath: isDeptOnly ? undefined : folderPath,
-    }),
-    queryFn: () =>
-      memoryAssetsApi.list(companyId, {
-        departmentId: departmentId ?? undefined,
-        folderPath: isDeptOnly ? undefined : folderPath,
-      }),
-    enabled: (Boolean(folderPath) && !isVirtualFolder && !isLayerOnly) || isDeptOnly,
-  });
-
-  const { data: folders } = useQuery({
-    queryKey: queryKeys.memory.folders.list(companyId),
-    queryFn: () => memoryFoldersApi.list(companyId),
-    enabled: Boolean(companyId),
-  });
-
+  // Hoist projects + deptSlug above the items/assets queries so we can pass
+  // a strict folderPath filter into the assetsQuery for dept-only mode.
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(companyId),
     queryFn: () => projectsApi.list(companyId),
@@ -150,6 +126,39 @@ export function MemoryFileList({
     if (!departmentId) return null;
     return projects?.find((p) => p.id === departmentId)?.urlKey ?? null;
   }, [projects, departmentId]);
+
+  const itemsQuery = useQuery({
+    queryKey: [...queryKeys.memory.list(companyId), { folderPath, departmentId }],
+    queryFn: () =>
+      memoryApi.list(companyId, departmentId ? { departmentId } : {}),
+    enabled: Boolean(folderPath) || isLayerOnly || isDeptOnly,
+  });
+
+  // Phase 6.2f follow-up: in dept-only mode, the items list filters strictly
+  // by `folderPath === deptSlug`. Match the same filter for assets so the
+  // central pane doesn't show assets from sub-paths alongside the strict-
+  // filtered items section.
+  const assetsFolderPath = isDeptOnly ? (deptSlug ?? "") : folderPath;
+  const assetsQuery = useQuery({
+    queryKey: queryKeys.memory.assets.list(companyId, {
+      departmentId: departmentId ?? undefined,
+      folderPath: assetsFolderPath,
+    }),
+    queryFn: () =>
+      memoryAssetsApi.list(companyId, {
+        departmentId: departmentId ?? undefined,
+        folderPath: assetsFolderPath,
+      }),
+    enabled:
+      (Boolean(folderPath) && !isVirtualFolder && !isLayerOnly) ||
+      (isDeptOnly && Boolean(deptSlug)),
+  });
+
+  const { data: folders } = useQuery({
+    queryKey: queryKeys.memory.folders.list(companyId),
+    queryFn: () => memoryFoldersApi.list(companyId),
+    enabled: Boolean(companyId),
+  });
 
   const rows = useMemo<ListRow[]>(() => {
     const allItems = (itemsQuery.data ?? []) as Array<

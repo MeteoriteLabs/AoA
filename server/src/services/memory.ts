@@ -1370,6 +1370,9 @@ export function memoryService(db: Db) {
         goalId?: string | null;
         taskId?: string | null;
         expiresAt?: Date | null;
+        // Phase 6.2c follow-up: actor attribution for the audit row.
+        // Falls back to "system" when not provided (e.g., internal callers).
+        actorId?: string | null;
       },
     ) => {
       const VALID_LAYERS = ["identity", "domain", "active_context", "working"];
@@ -1431,31 +1434,38 @@ export function memoryService(db: Db) {
         patch.departmentId = null;
       }
 
-      // Step 4: Apply the update.
-      const [updated] = await db
-        .update(memoryItems)
-        .set(patch)
-        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
-        .returning(memoryItemsSelection(caps.hasVectorSupport));
-
-      // Step 5: Write a memory_item_versions row for audit trail.
-      // The schema has: memoryItemId, versionNumber, content, status, createdBy.
-      // We store the changelog as the content field with a descriptive prefix.
+      // Step 4 + 5: Apply the update + write the audit row inside a single
+      // transaction so the layer-change and its audit trail are atomic. If
+      // either fails, neither is persisted. Per Phase 6.2c follow-up review.
       const changelog = `layer changed: ${fromLayer} → ${toLayer}`;
-      const [latest] = await db
-        .select({ versionNumber: memoryItemVersions.versionNumber })
-        .from(memoryItemVersions)
-        .where(eq(memoryItemVersions.memoryItemId, id))
-        .orderBy(desc(memoryItemVersions.versionNumber))
-        .limit(1);
-      const nextVersion = (latest?.versionNumber ?? 0) + 1;
+      const updated = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(memoryItems)
+          .set(patch)
+          .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
+          .returning(memoryItemsSelection(caps.hasVectorSupport));
 
-      await db.insert(memoryItemVersions).values({
-        memoryItemId: id,
-        versionNumber: nextVersion,
-        content: changelog,
-        status: "approved",
-        createdBy: "system",
+        // Look up the next version number inside the transaction so we don't
+        // race a concurrent insert.
+        const [latest] = await tx
+          .select({ versionNumber: memoryItemVersions.versionNumber })
+          .from(memoryItemVersions)
+          .where(eq(memoryItemVersions.memoryItemId, id))
+          .orderBy(desc(memoryItemVersions.versionNumber))
+          .limit(1);
+        const nextVersion = (latest?.versionNumber ?? 0) + 1;
+
+        await tx.insert(memoryItemVersions).values({
+          memoryItemId: id,
+          versionNumber: nextVersion,
+          content: changelog,
+          status: "approved",
+          // Plumb the actor ID through so the audit trail attributes the
+          // change to the operator, not a generic "system".
+          createdBy: input.actorId ?? "system",
+        });
+
+        return row;
       });
 
       // Step 6: Publish LiveEvent.

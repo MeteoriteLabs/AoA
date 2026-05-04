@@ -48,7 +48,7 @@ function createMockDb(items: ItemRow[] = []) {
   const versionsCreated: Array<Record<string, unknown>> = [];
   const updateCalls: Array<{ patch: Record<string, unknown>; id: string }> = [];
 
-  return {
+  const dbLike: Record<string, unknown> = {
     items,
     versionsCreated,
     updateCalls,
@@ -84,8 +84,12 @@ function createMockDb(items: ItemRow[] = []) {
         }),
       }),
     }),
-    transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(null),
   };
+  // Phase 6.2c follow-up: changeLayer now wraps the update + audit-row insert
+  // in a db.transaction(...) call. The mock's transaction passes itself as the
+  // `tx` so the chained methods inside the callback hit the same fake stores.
+  dbLike.transaction = async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(dbLike);
+  return dbLike as never;
 }
 
 describe("memoryService.changeLayer — Phase 6.2c", () => {
