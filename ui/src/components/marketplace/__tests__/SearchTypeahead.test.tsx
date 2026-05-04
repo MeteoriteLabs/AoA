@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { SearchTypeahead } from "../SearchTypeahead";
 import { marketplaceApi } from "@/api/marketplace";
 import { FULL_CATALOG } from "@/__tests__/__fixtures__/marketplace-catalog";
+import { mockCompanyContext } from "@/__tests__/test-utils";
 
 vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>(
@@ -15,6 +16,11 @@ vi.mock("@/api/marketplace", async () => {
   );
   return { ...actual, marketplaceApi: { getCatalog: vi.fn() } };
 });
+
+// SearchTypeahead navigates via the custom useNavigate which requires CompanyContext.
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => mockCompanyContext,
+}));
 
 function wrap(node: ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

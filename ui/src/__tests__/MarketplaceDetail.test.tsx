@@ -54,7 +54,10 @@ describe("MarketplaceDetail", () => {
       expect(headings.length).toBeGreaterThanOrEqual(2);
     });
     expect(screen.getByText(/Systematic code review/)).toBeInTheDocument();
-    expect(screen.getByText("v1.0.0")).toBeInTheDocument();
+    // MarketplaceDetail renders the version twice — once as a header badge and
+    // once in the right-side metadata Version field — so we assert presence
+    // rather than uniqueness.
+    expect(screen.getAllByText("v1.0.0").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Verified")).toBeInTheDocument();
     // Breadcrumb + page title + README heading → 3 matches.
     expect(screen.getAllByText("Code Review").length).toBeGreaterThan(1);

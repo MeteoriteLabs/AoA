@@ -174,37 +174,39 @@ test.describe("Marketplace UI", () => {
     await cleanupTestCompanies(request, /^E2E-MKT-/);
   });
 
-  test("Marketplace home renders Featured section (Slack is featured)", async ({
+  test("Marketplace home renders hero + at least one item card from the frozen fixture", async ({
     page,
   }) => {
     await page.goto("/marketplace");
 
-    // Featured section heading — visible once catalog loads
+    // Hero h1 ("Extend your workforce ...") — visible once data loads
     await expect(
-      page.getByRole("heading", { name: "Featured", level: 2 }),
+      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Slack plugin card heading should appear in Featured
-    // CatalogCard renders the name in <h3 class="...font-semibold...">, so use heading role
+    // Frozen fixture has 5 items (4 plugins + 1 skill). At least one CatalogCard
+    // should render its name as an h3. Slack is in the fixture.
     await expect(
       page.getByRole("heading", { name: "Slack", level: 3 }).first(),
     ).toBeVisible();
   });
 
-  test("Marketplace home renders 'Browse by type' section with type tiles", async ({
+  test("Marketplace home renders type pills with labels and 'available' counts", async ({
     page,
   }) => {
     await page.goto("/marketplace");
 
+    // Wait for hero so we know data has loaded
     await expect(
-      page.getByRole("heading", { name: "Browse by type", level: 2 }),
+      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // TypeTile renders <h3>{label}</h3> for each type
-    await expect(page.getByRole("heading", { name: "Plugins", level: 3 })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Skills", level: 3 })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Agents", level: 3 })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Teams", level: 3 })).toBeVisible();
+    // Type pills aren't h3 anymore — they're buttons with span labels.
+    // Locate by button name combining label + count text ("Plugins 4 available", etc.)
+    await expect(page.getByRole("button", { name: /Plugins\s+\d+\s+available/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Skills\s+\d+\s+available/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Agents\s+\d+\s+available/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Teams\s+\d+\s+available/i })).toBeVisible();
   });
 
   test("Marketplace home does not show error state", async ({ page }) => {
@@ -244,13 +246,17 @@ test.describe("Marketplace UI", () => {
     await expect(page.getByText("template-skill")).toBeVisible();
   });
 
-  test("/marketplace/unknowntype shows unknown-type error message", async ({
+  test("/marketplace/<unknown-type> redirects to the homepage", async ({
     page,
   }) => {
+    // The current routing redirects /marketplace/:type → /marketplace?type=:type
+    // (see MarketplaceTypeRedirect in App.tsx). Unknown types fall through to the
+    // homepage rather than rendering a dedicated error page.
     await page.goto("/marketplace/foobar");
 
+    await expect(page).toHaveURL(/\/marketplace(\?|$)/, { timeout: 10_000 });
     await expect(
-      page.getByText(/unknown item type/i),
+      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
     ).toBeVisible({ timeout: 10_000 });
   });
 
@@ -266,23 +272,21 @@ test.describe("Marketplace UI", () => {
     });
   });
 
-  test("Clicking a type tile navigates to the type-filter page", async ({
+  test("Clicking a type pill toggles the type filter on the homepage", async ({
     page,
   }) => {
     await page.goto("/marketplace");
 
-    // Wait for Browse by type section to load
+    // Wait for hero so the page has loaded
     await expect(
-      page.getByRole("heading", { name: "Browse by type", level: 2 }),
+      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Click the Plugins tile
-    await page.getByRole("heading", { name: "Plugins", level: 3 }).click();
+    // Click the Plugins pill (button)
+    const pluginsPill = page.getByRole("button", { name: /Plugins\s+\d+\s+available/i });
+    await pluginsPill.click();
 
-    // Should navigate to /marketplace/plugin
-    await expect(page).toHaveURL(/\/marketplace\/plugin/);
-    await expect(
-      page.getByRole("heading", { name: "Plugins", level: 1 }),
-    ).toBeVisible({ timeout: 10_000 });
+    // Pill should reflect active state (data-active="true" on the button)
+    await expect(pluginsPill).toHaveAttribute("data-active", "true");
   });
 });

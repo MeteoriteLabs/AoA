@@ -1,7 +1,6 @@
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import type { MarketplaceCatalogFile } from "@armyofagents/shared";
 import { marketplaceApi } from "@/api/marketplace";
-import bundledSnapshot from "@/aoa-marketplace-snapshot.json";
 
 const CATALOG_QUERY_KEY = ["marketplace", "catalog"] as const;
 const STALE_TIME_MS = 5 * 60 * 1000;
@@ -13,21 +12,17 @@ const GC_TIME_MS = 30 * 60 * 1000;
  * Single shared query key — repeated calls return same promise / cached result.
  * 5min staleTime is safe (CDN republishes nightly + on push).
  *
- * Falls back to the bundled snapshot when the API is unavailable (e.g. server
- * not yet synced, backend offline during local development). This ensures the
- * marketplace always shows something rather than a blank error screen.
+ * Source of truth is `GET /api/marketplace/catalog`. The server side
+ * (`MarketplaceCatalogService` in `server/src/app.ts`) seeds itself from the
+ * bundled snapshot (`ui/src/aoa-marketplace-snapshot.json`, gitignored,
+ * generated at build time by `pnpm fetch-catalog`). Errors from the server
+ * surface directly to the UI so a proper error state can render — we don't
+ * silently swap in stale client-side data.
  */
 export function useCatalog(): UseQueryResult<MarketplaceCatalogFile, Error> {
   return useQuery({
     queryKey: CATALOG_QUERY_KEY,
-    queryFn: async () => {
-      try {
-        return await marketplaceApi.getCatalog();
-      } catch {
-        // Server unavailable or catalog not yet synced — use bundled snapshot.
-        return bundledSnapshot as MarketplaceCatalogFile;
-      }
-    },
+    queryFn: () => marketplaceApi.getCatalog(),
     staleTime: STALE_TIME_MS,
     gcTime: GC_TIME_MS,
   });

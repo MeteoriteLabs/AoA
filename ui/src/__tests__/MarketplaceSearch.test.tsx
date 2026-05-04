@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import MarketplaceSearch from "@/pages/MarketplaceSearch";
 import { marketplaceApi } from "@/api/marketplace";
 import { FULL_CATALOG } from "@/__tests__/__fixtures__/marketplace-catalog";
+import { mockCompanyContext } from "@/__tests__/test-utils";
 
 vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>(
@@ -13,6 +14,11 @@ vi.mock("@/api/marketplace", async () => {
   );
   return { ...actual, marketplaceApi: { getCatalog: vi.fn() } };
 });
+
+// MarketplaceLayout uses the custom useNavigate which requires CompanyContext.
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => mockCompanyContext,
+}));
 
 function wrap(initialPath: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

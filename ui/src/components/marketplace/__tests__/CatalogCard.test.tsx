@@ -14,7 +14,11 @@ describe("CatalogCard", () => {
     expect(screen.getByText("Slack")).toBeInTheDocument();
     expect(screen.getByText(/Slack notifications/)).toBeInTheDocument();
     expect(screen.getByText("v1.0.0")).toBeInTheDocument();
-    expect(screen.getByText("Verified")).toBeInTheDocument();
+    // CatalogCard renders TrustBadge with showLabel={false} — visible "Verified"
+    // text is hidden; the verified-tier description lives in the sr-only span.
+    expect(
+      screen.getByText(/reviewed and signed off by aoa team/i),
+    ).toBeInTheDocument();
   });
 
   it("links to detail page with slashes preserved (splat route)", () => {

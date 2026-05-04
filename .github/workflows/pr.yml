@@ -344,6 +344,14 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Pin marketplace catalog fixture for stable e2e
+        # `pnpm build` ran prebuild → fetched the live CDN catalog, which
+        # evolves independently of this repo. Override with a frozen fixture
+        # so e2e assertions don't depend on whichever items are currently on
+        # the CDN. Server reads the snapshot lazily on first /api/marketplace
+        # request, so overwriting before `Run e2e tests` is sufficient.
+        run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
+
       - name: Install Playwright
         run: npx playwright install --with-deps chromium
 
