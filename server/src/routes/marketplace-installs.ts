@@ -35,6 +35,8 @@ import { publishLiveEvent } from "../services/live-events.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { permissionService } from "../services/permissions.js";
 import { marketplaceSettingsService } from "../services/marketplace-settings.js";
+import { marketplaceNotifications } from "../services/marketplace-notifications.js";
+import { logger } from "../middleware/logger.js";
 
 /**
  * Check if a user role can install a given catalog item type.
@@ -156,8 +158,17 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
 
       const decision = resolveInstallDecision(effectiveRole, catalogItem.type, settings);
       if (decision === "request") {
+        // Persist a pending operation row so founders can review it via GET /install/:operationId,
+        // then notify founders that a team member has requested the install.
+        const requestedOp = await startInstallOperation({
+          request, catalogItem, companyId, requestedByUserId: userId, db,
+        });
+        void marketplaceNotifications
+          .installRequested(db, companyId, catalogItem.name, userId)
+          .catch((err) => logger.error({ err }, "marketplace installRequested notification failed"));
         res.status(202).json({
           queued: true,
+          operationId: requestedOp.id,
           message: "Install request submitted. A founder will review it.",
         });
         return;
