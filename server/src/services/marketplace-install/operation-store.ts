@@ -23,7 +23,7 @@ export interface OperationRow {
   catalogItemId: string;
   itemType: "plugin" | "skill" | "agent" | "team";
   targetDepartmentId: string | null;
-  status: "pending" | "running" | "success" | "failure";
+  status: "pending" | "running" | "success" | "failure" | "requested";
   resultEntityId: string | null;
   errorMessage: string | null;
   cascadeResults: CascadeStepResult[] | null;

@@ -28,6 +28,7 @@ import {
   installTeam,
   installMarketplacePlugin,
   findOperationById,
+  updateOperation,
   type Installers,
 } from "../services/marketplace-install/index.js";
 import type { PluginLoaderLike } from "../services/marketplace-install/plugin-installer.js";
@@ -177,13 +178,20 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
           res.status(500).json({ error: `Failed to queue install request: ${message}` });
           return;
         }
+        // Transition to terminal "requested" status so polling clients stop waiting.
+        // Fire-and-forget — a failure here is logged but doesn't block the 202 response.
+        void updateOperation(db, requestedOp.id, {
+          status: "requested",
+          completedAt: new Date(),
+        }).catch((err) => logger.error({ err }, "marketplace: failed to set status=requested"));
+
         void marketplaceNotifications
           .installRequested(db, companyId, catalogItem.name, userId, requestedOp.id)
           .catch((err) => logger.error({ err }, "marketplace installRequested notification failed"));
         res.status(202).json({
           queued: true,
           operationId: requestedOp.id,
-          status: requestedOp.status,
+          status: "requested",
           message: "Install request submitted. A founder will review it.",
         });
         return;

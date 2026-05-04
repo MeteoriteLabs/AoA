@@ -36,7 +36,7 @@ export const marketplaceInstallOperations = pgTable(
     catalogItemId: text("catalog_item_id").notNull(),
     itemType: text("item_type").$type<"plugin" | "skill" | "agent" | "team">().notNull(),
     targetDepartmentId: uuid("target_department_id"),  // null for plugins (instance-scoped)
-    status: text("status").$type<"pending" | "running" | "success" | "failure">().notNull().default("pending"),
+    status: text("status").$type<"pending" | "running" | "success" | "failure" | "requested">().notNull().default("pending"),
     resultEntityId: text("result_entity_id"),
     errorMessage: text("error_message"),
     cascadeResults: jsonb("cascade_results").$type<CascadeStepResult[]>(),

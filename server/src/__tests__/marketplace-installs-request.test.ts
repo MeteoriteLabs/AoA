@@ -101,6 +101,7 @@ vi.mock("../services/marketplace-install/index.js", () => ({
   installMarketplacePlugin: vi.fn(),
   findOperationById: vi.fn(),
   resolveInstallPlan: vi.fn(),
+  updateOperation: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../services/marketplace-notifications.js", () => ({
   marketplaceNotifications: {
@@ -128,6 +129,7 @@ vi.mock("../middleware/logger.js", () => ({ logger: { error: vi.fn() } }));
 import { createMarketplaceInstallRouter } from "../routes/marketplace-installs.js";
 import { startInstallOperation } from "../services/marketplace-install/index.js";
 import { dispatchInstall } from "../services/marketplace-install/index.js";
+import { updateOperation } from "../services/marketplace-install/index.js";
 import { marketplaceNotifications } from "../services/marketplace-notifications.js";
 import express from "express";
 import request from "supertest";
@@ -198,7 +200,7 @@ describe("POST /install — decision=request path", () => {
     expect(res.status).toBe(202);
     expect(res.body.operationId).toBe("op-request-uuid");
     expect(res.body.queued).toBe(true);
-    expect(res.body.status).toBe("pending");
+    expect(res.body.status).toBe("requested");
   });
 
   it("calls startInstallOperation to persist the pending row", async () => {
@@ -241,5 +243,17 @@ describe("POST /install — decision=request path", () => {
       .send({ catalogItemId: "skill:aoa-curated/code-review" });
 
     expect(dispatchInstall).not.toHaveBeenCalled();
+  });
+
+  it("transitions the operation to status='requested' so polling clients see a terminal state", async () => {
+    const app = buildApp();
+    await request(app)
+      .post("/api/companies/c1/marketplace/install")
+      .send({ catalogItemId: "skill:aoa-curated/code-review" });
+
+    expect(updateOperation).toHaveBeenCalledOnce();
+    const [, , patch] = vi.mocked(updateOperation).mock.calls[0];
+    expect(patch.status).toBe("requested");
+    expect(patch.completedAt).toBeInstanceOf(Date);
   });
 });
