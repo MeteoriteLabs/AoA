@@ -94,10 +94,29 @@ export async function applySkillUpdate(args: {
     if (!skillRow) throw new SkillDeletedError(catalogItemId);
     if (skillRow.customized) throw new SkillCustomizedError(catalogItemId);
 
-    await tx
+    // Optimistic-lock: add AND customized=false to WHERE. If a concurrent founder edit
+    // committed customized=true between our SELECT and this UPDATE, RETURNING is empty
+    // and we throw rather than silently overwriting.
+    //
+    // Known approximation: empty RETURNING could also mean the row was hard-deleted in
+    // the same window. In that case we throw SkillCustomizedError instead of the more
+    // precise SkillDeletedError. The caller fires a spurious "update available"
+    // notification — a low-harm false positive given the rarity of concurrent delete +
+    // auto-apply. A second SELECT to distinguish the cases is not worth the extra
+    // round-trip here.
+    const updatedRows = await tx
       .update(companySkills)
       .set({ markdown: newMarkdown, sourceRef: catalogItem.version, updatedAt: new Date() })
-      .where(eq(companySkills.id, skillRow.id));
+      .where(and(
+        eq(companySkills.id, skillRow.id),
+        eq(companySkills.customized, false),
+      ))
+      .returning({ id: companySkills.id });
+
+    if (updatedRows.length === 0) {
+      // Concurrent edit (or rare delete race) won — treat as customized.
+      throw new SkillCustomizedError(catalogItemId);
+    }
 
     // Mark the pending row applied (filter by catalogItemId + status=pending so a
     // concurrent run that already applied it is a no-op, not an error)

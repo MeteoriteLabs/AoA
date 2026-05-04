@@ -87,7 +87,12 @@ describe("isWithinUpdateWindow", () => {
 function buildTx({
   skillRow = { id: "skill-1", customized: false },
   skillRows = skillRow ? [skillRow] : [],
-}: { skillRow?: { id: string; customized: boolean } | null; skillRows?: any[] } = {}) {
+  skillUpdateReturnRows = [{ id: "skill-1" }],
+}: {
+  skillRow?: { id: string; customized: boolean } | null;
+  skillRows?: any[];
+  skillUpdateReturnRows?: { id: string }[];
+} = {}) {
   const updatedSkillValues: any[] = [];
   const updatedPendingValues: any[] = [];
 
@@ -102,9 +107,19 @@ function buildTx({
     update: (_table: any) => ({
       set: (values: any) => ({
         where: () => {
-          if ("markdown" in values) updatedSkillValues.push(values);
-          else updatedPendingValues.push(values);
-          return Promise.resolve();
+          if ("markdown" in values) {
+            // Skill UPDATE: thenable AND chainable with .returning()
+            updatedSkillValues.push(values);
+            const rows = skillUpdateReturnRows;
+            return {
+              then: (resolve: any, reject: any) =>
+                Promise.resolve(rows).then(resolve, reject),
+              returning: () => Promise.resolve(rows),
+            };
+          }
+          // Pending UPDATE: plain promise (no .returning() needed)
+          updatedPendingValues.push(values);
+          return Promise.resolve(undefined);
         },
       }),
     }),
@@ -180,5 +195,19 @@ describe("applySkillUpdate", () => {
 
     // DB was still written
     expect(tx._updatedSkillValues[0]).toMatchObject({ markdown: "# Code Review v1.1.0" });
+  });
+
+  it("throws SkillCustomizedError when UPDATE affects 0 rows — concurrent edit set customized=true between SELECT and this UPDATE", async () => {
+    // SELECT sees customized=false, but UPDATE WHERE customized=false matches 0 rows
+    // (another request committed customized=true in the window between SELECT and UPDATE)
+    const tx = buildTx({ skillUpdateReturnRows: [] });
+    const db = buildDb(tx);
+
+    await expect(applySkillUpdate({ db: db as any, ...APPLY_ARGS }))
+      .rejects.toThrow(SkillCustomizedError);
+
+    // Neither the pending-update write nor the notification should fire
+    expect(tx._updatedPendingValues).toHaveLength(0);
+    expect(marketplaceNotifications.updateCompleted).not.toHaveBeenCalled();
   });
 });
