@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { File as FileIcon, Download, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,7 @@ export function GenericFileViewer({ companyId, assetId }: GenericFileViewerProps
     queryKey: queryKeys.memory.assets.detail(companyId, assetId),
     queryFn: () => memoryAssetsApi.get(companyId, assetId),
   });
+  const [extractsOpen, setExtractsOpen] = useState(false);
   const url = memoryAssetsApi.contentUrl(companyId, assetId);
 
   if (!asset) {
@@ -42,7 +44,19 @@ export function GenericFileViewer({ companyId, assetId }: GenericFileViewerProps
         </Button>
       </div>
       {asset.importJobId && (
-        <ExtractsSidebar companyId={companyId} importJobId={asset.importJobId} />
+        <div className="border-t border-border">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setExtractsOpen((o) => !o)}
+            className="w-full justify-start text-xs"
+          >
+            {extractsOpen ? "Hide extracts" : "Show extracts"}
+          </Button>
+          {extractsOpen && (
+            <ExtractsSidebar companyId={companyId} importJobId={asset.importJobId} />
+          )}
+        </div>
       )}
     </div>
   );

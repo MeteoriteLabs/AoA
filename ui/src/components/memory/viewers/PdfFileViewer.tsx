@@ -27,6 +27,7 @@ export function PdfFileViewer({ companyId, assetId }: PdfFileViewerProps) {
 
   const [pageNum, setPageNum] = useState(1);
   const [numPages, setNumPages] = useState<number | null>(null);
+  const [extractsOpen, setExtractsOpen] = useState(false);
 
   const fileUrl = useMemo(
     () => memoryAssetsApi.contentUrl(companyId, assetId),
@@ -98,10 +99,19 @@ export function PdfFileViewer({ companyId, assetId }: PdfFileViewerProps) {
         </div>
       </div>
       {asset.importJobId && (
-        <ExtractsSidebar
-          companyId={companyId}
-          importJobId={asset.importJobId}
-        />
+        <div className="border-t border-border">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setExtractsOpen((o) => !o)}
+            className="w-full justify-start text-xs"
+          >
+            {extractsOpen ? "Hide extracts" : "Show extracts"}
+          </Button>
+          {extractsOpen && (
+            <ExtractsSidebar companyId={companyId} importJobId={asset.importJobId} />
+          )}
+        </div>
       )}
     </div>
   );

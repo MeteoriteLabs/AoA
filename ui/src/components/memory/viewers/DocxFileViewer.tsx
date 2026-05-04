@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, Download, FileWarning } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ export function DocxFileViewer({ companyId, assetId }: DocxFileViewerProps) {
     queryKey: queryKeys.memory.assets.detail(companyId, assetId),
     queryFn: () => memoryAssetsApi.get(companyId, assetId),
   });
+  const [extractsOpen, setExtractsOpen] = useState(false);
 
   const renderUrl = memoryAssetsApi.renderUrl(companyId, assetId);
   const downloadUrl = memoryAssetsApi.contentUrl(companyId, assetId);
@@ -71,7 +73,19 @@ export function DocxFileViewer({ companyId, assetId }: DocxFileViewerProps) {
         </div>
       </div>
       {asset.importJobId && (
-        <ExtractsSidebar companyId={companyId} importJobId={asset.importJobId} />
+        <div className="border-t border-border">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setExtractsOpen((o) => !o)}
+            className="w-full justify-start text-xs"
+          >
+            {extractsOpen ? "Hide extracts" : "Show extracts"}
+          </Button>
+          {extractsOpen && (
+            <ExtractsSidebar companyId={companyId} importJobId={asset.importJobId} />
+          )}
+        </div>
       )}
     </div>
   );
