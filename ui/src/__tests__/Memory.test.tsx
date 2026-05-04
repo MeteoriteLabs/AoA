@@ -8,6 +8,13 @@ import {
 } from "./test-utils";
 import { Memory } from "../pages/Memory";
 
+// Mock useToast — Memory page consumes it via useToast() but the shared
+// test wrapper deliberately doesn't include ToastProvider (other tests in
+// this directory mock ToastContext at the file level instead).
+vi.mock("../context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn() }),
+}));
+
 // --- Mock data ---
 
 function makeMemoryItem(overrides: Record<string, unknown> = {}) {
