@@ -61,14 +61,21 @@ export function canInstallType(
  * Resolve the install access decision for a role + type + settings combination.
  * Returns:
  *   "allow"   — proceed with install
- *   "request" — team_member with request permission: return 202
+ *   "request" — needs approval: team_member with request permission, OR
+ *               team_lead when requireFounderApproval=true
  *   "deny"    — insufficient permissions: return 403
  */
 export function resolveInstallDecision(
   role: string,
   type: string,
-  settings: { allowTeamLeadPlugins: boolean; teamMemberCanRequestInstall: boolean },
+  settings: {
+    allowTeamLeadPlugins: boolean;
+    teamMemberCanRequestInstall: boolean;
+    requireFounderApproval: boolean;
+  },
 ): "allow" | "request" | "deny" {
+  if (role === "founder") return "allow";
+  if (settings.requireFounderApproval && role === "team_lead") return "request";
   if (canInstallType(role, type, settings.allowTeamLeadPlugins)) return "allow";
   if (role === "team_member" && settings.teamMemberCanRequestInstall) return "request";
   return "deny";

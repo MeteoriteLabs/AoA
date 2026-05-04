@@ -28,7 +28,7 @@ describe("canInstallType", () => {
 });
 
 describe("resolveInstallDecision", () => {
-  const settings = { allowTeamLeadPlugins: false, teamMemberCanRequestInstall: true };
+  const settings = { allowTeamLeadPlugins: false, teamMemberCanRequestInstall: true, requireFounderApproval: false };
 
   it("returns 'allow' for founder", () => {
     expect(resolveInstallDecision("founder", "skill", settings)).toBe("allow");
@@ -49,6 +49,31 @@ describe("resolveInstallDecision", () => {
 
   it("returns 'deny' for team_lead trying plugin with allowTeamLeadPlugins=false", () => {
     expect(resolveInstallDecision("team_lead", "plugin", settings)).toBe("deny");
+  });
+
+  describe("requireFounderApproval", () => {
+    const strictSettings = {
+      allowTeamLeadPlugins: true,
+      teamMemberCanRequestInstall: true,
+      requireFounderApproval: true,
+    };
+
+    it("returns 'request' for team_lead when requireFounderApproval=true", () => {
+      expect(resolveInstallDecision("team_lead", "skill", strictSettings)).toBe("request");
+    });
+
+    it("returns 'request' for team_lead on plugin when requireFounderApproval=true (even if allowTeamLeadPlugins=true)", () => {
+      expect(resolveInstallDecision("team_lead", "plugin", strictSettings)).toBe("request");
+    });
+
+    it("returns 'allow' for founder even when requireFounderApproval=true", () => {
+      expect(resolveInstallDecision("founder", "skill", strictSettings)).toBe("allow");
+    });
+
+    it("returns 'allow' for team_lead when requireFounderApproval=false", () => {
+      const noApproval = { ...strictSettings, requireFounderApproval: false };
+      expect(resolveInstallDecision("team_lead", "skill", noApproval)).toBe("allow");
+    });
   });
 });
 
@@ -93,6 +118,7 @@ vi.mock("../services/marketplace-settings.js", () => ({
     get: vi.fn().mockResolvedValue({
       allowTeamLeadPlugins: false,
       teamMemberCanRequestInstall: true,
+      requireFounderApproval: false,
     }),
   })),
 }));
