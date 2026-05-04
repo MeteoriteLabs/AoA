@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { Plus, Settings, Upload } from "lucide-react";
+import { Plus, Settings, Store, Upload } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialog } from "@/context/DialogContext";
 import { companiesApi, type CompanyStats } from "@/api/companies";
@@ -51,6 +51,20 @@ export function Lobby() {
       <header className="flex items-center justify-between px-6 h-14 shrink-0 border-b border-border">
         <span className="text-sm font-bold tracking-tight text-foreground">AoA</span>
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => {
+              navigate("/marketplace");
+            }}
+            className={cn(
+              "flex items-center gap-1.5 h-8 px-2.5 rounded-md text-sm font-medium text-muted-foreground",
+              "hover:bg-accent hover:text-foreground transition-colors",
+            )}
+            aria-label="Browse Marketplace"
+          >
+            <Store className="h-4 w-4" />
+            <span>Browse Marketplace</span>
+          </button>
           <button
             type="button"
             onClick={() => {

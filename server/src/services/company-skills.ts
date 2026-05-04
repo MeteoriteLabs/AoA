@@ -1550,7 +1550,8 @@ export function companySkillService(db: Db) {
           await fs.mkdir(path.dirname(fullPath), { recursive: true });
           await fs.writeFile(fullPath, content, "utf8");
         } catch {
-          // Filesystem write failed — still update DB if SKILL.md
+          // Filesystem write failed — DB write proceeds regardless (for SKILL.md it
+          // updates the markdown column; for other paths it sets customized=true).
         }
       }
     }
@@ -1566,8 +1567,16 @@ export function companySkillService(db: Db) {
           markdown: content,
           name: newName,
           description: newDescription,
+          customized: true, // Atomic: folded in here so no separate route-level write is needed
           updatedAt: new Date(),
         })
+        .where(eq(companySkills.id, skillId));
+    } else {
+      // For non-SKILL.md paths (filesystem-only edit), mark customized in a standalone write.
+      // The DB markdown column wasn't changed, so there is no two-step atomicity risk.
+      await db
+        .update(companySkills)
+        .set({ customized: true })
         .where(eq(companySkills.id, skillId));
     }
 

@@ -65,6 +65,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const NPM_PLUGIN_PACKAGE_PREFIX = "paperclip-plugin-";
 
 /**
+ * Current AoA naming convention for npm-published plugins.
+ * Accepted in addition to the legacy `paperclip-plugin-` prefix and
+ * scoped `@scope/plugin-*` packages.
+ */
+export const NPM_PLUGIN_PACKAGE_PREFIX_AOA = "aoa-plugin-";
+
+/**
  * Default local plugin directory.  The loader scans this directory for
  * locally-installed plugin packages.
  *
@@ -507,6 +514,7 @@ export interface PluginLoader {
  */
 export function isPluginPackageName(name: string): boolean {
   if (name.startsWith(NPM_PLUGIN_PACKAGE_PREFIX)) return true;
+  if (name.startsWith(NPM_PLUGIN_PACKAGE_PREFIX_AOA)) return true;
   // Also accept scoped packages like @acme/plugin-linear or @armyofagents/plugin-*
   if (name.includes("/")) {
     const localPart = name.split("/")[1] ?? "";

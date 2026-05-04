@@ -786,6 +786,32 @@ export {
 } from "./constants/github.js";
 
 export { API_PREFIX, API } from "./api.js";
+
+// Marketplace catalog types
+export {
+  CATALOG_SCHEMA_VERSION_MIN,
+  CATALOG_SCHEMA_VERSION_MAX,
+  MarketplaceCategorySchema,
+  MarketplaceTagSchema,
+  MarketplaceTrustTierSchema,
+  MarketplaceItemTypeSchema,
+  MarketplaceCatalogItemSchema,
+  MarketplaceCatalogFileSchema,
+  isSchemaVersionSupported,
+  MARKETPLACE_SETTINGS_DEFAULTS,
+  type MarketplaceCategory,
+  type MarketplaceTag,
+  type MarketplaceTrustTier,
+  type MarketplaceItemType,
+  type MarketplaceCatalogItem,
+  type CatalogItem,
+  type MarketplaceCatalogFile,
+  type CatalogSyncStatus,
+  type MarketplaceSettings,
+  type PendingUpdateStatus,
+  type PendingUpdateType,
+  type PendingUpdate,
+} from "./marketplace.js";
 export {
   ROUTINE_VARIABLE_NAME_PATTERN,
   ROUTINE_VARIABLE_MATCHER,

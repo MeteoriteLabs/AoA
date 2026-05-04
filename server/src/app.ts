@@ -68,7 +68,12 @@ import { filesystemRoutes } from "./routes/filesystem.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { createMarketplaceRouter } from "./routes/marketplace.js";
+import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js";
+import { createMarketplaceCompanyRouter } from "./routes/marketplace-company.js";
+import { MarketplaceCatalogService } from "./services/aoa-marketplace.js";
 import { pluginLoader } from "./services/plugin-loader.js";
+import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
 import { createPluginStreamBus } from "./services/plugin-stream-bus.js";
@@ -301,6 +306,82 @@ export async function createApp(
     streamBus,
   }));
   api.use(pluginCompanySettingsRoutes(db));
+
+  // Marketplace catalog service + routes
+  const marketplaceCatalogService = new MarketplaceCatalogService({
+    db,
+    bundledSnapshotProvider: async () => {
+      // Lazy import to avoid bundling issues.
+      // The snapshot file is gitignored — fetched at build time by
+      // `pnpm fetch-catalog` before the server boots. Path is held in a
+      // string variable so TypeScript's static module resolver doesn't
+      // try to find the file at typecheck time (which would fail across
+      // packages — server's tsconfig finds it via the local types/
+      // ambient declaration, but cli/'s tsconfig walks server source via
+      // the workspace import without seeing server's types/ folder).
+      try {
+        const snapshotPath = "../../ui/src/aoa-marketplace-snapshot.json";
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const snapshot = (await import(snapshotPath, { with: { type: "json" } })) as { default: unknown };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return snapshot.default as any;
+      } catch {
+        return null;
+      }
+    },
+  });
+  marketplaceCatalogService.startSyncLoop();
+  api.use("/marketplace", createMarketplaceRouter({ service: marketplaceCatalogService }));
+
+  // Marketplace install routes (per-company, M.2.G).
+  // Mounted under /api/companies/:companyId/marketplace, matching the per-company
+  // URL prefix pattern used by routes/teams.ts. Plugin installs require a live
+  // pluginLoader/registry/lifecycle wired here at the route layer because the
+  // loader instance is created in this scope (above) and not exported.
+  //
+  // The PluginLoaderLike adapter narrows the real loader/registry/lifecycle
+  // surface to just what marketplace needs (PluginInstaller's contract), which
+  // also handles the manifest type widening (PaperclipPluginManifestV1 ->
+  // { id; [key: string]: unknown }) and the lifecycle.load return-value shrink
+  // (PluginRecord -> void).
+  const marketplacePluginRegistry = pluginRegistryService(db);
+  api.use(
+    "/companies/:companyId/marketplace",
+    createMarketplaceInstallRouter({
+      db,
+      catalogService: marketplaceCatalogService,
+      pluginLoader: {
+        installPlugin: async (opts) => {
+          const discovered = await loaderInst.installPlugin(opts);
+          return {
+            packagePath: discovered.packagePath,
+            packageName: discovered.packageName,
+            version: discovered.version,
+            source: discovered.source,
+            manifest: discovered.manifest as { id: string; [key: string]: unknown } | null,
+          };
+        },
+        registry: {
+          getByKey: async (pluginKey) => {
+            const row = await marketplacePluginRegistry.getByKey(pluginKey);
+            return row ? { id: row.id, pluginKey: row.pluginKey } : null;
+          },
+        },
+        lifecycle: {
+          load: async (pluginId) => {
+            await lifecycleMgr.load(pluginId);
+          },
+        },
+      },
+    }),
+  );
+  api.use(
+    "/companies/:companyId/marketplace",
+    createMarketplaceCompanyRouter({
+      db,
+      catalogService: marketplaceCatalogService,
+    }),
+  );
 
   app.use("/api", api);
 

@@ -1,5 +1,5 @@
 import { Router, type Request } from "express";
-import type { Db } from "@armyofagents/db";
+import { type Db } from "@armyofagents/db";
 import {
   companySkillCreateSchema,
   companySkillFileUpdateSchema,
@@ -137,6 +137,9 @@ export function companySkillRoutes(db: Db) {
         String(req.body.path ?? ""),
         String(req.body.content ?? ""),
       );
+
+      // customized=true is written inside svc.updateFile() for all paths:
+      // atomically with markdown for SKILL.md, standalone for other files.
 
       const actor = getActorInfo(req);
       await logActivity(db, {
