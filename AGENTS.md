@@ -164,9 +164,16 @@ The feature PR's verify uses `--frozen-lockfile`; deps are now on the base, so t
 - **Single-use branch name.** `chore/refresh-lockfile` is the literal exception token. Only one such branch can be open at a time. If two contributors need to update the lockfile simultaneously, coordinate via Slack.
 - **Don't rename the branch after merge** until the post-merge CI passes — GitHub auto-deletes the remote branch on squash-merge with `--delete-branch`.
 
-### Future improvement: port the upstream automation
+### Automation: `refresh-lockfile.yml` bot
 
-Paperclip ships a [`refresh-lockfile.yml`](https://github.com/anthropic/paperclip/blob/master/.github/workflows/refresh-lockfile.yml) GitHub Action that watches `master` for manifest changes, regenerates the lockfile in CI, opens a `chore/refresh-lockfile` PR automatically, and auto-merges via squash. Porting this workflow to AoA would eliminate the manual ceremony entirely. Tracked separately — not yet implemented.
+[`.github/workflows/refresh-lockfile.yml`](.github/workflows/refresh-lockfile.yml) watches `Porting1.1` for manifest changes, regenerates the lockfile in CI, opens (or updates) a `chore/refresh-lockfile` PR automatically, and auto-merges via squash.
+
+**For most contributors this means:** open your feature PR with the manifest change committed (no lockfile). Once you merge, the bot fires, regenerates the lockfile on a separate PR, and auto-merges that PR. The next contributor's feature PR rebases off the new base with the updated lockfile already in place.
+
+**The manual flow above** is still useful when:
+- You need to verify the regenerated lockfile locally before pushing.
+- You want to ship the manifest + lockfile in one commit (the bot adds a separate commit).
+- The bot is broken and you need to bypass it.
 
 ## 8. Verification Before Hand-off
 
