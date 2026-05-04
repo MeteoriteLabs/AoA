@@ -312,13 +312,17 @@ export async function createApp(
     db,
     bundledSnapshotProvider: async () => {
       // Lazy import to avoid bundling issues.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // Cast via unknown: TypeScript infers JSON literal types (e.g. status: string)
-      // that don't satisfy the branded union, but the service validates via Zod anyway.
+      // The snapshot file is gitignored — fetched at build time by
+      // `pnpm fetch-catalog` before the server boots. Path is held in a
+      // string variable so TypeScript's static module resolver doesn't
+      // try to find the file at typecheck time (which would fail across
+      // packages — server's tsconfig finds it via the local types/
+      // ambient declaration, but cli/'s tsconfig walks server source via
+      // the workspace import without seeing server's types/ folder).
       try {
-        const snapshot = await import("../../ui/src/aoa-marketplace-snapshot.json", {
-          with: { type: "json" },
-        });
+        const snapshotPath = "../../ui/src/aoa-marketplace-snapshot.json";
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const snapshot = (await import(snapshotPath, { with: { type: "json" } })) as { default: unknown };
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return snapshot.default as any;
       } catch {
