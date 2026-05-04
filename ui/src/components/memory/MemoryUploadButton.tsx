@@ -56,8 +56,11 @@ export function MemoryUploadButton({
         folderPath: effectiveFolderPath || undefined,
       }),
     onSuccess: (res) => {
+      // Phase 6.2e dropped auto-extraction — uploads create a memory asset
+      // and stop there. Earlier wording ("extraction queued") was stale and
+      // implied a background job that no longer exists.
       pushToast({
-        title: `Uploaded ${res.asset.fileName} — extraction queued`,
+        title: `Uploaded ${res.asset.fileName}`,
         tone: "success",
       });
       void qc.invalidateQueries({

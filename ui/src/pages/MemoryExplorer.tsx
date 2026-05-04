@@ -13,6 +13,7 @@ import { CollapsedRail } from "../components/memory/CollapsedRail";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
+import { canUploadInScope } from "../lib/memoryUploadScope";
 
 export function MemoryExplorer() {
   const { selectedCompanyId } = useCompany();
@@ -32,6 +33,16 @@ export function MemoryExplorer() {
   // Phase 6.2a: synthetic Home selection — no folder, no dept, no layer, no item.
   const isHomeSelected =
     !folderPath && !departmentId && !layer && !selectedItemId;
+
+  // Codex P1 round 2: only show the upload button in scopes where the
+  // resulting asset is reachable from the central pane. Layer-only views and
+  // virtual shortcuts (Pinned/Pending/Recent/Archived) suppress assets, so
+  // an upload there would be invisible afterwards.
+  const canUpload = canUploadInScope({
+    folderPath,
+    departmentId,
+    layer,
+  });
 
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -59,11 +70,13 @@ export function MemoryExplorer() {
         <div className="flex items-center justify-end gap-2 px-3 py-2 border-b border-border bg-card/30">
           <MemoryScopedSearch value={searchQuery} onChange={setSearchQuery} />
           <span className="flex-1" />
-          <MemoryUploadButton
-            companyId={selectedCompanyId}
-            departmentId={departmentId}
-            folderPath={folderPath}
-          />
+          {canUpload && (
+            <MemoryUploadButton
+              companyId={selectedCompanyId}
+              departmentId={departmentId}
+              folderPath={folderPath}
+            />
+          )}
         </div>
       )}
       <Group
