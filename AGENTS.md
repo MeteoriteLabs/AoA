@@ -109,7 +109,66 @@ Notes:
 - `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
 - `pnpm db:generate` compiles `packages/db` first
 
-## 7. Verification Before Hand-off
+## 7. Dependency Change Workflow
+
+Adding, upgrading, or removing a dep needs special handling because CI blocks any PR that commits `pnpm-lock.yaml` (the policy gate in [`.github/workflows/pr.yml:30-37`](.github/workflows/pr.yml) — *"CI owns lockfile updates"*).
+
+The escape hatch: a PR whose head branch is named **exactly** `chore/refresh-lockfile`. The policy gate is keyed on the literal branch name; any other name (e.g. `chore/refresh-lockfile-2`, `chore/lockfile`) is blocked.
+
+### Manual flow (current)
+
+```sh
+# 1. Branch off the target base
+git checkout -b chore/refresh-lockfile origin/Porting1.1
+
+# 2. Edit the relevant package.json files (root, server/, ui/, packages/*/)
+#    Add/remove deps as needed.
+
+# 3. Regenerate the lockfile
+pnpm install --no-frozen-lockfile
+
+# 4. Verify it's in sync — should be a no-op
+pnpm install --frozen-lockfile
+
+# 5. Commit BOTH manifest changes and pnpm-lock.yaml
+git add package.json '**/package.json' pnpm-lock.yaml
+git commit -m "chore(deps): <description>"
+git push -u origin chore/refresh-lockfile
+
+# 6. Open PR — policy gate's lockfile-block step is skipped via the
+#    branch-name exception. CI's "Validate dependency resolution when
+#    manifests change" step runs `pnpm install --lockfile-only
+#    --no-frozen-lockfile` to confirm internal consistency.
+
+# 7. Squash-merge after review.
+```
+
+### Consuming PRs that need new deps
+
+If a feature PR needs a new dep that isn't on the base yet:
+
+1. Land the `chore/refresh-lockfile` PR **first** (so the dep is on the base lockfile).
+2. Rebase the feature PR onto the updated base. Manifest hunks become no-ops; the lockfile rebase WILL conflict — resolve by keeping the base's version:
+
+```sh
+git rebase origin/<base>
+git checkout --theirs pnpm-lock.yaml package.json '**/package.json'
+git add pnpm-lock.yaml package.json '**/package.json'
+git rebase --continue
+```
+
+The feature PR's verify uses `--frozen-lockfile`; deps are now on the base, so the lockfile is in sync.
+
+### Caveats
+
+- **Single-use branch name.** `chore/refresh-lockfile` is the literal exception token. Only one such branch can be open at a time. If two contributors need to update the lockfile simultaneously, coordinate via Slack.
+- **Don't rename the branch after merge** until the post-merge CI passes — GitHub auto-deletes the remote branch on squash-merge with `--delete-branch`.
+
+### Future improvement: port the upstream automation
+
+Paperclip ships a [`refresh-lockfile.yml`](https://github.com/anthropic/paperclip/blob/master/.github/workflows/refresh-lockfile.yml) GitHub Action that watches `master` for manifest changes, regenerates the lockfile in CI, opens a `chore/refresh-lockfile` PR automatically, and auto-merges via squash. Porting this workflow to AoA would eliminate the manual ceremony entirely. Tracked separately — not yet implemented.
+
+## 8. Verification Before Hand-off
 
 Run this full check before claiming done:
 
@@ -121,7 +180,7 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
-## 8. API and Auth Expectations
+## 9. API and Auth Expectations
 
 - Base path: `/api`
 - Board access is treated as full-control operator context
@@ -134,13 +193,13 @@ When adding endpoints:
 - Write activity log entries for mutations
 - Return consistent HTTP errors (`400/401/403/404/409/422/500`)
 
-## 9. UI Expectations
+## 10. UI Expectations
 
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
 
-## 10. Definition of Done
+## 11. Definition of Done
 
 A change is done when all are true:
 
