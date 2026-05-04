@@ -4,9 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 
+const navigateMock = vi.fn();
 vi.mock("@/lib/router", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("@/lib/router");
-  return { ...actual, useNavigate: () => vi.fn() };
+  return { ...actual, useNavigate: () => navigateMock };
 });
 
 vi.mock("../api/memory", () => ({
@@ -45,6 +46,44 @@ vi.mock("../api/memory", () => ({
 vi.mock("../api/memoryAssets", () => ({
   memoryAssetsApi: { list: vi.fn(async () => []) },
 }));
+vi.mock("../api/memoryFolders", () => ({
+  memoryFoldersApi: {
+    list: vi.fn(async () => [
+      {
+        id: "f-eng-decisions",
+        companyId: "co-1",
+        departmentId: "d-eng",
+        path: "engineering/Decisions",
+        displayName: "Decisions",
+        icon: null,
+        sortOrder: 0,
+        seedKey: "decisions",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "f-eng-q3",
+        companyId: "co-1",
+        departmentId: "d-eng",
+        path: "engineering/Q3 Planning",
+        displayName: "Q3 Planning",
+        icon: "📂",
+        sortOrder: 100,
+        seedKey: null,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    ]),
+  },
+}));
+vi.mock("../api/projects", () => ({
+  projectsApi: {
+    list: vi.fn(async () => [
+      { id: "d-eng", type: "department", name: "Engineering", archivedAt: null, urlKey: "engineering" },
+      { id: "d-mkt", type: "department", name: "Marketing", archivedAt: null, urlKey: "marketing" },
+    ]),
+  },
+}));
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "co-1",
@@ -79,7 +118,10 @@ function renderList(props: {
 }
 
 describe("MemoryFileList — virtual folders (Phase 6.1e)", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    navigateMock.mockClear();
+  });
 
   it("__pinned shows only items with founderPinnedToTop=true", async () => {
     renderList({ folderPath: "__pinned", departmentId: null });
@@ -112,43 +154,13 @@ describe("MemoryFileList — virtual folders (Phase 6.1e)", () => {
   });
 });
 
-describe("MemoryFileList — category grouping (Phase 6.2a)", () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it("groups items by category", async () => {
-    renderList({
-      folderPath: "engineering/Decisions",
-      departmentId: "d-eng",
-    });
-    await waitFor(() =>
-      expect(screen.getByText("Pinned item")).toBeInTheDocument(),
-    );
-    // The mock fixture has decision + context categories.
-    // getAllByText used because the folder path "engineering/Decisions" also contains "Decisions"
-    const decisionTexts = screen.getAllByText(/^Decisions$/i);
-    expect(decisionTexts.length).toBeGreaterThan(0);
-  });
-
-  it("collapses group on header click", async () => {
-    const user = userEvent.setup();
-    renderList({
-      folderPath: "engineering/Decisions",
-      departmentId: "d-eng",
-    });
-    await waitFor(() => screen.getByText("Pinned item"));
-    // Find the "Decisions" group header button
-    const headerButtons = screen.getAllByRole("button", { expanded: true });
-    // Click the first expanded group header to collapse it
-    const decisionsHeader = headerButtons.find((b) =>
-      /Decisions/i.test(b.textContent || ""),
-    );
-    expect(decisionsHeader).toBeDefined();
-    await user.click(decisionsHeader!);
-    expect(decisionsHeader!.getAttribute("aria-expanded")).toBe("false");
+describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    navigateMock.mockClear();
   });
 
   it("renders ExpiresAtChip on active_context items with expiresAt", async () => {
-    // The default fixture doesn't have expiresAt — re-mock with one
     const { memoryApi } = await import("../api/memory");
     (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
       {
@@ -173,24 +185,18 @@ describe("MemoryFileList — category grouping (Phase 6.2a)", () => {
     expect(screen.getByText(/expires in 5d/i)).toBeInTheDocument();
     vi.useRealTimers();
   });
-});
-
-describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
-  beforeEach(() => vi.clearAllMocks());
 
   it("__recent shows items updated in last 14 days, excludes archived", async () => {
     const { memoryApi } = await import("../api/memory");
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-05-03T00:00:00Z"));
-    // recent = updated within 14 days of 2026-05-03 = after 2026-04-19
-    // old = updated before 2026-04-19
     (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
       {
         id: "i-recent",
         title: "Recent item",
         category: "decision",
         status: "approved",
-        updatedAt: "2026-05-01T00:00:00Z", // 2 days ago — within 14d
+        updatedAt: "2026-05-01T00:00:00Z",
         folderPath: "any",
         founderPinnedToTop: false,
       },
@@ -199,7 +205,7 @@ describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
         title: "Archived item",
         category: "decision",
         status: "archived",
-        updatedAt: "2026-05-02T00:00:00Z", // within 14d but archived — must be excluded
+        updatedAt: "2026-05-02T00:00:00Z",
         folderPath: "any",
         founderPinnedToTop: false,
       },
@@ -208,7 +214,7 @@ describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
         title: "Old item",
         category: "context",
         status: "approved",
-        updatedAt: "2026-03-01T00:00:00Z", // 63 days ago — outside 14d
+        updatedAt: "2026-03-01T00:00:00Z",
         folderPath: "any",
         founderPinnedToTop: false,
       },
@@ -281,15 +287,68 @@ describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
     );
     expect(screen.queryByText("Identity item")).not.toBeInTheDocument();
   });
+});
 
-  it("dept-only URL (no folder, dept set) shows all items in that dept", async () => {
-    // Mock items in different folder paths within the same dept,
-    // plus an item in a different dept
+describe("MemoryFileList — Phase 6.2f folder-first", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    navigateMock.mockClear();
+  });
+
+  it("dept-only URL shows subfolders + items at dept root", async () => {
+    const { memoryApi } = await import("../api/memory");
+    (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        id: "i-root",
+        title: "Engineering charter",
+        category: "decision",
+        status: "approved",
+        layer: "domain",
+        departmentId: "d-eng",
+        folderPath: "engineering", // root-level item
+        founderPinnedToTop: false,
+        updatedAt: "2026-05-01T00:00:00Z",
+      },
+      {
+        id: "i-nested",
+        title: "Auth strategy",
+        category: "decision",
+        status: "approved",
+        layer: "domain",
+        departmentId: "d-eng",
+        folderPath: "engineering/Decisions", // nested
+        founderPinnedToTop: false,
+        updatedAt: "2026-05-02T00:00:00Z",
+      },
+    ]);
+    renderList({ folderPath: "", departmentId: "d-eng" });
+    await waitFor(() =>
+      expect(screen.getByText("Engineering charter")).toBeInTheDocument(),
+    );
+    // Subfolder tiles shown
+    expect(screen.getByText("Decisions")).toBeInTheDocument();
+    expect(screen.getByText("Q3 Planning")).toBeInTheDocument();
+    // Nested item NOT shown at this level
+    expect(screen.queryByText("Auth strategy")).not.toBeInTheDocument();
+  });
+
+  it("clicking a subfolder navigates to that folder", async () => {
+    renderList({ folderPath: "", departmentId: "d-eng" });
+    const user = userEvent.setup();
+    await waitFor(() => screen.getByText("Decisions"));
+    await user.click(screen.getByText("Decisions"));
+    expect(navigateMock).toHaveBeenCalled();
+    const lastCall = navigateMock.mock.calls[navigateMock.mock.calls.length - 1][0] as string;
+    expect(lastCall).toContain("folder=engineering%2FDecisions");
+    expect(lastCall).toContain("dept=d-eng");
+  });
+
+  it("subfolder shows aggregated item count (descendants too)", async () => {
     const { memoryApi } = await import("../api/memory");
     (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
       {
         id: "i-1",
-        title: "Eng decision",
+        title: "X",
         category: "decision",
         status: "approved",
         layer: "domain",
@@ -298,35 +357,11 @@ describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
         founderPinnedToTop: false,
         updatedAt: "2026-05-01T00:00:00Z",
       },
-      {
-        id: "i-2",
-        title: "Eng reference",
-        category: "reference",
-        status: "approved",
-        layer: "domain",
-        departmentId: "d-eng",
-        folderPath: "engineering/References",
-        founderPinnedToTop: false,
-        updatedAt: "2026-05-02T00:00:00Z",
-      },
-      {
-        id: "i-3",
-        title: "Marketing decision",
-        category: "decision",
-        status: "approved",
-        layer: "domain",
-        departmentId: "d-mkt",
-        folderPath: "marketing/Decisions",
-        founderPinnedToTop: false,
-        updatedAt: "2026-05-03T00:00:00Z",
-      },
     ]);
     renderList({ folderPath: "", departmentId: "d-eng" });
-    await waitFor(() =>
-      expect(screen.getByText("Eng decision")).toBeInTheDocument(),
-    );
-    expect(screen.getByText("Eng reference")).toBeInTheDocument();
-    // Marketing item NOT shown
-    expect(screen.queryByText("Marketing decision")).not.toBeInTheDocument();
+    await waitFor(() => screen.getByText("Decisions"));
+    // The Decisions folder tile should show "1 item"
+    const decisionsRow = screen.getByText("Decisions").closest("button");
+    expect(decisionsRow?.textContent).toContain("1 item");
   });
 });

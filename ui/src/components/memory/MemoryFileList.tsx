@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import {
@@ -9,9 +9,10 @@ import {
   Presentation,
   File as FileIcon,
 } from "lucide-react";
-import type { MemoryItem, MemoryAssetRecord } from "@armyofagents/shared";
+import type { MemoryItem, MemoryAssetRecord, MemoryFolderRecord } from "@armyofagents/shared";
 import { memoryApi } from "../../api/memory";
 import { memoryAssetsApi } from "../../api/memoryAssets";
+import { memoryFoldersApi } from "../../api/memoryFolders";
 import { projectsApi } from "../../api/projects";
 import { queryKeys } from "../../lib/queryKeys";
 import { useCompany } from "../../context/CompanyContext";
@@ -131,12 +132,24 @@ export function MemoryFileList({
     enabled: (Boolean(folderPath) && !isVirtualFolder && !isLayerOnly) || isDeptOnly,
   });
 
+  const { data: folders } = useQuery({
+    queryKey: queryKeys.memory.folders.list(companyId),
+    queryFn: () => memoryFoldersApi.list(companyId),
+    enabled: Boolean(companyId),
+  });
+
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(companyId),
     queryFn: () => projectsApi.list(companyId),
     enabled: Boolean(companyId) && Boolean(departmentId),
   });
+
   const deptName = projects?.find((p) => p.id === departmentId)?.name;
+
+  const deptSlug = useMemo(() => {
+    if (!departmentId) return null;
+    return projects?.find((p) => p.id === departmentId)?.urlKey ?? null;
+  }, [projects, departmentId]);
 
   const rows = useMemo<ListRow[]>(() => {
     const allItems = (itemsQuery.data ?? []) as Array<
@@ -144,6 +157,7 @@ export function MemoryFileList({
         folderPath?: string;
         founderPinnedToTop?: boolean;
         layer?: string | null;
+        status?: string;
       }
     >;
 
@@ -158,9 +172,13 @@ export function MemoryFileList({
           return Number.isFinite(t) && t >= recentCutoff;
         }
         if (folderPath === "__archived") return it.status === "archived";
-        if (isLayerOnly) return it.layer === layer;
-        if (isDeptOnly) return (it as unknown as { departmentId?: string | null }).departmentId === departmentId;
-        return it.folderPath === folderPath;
+        if (isLayerOnly) return it.layer === layer && it.status !== "archived";
+        // Phase 6.2f: strict path. Dept-only mode shows items where folderPath === dept slug.
+        if (isDeptOnly) {
+          if (!deptSlug) return false;
+          return it.folderPath === deptSlug && it.status !== "archived";
+        }
+        return it.folderPath === folderPath && it.status !== "archived";
       })
       .map<ListRow>((it) => ({
         kind: "memory_item",
@@ -192,7 +210,7 @@ export function MemoryFileList({
       (a, b) =>
         new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime(),
     );
-  }, [itemsQuery.data, assetsQuery.data, folderPath, isVirtualFolder, isLayerOnly, isDeptOnly, layer, departmentId]);
+  }, [itemsQuery.data, assetsQuery.data, folderPath, isVirtualFolder, isLayerOnly, isDeptOnly, layer, deptSlug]);
 
   const filteredRows = useMemo(() => {
     if (!searchQuery?.trim()) return rows;
@@ -205,89 +223,51 @@ export function MemoryFileList({
     );
   }, [rows, searchQuery]);
 
-  // Phase 6.2a: collapsible category groups.
-  // Group keys are MemoryItemCategory values + "asset" for files (which don't have a category).
-  type GroupKey =
-    | "decision"
-    | "reference"
-    | "insight"
-    | "preference"
-    | "procedure"
-    | "policy"
-    | "context"
-    | "asset";
+  // Phase 6.2f: compute direct subfolders for folder/dept modes.
+  const subfolders = useMemo<MemoryFolderRecord[]>(() => {
+    if (isVirtualFolder || isLayerOnly) return [];
+    // Dept-only mode: subfolders of "<deptSlug>/...".
+    const parentPath = isDeptOnly ? deptSlug : folderPath;
+    if (!parentPath) return [];
+    return (folders ?? [])
+      .filter((f) => {
+        if (!f.path.startsWith(parentPath + "/")) return false;
+        const remainder = f.path.slice(parentPath.length + 1);
+        return remainder.length > 0 && !remainder.includes("/");
+      })
+      .sort((a, b) => {
+        const aSeed = a.seedKey !== null;
+        const bSeed = b.seedKey !== null;
+        if (aSeed !== bSeed) return aSeed ? -1 : 1;
+        if (aSeed) return a.sortOrder - b.sortOrder;
+        return a.displayName.localeCompare(b.displayName);
+      });
+  }, [folders, folderPath, isVirtualFolder, isLayerOnly, isDeptOnly, deptSlug]);
 
-  const CATEGORY_LABEL: Record<GroupKey, string> = {
-    decision: "Decisions",
-    reference: "References",
-    insight: "Insights",
-    preference: "Preferences",
-    procedure: "Procedures",
-    policy: "Policies",
-    context: "Context",
-    asset: "Files",
-  };
-
-  const CATEGORY_ORDER: GroupKey[] = [
-    "decision",
-    "reference",
-    "policy",
-    "procedure",
-    "insight",
-    "preference",
-    "context",
-    "asset",
-  ];
-
-  interface CategoryGroup {
-    key: GroupKey;
-    label: string;
-    rows: ListRow[];
-  }
-
-  const groupedRows = useMemo<CategoryGroup[]>(() => {
-    const buckets = new Map<GroupKey, ListRow[]>();
-    for (const row of filteredRows) {
-      const k: GroupKey =
-        row.kind === "asset" ? "asset" : ((row.category ?? "context") as GroupKey);
-      const list = buckets.get(k) ?? [];
-      list.push(row);
-      buckets.set(k, list);
+  // Per-folder item count (rolled up across descendants, excluding archived).
+  const folderItemCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const it of (itemsQuery.data ?? []) as Array<MemoryItem & { folderPath?: string; status?: string }>) {
+      if (it.status === "archived") continue;
+      const p = it.folderPath ?? "";
+      map.set(p, (map.get(p) ?? 0) + 1);
     }
-    // Build groups in CATEGORY_ORDER, skipping empties.
-    return CATEGORY_ORDER.map<CategoryGroup>((k) => ({
-      key: k,
-      label: CATEGORY_LABEL[k],
-      rows: buckets.get(k) ?? [],
-    })).filter((g) => g.rows.length > 0);
-  }, [filteredRows]);
+    return (path: string) => {
+      let total = 0;
+      for (const [itemPath, count] of map.entries()) {
+        if (itemPath === path || itemPath.startsWith(path + "/")) {
+          total += count;
+        }
+      }
+      return total;
+    };
+  }, [itemsQuery.data]);
 
-  // Default-expanded set: top 3 groups by row count.
-  // Persisted per-scope so collapse state survives folder switches.
-  const defaultExpanded = useMemo(() => {
-    const sorted = [...groupedRows].sort((a, b) => b.rows.length - a.rows.length);
-    return new Set(sorted.slice(0, 3).map((g) => g.key));
-  }, [groupedRows]);
-
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<GroupKey>>(new Set());
-  // Recompute initial state when scope changes (folderPath/dept changes the rows).
-  useEffect(() => {
-    // Mark as collapsed everything NOT in defaultExpanded
-    const next = new Set<GroupKey>();
-    for (const g of groupedRows) {
-      if (!defaultExpanded.has(g.key)) next.add(g.key);
-    }
-    setCollapsedGroups(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folderPath, departmentId]);
-
-  function toggleGroup(key: GroupKey) {
-    setCollapsedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+  function navigateToFolder(folder: MemoryFolderRecord) {
+    const params = new URLSearchParams();
+    params.set("folder", folder.path);
+    if (folder.departmentId) params.set("dept", folder.departmentId);
+    navigate(`/${companyPrefix}/memory/explore?${params.toString()}`);
   }
 
   function selectRow(row: ListRow) {
@@ -312,7 +292,10 @@ export function MemoryFileList({
       <div className="flex items-center px-3 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground gap-2">
         <span className="truncate">{folderLabel(folderPath, layer, isDeptOnly, deptName)}</span>
         <span className="flex-1" />
-        <span className="text-[10px] text-muted-foreground">{filteredRows.length}</span>
+        <span className="text-[10px] text-muted-foreground">
+          {subfolders.length > 0 && `${subfolders.length} ${subfolders.length === 1 ? "folder" : "folders"} · `}
+          {filteredRows.length} {filteredRows.length === 1 ? "item" : "items"}
+        </span>
       </div>
       <div className="flex-1 overflow-auto">
         {isLoading ? (
@@ -321,69 +304,92 @@ export function MemoryFileList({
             <Skeleton className="h-12 w-full" />
             <Skeleton className="h-12 w-full" />
           </div>
-        ) : groupedRows.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
-            No items in this folder
-          </div>
         ) : (
-          groupedRows.map((group) => {
-            const isCollapsed = collapsedGroups.has(group.key);
-            return (
-              <div key={group.key} className="border-b border-border last:border-b-0">
-                <button
-                  type="button"
-                  onClick={() => toggleGroup(group.key)}
-                  className="w-full flex items-center gap-1.5 px-3 py-1.5 hover:bg-muted/40 transition-colors text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
-                  aria-expanded={!isCollapsed}
-                >
-                  <span className="inline-block w-3 text-center">
-                    {isCollapsed ? "▶" : "▼"}
-                  </span>
-                  <span>{group.label}</span>
-                  <span className="text-muted-foreground/60">({group.rows.length})</span>
-                </button>
-                {!isCollapsed &&
-                  group.rows.map((row) => {
-                    const Icon = iconForRow(row);
-                    const isSelected =
-                      row.id === selectedItemId && row.kind === selectedItemType;
-                    const expiresAt =
-                      row.kind === "memory_item"
-                        ? (row.raw as MemoryItem & { expiresAt?: Date | string | null }).expiresAt ?? null
-                        : null;
-                    return (
-                      <button
-                        key={`${row.kind}-${row.id}`}
-                        onClick={() => selectRow(row)}
-                        className={cn(
-                          "w-full text-left flex items-center gap-2 pl-7 pr-3 py-2 text-xs transition-colors",
-                          isSelected
-                            ? "bg-primary/10 text-primary"
-                            : "hover:bg-muted/40",
-                        )}
-                      >
-                        <Icon className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-                        <span className="flex-1 truncate">{row.name}</span>
-                        {row.status && (
-                          <span
-                            className={cn(
-                              "text-[10px] px-1.5 py-0.5 rounded",
-                              STATUS_COLORS[row.status] ?? "",
-                            )}
-                          >
-                            {row.status}
-                          </span>
-                        )}
-                        <ExpiresAtChip expiresAt={expiresAt} />
-                        <span className="text-muted-foreground tabular-nums text-[10px]">
-                          {formatRelative(row.modifiedAt)}
-                        </span>
-                      </button>
-                    );
-                  })}
+          <>
+            {subfolders.length > 0 && (
+              <div className="border-b border-border">
+                <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  Folders ({subfolders.length})
+                </div>
+                {subfolders.map((f) => {
+                  const count = folderItemCounts(f.path);
+                  return (
+                    <button
+                      key={`folder-${f.id}`}
+                      onClick={() => navigateToFolder(f)}
+                      className={cn(
+                        "w-full text-left flex items-center gap-2 px-3 py-2 text-xs",
+                        "hover:bg-muted/40 transition-colors duration-100",
+                      )}
+                    >
+                      <span className="text-base leading-none">
+                        {f.icon ?? "📂"}
+                      </span>
+                      <span className="flex-1 truncate font-medium">{f.displayName}</span>
+                      <span className="text-muted-foreground tabular-nums text-[10px]">
+                        {count} {count === 1 ? "item" : "items"}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
-            );
-          })
+            )}
+            {filteredRows.length > 0 ? (
+              <div>
+                <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  Items at this level ({filteredRows.length})
+                </div>
+                {filteredRows.map((row) => {
+                  const Icon = iconForRow(row);
+                  const isSelected =
+                    row.id === selectedItemId && row.kind === selectedItemType;
+                  const expiresAt =
+                    row.kind === "memory_item"
+                      ? (row.raw as MemoryItem & { expiresAt?: Date | string | null })
+                          .expiresAt ?? null
+                      : null;
+                  return (
+                    <button
+                      key={`${row.kind}-${row.id}`}
+                      onClick={() => selectRow(row)}
+                      className={cn(
+                        "w-full text-left flex items-center gap-2 px-3 py-2 text-xs transition-colors",
+                        isSelected
+                          ? "bg-primary/10 text-primary"
+                          : "hover:bg-muted/40",
+                      )}
+                    >
+                      <Icon className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                      <span className="flex-1 truncate">{row.name}</span>
+                      {row.category && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/60 text-muted-foreground">
+                          {row.category}
+                        </span>
+                      )}
+                      {row.status && (
+                        <span
+                          className={cn(
+                            "text-[10px] px-1.5 py-0.5 rounded",
+                            STATUS_COLORS[row.status] ?? "",
+                          )}
+                        >
+                          {row.status}
+                        </span>
+                      )}
+                      <ExpiresAtChip expiresAt={expiresAt} />
+                      <span className="text-muted-foreground tabular-nums text-[10px]">
+                        {formatRelative(row.modifiedAt)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : subfolders.length === 0 ? (
+              <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
+                No items in this folder
+              </div>
+            ) : null}
+          </>
         )}
       </div>
     </div>
