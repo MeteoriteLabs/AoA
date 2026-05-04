@@ -70,7 +70,6 @@
   "devDependencies": {
     "@types/diff": "^8.0.0",
     "@types/express": "^5.0.0",
-    "@types/diff": "^8.0.0",
     "@types/express-serve-static-core": "^5.0.0",
     "@types/multer": "^2.0.0",
     "@types/node": "^24.6.0",
