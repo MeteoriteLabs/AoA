@@ -87,6 +87,10 @@ export async function createOperation(db: Db, input: CreateOperationInput): Prom
       idempotencyKey: input.idempotencyKey ?? null,
       requestedByUserId: input.requestedByUserId,
     })
+    // ON CONFLICT DO NOTHING (targetless form): Drizzle cannot express partial-index
+    // predicates in a conflict target, so we suppress any constraint violation on this
+    // insert. The only expected conflict is the (companyId, idempotencyKey) partial unique
+    // index — null idempotencyKey values do not trigger it.
     .onConflictDoNothing()
     .returning();
 

@@ -119,7 +119,7 @@ describe("createOperation — conflict handling", () => {
     );
   });
 
-  it("skips the fallback select when insert succeeds (no idempotencyKey provided)", async () => {
+  it("returns new row immediately when insert succeeds (no idempotencyKey, happy path)", async () => {
     const NEW_ROW = { ...EXISTING_ROW, id: "new-op-no-key", idempotencyKey: null };
     let selectCalled = false;
     const db = {
