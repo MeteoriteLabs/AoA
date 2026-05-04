@@ -46,11 +46,15 @@ function createMockDb(
   // First select call returns folders (target lookup), subsequent select calls
   // return affected rows for items + sub-folders. We sequence via call counter.
   let selectCallIdx = 0;
+  let transactionCalls = 0;
 
-  return {
+  const dbLike: Record<string, unknown> = {
     folders,
     items,
     updateCalls,
+    get transactionCalls() {
+      return transactionCalls;
+    },
     select: () => {
       const callIdx = selectCallIdx++;
       return {
@@ -98,7 +102,28 @@ function createMockDb(
       },
     }),
   };
+  // Codex P1 follow-up: `remove` now wraps reparent + delete in a single
+  // db.transaction(...). The mock's transaction passes itself as the `tx`
+  // parameter so the chained methods inside the callback hit the same fake
+  // stores as the outer mock.
+  dbLike.transaction = async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => {
+    transactionCalls++;
+    return fn(dbLike);
+  };
+  return dbLike as unknown as MockDb;
 }
+
+type MockDb = {
+  folders: FolderRow[];
+  items: Array<{ id: string; folderPath: string }>;
+  updateCalls: Array<{ table: "memory_items" | "memory_folders"; patch: Record<string, unknown> }>;
+  readonly transactionCalls: number;
+  select: () => unknown;
+  insert: () => unknown;
+  update: (table: unknown) => unknown;
+  delete: () => unknown;
+  transaction: <T>(fn: (tx: unknown) => Promise<T>) => Promise<T>;
+};
 
 describe("memoryFoldersService.remove — Phase 6.2b enforcement + reparenting", () => {
   beforeEach(() => {
@@ -128,12 +153,42 @@ describe("memoryFoldersService.remove — Phase 6.2b enforcement + reparenting",
     await expect(svc.remove("f-q3", "co-1")).resolves.toBeUndefined();
   });
 
+  // Codex P1 regression: ensure the reparent + delete happens inside a single
+  // db.transaction(...) call so a mid-sequence failure can't leave the tree
+  // partially mutated.
+  it("wraps reparent + delete in db.transaction", async () => {
+    const folder: FolderRow = {
+      id: "f-q3",
+      companyId: "co-1",
+      path: "engineering/Q3",
+      seedKey: null,
+    };
+    const db = createMockDb([folder]);
+    const svc = memoryFoldersService(db as never);
+    await svc.remove("f-q3", "co-1");
+    expect(db.transactionCalls).toBe(1);
+  });
+
+  it("seeded-folder rejection happens BEFORE the transaction", async () => {
+    // The seedKey check is a precondition — no DB writes should be attempted,
+    // and no transaction should be opened, when we refuse the delete.
+    const db = createMockDb([
+      { id: "f-decisions", companyId: "co-1", path: "engineering/Decisions", seedKey: "decisions" },
+    ]);
+    const svc = memoryFoldersService(db as never);
+    await expect(svc.remove("f-decisions", "co-1")).rejects.toThrow(/seeded/i);
+    expect(db.transactionCalls).toBe(0);
+    expect(db.updateCalls.length).toBe(0);
+  });
+
   it("when target folder not found, returns silently (idempotent)", async () => {
     const db = createMockDb([]);
     const svc = memoryFoldersService(db as never);
     await expect(svc.remove("f-missing", "co-1")).resolves.toBeUndefined();
     // No mutations attempted on the empty fixture.
     expect(db.updateCalls.length).toBe(0);
+    // And no transaction opened for a folder that didn't exist.
+    expect(db.transactionCalls).toBe(0);
   });
 
   it("path-rewrite math: top-level user folder → parent slug", async () => {

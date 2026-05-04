@@ -1,8 +1,9 @@
 import { useRef } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Upload, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { memoryAssetsApi } from "../../api/memoryAssets";
+import { projectsApi } from "../../api/projects";
 import { queryKeys } from "../../lib/queryKeys";
 import { useToast } from "../../context/ToastContext";
 
@@ -21,11 +22,38 @@ export function MemoryUploadButton({
   const qc = useQueryClient();
   const { pushToast } = useToast();
 
+  // Phase 6.2 follow-up (Codex P1): in dept-only mode the explorer sets
+  // `folderPath = ""` and `departmentId = "<id>"`, but the central pane's
+  // strict-path filter (`folderPath === deptSlug`) only shows assets stored
+  // at `<deptSlug>`. Look up the dept slug here so uploads from the dept
+  // root land where the listing filter can see them. Cached via react-query
+  // — `MemoryFileList` reads the same key, so this is a cache hit.
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(companyId),
+    queryFn: () => projectsApi.list(companyId),
+    enabled: Boolean(companyId) && Boolean(departmentId) && !folderPath,
+  });
+  const deptSlug = departmentId
+    ? projects?.find((p) => p.id === departmentId)?.urlKey ?? null
+    : null;
+
+  // The folder path the upload should actually land at:
+  //   - explicit folderPath wins (sub-folder selected)
+  //   - otherwise, dept root → use the dept slug
+  //   - otherwise, top-level (Company / identity layer) → empty string
+  const effectiveFolderPath = folderPath || deptSlug || "";
+
+  // Don't fire while we're still resolving the slug for dept-root uploads —
+  // otherwise a fast-clicking user can race the projects query and re-create
+  // the original "asset stored at empty path, vanishes from view" bug.
+  const awaitingDeptSlug =
+    Boolean(departmentId) && !folderPath && deptSlug === null;
+
   const uploadMutation = useMutation({
     mutationFn: (file: File) =>
       memoryAssetsApi.upload(companyId, file, {
         departmentId: departmentId ?? undefined,
-        folderPath: folderPath || undefined,
+        folderPath: effectiveFolderPath || undefined,
       }),
     onSuccess: (res) => {
       pushToast({
@@ -35,7 +63,7 @@ export function MemoryUploadButton({
       void qc.invalidateQueries({
         queryKey: queryKeys.memory.assets.list(companyId, {
           departmentId: departmentId ?? undefined,
-          folderPath,
+          folderPath: effectiveFolderPath,
         }),
       });
       void qc.invalidateQueries({
@@ -67,7 +95,7 @@ export function MemoryUploadButton({
         size="sm"
         variant="outline"
         onClick={handlePick}
-        disabled={uploadMutation.isPending}
+        disabled={uploadMutation.isPending || awaitingDeptSlug}
         className="h-7 gap-1 text-xs"
       >
         {uploadMutation.isPending ? (

@@ -3,8 +3,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-const { uploadMock } = vi.hoisted(() => ({
+const { uploadMock, projectsListMock } = vi.hoisted(() => ({
   uploadMock: vi.fn(async () => ({ asset: { id: "a-1", fileName: "x.pdf" }, jobId: "j-1" })),
+  projectsListMock: vi.fn(async () => [
+    { id: "dept-1", urlKey: "engineering", name: "Engineering", type: "department" },
+  ]),
 }));
 
 vi.mock("../api/memoryAssets", () => ({
@@ -12,6 +15,12 @@ vi.mock("../api/memoryAssets", () => ({
     upload: uploadMock,
     list: vi.fn(async () => []),
     contentUrl: () => "/test",
+  },
+}));
+
+vi.mock("../api/projects", () => ({
+  projectsApi: {
+    list: projectsListMock,
   },
 }));
 
@@ -36,14 +45,17 @@ function renderButton(props?: Partial<React.ComponentProps<typeof MemoryUploadBu
 }
 
 describe("MemoryUploadButton (Phase 6.1c)", () => {
-  beforeEach(() => uploadMock.mockClear());
+  beforeEach(() => {
+    uploadMock.mockClear();
+    projectsListMock.mockClear();
+  });
 
   it("renders an Upload button", () => {
     renderButton();
     expect(screen.getByRole("button", { name: /upload/i })).toBeInTheDocument();
   });
 
-  it("calls upload on file selection", async () => {
+  it("calls upload on file selection (sub-folder mode passes folderPath verbatim)", async () => {
     const user = userEvent.setup();
     renderButton();
     const file = new File(["hi"], "x.pdf", { type: "application/pdf" });
@@ -56,5 +68,41 @@ describe("MemoryUploadButton (Phase 6.1c)", () => {
         folderPath: "Engineering/Files",
       }),
     );
+  });
+
+  // Codex P1 regression: in dept-only mode (folderPath="", departmentId set),
+  // the upload must land at <deptSlug>, not "". Otherwise the strict-path
+  // listing filter in MemoryFileList (assetsFolderPath === deptSlug) hides
+  // the freshly uploaded file.
+  it("dept-root mode: sends deptSlug as folderPath (not empty)", async () => {
+    const user = userEvent.setup();
+    renderButton({ folderPath: "", departmentId: "dept-1" });
+    // Wait for projects query to resolve so the slug is available.
+    await waitFor(() => expect(projectsListMock).toHaveBeenCalled());
+    const file = new File(["hi"], "x.pdf", { type: "application/pdf" });
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(input, file);
+    await waitFor(() =>
+      expect(uploadMock).toHaveBeenCalledWith("co-1", file, {
+        departmentId: "dept-1",
+        folderPath: "engineering",
+      }),
+    );
+  });
+
+  it("top-level mode (no dept, no folder): sends folderPath=undefined", async () => {
+    const user = userEvent.setup();
+    renderButton({ folderPath: "", departmentId: null });
+    const file = new File(["hi"], "x.pdf", { type: "application/pdf" });
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(input, file);
+    await waitFor(() =>
+      expect(uploadMock).toHaveBeenCalledWith("co-1", file, {
+        departmentId: undefined,
+        folderPath: undefined,
+      }),
+    );
+    // Projects query should not have fired in this mode.
+    expect(projectsListMock).not.toHaveBeenCalled();
   });
 });

@@ -20,9 +20,23 @@ import { memoryAssetsService } from "../services/memory-assets.js";
 
 function tinyDb() {
   const rows: Array<Record<string, unknown>> = [];
-  return {
+  // Phase 6.2b's remove() does multiple selects (target, affected items,
+  // affected sub-folders). The very first select returns the target folder
+  // row; the rest should return empty so the reparent loops are no-ops in
+  // this minimal fixture. Sequence-based discriminator (a table-name check
+  // doesn't work because @armyofagents/db is mocked with a Proxy that
+  // returns an object for any property access).
+  let selectIdx = 0;
+  const dbLike: Record<string, unknown> = {
     rows,
-    select: () => ({ from: () => ({ where: async () => rows }) }),
+    select: () => {
+      const idx = selectIdx++;
+      return {
+        from: () => ({
+          where: async () => (idx === 0 ? rows : []),
+        }),
+      };
+    },
     insert: () => ({
       values: (row: Record<string, unknown>) => ({
         returning: async () => {
@@ -45,6 +59,11 @@ function tinyDb() {
     }),
     delete: () => ({ where: async () => { rows.splice(0); } }),
   };
+  // Codex P1 follow-up: memory-folders.remove now wraps reparent + delete
+  // in db.transaction(...). The mock passes itself in as the `tx` param.
+  dbLike.transaction = async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> =>
+    fn(dbLike);
+  return dbLike as { rows: Array<Record<string, unknown>> } & Record<string, unknown>;
 }
 
 describe("LiveEvents publishes from memory services", () => {
@@ -89,7 +108,15 @@ describe("LiveEvents publishes from memory services", () => {
 
   it("memoryFoldersService.remove publishes memory.folder.deleted", async () => {
     const db = tinyDb();
-    db.rows.push({ id: "f-1", companyId: "co-1" });
+    // seedKey: null is required — Phase 6.2b introduced a guard that refuses
+    // to delete seeded folders, so the fixture has to opt in to "user folder".
+    // path is required too — the parent-path computation reads it.
+    db.rows.push({
+      id: "f-1",
+      companyId: "co-1",
+      seedKey: null,
+      path: "Engineering",
+    });
     const svc = memoryFoldersService(db as never);
     await svc.remove("f-1", "co-1");
     expect(publishMock).toHaveBeenCalledWith(

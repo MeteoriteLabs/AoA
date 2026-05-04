@@ -120,58 +120,67 @@ export function memoryFoldersService(db: Db) {
         ? target.path.slice(0, target.path.lastIndexOf("/"))
         : "";
 
-      // Step 4: Reparent items. Fetch all affected rows in JS, compute the
-      //         new folderPath, and update each. SQL's SUBSTRING+|| approach
-      //         had a parameter-typing edge case in drizzle's sql template
-      //         that produced NULL. JS rewrite is bulletproof and the row
-      //         counts here are always small (single dept's items).
-      const affectedItems = await db
-        .select({ id: memoryItems.id, folderPath: memoryItems.folderPath })
-        .from(memoryItems)
-        .where(
-          and(
-            eq(memoryItems.companyId, companyId),
-            // folder_path = target.path OR folder_path LIKE target.path/%
-            sql`(${memoryItems.folderPath} = ${target.path} OR ${memoryItems.folderPath} LIKE ${target.path + "/%"})`,
-          ),
-        );
-      for (const row of affectedItems) {
-        const remainder =
-          row.folderPath === target.path
-            ? ""
-            : row.folderPath.slice(target.path.length); // includes leading "/"
-        const newPath = parentPath + remainder;
-        await db
-          .update(memoryItems)
-          .set({ folderPath: newPath })
-          .where(eq(memoryItems.id, row.id));
-      }
+      // Codex P1 follow-up: wrap the entire reparent + delete sequence in a
+      // single DB transaction. Without it, a mid-sequence failure (e.g. a
+      // `memory_folders_unique_path_per_company` collision while reparenting
+      // descendants) would leave earlier item/folder moves committed and the
+      // tree in a partially-mutated state. The transaction guarantees the
+      // operation is all-or-nothing.
+      await db.transaction(async (tx) => {
+        // Step 4: Reparent items. Fetch all affected rows in JS, compute the
+        //         new folderPath, and update each. SQL's SUBSTRING+|| approach
+        //         had a parameter-typing edge case in drizzle's sql template
+        //         that produced NULL. JS rewrite is bulletproof and the row
+        //         counts here are always small (single dept's items).
+        const affectedItems = await tx
+          .select({ id: memoryItems.id, folderPath: memoryItems.folderPath })
+          .from(memoryItems)
+          .where(
+            and(
+              eq(memoryItems.companyId, companyId),
+              // folder_path = target.path OR folder_path LIKE target.path/%
+              sql`(${memoryItems.folderPath} = ${target.path} OR ${memoryItems.folderPath} LIKE ${target.path + "/%"})`,
+            ),
+          );
+        for (const row of affectedItems) {
+          const remainder =
+            row.folderPath === target.path
+              ? ""
+              : row.folderPath.slice(target.path.length); // includes leading "/"
+          const newPath = parentPath + remainder;
+          await tx
+            .update(memoryItems)
+            .set({ folderPath: newPath })
+            .where(eq(memoryItems.id, row.id));
+        }
 
-      // Step 5: Reparent sub-folder rows. Same JS approach.
-      const affectedFolders = await db
-        .select({ id: memoryFolders.id, path: memoryFolders.path })
-        .from(memoryFolders)
-        .where(
-          and(
-            eq(memoryFolders.companyId, companyId),
-            sql`${memoryFolders.path} LIKE ${target.path + "/%"}`,
-          ),
-        );
-      for (const row of affectedFolders) {
-        const remainder = row.path.slice(target.path.length); // always starts with "/"
-        const newPath = parentPath + remainder;
-        await db
-          .update(memoryFolders)
-          .set({ path: newPath })
-          .where(eq(memoryFolders.id, row.id));
-      }
+        // Step 5: Reparent sub-folder rows. Same JS approach.
+        const affectedFolders = await tx
+          .select({ id: memoryFolders.id, path: memoryFolders.path })
+          .from(memoryFolders)
+          .where(
+            and(
+              eq(memoryFolders.companyId, companyId),
+              sql`${memoryFolders.path} LIKE ${target.path + "/%"}`,
+            ),
+          );
+        for (const row of affectedFolders) {
+          const remainder = row.path.slice(target.path.length); // always starts with "/"
+          const newPath = parentPath + remainder;
+          await tx
+            .update(memoryFolders)
+            .set({ path: newPath })
+            .where(eq(memoryFolders.id, row.id));
+        }
 
-      // Step 6: Delete the target folder row itself.
-      await db
-        .delete(memoryFolders)
-        .where(and(eq(memoryFolders.id, id), eq(memoryFolders.companyId, companyId)));
+        // Step 6: Delete the target folder row itself.
+        await tx
+          .delete(memoryFolders)
+          .where(and(eq(memoryFolders.id, id), eq(memoryFolders.companyId, companyId)));
+      });
 
-      // Step 7: Publish LiveEvent.
+      // Step 7: Publish LiveEvent — only after the transaction commits, so
+      // we never announce a deletion that was rolled back.
       publishLiveEvent({
         type: "memory.folder.deleted",
         companyId,
