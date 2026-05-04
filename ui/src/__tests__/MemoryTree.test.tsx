@@ -75,6 +75,8 @@ vi.mock("../api/memory", () => ({
       { id: "i-id1", title: "Vision", layer: "identity", status: "approved", founderPinnedToTop: true },
       { id: "i-d1", title: "Auth", layer: "domain", status: "approved", departmentId: "d-eng" },
       { id: "i-d2", title: "API", layer: "domain", status: "pending", departmentId: "d-eng" },
+      // Phase 6.2f: archived domain item — should NOT count toward Domain or Engineering
+      { id: "i-d-arch", title: "Old extracted", layer: "domain", status: "archived", departmentId: "d-eng" },
       { id: "i-a1", title: "Ctx", layer: "active_context", status: "approved", goalId: "g-1" },
       { id: "i-w1", title: "Work", layer: "working", status: "approved" },
     ]),
@@ -244,5 +246,22 @@ describe("MemoryTree (Phase 6.2a)", () => {
     await user.click(eng!);
     await waitFor(() => expect(screen.getByText("Decisions")).toBeInTheDocument());
     expect(screen.getByText("Q3 Planning")).toBeInTheDocument();
+  });
+
+  it("excludes archived items from layer/dept counts", async () => {
+    renderTree();
+    await waitFor(() => screen.getByText("Engineering"));
+    // Engineering should show 2 items (Auth + API), NOT 3 (excluding archived "Old extracted").
+    const engRow = screen.getByText("Engineering").closest("div");
+    // The count badge renders the number adjacent to the label text.
+    expect(engRow?.textContent).toContain("2");
+    expect(engRow?.textContent).not.toContain("3");
+  });
+
+  it("Archived shortcut still counts archived items", async () => {
+    renderTree();
+    await waitFor(() => screen.getByText("Archived"));
+    const archivedRow = screen.getByText("Archived").closest("div");
+    expect(archivedRow?.textContent).toContain("1");
   });
 });

@@ -136,18 +136,24 @@ export function MemoryTree({
     let archived = 0;
     const recentCutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
     for (const it of all) {
-      if (it.layer && it.layer in byLayer) byLayer[it.layer] += 1;
-      if (it.layer === "domain" && it.departmentId) {
-        byDeptDomain.set(it.departmentId, (byDeptDomain.get(it.departmentId) ?? 0) + 1);
+      const isArchived = it.status === "archived";
+      // Counts that drive the tree's "live" visibility — exclude archived items.
+      if (!isArchived) {
+        if (it.layer && it.layer in byLayer) byLayer[it.layer] += 1;
+        if (it.layer === "domain" && it.departmentId) {
+          byDeptDomain.set(it.departmentId, (byDeptDomain.get(it.departmentId) ?? 0) + 1);
+        }
+        if (it.layer === "active_context" && it.goalId) {
+          byGoalActive.set(it.goalId, (byGoalActive.get(it.goalId) ?? 0) + 1);
+        }
+        if (it.founderPinnedToTop) pinned += 1;
+        if (it.status === "pending") pending += 1;
       }
-      if (it.layer === "active_context" && it.goalId) {
-        byGoalActive.set(it.goalId, (byGoalActive.get(it.goalId) ?? 0) + 1);
-      }
-      if (it.founderPinnedToTop) pinned += 1;
-      if (it.status === "pending") pending += 1;
-      if (it.status === "archived") archived += 1;
+      // Archived shortcut count — unchanged (counts archived items intentionally).
+      if (isArchived) archived += 1;
+      // Recent count — already excludes archived in the filter.
       const updatedAtMs = new Date(it.updatedAt).getTime();
-      if (Number.isFinite(updatedAtMs) && updatedAtMs >= recentCutoff && it.status !== "archived") {
+      if (Number.isFinite(updatedAtMs) && updatedAtMs >= recentCutoff && !isArchived) {
         recent += 1;
       }
     }
