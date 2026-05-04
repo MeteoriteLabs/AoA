@@ -44,6 +44,7 @@ import { extractSkillMentionIds } from "@armyofagents/shared";
 import {
   readAoaSkillSyncPreference,
   writeAoaSkillSyncPreference,
+  signalRunningProcess,
 } from "@armyofagents/adapter-utils/server-utils";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 
@@ -2677,6 +2678,8 @@ export function heartbeatService(db: Db) {
 
       // ── onSpawn: persist PID/PGID/startedAt immediately after fork ──────
       const onSpawn = (pid: number | null, pgid: number | null, startedAt: Date) => {
+        // pgid is now reliably populated on POSIX (= child.pid for detached:true spawns).
+        // Persisting it lets an out-of-process watchdog kill the group if needed.
         void db
           .update(heartbeatRuns)
           .set({ processPid: pid, processGroupId: pgid, processStartedAt: startedAt })
@@ -3825,12 +3828,10 @@ export function heartbeatService(db: Db) {
 
       const running = runningProcesses.get(run.id);
       if (running) {
-        running.child.kill("SIGTERM");
+        signalRunningProcess(running, "SIGTERM");
         const graceMs = Math.max(1, running.graceSec) * 1000;
         setTimeout(() => {
-          if (!running.child.killed) {
-            running.child.kill("SIGKILL");
-          }
+          signalRunningProcess(running, "SIGKILL");
         }, graceMs);
       }
 
@@ -3881,7 +3882,7 @@ export function heartbeatService(db: Db) {
 
         const running = runningProcesses.get(run.id);
         if (running) {
-          running.child.kill("SIGTERM");
+          signalRunningProcess(running, "SIGTERM");
           runningProcesses.delete(run.id);
         }
         await releaseIssueExecutionAndPromote(run);
@@ -3910,7 +3911,7 @@ export function heartbeatService(db: Db) {
           });
           const running = runningProcesses.get(run.id);
           if (running) {
-            running.child.kill("SIGTERM");
+            signalRunningProcess(running, "SIGTERM");
             runningProcesses.delete(run.id);
           }
           await releaseIssueExecutionAndPromote(run);
@@ -3936,7 +3937,7 @@ export function heartbeatService(db: Db) {
         });
         const running = runningProcesses.get(run.id);
         if (running) {
-          running.child.kill("SIGTERM");
+          signalRunningProcess(running, "SIGTERM");
           runningProcesses.delete(run.id);
         }
         await releaseIssueExecutionAndPromote(run);

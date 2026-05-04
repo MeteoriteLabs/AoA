@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import type { AdapterSkillEntry, AdapterSkillSnapshot } from "./types.js";
@@ -14,8 +14,8 @@ export interface RunProcessResult {
 interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
-  /** POSIX process-group id captured at spawn; null on Windows or if unavailable. */
-  pgid: number | null;
+  /** POSIX process-group id captured at spawn; null on Windows. Equals child.pid when spawned with detached:true. */
+  processGroupId: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -23,52 +23,58 @@ interface RunningProcess {
 // ---------------------------------------------------------------------------
 
 /**
- * Get the POSIX process-group id for a PID.
- * Returns null on Windows or if the syscall fails (e.g. the process has
- * already exited).
+ * Resolve the POSIX process-group id for a freshly spawned child.
+ *
+ * Assumes the child was spawned with `detached: true` on POSIX, which
+ * causes the OS to put the child in its own new process group with
+ * pgid === pid. Returns null on Windows (no process groups) or when
+ * the child failed to spawn (no pid).
+ *
+ * Replaces the older safeGetPgid which called process.getpgid(pid)
+ * — that API was never exposed by Node and always threw a TypeError.
  */
-export function safeGetPgid(pid: number): number | null {
+export function resolveProcessGroupId(child: ChildProcess): number | null {
   if (process.platform === "win32") return null;
-  try {
-    return (process as unknown as { getpgid(pid: number): number }).getpgid(pid);
-  } catch {
-    return null;
-  }
+  return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
 /**
- * Kill a child process (and its entire process group / tree) in a
- * platform-aware manner.
+ * Signal a running process or its process group.
  *
- * POSIX: sends SIGTERM to the process group (-pgid), then SIGKILL after
- *        5 seconds if the group is still alive.  Falls back to the
- *        individual PID when pgid is null.
- * Windows: runs `taskkill /PID <pid> /T /F` which terminates the process
- *          tree recursively.  Falls back to process.kill(pid) if taskkill
- *          itself fails.
+ * POSIX with a valid processGroupId:
+ *   sends the signal to -processGroupId (negative PID), which addresses
+ *   the entire process group, killing the parent and all its children.
+ *   Falls back to signaling the child directly if the group signal
+ *   fails (e.g., the parent has already died but its children
+ *   re-parented to init).
+ *
+ * Windows:
+ *   uses Node's child.kill(signal). This signals ONLY the spawned
+ *   child — any subprocesses the child spawned become orphans. This
+ *   is a known limitation (Paperclip has the same behavior). To
+ *   propagate kills to the whole tree on Windows, AoA would need to
+ *   shell out to `taskkill /PID <pid> /T /F`. Tracked as a follow-up
+ *   if Windows-deployment process-tree leaks become a real concern.
+ *
+ * Caller is responsible for the SIGTERM → SIGKILL escalation timer.
+ *
+ * Reference impl: paperclip-master/packages/adapter-utils/src/server-utils.ts:57-72
  */
-export function killProcessTree(pid: number | null, pgid: number | null): void {
-  if (pid === null && pgid === null) return;
-  if (process.platform === "win32") {
-    if (pid === null) return;
+export function signalRunningProcess(
+  running: Pick<RunningProcess, "child" | "processGroupId">,
+  signal: NodeJS.Signals,
+): void {
+  if (process.platform !== "win32" && running.processGroupId && running.processGroupId > 0) {
     try {
-      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"]);
+      process.kill(-running.processGroupId, signal);
+      return;
     } catch {
-      try { process.kill(pid); } catch { /* ignore */ }
+      // Fall back to the direct child signal if group signaling fails.
     }
-    return;
   }
-  // POSIX
-  try {
-    if (pgid !== null) process.kill(-pgid, "SIGTERM");
-    else if (pid !== null) process.kill(pid, "SIGTERM");
-  } catch { /* process may have already exited */ }
-  setTimeout(() => {
-    try {
-      if (pgid !== null) process.kill(-pgid, "SIGKILL");
-      else if (pid !== null) process.kill(pid, "SIGKILL");
-    } catch { /* ignore */ }
-  }, 5000);
+  if (!running.child.killed) {
+    running.child.kill(signal);
+  }
 }
 
 type ChildProcessWithEvents = ChildProcess & {
@@ -288,15 +294,19 @@ export async function runChildProcess(
       // Windows requires shell:true to execute .cmd wrappers for npm-installed CLIs.
       // The `command` value comes from trusted adapter configuration, not user input.
       shell: process.platform === "win32",
+      // detached:true on POSIX puts the child in its own process group (pgid === pid),
+      // so signalRunningProcess can address the whole group via process.kill(-pgid, signal)
+      // and reap any subprocesses spawned by the child.
+      detached: process.platform !== "win32",
       stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
     }) as ChildProcessWithEvents;
 
     // Capture process metadata immediately after spawn, before stdin write.
     const spawnedPid = child.pid ?? null;
-    const spawnedPgid = spawnedPid !== null ? safeGetPgid(spawnedPid) : null;
+    const spawnedPgid = resolveProcessGroupId(child);
     const spawnedAt = new Date();
 
-    runningProcesses.set(runId, { child, graceSec: opts.graceSec, pgid: spawnedPgid });
+    runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId: spawnedPgid });
 
     // Notify caller before writing stdin so they can persist the PID/PGID.
     if (opts.onSpawn) {
@@ -317,11 +327,9 @@ export async function runChildProcess(
       opts.timeoutSec > 0
         ? setTimeout(() => {
             timedOut = true;
-            child.kill("SIGTERM");
+            signalRunningProcess({ child, processGroupId: spawnedPgid }, "SIGTERM");
             setTimeout(() => {
-              if (!child.killed) {
-                child.kill("SIGKILL");
-              }
+              signalRunningProcess({ child, processGroupId: spawnedPgid }, "SIGKILL");
             }, Math.max(1, opts.graceSec) * 1000);
           }, opts.timeoutSec * 1000)
         : null;

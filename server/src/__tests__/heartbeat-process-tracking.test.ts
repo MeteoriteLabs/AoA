@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { safeGetPgid, killProcessTree } from "@armyofagents/adapter-utils/server-utils";
+import { describe, it, expect, vi } from "vitest";
+import { resolveProcessGroupId, signalRunningProcess } from "@armyofagents/adapter-utils/server-utils";
+import { spawn } from "node:child_process";
 
-describe("safeGetPgid", () => {
+describe("resolveProcessGroupId", () => {
   it("returns null on Windows", () => {
     const original = process.platform;
     Object.defineProperty(process, "platform", {
@@ -10,7 +11,8 @@ describe("safeGetPgid", () => {
       configurable: true,
     });
     try {
-      expect(safeGetPgid(1234)).toBeNull();
+      const fakeChild = { pid: 1234 } as ReturnType<typeof spawn>;
+      expect(resolveProcessGroupId(fakeChild)).toBeNull();
     } finally {
       Object.defineProperty(process, "platform", {
         value: original,
@@ -20,67 +22,92 @@ describe("safeGetPgid", () => {
     }
   });
 
-  it("returns null when getpgid throws (non-existent PID)", () => {
-    if (process.platform === "win32") return; // skip on actual Windows
-    // PID 999999999 is almost certainly not running; getpgid will throw ESRCH
-    expect(safeGetPgid(999999999)).toBeNull();
+  it("returns the child's pid on POSIX (which equals pgid when spawned with detached:true)", () => {
+    if (process.platform === "win32") return;
+    const fakeChild = { pid: 1234 } as ReturnType<typeof spawn>;
+    expect(resolveProcessGroupId(fakeChild)).toBe(1234);
   });
 
-  // process.getpgid is not exposed in Node.js (verified Node 18/20/22/24).
-  // safeGetPgid swallows the TypeError and returns null on every platform.
-  // The function exists for forward-compatibility / explicit fallback in
-  // killProcessTree. Real implementation tracked in
-  // https://github.com/MeteoriteLabs/AoA/issues/96.
-  it("returns null on POSIX because process.getpgid is unavailable in Node", () => {
+  it("returns null when child has no pid (spawn failed)", () => {
+    const fakeChild = { pid: undefined } as unknown as ReturnType<typeof spawn>;
+    expect(resolveProcessGroupId(fakeChild)).toBeNull();
+  });
+
+  it("returns null when child pid is invalid (0)", () => {
     if (process.platform === "win32") return;
-    expect(safeGetPgid(process.pid)).toBeNull();
+    const fakeChild = { pid: 0 } as ReturnType<typeof spawn>;
+    expect(resolveProcessGroupId(fakeChild)).toBeNull();
   });
 });
 
-describe("killProcessTree", () => {
-  it("is a no-op when both pid and pgid are null", () => {
-    expect(() => killProcessTree(null, null)).not.toThrow();
+describe("signalRunningProcess", () => {
+  it("uses process.kill(-pgid, signal) on POSIX when processGroupId is valid", () => {
+    if (process.platform === "win32") return;
+
+    let capturedTarget: number | null = null;
+    let capturedSignal: NodeJS.Signals | string | null = null;
+    const originalKill = process.kill;
+    (process as unknown as { kill: typeof process.kill }).kill = ((pid: number, sig?: NodeJS.Signals | number) => {
+      capturedTarget = pid;
+      capturedSignal = (sig as NodeJS.Signals) ?? null;
+      return true;
+    }) as typeof process.kill;
+
+    try {
+      const childKill = vi.fn();
+      const fakeChild = { pid: 1234, killed: false, kill: childKill } as unknown as ReturnType<typeof spawn>;
+      signalRunningProcess({ child: fakeChild, processGroupId: 1234 }, "SIGTERM");
+      expect(capturedTarget).toBe(-1234);
+      expect(capturedSignal).toBe("SIGTERM");
+      expect(childKill).not.toHaveBeenCalled();
+    } finally {
+      (process as unknown as { kill: typeof process.kill }).kill = originalKill;
+    }
   });
 
-  it("does not throw when passed null pid with null pgid on Windows", () => {
+  it("falls back to child.kill when group signal throws", () => {
+    if (process.platform === "win32") return;
+
+    const originalKill = process.kill;
+    (process as unknown as { kill: typeof process.kill }).kill = (() => {
+      throw new Error("ESRCH");
+    }) as typeof process.kill;
+
+    try {
+      const childKill = vi.fn();
+      const fakeChild = { pid: 1234, killed: false, kill: childKill } as unknown as ReturnType<typeof spawn>;
+      signalRunningProcess({ child: fakeChild, processGroupId: 1234 }, "SIGTERM");
+      expect(childKill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      (process as unknown as { kill: typeof process.kill }).kill = originalKill;
+    }
+  });
+
+  it("uses child.kill on Windows", () => {
     const original = process.platform;
-    Object.defineProperty(process, "platform", {
-      value: "win32",
-      writable: true,
-      configurable: true,
-    });
+    Object.defineProperty(process, "platform", { value: "win32", writable: true, configurable: true });
+
     try {
-      // pid=null short-circuits on Windows
-      expect(() => killProcessTree(null, null)).not.toThrow();
+      const childKill = vi.fn();
+      const fakeChild = { pid: 1234, killed: false, kill: childKill } as unknown as ReturnType<typeof spawn>;
+      signalRunningProcess({ child: fakeChild, processGroupId: 1234 }, "SIGTERM");
+      expect(childKill).toHaveBeenCalledWith("SIGTERM");
     } finally {
-      Object.defineProperty(process, "platform", {
-        value: original,
-        writable: true,
-        configurable: true,
-      });
+      Object.defineProperty(process, "platform", { value: original, writable: true, configurable: true });
     }
   });
 
-  it("calls process.kill on POSIX when only pid is available (pgid null)", () => {
-    if (process.platform === "win32") return;
-    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true as unknown as void);
-    try {
-      // Pass a fake pid that process.kill might reject — use mock to prevent that
-      killProcessTree(12345, null);
-      expect(killSpy).toHaveBeenCalledWith(12345, "SIGTERM");
-    } finally {
-      killSpy.mockRestore();
-    }
-  });
+  it("does not double-signal an already-killed child on Windows", () => {
+    const original = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", writable: true, configurable: true });
 
-  it("sends SIGTERM to -pgid on POSIX when pgid is available", () => {
-    if (process.platform === "win32") return;
-    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true as unknown as void);
     try {
-      killProcessTree(12345, 12300);
-      expect(killSpy).toHaveBeenCalledWith(-12300, "SIGTERM");
+      const childKill = vi.fn();
+      const fakeChild = { pid: 1234, killed: true, kill: childKill } as unknown as ReturnType<typeof spawn>;
+      signalRunningProcess({ child: fakeChild, processGroupId: 1234 }, "SIGTERM");
+      expect(childKill).not.toHaveBeenCalled();
     } finally {
-      killSpy.mockRestore();
+      Object.defineProperty(process, "platform", { value: original, writable: true, configurable: true });
     }
   });
 });
