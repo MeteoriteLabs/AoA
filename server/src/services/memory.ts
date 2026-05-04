@@ -1,13 +1,14 @@
 import { and, eq, ilike, or, sql, desc } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, memoryItems, memoryItemVersions, suggestions } from "@armyofagents/db";
-import { MEMORY_ITEM_LAYERS } from "@armyofagents/shared";
+import { agents, memoryItems, memoryItemVersions, memoryRetrievals, suggestions } from "@armyofagents/db";
+import { MEMORY_ITEM_LAYERS, normalizeMemoryFolderPath } from "@armyofagents/shared";
 import { generateEmbedding } from "./embeddings.js";
 import { resolveApiKey } from "../adapters/api-common.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { getDbCapabilities } from "./db-capabilities.js";
 import { buildMemoryInsert, memoryItemsSelection } from "./memory-projection.js";
+import { publishLiveEvent } from "./live-events.js";
 
 const log = logger.child({ service: "memory" });
 
@@ -42,6 +43,67 @@ export interface FindSimilarScope {
   companyId: string;
   departmentId?: string;
   layer?: string;
+}
+
+// V2.6 multi-pathway retrieval — combines semantic + keyword + temporal
+// pathways via reciprocal rank fusion (RRF), then re-weights by trust
+// signals (validationCount, accessedAt, lastValidatedAt).
+//
+// Each pathway returns up to PATHWAY_FETCH_LIMIT items. RRF gives
+// stable ranking even when pathways disagree, then trust-weight nudges
+// validated items above unvalidated peers.
+const RRF_K = 60;
+const PATHWAY_FETCH_LIMIT = 50;
+const VALIDATION_BOOST_WEIGHT = 0.1;
+const ACCESSED_DECAY_DAYS = 30;
+const ACCESSED_BOOST_WEIGHT = 0.05;
+const VALIDATED_DECAY_DAYS = 60;
+const VALIDATED_BOOST_WEIGHT = 0.05;
+
+export interface MultiPathSearchFilters {
+  /** Restrict to items in this layer (identity / domain / active_context / working). */
+  layer?: string;
+  /** Restrict to items scoped to this department (project of type 'department'). */
+  departmentId?: string;
+  /** Restrict to items scoped to this project (project of type 'project'). */
+  projectId?: string;
+  /** Restrict to items in this category. */
+  category?: string;
+  /** Final top-K to return after RRF + trust weighting. Default 10. */
+  limit?: number;
+  /** Toggle individual pathways. All true by default. */
+  enableSemantic?: boolean;
+  enableKeyword?: boolean;
+  enableTemporal?: boolean;
+}
+
+export interface MultiPathSearchResult {
+  id: string;
+  companyId: string;
+  title: string;
+  content: string;
+  category: string;
+  source: string;
+  status: string;
+  tags: string[] | null;
+  departmentId: string | null;
+  projectId: string | null;
+  layer: string | null;
+  priority: number;
+  validationCount: number;
+  agentId: string | null;
+  pinnedToSkill: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  /** Sum of 1/(60+rank) across pathways that returned this item. */
+  rrfScore: number;
+  /** rrfScore × trustWeight (validation + recency boost). Final ranking key. */
+  finalScore: number;
+  /** Cosine 1-distance from semantic pathway, or null if not present in semantic results. */
+  similarity: number | null;
+  semanticRank: number | null;
+  keywordRank: number | null;
+  temporalRank: number | null;
 }
 
 function isValidLayer(layer: string | null | undefined): boolean {
@@ -285,6 +347,261 @@ export function memoryService(db: Db) {
         .limit(limit);
 
       return textResults;
+    },
+
+    /**
+     * V2.6 multi-pathway memory search.
+     *
+     * Runs SEMANTIC + KEYWORD + TEMPORAL pathways in parallel against
+     * memory_items, merges results via reciprocal rank fusion (RRF),
+     * then re-weights each item by trust signals (validationCount,
+     * accessedAt, lastValidatedAt) before returning the final top-K.
+     *
+     * Pathway behavior:
+     *  - SEMANTIC: pgvector cosine distance. Skipped when pgvector is
+     *    unavailable or the company has no OpenAI key (graceful degrade
+     *    to keyword + temporal).
+     *  - KEYWORD: ilike on title + content. Skipped when query is empty.
+     *  - TEMPORAL: ranks by validation count + decayed recency (accessed
+     *    + lastValidated). Independent of query text.
+     *
+     * RRF formula: score(item) = Σ_pathways 1 / (RRF_K + rank_in_pathway)
+     * Final score: rrfScore × (1 + validationBonus + accessedBonus + validatedBonus)
+     *
+     * Cost: 3 parallel queries (one of which may also hit OpenAI for
+     * embedding the query). p50 ~150ms.
+     *
+     * Scope filters (departmentId, projectId, layer, category) apply
+     * BEFORE search runs. Caller is responsible for downstream RBAC
+     * filtering (filterMemoryForScope).
+     */
+    searchMultiPath: async (
+      companyId: string,
+      query: string,
+      filters: MultiPathSearchFilters = {},
+    ): Promise<MultiPathSearchResult[]> => {
+      const limit = filters.limit ?? 10;
+
+      const buildConditions = () => {
+        const conds = [
+          eq(memoryItems.companyId, companyId),
+          eq(memoryItems.status, "approved"),
+        ];
+        if (filters.layer) conds.push(eq(memoryItems.layer, filters.layer));
+        if (filters.category) conds.push(eq(memoryItems.category, filters.category));
+        if (filters.departmentId) conds.push(eq(memoryItems.departmentId, filters.departmentId));
+        if (filters.projectId) conds.push(eq(memoryItems.projectId, filters.projectId));
+        return conds;
+      };
+
+      const projection = {
+        id: memoryItems.id,
+        companyId: memoryItems.companyId,
+        title: memoryItems.title,
+        content: memoryItems.content,
+        category: memoryItems.category,
+        source: memoryItems.source,
+        status: memoryItems.status,
+        tags: memoryItems.tags,
+        departmentId: memoryItems.departmentId,
+        projectId: memoryItems.projectId,
+        layer: memoryItems.layer,
+        priority: memoryItems.priority,
+        validationCount: memoryItems.validationCount,
+        agentId: memoryItems.agentId,
+        pinnedToSkill: memoryItems.pinnedToSkill,
+        accessedAt: memoryItems.accessedAt,
+        lastValidatedAt: memoryItems.lastValidatedAt,
+        createdAt: memoryItems.createdAt,
+        updatedAt: memoryItems.updatedAt,
+      };
+
+      // ── Pathway 1: SEMANTIC ─────────────────────────────────────
+      const runSemantic = async (): Promise<Array<Record<string, unknown>>> => {
+        if (filters.enableSemantic === false) return [];
+        const caps = getDbCapabilities();
+        if (!caps.hasVectorSupport) return [];
+
+        let apiKey: string | null = null;
+        try {
+          apiKey = await resolveApiKey(companyId, "openai");
+        } catch {
+          return [];
+        }
+        if (!apiKey) return [];
+
+        try {
+          const queryEmbedding = await generateEmbedding(query, apiKey);
+          const vectorStr = toVectorString(queryEmbedding);
+
+          const conds = buildConditions();
+          conds.push(sql`${memoryItems.embedding} IS NOT NULL`);
+
+          return await db
+            .select({
+              ...projection,
+              similarity: sql<number>`1 - (${memoryItems.embedding} <=> ${vectorStr}::vector)`.as(
+                "similarity",
+              ),
+            })
+            .from(memoryItems)
+            .where(and(...conds))
+            .orderBy(sql`${memoryItems.embedding} <=> ${vectorStr}::vector`)
+            .limit(PATHWAY_FETCH_LIMIT);
+        } catch (err: unknown) {
+          log.warn(
+            { error: err instanceof Error ? err.message : String(err) },
+            "Semantic pathway failed in multi-path search; continuing with keyword + temporal",
+          );
+          return [];
+        }
+      };
+
+      // ── Pathway 2: KEYWORD (ilike) ──────────────────────────────
+      const runKeyword = async (): Promise<Array<Record<string, unknown>>> => {
+        if (filters.enableKeyword === false) return [];
+        const trimmed = query.trim();
+        if (!trimmed) return [];
+
+        const conds = buildConditions();
+        conds.push(
+          or(
+            ilike(memoryItems.title, `%${trimmed}%`),
+            ilike(memoryItems.content, `%${trimmed}%`),
+          )!,
+        );
+
+        return await db
+          .select(projection)
+          .from(memoryItems)
+          .where(and(...conds))
+          .orderBy(desc(memoryItems.priority), desc(memoryItems.updatedAt))
+          .limit(PATHWAY_FETCH_LIMIT);
+      };
+
+      // ── Pathway 3: TEMPORAL (recency + validation) ──────────────
+      const runTemporal = async (): Promise<Array<Record<string, unknown>>> => {
+        if (filters.enableTemporal === false) return [];
+        const conds = buildConditions();
+
+        return await db
+          .select(projection)
+          .from(memoryItems)
+          .where(and(...conds))
+          .orderBy(
+            sql`(LN(1 + ${memoryItems.validationCount}) * 0.4 +
+                 EXP(-EXTRACT(EPOCH FROM (NOW() - COALESCE(${memoryItems.accessedAt}, ${memoryItems.updatedAt}))) / ${ACCESSED_DECAY_DAYS * 86400}) * 0.3 +
+                 EXP(-EXTRACT(EPOCH FROM (NOW() - COALESCE(${memoryItems.lastValidatedAt}, ${memoryItems.updatedAt}))) / ${VALIDATED_DECAY_DAYS * 86400}) * 0.3) DESC`,
+          )
+          .limit(PATHWAY_FETCH_LIMIT);
+      };
+
+      const [semanticRows, keywordRows, temporalRows] = await Promise.all([
+        runSemantic(),
+        runKeyword(),
+        runTemporal(),
+      ]);
+
+      // ── RRF merge ───────────────────────────────────────────────
+      interface MergedEntry {
+        item: Record<string, unknown>;
+        rrfScore: number;
+        similarity: number | null;
+        semanticRank: number | null;
+        keywordRank: number | null;
+        temporalRank: number | null;
+      }
+      const merged = new Map<string, MergedEntry>();
+
+      const accumulate = (
+        rows: Array<Record<string, unknown>>,
+        pathway: "semantic" | "keyword" | "temporal",
+      ) => {
+        rows.forEach((row, idx) => {
+          const id = String(row.id);
+          const rank = idx + 1;
+          const contribution = 1 / (RRF_K + rank);
+          let entry = merged.get(id);
+          if (!entry) {
+            entry = {
+              item: row,
+              rrfScore: 0,
+              similarity: null,
+              semanticRank: null,
+              keywordRank: null,
+              temporalRank: null,
+            };
+            merged.set(id, entry);
+          }
+          entry.rrfScore += contribution;
+          if (pathway === "semantic") {
+            entry.semanticRank = rank;
+            const sim = (row as { similarity?: unknown }).similarity;
+            entry.similarity = typeof sim === "number" ? sim : null;
+          } else if (pathway === "keyword") {
+            entry.keywordRank = rank;
+          } else {
+            entry.temporalRank = rank;
+          }
+        });
+      };
+
+      accumulate(semanticRows, "semantic");
+      accumulate(keywordRows, "keyword");
+      accumulate(temporalRows, "temporal");
+
+      // ── Trust weighting ─────────────────────────────────────────
+      const now = Date.now();
+      const accessedDecayMs = ACCESSED_DECAY_DAYS * 86400 * 1000;
+      const validatedDecayMs = VALIDATED_DECAY_DAYS * 86400 * 1000;
+
+      const results: MultiPathSearchResult[] = [];
+      for (const entry of merged.values()) {
+        const item = entry.item as Record<string, unknown>;
+        const validationCount = typeof item.validationCount === "number" ? item.validationCount : 1;
+        const validationBonus = Math.log(1 + validationCount) * VALIDATION_BOOST_WEIGHT;
+
+        const accessedAt = item.accessedAt instanceof Date ? item.accessedAt : null;
+        const accessedBonus = accessedAt
+          ? Math.exp(-(now - accessedAt.getTime()) / accessedDecayMs) * ACCESSED_BOOST_WEIGHT
+          : 0;
+
+        const lastValidatedAt = item.lastValidatedAt instanceof Date ? item.lastValidatedAt : null;
+        const validatedBonus = lastValidatedAt
+          ? Math.exp(-(now - lastValidatedAt.getTime()) / validatedDecayMs) * VALIDATED_BOOST_WEIGHT
+          : 0;
+
+        const trustWeight = 1 + validationBonus + accessedBonus + validatedBonus;
+
+        results.push({
+          id: String(item.id),
+          companyId: String(item.companyId),
+          title: String(item.title),
+          content: String(item.content),
+          category: String(item.category),
+          source: String(item.source),
+          status: String(item.status),
+          tags: (item.tags as string[] | null) ?? null,
+          departmentId: (item.departmentId as string | null) ?? null,
+          projectId: (item.projectId as string | null) ?? null,
+          layer: (item.layer as string | null) ?? null,
+          priority: typeof item.priority === "number" ? item.priority : 0,
+          validationCount,
+          agentId: (item.agentId as string | null) ?? null,
+          pinnedToSkill: Boolean(item.pinnedToSkill),
+          createdAt: item.createdAt as Date,
+          updatedAt: item.updatedAt as Date,
+          rrfScore: entry.rrfScore,
+          finalScore: entry.rrfScore * trustWeight,
+          similarity: entry.similarity,
+          semanticRank: entry.semanticRank,
+          keywordRank: entry.keywordRank,
+          temporalRank: entry.temporalRank,
+        });
+      }
+
+      results.sort((a, b) => b.finalScore - a.finalScore);
+      return results.slice(0, limit);
     },
 
     /**
@@ -954,5 +1271,211 @@ export function memoryService(db: Db) {
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .returning(memoryItemsSelection())
         .then((rows) => rows[0] ?? null),
+
+    /**
+     * V2.6 Phase 3 — list memory_retrievals rows for an issue (across all
+     * its heartbeat runs), joined to memory_items so the UI can render the
+     * item title/layer/category alongside the per-call audit metadata.
+     *
+     * Powers the workspace right-panel MemorySection. Sorted newest-first.
+     * Item join is a LEFT JOIN — retrievals whose memory_items have been
+     * deleted still surface (with null fields) so the audit trail
+     * accurately reflects what happened, not what currently exists.
+     *
+     * Limit defaults to 100; UI typically renders ~30. Cap at 500 to
+     * prevent runaway responses if a noisy run audits hundreds of items.
+     */
+    listRetrievalsForIssue: async (
+      companyId: string,
+      issueId: string,
+      options: { limit?: number } = {},
+    ) => {
+      const limit = Math.min(options.limit ?? 100, 500);
+
+      return await db
+        .select({
+          id: memoryRetrievals.id,
+          companyId: memoryRetrievals.companyId,
+          agentId: memoryRetrievals.agentId,
+          runId: memoryRetrievals.runId,
+          taskId: memoryRetrievals.taskId,
+          triggeredBy: memoryRetrievals.triggeredBy,
+          query: memoryRetrievals.query,
+          itemId: memoryRetrievals.itemId,
+          similarityScore: memoryRetrievals.similarityScore,
+          rank: memoryRetrievals.rank,
+          shownToAgent: memoryRetrievals.shownToAgent,
+          createdAt: memoryRetrievals.createdAt,
+          // joined item fields (LEFT JOIN — null when item deleted)
+          itemTitle: memoryItems.title,
+          itemContent: memoryItems.content,
+          itemCategory: memoryItems.category,
+          itemLayer: memoryItems.layer,
+          itemStatus: memoryItems.status,
+          itemPinnedToSkill: memoryItems.pinnedToSkill,
+        })
+        .from(memoryRetrievals)
+        .leftJoin(memoryItems, eq(memoryRetrievals.itemId, memoryItems.id))
+        .where(
+          and(
+            eq(memoryRetrievals.companyId, companyId),
+            eq(memoryRetrievals.taskId, issueId),
+          ),
+        )
+        .orderBy(desc(memoryRetrievals.createdAt))
+        .limit(limit);
+    },
+
+    moveItem: async (id: string, companyId: string, folderPath: string) => {
+      const caps = getDbCapabilities();
+      const path = normalizeMemoryFolderPath(folderPath);
+      const [row] = await db
+        .update(memoryItems)
+        .set({ folderPath: path, updatedAt: new Date() })
+        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
+        .returning(memoryItemsSelection(caps.hasVectorSupport));
+      if (row) {
+        publishLiveEvent({
+          type: "memory.item.moved",
+          companyId,
+          payload: { item: row },
+        });
+      }
+      return row ?? null;
+    },
+
+    setPinnedToTop: async (id: string, companyId: string, pinned: boolean) => {
+      const caps = getDbCapabilities();
+      const [row] = await db
+        .update(memoryItems)
+        .set({ founderPinnedToTop: pinned, updatedAt: new Date() })
+        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
+        .returning(memoryItemsSelection(caps.hasVectorSupport));
+      if (row) {
+        publishLiveEvent({
+          type: "memory.item.updated",
+          companyId,
+          payload: { item: row },
+        });
+      }
+      return row ?? null;
+    },
+
+    changeLayer: async (
+      id: string,
+      companyId: string,
+      input: {
+        newLayer: "identity" | "domain" | "active_context" | "working";
+        departmentId?: string | null;
+        goalId?: string | null;
+        taskId?: string | null;
+        expiresAt?: Date | null;
+        // Phase 6.2c follow-up: actor attribution for the audit row.
+        // Falls back to "system" when not provided (e.g., internal callers).
+        actorId?: string | null;
+      },
+    ) => {
+      const VALID_LAYERS = ["identity", "domain", "active_context", "working"];
+      if (!VALID_LAYERS.includes(input.newLayer)) {
+        throw new Error(`Invalid layer: ${input.newLayer}`);
+      }
+
+      // Step 1: Fetch current item state.
+      const caps = getDbCapabilities();
+      const [target] = await db
+        .select(memoryItemsSelection(caps.hasVectorSupport))
+        .from(memoryItems)
+        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)));
+
+      if (!target) return null;
+
+      const fromLayer = target.layer ?? "domain"; // default to domain if null
+      const toLayer = input.newLayer;
+
+      // Step 2: Validate transition requirements.
+      if (toLayer === "active_context" && !input.goalId) {
+        throw new Error("goalId required for active_context layer");
+      }
+      if (toLayer === "working" && !input.taskId) {
+        throw new Error("taskId required for working layer");
+      }
+
+      // Step 3: Compute field mutations per transition rules:
+      //   - any → working      : set taskId; clear goalId+expiresAt
+      //   - any → active_context: set goalId+expiresAt; clear taskId
+      //   - any → domain       : clear taskId+goalId+expiresAt; departmentId from input or keep current
+      //   - any → identity     : clear taskId+goalId+expiresAt+departmentId
+      //   - folderPath always cleared (item moves layers; folder-tree position resets)
+      const patch: Record<string, unknown> = {
+        layer: toLayer,
+        folderPath: "",
+        updatedAt: new Date(),
+      };
+
+      if (toLayer === "working") {
+        patch.taskId = input.taskId;
+        patch.goalId = null;
+        patch.expiresAt = null;
+        patch.departmentId = input.departmentId ?? (target as Record<string, unknown>).departmentId;
+      } else if (toLayer === "active_context") {
+        patch.goalId = input.goalId;
+        patch.expiresAt = input.expiresAt ?? null;
+        patch.taskId = null;
+        patch.departmentId = input.departmentId ?? (target as Record<string, unknown>).departmentId;
+      } else if (toLayer === "domain") {
+        patch.departmentId = input.departmentId ?? (target as Record<string, unknown>).departmentId;
+        patch.taskId = null;
+        patch.goalId = null;
+        patch.expiresAt = null;
+      } else if (toLayer === "identity") {
+        patch.taskId = null;
+        patch.goalId = null;
+        patch.expiresAt = null;
+        patch.departmentId = null;
+      }
+
+      // Step 4 + 5: Apply the update + write the audit row inside a single
+      // transaction so the layer-change and its audit trail are atomic. If
+      // either fails, neither is persisted. Per Phase 6.2c follow-up review.
+      const changelog = `layer changed: ${fromLayer} → ${toLayer}`;
+      const updated = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .update(memoryItems)
+          .set(patch)
+          .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
+          .returning(memoryItemsSelection(caps.hasVectorSupport));
+
+        // Look up the next version number inside the transaction so we don't
+        // race a concurrent insert.
+        const [latest] = await tx
+          .select({ versionNumber: memoryItemVersions.versionNumber })
+          .from(memoryItemVersions)
+          .where(eq(memoryItemVersions.memoryItemId, id))
+          .orderBy(desc(memoryItemVersions.versionNumber))
+          .limit(1);
+        const nextVersion = (latest?.versionNumber ?? 0) + 1;
+
+        await tx.insert(memoryItemVersions).values({
+          memoryItemId: id,
+          versionNumber: nextVersion,
+          content: changelog,
+          status: "approved",
+          // Plumb the actor ID through so the audit trail attributes the
+          // change to the operator, not a generic "system".
+          createdBy: input.actorId ?? "system",
+        });
+
+        return row;
+      });
+
+      // Step 6: Publish LiveEvent.
+      publishLiveEvent({
+        type: "memory.item.layer-changed",
+        companyId,
+        payload: { item: updated, fromLayer, toLayer },
+      });
+
+      return updated ?? null;
+    },
   };
 }

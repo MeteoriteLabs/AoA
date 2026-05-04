@@ -644,5 +644,31 @@ export function extractionService(db: Db) {
         });
       }
     },
+
+    /**
+     * Extract structured memory items from raw text (e.g. imported file content).
+     * Returns ExtractedItem[] — does NOT persist anything. Caller handles DB writes.
+     * Falls back gracefully: if LLM is unavailable, returns [].
+     * Caller should fall back to paragraph chunking when this returns [].
+     */
+    extractFromRawText: async (
+      companyId: string,
+      rawText: string,
+    ): Promise<ExtractedItem[]> => {
+      if (!rawText || rawText.trim().length < 10) return [];
+
+      try {
+        const { text: deptList } = await buildDepartmentsList(db, companyId);
+        const systemPrompt = EXTRACTION_PROMPT_TEMPLATE.replace(
+          "{{DEPARTMENTS_AND_PROJECTS_LIST}}",
+          deptList,
+        );
+        return await callLLM(systemPrompt, rawText, db, companyId);
+      } catch (err) {
+        // LLM unavailable or quota exceeded — caller falls back to paragraph chunking
+        logger.warn({ err, companyId }, "extractFromRawText: LLM call failed, falling back to chunking");
+        return [];
+      }
+    },
   };
 }

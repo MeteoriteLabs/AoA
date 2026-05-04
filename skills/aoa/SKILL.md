@@ -222,6 +222,43 @@ GET /api/companies/{companyId}/issues?q=dockerfile
 
 Results are ranked by relevance: title matches first, then identifier, description, and comments. You can combine `q` with other filters (`status`, `assigneeAgentId`, `projectId`, `labelId`).
 
+## Memory (V2.6)
+
+AoA exposes company-shared memory via three MCP tools at the same MCP endpoint your run JWT can already reach (`POST /api/companies/:companyId/mcp`, JSON-RPC `tools/call`):
+
+| Tool            | Purpose                                                                                          |
+| --------------- | ------------------------------------------------------------------------------------------------ |
+| `memory.search` | Semantic + keyword + temporal multi-pathway retrieval. Returns top-K items scoped to your access. |
+| `memory.get`    | Fetch one approved memory item by id (404 if outside your scope).                                 |
+| `memory.retain` | Persist an observation. Set `scopeToSelf: true` to auto-approve into your agent-personal bucket; otherwise creates a `pending` item awaiting founder review. |
+
+**When to use `memory.search` vs the auto-delivered skill:**
+
+- Pinned company knowledge is auto-delivered every run as the **`company-knowledge` skill** — read that file first; it covers the founder's curated baseline (brand voice, conventions, procedures, etc.).
+- Use `memory.search` when you need something specific that isn't in the pinned skill — past decisions, niche references, anything in the long tail.
+
+**When to use `memory.retain`:**
+
+- `scopeToSelf: true` for personal observations you want to remember across runs ("user prefers TypeScript over Flow"). These auto-approve into your private bucket — no founder review.
+- Without `scopeToSelf` for company-wide insights you think the founder should know about. These create `pending` items for founder approval (Critical Rule #6 — agents cannot write to shared memory directly).
+
+For purely local scratch within a single run, `para-memory-files` (workspace files) still works — it's just no longer the canonical place for shared knowledge.
+
+Required arguments for `memory.retain`:
+
+```
+{
+  "title": "User prefers TypeScript over Flow",
+  "content": "Observed during run #42 — user explicitly said no Flow types in new files",
+  "category": "preference",
+  "layer": "domain",
+  "sourceContext": "run:abc-123 / issue:def-456",
+  "scopeToSelf": true
+}
+```
+
+Required for source=agent items: `layer` (one of `identity` / `domain` / `active_context` / `working`) and `sourceContext` (free-text trace explaining where the observation came from).
+
 ## Full Reference
 
 For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/aoa/references/api-reference.md`

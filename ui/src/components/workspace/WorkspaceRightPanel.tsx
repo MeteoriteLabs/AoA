@@ -22,6 +22,7 @@ import { NotesSection } from "./sections/NotesSection";
 import { ChangesContextSection } from "./sections/ChangesContextSection";
 import { LogsContextSection } from "./sections/LogsContextSection";
 import { PreviewContextSection } from "./sections/PreviewContextSection";
+import { MemorySection } from "./sections/MemorySection";
 import { GitPanel } from "./tools/GitPanel";
 import { TerminalPanel } from "./tools/TerminalPanel";
 import type { PreviewMode } from "./WorkspacePreviewPanel";
@@ -301,15 +302,11 @@ export function WorkspaceRightPanel({
                         </div>
                       )}
                       {section.name === "memory" && (
-                        <div
-                          className="mx-3 p-3 rounded-md border border-dashed border-muted-foreground/30 flex items-start gap-2"
-                          data-testid="memory-placeholder"
-                        >
-                          <Brain className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-                          <div className="text-xs text-muted-foreground">
-                            Memory integration coming soon — agent memory will appear here once configured
-                          </div>
-                        </div>
+                        <MemorySection
+                          issueId={issueId}
+                          companyId={companyId}
+                          companyPrefix={companyPrefix}
+                        />
                       )}
                       {section.name === "notes" && (
                         <NotesSection workspaceId={workspace.id} />

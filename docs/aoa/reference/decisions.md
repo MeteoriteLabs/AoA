@@ -521,3 +521,54 @@ Paperclip's `paperclipUpsertIssueDocument` tool wraps a markdown body (identifie
 **Revisit when:** AoA introduces a similar skill-helper protocol (e.g., bundled CLI binaries that run alongside the agent) or adopts a `pi-local`-family adapter. At that point the PATH-prepending logic in the existing adapter `execute.ts` files is the porting site.
 
 **Reference:** Plan `docs/superpowers/plans/2026-04-26-upstream-paperclip-resync.md` (Tier 5 / D5 skipped).
+
+---
+
+## Decision #95 — Defer memory access model (Phase 6.2d) until team-under-Commander work has a concrete consumer
+
+**Status:** Deferred (locked 2026-05-04)
+
+**Context:** Phase 6.2 of the memory page redesign sketched (in `docs/superpowers/specs/2026-05-03-memory-layer-first-redesign-design.md` §11) a `MemoryAccessService` with `ActorContext` + `MemoryScope` enforcement — three caller classes (external MCP, Commander, worker agents) with permission ceilings, a unified scope filter type, and worker-default restrictions (Identity + own-dept Domain + own-task Working + tagged-shared). Phases 6.2a / 6.2b / 6.2c / 6.2e / 6.2f shipped the user-facing redesign; 6.2d (the access model implementation) was scoped as the final architectural slice.
+
+During the 6.2d brainstorm (2026-05-04), the founder pushed for a more aggressive design: **no pre-baked context for any agent class** — full MCP for everything, including worker agents. Workers would receive only their task description + memory tools (`memory.search`, `memory.list`, `memory.create_working_item`) + a default skill prompt instructing them to fetch context as needed. Commander stays tool-based (already is). External MCP stays tool-based (already is). The pre-baked heartbeat context package shrinks dramatically or disappears.
+
+**Decision:** Defer the entire 6.2d implementation. Write only the design notes; do not build until a concrete consumer exists.
+
+**Reasoning:**
+1. **No live consumer for worker scoping today.** Worker adapters (`claude_local`, `codex_local`, `opencode_local`, `openclaw`, `cursor`, `hermes_local`, `gemini_local`, `http`, `process`) do not have memory tools wired up. They consume the heartbeat-built context package and have no way to call `memory.search` mid-task. Adding tools to each adapter is part of the team-under-Commander architecture (Decision #91), not 6.2d.
+2. **Commander already works.** Commander's 30 tools include memory tools today. It uses them. Phase 6.2d would not add functionality there — at best it would refactor the existing scope filter to a unified type.
+3. **External MCP already works.** Tokens authenticate, get full company access. The `folderPath` filter could be added independently as a small polish slice if the founder wants it (see Revisit options).
+4. **Speculative design risk.** Building the access model without a worker consumer means we'd be guessing at usage patterns sub-agents will reveal. When team-under-Commander lands, we'd likely refactor — better to design alongside the consumer.
+5. **Founder's full-MCP preference reinforces this.** The aggressive "no pre-bake" model REQUIRES adapters to have memory tools. That's the team-under-Commander work.
+
+**What we're NOT doing yet (and why):**
+- `MemoryAccessService` + `ActorContext` types — no consumer that exercises them.
+- Worker scope ceiling enforcement — no worker calls memory tools today.
+- `sharedWithAgentIds` / tagged-sharing — no agent-tool surface to share into.
+- Read audit log — workers don't read memory directly.
+- Heartbeat refactor — invisible behavior change with no immediate upside.
+
+**What stays valid in the §11 sketch (preserved for future):**
+- Three consumer classes (external MCP / Commander / worker agents) with different default ceilings.
+- Worker agents get the most restricted default.
+- `MemoryScope` unified type covering layer + departmentId + folderPath + goalId + taskId.
+- `ActorContext` derived from auth middleware (not caller-supplied) — caller can narrow within ceiling, never escalate.
+- Future: per-agent or per-role grants via `sharedWithAgentIds` for explicit cross-scope access.
+
+**Founder's revised vision (captured for future implementation):**
+- Workers: no pre-bake. Task description + memory tools only. Default skill instructs use of `memory.search`, `memory.list`, `memory.create_working_item`. Working memory items lifecycle: archive on task close (current 7-day TTL behavior — keep).
+- Commander: full MCP, no pre-bake. Already operating this way.
+- External MCP: full MCP, token-authed. Already operating this way.
+
+**Open questions to resolve when this is picked back up:**
+1. Worker default scope precise rules (Active Context inclusion logic — by goal lineage, or excluded until tagged?).
+2. `sharedWithAgentIds` design: per-agent UUID grants vs role tags vs both.
+3. Read audit log: when, what, where (Commander's run summary? Settings? Inbox?).
+4. Migration path for existing MCP clients passing `{layer}` only after the unified type lands.
+5. Heartbeat context builder: shrink to bare minimum (task + working memory) when adapters gain tools, or eliminate entirely?
+
+**Revisit when:**
+- Team-under-Commander work begins (Decision #91 follow-up). At that point, sub-agents will need MCP tool access and the access model designs alongside the actual consumer.
+- OR: founder wants the `folderPath` filter exposed via Commander or external MCP today — that's a small standalone slice (~½ day) without the broader access-ceiling infrastructure.
+
+**Reference:** Spec `docs/superpowers/specs/2026-05-03-memory-layer-first-redesign-design.md` §11 (sketch + open questions). Brainstorm conversation logged 2026-05-04. Phase 6.2 shipped a/b/c/e/f without 6.2d.

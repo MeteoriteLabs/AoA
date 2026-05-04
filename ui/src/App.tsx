@@ -19,6 +19,7 @@ import { Issues } from "./pages/Issues";
 import { Goals } from "./pages/Goals";
 import { GoalDetail } from "./pages/GoalDetail";
 import { Memory } from "./pages/Memory";
+import { MemoryExplorer } from "./pages/MemoryExplorer";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Inbox } from "./pages/Inbox";
@@ -34,6 +35,7 @@ import { TeamDetail } from "./pages/TeamDetail";
 import { HumanDetail } from "./pages/HumanDetail";
 import { ActiveAgents } from "./pages/ActiveAgents";
 import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
+import { MemoryQuickSwitcher } from "./components/memory/MemoryQuickSwitcher";
 import { Discussions } from "./pages/Discussions";
 import { DiscussionDetail } from "./pages/DiscussionDetail";
 import { Skills } from "./pages/Skills";
@@ -164,7 +166,10 @@ function boardRoutes() {
       <Route path="briefs/:briefId" element={<Navigate to="/discussions" replace />} />
       <Route path="debriefs" element={<Navigate to="/discussions" replace />} />
       <Route path="active-agents" element={<ActiveAgents />} />
-      <Route path="memory" element={<Memory />} />
+      {/* Phase 6.2a: explorer is the only memory page; home content lives in its center pane when no scope is selected. /memory redirects in. */}
+      <Route path="memory" element={<Navigate to="explore" replace />} />
+      <Route path="memory/explore" element={<MemoryExplorer />} />
+      <Route path="memory/legacy" element={<Memory />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
@@ -306,6 +311,7 @@ export function App() {
       </Routes>
       <OnboardingWizard />
       <DiscussionCaptureModal />
+      <MemoryQuickSwitcher />
     </>
   );
 }

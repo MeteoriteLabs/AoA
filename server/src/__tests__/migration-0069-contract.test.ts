@@ -50,16 +50,20 @@ describe("Migration 0069 — pre-flight cleanup (I1 backstop)", () => {
     // Critical ordering invariant: dedupe → then index. Reversed, the
     // index creation aborts before the cleanup gets a chance to run.
     const cleanupIdx = sql.search(/UPDATE\s+team_coordinations\s+SET status\s*=\s*'archived'/i);
-    const indexIdx = sql.search(/CREATE UNIQUE INDEX\s+"team_coordinations_one_published_uq"/);
+    const indexIdx = sql.search(/CREATE UNIQUE INDEX(?:\s+IF NOT EXISTS)?\s+"team_coordinations_one_published_uq"/);
     expect(cleanupIdx).toBeGreaterThanOrEqual(0);
     expect(indexIdx).toBeGreaterThanOrEqual(0);
     expect(cleanupIdx).toBeLessThan(indexIdx);
   });
 
-  it("preserves the original 3 generated statements unchanged", () => {
-    // Cleanup is ADDITIVE — must not have replaced the drizzle-kit-
-    // generated statements.
-    expect(sql).toMatch(/CREATE UNIQUE INDEX\s+"team_coordinations_one_published_uq"\s+ON\s+"team_coordinations"\s+USING btree\s*\("team_id"\)\s+WHERE status\s*=\s*'published'/);
+  it("preserves the 3 generated statements (idempotent form ok)", () => {
+    // Originally these were emitted as plain CREATE UNIQUE INDEX / ALTER TABLE
+    // ADD CONSTRAINT statements. We made them idempotent (CREATE UNIQUE INDEX
+    // IF NOT EXISTS + DO-block constraint guards) to allow re-running on
+    // partial-apply states (where index/constraints exist but the migration
+    // wasn't recorded in __drizzle_migrations). The intent — index + 2
+    // constraints exist after the migration — is preserved either way.
+    expect(sql).toMatch(/CREATE UNIQUE INDEX(?:\s+IF NOT EXISTS)?\s+"team_coordinations_one_published_uq"\s+ON\s+"team_coordinations"\s+USING btree\s*\("team_id"\)\s+WHERE status\s*=\s*'published'/);
     expect(sql).toMatch(/ALTER TABLE\s+"teams"\s+ADD CONSTRAINT\s+"teams_status_check"\s+CHECK \(status IN \('active', 'archived'\)\)/);
     expect(sql).toMatch(/ALTER TABLE\s+"team_coordinations"\s+ADD CONSTRAINT\s+"team_coordinations_status_check"\s+CHECK \(status IN \('draft', 'published', 'archived'\)\)/);
   });

@@ -109,7 +109,33 @@ export {
   type UpdateMemoryItem,
   type SuggestMemoryUpdate,
   type SuggestMemoryArchive,
+  // V2.6: memory infrastructure
+  memoryProfileSchema,
+  memoryWriteCapabilitiesSchema,
+  createMemoryRelationSchema,
+  memoryRetrievalRowSchema,
+  memoryExtractionProgressSchema,
+  createMemoryExtractionSchema,
+  createMemoryExtractionBatchSchema,
+  type MemoryProfile,
+  type MemoryWriteCapabilities,
+  type CreateMemoryRelation,
+  type MemoryRetrievalRow,
+  type MemoryExtractionProgress,
+  type CreateMemoryExtraction,
+  type CreateMemoryExtractionBatch,
 } from "./memory.js";
+
+export {
+  memoryFolderCreateSchema,
+  memoryFolderUpdateSchema,
+  normalizeMemoryFolderPath,
+} from "./memory-folder.js";
+
+export {
+  memoryAssetUpdateSchema,
+  memoryAssetMoveSchema,
+} from "./memory-asset.js";
 
 export {
   createDebriefSchema,

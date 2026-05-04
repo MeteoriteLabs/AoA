@@ -44,6 +44,13 @@ import { transcriptionRoutes } from "./routes/transcription.js";
 import { memoryFeedbackRoutes } from "./routes/memory-feedback.js";
 import { feedbackRoutes } from "./routes/feedback.js";
 import { memoryLifecycleRoutes } from "./routes/memory-lifecycle.js";
+import { memoryRetrievalsRoutes } from "./routes/memory-retrievals.js";
+import { memoryStarterTemplatesRoutes } from "./routes/memory-starter-templates.js";
+import { fileImportRoutes } from "./routes/file-import.js";
+import { memoryFoldersRoutes } from "./routes/memory-folders.js";
+import { memoryAssetsRoutes } from "./routes/memory-assets.js";
+import { memoryAssetsUploadRoutes } from "./routes/memory-assets-upload.js";
+import { memoryAssetRenderRoutes } from "./routes/memory-asset-render.js";
 import { suggestionRoutes } from "./routes/suggestions.js";
 import { contextPackagingRoutes } from "./routes/context-packaging.js";
 import { mcpServerRoutes } from "./mcp/server.js";
@@ -176,6 +183,14 @@ export async function createApp(
   api.use(goalRoutes(db));
   api.use(teamsRoutes(db));
   api.use(teamImportsRoutes(db));
+  // Phase 6.0: memory-folders and memory-assets routes MUST mount before
+  // memoryRoutes because the latter has /memory/:id which would otherwise
+  // catch /memory/folders and /memory/assets (treating "folders"/"assets"
+  // as a UUID and 500ing).
+  api.use(memoryFoldersRoutes({ db }));
+  api.use(memoryAssetsRoutes({ db, storageService: opts.storageService }));
+  api.use(memoryAssetsUploadRoutes({ db, storageService: opts.storageService }));
+  api.use(memoryAssetRenderRoutes({ db, storageService: opts.storageService }));
   api.use(memoryRoutes(db));
   api.use(searchRoutes(db));
   api.use(debriefRoutes(db));
@@ -187,6 +202,9 @@ export async function createApp(
   api.use(memoryFeedbackRoutes(db));
   api.use(feedbackRoutes(db));
   api.use(memoryLifecycleRoutes(db));
+  api.use(memoryRetrievalsRoutes(db));
+  api.use(memoryStarterTemplatesRoutes(db));
+  api.use(fileImportRoutes(db, opts.storageService));
   api.use(teamRoutes(db));
   api.use(suggestionRoutes(db));
   api.use(contextPackagingRoutes(db));

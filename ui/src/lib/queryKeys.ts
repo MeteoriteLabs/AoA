@@ -122,6 +122,38 @@ export const queryKeys = {
     detail: (companyId: string, id: string) => ["memory", companyId, id] as const,
     versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"] as const,
     semanticSearch: (companyId: string, q: string) => ["memory", companyId, "semantic-search", q] as const,
+    // V2.6 Phase 3
+    retrievalsForIssue: (companyId: string, issueId: string) =>
+      ["memory", companyId, "retrievals", "issue", issueId] as const,
+    // V2.6 Phase 4
+    starterTemplates: (companyId: string) =>
+      ["memory", companyId, "starter-templates"] as const,
+    importJob: (companyId: string, jobId: string) =>
+      ["memory", companyId, "import-job", jobId] as const,
+    folders: {
+      list: (companyId: string, departmentId?: string) =>
+        ["memory", "folders", companyId, departmentId ?? "_all"] as const,
+    },
+    assets: {
+      list: (
+        companyId: string,
+        params?: {
+          departmentId?: string;
+          folderPath?: string;
+          mimeType?: string;
+        },
+      ) =>
+        [
+          "memory",
+          "assets",
+          companyId,
+          params?.departmentId ?? "_all",
+          params?.folderPath ?? "_all",
+          params?.mimeType ?? "_all",
+        ] as const,
+      detail: (companyId: string, id: string) =>
+        ["memory", "assets", companyId, "detail", id] as const,
+    },
   },
   search: {
     global: (companyId: string, query: string, includeArchived = false) =>

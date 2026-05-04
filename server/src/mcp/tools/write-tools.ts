@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   ISSUE_STATUSES,
+  MEMORY_ITEM_LAYERS,
   mcpArtifactVersionSchema,
   mcpDebriefSchema,
 } from "@armyofagents/shared";
@@ -373,6 +374,134 @@ async function handleAttachArtifactVersion(
   return ok(version);
 }
 
+/**
+ * V2.6 worker-facing memory.retain.
+ *
+ * Two distinct paths based on caller + scope:
+ *
+ *   PATH 1 — agent-personal scope (auto-approved)
+ *     Conditions: actor.source === "agent" AND scopeToSelf === true
+ *                 AND actor.agentId is set
+ *     Behavior: creates the item, then immediately approves it. The
+ *               item's agentId column is set to the caller's agentId,
+ *               which scopes it to the agent's personal "notebook" —
+ *               only this agent (plus founder/team_lead in scope) sees
+ *               it on subsequent reads. No founder review required.
+ *               This is the agent equivalent of jotting in a private
+ *               diary. Critical Rule #6 is preserved because the agent
+ *               can only auto-approve INTO ITS OWN BUCKET.
+ *
+ *   PATH 2 — org/department/project scope (pending)
+ *     Conditions: any other call shape
+ *     Behavior: identical to suggest-memory — creates a pending item
+ *               that requires founder approval. RBAC scope check
+ *               applies.
+ *
+ * Critical Rule #6 footnote: agents cannot write to identity / domain
+ * memory directly. Auto-approve is gated on (a) the personal-scope
+ * boolean and (b) actor being an agent. Founders calling memory.retain
+ * (e.g., from the board) always go through the pending path because
+ * they have richer authoring tools at /companies/:cid/memory.
+ */
+async function handleMemoryRetain(
+  ctx: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  const parsed = z
+    .object({
+      title: z.string().min(1),
+      content: z.string().min(1),
+      category: z.string().min(1),
+      layer: z.enum(MEMORY_ITEM_LAYERS),
+      sourceContext: z.string().min(1),
+      tags: z.array(z.string()).optional(),
+      departmentId: z.string().uuid().nullable().optional(),
+      projectId: z.string().uuid().nullable().optional(),
+      goalId: z.string().uuid().nullable().optional(),
+      taskId: z.string().uuid().nullable().optional(),
+      scopeToSelf: z.boolean().optional(),
+    })
+    .parse(args);
+
+  const callerAgentId = ctx.actor.agentId ?? null;
+  const isAgentActor = ctx.actor.source === "agent";
+  const isPersonalScope = parsed.scopeToSelf === true && isAgentActor && callerAgentId !== null;
+
+  // Org/department/project scope path — re-check RBAC even though the
+  // route already gates company access; the founder's permissionsSvc
+  // can deny per-layer or per-department writes.
+  if (!isPersonalScope) {
+    assertScopedProjectAccess(ctx.scope, parsed.departmentId ?? null, "Department");
+    assertScopedProjectAccess(ctx.scope, parsed.projectId ?? null, "Project");
+    await assertScopedGoalAccess(ctx.db, ctx.scope, parsed.goalId ?? null);
+
+    const memoryDepartmentId =
+      parsed.departmentId ?? parsed.projectId ?? null;
+    const canCreateMemory = await ctx.services.permissionsSvc.canAccessMemory(
+      ctx.companyId,
+      ctx.actor.userId,
+      "create",
+      {
+        layer: parsed.layer,
+        departmentId: memoryDepartmentId,
+        visibility: "scoped",
+      },
+    );
+    if (!canCreateMemory) {
+      return forbiddenResult("Insufficient permissions for memory create");
+    }
+  }
+
+  // memorySvc.create() forces source=agent → status=pending. We use
+  // that path for both routes, then immediately approve when
+  // isPersonalScope (preserving the rule that agents create pending
+  // items, but allowing the agent to flip its own personal bucket to
+  // approved as a follow-up step).
+  const item = await ctx.services.memorySvc.create(ctx.companyId, {
+    title: parsed.title,
+    content: parsed.content,
+    category: parsed.category,
+    layer: parsed.layer,
+    source: isAgentActor ? "agent" : "mcp",
+    sourceContext: parsed.sourceContext,
+    createdBy: ctx.actor.userId,
+    visibility: "scoped",
+    priority: 0,
+    tags: parsed.tags ?? null,
+    departmentId: parsed.departmentId ?? null,
+    projectId: parsed.projectId ?? null,
+    goalId: parsed.goalId ?? null,
+    taskId: parsed.taskId ?? null,
+    agentId: isPersonalScope ? callerAgentId : null,
+  });
+
+  let finalStatus = item.status;
+  if (isPersonalScope && item.status === "pending") {
+    const approved = await ctx.services.memorySvc.approve(ctx.companyId, item.id);
+    if (approved) finalStatus = approved.status;
+  }
+
+  await logActivity(ctx.db, {
+    companyId: ctx.companyId,
+    actorType: isAgentActor ? "agent" : "user",
+    actorId: ctx.actor.userId,
+    agentId: isAgentActor ? callerAgentId : null,
+    runId: ctx.actor.runId ?? null,
+    action: "memory.created",
+    entityType: "memory_item",
+    entityId: item.id,
+    details: {
+      title: item.title,
+      source: item.source,
+      status: finalStatus,
+      scopeToSelf: isPersonalScope,
+      layer: parsed.layer,
+    },
+  });
+
+  return ok({ id: item.id, status: finalStatus, agentId: item.agentId });
+}
+
 export const writeToolHandlers: Record<string, ToolHandler> = {
   "debrief-push": handleDebriefPush,
   "suggest-memory": handleSuggestMemory,
@@ -381,4 +510,6 @@ export const writeToolHandlers: Record<string, ToolHandler> = {
   "update-task": handleUpdateTask,
   "add-task-comment": handleAddTaskComment,
   "attach-artifact-version": handleAttachArtifactVersion,
+  // V2.6
+  "memory.retain": handleMemoryRetain,
 };

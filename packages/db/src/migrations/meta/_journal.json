@@ -498,6 +498,48 @@
       "when": 1777590000000,
       "tag": "0070_agent_role_3_tier",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1777583424634,
+      "tag": "0071_amazing_khan",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1777620591842,
+      "tag": "0072_green_the_spike",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1777713283557,
+      "tag": "0073_yummy_wallflower",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1746198000000,
+      "tag": "0074_memory_folder_path_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1777718392042,
+      "tag": "0075_seed_existing_companies_and_departments",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1777873339732,
+      "tag": "0076_archive_extracted_memory_items",
+      "breakpoints": true
     }
   ]
 }

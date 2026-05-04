@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MEMORY_ITEM_LAYERS } from "@armyofagents/shared";
 import {
   type ToolContext,
   type ToolHandler,
@@ -6,7 +7,8 @@ import {
   notFoundResult,
   ok,
 } from "./types.js";
-import { assertScopedProjectAccess, canAccessProjectScopedEntity } from "./scope.js";
+import { assertScopedProjectAccess, canAccessProjectScopedEntity, filterMemoryForScope } from "./scope.js";
+import { recordMemoryRetrievals } from "../../services/memory-retrieval-audit.js";
 
 async function handleMe(ctx: ToolContext): Promise<ToolResult> {
   const role = await ctx.resolveRole(ctx.companyId, ctx.actor.userId);
@@ -161,6 +163,104 @@ async function handleGetTaskComment(
   return ok(comment);
 }
 
+/**
+ * V2.6 worker-facing memory search.
+ *
+ * Runs memorySvc.searchMultiPath (semantic + keyword + temporal +
+ * RRF + trust weighting), then applies filterMemoryForScope to enforce
+ * the caller's RBAC visibility. Each shown item is logged to
+ * memory_retrievals (triggeredBy: "agent_search" for agent actors,
+ * "auto" otherwise — only agent_search wakes the workspace UI today
+ * but the audit row is preserved either way).
+ *
+ * Returned items include rrfScore, finalScore, similarity, and
+ * per-pathway ranks so callers can debug retrieval quality.
+ */
+async function handleMemorySearch(
+  ctx: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  const parsed = z
+    .object({
+      query: z.string().min(1),
+      layer: z.enum(MEMORY_ITEM_LAYERS).optional(),
+      category: z.string().optional(),
+      departmentId: z.string().uuid().optional(),
+      projectId: z.string().uuid().optional(),
+      limit: z.number().int().positive().max(50).optional(),
+    })
+    .parse(args);
+
+  const results = await ctx.services.memorySvc.searchMultiPath(ctx.companyId, parsed.query, {
+    layer: parsed.layer,
+    category: parsed.category,
+    departmentId: parsed.departmentId,
+    projectId: parsed.projectId,
+    limit: parsed.limit ?? 10,
+  });
+
+  // RBAC filter — items the caller can't see drop out before being
+  // returned, but their audit rows are still emitted with
+  // shownToAgent=false so "queried but not shown" is debuggable.
+  const allowed = await filterMemoryForScope(ctx.db, ctx.scope, results);
+  const allowedIds = new Set(allowed.map((row) => row.id));
+
+  void recordMemoryRetrievals(ctx.db, {
+    companyId: ctx.companyId,
+    agentId: ctx.actor.agentId ?? null,
+    runId: ctx.actor.runId ?? null,
+    triggeredBy: ctx.actor.source === "agent" ? "agent_search" : "agent_search",
+    query: parsed.query,
+    items: results.map((item, idx) => ({
+      id: item.id,
+      rank: idx + 1,
+      similarityScore: item.similarity,
+      shownToAgent: allowedIds.has(item.id),
+    })),
+  });
+
+  return ok({ items: allowed });
+}
+
+/**
+ * V2.6 worker-facing memory get.
+ *
+ * Fetches one approved memory item by id. Returns 404 when:
+ *   - the item doesn't exist
+ *   - the item belongs to another company
+ *   - the item's status is not "approved"
+ *   - the item is outside the caller's RBAC scope
+ *
+ * Logs the read attempt regardless of outcome (rank=1 for hits, no
+ * audit row when item not found — there's nothing to record).
+ */
+async function handleMemoryGet(
+  ctx: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  const parsed = z.object({ id: z.string().uuid() }).parse(args);
+
+  const item = await ctx.services.memorySvc.getById(ctx.companyId, parsed.id);
+  if (!item || item.status !== "approved") {
+    return notFoundResult("Memory item not found");
+  }
+
+  const allowed = await filterMemoryForScope(ctx.db, ctx.scope, [item]);
+  if (allowed.length === 0) {
+    return notFoundResult("Memory item not found");
+  }
+
+  void recordMemoryRetrievals(ctx.db, {
+    companyId: ctx.companyId,
+    agentId: ctx.actor.agentId ?? null,
+    runId: ctx.actor.runId ?? null,
+    triggeredBy: "agent_get",
+    items: [{ id: item.id, rank: 1, shownToAgent: true }],
+  });
+
+  return ok(allowed[0]);
+}
+
 export const readToolHandlers: Record<string, ToolHandler> = {
   "me": handleMe,
   "list-agents": handleListAgents,
@@ -171,4 +271,7 @@ export const readToolHandlers: Record<string, ToolHandler> = {
   "get-heartbeat-context": handleGetHeartbeatContext,
   "list-task-comments": handleListTaskComments,
   "get-task-comment": handleGetTaskComment,
+  // V2.6
+  "memory.search": handleMemorySearch,
+  "memory.get": handleMemoryGet,
 };

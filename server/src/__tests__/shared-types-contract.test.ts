@@ -82,8 +82,8 @@ describe("v2.5 internal agent constants", () => {
     expect(TRIGGER_SOURCES).toHaveLength(6);
   });
 
-  it("NOTIFICATION_TYPES has 5 values", () => {
-    expect(NOTIFICATION_TYPES).toHaveLength(5);
+  it("NOTIFICATION_TYPES has 10 values", () => {
+    expect(NOTIFICATION_TYPES).toHaveLength(10);
   });
 
   it("IA_RUN_STATUSES has 3 values", () => {

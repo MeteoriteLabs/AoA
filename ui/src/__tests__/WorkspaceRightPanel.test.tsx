@@ -1,3 +1,4 @@
+import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -222,6 +223,12 @@ vi.mock("@xterm/addon-fit", () => ({
 }));
 
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
+
+// Mock MemorySection so the expanded memory section renders a known placeholder
+// testid rather than spinning up the full memoryRetrievalsApi query.
+vi.mock("../components/workspace/sections/MemorySection", () => ({
+  MemorySection: () => <div data-testid="memory-placeholder" />,
+}));
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({

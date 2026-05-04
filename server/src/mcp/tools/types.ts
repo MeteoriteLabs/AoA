@@ -20,11 +20,32 @@ export type McpUserScope =
   | { kind: "founder"; userId: string }
   | { kind: "scoped"; userId: string; projectIds: Set<string> };
 
+/**
+ * Identity of the caller of an MCP route.
+ *
+ * `source` differentiates how the caller authenticated:
+ *   - "mcp"       — Bearer token matched an mcp_api_keys row (external client)
+ *   - "board"     — board session cookie (founder/team_lead from browser)
+ *   - "agent"     — short-lived run JWT issued to a CLI worker agent
+ *   - "commander" — internal-agent JWT (reserved; only meaningful once
+ *                   Commander goes CLI per V2.5 team-under-Commander work)
+ *
+ * Worker-tool gating (allowedActors) reads `source` to decide whether
+ * a given tool is callable by the caller.
+ *
+ * `agentId`/`runId` are populated for agent + commander actors and let
+ * tools like memory.retain (auto-approve self-personal scope) identify
+ * the calling agent without trusting a caller-supplied parameter.
+ */
 export type ProtocolActor = {
   userId: string;
   companyId: string | null;
   keyId: string | null;
-  source: "mcp" | "board";
+  source: "mcp" | "board" | "agent" | "commander";
+  /** Set for agent + commander actors. Null for mcp + board. */
+  agentId?: string | null;
+  /** Set when the agent is calling during an active heartbeat run. */
+  runId?: string | null;
 };
 
 export interface ToolServices {

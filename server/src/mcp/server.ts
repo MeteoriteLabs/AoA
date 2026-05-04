@@ -23,6 +23,7 @@ import { assertBoard, assertCompanyAccess, getActorInfo } from "../routes/authz.
 import {
   TOOL_DEFINITIONS,
   toolHandlers,
+  toolAllowedActors,
   type McpUserScope,
   type ToolContext,
   type ToolServices,
@@ -143,6 +144,27 @@ function asToolContent(payload: unknown) {
   };
 }
 
+/**
+ * Translate the request's `req.actor` (set by the auth middleware in
+ * server/src/middleware/auth.ts) into a stable ProtocolActor shape that
+ * MCP routes can consume.
+ *
+ * The auth layer recognizes four actor types: "mcp", "board", "agent",
+ * "none". This function maps the first three (a "none" actor returns
+ * null and the route returns 401).
+ *
+ * For agent actors:
+ *   - userId is synthesized from agentId so existing scope/audit code
+ *     that keys on userId continues to work without branching.
+ *   - companyId comes from the JWT (validated by middleware against the
+ *     URL companyId in ensureProtocolAccess).
+ *   - agentId and runId are passed through so per-agent tools like
+ *     memory.retain can identify the caller without trusting an arg.
+ *
+ * "commander" is reserved for the future when Commander goes CLI.
+ * Auth middleware doesn't currently emit a "commander" type — that
+ * branch lights up alongside the team-under-Commander work.
+ */
 function protocolAuthActor(req: Request) {
   if (req.actor.type === "mcp") {
     return {
@@ -150,6 +172,8 @@ function protocolAuthActor(req: Request) {
       companyId: req.actor.companyId ?? null,
       keyId: req.actor.keyId ?? null,
       source: "mcp" as const,
+      agentId: null,
+      runId: null,
     };
   }
   if (req.actor.type === "board") {
@@ -158,6 +182,19 @@ function protocolAuthActor(req: Request) {
       companyId: null,
       keyId: null,
       source: "board" as const,
+      agentId: null,
+      runId: null,
+    };
+  }
+  if (req.actor.type === "agent") {
+    const agentId = req.actor.agentId ?? null;
+    return {
+      userId: agentId ?? "agent-unknown",
+      companyId: req.actor.companyId ?? null,
+      keyId: null,
+      source: "agent" as const,
+      agentId,
+      runId: req.actor.runId ?? null,
     };
   }
   return null;
@@ -189,7 +226,12 @@ async function ensureProtocolAccess(
   if (!company) {
     throw forbidden("Company not found");
   }
-  if (!company.mcpEnabled) {
+  // mcpEnabled gates EXTERNAL clients (mcp Bearer keys). Internal agent
+  // actors authenticate via their run JWT — they need MCP access for
+  // memory tools regardless of the founder's external-MCP toggle.
+  // Board (founder) sessions also bypass this gate (their auth is
+  // already trust-bounded). External "mcp" keys are still gated.
+  if (actor.source === "mcp" && !company.mcpEnabled) {
     throw forbidden("MCP server is disabled for this company");
   }
   return {
@@ -505,6 +547,20 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
         const handler = toolHandlers[params.name];
         if (!handler) {
           res.status(400).json(jsonRpcError(requestBody.id ?? null, -32601, "Tool not found"));
+          return;
+        }
+        // V2.6: per-tool actor-type gate. Tools listed in toolAllowedActors
+        // are restricted to the listed actor sources. Tools NOT in the map
+        // remain open to all authenticated actors (pre-V2.6 behavior).
+        const allowed = toolAllowedActors[params.name];
+        if (allowed && !allowed.includes(protocolActor.source)) {
+          res.status(403).json(
+            jsonRpcError(
+              requestBody.id ?? null,
+              -32003,
+              `Tool ${params.name} is not available for ${protocolActor.source} actors`,
+            ),
+          );
           return;
         }
         const ctx: ToolContext = {
