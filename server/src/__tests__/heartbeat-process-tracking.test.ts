@@ -26,12 +26,14 @@ describe("safeGetPgid", () => {
     expect(safeGetPgid(999999999)).toBeNull();
   });
 
-  it("returns a number for the current process on POSIX", () => {
+  // process.getpgid is not exposed in Node.js (verified Node 18/20/22/24).
+  // safeGetPgid swallows the TypeError and returns null on every platform.
+  // The function exists for forward-compatibility / explicit fallback in
+  // killProcessTree. Real implementation tracked in
+  // https://github.com/MeteoriteLabs/AoA/issues/96.
+  it("returns null on POSIX because process.getpgid is unavailable in Node", () => {
     if (process.platform === "win32") return;
-    const pgid = safeGetPgid(process.pid);
-    // Should be a positive integer
-    expect(typeof pgid).toBe("number");
-    expect(pgid).toBeGreaterThan(0);
+    expect(safeGetPgid(process.pid)).toBeNull();
   });
 });
 
