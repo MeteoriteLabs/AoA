@@ -3828,9 +3828,29 @@ export function heartbeatService(db: Db) {
 
       const running = runningProcesses.get(run.id);
       if (running) {
+        logger.info(
+          {
+            runId: run.id,
+            agentId: run.agentId,
+            pid: running.child.pid,
+            processGroupId: running.processGroupId,
+            reason: "cancelRun",
+          },
+          "heartbeat.cancel: signaling SIGTERM",
+        );
         signalRunningProcess(running, "SIGTERM");
         const graceMs = Math.max(1, running.graceSec) * 1000;
         setTimeout(() => {
+          logger.info(
+            {
+              runId: run.id,
+              agentId: run.agentId,
+              pid: running.child.pid,
+              processGroupId: running.processGroupId,
+              reason: "cancelRun.grace-expired",
+            },
+            "heartbeat.cancel: signaling SIGKILL",
+          );
           signalRunningProcess(running, "SIGKILL");
         }, graceMs);
       }
@@ -3882,6 +3902,16 @@ export function heartbeatService(db: Db) {
 
         const running = runningProcesses.get(run.id);
         if (running) {
+          logger.info(
+            {
+              runId: run.id,
+              agentId: run.agentId,
+              pid: running.child.pid,
+              processGroupId: running.processGroupId,
+              reason: "cancelActiveForAgent",
+            },
+            "heartbeat.cancel: signaling SIGTERM",
+          );
           signalRunningProcess(running, "SIGTERM");
           runningProcesses.delete(run.id);
         }
@@ -3911,6 +3941,16 @@ export function heartbeatService(db: Db) {
           });
           const running = runningProcesses.get(run.id);
           if (running) {
+            logger.info(
+              {
+                runId: run.id,
+                agentId: run.agentId,
+                pid: running.child.pid,
+                processGroupId: running.processGroupId,
+                reason: "cancelBudgetScopeWork.agent",
+              },
+              "heartbeat.cancel: signaling SIGTERM",
+            );
             signalRunningProcess(running, "SIGTERM");
             runningProcesses.delete(run.id);
           }
@@ -3937,6 +3977,16 @@ export function heartbeatService(db: Db) {
         });
         const running = runningProcesses.get(run.id);
         if (running) {
+          logger.info(
+            {
+              runId: run.id,
+              agentId: run.agentId,
+              pid: running.child.pid,
+              processGroupId: running.processGroupId,
+              reason: "cancelBudgetScopeWork.company",
+            },
+            "heartbeat.cancel: signaling SIGTERM",
+          );
           signalRunningProcess(running, "SIGTERM");
           runningProcesses.delete(run.id);
         }
