@@ -291,8 +291,13 @@ jobs:
       - name: Forbidden tokens scan (.forbidden-tokens.json)
         run: pnpm exec node scripts/check-forbidden-tokens.mjs
 
+  # verify and e2e run independently of policy. Failing policy (e.g.,
+  # contributor accidentally committed pnpm-lock.yaml) should not mask
+  # verify's test failures or e2e's UI failures — contributors deserve
+  # to see all their PR's failure signal, not just the first gate.
+  # Branch protection rules require ALL of policy/verify/e2e/brand-check
+  # to pass for merge — that's the right gate, not a pipeline dependency.
   verify:
-    needs: [policy]
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -324,7 +329,6 @@ jobs:
         run: pnpm build
 
   e2e:
-    needs: [policy]
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
