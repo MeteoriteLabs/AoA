@@ -11,7 +11,7 @@
     "dev:ui": "pnpm --filter @armyofagents/ui dev",
     "dev:list": "ps aux | grep -i 'pnpm.*dev' | grep -v grep",
     "dev:stop": "pkill -f 'pnpm.*dev' || true",
-    "fetch-catalog": "pnpm exec tsx scripts/fetch-bundled-catalog.ts",
+    "fetch-catalog": "pnpm --filter @armyofagents/db exec -- tsx ../../scripts/fetch-bundled-catalog.ts",
     "prebuild": "pnpm fetch-catalog",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
