@@ -24,7 +24,7 @@ const sampleTree: UnifiedOrgNode[] = [
   makeOrgNode({
     id: "agent-1",
     name: "Claude",
-    role: "ceo",
+    role: "cxo",
     nodeType: "agent",
     adapterType: "claude_local",
     children: [

@@ -58,7 +58,7 @@ describe("generateReadme", () => {
           slug: "ada",
           name: "Ada",
           path: "agents/ada/AGENTS.md",
-          role: "ceo",
+          role: "cxo",
           title: null,
           icon: null,
           capabilities: null,
@@ -105,8 +105,8 @@ describe("generateReadme", () => {
       ],
     });
     const readme = generateReadme(manifest);
-    // Roll-up: 1 CEO + 2 Engineers
-    expect(readme).toMatch(/CEO\s*\|\s*1/);
+    // Roll-up: 1 cxo + 2 Engineers
+    expect(readme).toMatch(/cxo\s*\|\s*1/);
     expect(readme).toMatch(/Engineer\s*\|\s*2/);
     // Agents table has all three
     expect(readme).toContain("Ada");
@@ -123,7 +123,7 @@ describe("generateReadme", () => {
           slug: "ada",
           name: "Ada",
           path: "agents/ada/AGENTS.md",
-          role: "ceo",
+          role: "cxo",
           title: null,
           icon: null,
           capabilities: null,

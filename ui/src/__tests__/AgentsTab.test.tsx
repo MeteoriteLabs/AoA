@@ -157,7 +157,7 @@ describe("AgentsTab", () => {
 
   function makeAgentList() {
     return [
-      makeAgent({ id: "a1", name: "Alice", role: "ceo", status: "active", adapterType: "codex_local", reportsTo: null, budgetMonthlyCents: 5000, title: "Chief Executive" }),
+      makeAgent({ id: "a1", name: "Alice", role: "cxo", status: "active", adapterType: "codex_local", reportsTo: null, budgetMonthlyCents: 5000, title: "Chief Executive" }),
       makeAgent({ id: "a2", name: "Bob", role: "engineer", status: "paused", adapterType: "claude_local", reportsTo: "a1", parentType: "agent", parentId: "a1", budgetMonthlyCents: 0, title: null }),
     ];
   }
@@ -359,7 +359,7 @@ describe("AgentsTab", () => {
   });
 
   it("shows title in agent subtitle when present", () => {
-    const agents = [makeAgent({ id: "a1", name: "Alice", role: "ceo", title: "Chief Executive" })];
+    const agents = [makeAgent({ id: "a1", name: "Alice", role: "cxo", title: "Chief Executive" })];
 
     renderWithProviders(
       <AgentsTab agents={agents as any} orgTree={[]} permissions={defaultPermissions} />,
