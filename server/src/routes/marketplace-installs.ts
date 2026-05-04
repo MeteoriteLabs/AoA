@@ -160,15 +160,23 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       if (decision === "request") {
         // Persist a pending operation row so founders can review it via GET /install/:operationId,
         // then notify founders that a team member has requested the install.
-        const requestedOp = await startInstallOperation({
-          request, catalogItem, companyId, requestedByUserId: userId, db,
-        });
+        let requestedOp;
+        try {
+          requestedOp = await startInstallOperation({
+            request, catalogItem, companyId, requestedByUserId: userId, db,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          res.status(500).json({ error: `Failed to queue install request: ${message}` });
+          return;
+        }
         void marketplaceNotifications
-          .installRequested(db, companyId, catalogItem.name, userId)
+          .installRequested(db, companyId, catalogItem.name, userId, requestedOp.id)
           .catch((err) => logger.error({ err }, "marketplace installRequested notification failed"));
         res.status(202).json({
           queued: true,
           operationId: requestedOp.id,
+          status: requestedOp.status,
           message: "Install request submitted. A founder will review it.",
         });
         return;

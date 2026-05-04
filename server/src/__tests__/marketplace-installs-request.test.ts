@@ -172,6 +172,7 @@ describe("POST /install — decision=request path", () => {
     expect(res.status).toBe(202);
     expect(res.body.operationId).toBe("op-request-uuid");
     expect(res.body.queued).toBe(true);
+    expect(res.body.status).toBe("pending");
   });
 
   it("calls startInstallOperation to persist the pending row", async () => {
@@ -190,9 +191,21 @@ describe("POST /install — decision=request path", () => {
       .send({ catalogItemId: "skill:aoa-curated/code-review" });
 
     expect(marketplaceNotifications.installRequested).toHaveBeenCalledOnce();
-    const [, , itemName, requestingUserId] = vi.mocked(marketplaceNotifications.installRequested).mock.calls[0];
+    const [, , itemName, requestingUserId, opId] = vi.mocked(marketplaceNotifications.installRequested).mock.calls[0];
     expect(itemName).toBe("Code Review");
     expect(requestingUserId).toBe("user-team-member");
+    expect(opId).toBe("op-request-uuid");
+  });
+
+  it("returns 500 with structured error when startInstallOperation throws", async () => {
+    vi.mocked(startInstallOperation).mockRejectedValueOnce(new Error("DB connection lost"));
+    const app = buildApp();
+    const res = await request(app)
+      .post("/api/companies/c1/marketplace/install")
+      .send({ catalogItemId: "skill:aoa-curated/code-review" });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/failed to queue install request/i);
   });
 
   it("does NOT call dispatchInstall (request stays pending for founder review)", async () => {
