@@ -41,11 +41,20 @@ export function resolveProcessGroupId(child: ChildProcess): number | null {
 /**
  * Signal a running process or its process group.
  *
- * On POSIX with a valid processGroupId, sends the signal to the negative
- * PID (which addresses the entire process group, killing the parent and
- * all its children). Falls back to signaling the child directly if the
- * group signal fails. On Windows, signals the child via Node's built-in
- * Process.kill (no process-group semantics).
+ * POSIX with a valid processGroupId:
+ *   sends the signal to -processGroupId (negative PID), which addresses
+ *   the entire process group, killing the parent and all its children.
+ *   Falls back to signaling the child directly if the group signal
+ *   fails (e.g., the parent has already died but its children
+ *   re-parented to init).
+ *
+ * Windows:
+ *   uses Node's child.kill(signal). This signals ONLY the spawned
+ *   child — any subprocesses the child spawned become orphans. This
+ *   is a known limitation (Paperclip has the same behavior). To
+ *   propagate kills to the whole tree on Windows, AoA would need to
+ *   shell out to `taskkill /PID <pid> /T /F`. Tracked as a follow-up
+ *   if Windows-deployment process-tree leaks become a real concern.
  *
  * Caller is responsible for the SIGTERM → SIGKILL escalation timer.
  *
