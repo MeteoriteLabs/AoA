@@ -164,7 +164,7 @@ describe("Unified Org Tree (T7)", () => {
     });
 
     it("builds agent-only tree using reportsTo fallback", async () => {
-      const ceo = makeAgent({ id: "a-ceo", name: "CEO Agent", role: "ceo", reportsTo: null });
+      const ceo = makeAgent({ id: "a-ceo", name: "CEO Agent", role: "cxo", reportsTo: null });
       const worker = makeAgent({ id: "a-worker", name: "Worker", reportsTo: "a-ceo" });
 
       const db = createSequenceDb({
@@ -434,7 +434,7 @@ describe("Unified Org Tree (T7)", () => {
     it("walks agent-only chain via reportsTo fallback", async () => {
       const worker = makeAgent({ id: "a-worker", reportsTo: "a-manager" });
       const manager = makeAgent({ id: "a-manager", name: "Manager", reportsTo: "a-ceo", role: "manager" });
-      const ceo = makeAgent({ id: "a-ceo", name: "CEO", role: "ceo", reportsTo: null });
+      const ceo = makeAgent({ id: "a-ceo", name: "CEO", role: "cxo", reportsTo: null });
 
       const db = createSequenceDb({
         selects: [
