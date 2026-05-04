@@ -73,7 +73,9 @@ function buildApp(dbOverrides: any = {}) {
 
   // Second select for skill row needs different data
   let selectCall = 0;
-  const smartDb = {
+  const txSetsCapture: any[][] = [];
+
+  const smartDb: any = {
     select: () => {
       selectCall++;
       const n = selectCall;
@@ -84,6 +86,24 @@ function buildApp(dbOverrides: any = {}) {
       };
     },
     update: db.update,
+    transaction: async (cb: (tx: any) => Promise<any>) => {
+      const txSets: any[] = [];
+      const tx = {
+        update: () => ({
+          set: (values: any) => ({
+            where: () => {
+              txSets.push(values);
+              dbOverrides.capturedSets?.push(values);
+              return Promise.resolve();
+            },
+          }),
+        }),
+      };
+      const result = await cb(tx);
+      txSetsCapture.push(txSets);
+      return result;
+    },
+    _txSetsCapture: txSetsCapture,
   };
 
   const router = createMarketplaceCompanyRouter({
@@ -132,5 +152,29 @@ describe("POST /updates/:id/merge — sets customized = true", () => {
     expect(res.status).toBe(200);
     // Fails before the fix — current code omits customized from the SET clause
     expect(capturedSets.some((s) => s.customized === true)).toBe(true);
+  });
+
+  it("executes both the skill update and the pending-update status change inside a single transaction", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      text: async () => "# New upstream content",
+    })) as any;
+
+    const capturedSets: any[] = [];
+    const { app, smartDb } = buildApp({ capturedSets });
+
+    const res = await request(app)
+      .post("/api/companies/c1/marketplace/updates/upd-1/merge")
+      .send({ decisions: { "## Overview": "theirs" } });
+
+    expect(res.status).toBe(200);
+
+    // Exactly one transaction should have been opened
+    expect(smartDb._txSetsCapture).toHaveLength(1);
+
+    const txSets = smartDb._txSetsCapture[0];
+    // Transaction must contain both writes: the skill update and the pending-update status
+    expect(txSets.some((s: any) => "markdown" in s)).toBe(true);   // skill update
+    expect(txSets.some((s: any) => s.status === "applied")).toBe(true); // pending update
   });
 });
