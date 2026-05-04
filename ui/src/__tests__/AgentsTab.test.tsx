@@ -79,7 +79,7 @@ vi.mock("../components/StatusBadge", () => ({
 
 vi.mock("../components/agent-config-primitives", () => ({
   adapterLabels: { claude_local: "Claude (local)", codex_local: "Codex (local)" } as Record<string, string>,
-  roleLabels: { engineer: "Engineer", designer: "Designer", ceo: "Director", general: "General" } as Record<string, string>,
+  roleLabels: { engineer: "Engineer", designer: "Designer", cxo: "Director", lead: "Lead", general: "General" } as Record<string, string>,
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
