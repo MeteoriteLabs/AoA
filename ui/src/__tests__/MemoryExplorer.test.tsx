@@ -1,7 +1,17 @@
+import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
+import { ToastProvider } from "../context/ToastContext";
+
+// Mock react-pdf and pdfjs-dist to avoid DOMMatrix/canvas issues in jsdom
+vi.mock("react-pdf", () => ({
+  Document: ({ children }: any) => <div data-testid="pdf-document">{children}</div>,
+  Page: () => <div data-testid="pdf-page" />,
+  pdfjs: { GlobalWorkerOptions: {} },
+}));
+vi.mock("pdfjs-dist", () => ({ GlobalWorkerOptions: {} }));
 
 // Mock react-resizable-panels with simple divs
 vi.mock("react-resizable-panels", () => ({
@@ -120,9 +130,11 @@ function renderPage() {
   });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter>
-        <MemoryExplorer />
-      </MemoryRouter>
+      <ToastProvider>
+        <MemoryRouter>
+          <MemoryExplorer />
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>,
   );
 }
@@ -143,10 +155,10 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     );
   });
 
-  it("right pane shows the empty state when nothing is selected", async () => {
+  it("right pane shows the home view when nothing is selected", async () => {
     renderPage();
     await waitFor(() =>
-      expect(screen.getByText(/Select an item to view it here/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Coming soon/i)).toBeInTheDocument(),
     );
   });
 });

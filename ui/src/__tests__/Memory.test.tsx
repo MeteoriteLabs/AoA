@@ -139,6 +139,9 @@ vi.mock("@tanstack/react-query", async () => {
         if (opts.queryKey?.[2] === "pending") {
           return { data: pendingQueue, isLoading: false };
         }
+        if (opts.queryKey?.[2] === "starter-templates") {
+          return { data: [], isLoading: false };
+        }
         return { data: allItems, isLoading: false };
       }
       if (opts.queryKey?.[0] === "projects") {
@@ -205,6 +208,17 @@ vi.mock("../lib/queryKeys", () => ({
       pending: (companyId: string) => ["memory", companyId, "pending"],
       detail: (companyId: string, id: string) => ["memory", companyId, id],
       versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"],
+      semanticSearch: (companyId: string, q: string) => ["memory", companyId, "semantic-search", q],
+      retrievalsForIssue: (companyId: string, issueId: string) => ["memory", companyId, "retrievals", "issue", issueId],
+      starterTemplates: (companyId: string) => ["memory", companyId, "starter-templates"],
+      importJob: (companyId: string, jobId: string) => ["memory", companyId, "import-job", jobId],
+      folders: {
+        list: (companyId: string, departmentId?: string) => ["memory", "folders", companyId, departmentId ?? "_all"],
+      },
+      assets: {
+        list: (companyId: string) => ["memory", "assets", companyId],
+        detail: (companyId: string, id: string) => ["memory", "assets", companyId, "detail", id],
+      },
     },
     projects: {
       list: (companyId: string) => ["projects", companyId],
@@ -260,6 +274,9 @@ describe("Memory Page", () => {
     it("shows empty placeholder when a layer has no items", () => {
       mockQueryFn = (opts: any) => {
         if (opts.queryKey?.[0] === "memory") {
+          if (opts.queryKey?.[2] === "starter-templates") {
+            return { data: [], isLoading: false };
+          }
           return { data: [identityItem], isLoading: false };
         }
         return { data: [], isLoading: false };
@@ -377,6 +394,9 @@ describe("Memory Page", () => {
           if (opts.queryKey?.[2] === "pending") {
             return { data: { items: [], versions: [], archives: [], totalCount: 0 }, isLoading: false };
           }
+          if (opts.queryKey?.[2] === "starter-templates") {
+            return { data: [], isLoading: false };
+          }
           return { data: [domainItem], isLoading: false };
         }
         return { data: [], isLoading: false };
@@ -469,6 +489,9 @@ describe("Memory Page", () => {
           return { data: [], isLoading: false };
         }
         if (opts.queryKey?.[0] === "memory") {
+          if (opts.queryKey?.[2] === "starter-templates") {
+            return { data: [], isLoading: false };
+          }
           return { data: allItems, isLoading: false };
         }
         return { data: [], isLoading: false };
