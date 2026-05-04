@@ -328,6 +328,48 @@ jobs:
       - name: Build
         run: pnpm build
 
+  # Advisory cross-platform coverage — matches the verify job but runs on
+  # macOS + Windows. continue-on-error: true so failures don't block PR
+  # merges (existing `verify` Linux job remains the required gate via
+  # branch protection). Failures here become follow-up issues, not
+  # in-PR scope expansions. Once a platform stabilizes, flip its matrix
+  # entry to required by adding it to branch protection rules.
+  verify-cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Run tests
+        run: pnpm test:run
+
+      - name: Build
+        run: pnpm build
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -393,3 +435,77 @@ jobs:
             tests/e2e/playwright-report/
             tests/e2e/test-results/
           retention-days: 14
+
+  # Advisory cross-platform coverage for e2e — matches the e2e job but
+  # runs on macOS + Windows. continue-on-error: true so failures don't
+  # block PR merges. Some steps differ from the Linux e2e job:
+  #   - playwright install runs without --with-deps (Linux apt-only flag)
+  #   - config file generation uses `shell: bash` for HEREDOC support
+  #     (Windows runners ship Git Bash and provide bash as a shell option)
+  e2e-cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Pin marketplace catalog fixture for stable e2e
+        shell: bash
+        run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
+
+      - name: Install Playwright
+        run: npx playwright install chromium
+
+      - name: Generate Paperclip config
+        shell: bash
+        run: |
+          mkdir -p ~/.aoa/instances/default
+          cat > ~/.aoa/instances/default/config.json << 'CONF'
+          {
+            "$meta": { "version": 1, "updatedAt": "2026-01-01T00:00:00.000Z", "source": "onboard" },
+            "database": { "mode": "embedded-postgres" },
+            "logging": { "mode": "file" },
+            "server": { "deploymentMode": "local_trusted", "host": "127.0.0.1", "port": 3100 },
+            "auth": { "baseUrlMode": "auto" },
+            "storage": { "provider": "local_disk" },
+            "secrets": { "provider": "local_encrypted", "strictMode": false }
+          }
+          CONF
+
+      - name: Run e2e tests
+        env:
+          AOA_E2E_SKIP_LLM: "true"
+        run: pnpm run test:e2e
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.os }}
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
