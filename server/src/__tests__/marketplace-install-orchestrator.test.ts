@@ -35,7 +35,7 @@ describe("startInstallOperation", () => {
     insert: () => ({
       values: (row: any) => {
         insertedOps.push(row);
-        return { returning: () => Promise.resolve([{ ...row, id: "op-uuid-1" }]) };
+        return { onConflictDoNothing: () => ({ returning: () => Promise.resolve([{ ...row, id: "op-uuid-1" }]) }) };
       },
     }),
     select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) }),

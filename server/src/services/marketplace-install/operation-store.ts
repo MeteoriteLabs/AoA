@@ -69,9 +69,11 @@ export async function findExistingByIdempotencyKey(
 /**
  * Insert a new operation row in `pending` status.
  *
- * The DB has `defaultRandom()` on `id`, `defaultNow()` on `startedAt`/`createdAt`,
- * and `default("pending")` on `status` — we still pass `status` explicitly so
- * the row reads identically before and after the install loop runs.
+ * Uses `.onConflictDoNothing().returning()` so that a stale idempotency-key
+ * row (past the 24h app-level window but still present in the DB's unbounded
+ * unique index) does not cause a constraint violation. When the insert is
+ * suppressed by the conflict, we fetch and return the existing row so the
+ * caller gets a usable OperationRow regardless.
  */
 export async function createOperation(db: Db, input: CreateOperationInput): Promise<OperationRow> {
   const [row] = await db
@@ -85,8 +87,31 @@ export async function createOperation(db: Db, input: CreateOperationInput): Prom
       idempotencyKey: input.idempotencyKey ?? null,
       requestedByUserId: input.requestedByUserId,
     })
+    .onConflictDoNothing()
     .returning();
-  return row as OperationRow;
+
+  if (row) return row as OperationRow;
+
+  // Insert was suppressed by the unique index on (companyId, idempotencyKey).
+  // Fetch the existing row so the caller gets a valid OperationRow back.
+  const existing = await db
+    .select()
+    .from(marketplaceInstallOperations)
+    .where(
+      and(
+        eq(marketplaceInstallOperations.companyId, input.companyId),
+        eq(marketplaceInstallOperations.idempotencyKey, input.idempotencyKey!),
+      ),
+    )
+    .limit(1);
+
+  if (!existing[0]) {
+    throw new Error(
+      `createOperation: idempotency conflict for key "${input.idempotencyKey}" but row not found — possible concurrent delete`,
+    );
+  }
+
+  return existing[0] as OperationRow;
 }
 
 /**

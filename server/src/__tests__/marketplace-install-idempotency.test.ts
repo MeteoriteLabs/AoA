@@ -25,7 +25,7 @@ describe("idempotency", () => {
       insert: () => ({
         values: (row: any) => {
           storedOp = { ...row, id: "op-1", createdAt: new Date() };
-          return { returning: () => Promise.resolve([storedOp]) };
+          return { onConflictDoNothing: () => ({ returning: () => Promise.resolve([storedOp]) }) };
         },
       }),
       select: () => ({
@@ -59,7 +59,7 @@ describe("idempotency", () => {
         values: (row: any) => {
           const op = { ...row, id: `op-${nextId++}`, createdAt: new Date() };
           operations.push(op);
-          return { returning: () => Promise.resolve([op]) };
+          return { onConflictDoNothing: () => ({ returning: () => Promise.resolve([op]) }) };
         },
       }),
       select: () => ({

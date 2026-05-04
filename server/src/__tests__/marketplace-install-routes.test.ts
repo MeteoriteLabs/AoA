@@ -62,7 +62,7 @@ function buildApp() {
 
   const router = createMarketplaceInstallRouter({
     db: {
-      insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "op-1", status: "pending", companyId: "c1", catalogItemId: SKILL.id, itemType: "skill" }]) }) }),
+      insert: () => ({ values: () => ({ onConflictDoNothing: () => ({ returning: () => Promise.resolve([{ id: "op-1", status: "pending", companyId: "c1", catalogItemId: SKILL.id, itemType: "skill" }]) }) }) }),
       select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) }),
       update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
       transaction: async (cb: any) => cb({ insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "skill-1" }]) }) }) }),
