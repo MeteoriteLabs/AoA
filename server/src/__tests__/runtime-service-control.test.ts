@@ -85,6 +85,21 @@ vi.mock("../home-paths.js", () => ({
   resolveHomeAwarePath: (p: string) => p,
 }));
 
+// `../middleware/logger.js` (used by workspace-runtime.ts after the C1 audit
+// log) eagerly resolves AoA's config + log directory at import time, which in
+// turn drags in `../home-paths.js` exports beyond `resolveHomeAwarePath`.
+// Stub the logger here so the mock above remains a minimal partial.
+vi.mock("../middleware/logger.js", () => ({
+  logger: {
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+    trace: () => {},
+    fatal: () => {},
+  },
+}));
+
 // ── Imports under test ────────────────────────────────────────────────────────
 
 import {
