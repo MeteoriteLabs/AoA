@@ -601,6 +601,18 @@ jobs:
           # ONLY validate the chain among snapshots that ARE committed: a break
           # here is the PR #94 signal (a committed snapshot whose prevId points
           # to a stale predecessor).
+          #
+          # KNOWN LIMITATION: gap-then-corruption is not catchable here.
+          # If an attacker drops snapshot B AND alters C's prevId to point to a
+          # stale id (e.g., A's pre-renumber id), this check cannot distinguish
+          # that from the legitimate case where B was renumbered and its
+          # snapshot was never committed but C correctly points through the
+          # gap to B's renumbered id. Drizzle-kit produces this pattern
+          # legitimately (see commit b5570de — PR #94's chain repair). To
+          # detect this attack would require maintaining an out-of-band
+          # "expected predecessor ids" manifest, which is outside the scope of
+          # this CI check. Reviewer flagged this in the v2 plan retrospective
+          # (2026-05-05); the check stays as-is intentionally.
           prev_id = None
           checked = 0
           for entry in journal["entries"]:
