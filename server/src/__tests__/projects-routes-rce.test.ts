@@ -28,12 +28,14 @@ vi.mock("../services/permissions.js", () => ({
 }));
 
 import { projectRoutes } from "../routes/projects.js";
+import { errorHandler } from "../middleware/error-handler.js";
 
 function makeApp(actor: any) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => { (req as any).actor = actor; next(); });
   app.use("/api", projectRoutes({} as any));
+  app.use(errorHandler);
   return app;
 }
 
@@ -76,6 +78,16 @@ describe("PATCH /projects/:id with provisionCommand", () => {
 
   it("403 for agent actor", async () => {
     const app = makeApp({ type: "agent", agentId: "a1", companyId: "company-A", source: "agent_key" });
+    const res = await request(app)
+      .patch("/api/projects/p1")
+      .send({ executionWorkspacePolicy: policyWithCmd });
+    expect(res.status).toBe(403);
+    expect(typeof res.body.error).toBe("string");
+    expect(res.body.error.length).toBeGreaterThan(0);
+  });
+
+  it("403 for mcp actor", async () => {
+    const app = makeApp({ type: "mcp", userId: "mcp-user-1", companyId: "company-A", source: "key" });
     const res = await request(app)
       .patch("/api/projects/p1")
       .send({ executionWorkspacePolicy: policyWithCmd });
