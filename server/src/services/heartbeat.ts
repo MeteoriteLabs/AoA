@@ -3841,6 +3841,10 @@ export function heartbeatService(db: Db) {
         signalRunningProcess(running, "SIGTERM");
         const graceMs = Math.max(1, running.graceSec) * 1000;
         setTimeout(() => {
+          // If the process exited cleanly during the grace period, the
+          // normal completion path will have removed the entry from
+          // runningProcesses. Don't log/signal a process that's gone.
+          if (!runningProcesses.has(run.id)) return;
           logger.info(
             {
               runId: run.id,
