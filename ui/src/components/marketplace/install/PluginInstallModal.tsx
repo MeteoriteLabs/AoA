@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -48,9 +48,16 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
   const [pendingOpId, setPendingOpId] = useState<string | null>(null);
   const [pendingToastId, setPendingToastId] = useState<number | null>(null);
 
+  // Capture the timestamp when this modal instance opened.
+  const openedAt = useRef<Date>(new Date());
+  useEffect(() => {
+    if (open) openedAt.current = new Date();
+  }, [open]);
+
   const { data: opStatus } = useOperationStatus({
     companyId: installCompanyId,
     operationId: pendingOpId,
+    startedAfter: openedAt.current,
   });
 
   // React to terminal status — update toast and clear tracking state

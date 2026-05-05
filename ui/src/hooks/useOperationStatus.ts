@@ -6,6 +6,8 @@ const POLL_INTERVAL_MS = 2000;
 export interface UseOperationStatusOpts {
   companyId: string | null;
   operationId: string | null;
+  /** If provided, any operation whose createdAt is before this date is treated as stale. */
+  startedAfter?: Date;
 }
 
 /**
@@ -16,10 +18,16 @@ export interface UseOperationStatusOpts {
 export function useOperationStatus(
   opts: UseOperationStatusOpts,
 ): UseQueryResult<InstallOperation, Error> {
-  const { companyId, operationId } = opts;
+  const { companyId, operationId, startedAfter } = opts;
   return useQuery({
     queryKey: ["marketplace", "operation", companyId, operationId] as const,
-    queryFn: () => marketplaceApi.getOperation(companyId!, operationId!),
+    queryFn: async () => {
+      const data = await marketplaceApi.getOperation(companyId!, operationId!);
+      if (startedAfter && new Date(data.createdAt) < startedAfter) {
+        return { ...data, status: "failure" as const, errorMessage: "stale_operation" };
+      }
+      return data;
+    },
     enabled: !!companyId && !!operationId,
     refetchInterval: (query) => {
       const data = query.state.data;
