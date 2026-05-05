@@ -63,6 +63,7 @@ export const MarketplaceCatalogItemSchema = z.object({
     .object({
       packageName: z.string(),
       version: z.string(),
+      tarballUrl: z.string().url().optional(),
     })
     .optional(),
   // Only present on snapshot items (skill/agent/team), commit-pinned URL to fetchable file

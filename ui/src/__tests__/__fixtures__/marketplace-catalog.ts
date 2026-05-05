@@ -12,7 +12,11 @@ export const SLACK_PLUGIN: CatalogItem = {
     locator: "plugins/aoa-plugin-slack",
     commitSha: "abc123",
   },
-  npm: { packageName: "aoa-plugin-slack", version: "1.0.0" },
+  npm: {
+    packageName: "aoa-plugin-slack",
+    version: "1.0.0",
+    tarballUrl: "https://github.com/MeteoriteLabs/aoa-marketplace/releases/download/v1.0.0/aoa-plugin-slack-1.0.0.tgz",
+  },
   trust: { tier: "verified", source: "aoa-curated" },
   status: "active",
   addedAt: "2026-04-30T00:00:00Z",
