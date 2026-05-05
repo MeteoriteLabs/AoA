@@ -1243,40 +1243,54 @@ export function agentRoutes(db: Db) {
 
   router.get("/agents/:id/keys", async (req, res) => {
     assertBoard(req);
-    const id = req.params.id as string;
-    const keys = await svc.listKeys(id);
+    const agent = await svc.getById(req.params.id as string);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+    const keys = await svc.listKeys(agent.id);
     res.json(keys);
   });
 
   router.post("/agents/:id/keys", validate(createAgentKeySchema), async (req, res) => {
     assertBoard(req);
-    const id = req.params.id as string;
-    const key = await svc.createApiKey(id, req.body.name);
-
-    const agent = await svc.getById(id);
-    if (agent) {
-      await logActivity(db, {
-        companyId: agent.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "agent.key_created",
-        entityType: "agent",
-        entityId: agent.id,
-        details: { keyId: key.id, name: key.name },
-      });
+    const agent = await svc.getById(req.params.id as string);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
     }
+    assertCompanyAccess(req, agent.companyId);
+
+    const key = await svc.createApiKey(agent.id, req.body.name);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.key_created",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { keyId: key.id, name: key.name },
+    });
 
     res.status(201).json(key);
   });
 
   router.delete("/agents/:id/keys/:keyId", async (req, res) => {
     assertBoard(req);
-    const keyId = req.params.keyId as string;
-    const revoked = await svc.revokeKey(keyId);
-    if (!revoked) {
+    const agent = await svc.getById(req.params.id as string);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    const key = await svc.getKeyById(req.params.keyId as string);
+    if (!key || key.agentId !== agent.id) {
       res.status(404).json({ error: "Key not found" });
       return;
     }
+    await svc.revokeKey(req.params.keyId as string);
     res.json({ ok: true });
   });
 
