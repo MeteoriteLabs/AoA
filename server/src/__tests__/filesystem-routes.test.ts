@@ -1,3 +1,6 @@
+import os from "node:os";
+import path from "node:path";
+
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
@@ -55,10 +58,32 @@ describe("filesystem routes — instance admin gate", () => {
     // May be 200 or 400 (path validation) or 500 (FS error in test env), but NEVER 403
     expect(res.status).not.toBe(403);
   });
-  it("403 reveal for path outside home dir (instance admin)", async () => {
+  it("400 reveal for path outside home dir (instance admin)", async () => {
     const res = await request(makeApp(instanceAdmin))
       .post("/api/filesystem/reveal").send({ path: "/etc/passwd" });
     // Should be rejected with 400 (outside home) — never 200 or actually-spawn xdg-open
-    expect([400, 403]).toContain(res.status);
+    expect(res.status).toBe(400);
+  });
+  it("400 reveal for sibling-prefix path that bypasses startsWith (instance admin)", async () => {
+    const homeDir = os.homedir();
+    // Construct a sibling: if homeDir is /Users/alice, target is /Users/alice-evil-sibling.
+    // The old `target.startsWith(homeDir)` check would have returned true here,
+    // letting the sibling bypass the gate. With path.relative the result is
+    // "../alice-evil-sibling" which correctly starts with ".." → outside.
+    const siblingPath = path.join(
+      path.dirname(homeDir),
+      path.basename(homeDir) + "-evil-sibling",
+    );
+    const res = await request(makeApp(instanceAdmin))
+      .post("/api/filesystem/reveal").send({ path: siblingPath });
+    expect(res.status).toBe(400);
+  });
+  it("not 400 reveal for home dir itself (instance admin)", async () => {
+    const homeDir = os.homedir();
+    const res = await request(makeApp(instanceAdmin))
+      .post("/api/filesystem/reveal").send({ path: homeDir });
+    // Could be 200 (success), 404 (rare CI), or 500 (spawn error in CI), but
+    // never 400 — the boundary check must not lock the user out of $HOME.
+    expect(res.status).not.toBe(400);
   });
 });

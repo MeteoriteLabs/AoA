@@ -20,6 +20,15 @@ function isAbsolutePath(p: string): boolean {
   return path.isAbsolute(p) || /^[A-Za-z]:[\\/]/.test(p);
 }
 
+// Robust boundary check: returns true iff `candidate` is `parent` itself or a
+// descendant of it. Uses path.relative() to defeat the prefix-bypass anti-
+// pattern (e.g. `target.startsWith("/Users/alice")` accepts `/Users/alice2/x`).
+function isPathInsideDir(parent: string, candidate: string): boolean {
+  if (candidate === parent) return true;
+  const rel = path.relative(parent, candidate);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
 function checkGitRepo(dirPath: string): Promise<boolean> {
   return new Promise((resolve) => {
     execFile("git", ["rev-parse", "--git-dir"], { cwd: dirPath, timeout: 3000 }, (err) => {
@@ -166,7 +175,7 @@ export function filesystemRoutes() {
     const target = path.resolve(parsed.data.path);
 
     const homeDir = os.homedir();
-    if (!target.startsWith(homeDir)) {
+    if (!isPathInsideDir(homeDir, target)) {
       res.status(400).json({ error: "Path outside home directory" });
       return;
     }
