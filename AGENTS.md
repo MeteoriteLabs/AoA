@@ -175,6 +175,31 @@ The feature PR's verify uses `--frozen-lockfile`; deps are now on the base, so t
 - You want to ship the manifest + lockfile in one commit (the bot adds a separate commit).
 - The bot is broken and you need to bypass it.
 
+### Inline lockfile updates (added 2026-05-05)
+
+The policy gate's `Block manual lockfile edits` step now allows `pnpm-lock.yaml`
+commits when **package manifests also changed in the same PR**. The check matches
+this regex against the PR diff: `(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$`.
+
+This means you can ship a single PR that adds a dependency:
+
+1. Edit `package.json` (root or workspace) to add the new dep.
+2. Run `pnpm install --no-frozen-lockfile` to update `pnpm-lock.yaml`.
+3. Commit BOTH files together in any branch.
+
+The gate accepts the lockfile because it's accompanied by manifest changes.
+Stealth lockfile-only commits (no manifest change) are still blocked.
+
+The recommended path is still the `chore/refresh-lockfile` bot — it auto-merges
+and keeps the lockfile fresh after manifest edits land. Use the inline path
+when:
+- You're adding a new dep and want the manifest + lockfile in a single
+  reviewable commit.
+- The bot is broken or has an open chore PR you don't want to interfere with.
+
+The gate's logic is at `.github/workflows/pr.yml` (`Block manual lockfile edits`
+step in the `policy` job).
+
 ## 8. Verification Before Hand-off
 
 Run this full check before claiming done:
