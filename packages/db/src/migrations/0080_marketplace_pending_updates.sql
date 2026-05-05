@@ -10,5 +10,5 @@ CREATE TABLE IF NOT EXISTS "marketplace_pending_updates" (
   "detected_at" timestamptz DEFAULT now() NOT NULL,
   "updated_at" timestamptz DEFAULT now() NOT NULL
 );
-CREATE INDEX "mpu_company_status_idx" ON "marketplace_pending_updates"("company_id","status");
-CREATE UNIQUE INDEX "mpu_company_item_uq" ON "marketplace_pending_updates"("company_id","catalog_item_id");
+CREATE INDEX IF NOT EXISTS "mpu_company_status_idx" ON "marketplace_pending_updates"("company_id","status");
+CREATE UNIQUE INDEX IF NOT EXISTS "mpu_company_item_uq" ON "marketplace_pending_updates"("company_id","catalog_item_id");
