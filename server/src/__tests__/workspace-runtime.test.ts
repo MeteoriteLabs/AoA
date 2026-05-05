@@ -672,7 +672,10 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
-  it("records teardown and cleanup operations when a recorder is provided", async () => {
+  // Skipped on Windows: cleanupCommand uses `printf` which is not available
+  // on the Windows runner. Same shell-availability constraint as the
+  // provision-command tests below (Issue #113).
+  it.skipIf(process.platform === "win32")("records teardown and cleanup operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();
     const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
