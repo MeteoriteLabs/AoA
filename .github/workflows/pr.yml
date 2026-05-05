@@ -496,11 +496,20 @@ jobs:
           CONF
 
       - name: Run e2e tests
+        # Windows runner can't start embedded-postgres (runneradmin user is
+        # rejected by Postgres security policy — Issue #114). The Playwright
+        # config skips all tests on win32, but Playwright then exits 1 with
+        # "No tests found". Skip the entire test-run step on Windows; the
+        # rest of the matrix (checkout/install/build/playwright-install)
+        # still runs as parity. Re-enable when Issue #114's postgres-
+        # container approach lands.
+        if: matrix.os != 'windows-latest'
         env:
           AOA_E2E_SKIP_LLM: "true"
         run: pnpm run test:e2e
 
       - name: Upload Playwright report
+        if: matrix.os != 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report-${{ matrix.os }}
