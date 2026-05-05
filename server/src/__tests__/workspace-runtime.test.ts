@@ -199,7 +199,11 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.branchName).toBe(first.branchName);
   });
 
-  it("runs a configured provision command inside the derived worktree", async () => {
+  // Skipped on Windows: provision script is bash with `#!/usr/bin/env bash`
+  // shebang and `set -euo pipefail`. Production runWorkspaceCommand() falls
+  // back to /bin/sh when SHELL is unset, which the Windows runner does not
+  // provide. Shell-specific behavior — skip rather than rewrite. (Issue #113)
+  it.skipIf(process.platform === "win32")("runs a configured provision command inside the derived worktree", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.writeFile(
@@ -285,7 +289,8 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.readFile(path.join(reused.cwd, ".aoa-provision-created"), "utf8")).resolves.toBe("false\n");
   });
 
-  it("writes an isolated repo-local Paperclip config and worktree branding when provisioning", async () => {
+  // Skipped on Windows: provisionCommand uses a bash script. (Issue #113)
+  it.skipIf(process.platform === "win32")("writes an isolated repo-local Paperclip config and worktree branding when provisioning", async () => {
     const repoRoot = await createTempRepo();
     const previousCwd = process.cwd();
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-home-"));
@@ -435,7 +440,8 @@ describe("realizeExecutionWorkspace", () => {
     }
   });
 
-  it("records worktree setup and provision operations when a recorder is provided", async () => {
+  // Skipped on Windows: provisionCommand uses a bash script. (Issue #113)
+  it.skipIf(process.platform === "win32")("records worktree setup and provision operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();
     const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
@@ -666,7 +672,10 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
-  it("records teardown and cleanup operations when a recorder is provided", async () => {
+  // Skipped on Windows: cleanupCommand uses `printf` which is not available
+  // on the Windows runner. Same shell-availability constraint as the
+  // provision-command tests below (Issue #113).
+  it.skipIf(process.platform === "win32")("records teardown and cleanup operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();
     const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
