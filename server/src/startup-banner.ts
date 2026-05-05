@@ -27,6 +27,7 @@ type StartupBannerOptions = {
   uiMode: UiMode;
   db: ExternalPostgresInfo | EmbeddedPostgresInfo;
   migrationSummary: string;
+  hasVectorSupport: boolean;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   databaseBackupEnabled: boolean;
@@ -131,6 +132,9 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
   const dbBackup = opts.databaseBackupEnabled
     ? `enabled ${color(`(every ${opts.databaseBackupIntervalMinutes}m, tiered retention)`, "dim")}`
     : color("disabled", "yellow");
+  const memoryRetrieval = opts.hasVectorSupport
+    ? color("pgvector (semantic)", "green")
+    : color("text-only fallback", "yellow");
 
   const art = [
     color(" █████╗  ██████╗  █████╗ ", "cyan"),
@@ -153,6 +157,7 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
     row("UI", uiUrl),
     row("Database", dbDetails),
     row("Migrations", opts.migrationSummary),
+    row("Memory", memoryRetrieval),
     row(
       "Agent JWT",
       agentJwtSecret.status === "pass"

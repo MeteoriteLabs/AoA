@@ -26,7 +26,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService, routineService, processFileImportQueue, resetStuckJobs, WORKER_INTERVAL_MS } from "./services/index.js";
-import { probeDbCapabilities } from "./services/db-capabilities.js";
+import { getDbCapabilities, probeDbCapabilities } from "./services/db-capabilities.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
   restartDesiredRuntimeServicesOnStartup,
@@ -679,6 +679,7 @@ server.listen(listenPort, config.host, () => {
     uiMode,
     db: startupDbInfo,
     migrationSummary,
+    hasVectorSupport: getDbCapabilities().hasVectorSupport,
     heartbeatSchedulerEnabled: config.heartbeatSchedulerEnabled,
     heartbeatSchedulerIntervalMs: config.heartbeatSchedulerIntervalMs,
     databaseBackupEnabled: config.databaseBackupEnabled,
