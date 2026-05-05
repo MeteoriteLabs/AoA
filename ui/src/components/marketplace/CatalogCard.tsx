@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import type { CatalogItem } from "@armyofagents/shared";
+import type { CatalogItem, PluginRecord } from "@armyofagents/shared";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { SnapshotInstallModal } from "@/components/marketplace/install/SnapshotI
 
 export interface CatalogCardProps {
   item: CatalogItem;
+  installedByPackageName?: Map<string, PluginRecord>;
 }
 
 export function detailUrl(item: CatalogItem): string {
@@ -19,10 +20,14 @@ export function detailUrl(item: CatalogItem): string {
   return `/marketplace/${item.type}/${slug}`;
 }
 
-export function CatalogCard({ item }: CatalogCardProps) {
+export function CatalogCard({ item, installedByPackageName }: CatalogCardProps) {
   const Icon = TYPE_ICONS[item.type];
   const typeLabel = TYPE_LABELS[item.type];
   const [installOpen, setInstallOpen] = useState(false);
+
+  const installedPlugin = item.npm?.packageName
+    ? installedByPackageName?.get(item.npm.packageName)
+    : undefined;
 
   return (
     <div>
@@ -56,17 +61,29 @@ export function CatalogCard({ item }: CatalogCardProps) {
                   </Badge>
                 ))}
               </div>
-              <Button
-                size="sm"
-                className="text-xs h-7 px-2.5 shrink-0"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setInstallOpen(true);
-                }}
-              >
-                Install
-              </Button>
+              {installedPlugin ? (
+                installedPlugin.status === "ready" ? (
+                  <Badge className="text-xs h-7 px-2.5 shrink-0 bg-green-600 hover:bg-green-600 cursor-default">
+                    Installed
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary" className="text-xs h-7 px-2.5 shrink-0 cursor-default">
+                    Pending
+                  </Badge>
+                )
+              ) : (
+                <Button
+                  size="sm"
+                  className="text-xs h-7 px-2.5 shrink-0"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setInstallOpen(true);
+                  }}
+                >
+                  Install
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>

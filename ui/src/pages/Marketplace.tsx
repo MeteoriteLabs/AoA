@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { BookOpen, Bot, Plug, Search, Users } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useCatalog } from "@/hooks/useCatalog";
@@ -8,7 +9,9 @@ import { CatalogCard } from "@/components/marketplace/CatalogCard";
 import { MarketplaceLayout } from "@/components/marketplace/MarketplaceLayout";
 import { filterByType } from "@/api/marketplace";
 import { TYPE_LABELS_PLURAL } from "@/lib/marketplace-constants";
-import type { MarketplaceItemType, MarketplaceCategory } from "@armyofagents/shared";
+import { pluginsApi } from "@/api/plugins";
+import { queryKeys } from "@/lib/queryKeys";
+import type { MarketplaceItemType, MarketplaceCategory, PluginRecord } from "@armyofagents/shared";
 
 // ─── Type pill config ────────────────────────────────────────────────────────
 
@@ -68,6 +71,16 @@ function sortItems(items: ReturnType<typeof filterByType>, order: SortOrder) {
 
 export default function Marketplace() {
   const { data: catalog, isLoading, error } = useCatalog();
+
+  const { data: installedPlugins } = useQuery({
+    queryKey: queryKeys.plugins.all,
+    queryFn: () => pluginsApi.list(),
+  });
+
+  const installedByPackageName = useMemo(
+    () => new Map((installedPlugins ?? []).map((p: PluginRecord) => [p.packageName, p])),
+    [installedPlugins],
+  );
 
   const [searchParams] = useSearchParams();
 
@@ -313,7 +326,7 @@ export default function Marketplace() {
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               {browseItems.map(item => (
-                <CatalogCard key={item.id} item={item} />
+                <CatalogCard key={item.id} item={item} installedByPackageName={installedByPackageName} />
               ))}
             </div>
           )}

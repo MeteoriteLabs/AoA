@@ -3,10 +3,29 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { CatalogCard } from "../CatalogCard";
 import { SLACK_PLUGIN, CODE_REVIEW_SKILL } from "@/__tests__/__fixtures__/marketplace-catalog";
+import type { PluginRecord } from "@armyofagents/shared";
 
 function renderWithRouter(ui: React.ReactElement) {
   return render(<MemoryRouter>{ui}</MemoryRouter>);
 }
+
+const INSTALLED_READY: PluginRecord = {
+  id: "plugin-uuid",
+  pluginKey: "aoa.plugin-slack",
+  packageName: "aoa-plugin-slack",
+  version: "1.0.0",
+  apiVersion: 1,
+  categories: ["integrations"],
+  manifestJson: {} as any,
+  status: "ready",
+  installOrder: 1,
+  packagePath: null,
+  lastError: null,
+  installedAt: new Date(),
+  updatedAt: new Date(),
+};
+
+const INSTALLED_LOADING: PluginRecord = { ...INSTALLED_READY, status: "loading" };
 
 describe("CatalogCard", () => {
   it("renders item name, description, version, type icon, trust badge", () => {
@@ -34,5 +53,28 @@ describe("CatalogCard", () => {
   it("renders skill type label for skill items", () => {
     renderWithRouter(<CatalogCard item={CODE_REVIEW_SKILL} />);
     expect(screen.getByText("Skill")).toBeInTheDocument();
+  });
+
+  it("shows green Installed badge when plugin is ready", () => {
+    const map = new Map([["aoa-plugin-slack", INSTALLED_READY]]);
+    renderWithRouter(<CatalogCard item={SLACK_PLUGIN} installedByPackageName={map} />);
+    expect(screen.getByText("Installed")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /install/i })).not.toBeInTheDocument();
+  });
+
+  it("shows Pending badge when plugin is installed but not ready", () => {
+    const map = new Map([["aoa-plugin-slack", INSTALLED_LOADING]]);
+    renderWithRouter(<CatalogCard item={SLACK_PLUGIN} installedByPackageName={map} />);
+    expect(screen.getByText("Pending")).toBeInTheDocument();
+  });
+
+  it("shows Install button when plugin is not installed", () => {
+    renderWithRouter(<CatalogCard item={SLACK_PLUGIN} installedByPackageName={new Map()} />);
+    expect(screen.getByRole("button", { name: /install/i })).toBeInTheDocument();
+  });
+
+  it("shows Install button when installedByPackageName prop is omitted", () => {
+    renderWithRouter(<CatalogCard item={SLACK_PLUGIN} />);
+    expect(screen.getByRole("button", { name: /install/i })).toBeInTheDocument();
   });
 });
