@@ -383,6 +383,13 @@ export async function createApp(
     }),
   );
 
+  // Catch-all 404 for unmatched /api/* routes. Without this, requests like
+  // GET /api/foo fall through to express.static / Vite middleware, which
+  // either serve index.html or throw -> 500 via errorHandler. Issue #116.
+  api.use((req, res) => {
+    res.status(404).json({ error: "Not found", path: req.originalUrl });
+  });
+
   app.use("/api", api);
 
   // Plugin UI static assets (outside /api prefix)
@@ -417,7 +424,9 @@ export async function createApp(
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
       app.use(express.static(uiDist));
-      app.get(/.*/, (_req, res) => {
+      // Catch-all SPA route, but NOT for /api/* (those 404 above, or matched by api router).
+      // This prevents unmatched /api/foo from serving the SPA's index.html. Issue #116.
+      app.get(/^(?!\/api\/).*/, (_req, res) => {
         res.sendFile(path.join(uiDist, "index.html"));
       });
     } else {
@@ -438,7 +447,9 @@ export async function createApp(
     });
 
     app.use(vite.middlewares);
-    app.get(/.*/, async (req, res, next) => {
+    // Catch-all SPA route for Vite dev mode, but NOT for /api/* (those 404 above).
+    // This prevents unmatched /api/foo from serving the SPA's index.html. Issue #116.
+    app.get(/^(?!\/api\/).*/, async (req, res, next) => {
       try {
         const templatePath = path.resolve(uiRoot, "index.html");
         const template = fs.readFileSync(templatePath, "utf-8");
