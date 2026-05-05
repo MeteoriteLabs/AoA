@@ -36,6 +36,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { Router } from "express";
+import { execNpm } from "../utils/npm-spawn.js";
 import {
   listServerAdapters,
   findServerAdapter,
@@ -276,9 +277,9 @@ export function adapterRoutes() {
     if (externalRecord.packageName && !externalRecord.localPath) {
       try {
         const pluginsDir = getAdapterPluginsDir();
-        await execFileAsync("npm", ["uninstall", externalRecord.packageName], {
+        await execNpm(["uninstall", externalRecord.packageName], {
           cwd: pluginsDir,
-          timeout: 60_000,
+          timeoutMs: 60_000,
         });
         logger.info(
           { type: adapterType, packageName: externalRecord.packageName },
@@ -338,9 +339,9 @@ export function adapterRoutes() {
 
         logger.info({ spec, pluginsDir }, "Installing adapter package via npm");
 
-        await execFileAsync("npm", ["install", "--no-save", spec], {
+        await execNpm(["install", "--no-save", spec], {
           cwd: pluginsDir,
-          timeout: 120_000,
+          timeoutMs: 120_000,
         });
 
         try {
@@ -498,9 +499,9 @@ export function adapterRoutes() {
 
       logger.info({ type, packageName: record.packageName }, "Reinstalling adapter package via npm");
 
-      await execFileAsync("npm", ["install", "--no-save", record.packageName], {
+      await execNpm(["install", "--no-save", record.packageName], {
         cwd: pluginsDir,
-        timeout: 120_000,
+        timeoutMs: 120_000,
       });
 
       const newModule = await reloadExternalAdapter(type);
