@@ -650,6 +650,98 @@ function getMinimumHostVersion(manifest: PaperclipPluginManifestV1): string | un
 }
 
 /**
+ * Resolve the real npm package name after installing from a tarball URL.
+ *
+ * When `npm install <tarball-url>` succeeds, the package lands in
+ * `node_modules/<actual-name>` — not under the URL string.  This helper
+ * reads the `package-lock.json` that npm writes in `installDir` and finds
+ * the entry whose `resolved` field matches the URL; the entry key (with the
+ * leading `node_modules/` prefix stripped) is the canonical package name.
+ *
+ * Falls back to scanning `node_modules/` for a `package.json` whose
+ * `_resolved` field matches the URL if no lock-file is available.
+ *
+ * @throws {Error} if the package name cannot be determined.
+ */
+async function resolvePackageNameFromLockfile(
+  installDir: string,
+  tarballUrl: string,
+  nodeModulesPath: string,
+): Promise<string> {
+  // Primary: read package-lock.json
+  const lockfilePath = path.join(installDir, "package-lock.json");
+  if (existsSync(lockfilePath)) {
+    try {
+      const raw = await readFile(lockfilePath, "utf-8");
+      const lock = JSON.parse(raw) as {
+        packages?: Record<string, { resolved?: string }>;
+      };
+      if (lock.packages) {
+        for (const [key, entry] of Object.entries(lock.packages)) {
+          if (entry.resolved === tarballUrl && key.startsWith("node_modules/")) {
+            // key is e.g. "node_modules/@scope/plugin-name" or "node_modules/plugin-name"
+            const name = key.slice("node_modules/".length);
+            if (name) return name;
+          }
+        }
+      }
+    } catch {
+      // Fall through to the scan fallback
+    }
+  }
+
+  // Fallback: scan node_modules/ for a package.json with _resolved matching the URL
+  if (existsSync(nodeModulesPath)) {
+    let topEntries: string[];
+    try {
+      topEntries = await readdir(nodeModulesPath);
+    } catch {
+      topEntries = [];
+    }
+    for (const entry of topEntries) {
+      const entryPath = path.join(nodeModulesPath, entry);
+      if (entry.startsWith("@")) {
+        // Scoped: look one level deeper
+        let scopedEntries: string[];
+        try {
+          scopedEntries = await readdir(entryPath);
+        } catch {
+          continue;
+        }
+        for (const scopedEntry of scopedEntries) {
+          const pkgJsonPath = path.join(entryPath, scopedEntry, "package.json");
+          if (!existsSync(pkgJsonPath)) continue;
+          try {
+            const pkg = JSON.parse(await readFile(pkgJsonPath, "utf-8")) as Record<string, unknown>;
+            if (pkg["_resolved"] === tarballUrl && typeof pkg["name"] === "string") {
+              return pkg["name"];
+            }
+          } catch {
+            continue;
+          }
+        }
+      } else {
+        const pkgJsonPath = path.join(entryPath, "package.json");
+        if (!existsSync(pkgJsonPath)) continue;
+        try {
+          const pkg = JSON.parse(await readFile(pkgJsonPath, "utf-8")) as Record<string, unknown>;
+          if (pkg["_resolved"] === tarballUrl && typeof pkg["name"] === "string") {
+            return pkg["name"];
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+  }
+
+  throw new Error(
+    `Could not determine the installed package name for tarball URL: ${tarballUrl}. ` +
+      `Check that the tarball URL is correct and that npm installed it into ${nodeModulesPath}.`,
+  );
+}
+
+/**
  * Extract UI contribution metadata from a manifest for route serialization.
  *
  * Returns `null` when the plugin does not declare any UI slots or launchers.
@@ -848,7 +940,21 @@ export function pluginLoader(
 
       // Resolve the package path after installation
       const nodeModulesPath = path.join(targetInstallDir, "node_modules");
-      resolvedPackageName = packageName!;
+
+      // When packageName is a tarball URL (http:// or https://), the installed
+      // package's real name is NOT the URL — it is the `name` field inside the
+      // package's own package.json.  Derive it from package-lock.json which npm
+      // writes after every `npm install`, where the entry whose `resolved` field
+      // matches the URL gives us the canonical package name.
+      if (packageName!.startsWith("https://") || packageName!.startsWith("http://")) {
+        resolvedPackageName = await resolvePackageNameFromLockfile(
+          targetInstallDir,
+          packageName!,
+          nodeModulesPath,
+        );
+      } else {
+        resolvedPackageName = packageName!;
+      }
 
       // Handle scoped packages
       if (resolvedPackageName.startsWith("@")) {
