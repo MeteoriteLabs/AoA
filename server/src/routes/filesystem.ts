@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFile, spawn } from "node:child_process";
 import { z } from "zod";
+import { assertCanManageInstanceSettings } from "./authz.js";
 
 const SKIP_DIRS = new Set([
   "node_modules",
@@ -32,6 +33,7 @@ export function filesystemRoutes() {
 
   // Browse directory contents
   router.get("/filesystem/browse", async (req, res) => {
+    assertCanManageInstanceSettings(req);
     const rawPath = (req.query.path as string) || os.homedir();
     const gitAware = req.query.gitAware === "true";
     const includeFiles = req.query.includeFiles === "true";
@@ -123,6 +125,7 @@ export function filesystemRoutes() {
 
   // Create directory
   router.post("/filesystem/mkdir", async (req, res) => {
+    assertCanManageInstanceSettings(req);
     const { path: dirPath } = req.body as { path?: string };
 
     if (!dirPath || !isAbsolutePath(dirPath)) {
@@ -144,7 +147,8 @@ export function filesystemRoutes() {
   });
 
   // Get home directory (useful for client-side path suggestions)
-  router.get("/filesystem/home", (_req, res) => {
+  router.get("/filesystem/home", (req, res) => {
+    assertCanManageInstanceSettings(req);
     res.json({ homePath: os.homedir(), platform: process.platform });
   });
 
@@ -152,6 +156,7 @@ export function filesystemRoutes() {
   const revealBodySchema = z.object({ path: z.string().min(1) });
 
   router.post("/filesystem/reveal", async (req, res) => {
+    assertCanManageInstanceSettings(req);
     const parsed = revealBodySchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: "Invalid path" });
@@ -159,6 +164,12 @@ export function filesystemRoutes() {
     }
 
     const target = path.resolve(parsed.data.path);
+
+    const homeDir = os.homedir();
+    if (!target.startsWith(homeDir)) {
+      res.status(400).json({ error: "Path outside home directory" });
+      return;
+    }
 
     try {
       await fs.access(target);
@@ -179,7 +190,8 @@ export function filesystemRoutes() {
   });
 
   // List available drives (Windows) or filesystem roots (macOS/Linux)
-  router.get("/filesystem/drives", async (_req, res) => {
+  router.get("/filesystem/drives", async (req, res) => {
+    assertCanManageInstanceSettings(req);
     if (process.platform === "win32") {
       // Check drive letters A-Z by trying to stat them
       const drives: Array<{ name: string; path: string }> = [];
