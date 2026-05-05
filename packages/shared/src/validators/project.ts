@@ -1,6 +1,46 @@
 import { z } from "zod";
 import { PROJECT_STATUSES, PROJECT_TYPES } from "../constants.js";
 
+/**
+ * Strict shape mirroring `ExecutionWorkspaceStrategy` from
+ * `packages/shared/src/types/workspace-runtime.ts`. `.strict()` rejects unknown
+ * keys so callers can't smuggle additional shell-command-like fields past the
+ * route role gate (security finding C1).
+ */
+const executionWorkspaceStrategySchema = z.object({
+  type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]),
+  baseRef: z.string().nullable().optional(),
+  branchTemplate: z.string().nullable().optional(),
+  worktreeParentDir: z.string().nullable().optional(),
+  provisionCommand: z.string().nullable().optional(),
+  teardownCommand: z.string().nullable().optional(),
+}).strict();
+
+/**
+ * Strict shape mirroring `ProjectExecutionWorkspacePolicy`. The route handler
+ * checks `workspaceStrategy.{provisionCommand,teardownCommand}` for the
+ * founder-only gate; this schema constrains the surface so callers cannot pass
+ * unknown fields that the runtime would otherwise consume verbatim.
+ */
+const executionWorkspacePolicySchema = z.object({
+  enabled: z.boolean(),
+  defaultMode: z.enum([
+    "shared_workspace",
+    "isolated_workspace",
+    "operator_branch",
+    "adapter_default",
+  ]).optional(),
+  allowIssueOverride: z.boolean().optional(),
+  defaultProjectWorkspaceId: z.string().nullable().optional(),
+  workspaceStrategy: executionWorkspaceStrategySchema.nullable().optional(),
+  workspaceRuntime: z.record(z.unknown()).nullable().optional(),
+  branchPolicy: z.record(z.unknown()).nullable().optional(),
+  pullRequestPolicy: z.record(z.unknown()).nullable().optional(),
+  runtimePolicy: z.record(z.unknown()).nullable().optional(),
+  cleanupPolicy: z.record(z.unknown()).nullable().optional(),
+  ttlDays: z.number().int().positive().nullable().optional(),
+}).strict();
+
 const projectWorkspaceFields = {
   name: z.string().min(1).optional(),
   cwd: z.string().min(1).optional().nullable(),
@@ -46,7 +86,7 @@ const projectFields = {
   color: z.string().optional().nullable(),
   functionType: z.string().optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
-  executionWorkspacePolicy: z.record(z.unknown()).nullable().optional(),
+  executionWorkspacePolicy: executionWorkspacePolicySchema.nullable().optional(),
 };
 
 export const createProjectSchema = z.object({
