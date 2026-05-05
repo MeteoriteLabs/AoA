@@ -1,0 +1,92 @@
+import express from "express";
+import request from "supertest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../services/index.js", () => ({
+  projectService: () => ({
+    getById: vi.fn().mockResolvedValue({ id: "p1", companyId: "company-A", name: "P" }),
+    update: vi.fn().mockResolvedValue({ id: "p1", companyId: "company-A", name: "P", executionWorkspacePolicy: null }),
+    create: vi.fn(),
+    resolveByReference: vi.fn().mockResolvedValue({ project: { id: "p1" }, ambiguous: false }),
+  }),
+  instanceSettingsService: () => ({
+    getExperimental: vi.fn().mockResolvedValue({ enableIsolatedWorkspaces: true }),
+  }),
+  logActivity: vi.fn(),
+}));
+
+vi.mock("../services/permissions.js", () => ({
+  permissionService: () => ({
+    getEffectiveRole: vi.fn().mockImplementation(async (_c: string, userId: string) => {
+      if (userId === "user-fnd") return "founder";
+      if (userId === "user-lead") return "team_lead";
+      return "team_member";
+    }),
+    isFounder: vi.fn().mockResolvedValue(false),
+    isTeamLeadForDepartment: vi.fn().mockResolvedValue(false),
+  }),
+}));
+
+import { projectRoutes } from "../routes/projects.js";
+
+function makeApp(actor: any) {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => { (req as any).actor = actor; next(); });
+  app.use("/api", projectRoutes({} as any));
+  return app;
+}
+
+const baseActor = (userId: string) => ({
+  type: "board",
+  source: "session",
+  userId,
+  companyIds: ["company-A"],
+  isInstanceAdmin: false,
+});
+
+describe("PATCH /projects/:id with provisionCommand", () => {
+  const policyWithCmd = {
+    workspaceStrategy: { type: "git_worktree", provisionCommand: "id > /tmp/pwn" },
+  };
+
+  it("403 for team_member", async () => {
+    const app = makeApp(baseActor("user-tm"));
+    const res = await request(app)
+      .patch("/api/projects/p1")
+      .send({ executionWorkspacePolicy: policyWithCmd });
+    expect(res.status).toBe(403);
+  });
+
+  it("403 for team_lead", async () => {
+    const app = makeApp(baseActor("user-lead"));
+    const res = await request(app)
+      .patch("/api/projects/p1")
+      .send({ executionWorkspacePolicy: policyWithCmd });
+    expect(res.status).toBe(403);
+  });
+
+  it("200 for founder", async () => {
+    const app = makeApp(baseActor("user-fnd"));
+    const res = await request(app)
+      .patch("/api/projects/p1")
+      .send({ executionWorkspacePolicy: policyWithCmd });
+    expect(res.status).toBe(200);
+  });
+
+  it("403 for agent actor", async () => {
+    const app = makeApp({ type: "agent", agentId: "a1", companyId: "company-A", source: "agent_key" });
+    const res = await request(app)
+      .patch("/api/projects/p1")
+      .send({ executionWorkspacePolicy: policyWithCmd });
+    expect(res.status).toBe(403);
+  });
+
+  it("200 for team_lead WITHOUT provisionCommand (regression guard)", async () => {
+    const app = makeApp(baseActor("user-lead"));
+    const res = await request(app)
+      .patch("/api/projects/p1")
+      .send({ name: "renamed" });
+    expect(res.status).toBe(200);
+  });
+});
