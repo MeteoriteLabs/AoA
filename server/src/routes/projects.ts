@@ -16,6 +16,22 @@ import { conflict, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { gateProjectExecutionWorkspacePolicy, parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 
+/**
+ * Detects whether a request body's executionWorkspacePolicy carries any of the
+ * shell-command fields (provisionCommand / teardownCommand / cleanupCommand)
+ * that are eventually passed to `sh -c` by `runWorkspaceCommand`. Used as the
+ * gate trigger for the founder-only role check on POST/PATCH /projects routes
+ * to mitigate finding C1 (RCE via executionWorkspacePolicy.provisionCommand).
+ */
+export function sniffsShellCommandFields(policy: unknown): boolean {
+  if (!policy || typeof policy !== "object") return false;
+  const p = policy as Record<string, unknown>;
+  const ws = (p.workspaceStrategy ?? {}) as Record<string, unknown>;
+  return typeof ws.provisionCommand === "string"
+      || typeof ws.teardownCommand === "string"
+      || typeof ws.cleanupCommand === "string";
+}
+
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
