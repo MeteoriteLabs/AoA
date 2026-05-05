@@ -89,11 +89,14 @@ export async function installMarketplacePlugin(
     );
   }
 
-  // 2. Delegate to existing pipeline (returns DiscoveredPlugin)
-  const discovered = await pluginLoader.installPlugin({
-    packageName: catalogItem.npm.packageName,
-    version: catalogItem.npm.version,
-  });
+  // 2. Delegate to existing pipeline (returns DiscoveredPlugin).
+  // When a tarball URL is present, pass it as packageName (no version) so
+  // npm install resolves the exact artifact — standard npm tarball-URL install.
+  const installOpts = catalogItem.npm.tarballUrl
+    ? { packageName: catalogItem.npm.tarballUrl }
+    : { packageName: catalogItem.npm.packageName, version: catalogItem.npm.version };
+
+  const discovered = await pluginLoader.installPlugin(installOpts);
 
   if (!discovered.manifest) {
     throw new Error(`Plugin installed but manifest is missing for ${catalogItem.id}`);
