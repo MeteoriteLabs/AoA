@@ -4,7 +4,7 @@
  * This service is the entry point for the plugin system's I/O boundary:
  *
  * 1. **Discovery** — Scans the local plugin directory
- *    (`~/.paperclip/plugins/`) and `node_modules` for packages matching
+ *    (`~/.aoa/plugins/`) and `node_modules` for packages matching
  *    the `paperclip-plugin-*` naming convention. Aggregates results with
  *    path-based deduplication.
  *
@@ -31,13 +31,13 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import type {
   PaperclipPluginManifestV1,
   PluginLauncherDeclaration,
   PluginRecord,
   PluginUiSlotDeclaration,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { logger } from "../middleware/logger.js";
 import { pluginManifestValidator } from "./plugin-manifest-validator.js";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
@@ -65,6 +65,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const NPM_PLUGIN_PACKAGE_PREFIX = "paperclip-plugin-";
 
 /**
+ * Current AoA naming convention for npm-published plugins.
+ * Accepted in addition to the legacy `paperclip-plugin-` prefix and
+ * scoped `@scope/plugin-*` packages.
+ */
+export const NPM_PLUGIN_PACKAGE_PREFIX_AOA = "aoa-plugin-";
+
+/**
  * Default local plugin directory.  The loader scans this directory for
  * locally-installed plugin packages.
  *
@@ -72,7 +79,7 @@ export const NPM_PLUGIN_PACKAGE_PREFIX = "paperclip-plugin-";
  */
 export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
   os.homedir(),
-  ".paperclip",
+  ".aoa",
   "plugins",
 );
 
@@ -104,7 +111,7 @@ export interface DiscoveredPlugin {
  * @see PLUGIN_SPEC.md §8.1 — On-Disk Layout
  */
 export type PluginSource =
-  | "local-filesystem"  // ~/.paperclip/plugins/ local directory
+  | "local-filesystem"  // ~/.aoa/plugins/ local directory
   | "npm"               // npm packages matching paperclip-plugin-* convention
   | "registry";         // future: remote plugin registry URL
 
@@ -143,7 +150,7 @@ function getDeclaredPageRoutePaths(manifest: PaperclipPluginManifestV1): string[
 export interface PluginLoaderOptions {
   /**
    * Path to the local plugin directory to scan.
-   * Defaults to ~/.paperclip/plugins/
+   * Defaults to ~/.aoa/plugins/
    */
   localPluginDir?: string;
 
@@ -507,7 +514,8 @@ export interface PluginLoader {
  */
 export function isPluginPackageName(name: string): boolean {
   if (name.startsWith(NPM_PLUGIN_PACKAGE_PREFIX)) return true;
-  // Also accept scoped packages like @acme/plugin-linear or @paperclipai/plugin-*
+  if (name.startsWith(NPM_PLUGIN_PACKAGE_PREFIX_AOA)) return true;
+  // Also accept scoped packages like @acme/plugin-linear or @armyofagents/plugin-*
   if (name.includes("/")) {
     const localPart = name.split("/")[1] ?? "";
     return localPart.startsWith("plugin-");
@@ -640,7 +648,7 @@ function compareSemver(left: string, right: string): number {
 }
 
 function getMinimumHostVersion(manifest: PaperclipPluginManifestV1): string | undefined {
-  return manifest.minimumHostVersion ?? manifest.minimumPaperclipVersion;
+  return manifest.minimumHostVersion ?? manifest.minimumAoaVersion;
 }
 
 /**
@@ -1739,10 +1747,13 @@ export function pluginLoader(
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
-      // (for example @paperclipai/shared exports). Run those workers through
+      // (for example @armyofagents/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
+      // Node 24's ESM loader rejects raw absolute paths as --import values;
+      // on Windows it sees `C:\...` and treats `C:` as a URL scheme. Convert
+      // to a file:// URL so the loader accepts it cross-platform.
       if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
-        workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+        workerOptions.execArgv = ["--import", pathToFileURL(DEV_TSX_LOADER_PATH).href];
       }
 
       await workerManager.startWorker(pluginId, workerOptions);

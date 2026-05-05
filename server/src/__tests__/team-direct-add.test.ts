@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 
-// Mock @paperclipai/db to avoid drizzle-orm ESM cycle
-vi.mock("@paperclipai/db", () => {
+// Mock @armyofagents/db to avoid drizzle-orm ESM cycle
+vi.mock("@armyofagents/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {
@@ -121,21 +121,21 @@ describe("teamService.addMember", () => {
 
     const db = createSequenceDb({
       selects: [
-        // assertFounder → isInstanceAdmin (instanceUserRoles)
+        // assertFounder -> isInstanceAdmin (instanceUserRoles)
         [],
-        // assertFounder → userRoles → founder
+        // assertFounder -> userRoles -> founder
         [{ role: "founder", projectId: null }],
-        // email uniqueness check → no existing
+        // email uniqueness check -> no existing
         [],
-        // find authUser by email → not found
+        // find authUser by email -> not found
         [],
-        // updateUserRole → getUserRole → isInstanceAdmin
+        // updateUserRole -> getUserRole -> isInstanceAdmin
         [],
-        // updateUserRole → getUserRole → userRoles
+        // updateUserRole -> getUserRole -> userRoles
         [{ role: "team_member", projectId: "dept-1" }],
-        // updateUserRole final getUserRole → isInstanceAdmin
+        // updateUserRole final getUserRole -> isInstanceAdmin
         [],
-        // updateUserRole final getUserRole → userRoles
+        // updateUserRole final getUserRole -> userRoles
         [{ role: "team_member", projectId: "dept-1" }],
       ],
       inserts: [
@@ -161,21 +161,21 @@ describe("teamService.addMember", () => {
 
     const db = createSequenceDb({
       selects: [
-        // assertFounder → isInstanceAdmin
+        // assertFounder -> isInstanceAdmin
         [],
-        // assertFounder → userRoles → founder
+        // assertFounder -> userRoles -> founder
         [{ role: "founder", projectId: null }],
-        // email uniqueness in company → no match
+        // email uniqueness in company -> no match
         [],
-        // find authUser by email → found
+        // find authUser by email -> found
         [{ id: "existing-user-id" }],
-        // updateUserRole → getUserRole → isInstanceAdmin
+        // updateUserRole -> getUserRole -> isInstanceAdmin
         [],
-        // updateUserRole → getUserRole → userRoles
+        // updateUserRole -> getUserRole -> userRoles
         [{ role: "team_member", projectId: null }],
-        // updateUserRole final getUserRole → isInstanceAdmin
+        // updateUserRole final getUserRole -> isInstanceAdmin
         [],
-        // updateUserRole final getUserRole → userRoles
+        // updateUserRole final getUserRole -> userRoles
         [{ role: "team_member", projectId: null }],
       ],
     });
@@ -192,11 +192,11 @@ describe("teamService.addMember", () => {
     resetMocks();
     const db = createSequenceDb({
       selects: [
-        // assertFounder → isInstanceAdmin
+        // assertFounder -> isInstanceAdmin
         [],
-        // assertFounder → userRoles → founder
+        // assertFounder -> userRoles -> founder
         [{ role: "founder", projectId: null }],
-        // email uniqueness check → exists!
+        // email uniqueness check -> exists!
         [{ principalId: "dup-user" }],
       ],
     });
@@ -210,9 +210,9 @@ describe("teamService.addMember", () => {
     resetMocks();
     const db = createSequenceDb({
       selects: [
-        // assertFounder → isInstanceAdmin
+        // assertFounder -> isInstanceAdmin
         [],
-        // assertFounder → userRoles → team_lead (not founder)
+        // assertFounder -> userRoles -> team_lead (not founder)
         [{ role: "team_lead", projectId: "dept-1" }],
       ],
     });
@@ -226,11 +226,11 @@ describe("teamService.addMember", () => {
     resetMocks();
     const db = createSequenceDb({
       selects: [
-        // assertFounder → isInstanceAdmin
+        // assertFounder -> isInstanceAdmin
         [],
-        // assertFounder → userRoles → founder (passes assertFounder)
+        // assertFounder -> userRoles -> founder (passes assertFounder)
         [{ role: "founder", projectId: null }],
-        // assertSystemAdmin → isCompanySystemAdmin → not admin
+        // assertSystemAdmin -> isCompanySystemAdmin -> not admin
         [{ isSystemAdmin: false }],
       ],
     });
@@ -251,21 +251,21 @@ describe("teamService.addMember", () => {
     const updateSets: Record<string, unknown>[] = [];
     const db = createSequenceDb({
       selects: [
-        // assertFounder → isInstanceAdmin
+        // assertFounder -> isInstanceAdmin
         [],
-        // assertFounder → userRoles → founder
+        // assertFounder -> userRoles -> founder
         [{ role: "founder", projectId: null }],
-        // email uniqueness → clean
+        // email uniqueness -> clean
         [],
-        // find authUser → exists
+        // find authUser -> exists
         [{ id: "new-user-id" }],
-        // updateUserRole → getUserRole → isInstanceAdmin
+        // updateUserRole -> getUserRole -> isInstanceAdmin
         [],
-        // updateUserRole → getUserRole → userRoles
+        // updateUserRole -> getUserRole -> userRoles
         [{ role: "team_member", projectId: null }],
-        // updateUserRole final getUserRole → isInstanceAdmin
+        // updateUserRole final getUserRole -> isInstanceAdmin
         [],
-        // updateUserRole final getUserRole → userRoles
+        // updateUserRole final getUserRole -> userRoles
         [{ role: "team_member", projectId: null }],
       ],
     });
@@ -299,9 +299,9 @@ describe("teamService.getReportsFor", () => {
     resetMocks();
     const db = createSequenceDb({
       selects: [
-        // human reports → none
+        // human reports -> none
         [],
-        // direct agents → none
+        // direct agents -> none
         [],
       ],
     });
@@ -320,7 +320,7 @@ describe("teamService.getReportsFor", () => {
           { userId: "u2", displayName: "Alice", email: "alice@test.com", role: "team_member" },
           { userId: "u3", displayName: "Bob", email: "bob@test.com", role: "team_lead" },
         ],
-        // direct agents → none
+        // direct agents -> none
         [],
       ],
     });
@@ -336,7 +336,7 @@ describe("teamService.getReportsFor", () => {
     resetMocks();
     const db = createSequenceDb({
       selects: [
-        // human reports → none
+        // human reports -> none
         [],
         // direct agents
         [{ id: "agent-1", name: "Agent Alpha" }],
@@ -363,9 +363,9 @@ describe("teamService.getDependencies", () => {
     resetMocks();
     const db = createSequenceDb({
       selects: [
-        // getReportsFor → human reports
+        // getReportsFor -> human reports
         [{ userId: "u2", displayName: "Alice", email: "alice@test.com", role: "team_member" }],
-        // getReportsFor → direct agents
+        // getReportsFor -> direct agents
         [{ id: "agent-1", name: "Agent A" }],
         // BFS children of agent-1
         [],
@@ -389,13 +389,13 @@ describe("teamService.getDependencies", () => {
     resetMocks();
     const db = createSequenceDb({
       selects: [
-        // getReportsFor → no humans
+        // getReportsFor -> no humans
         [],
-        // getReportsFor → no agents
+        // getReportsFor -> no agents
         [],
-        // assignedTaskCount → 0
+        // assignedTaskCount -> 0
         [{ cnt: 0 }],
-        // createdTaskCount → 0
+        // createdTaskCount -> 0
         [{ cnt: 0 }],
       ],
     });
@@ -413,7 +413,7 @@ describe("teamService.reassignAndRemove", () => {
     resetMocks();
     const db = createSequenceDb({
       selects: [
-        // isCompanySystemAdmin → true
+        // isCompanySystemAdmin -> true
         [{ isSystemAdmin: true }],
       ],
     });
@@ -430,17 +430,17 @@ describe("teamService.reassignAndRemove", () => {
     resetMocks();
     const db = createSequenceDb({
       selects: [
-        // isCompanySystemAdmin → false
+        // isCompanySystemAdmin -> false
         [{ isSystemAdmin: false }],
-        // getUserRole → isInstanceAdmin
+        // getUserRole -> isInstanceAdmin
         [],
-        // getUserRole → userRoles → founder
+        // getUserRole -> userRoles -> founder
         [{ role: "founder", projectId: null }],
-        // founderCount → userRoles query (founder role rows)
+        // founderCount -> userRoles query (founder role rows)
         [{ userId: "last-founder" }],
-        // founderCount → memberships
+        // founderCount -> memberships
         [{ principalId: "last-founder" }],
-        // founderCount → isInstanceAdmin for that membership
+        // founderCount -> isInstanceAdmin for that membership
         [],
       ],
     });
@@ -459,11 +459,11 @@ describe("teamService.reassignAndRemove", () => {
     const deleteCalls: number[] = [];
     const db = createSequenceDb({
       selects: [
-        // isCompanySystemAdmin → false
+        // isCompanySystemAdmin -> false
         [{ isSystemAdmin: false }],
-        // getUserRole → isInstanceAdmin
+        // getUserRole -> isInstanceAdmin
         [],
-        // getUserRole → userRoles → team_member
+        // getUserRole -> userRoles -> team_member
         [{ role: "team_member", projectId: "dept-1" }],
       ],
     });
@@ -502,19 +502,19 @@ describe("teamService.reassignAndRemove", () => {
     resetMocks();
     const db = createSequenceDb({
       selects: [
-        // isCompanySystemAdmin → false
+        // isCompanySystemAdmin -> false
         [{ isSystemAdmin: false }],
-        // getUserRole → isInstanceAdmin
+        // getUserRole -> isInstanceAdmin
         [],
-        // getUserRole → userRoles → founder
+        // getUserRole -> userRoles -> founder
         [{ role: "founder", projectId: null }],
-        // founderCount → userRoles query (2 founder rows)
+        // founderCount -> userRoles query (2 founder rows)
         [{ userId: "founder-to-remove" }, { userId: "other-founder" }],
-        // founderCount → memberships
+        // founderCount -> memberships
         [{ principalId: "founder-to-remove" }, { principalId: "other-founder" }],
-        // founderCount → isInstanceAdmin for founder-to-remove
+        // founderCount -> isInstanceAdmin for founder-to-remove
         [],
-        // founderCount → isInstanceAdmin for other-founder
+        // founderCount -> isInstanceAdmin for other-founder
         [],
       ],
     });

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Mock @paperclipai/db to avoid drizzle-orm ESM cycle
-vi.mock("@paperclipai/db", () => {
+// Mock @armyofagents/db to avoid drizzle-orm ESM cycle
+vi.mock("@armyofagents/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {
@@ -306,6 +306,55 @@ describe("Memory Lifecycle Service", () => {
 
       const svc = memoryLifecycleService(db as any);
       const count = await svc.flagStaleItems("co-1");
+
+      expect(count).toBe(0);
+    });
+  });
+
+  describe("onTaskCompleted", () => {
+    it("archives working-layer items scoped to the completed task", async () => {
+      const items = [
+        { id: "wm-1", title: "Task working mem 1", layer: "working", status: "approved", taskId: "task-99", companyId: "co-1" },
+        { id: "wm-2", title: "Task working mem 2", layer: "working", status: "approved", taskId: "task-99", companyId: "co-1" },
+      ];
+
+      const db = createSequenceDb({
+        selects: [items],
+        updates: [items],
+      });
+
+      const svc = memoryLifecycleService(db as any);
+      const count = await svc.onTaskCompleted("co-1", "task-99");
+
+      expect(count).toBe(2);
+      expect(logActivity).toHaveBeenCalledTimes(2);
+      expect(logActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        companyId: "co-1",
+        actorType: "system",
+        actorId: "system",
+        action: "memory.auto_archived",
+        entityType: "memory_item",
+        entityId: "wm-1",
+        details: expect.objectContaining({ reason: "task_completed", taskId: "task-99" }),
+      }));
+    });
+
+    it("returns 0 when no working items are scoped to the task", async () => {
+      const db = createSequenceDb({ selects: [[]] });
+
+      const svc = memoryLifecycleService(db as any);
+      const count = await svc.onTaskCompleted("co-1", "task-99");
+
+      expect(count).toBe(0);
+      expect(logActivity).not.toHaveBeenCalled();
+    });
+
+    it("is idempotent — re-running returns 0 (items already archived)", async () => {
+      // Second call finds no approved items (already archived by first call)
+      const db = createSequenceDb({ selects: [[]] });
+
+      const svc = memoryLifecycleService(db as any);
+      const count = await svc.onTaskCompleted("co-1", "task-99");
 
       expect(count).toBe(0);
     });

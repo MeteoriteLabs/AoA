@@ -1,17 +1,28 @@
 import { useEffect } from "react";
+import { isKeyboardShortcutTextInputTarget } from "@/lib/keyboard-shortcuts-config";
 
 interface ShortcutHandlers {
   onNewIssue?: () => void;
   onToggleSidebar?: () => void;
   onSwitchCompany?: (index: number) => void;
+  /** Open the keyboard shortcut cheatsheet. Bound to global.cheatsheet ("?"). */
+  onShowCheatsheet?: () => void;
 }
 
-export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onSwitchCompany }: ShortcutHandlers) {
+/**
+ * Handles keyboard shortcuts for global navigation.
+ *
+ * Currently bound IDs from KEYBOARD_SHORTCUTS:
+ *   - global.new_task       → onNewIssue
+ *   - global.toggle_sidebar → onToggleSidebar
+ *   - global.switch_company → onSwitchCompany
+ *   - global.cheatsheet     → onShowCheatsheet
+ */
+export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onSwitchCompany, onShowCheatsheet }: ShortcutHandlers) {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       // Don't fire shortcuts when typing in inputs
-      const target = e.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
+      if (isKeyboardShortcutTextInputTarget(e.target)) {
         return;
       }
 
@@ -19,6 +30,13 @@ export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onSwitchComp
       if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "9") {
         e.preventDefault();
         onSwitchCompany?.(parseInt(e.key, 10) - 1);
+        return;
+      }
+
+      // ? → Show keyboard cheatsheet (e.key === "?" regardless of Shift state on US layout)
+      if (e.key === "?" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        onShowCheatsheet?.();
         return;
       }
 
@@ -37,5 +55,5 @@ export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onSwitchComp
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onNewIssue, onToggleSidebar, onSwitchCompany]);
+  }, [onNewIssue, onToggleSidebar, onSwitchCompany, onShowCheatsheet]);
 }

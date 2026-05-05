@@ -1,5 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { accessService, logActivity, teamService } from "../services/index.js";
@@ -9,7 +9,7 @@ import {
   reassignAndRemoveSchema,
   transferAdminSchema,
   updateTeamMemberRoleSchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 
 export function teamRoutes(db: Db) {
   const router = Router();

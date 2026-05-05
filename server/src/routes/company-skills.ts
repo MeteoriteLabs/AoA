@@ -1,12 +1,12 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import { type Db } from "@armyofagents/db";
 import {
   companySkillCreateSchema,
   companySkillFileUpdateSchema,
   companySkillImportSchema,
   companySkillImportPackageSchema,
   companySkillProjectScanRequestSchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { accessService, agentService, companySkillService, logActivity } from "../services/index.js";
 import { forbidden } from "../errors.js";
@@ -137,6 +137,9 @@ export function companySkillRoutes(db: Db) {
         String(req.body.path ?? ""),
         String(req.body.content ?? ""),
       );
+
+      // customized=true is written inside svc.updateFile() for all paths:
+      // atomically with markdown for SKILL.md, standalone for other files.
 
       const actor = getActorInfo(req);
       await logActivity(db, {

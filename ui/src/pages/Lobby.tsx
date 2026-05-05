@@ -1,12 +1,13 @@
 import { useEffect, useRef } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { Plus, Settings } from "lucide-react";
+import { Plus, Settings, Store, Upload } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialog } from "@/context/DialogContext";
 import { companiesApi, type CompanyStats } from "@/api/companies";
 import { queryKeys } from "@/lib/queryKeys";
 import { LobbyCompanyCard } from "@/components/LobbyCompanyCard";
+import { UserMenu } from "@/components/UserMenu";
 import { cn } from "@/lib/utils";
 
 export function Lobby() {
@@ -49,19 +50,36 @@ export function Lobby() {
       {/* Minimal header */}
       <header className="flex items-center justify-between px-6 h-14 shrink-0 border-b border-border">
         <span className="text-sm font-bold tracking-tight text-foreground">AoA</span>
-        <button
-          type="button"
-          onClick={() => {
-            navigate("/instance/settings");
-          }}
-          className={cn(
-            "flex items-center justify-center h-8 w-8 rounded-md text-muted-foreground",
-            "hover:bg-accent hover:text-foreground transition-colors",
-          )}
-          aria-label="Settings"
-        >
-          <Settings className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => {
+              navigate("/marketplace");
+            }}
+            className={cn(
+              "flex items-center gap-1.5 h-8 px-2.5 rounded-md text-sm font-medium text-muted-foreground",
+              "hover:bg-accent hover:text-foreground transition-colors",
+            )}
+            aria-label="Browse Marketplace"
+          >
+            <Store className="h-4 w-4" />
+            <span>Browse Marketplace</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              navigate("/instance/settings");
+            }}
+            className={cn(
+              "flex items-center justify-center h-8 w-8 rounded-md text-muted-foreground",
+              "hover:bg-accent hover:text-foreground transition-colors",
+            )}
+            aria-label="Settings"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+          <UserMenu collapsed />
+        </div>
       </header>
 
       {/* Main content */}
@@ -100,6 +118,22 @@ export function Lobby() {
             >
               <Plus className="h-5 w-5" />
               <span className="text-sm font-medium">Create Company</span>
+            </button>
+
+            {/* Import Company card */}
+            <button
+              type="button"
+              onClick={() => navigate("/import")}
+              className={cn(
+                "flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border p-5",
+                "text-muted-foreground transition-all duration-150",
+                "hover:border-foreground/20 hover:text-foreground",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                "min-h-[120px]",
+              )}
+            >
+              <Upload className="h-5 w-5" />
+              <span className="text-sm font-medium">Import Company</span>
             </button>
           </div>
         </div>

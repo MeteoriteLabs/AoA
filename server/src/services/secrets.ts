@@ -1,8 +1,8 @@
 import { and, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companySecrets, companySecretVersions } from "@paperclipai/db";
-import type { AgentEnvConfig, EnvBinding, SecretProvider } from "@paperclipai/shared";
-import { envBindingSchema } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { companySecrets, companySecretVersions } from "@armyofagents/db";
+import type { AgentEnvConfig, EnvBinding, SecretProvider } from "@armyofagents/shared";
+import { envBindingSchema } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider, listSecretProviders } from "../secrets/provider-registry.js";
 
@@ -166,6 +166,8 @@ export function secretService(db: Db) {
       return resolveSecretValue(companyId, secret.id, "latest");
     },
 
+    resolveSecretValue,
+
     create: async (
       companyId: string,
       input: {
@@ -289,6 +291,18 @@ export function secretService(db: Db) {
       if (!secret) return null;
       await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
       return secret;
+    },
+
+    /**
+     * Convenience wrapper for deleting a secret by (companyId, name). Idempotent:
+     * returns `false` when no matching secret exists. Version rows cascade-delete
+     * via the FK on `company_secret_versions.secret_id`.
+     */
+    delete: async (companyId: string, name: string): Promise<boolean> => {
+      const existing = await getByName(companyId, name);
+      if (!existing) return false;
+      await db.delete(companySecrets).where(eq(companySecrets.id, existing.id));
+      return true;
     },
 
     normalizeAdapterConfigForPersistence: async (

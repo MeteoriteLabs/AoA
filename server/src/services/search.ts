@@ -1,14 +1,14 @@
 import { and, eq, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { userRoles } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { userRoles } from "@armyofagents/db";
 import type {
   GlobalSearchEntityType,
   GlobalSearchGroup,
   GlobalSearchResponse,
   GlobalSearchResult,
   UserRole,
-} from "@paperclipai/shared";
-import { deriveAgentUrlKey } from "@paperclipai/shared";
+} from "@armyofagents/shared";
+import { deriveAgentUrlKey } from "@armyofagents/shared";
 
 type Actor = {
   type: "none" | "board" | "agent" | "mcp";
@@ -579,7 +579,7 @@ export function searchService(db: Db) {
           type: "memory" as const,
           title: row.title,
           subtitle: excerpt(row.subtitle),
-          href: `/memory?item=${encodeURIComponent(row.id)}`,
+          href: `/memory/explore?item=${encodeURIComponent(row.id)}`,
           score: toFiniteScore(row.score),
           status: row.status,
           departmentName: row.departmentName,

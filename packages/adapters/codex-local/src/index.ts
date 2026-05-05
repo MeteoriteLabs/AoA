@@ -3,6 +3,13 @@ export const label = "Codex (local)";
 export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.3-codex";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 
+export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.4"] as const;
+
+export function isCodexLocalFastModeSupported(model: string | null | undefined): boolean {
+  if (!model) return false;
+  return (CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS as readonly string[]).includes(model);
+}
+
 export const models = [
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
@@ -40,4 +47,5 @@ Notes:
 - Prompts are piped via stdin (Codex receives "-" prompt argument).
 - Paperclip auto-injects local skills into Codex personal skills dir ("$CODEX_HOME/skills" or "~/.codex/skills") when missing, so Codex can discover "$paperclip" and related skills.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
+- fastMode (boolean, optional): enable Codex Fast tier for lower-latency runs. Currently supported on gpt-5.4 only; ignored on other models. Consumes credits faster.
 `;

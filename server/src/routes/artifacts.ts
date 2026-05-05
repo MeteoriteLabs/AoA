@@ -1,11 +1,11 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   createArtifactSchema,
   updateArtifactSchema,
   createArtifactVersionSchema,
   mcpArtifactVersionSchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { artifactService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";

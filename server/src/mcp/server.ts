@@ -1,29 +1,42 @@
 import { Router, type Request } from "express";
-import { and, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { issues, userRoles, projectGoals } from "@paperclipai/db";
-import {
-  createMcpApiKeySchema,
-  ISSUE_STATUSES,
-  mcpArtifactVersionSchema,
-  mcpDebriefSchema,
-  updateMcpSettingsSchema,
-} from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { createMcpApiKeySchema, updateMcpSettingsSchema } from "@armyofagents/shared";
 import { z } from "zod";
 import { forbidden, unauthorized } from "../errors.js";
 import {
+  agentService,
+  approvalService,
   artifactService,
   companyService,
   debriefService,
   extractionService,
   goalService,
+  issueApprovalService,
   issueService,
   logActivity,
   mcpService,
   memoryService,
   permissionService,
+  projectService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../routes/authz.js";
+import {
+  TOOL_DEFINITIONS,
+  toolHandlers,
+  toolAllowedActors,
+  type McpUserScope,
+  type ToolContext,
+  type ToolServices,
+} from "./tools/index.js";
+import {
+  canAccessProjectScopedEntity,
+  filterArtifactsForScope,
+  filterGoalsForScope,
+  filterMemoryForScope,
+  resolveScopedAgentIdsDefault,
+  resolveUserRole,
+  resolveUserScope,
+} from "./tools/scope.js";
 
 const JSON_RPC_VERSION = "2.0";
 const MCP_PROTOCOL_VERSION = "2024-11-05";
@@ -49,10 +62,6 @@ const callToolSchema = z.object({
   name: z.string().min(1),
   arguments: z.record(z.unknown()).optional(),
 });
-
-type McpUserScope =
-  | { kind: "founder"; userId: string }
-  | { kind: "scoped"; userId: string; projectIds: Set<string> };
 
 type RateWindow = { count: number; resetAt: number };
 
@@ -87,7 +96,13 @@ interface McpRouteDeps {
   companiesSvc?: ReturnType<typeof companyService>;
   mcpSvc?: ReturnType<typeof mcpService>;
   permissionsSvc?: ReturnType<typeof permissionService>;
+  agentsSvc?: ReturnType<typeof agentService>;
+  projectsSvc?: ReturnType<typeof projectService>;
+  approvalsSvc?: ReturnType<typeof approvalService>;
+  issueApprovalsSvc?: ReturnType<typeof issueApprovalService>;
   resolveScope?: (companyId: string, userId: string) => Promise<McpUserScope>;
+  resolveRole?: (companyId: string, userId: string) => Promise<string>;
+  resolveScopedAgentIds?: (companyId: string, scope: McpUserScope) => Promise<Set<string> | null>;
 }
 
 function jsonRpcResult(id: unknown, result: unknown) {
@@ -129,6 +144,27 @@ function asToolContent(payload: unknown) {
   };
 }
 
+/**
+ * Translate the request's `req.actor` (set by the auth middleware in
+ * server/src/middleware/auth.ts) into a stable ProtocolActor shape that
+ * MCP routes can consume.
+ *
+ * The auth layer recognizes four actor types: "mcp", "board", "agent",
+ * "none". This function maps the first three (a "none" actor returns
+ * null and the route returns 401).
+ *
+ * For agent actors:
+ *   - userId is synthesized from agentId so existing scope/audit code
+ *     that keys on userId continues to work without branching.
+ *   - companyId comes from the JWT (validated by middleware against the
+ *     URL companyId in ensureProtocolAccess).
+ *   - agentId and runId are passed through so per-agent tools like
+ *     memory.retain can identify the caller without trusting an arg.
+ *
+ * "commander" is reserved for the future when Commander goes CLI.
+ * Auth middleware doesn't currently emit a "commander" type — that
+ * branch lights up alongside the team-under-Commander work.
+ */
 function protocolAuthActor(req: Request) {
   if (req.actor.type === "mcp") {
     return {
@@ -136,6 +172,8 @@ function protocolAuthActor(req: Request) {
       companyId: req.actor.companyId ?? null,
       keyId: req.actor.keyId ?? null,
       source: "mcp" as const,
+      agentId: null,
+      runId: null,
     };
   }
   if (req.actor.type === "board") {
@@ -144,109 +182,22 @@ function protocolAuthActor(req: Request) {
       companyId: null,
       keyId: null,
       source: "board" as const,
+      agentId: null,
+      runId: null,
+    };
+  }
+  if (req.actor.type === "agent") {
+    const agentId = req.actor.agentId ?? null;
+    return {
+      userId: agentId ?? "agent-unknown",
+      companyId: req.actor.companyId ?? null,
+      keyId: null,
+      source: "agent" as const,
+      agentId,
+      runId: req.actor.runId ?? null,
     };
   }
   return null;
-}
-
-async function resolveUserScope(db: Db, companyId: string, userId: string): Promise<McpUserScope> {
-  const roles = await db
-    .select()
-    .from(userRoles)
-    .where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
-
-  if (roles.length === 0 || roles.some((role) => role.role === "founder")) {
-    return { kind: "founder", userId };
-  }
-
-  const projectIds = new Set(roles.map((role) => role.projectId).filter((id): id is string => Boolean(id)));
-  return { kind: "scoped", userId, projectIds };
-}
-
-function canAccessProjectScopedEntity(scope: McpUserScope, projectId: string | null | undefined) {
-  if (scope.kind === "founder") return true;
-  return Boolean(projectId && scope.projectIds.has(projectId));
-}
-
-async function goalProjectMap(db: Db, goalIds: string[]) {
-  if (goalIds.length === 0) return new Map<string, string[]>();
-  const rows = await db
-    .select({
-      goalId: projectGoals.goalId,
-      projectId: projectGoals.projectId,
-    })
-    .from(projectGoals)
-    .where(inArray(projectGoals.goalId, goalIds));
-  const map = new Map<string, string[]>();
-  for (const row of rows) {
-    const current = map.get(row.goalId) ?? [];
-    current.push(row.projectId);
-    map.set(row.goalId, current);
-  }
-  return map;
-}
-
-async function artifactProjectMap(db: Db, artifactIds: string[]) {
-  if (artifactIds.length === 0) return new Map<string, string | null>();
-  const rows = await db
-    .select({
-      artifactId: issues.artifactId,
-      projectId: issues.projectId,
-    })
-    .from(issues)
-    .where(inArray(issues.artifactId, artifactIds));
-  const map = new Map<string, string | null>();
-  for (const row of rows) {
-    if (row.artifactId) {
-      map.set(row.artifactId, row.projectId ?? null);
-    }
-  }
-  return map;
-}
-
-async function memoryTaskProjectMap(db: Db, taskIds: string[]) {
-  if (taskIds.length === 0) return new Map<string, string | null>();
-  const rows = await db
-    .select({
-      id: issues.id,
-      projectId: issues.projectId,
-    })
-    .from(issues)
-    .where(inArray(issues.id, taskIds));
-  return new Map(rows.map((row) => [row.id, row.projectId ?? null]));
-}
-
-async function filterGoalsForScope(db: Db, scope: McpUserScope, rows: Array<Record<string, any>>) {
-  if (scope.kind === "founder") return rows;
-  const projectMap = await goalProjectMap(db, rows.map((row) => row.id));
-  return rows.filter((row) => (projectMap.get(row.id) ?? []).some((projectId) => scope.projectIds.has(projectId)));
-}
-
-async function filterMemoryForScope(db: Db, scope: McpUserScope, rows: Array<Record<string, any>>) {
-  if (scope.kind === "founder") return rows;
-  const goalIds = rows.map((row) => row.goalId).filter((id): id is string => Boolean(id));
-  const taskIds = rows.map((row) => row.taskId).filter((id): id is string => Boolean(id));
-  const [goalProjects, taskProjects] = await Promise.all([
-    goalProjectMap(db, [...new Set(goalIds)]),
-    memoryTaskProjectMap(db, [...new Set(taskIds)]),
-  ]);
-  return rows.filter((row) => {
-    if (canAccessProjectScopedEntity(scope, row.departmentId)) return true;
-    if (canAccessProjectScopedEntity(scope, row.projectId)) return true;
-    if (row.goalId && (goalProjects.get(row.goalId) ?? []).some((projectId) => scope.projectIds.has(projectId))) {
-      return true;
-    }
-    if (row.taskId && canAccessProjectScopedEntity(scope, taskProjects.get(row.taskId) ?? null)) {
-      return true;
-    }
-    return false;
-  });
-}
-
-async function filterArtifactsForScope(db: Db, scope: McpUserScope, rows: Array<Record<string, any>>) {
-  if (scope.kind === "founder") return rows;
-  const projectMap = await artifactProjectMap(db, rows.map((row) => row.id));
-  return rows.filter((row) => canAccessProjectScopedEntity(scope, projectMap.get(row.id) ?? null));
 }
 
 function parseResourceUri(uri: string) {
@@ -275,33 +226,18 @@ async function ensureProtocolAccess(
   if (!company) {
     throw forbidden("Company not found");
   }
-  if (!company.mcpEnabled) {
+  // mcpEnabled gates EXTERNAL clients (mcp Bearer keys). Internal agent
+  // actors authenticate via their run JWT — they need MCP access for
+  // memory tools regardless of the founder's external-MCP toggle.
+  // Board (founder) sessions also bypass this gate (their auth is
+  // already trust-bounded). External "mcp" keys are still gated.
+  if (actor.source === "mcp" && !company.mcpEnabled) {
     throw forbidden("MCP server is disabled for this company");
   }
   return {
     actor,
     company,
   };
-}
-
-function assertScopedProjectAccess(scope: McpUserScope, projectId: string | null | undefined, label: string) {
-  if (scope.kind === "founder") return;
-  if (!projectId) return;
-  if (!scope.projectIds.has(projectId)) {
-    throw forbidden(`${label} is outside your scope`);
-  }
-}
-
-async function assertScopedGoalAccess(
-  db: Db,
-  scope: McpUserScope,
-  goalId: string | null | undefined,
-) {
-  if (!goalId || scope.kind === "founder") return;
-  const projects = (await goalProjectMap(db, [goalId])).get(goalId) ?? [];
-  if (projects.length === 0 || !projects.some((projectId) => scope.projectIds.has(projectId))) {
-    throw forbidden("Goal is outside your scope");
-  }
 }
 
 export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
@@ -315,6 +251,33 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   const companiesSvc = deps.companiesSvc ?? companyService(db);
   const mcpSvc = deps.mcpSvc ?? mcpService(db);
   const permissionsSvc = deps.permissionsSvc ?? permissionService(db);
+  const agentsSvc = deps.agentsSvc ?? agentService(db);
+  const projectsSvc = deps.projectsSvc ?? projectService(db);
+  const approvalsSvc = deps.approvalsSvc ?? approvalService(db);
+  const issueApprovalsSvc = deps.issueApprovalsSvc ?? issueApprovalService(db);
+  const resolveRole =
+    deps.resolveRole ??
+    ((companyId: string, userId: string) => resolveUserRole(db, companyId, userId));
+  const resolveScopedAgentIds =
+    deps.resolveScopedAgentIds ??
+    ((companyId: string, scope: McpUserScope) =>
+      resolveScopedAgentIdsDefault(db, companyId, scope));
+
+  const services: ToolServices = {
+    issuesSvc,
+    goalsSvc,
+    memorySvc,
+    artifactsSvc,
+    debriefsSvc,
+    extractionSvc,
+    companiesSvc,
+    mcpSvc,
+    permissionsSvc,
+    agentsSvc,
+    projectsSvc,
+    approvalsSvc,
+    issueApprovalsSvc,
+  };
 
   router.get("/companies/:companyId/mcp/status", async (req, res) => {
     assertBoard(req);
@@ -573,73 +536,7 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
 
       if (method === "tools/list") {
         res.json(
-          jsonRpcResult(requestBody.id ?? null, {
-            tools: [
-              {
-                name: "debrief-push",
-                description: "Push content into the Debrief pipeline",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    content: { type: "string" },
-                    title: { type: "string" },
-                    departmentId: { type: "string" },
-                    projectId: { type: "string" },
-                    source: { type: "object" },
-                  },
-                  required: ["content"],
-                },
-              },
-              {
-                name: "suggest-memory",
-                description: "Create a pending memory suggestion",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    title: { type: "string" },
-                    content: { type: "string" },
-                    category: { type: "string" },
-                    tags: { type: "array", items: { type: "string" } },
-                    departmentId: { type: "string" },
-                    projectId: { type: "string" },
-                    layer: { type: "string" },
-                    priority: { type: "number" },
-                    goalId: { type: "string" },
-                    taskId: { type: "string" },
-                  },
-                  required: ["title", "content", "category"],
-                },
-              },
-              {
-                name: "update-task-status",
-                description: "Update a task status with permission checks",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    taskId: { type: "string" },
-                    status: { type: "string", enum: [...ISSUE_STATUSES] },
-                  },
-                  required: ["taskId", "status"],
-                },
-              },
-              {
-                name: "attach-artifact-version",
-                description: "Add a new immutable version to an artifact",
-                inputSchema: {
-                  type: "object",
-                  properties: {
-                    artifactId: { type: "string" },
-                    sourceDetail: { type: "string" },
-                    changelog: { type: "string" },
-                    parentVersionId: { type: "string" },
-                    content: { type: "string" },
-                    fileUrl: { type: "string" },
-                  },
-                  required: ["artifactId", "sourceDetail"],
-                },
-              },
-            ],
-          }),
+          jsonRpcResult(requestBody.id ?? null, { tools: TOOL_DEFINITIONS }),
         );
         return;
       }
@@ -647,192 +544,43 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
       if (method === "tools/call") {
         const params = callToolSchema.parse(requestBody.params);
         const args = params.arguments ?? {};
-
-        if (params.name === "debrief-push") {
-          const parsed = mcpDebriefSchema.parse(args);
-          assertScopedProjectAccess(scope, parsed.departmentId ?? null, "Department");
-          assertScopedProjectAccess(scope, parsed.projectId ?? null, "Project");
-          const actorInfo = getActorInfo(req);
-          const debrief = await debriefsSvc.create(companyId, {
-            title: parsed.title ?? null,
-            inputType: "mcp",
-            rawContent: parsed.content,
-            departmentId: parsed.departmentId ?? null,
-            projectId: parsed.projectId ?? null,
-            sourceInfo: parsed.source ?? null,
-            createdBy: actorInfo.actorId,
-          });
-          await logActivity(db, {
-            companyId,
-            actorType: actorInfo.actorType,
-            actorId: actorInfo.actorId,
-            agentId: actorInfo.agentId,
-            runId: actorInfo.runId,
-            action: "debrief.created",
-            entityType: "debrief",
-            entityId: debrief.id,
-            details: { title: debrief.title, inputType: "mcp" },
-          });
-          void extractionSvc.extractFromDebrief(companyId, debrief.id).catch(() => {});
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent({ debriefId: debrief.id, status: "processing" })));
+        const handler = toolHandlers[params.name];
+        if (!handler) {
+          res.status(400).json(jsonRpcError(requestBody.id ?? null, -32601, "Tool not found"));
           return;
         }
-
-        if (params.name === "suggest-memory") {
-          const parsed = z
-            .object({
-              title: z.string().min(1),
-              content: z.string().min(1),
-              category: z.string().min(1),
-              tags: z.array(z.string()).optional(),
-              departmentId: z.string().uuid().nullable().optional(),
-              projectId: z.string().uuid().nullable().optional(),
-              layer: z.string().nullable().optional(),
-              priority: z.number().int().optional(),
-              goalId: z.string().uuid().nullable().optional(),
-              taskId: z.string().uuid().nullable().optional(),
-            })
-            .parse(args);
-
-          assertScopedProjectAccess(scope, parsed.departmentId ?? null, "Department");
-          assertScopedProjectAccess(scope, parsed.projectId ?? null, "Project");
-          await assertScopedGoalAccess(db, scope, parsed.goalId ?? null);
-
-          let linkedTask: Awaited<ReturnType<typeof issuesSvc.getById>> | null = null;
-          if (parsed.taskId) {
-            linkedTask = await issuesSvc.getById(parsed.taskId);
-            if (!linkedTask || linkedTask.companyId !== companyId) {
-              res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Task not found"));
-              return;
-            }
-            assertScopedProjectAccess(scope, linkedTask.projectId, "Task");
-          }
-
-          const memoryDepartmentId =
-            parsed.departmentId ??
-            parsed.projectId ??
-            linkedTask?.projectId ??
-            null;
-          const canCreateMemory = await permissionsSvc.canAccessMemory(
-            companyId,
-            protocolActor.userId,
-            "create",
-            {
-              layer: parsed.layer ?? null,
-              departmentId: memoryDepartmentId,
-              visibility: "scoped",
-            },
+        // V2.6: per-tool actor-type gate. Tools listed in toolAllowedActors
+        // are restricted to the listed actor sources. Tools NOT in the map
+        // remain open to all authenticated actors (pre-V2.6 behavior).
+        const allowed = toolAllowedActors[params.name];
+        if (allowed && !allowed.includes(protocolActor.source)) {
+          res.status(403).json(
+            jsonRpcError(
+              requestBody.id ?? null,
+              -32003,
+              `Tool ${params.name} is not available for ${protocolActor.source} actors`,
+            ),
           );
-          if (!canCreateMemory) {
-            res.status(403).json(jsonRpcError(requestBody.id ?? null, -32003, "Insufficient permissions for memory create"));
-            return;
-          }
-
-          const item = await memorySvc.create(companyId, {
-            ...parsed,
-            source: "mcp",
-            createdBy: protocolActor.userId,
-            status: "pending",
-            visibility: "scoped",
-            priority: parsed.priority ?? 0,
-            tags: parsed.tags ?? null,
-            departmentId: parsed.departmentId ?? null,
-            projectId: parsed.projectId ?? null,
-            layer: parsed.layer ?? null,
-            goalId: parsed.goalId ?? null,
-            taskId: parsed.taskId ?? null,
-          });
-          await logActivity(db, {
-            companyId,
-            actorType: "user",
-            actorId: protocolActor.userId,
-            action: "memory.created",
-            entityType: "memory_item",
-            entityId: item.id,
-            details: { title: item.title, source: item.source, status: item.status },
-          });
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent({ id: item.id, status: item.status })));
           return;
         }
-
-        if (params.name === "update-task-status") {
-          const parsed = z.object({ taskId: z.string(), status: z.enum(ISSUE_STATUSES) }).parse(args);
-          const issue = await issuesSvc.getById(parsed.taskId);
-          if (!issue || issue.companyId !== companyId || !canAccessProjectScopedEntity(scope, issue.projectId)) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Task not found"));
-            return;
-          }
-          const canUpdateTask = await permissionsSvc.canAccessEntity(companyId, protocolActor.userId, "task", "update", {
-            departmentId: issue.projectId ?? null,
-            assigneeUserId: issue.assigneeUserId ?? null,
-          });
-          if (!canUpdateTask) {
-            res.status(403).json(jsonRpcError(requestBody.id ?? null, -32003, "Insufficient permissions for task update"));
-            return;
-          }
-          const updated = await issuesSvc.update(parsed.taskId, { status: parsed.status });
-          await logActivity(db, {
-            companyId,
-            actorType: "user",
-            actorId: protocolActor.userId,
-            action: "issue.updated",
-            entityType: "issue",
-            entityId: parsed.taskId,
-            details: { status: parsed.status, source: "mcp" },
-          });
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(updated)));
-          return;
+        const ctx: ToolContext = {
+          db,
+          companyId,
+          actor: protocolActor,
+          scope,
+          services,
+          actorInfo: getActorInfo(req),
+          resolveRole,
+          resolveScopedAgentIds,
+        };
+        const result = await handler(ctx, args);
+        if (result.ok) {
+          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(result.data)));
+        } else {
+          res
+            .status(result.status)
+            .json(jsonRpcError(requestBody.id ?? null, result.code, result.message));
         }
-
-        if (params.name === "attach-artifact-version") {
-          const parsed = z
-            .object({
-              artifactId: z.string().uuid(),
-              sourceDetail: mcpArtifactVersionSchema.shape.sourceDetail,
-              changelog: mcpArtifactVersionSchema.shape.changelog,
-              parentVersionId: mcpArtifactVersionSchema.shape.parentVersionId,
-              content: mcpArtifactVersionSchema.shape.content,
-              fileUrl: mcpArtifactVersionSchema.shape.fileUrl,
-            })
-            .parse(args);
-
-          const artifact = await artifactsSvc.getById(parsed.artifactId);
-          const filtered = artifact ? await filterArtifactsForScope(db, scope, [artifact]) : [];
-          if (filtered.length === 0) {
-            res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Artifact not found"));
-            return;
-          }
-          const linkedProjectId = (await artifactProjectMap(db, [parsed.artifactId])).get(parsed.artifactId) ?? null;
-          const canUpdateArtifact = await permissionsSvc.canAccessEntity(companyId, protocolActor.userId, "artifact", "update", {
-            departmentId: linkedProjectId,
-          });
-          if (!canUpdateArtifact) {
-            res.status(403).json(jsonRpcError(requestBody.id ?? null, -32003, "Insufficient permissions for artifact update"));
-            return;
-          }
-
-          const version = await artifactsSvc.addVersion(parsed.artifactId, {
-            source: "mcp",
-            sourceDetail: parsed.sourceDetail,
-            changelog: parsed.changelog ?? null,
-            parentVersionId: parsed.parentVersionId ?? null,
-            content: parsed.content ?? null,
-            fileUrl: parsed.fileUrl ?? null,
-          });
-          await logActivity(db, {
-            companyId,
-            actorType: "user",
-            actorId: protocolActor.userId,
-            action: "artifact.version_added",
-            entityType: "artifact",
-            entityId: parsed.artifactId,
-            details: { versionId: version.id, versionNumber: version.versionNumber, source: "mcp" },
-          });
-          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(version)));
-          return;
-        }
-
-        res.status(400).json(jsonRpcError(requestBody.id ?? null, -32601, "Tool not found"));
         return;
       }
 

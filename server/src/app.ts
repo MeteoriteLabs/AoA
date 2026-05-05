@@ -2,8 +2,8 @@ import express, { Router, type Request as ExpressRequest } from "express";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { Db } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode, PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import type { DeploymentExposure, DeploymentMode, PaperclipPluginManifestV1 } from "@armyofagents/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
@@ -15,12 +15,19 @@ import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { goalRoutes } from "./routes/goals.js";
+import { teamsRoutes } from "./routes/teams.js";
+import { teamImportsRoutes } from "./routes/team-imports.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
+import { githubRoutes } from "./routes/github.js";
 import { costRoutes } from "./routes/costs.js";
+import { financeRoutes } from "./routes/finance.js";
+import { quotaRoutes } from "./routes/quotas.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
+import { sidebarPreferencesRoutes } from "./routes/sidebar-preferences.js";
+import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
@@ -35,7 +42,15 @@ import { outputDetectionRoutes } from "./routes/output-detection.js";
 import { trustScoreRoutes } from "./routes/trust-scores.js";
 import { transcriptionRoutes } from "./routes/transcription.js";
 import { memoryFeedbackRoutes } from "./routes/memory-feedback.js";
+import { feedbackRoutes } from "./routes/feedback.js";
 import { memoryLifecycleRoutes } from "./routes/memory-lifecycle.js";
+import { memoryRetrievalsRoutes } from "./routes/memory-retrievals.js";
+import { memoryStarterTemplatesRoutes } from "./routes/memory-starter-templates.js";
+import { fileImportRoutes } from "./routes/file-import.js";
+import { memoryFoldersRoutes } from "./routes/memory-folders.js";
+import { memoryAssetsRoutes } from "./routes/memory-assets.js";
+import { memoryAssetsUploadRoutes } from "./routes/memory-assets-upload.js";
+import { memoryAssetRenderRoutes } from "./routes/memory-asset-render.js";
 import { suggestionRoutes } from "./routes/suggestions.js";
 import { contextPackagingRoutes } from "./routes/context-packaging.js";
 import { mcpServerRoutes } from "./mcp/server.js";
@@ -47,11 +62,18 @@ import { workflowTemplateRoutes } from "./routes/workflow-templates.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { cliAuthRoutes } from "./routes/cli-auth.js";
+import { authProfileRoutes } from "./routes/auth-profile.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
+import { adapterRoutes } from "./routes/adapters.js";
 import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { createMarketplaceRouter } from "./routes/marketplace.js";
+import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js";
+import { createMarketplaceCompanyRouter } from "./routes/marketplace-company.js";
+import { MarketplaceCatalogService } from "./services/aoa-marketplace.js";
 import { pluginLoader } from "./services/plugin-loader.js";
+import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
 import { createPluginStreamBus } from "./services/plugin-stream-bus.js";
@@ -61,8 +83,8 @@ import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { buildHostServices } from "./services/plugin-host-services.js";
-import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
-import { resolvePaperclipInstanceId } from "./home-paths.js";
+import { createHostClientHandlers } from "@armyofagents/plugin-sdk";
+import { resolveAoaInstanceId } from "./home-paths.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 // Host version reported to plugin workers during initialize. Read from
@@ -137,25 +159,11 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
-  app.get("/api/auth/get-session", (req, res) => {
-    if (req.actor.type !== "board" || !req.actor.userId) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    res.json({
-      session: {
-        id: `paperclip:${req.actor.source}:${req.actor.userId}`,
-        userId: req.actor.userId,
-      },
-      user: {
-        id: req.actor.userId,
-        email: null,
-        name: req.actor.source === "local_implicit" ? "Local Board" : null,
-      },
-    });
-  });
+  // Mount profile-aware auth routes (get-session with DB-loaded user, profile GET/PATCH)
+  // before the betterAuthHandler catch-all so specific routes win.
+  app.use("/api", authProfileRoutes(db));
   if (opts.betterAuthHandler) {
-    app.all("/api/auth/*authPath", opts.betterAuthHandler);
+    app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
   app.use(llmRoutes(db));
 
@@ -178,6 +186,16 @@ export async function createApp(
   api.use(issueRoutes(db, opts.storageService));
   api.use(dependencyRoutes(db));
   api.use(goalRoutes(db));
+  api.use(teamsRoutes(db));
+  api.use(teamImportsRoutes(db));
+  // Phase 6.0: memory-folders and memory-assets routes MUST mount before
+  // memoryRoutes because the latter has /memory/:id which would otherwise
+  // catch /memory/folders and /memory/assets (treating "folders"/"assets"
+  // as a UUID and 500ing).
+  api.use(memoryFoldersRoutes({ db }));
+  api.use(memoryAssetsRoutes({ db, storageService: opts.storageService }));
+  api.use(memoryAssetsUploadRoutes({ db, storageService: opts.storageService }));
+  api.use(memoryAssetRenderRoutes({ db, storageService: opts.storageService }));
   api.use(memoryRoutes(db));
   api.use(searchRoutes(db));
   api.use(debriefRoutes(db));
@@ -187,7 +205,11 @@ export async function createApp(
   api.use(trustScoreRoutes(db));
   api.use(transcriptionRoutes(db));
   api.use(memoryFeedbackRoutes(db));
+  api.use(feedbackRoutes(db));
   api.use(memoryLifecycleRoutes(db));
+  api.use(memoryRetrievalsRoutes(db));
+  api.use(memoryStarterTemplatesRoutes(db));
+  api.use(fileImportRoutes(db, opts.storageService));
   api.use(teamRoutes(db));
   api.use(suggestionRoutes(db));
   api.use(contextPackagingRoutes(db));
@@ -198,16 +220,22 @@ export async function createApp(
   api.use(mcpServerRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
+  api.use(githubRoutes(db));
   api.use(costRoutes(db));
+  api.use(financeRoutes(db));
+  api.use(quotaRoutes(db));
   api.use(companySkillRoutes(db));
   api.use(routineRoutes(db));
   api.use(instanceSettingsRoutes(db));
   api.use(cliAuthRoutes(db));
   api.use(executionWorkspaceRoutes(db));
   api.use(filesystemRoutes());
+  api.use(adapterRoutes());
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
+  api.use(sidebarPreferencesRoutes(db));
+  api.use(inboxDismissalRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
@@ -260,7 +288,7 @@ export async function createApp(
       });
     },
     instanceInfo: {
-      instanceId: resolvePaperclipInstanceId(),
+      instanceId: resolveAoaInstanceId(),
       hostVersion: SERVER_VERSION,
     },
   };
@@ -279,11 +307,94 @@ export async function createApp(
   }));
   api.use(pluginCompanySettingsRoutes(db));
 
+  // Marketplace catalog service + routes
+  const marketplaceCatalogService = new MarketplaceCatalogService({
+    db,
+    bundledSnapshotProvider: async () => {
+      // Lazy import to avoid bundling issues.
+      // The snapshot file is gitignored — fetched at build time by
+      // `pnpm fetch-catalog` before the server boots. Path is held in a
+      // string variable so TypeScript's static module resolver doesn't
+      // try to find the file at typecheck time (which would fail across
+      // packages — server's tsconfig finds it via the local types/
+      // ambient declaration, but cli/'s tsconfig walks server source via
+      // the workspace import without seeing server's types/ folder).
+      try {
+        const snapshotPath = "../../ui/src/aoa-marketplace-snapshot.json";
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const snapshot = (await import(snapshotPath, { with: { type: "json" } })) as { default: unknown };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return snapshot.default as any;
+      } catch {
+        return null;
+      }
+    },
+  });
+  marketplaceCatalogService.startSyncLoop();
+  api.use("/marketplace", createMarketplaceRouter({ service: marketplaceCatalogService }));
+
+  // Marketplace install routes (per-company, M.2.G).
+  // Mounted under /api/companies/:companyId/marketplace, matching the per-company
+  // URL prefix pattern used by routes/teams.ts. Plugin installs require a live
+  // pluginLoader/registry/lifecycle wired here at the route layer because the
+  // loader instance is created in this scope (above) and not exported.
+  //
+  // The PluginLoaderLike adapter narrows the real loader/registry/lifecycle
+  // surface to just what marketplace needs (PluginInstaller's contract), which
+  // also handles the manifest type widening (PaperclipPluginManifestV1 ->
+  // { id; [key: string]: unknown }) and the lifecycle.load return-value shrink
+  // (PluginRecord -> void).
+  const marketplacePluginRegistry = pluginRegistryService(db);
+  api.use(
+    "/companies/:companyId/marketplace",
+    createMarketplaceInstallRouter({
+      db,
+      catalogService: marketplaceCatalogService,
+      pluginLoader: {
+        installPlugin: async (opts) => {
+          const discovered = await loaderInst.installPlugin(opts);
+          return {
+            packagePath: discovered.packagePath,
+            packageName: discovered.packageName,
+            version: discovered.version,
+            source: discovered.source,
+            manifest: discovered.manifest as { id: string; [key: string]: unknown } | null,
+          };
+        },
+        registry: {
+          getByKey: async (pluginKey) => {
+            const row = await marketplacePluginRegistry.getByKey(pluginKey);
+            return row ? { id: row.id, pluginKey: row.pluginKey } : null;
+          },
+        },
+        lifecycle: {
+          load: async (pluginId) => {
+            await lifecycleMgr.load(pluginId);
+          },
+        },
+      },
+    }),
+  );
+  api.use(
+    "/companies/:companyId/marketplace",
+    createMarketplaceCompanyRouter({
+      db,
+      catalogService: marketplaceCatalogService,
+    }),
+  );
+
+  // Catch-all 404 for unmatched /api/* routes. Without this, requests like
+  // GET /api/foo fall through to express.static / Vite middleware, which
+  // either serve index.html or throw -> 500 via errorHandler. Issue #116.
+  api.use((req, res) => {
+    res.status(404).json({ error: "Not found", path: req.originalUrl });
+  });
+
   app.use("/api", api);
 
   // Plugin UI static assets (outside /api prefix)
   const pluginDir = path.resolve(
-    process.env.PAPERCLIP_PLUGIN_DIR ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".paperclip", "plugins"),
+    process.env.AOA_PLUGIN_DIR ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".aoa", "plugins"),
   );
   app.use("/_plugins", pluginUiStaticRoutes(db, { localPluginDir: pluginDir }));
 
@@ -313,11 +424,13 @@ export async function createApp(
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
       app.use(express.static(uiDist));
-      app.get(/.*/, (_req, res) => {
+      // Catch-all SPA route, but NOT for /api/* (those 404 above, or matched by api router).
+      // This prevents unmatched /api/foo from serving the SPA's index.html. Issue #116.
+      app.get(/^(?!\/api\/).*/, (_req, res) => {
         res.sendFile(path.join(uiDist, "index.html"));
       });
     } else {
-      console.warn("[paperclip] UI dist not found; running in API-only mode");
+      console.warn("[aoa] UI dist not found; running in API-only mode");
     }
   }
 
@@ -334,7 +447,9 @@ export async function createApp(
     });
 
     app.use(vite.middlewares);
-    app.get(/.*/, async (req, res, next) => {
+    // Catch-all SPA route for Vite dev mode, but NOT for /api/* (those 404 above).
+    // This prevents unmatched /api/foo from serving the SPA's index.html. Issue #116.
+    app.get(/^(?!\/api\/).*/, async (req, res, next) => {
       try {
         const templatePath = path.resolve(uiRoot, "index.html");
         const template = fs.readFileSync(templatePath, "utf-8");

@@ -52,7 +52,7 @@ runsForIssue: (companyId: string, issueId: string) =>
 In `ui/src/api/activity.ts`, add the `detectedOutputs` field to `RunForIssue`:
 
 ```typescript
-import type { DetectedOutput } from "@paperclipai/shared";
+import type { DetectedOutput } from "@armyofagents/shared";
 
 export interface RunForIssue {
   runId: string;
@@ -84,10 +84,10 @@ git commit -m "feat: add detectedOutputs to runs-for-issue query and type"
 
 - [ ] **Step 1: Add workspaceRuntimeServices import**
 
-In `server/src/routes/execution-workspaces.ts`, add `workspaceRuntimeServices` to the `@paperclipai/db` import on line 4:
+In `server/src/routes/execution-workspaces.ts`, add `workspaceRuntimeServices` to the `@armyofagents/db` import on line 4:
 
 ```typescript
-import { issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@armyofagents/db";
 ```
 
 - [ ] **Step 2: Add the GET runtime-services route**
@@ -136,7 +136,7 @@ git commit -m "feat: add GET runtime-services endpoint for execution workspaces"
 In `ui/src/api/execution-workspaces.ts`, add the type and method:
 
 ```typescript
-import type { ExecutionWorkspace } from "@paperclipai/shared";
+import type { ExecutionWorkspace } from "@armyofagents/shared";
 import { api } from "./client";
 
 export interface WorkspaceRuntimeService {
@@ -299,7 +299,7 @@ Add these imports to the top of the file:
 
 ```typescript
 import { FileText, FileCode, FileImage, File } from "lucide-react";
-import type { DetectedOutput } from "@paperclipai/shared";
+import type { DetectedOutput } from "@armyofagents/shared";
 ```
 
 Also add `activityApi` and `RunForIssue` — these are already imported (line 5), so no change needed there.

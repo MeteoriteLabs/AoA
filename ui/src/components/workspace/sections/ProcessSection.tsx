@@ -10,7 +10,7 @@ import { queryKeys } from "../../../lib/queryKeys";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Bot, ExternalLink, AlertTriangle, ArrowDown } from "lucide-react";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type { Agent, Issue } from "@armyofagents/shared";
 
 interface ProcessSectionProps {
   issueId: string;

@@ -1,4 +1,5 @@
 /// <reference path="./types/express.d.ts" />
+import "./env-compat.js"; // side-effect: mirror PAPERCLIP_* env to AOA_* for migration
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -18,16 +19,27 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService, routineService } from "./services/index.js";
+import { heartbeatService, routineService, processFileImportQueue, resetStuckJobs, WORKER_INTERVAL_MS } from "./services/index.js";
+import { getDbCapabilities, probeDbCapabilities } from "./services/db-capabilities.js";
+import {
+  reconcilePersistedRuntimeServicesOnStartup,
+  restartDesiredRuntimeServicesOnStartup,
+} from "./services/workspace-runtime.js";
+import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
+import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
+import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
+import { onBudgetExhausted } from "./services/budget-hooks.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
+import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -52,19 +64,27 @@ type EmbeddedPostgresCtor = new (opts: {
   password: string;
   port: number;
   persistent: boolean;
+  /**
+   * Flags forwarded to `initdb` when the cluster is first created. Used to
+   * force UTF-8 encoding so non-Latin-1 characters (right-arrow `→`, em-dashes,
+   * emoji, CJK) can be stored. On Windows, the default initdb takes the OS
+   * locale (WIN1252), and INSERTs of UTF-8-only chars then fail with
+   * `character with byte sequence … has no equivalent in encoding "WIN1252"`.
+   */
+  initdbFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
 
 const config = loadConfig();
-if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
-  process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
+if (process.env.AOA_SECRETS_PROVIDER === undefined) {
+  process.env.AOA_SECRETS_PROVIDER = config.secretsProvider;
 }
-if (process.env.PAPERCLIP_SECRETS_STRICT_MODE === undefined) {
-  process.env.PAPERCLIP_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
+if (process.env.AOA_SECRETS_STRICT_MODE === undefined) {
+  process.env.AOA_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
 }
-if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
-  process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
+if (process.env.AOA_SECRETS_MASTER_KEY_FILE === undefined) {
+  process.env.AOA_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
 }
 
 type MigrationSummary =
@@ -82,8 +102,8 @@ function formatPendingMigrationSummary(migrations: string[]): string {
 }
 
 async function promptApplyMigrations(migrations: string[]): Promise<boolean> {
-  if (process.env.PAPERCLIP_MIGRATION_PROMPT === "never") return false;
-  if (process.env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true") return true;
+  if (process.env.AOA_MIGRATION_PROMPT === "never") return false;
+  if (process.env.AOA_MIGRATION_AUTO_APPLY === "true") return true;
   if (!stdin.isTTY || !stdout.isTTY) return true;
 
   const prompt = createInterface({ input: stdin, output: stdout });
@@ -159,7 +179,7 @@ function isLoopbackHost(host: string): boolean {
 }
 
 const LOCAL_BOARD_USER_ID = "local-board";
-const LOCAL_BOARD_USER_EMAIL = "local@paperclip.local";
+const LOCAL_BOARD_USER_EMAIL = "local@aoa.local";
 const LOCAL_BOARD_USER_NAME = "Board";
 
 async function ensureLocalTrustedBoardPrincipal(db: any): Promise<void> {
@@ -250,7 +270,7 @@ if (config.databaseUrl) {
   let port = configuredPort;
   const embeddedPostgresLogBuffer: string[] = [];
   const EMBEDDED_POSTGRES_LOG_BUFFER_LIMIT = 120;
-  const verboseEmbeddedPostgresLogs = process.env.PAPERCLIP_EMBEDDED_POSTGRES_VERBOSE === "true";
+  const verboseEmbeddedPostgresLogs = process.env.AOA_EMBEDDED_POSTGRES_VERBOSE === "true";
   const appendEmbeddedPostgresLog = (message: unknown) => {
     const text = typeof message === "string" ? message : message instanceof Error ? message.message : String(message ?? "");
     for (const lineRaw of text.split(/\r?\n/)) {
@@ -323,6 +343,15 @@ if (config.databaseUrl) {
       password: "paperclip",
       port,
       persistent: true,
+      // Force UTF-8 encoding + locale=C at cluster creation. Without this,
+      // initdb takes the OS locale (WIN1252 on Windows) and the cluster
+      // physically rejects UTF-8-only characters in INSERTs/UPDATEs. Locale=C
+      // gives byte-sort ORDER BY semantics; that's the safest default for an
+      // application-layer database where collation rarely matters.
+      // Only applied on first cluster creation; existing clusters keep their
+      // initial encoding (an existing WIN1252 cluster needs to be re-init'd
+      // or pg_dump/restore'd to switch to UTF-8).
+      initdbFlags: ["--encoding=UTF8", "--locale=C"],
       onLog: appendEmbeddedPostgresLog,
       onError: appendEmbeddedPostgresLog,
     });
@@ -340,6 +369,11 @@ if (config.databaseUrl) {
 
     if (existsSync(postmasterPidFile)) {
       logger.warn("Removing stale embedded PostgreSQL lock file");
+      // On Windows, also kill any orphan postgres.exe still holding the
+      // shared-memory block — otherwise embeddedPostgres.start() below will
+      // fail with "pre-existing shared memory block is still in use".
+      // No-op on non-Windows.
+      await tryRecoverOrphanPostgres({ dataDir });
       rmSync(postmasterPidFile, { force: true });
     }
     try {
@@ -371,6 +405,10 @@ if (config.databaseUrl) {
   activeDatabaseConnectionString = embeddedConnectionString;
   startupDbInfo = { mode: "embedded-postgres", dataDir, port };
 }
+
+// Probe optional database capabilities (pgvector). Services read the result
+// via getDbCapabilities() to gate semantic-search paths and embedding columns.
+await probeDbCapabilities(db as any);
 
 if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
   throw new Error(
@@ -417,10 +455,10 @@ if (config.deploymentMode === "authenticated") {
     resolveBetterAuthSessionFromHeaders,
   } = await import("./auth/better-auth.js");
   const betterAuthSecret =
-    process.env.BETTER_AUTH_SECRET?.trim() ?? process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
+    process.env.BETTER_AUTH_SECRET?.trim() ?? process.env.AOA_AGENT_JWT_SECRET?.trim();
   if (!betterAuthSecret) {
     throw new Error(
-      "authenticated mode requires BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET) to be set",
+      "authenticated mode requires BETTER_AUTH_SECRET (or AOA_AGENT_JWT_SECRET) to be set",
     );
   }
   const derivedTrustedOrigins = deriveAuthTrustedOrigins(config);
@@ -475,9 +513,9 @@ const runtimeApiHost =
   runtimeListenHost === "0.0.0.0" || runtimeListenHost === "::"
     ? "localhost"
     : runtimeListenHost;
-process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
-process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+process.env.AOA_LISTEN_HOST = runtimeListenHost;
+process.env.AOA_LISTEN_PORT = String(listenPort);
+process.env.AOA_API_URL = `http://${runtimeApiHost}:${listenPort}`;
 
 setupLiveEventsWebSocketServer(server, db as any, {
   deploymentMode: config.deploymentMode,
@@ -487,10 +525,45 @@ setupLiveEventsWebSocketServer(server, db as any, {
 if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
 
+  // Subscribe heartbeat's scope-cancellation to budget-exhausted signals so
+  // hard-stop breaches interrupt in-flight work, not just preflight-block.
+  onBudgetExhausted(async (scope) => {
+    const cancelled = await heartbeat.cancelBudgetScopeWork(scope);
+    if (cancelled > 0) {
+      logger.warn(
+        { scope, cancelled },
+        "cancelled in-flight runs due to budget hard-stop",
+      );
+    }
+  });
+
   // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
   void heartbeat.reapOrphanedRuns().catch((err) => {
     logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
   });
+
+  // Reconcile stale runtime service states after server restart
+  void reconcilePersistedRuntimeServicesOnStartup(db as any).catch((err) => {
+    logger.error({ err }, "reconcilePersistedRuntimeServicesOnStartup failed");
+  });
+
+  // Auto-resume runtime services that were desiredState:running when server stopped
+  void restartDesiredRuntimeServicesOnStartup(db as any).catch((err) => {
+    logger.error({ err }, "restartDesiredRuntimeServicesOnStartup failed");
+  });
+
+  // Periodic sweep: mark stale workspaces as cleanup-eligible based on project TTL.
+  // Sweeper no-ops when the instance-level experimental flag is off.
+  scheduleTtlSweeper(db as any);
+
+  // Retry filesystem cleanup for workspaces stuck in `cleanup_failed` (Windows
+  // file-handle races). Runs every 60s; promotes to `archived` once rm succeeds.
+  scheduleCleanupRetrySweeper(db as any);
+
+  // Detect heartbeat runs that are still marked `running` but have produced no
+  // output for >30 min. Records a watchdog decision and snoozes re-evaluation
+  // for 1 hr to avoid duplicate decisions. Observe-only — no recovery actions.
+  registerHeartbeatWatchdogSweeper(db as any);
 
   setInterval(() => {
     void heartbeat
@@ -520,6 +593,21 @@ if (config.heartbeatSchedulerEnabled) {
   }, config.heartbeatSchedulerIntervalMs);
 }
 
+// File import queue worker
+void resetStuckJobs(db as any).catch((err) =>
+  logger.warn({ err }, "resetStuckJobs on startup failed"),
+);
+let fileImportTickInFlight = false;
+setInterval(() => {
+  if (fileImportTickInFlight) return;
+  fileImportTickInFlight = true;
+  void processFileImportQueue(db as any, storageService)
+    .catch((err) => logger.warn({ err }, "processFileImportQueue tick failed"))
+    .finally(() => { fileImportTickInFlight = false; });
+}, WORKER_INTERVAL_MS);
+// No immediate first tick — the first interval fires at T+15s, which is acceptable
+// since resetStuckJobs already ran synchronously above
+
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
   let backupInFlight = false;
@@ -535,8 +623,8 @@ if (config.databaseBackupEnabled) {
       const result = await runDatabaseBackup({
         connectionString: activeDatabaseConnectionString,
         backupDir: config.databaseBackupDir,
-        retentionDays: config.databaseBackupRetentionDays,
-        filenamePrefix: "paperclip",
+        retention: DEFAULT_BACKUP_RETENTION,
+        filenamePrefix: "aoa",
       });
       logger.info(
         {
@@ -544,7 +632,6 @@ if (config.databaseBackupEnabled) {
           sizeBytes: result.sizeBytes,
           prunedCount: result.prunedCount,
           backupDir: config.databaseBackupDir,
-          retentionDays: config.databaseBackupRetentionDays,
         },
         `Automatic database backup complete: ${formatDatabaseBackupResult(result)}`,
       );
@@ -558,7 +645,7 @@ if (config.databaseBackupEnabled) {
   logger.info(
     {
       intervalMinutes: config.databaseBackupIntervalMinutes,
-      retentionDays: config.databaseBackupRetentionDays,
+      retention: DEFAULT_BACKUP_RETENTION,
       backupDir: config.databaseBackupDir,
     },
     "Automatic database backups enabled",
@@ -570,7 +657,7 @@ if (config.databaseBackupEnabled) {
 
 server.listen(listenPort, config.host, () => {
   logger.info(`Server listening on ${config.host}:${listenPort}`);
-  if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
+  if (process.env.AOA_OPEN_ON_LISTEN === "true") {
     const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
     const url = `http://${openHost}:${listenPort}`;
     void import("open")
@@ -592,11 +679,11 @@ server.listen(listenPort, config.host, () => {
     uiMode,
     db: startupDbInfo,
     migrationSummary,
+    hasVectorSupport: getDbCapabilities().hasVectorSupport,
     heartbeatSchedulerEnabled: config.heartbeatSchedulerEnabled,
     heartbeatSchedulerIntervalMs: config.heartbeatSchedulerIntervalMs,
     databaseBackupEnabled: config.databaseBackupEnabled,
     databaseBackupIntervalMinutes: config.databaseBackupIntervalMinutes,
-    databaseBackupRetentionDays: config.databaseBackupRetentionDays,
     databaseBackupDir: config.databaseBackupDir,
   });
 

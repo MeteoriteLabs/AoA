@@ -253,7 +253,7 @@ describe("detectCliTool", () => {
     const result = await detectCliTool("claude_cli");
     expect(result.available).toBe(false);
     expect(result.error).toContain("not found in PATH");
-    expect(result.error).toContain("API mode");
+    expect(result.error).toContain("Install the CLI");
   });
 
   it("returns error for unknown tool type", async () => {

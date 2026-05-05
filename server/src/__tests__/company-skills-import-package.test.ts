@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { companySkillImportPackageSchema } from "@paperclipai/shared";
+import { companySkillImportPackageSchema } from "@armyofagents/shared";
 import { validatePackageFileKey } from "../services/company-skills.js";
 
 // ---------------------------------------------------------------------------

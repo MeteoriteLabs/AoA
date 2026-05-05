@@ -3,18 +3,19 @@
 import { Router } from "express";
 import { z } from "zod";
 import { and, eq, asc, desc, gte, lte, isNull, sql, type SQL } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   internalAgentConfig,
   internalAgentConversations,
   internalAgentMessages,
   internalAgentRuns,
   internalAgentReminders,
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 import { validate } from "../middleware/index.js";
 import { assertRole } from "../middleware/rbac.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { HttpError, badRequest, notFound } from "../errors.js";
+import { agentLoopService } from "../services/internal-agent/agent-loop.js";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -64,69 +65,87 @@ export function internalAgentRoutes(db: Db) {
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
 
-      try {
-        // Create or fetch active conversation inside a transaction to prevent
-        // duplicate active conversations from concurrent requests.
-        const { conversationId, run } = await db.transaction(async (tx) => {
-          const conversations = await tx
-            .select()
-            .from(internalAgentConversations)
-            .where(
-              and(
-                eq(internalAgentConversations.companyId, companyId),
-                eq(internalAgentConversations.userId, actor.actorId),
-                eq(internalAgentConversations.status, "active"),
-              ),
-            );
+      // Create a run record for observability in /runs UI. Sprint 2A (Decision
+      // #91) — CLI-mode doesn't populate tokenUsage / costCents / toolsCalled
+      // per-turn; those stay null on this record until the team-under-Commander
+      // work lands. The record is still useful for "did Commander run?" audit.
+      const [run] = await db
+        .insert(internalAgentRuns)
+        .values({
+          companyId,
+          triggerType: "conversation",
+          triggerSource: "user_message",
+          status: "running",
+          userId: actor.actorId,
+        })
+        .returning();
 
-          let convId: string;
-          if (conversations.length > 0) {
-            convId = conversations[0].id;
-          } else {
-            const [newConv] = await tx
-              .insert(internalAgentConversations)
-              .values({
-                companyId,
-                userId: actor.actorId,
-                status: "active",
-              })
-              .returning();
-            convId = newConv.id;
+      // Signal "thinking" to the UI while we kick off the dispatch.
+      res.write(
+        `event: thinking\ndata: ${JSON.stringify({ status: "processing" })}\n\n`,
+      );
+
+      let finalSummary:
+        | {
+            runId: string;
+            toolsCalled: string[];
+            durationMs: number;
+            costCents: number;
+            tokenUsage: { inputTokens: number; outputTokens: number };
           }
+        | null = null;
 
-          // Store user message
-          await tx.insert(internalAgentMessages).values({
-            conversationId: convId,
-            role: "user",
-            content: req.body.message,
-            pageContext: req.body.pageContext ?? null,
-          }).returning();
-
-          // Create run record
-          const [runRecord] = await tx
-            .insert(internalAgentRuns)
-            .values({
-              companyId,
-              triggerType: "conversation",
-              triggerSource: "user_message",
-              status: "running",
-              userId: actor.actorId,
-            })
-            .returning();
-
-          return { conversationId: convId, run: runRecord };
+      try {
+        const svc = agentLoopService(db);
+        // Sprint 2A: userRole defaults to "founder" in local_trusted mode
+        // (single-user). A future polish pass should look this up from
+        // user_roles for authenticated multi-user deployments.
+        const stream = svc.chat({
+          companyId,
+          userId: actor.actorId,
+          userRole: "founder",
+          content: req.body.message,
+          pageContext: req.body.pageContext ?? undefined,
         });
 
-        // Send thinking event
-        res.write(
-          `event: thinking\ndata: ${JSON.stringify({ status: "processing" })}\n\n`,
-        );
-
-        // Placeholder: real implementation would invoke agentLoopService here.
-        // For now, emit a stub response indicating the loop is not yet wired.
-        res.write(
-          `event: content\ndata: ${JSON.stringify({ delta: "Internal agent chat is connected. Agent loop integration pending." })}\n\n`,
-        );
+        for await (const chunk of stream) {
+          switch (chunk.type) {
+            case "text":
+              res.write(
+                `event: content\ndata: ${JSON.stringify({ text: chunk.delta })}\n\n`,
+              );
+              break;
+            case "tool_call":
+              res.write(
+                `event: tool_call\ndata: ${JSON.stringify({ name: chunk.name })}\n\n`,
+              );
+              break;
+            case "tool_result":
+              res.write(
+                `event: tool_result\ndata: ${JSON.stringify({ name: chunk.name })}\n\n`,
+              );
+              break;
+            case "action_confirmation":
+              // CLI-mode doesn't yield these today (no per-tool confirmations);
+              // the branch stays here to be explicit about the mapping.
+              res.write(
+                `event: action_confirm\ndata: ${JSON.stringify({
+                  confirmId: chunk.runId,
+                  action: chunk.toolName,
+                  description: chunk.toolName,
+                })}\n\n`,
+              );
+              break;
+            case "error":
+              res.write(
+                `event: error\ndata: ${JSON.stringify({ code: "INTERNAL", message: chunk.message })}\n\n`,
+              );
+              break;
+            case "done":
+              finalSummary = chunk.summary;
+              break;
+          }
+        }
 
         // Mark run completed
         await db
@@ -134,24 +153,38 @@ export function internalAgentRoutes(db: Db) {
           .set({
             status: "completed",
             completedAt: new Date(),
+            durationMs: finalSummary?.durationMs ?? null,
+            costCents: finalSummary?.costCents ?? null,
+            tokenUsage: finalSummary?.tokenUsage ?? null,
           })
           .where(eq(internalAgentRuns.id, run.id));
 
-        // Send done event
+        // Send done event. For CLI mode the numeric fields are zeros until
+        // run tracking is re-introduced; the shape matches what the UI expects.
         res.write(
           `event: done\ndata: ${JSON.stringify({
             messageId: run.id,
             runId: run.id,
-            tokenUsage: { input: 0, output: 0 },
-            costCents: 0,
+            tokenUsage: finalSummary?.tokenUsage ?? { input: 0, output: 0 },
+            costCents: finalSummary?.costCents ?? 0,
           })}\n\n`,
         );
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : "Internal error";
+        const message = err instanceof Error ? err.message : "Internal error";
         res.write(
           `event: error\ndata: ${JSON.stringify({ code: "INTERNAL", message })}\n\n`,
         );
+
+        // Mark run failed if it hasn't been completed already
+        await db
+          .update(internalAgentRuns)
+          .set({
+            status: "failed",
+            completedAt: new Date(),
+            errorMessage: message,
+          })
+          .where(eq(internalAgentRuns.id, run.id))
+          .catch(() => {});
       }
 
       res.end();

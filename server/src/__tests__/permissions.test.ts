@@ -1,13 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
 
-// Mock drizzle-orm and @paperclipai/db to avoid ESM cycle issues
+// Mock drizzle-orm and @armyofagents/db to avoid ESM cycle issues
 vi.mock("drizzle-orm", () => ({
   and: (...conditions: unknown[]) => conditions,
   eq: (col: unknown, val: unknown) => ({ col, val, op: "eq" }),
   isNull: (col: unknown) => ({ col, op: "isNull" }),
 }));
 
-vi.mock("@paperclipai/db", () => ({
+vi.mock("@armyofagents/db", () => ({
   userRoles: {
     companyId: "company_id",
     userId: "user_id",

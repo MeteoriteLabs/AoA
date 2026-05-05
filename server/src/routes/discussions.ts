@@ -1,12 +1,12 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   createDiscussionSchema,
   createDiscussionEntrySchema,
   updateDiscussionSchema,
   approveItemsSchema,
   createAnnotationSchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { discussionService, logActivity } from "../services/index.js";
 import { HttpError } from "../errors.js";
@@ -333,7 +333,7 @@ export function discussionRoutes(db: Db) {
 
           // Fetch the item→task mapping for all approved items
           const { eq, inArray } = await import("drizzle-orm");
-          const { discussionExtractedItems } = await import("@paperclipai/db");
+          const { discussionExtractedItems } = await import("@armyofagents/db");
 
           const allItemIds = dependencies.flatMap((d) => [
             d.dependentItemId,

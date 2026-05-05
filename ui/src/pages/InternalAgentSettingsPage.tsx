@@ -30,17 +30,14 @@ import { PageTabBar } from "../components/PageTabBar";
 import { PageSkeleton } from "../components/PageSkeleton";
 import {
   AGENT_CAPABILITIES,
-  AGENT_MODELS_BY_PROVIDER,
-  AGENT_PROVIDERS,
   CLI_TOOLS,
   NOTIFICATION_PREFERENCES,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import type {
-  AgentProvider,
   AgentCapability,
   NotificationPreference,
   UpdateInternalAgentConfig,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -171,9 +168,9 @@ export function InternalAgentSettingsPage() {
   );
 
   // Form state
-  const [executionMode, setExecutionMode] = useState<"api" | "cli">("api");
-  const [provider, setProvider] = useState<AgentProvider>("anthropic");
-  const [model, setModel] = useState<string>("claude-sonnet-4-6");
+  // Sprint 2A (Decision #91) removed API-mode execution from the Commander
+  // path; CLI is now the only dispatch. executionMode stays in the DB schema
+  // for rollback/audit but is always written as 'cli' here.
   const [cliTool, setCliTool] = useState<string>("claude_cli");
   const [enabledCapabilities, setEnabledCapabilities] = useState<string[]>([
     ...AGENT_CAPABILITIES,
@@ -239,10 +236,6 @@ export function InternalAgentSettingsPage() {
   // Sync form from config
   useEffect(() => {
     if (!config) return;
-    setExecutionMode(config.executionMode as "api" | "cli");
-    if (config.provider)
-      setProvider(config.provider as AgentProvider);
-    if (config.model) setModel(config.model);
     if (config.cliTool) setCliTool(config.cliTool);
     setEnabledCapabilities([...config.enabledCapabilities]);
     setNotificationPreference(config.notificationPreference as NotificationPreference);
@@ -272,10 +265,8 @@ export function InternalAgentSettingsPage() {
 
   function saveExecution() {
     saveMutation.mutate({
-      executionMode,
-      provider: executionMode === "api" ? provider : undefined,
-      model: executionMode === "api" ? model : undefined,
-      cliTool: executionMode === "cli" ? cliTool : undefined,
+      executionMode: "cli",
+      cliTool,
     });
   }
 
@@ -356,111 +347,35 @@ export function InternalAgentSettingsPage() {
           onValueChange={handleTabChange}
         />
 
-        {/* ─── Execution & Model ─── */}
+        {/* ─── Execution (CLI tool picker) ─── */}
         <TabsContent value="execution">
           <div className="space-y-4">
-            {/* Execution mode toggle */}
+            <p className="text-sm text-muted-foreground">
+              Commander runs via your local CLI tool. No API key required —
+              the CLI handles authentication and model selection itself.
+            </p>
+
+            {/* CLI Tool */}
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">
-                Execution Mode
+                CLI Tool
               </label>
-              <div role="group" aria-label="Execution mode" className="flex gap-1 bg-muted rounded-md p-0.5 w-fit">
-                <button
-                  aria-pressed={executionMode === "api"}
-                  className={`px-3 py-1 text-sm rounded ${executionMode === "api" ? "bg-background shadow-sm font-medium" : "text-muted-foreground"}`}
-                  onClick={() => setExecutionMode("api")}
-                >
-                  API
-                </button>
-                <button
-                  aria-pressed={executionMode === "cli"}
-                  className={`px-3 py-1 text-sm rounded ${executionMode === "cli" ? "bg-background shadow-sm font-medium" : "text-muted-foreground"}`}
-                  onClick={() => setExecutionMode("cli")}
-                >
-                  CLI
-                </button>
-              </div>
+              <Select value={cliTool} onValueChange={setCliTool}>
+                <SelectTrigger className="w-full max-w-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CLI_TOOLS.map((t) => (
+                    <SelectItem key={t.value} value={t.value}>
+                      {t.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                Make sure the selected tool is installed and on your PATH.
+              </p>
             </div>
-
-            {executionMode === "api" ? (
-              <>
-                {/* Provider */}
-                <div>
-                  <label className="text-xs text-muted-foreground mb-1 block">
-                    Provider
-                  </label>
-                  <Select
-                    value={provider}
-                    onValueChange={(v) => {
-                      const p = v as AgentProvider;
-                      setProvider(p);
-                      const models = AGENT_MODELS_BY_PROVIDER[p];
-                      if (models.length > 0) setModel(models[0].value);
-                    }}
-                  >
-                    <SelectTrigger className="w-full max-w-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {AGENT_PROVIDERS.map((p) => (
-                        <SelectItem key={p} value={p}>
-                          {p === "anthropic"
-                            ? "Anthropic"
-                            : p === "openai"
-                              ? "OpenAI"
-                              : "Google"}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Model */}
-                <div>
-                  <label className="text-xs text-muted-foreground mb-1 block">
-                    Model
-                  </label>
-                  <Select value={model} onValueChange={setModel}>
-                    <SelectTrigger className="w-full max-w-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {AGENT_MODELS_BY_PROVIDER[provider].map((m) => (
-                        <SelectItem key={m.value} value={m.value}>
-                          {m.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* API key link */}
-                <p className="text-xs text-muted-foreground">
-                  <Link to="../settings?tab=llm" className="underline hover:text-foreground transition-colors">
-                    Configure API keys in LLM Providers settings
-                  </Link>
-                </p>
-              </>
-            ) : (
-              /* CLI Tool */
-              <div>
-                <label className="text-xs text-muted-foreground mb-1 block">
-                  CLI Tool
-                </label>
-                <Select value={cliTool} onValueChange={setCliTool}>
-                  <SelectTrigger className="w-full max-w-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CLI_TOOLS.map((t) => (
-                      <SelectItem key={t.value} value={t.value}>
-                        {t.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
 
             {/* Autonomy Level */}
             <div>

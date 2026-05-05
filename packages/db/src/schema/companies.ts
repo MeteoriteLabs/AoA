@@ -23,6 +23,7 @@ export const companies = pgTable(
     mcpEnabled: boolean("mcp_enabled").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    enableTeams: boolean("enable_teams").notNull().default(false),
   },
   (table) => ({
     issuePrefixUniqueIdx: uniqueIndex("companies_issue_prefix_idx").on(table.issuePrefix),

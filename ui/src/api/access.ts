@@ -1,4 +1,9 @@
-import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
+import type {
+  AdminUserDirectoryEntry,
+  AgentAdapterType,
+  JoinRequest,
+  UserCompanyAccessResponse,
+} from "@armyofagents/shared";
 import { api } from "./client";
 
 type InviteSummary = {
@@ -143,5 +148,33 @@ export const accessApi = {
     api.post<{ status: string; cancelled: boolean }>(
       `/cli-auth/challenges/${id}/cancel`,
       { token },
+    ),
+
+  searchAdminUsers: (query: string) =>
+    api.get<AdminUserDirectoryEntry[]>(
+      `/admin/users?query=${encodeURIComponent(query)}`,
+    ),
+
+  getUserCompanyAccess: (userId: string) =>
+    api.get<UserCompanyAccessResponse>(
+      `/admin/users/${userId}/company-access`,
+    ),
+
+  setUserCompanyAccess: (userId: string, companyIds: string[]) =>
+    api.put<UserCompanyAccessResponse>(
+      `/admin/users/${userId}/company-access`,
+      { companyIds },
+    ),
+
+  promoteInstanceAdmin: (userId: string) =>
+    api.post<{ id: string; userId: string; role: string }>(
+      `/admin/users/${userId}/promote-instance-admin`,
+      {},
+    ),
+
+  demoteInstanceAdmin: (userId: string) =>
+    api.post<{ id: string; userId: string; role: string }>(
+      `/admin/users/${userId}/demote-instance-admin`,
+      {},
     ),
 };

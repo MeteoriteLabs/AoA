@@ -203,8 +203,8 @@ export function buildJoinDefaultsPayloadForAccept(input: {
   }
 
   if (!nonEmptyTrimmedString(merged.paperclipApiUrl)) {
-    const legacyPaperclipApiUrl = nonEmptyTrimmedString(input.paperclipApiUrl);
-    if (legacyPaperclipApiUrl) merged.paperclipApiUrl = legacyPaperclipApiUrl;
+    const legacyAoaApiUrl = nonEmptyTrimmedString(input.paperclipApiUrl);
+    if (legacyAoaApiUrl) merged.paperclipApiUrl = legacyAoaApiUrl;
   }
 
   if (!nonEmptyTrimmedString(merged.webhookAuthHeader)) {
@@ -321,12 +321,15 @@ export function canReplayOpenClawInviteAccept(input: JoinReplayInput): boolean {
 export function resolveJoinRequestAgentManagerId(
   candidates: JoinRequestManagerCandidate[],
 ): string | null {
-  const ceoCandidates = candidates.filter((candidate) => candidate.role === "ceo");
-  if (ceoCandidates.length === 0) return null;
-  const rootCeo = ceoCandidates.find(
+  // Route join requests to a CXO-tier agent (apex preferred, but any CXO is
+  // acceptable as a manager candidate). Was historically `=== "ceo"` before
+  // the role-enum cleanup.
+  const cxoCandidates = candidates.filter((candidate) => candidate.role === "cxo");
+  if (cxoCandidates.length === 0) return null;
+  const apexCxo = cxoCandidates.find(
     (candidate) => !candidate.parentId && candidate.reportsTo === null,
   );
-  return (rootCeo ?? ceoCandidates[0] ?? null)?.id ?? null;
+  return (apexCxo ?? cxoCandidates[0] ?? null)?.id ?? null;
 }
 
 function requestBaseUrl(req: {
@@ -414,7 +417,7 @@ export function buildInviteOnboardingTextDocument(
   const inviteMessage = extractInviteMessage(invite);
 
   const lines = [
-    "# Paperclip OpenClaw Onboarding",
+    "# AoA OpenClaw Onboarding",
     "",
     "This document is meant to be readable by both humans and agents.",
     "",
@@ -434,23 +437,23 @@ export function buildInviteOnboardingTextDocument(
     registrationPath,
     "",
     "IMPORTANT: You MUST include agentDefaultsPayload.headers.x-openclaw-auth with your gateway token.",
-    "Without this token, Paperclip callback requests to your OpenClaw endpoint will fail with 401 Unauthorized.",
+    "Without this token, AoA callback requests to your OpenClaw endpoint will fail with 401 Unauthorized.",
     "",
     "## Step 2: Wait for approval, then claim API key",
     "/api/join-requests/{requestId}/claim-api-key",
     "~/.openclaw/workspace/paperclip-claimed-api-key.json",
-    "PAPERCLIP_API_KEY",
+    "AOA_API_KEY",
     "saved token field",
     "",
     "## Discovery",
     onboardingTextPath,
     testResolutionPath,
-    "Suggested Paperclip base URLs to try",
+    "Suggested AoA base URLs to try",
     ...candidates,
     "",
     "set the first reachable candidate as agentDefaultsPayload.paperclipApiUrl",
     "paperclipApiUrl",
-    "If none are reachable, stop and fix Paperclip hostname exposure before retrying.",
+    "If none are reachable, stop and fix AoA hostname exposure before retrying.",
   );
 
   if (opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private") {

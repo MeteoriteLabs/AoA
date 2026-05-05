@@ -11,6 +11,7 @@ import { NewGoalDialog } from "./NewGoalDialog";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
+import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -35,18 +36,13 @@ export function Layout() {
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
+  const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
 
   const { data: health } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
     retry: false,
   });
-
-  // G1 + G15: Clean up stale localStorage keys from removed CompanyRail and PropertiesPanel
-  useEffect(() => {
-    localStorage.removeItem("paperclip.companyOrder");
-    localStorage.removeItem("paperclip:panel-visible");
-  }, []);
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
@@ -125,6 +121,7 @@ export function Layout() {
     onNewIssue: () => openNewIssue(),
     onToggleSidebar: isMobile ? toggleSidebar : toggleCollapse,
     onSwitchCompany: switchCompany,
+    onShowCheatsheet: () => setCheatsheetOpen(true),
   });
 
   useEffect(() => {
@@ -272,6 +269,7 @@ export function Layout() {
       <NewGoalDialog />
       <NewAgentDialog />
       <ToastViewport />
+      <KeyboardShortcutsCheatsheet open={cheatsheetOpen} onOpenChange={setCheatsheetOpen} />
     </div>
     </AgentPanelProvider>
   );

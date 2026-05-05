@@ -7,7 +7,7 @@ import {
   internalAgentReminders,
   workflowTemplates,
   notifications,
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 
 /**
  * Internal Agent Schema Contract Tests (V2.5 Session 2)

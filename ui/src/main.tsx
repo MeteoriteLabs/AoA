@@ -12,9 +12,16 @@ import { DialogProvider } from "./context/DialogContext";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ToastProvider as MarketplaceToastProvider } from "@/components/marketplace/toast/ToastProvider";
+import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
 import { initPluginBridge } from "./plugins/bridge-init";
+import { runStorageMigrations } from "./lib/storage-migrations";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
+
+// Migrate legacy Paperclip localStorage keys to AoA names before any
+// context provider reads from localStorage.
+runStorageMigrations();
 
 // Initialize plugin bridge before React renders
 initPluginBridge(React, ReactDOM);
@@ -46,7 +53,10 @@ createRoot(document.getElementById("root")!).render(
                   <BreadcrumbProvider>
                     <SidebarProvider>
                       <DialogProvider>
-                        <App />
+                        <MarketplaceToastProvider>
+                          <App />
+                          <InstallToastSlot />
+                        </MarketplaceToastProvider>
                       </DialogProvider>
                     </SidebarProvider>
                   </BreadcrumbProvider>

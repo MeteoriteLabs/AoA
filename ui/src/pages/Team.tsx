@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Users, UserPlus } from "lucide-react";
-import type { Project, TeamMemberSummary, UserRole } from "@paperclipai/shared";
+import { Link } from "@/lib/router";
+import { Store, Users, UserPlus } from "lucide-react";
+import type { Project, TeamMemberSummary, UserRole } from "@armyofagents/shared";
 import { teamApi } from "../api/team";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
@@ -248,13 +249,21 @@ export function Team() {
       </div>
 
       {nonFounderMembers.length === 0 && pendingInvites.length === 0 ? (
-        <EmptyState
-          icon={Users}
-          message="Invite your first team member"
-          description="Create a scoped invite to bring in a team lead or contributor."
-          action="Invite teammate"
-          onAction={permissions.canInviteUsers ? () => setInviteOpen(true) : undefined}
-        />
+        <div className="flex flex-col items-center">
+          <EmptyState
+            icon={Users}
+            message="Invite your first team member"
+            description="Create a scoped invite to bring in a team lead or contributor."
+            action="Invite teammate"
+            onAction={permissions.canInviteUsers ? () => setInviteOpen(true) : undefined}
+          />
+          <Button asChild variant="outline" size="sm" className="-mt-8 mb-4">
+            <Link to="/marketplace/team">
+              <Store className="h-4 w-4 mr-1.5" />
+              Browse Team Templates
+            </Link>
+          </Button>
+        </div>
       ) : (
         <div className="space-y-3">
           {members.map((member) => (

@@ -19,7 +19,7 @@ export default defineConfig({
     globals: true,
     server: {
       deps: {
-        inline: [/@paperclipai\//],
+        inline: [/@armyofagents\//],
       },
     },
   },

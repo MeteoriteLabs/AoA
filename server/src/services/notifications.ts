@@ -1,6 +1,6 @@
 import { and, eq, desc, isNull, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { notifications } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { notifications } from "@armyofagents/db";
 import { notFound } from "../errors.js";
 
 export function notificationService(db: Db) {

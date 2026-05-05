@@ -9,12 +9,21 @@ export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { secretService } from "./secrets.js";
 export { costService } from "./costs.js";
+export { financeService } from "./finance.js";
+export { quotaWindowsService, providerSlugForAdapterType } from "./quota-windows.js";
 export { heartbeatService } from "./heartbeat.js";
 export { dependencyService } from "./dependencies.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
+export { sidebarPreferencesService } from "./sidebar-preferences.js";
+export { inboxDismissalService } from "./inbox-dismissals.js";
 export { accessService } from "./access.js";
 export { teamService } from "./team.js";
+export { teamsService } from "./teams.js";
+export { teamCoordinationService } from "./team-coordination.js";
+export { teamScaffolderService } from "./team-scaffolder.js";
+export { teamImportService } from "./team-import.js";
+export { teamExportService } from "./team-export.js";
 export { orgHierarchyService } from "./org-hierarchy.js";
 export { memoryService, type MemoryFilters, type SemanticSearchFilters, type FindSimilarScope } from "./memory.js";
 export { generateEmbedding, generateEmbeddingsBatch, processEmbeddingQueue, invalidateEmbedding } from "./embeddings.js";
@@ -49,6 +58,7 @@ export { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 export { instanceSettingsService } from "./instance-settings.js";
 
 export { boardAuthService } from "./board-auth.js";
+export { userProfileService } from "./user-profile.js";
 
 export { executionWorkspaceService, toExecutionWorkspace } from "./execution-workspaces.js";
 export {
@@ -111,3 +121,5 @@ export { createPluginToolRegistry, TOOL_NAMESPACE_SEPARATOR } from "./plugin-too
 export type { PluginToolRegistry } from "./plugin-tool-registry.js";
 export { createPluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 export type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
+
+export { fileImportService, processFileImportQueue, resetStuckJobs, WORKER_INTERVAL_MS } from "./file-import.js";

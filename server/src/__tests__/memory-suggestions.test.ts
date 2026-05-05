@@ -1,37 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeTableProxy, drizzleOperatorStubs, mockDbCapabilities } from "./helpers/drizzle-mock.js";
 
-vi.mock("@paperclipai/db", () => {
-  const makeTable = (name: string) => {
-    const cols: Record<string, symbol> = {};
-    return new Proxy({} as Record<string, unknown>, {
-      get(_target, prop) {
-        if (prop === "_") return { name };
-        if (prop === "$inferSelect" || prop === "$inferInsert") return {};
-        if (typeof prop === "string") {
-          if (!cols[prop]) cols[prop] = Symbol(`${name}.${prop}`);
-          return cols[prop];
-        }
-        return undefined;
-      },
-    });
-  };
-
-  return {
-    memoryItems: makeTable("memory_items"),
-    memoryItemVersions: makeTable("memory_item_versions"),
-    suggestions: makeTable("suggestions"),
-    agents: makeTable("agents"),
-  };
-});
-
-vi.mock("drizzle-orm", () => ({
-  and: (..._args: unknown[]) => "and",
-  eq: (..._args: unknown[]) => "eq",
-  ilike: (..._args: unknown[]) => "ilike",
-  or: (..._args: unknown[]) => "or",
-  desc: (..._args: unknown[]) => "desc",
-  sql: new Proxy(() => "sql", { get: () => () => "sql", apply: () => "sql" }),
+vi.mock("@armyofagents/db", () => ({
+  memoryItems: makeTableProxy("memory_items"),
+  memoryItemVersions: makeTableProxy("memory_item_versions"),
+  suggestions: makeTableProxy("suggestions"),
+  agents: makeTableProxy("agents"),
 }));
+
+vi.mock("drizzle-orm", () => drizzleOperatorStubs());
+
+// "creates agent memory items" asserts `embedding: null` in the values passed
+// to buildMemoryInsert. memory.ts line 128-130 only sets embedding=null when
+// hasVectorSupport is true; mock it to ensure the field is present.
+vi.mock("../services/db-capabilities.js", () => mockDbCapabilities());
 
 vi.mock("../services/embeddings.js", () => ({
   generateEmbedding: vi.fn(),
@@ -51,6 +33,22 @@ vi.mock("../middleware/logger.js", () => ({
     }),
   },
 }));
+
+// Spy on buildMemoryInsert to capture the values object the service passes
+// before the raw INSERT executes — needed to assert on status/embedding.
+const capturedBuildInsertValues: Record<string, unknown>[] = [];
+vi.mock("../services/memory-projection.js", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../services/memory-projection.js")>();
+  return {
+    ...orig,
+    buildMemoryInsert: vi.fn(
+      (db: unknown, values: Record<string, unknown>, hasVector: boolean) => {
+        capturedBuildInsertValues.push({ ...values });
+        return orig.buildMemoryInsert(db as any, values, hasVector);
+      },
+    ),
+  };
+});
 
 import { memoryService } from "../services/memory.js";
 
@@ -90,6 +88,9 @@ function createSequenceDb(config: {
     select: () => buildChain("select", () => selects[selectIdx++] ?? []),
     update: () => buildChain("update", () => updates[updateIdx++] ?? []),
     insert: () => buildChain("insert", () => inserts[insertIdx++] ?? []),
+    // buildMemoryInsert in memory-projection.ts calls db.execute() for raw SQL inserts.
+    // Return the next insert result (same queue as insert, since execute replaces it).
+    execute: () => Promise.resolve(inserts[insertIdx++] ?? []),
   };
 
   db.transaction = async (fn: (tx: typeof db) => Promise<unknown>) => fn(db as any);
@@ -100,10 +101,14 @@ function createSequenceDb(config: {
 describe("memoryService agent suggestions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    capturedBuildInsertValues.length = 0;
   });
 
   it("creates agent memory items as pending with required layer and sourceContext", async () => {
-    const { db, captured } = createSequenceDb({
+    // svc.create() now routes through buildMemoryInsert → db.execute().
+    // We spy on buildMemoryInsert (mocked above) to capture the values the service
+    // passes, and db.execute() returns the pre-configured insert row.
+    const { db } = createSequenceDb({
       inserts: [[{ id: "mem-1", status: "pending", source: "agent", layer: "domain" }]],
     });
     const svc = memoryService(db);
@@ -119,7 +124,8 @@ describe("memoryService agent suggestions", () => {
     });
 
     expect(item.status).toBe("pending");
-    expect(captured.insertValues[0]).toEqual(expect.objectContaining({
+    // Verify the values the service set before calling buildMemoryInsert
+    expect(capturedBuildInsertValues[0]).toEqual(expect.objectContaining({
       companyId: "co-1",
       source: "agent",
       status: "pending",

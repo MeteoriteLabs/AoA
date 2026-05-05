@@ -1,4 +1,4 @@
-import type { UpdateInternalAgentConfig } from "@paperclipai/shared";
+import type { UpdateInternalAgentConfig } from "@armyofagents/shared";
 import { api, ApiError } from "./client";
 
 /* ------------------------------------------------------------------ */

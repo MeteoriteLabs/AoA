@@ -1,4 +1,4 @@
-import type { GlobalSearchResponse } from "@paperclipai/shared";
+import type { GlobalSearchResponse } from "@armyofagents/shared";
 import { api } from "./client";
 
 export const searchApi = {

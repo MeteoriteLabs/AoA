@@ -48,7 +48,7 @@
  * @see PLUGIN_SPEC.md §15 — Capability Model
  */
 
-import type { PluginCapability } from "@paperclipai/shared";
+import type { PluginCapability } from "@armyofagents/shared";
 import type { WorkerToHostMethods, WorkerToHostMethodName } from "./protocol.js";
 import { PLUGIN_RPC_ERROR_CODES } from "./protocol.js";
 
@@ -133,6 +133,11 @@ export interface HostServices {
   /** Provides `metrics.write`. */
   metrics: {
     write(params: WorkerToHostMethods["metrics.write"][0]): Promise<void>;
+  };
+
+  /** Provides `telemetry.track`. */
+  telemetry: {
+    track(params: WorkerToHostMethods["telemetry.track"][0]): Promise<void>;
   };
 
   /** Provides `log`. */
@@ -283,6 +288,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // Metrics
   "metrics.write": "metrics.write",
+
+  // Telemetry
+  "telemetry.track": "telemetry.track",
 
   // Logger — always allowed
   "log": null,
@@ -445,6 +453,11 @@ export function createHostClientHandlers(
     // Metrics
     "metrics.write": gated("metrics.write", async (params) => {
       return services.metrics.write(params);
+    }),
+
+    // Telemetry
+    "telemetry.track": gated("telemetry.track", async (params) => {
+      return services.telemetry.track(params);
     }),
 
     // Logger

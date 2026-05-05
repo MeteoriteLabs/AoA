@@ -1,12 +1,15 @@
 {
-  "name": "paperclipai",
+  "name": "@armyofagents/cli",
   "version": "0.2.7",
-  "description": "Paperclip CLI — orchestrate AI agent teams to run a business",
+  "description": "AoA (Army of Agents) CLI — orchestrate AI agent teams to run a business",
   "type": "module",
   "bin": {
+    "aoa": "./dist/index.js",
     "paperclipai": "./dist/index.js"
   },
   "keywords": [
+    "aoa",
+    "army-of-agents",
     "paperclip",
     "ai",
     "agents",
@@ -16,10 +19,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip.git",
+    "url": "https://github.com/meteoritelabs/aoa.git",
     "directory": "cli"
   },
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/meteoritelabs/aoa",
   "files": [
     "dist"
   ],
@@ -34,16 +37,16 @@
   },
   "dependencies": {
     "@clack/prompts": "^0.10.0",
-    "@paperclipai/adapter-claude-local": "workspace:*",
-    "@paperclipai/adapter-codex-local": "workspace:*",
-    "@paperclipai/adapter-cursor-local": "workspace:*",
-    "@paperclipai/adapter-gemini-local": "workspace:*",
-    "@paperclipai/adapter-opencode-local": "workspace:*",
-    "@paperclipai/adapter-openclaw": "workspace:*",
-    "@paperclipai/adapter-utils": "workspace:*",
-    "@paperclipai/db": "workspace:*",
-    "@paperclipai/server": "workspace:*",
-    "@paperclipai/shared": "workspace:*",
+    "@armyofagents/adapter-claude-local": "workspace:*",
+    "@armyofagents/adapter-codex-local": "workspace:*",
+    "@armyofagents/adapter-cursor-local": "workspace:*",
+    "@armyofagents/adapter-gemini-local": "workspace:*",
+    "@armyofagents/adapter-opencode-local": "workspace:*",
+    "@armyofagents/adapter-openclaw": "workspace:*",
+    "@armyofagents/adapter-utils": "workspace:*",
+    "@armyofagents/db": "workspace:*",
+    "@armyofagents/server": "workspace:*",
+    "@armyofagents/shared": "workspace:*",
     "drizzle-orm": "0.38.4",
     "dotenv": "^17.0.1",
     "commander": "^13.1.0",

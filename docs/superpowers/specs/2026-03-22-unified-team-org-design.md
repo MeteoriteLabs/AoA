@@ -453,7 +453,7 @@ async function orgForCompany(companyId: string): Promise<UnifiedOrgNode[]> {
 
 **Role priority for dedup:** `founder > team_lead > team_member` — if a user has roles in multiple departments, their highest role is used for the tree display.
 
-**New imports needed in agents.ts:** `companyMemberships`, `authUsers` (from `@paperclipai/db`), `userRoles`, `projects`.
+**New imports needed in agents.ts:** `companyMemberships`, `authUsers` (from `@armyofagents/db`), `userRoles`, `projects`.
 
 ### A3. assertNoCycle Full Contract
 

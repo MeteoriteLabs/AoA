@@ -1,6 +1,7 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { deriveAgentUrlKey, deriveProjectUrlKey } from "@paperclipai/shared";
+import { deriveAgentUrlKey, deriveProjectUrlKey } from "@armyofagents/shared";
+import type { AdapterBillingType } from "@armyofagents/adapter-utils";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -77,4 +78,21 @@ export function projectRouteRef(project: { id: string; urlKey?: string | null; n
 /** Build a project URL using the short URL key when available. */
 export function projectUrl(project: { id: string; urlKey?: string | null; name?: string | null }): string {
   return `/projects/${projectRouteRef(project)}`;
+}
+
+/** Human-readable label for an AdapterBillingType value (all 8 variants). */
+const BILLING_TYPE_LABELS: Record<AdapterBillingType, string> = {
+  api: "API",
+  subscription: "Subscription",
+  metered_api: "Metered API",
+  subscription_included: "Subscription (included)",
+  subscription_overage: "Subscription (overage)",
+  credits: "Credits",
+  fixed: "Fixed fee",
+  unknown: "Unknown",
+};
+
+export function billingTypeDisplayName(billingType: AdapterBillingType | string | null | undefined): string {
+  if (!billingType) return "Unknown";
+  return BILLING_TYPE_LABELS[billingType as AdapterBillingType] ?? billingType;
 }

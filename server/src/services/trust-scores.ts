@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agentTrustScores, agents } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { agentTrustScores, agents } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 
 const log = logger.child({ service: "trust-scores" });

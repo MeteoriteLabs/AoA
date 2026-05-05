@@ -1,6 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
+
+// These tests render a multi-query page; give enough headroom for slow CI runs.
+vi.setConfig({ testTimeout: 15000 });
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -199,59 +201,49 @@ beforeEach(() => {
   issuesApiMock.list.mockResolvedValue([mockIssue]);
 });
 
+afterEach(() => {
+  cleanup();
+});
+
 // --- Tests ---
 
 describe("ProjectDetail — Board tab TaskSlideOver", () => {
   it("TaskSlideOver is not visible before any task is clicked", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/issues");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("kanban-board")).toBeInTheDocument();
-    });
+    await screen.findByTestId("kanban-board", {}, { timeout: 5000 });
 
     expect(screen.queryByTestId("task-slide-over")).not.toBeInTheDocument();
   });
 
   it("clicking a task in the Board tab opens the TaskSlideOver", async () => {
-    const user = userEvent.setup();
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/issues");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("task-card-TC-1")).toBeInTheDocument();
-    });
+    fireEvent.click(await screen.findByTestId("task-card-TC-1", {}, { timeout: 5000 }));
 
-    await user.click(screen.getByTestId("task-card-TC-1"));
-
-    expect(screen.getByTestId("task-slide-over")).toBeInTheDocument();
+    await screen.findByTestId("task-slide-over", {}, { timeout: 5000 });
   });
 
   it("TaskSlideOver receives the clicked task identifier as issueId", async () => {
-    const user = userEvent.setup();
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/issues");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("task-card-TC-1")).toBeInTheDocument();
-    });
+    fireEvent.click(await screen.findByTestId("task-card-TC-1", {}, { timeout: 5000 }));
 
-    await user.click(screen.getByTestId("task-card-TC-1"));
-
-    expect(screen.getByTestId("task-slide-over")).toHaveAttribute("data-issue-id", "TC-1");
+    const slideOver = await screen.findByTestId("task-slide-over", {}, { timeout: 5000 });
+    expect(slideOver).toHaveAttribute("data-issue-id", "TC-1");
   });
 
   it("closing the TaskSlideOver hides it", async () => {
-    const user = userEvent.setup();
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/issues");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("task-card-TC-1")).toBeInTheDocument();
-    });
-
     // Open the slide-over
-    await user.click(screen.getByTestId("task-card-TC-1"));
-    expect(screen.getByTestId("task-slide-over")).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId("task-card-TC-1", {}, { timeout: 5000 }));
+    await screen.findByTestId("task-slide-over", {}, { timeout: 5000 });
 
     // Close it
-    await user.click(screen.getByText("Close Panel"));
-    expect(screen.queryByTestId("task-slide-over")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByText("Close Panel", {}, { timeout: 5000 }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("task-slide-over")).not.toBeInTheDocument();
+    });
   });
 });

@@ -22,7 +22,7 @@ import {
   User,
   Zap,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -48,6 +48,17 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogTrigger,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "@/components/ui/alert-dialog";
 import {
   Tooltip,
   TooltipTrigger,
@@ -123,6 +134,41 @@ import { FilterBar, type FilterValue } from "@/components/FilterBar";
 import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
+import { UserMenu } from "@/components/UserMenu";
+import {
+  ReportsToSelect,
+  type UnifiedOrgNode,
+} from "@/components/team/ReportsToSelect";
+import { RoutineVariablesEditor } from "@/components/routines/RoutineVariablesEditor";
+import { RoutineRunDialog } from "@/components/routines/RoutineRunDialog";
+import { PrivacyTab } from "@/components/settings/PrivacyTab";
+import { BackupsTab } from "@/components/settings/BackupsTab";
+import { HeartbeatsTabView } from "@/components/settings/HeartbeatsTab";
+import { BudgetPolicyCard } from "@/components/finance/BudgetPolicyCard";
+import { BudgetIncidentCard } from "@/components/finance/BudgetIncidentCard";
+import { QuotaBar } from "@/components/finance/QuotaBar";
+import { ProviderQuotaCard } from "@/components/finance/ProviderQuotaCard";
+import { FinanceBillerCard } from "@/components/finance/FinanceBillerCard";
+import { FinanceKindCard } from "@/components/finance/FinanceKindCard";
+import { FinanceTimelineCard } from "@/components/finance/FinanceTimelineCard";
+import { AccountingModelCard } from "@/components/finance/AccountingModelCard";
+import {
+  ClaudeSubscriptionPanel,
+  type SubscriptionRollup,
+} from "@/components/finance/ClaudeSubscriptionPanel";
+import { CodexSubscriptionPanel } from "@/components/finance/CodexSubscriptionPanel";
+import type { ProviderQuotaWindow } from "@/api/quotas";
+import type {
+  FinanceBillerRow,
+  FinanceKindRow,
+  FinanceEvent,
+} from "@/api/finance";
+import type { CostByModelRow } from "@/api/costs";
+import type { BudgetPolicySummary, BudgetIncident } from "@armyofagents/shared";
+import { CompanyExport as CompanyExportPage } from "@/pages/CompanyExport";
+import { CompanyImport as CompanyImportPage } from "@/pages/CompanyImport";
+import { FeedbackThumbs } from "@/components/FeedbackThumbs";
+import { FeedbackConsentModal } from "@/components/FeedbackConsentModal";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -223,8 +269,8 @@ export function DesignGuide() {
             <div className="flex flex-wrap gap-2">
               {[
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
-                "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
-                "PropertiesPanel", "Sidebar", "CommandPalette",
+                "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "UserMenu", "CommentThread", "MarkdownEditor",
+                "PropertiesPanel", "Sidebar", "CommandPalette", "FeedbackThumbs", "FeedbackConsentModal",
               ].map((name) => (
                 <Badge key={name} variant="ghost" className="font-mono text-[10px]">
                   {name}
@@ -943,7 +989,7 @@ export function DesignGuide() {
 
         <SubSection title="Initials derivation">
           <div className="flex flex-col gap-2">
-            <Identity name="CEO Agent" size="sm" />
+            <Identity name="Director Agent" size="sm" />
             <Identity name="Alpha" size="sm" />
             <Identity name="Quality Assurance Lead" size="sm" />
           </div>
@@ -1005,6 +1051,35 @@ export function DesignGuide() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  ALERT DIALOG                                                 */}
+      {/* ============================================================ */}
+      <Section title="Alert Dialog">
+        <p className="text-sm text-muted-foreground max-w-2xl">
+          Destructive confirms. Use when an action cannot be undone — delete, archive with side-effects, revoke credentials. Not a general-purpose dialog; prefer <code className="text-xs bg-muted px-1 py-0.5 rounded">Dialog</code> for forms and non-destructive flows.
+        </p>
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="destructive">Archive workspace</Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Archive this workspace?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Archiving closes the workspace and releases its runtime resources. Linked tasks remain,
+                but their runtime environment will be reset. This cannot be undone automatically.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction className={buttonVariants({ variant: "destructive" })}>
+                Archive
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </Section>
 
       {/* ============================================================ */}
@@ -1195,6 +1270,114 @@ export function DesignGuide() {
       </Section>
 
       {/* ============================================================ */}
+      {/*  FEEDBACK THUMBS                                              */}
+      {/* ============================================================ */}
+      <Section title="Feedback Thumbs (F.2)">
+        <p className="text-sm text-muted-foreground max-w-2xl">
+          Per-user thumbs up/down on agent output. Mounts under agent-authored
+          task comments on TaskSlideOver. Reason textarea opens on thumbs-down
+          only (matches Paperclip's normalizeReason — upvote reasons are
+          discarded). Click an already-selected thumb to dismiss.
+        </p>
+        <div className="grid gap-6 md:grid-cols-2 max-w-3xl">
+          <SubSection title="No vote (idle)">
+            <div className="rounded-md border border-border bg-card p-3">
+              <FeedbackThumbs
+                issueId="design-guide-issue"
+                targetType="issue_comment"
+                targetId="00000000-0000-0000-0000-000000000001"
+              />
+            </div>
+          </SubSection>
+          <SubSection title="Thumbs-up selected">
+            <div className="rounded-md border border-border bg-card p-3">
+              <FeedbackThumbs
+                issueId="design-guide-issue"
+                targetType="issue_comment"
+                targetId="00000000-0000-0000-0000-000000000002"
+                initialVote={{
+                  id: "vote-up",
+                  companyId: "company-1",
+                  issueId: "design-guide-issue",
+                  targetType: "issue_comment",
+                  targetId: "00000000-0000-0000-0000-000000000002",
+                  authorUserId: "user-1",
+                  vote: "up",
+                  reason: null,
+                  sharedWithLabs: false,
+                  sharedAt: null,
+                  consentVersion: null,
+                  redactionSummary: null,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                }}
+              />
+            </div>
+          </SubSection>
+          <SubSection title="Thumbs-down with saved reason">
+            <div className="rounded-md border border-border bg-card p-3">
+              <FeedbackThumbs
+                issueId="design-guide-issue"
+                targetType="issue_comment"
+                targetId="00000000-0000-0000-0000-000000000003"
+                initialVote={{
+                  id: "vote-down",
+                  companyId: "company-1",
+                  issueId: "design-guide-issue",
+                  targetType: "issue_comment",
+                  targetId: "00000000-0000-0000-0000-000000000003",
+                  authorUserId: "user-1",
+                  vote: "down",
+                  reason: "Missed the test case for cancellations",
+                  sharedWithLabs: false,
+                  sharedAt: null,
+                  consentVersion: null,
+                  redactionSummary: null,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                }}
+              />
+            </div>
+          </SubSection>
+          <SubSection title="Inline in a comment card">
+            <div className="rounded-md border border-border bg-card p-3 space-y-3">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-medium text-muted-foreground">Claude Agent</span>
+                  <span className="text-xs text-muted-foreground">Apr 21</span>
+                </div>
+                <p className="text-sm">
+                  Built the scaffolded handler and wired it through to the
+                  routing table. Smoke tests pass.
+                </p>
+              </div>
+              <div className="pt-2 border-t border-border/60">
+                <FeedbackThumbs
+                  issueId="design-guide-issue"
+                  targetType="issue_comment"
+                  targetId="00000000-0000-0000-0000-000000000004"
+                />
+              </div>
+            </div>
+          </SubSection>
+        </div>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  FEEDBACK CONSENT MODAL (F.4)                                 */}
+      {/* ============================================================ */}
+      <Section title="Feedback Consent Modal (F.4)">
+        <p className="text-sm text-muted-foreground max-w-2xl">
+          First-vote prompt shown when the sharing preference is{" "}
+          <code className="font-mono text-xs">prompt</code>. MVP has two durable
+          options (Always / Never) plus Cancel to discard the click. Once
+          decided, the preference is persisted and the modal won't reappear for
+          that user. Per-vote "just this time" is deferred to Phase I.
+        </p>
+        <FeedbackConsentModalShowcase />
+      </Section>
+
+      {/* ============================================================ */}
       {/*  COST TABLE PATTERN                                           */}
       {/* ============================================================ */}
       <Section title="Cost Table Pattern">
@@ -1304,6 +1487,76 @@ export function DesignGuide() {
       </Section>
 
       {/* ============================================================ */}
+      {/*  USER MENU                                                    */}
+      {/* ============================================================ */}
+      <Section title="UserMenu">
+        <p className="text-sm text-muted-foreground">
+          Avatar dropdown shown at the bottom of the sidebar and in the Lobby header.
+          Reads the current profile from <code className="font-mono text-xs">/auth/profile</code>.
+        </p>
+        <SubSection title="Expanded (sidebar open)">
+          <div className="max-w-60 rounded-lg border border-border p-2 bg-background">
+            <UserMenu />
+          </div>
+        </SubSection>
+        <SubSection title="Collapsed (sidebar collapsed / Lobby header)">
+          <div className="w-12 rounded-lg border border-border py-2 bg-background">
+            <UserMenu collapsed />
+          </div>
+        </SubSection>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  REPORTS-TO SELECT                                            */}
+      {/* ============================================================ */}
+      <ReportsToSelectShowcase />
+
+      {/* ============================================================ */}
+      {/*  ROUTINE VARIABLES EDITOR                                     */}
+      {/* ============================================================ */}
+      <RoutineVariablesEditorShowcase />
+
+      {/* ============================================================ */}
+      {/*  ROUTINE RUN DIALOG                                           */}
+      {/* ============================================================ */}
+      <RoutineRunDialogShowcase />
+
+      {/* ============================================================ */}
+      {/*  BUDGET PAGE                                                  */}
+      {/* ============================================================ */}
+      <BudgetPageShowcase />
+
+      {/* ============================================================ */}
+      {/*  BUDGET COMPONENTS                                            */}
+      {/* ============================================================ */}
+      <BudgetComponentsShowcase />
+
+      {/* ============================================================ */}
+      {/*  QUOTA COMPONENTS                                             */}
+      {/* ============================================================ */}
+      <QuotaComponentsShowcase />
+
+      {/* ============================================================ */}
+      {/*  FINANCE LEDGER COMPONENTS                                    */}
+      {/* ============================================================ */}
+      <FinanceLedgerShowcase />
+
+      {/* ============================================================ */}
+      {/*  BREAKDOWN COMPONENTS                                         */}
+      {/* ============================================================ */}
+      <BreakdownComponentsShowcase />
+
+      {/* ============================================================ */}
+      {/*  COMPANY EXPORT                                               */}
+      {/* ============================================================ */}
+      <CompanyExportShowcase />
+
+      {/* ============================================================ */}
+      {/*  COMPANY IMPORT                                               */}
+      {/* ============================================================ */}
+      <CompanyImportShowcase />
+
+      {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
       <Section title="Keyboard Shortcuts">
@@ -1326,5 +1579,1312 @@ export function DesignGuide() {
         </div>
       </Section>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  ReportsToSelect showcase                                           */
+/* ------------------------------------------------------------------ */
+
+function ReportsToSelectShowcase() {
+  const showcaseTree: UnifiedOrgNode[] = [
+    {
+      id: "agent-cxo",
+      name: "Claude Chief of Staff",
+      role: "cxo",
+      status: "active",
+      nodeType: "agent",
+      adapterType: "claude_local",
+      children: [],
+    },
+    {
+      id: "agent-old",
+      name: "Retired Agent",
+      role: "engineer",
+      status: "terminated",
+      nodeType: "agent",
+      adapterType: "codex_local",
+      children: [],
+    },
+    {
+      id: "user-alice",
+      name: "Alice",
+      role: "founder",
+      status: "active",
+      nodeType: "user",
+      userRole: "founder",
+      children: [],
+    },
+  ];
+
+  const [normalValue, setNormalValue] = useState("agent:agent-ceo");
+  const [terminatedValue, setTerminatedValue] = useState("agent:agent-old");
+  const [staleValue, setStaleValue] = useState("user:ghost-id");
+  const [customValue, setCustomValue] = useState("");
+
+  return (
+    <Section title="Reports-To Select">
+      <SubSection title="Normal (active manager selected)">
+        <div className="max-w-sm">
+          <ReportsToSelect
+            orgTree={showcaseTree}
+            currentEntityId="user-alice"
+            currentEntityType="user"
+            value={normalValue}
+            onChange={setNormalValue}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Terminated (selected manager is terminated)">
+        <div className="max-w-sm">
+          <ReportsToSelect
+            orgTree={showcaseTree}
+            currentEntityId="user-alice"
+            currentEntityType="user"
+            value={terminatedValue}
+            onChange={setTerminatedValue}
+          />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Amber chip warns the founder that the saved reporting chain points at
+          a terminated agent. User can pick a replacement or clear.
+        </p>
+      </SubSection>
+
+      <SubSection title="Stale ID (saved value not in current tree)">
+        <div className="max-w-sm">
+          <ReportsToSelect
+            orgTree={showcaseTree}
+            currentEntityId="user-alice"
+            currentEntityType="user"
+            value={staleValue}
+            onChange={setStaleValue}
+          />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Value references an id that no longer exists in the org (e.g. deleted
+          agent). Friendly fallback invites the user to re-pick.
+        </p>
+      </SubSection>
+
+      <SubSection title="Custom chooseLabel (empty value)">
+        <div className="max-w-sm">
+          <ReportsToSelect
+            orgTree={showcaseTree}
+            currentEntityId="user-alice"
+            currentEntityType="user"
+            value={customValue}
+            onChange={setCustomValue}
+            chooseLabel="Pick a manager…"
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Disabled + empty tree (custom disabledEmptyLabel)">
+        <div className="max-w-sm">
+          <ReportsToSelect
+            orgTree={[]}
+            currentEntityId="agent-solo"
+            currentEntityType="agent"
+            value=""
+            onChange={() => {}}
+            disabled
+            disabledEmptyLabel="No managers yet (Director)"
+          />
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  RoutineVariablesEditor showcase                                    */
+/* ------------------------------------------------------------------ */
+
+function RoutineVariablesEditorShowcase() {
+  const routineId = "00000000-0000-0000-0000-000000000000";
+  return (
+    <Section title="Routine Variables Editor">
+      <SubSection title="Empty state (no placeholders in title/description)">
+        <div className="max-w-2xl">
+          <RoutineVariablesEditor
+            routineId={routineId}
+            title="Daily standup"
+            description="Post a summary to the team"
+            initialVariables={[]}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Single detected variable (default metadata)">
+        <div className="max-w-2xl">
+          <RoutineVariablesEditor
+            routineId={routineId}
+            title="Review {{topic}}"
+            description="Read all notes related to the given topic and summarise."
+            initialVariables={[]}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Multiple variables with configured metadata">
+        <div className="max-w-2xl">
+          <RoutineVariablesEditor
+            routineId={routineId}
+            title="Send {{tone}} digest about {{topic}}"
+            description="Depth: {{depth}}. Include charts: {{include_charts}}"
+            initialVariables={[
+              {
+                name: "tone",
+                label: "Tone",
+                type: "select",
+                defaultValue: "neutral",
+                required: true,
+                options: ["friendly", "neutral", "formal"],
+              },
+              {
+                name: "topic",
+                label: "Topic",
+                type: "text",
+                defaultValue: "weekly wins",
+                required: true,
+                options: [],
+              },
+              {
+                name: "depth",
+                label: "Depth (sentences)",
+                type: "number",
+                defaultValue: 5,
+                required: false,
+                options: [],
+              },
+              {
+                name: "include_charts",
+                label: "Include charts",
+                type: "boolean",
+                defaultValue: false,
+                required: false,
+                options: [],
+              },
+            ]}
+          />
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  RoutineRunDialog showcase                                          */
+/* ------------------------------------------------------------------ */
+
+function RoutineRunDialogShowcase() {
+  const routineId = "00000000-0000-0000-0000-000000000000";
+  const [zeroOpen, setZeroOpen] = useState(false);
+  const [mixedOpen, setMixedOpen] = useState(false);
+  const [requiredOpen, setRequiredOpen] = useState(false);
+  return (
+    <Section title="Routine Run Dialog">
+      <SubSection title="Zero-variable confirmation">
+        <div className="flex items-center gap-3">
+          <Button size="sm" onClick={() => setZeroOpen(true)}>
+            Open dialog
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            Confirmation only — no form fields.
+          </span>
+        </div>
+        <RoutineRunDialog
+          open={zeroOpen}
+          onOpenChange={setZeroOpen}
+          routineId={routineId}
+          routineTitle="Daily standup"
+          variables={[]}
+        />
+      </SubSection>
+
+      <SubSection title="Multi-variable form (mixed types)">
+        <div className="flex items-center gap-3">
+          <Button size="sm" onClick={() => setMixedOpen(true)}>
+            Open dialog
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            Text + number + boolean + select inputs with prefilled defaults.
+          </span>
+        </div>
+        <RoutineRunDialog
+          open={mixedOpen}
+          onOpenChange={setMixedOpen}
+          routineId={routineId}
+          routineTitle="Send {{tone}} digest about {{topic}}"
+          variables={[
+            {
+              name: "tone",
+              label: "Tone",
+              type: "select",
+              defaultValue: "neutral",
+              required: true,
+              options: ["friendly", "neutral", "formal"],
+            },
+            {
+              name: "topic",
+              label: "Topic",
+              type: "text",
+              defaultValue: "weekly wins",
+              required: true,
+              options: [],
+            },
+            {
+              name: "depth",
+              label: "Depth (sentences)",
+              type: "number",
+              defaultValue: 5,
+              required: false,
+              options: [],
+            },
+            {
+              name: "include_charts",
+              label: "Include charts",
+              type: "boolean",
+              defaultValue: false,
+              required: false,
+              options: [],
+            },
+          ]}
+        />
+      </SubSection>
+
+      <SubSection title="Submit disabled (required field empty)">
+        <div className="flex items-center gap-3">
+          <Button size="sm" onClick={() => setRequiredOpen(true)}>
+            Open dialog
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            Missing list surfaces the required field; Run button is disabled.
+          </span>
+        </div>
+        <RoutineRunDialog
+          open={requiredOpen}
+          onOpenChange={setRequiredOpen}
+          routineId={routineId}
+          routineTitle="Review {{topic}}"
+          variables={[
+            {
+              name: "topic",
+              label: "Review topic",
+              type: "text",
+              defaultValue: null,
+              required: true,
+              options: [],
+            },
+          ]}
+        />
+      </SubSection>
+
+      <SettingsTabsShowcase />
+    </Section>
+  );
+}
+
+function FeedbackConsentModalShowcase() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="default" onClick={() => setOpen(true)}>
+          Open consent modal
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          (Decide to dismiss — showcase only; no side effects.)
+        </span>
+      </div>
+      <FeedbackConsentModal
+        open={open}
+        onOpenChange={setOpen}
+        onDecide={() => setOpen(false)}
+      />
+    </div>
+  );
+}
+
+function SettingsTabsShowcase() {
+  return (
+    <>
+      <SubSection title="Privacy Tab — default (privacy-first: not_allowed, no bundles yet)">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <PrivacyTab
+            settings={{
+              censorUsernameInLogs: false,
+              keyboardShortcuts: false,
+              feedbackDataSharingPreference: "not_allowed",
+              backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            }}
+            isLoading={false}
+            error={null}
+            isSaving={false}
+            onChange={() => {}}
+            bundleHistory={[]}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Privacy Tab — feedback sharing enabled, 3 recent bundles">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <PrivacyTab
+            settings={{
+              censorUsernameInLogs: false,
+              keyboardShortcuts: false,
+              feedbackDataSharingPreference: "allowed",
+              backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            }}
+            isLoading={false}
+            error={null}
+            isSaving={false}
+            onChange={() => {}}
+            bundleHistory={[
+              {
+                id: "row-1",
+                exportId: "fbexp_0123456789abcdef01234567",
+                companyId: "company-1",
+                issueId: "issue-1",
+                projectId: null,
+                authorUserId: "user-1",
+                vote: "down",
+                status: "local_only",
+                destination: null,
+                createdAt: "2026-04-22T10:23:00Z",
+                sizeBytes: 4200,
+              },
+              {
+                id: "row-2",
+                exportId: "fbexp_abcdef0123456789abcdef01",
+                companyId: "company-1",
+                issueId: "issue-2",
+                projectId: null,
+                authorUserId: "user-1",
+                vote: "up",
+                status: "local_only",
+                destination: null,
+                createdAt: "2026-04-21T16:15:00Z",
+                sizeBytes: 2800,
+              },
+              {
+                id: "row-3",
+                exportId: "fbexp_ffffffffffffffff11111111",
+                companyId: "company-1",
+                issueId: "issue-3",
+                projectId: null,
+                authorUserId: "user-1",
+                vote: "down",
+                status: "local_only",
+                destination: null,
+                createdAt: "2026-04-19T16:42:00Z",
+                sizeBytes: 7100,
+              },
+            ]}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Backups Tab — default retention (7d / 4w / 1m)">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <BackupsTab
+            settings={{
+              censorUsernameInLogs: false,
+              keyboardShortcuts: false,
+              feedbackDataSharingPreference: "not_allowed",
+              backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            }}
+            isLoading={false}
+            error={null}
+            isSaving={false}
+            onChange={() => {}}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Backups Tab — maximum retention (14d / 4w / 6m)">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <BackupsTab
+            settings={{
+              censorUsernameInLogs: false,
+              keyboardShortcuts: false,
+              feedbackDataSharingPreference: "not_allowed",
+              backupRetention: { dailyDays: 14, weeklyWeeks: 4, monthlyMonths: 6 },
+            }}
+            isLoading={false}
+            error={null}
+            isSaving={false}
+            onChange={() => {}}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Heartbeats Tab — empty (no scheduler agents)">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <HeartbeatsTabView
+            agents={[]}
+            actionError={null}
+            isTogglingId={null}
+            isDisablingAll={false}
+            onToggle={() => {}}
+            onDisableAll={() => {}}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Heartbeats Tab — mixed (some active, some disabled)">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <HeartbeatsTabView
+            agents={[
+              {
+                id: "a-1",
+                companyId: "comp-1",
+                companyName: "Acme",
+                companyIssuePrefix: "ACM",
+                agentName: "Alpha",
+                agentUrlKey: "alpha",
+                role: "general",
+                title: "Senior Engineer",
+                status: "active",
+                adapterType: "claude_local",
+                intervalSec: 60,
+                heartbeatEnabled: true,
+                schedulerActive: true,
+                lastHeartbeatAt: new Date(Date.now() - 2 * 60 * 1000),
+              },
+              {
+                id: "a-2",
+                companyId: "comp-1",
+                companyName: "Acme",
+                companyIssuePrefix: "ACM",
+                agentName: "Bravo",
+                agentUrlKey: "bravo",
+                role: "lead",
+                title: "Product Lead",
+                status: "active",
+                adapterType: "codex_local",
+                intervalSec: 300,
+                heartbeatEnabled: false,
+                schedulerActive: false,
+                lastHeartbeatAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+              },
+            ]}
+            actionError={null}
+            isTogglingId={null}
+            isDisablingAll={false}
+            onToggle={() => {}}
+            onDisableAll={() => {}}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Heartbeats Tab — all disabled (Disable All hidden)">
+        <div className="rounded-xl border border-border bg-background p-5">
+          <HeartbeatsTabView
+            agents={[
+              {
+                id: "a-1",
+                companyId: "comp-1",
+                companyName: "Acme",
+                companyIssuePrefix: "ACM",
+                agentName: "Alpha",
+                agentUrlKey: "alpha",
+                role: "general",
+                title: "Senior Engineer",
+                status: "active",
+                adapterType: "claude_local",
+                intervalSec: 60,
+                heartbeatEnabled: false,
+                schedulerActive: false,
+                lastHeartbeatAt: null,
+              },
+            ]}
+            actionError={null}
+            isTogglingId={null}
+            isDisablingAll={false}
+            onToggle={() => {}}
+            onDisableAll={() => {}}
+          />
+        </div>
+      </SubSection>
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Budget page showcase                                               */
+/* ------------------------------------------------------------------ */
+
+function BudgetPagePreview({ variant }: { variant: "empty" | "loaded" }) {
+  const presets = ["Month to Date", "Last 7 Days", "Last 30 Days", "Custom"];
+  return (
+    <div className="space-y-6 rounded-xl border border-border bg-background p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold">Budget</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Spend, budgets, quotas, and the finance ledger across the company.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {presets.map((label, i) => (
+            <Button
+              key={label}
+              variant={i === 0 ? "secondary" : "ghost"}
+              size="sm"
+              disabled
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {variant === "empty" ? (
+        <Card>
+          <CardContent className="p-6 text-center text-sm text-muted-foreground">
+            No cost events in this range yet.
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">Month to Date</p>
+              <p className="text-sm text-muted-foreground">32% utilized</p>
+            </div>
+            <p className="text-2xl font-bold">
+              $32.50{" "}
+              <span className="text-base font-normal text-muted-foreground">
+                / $100.00
+              </span>
+            </p>
+            <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full bg-green-400"
+                style={{ width: "32%" }}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        {[
+          ["Breakdown", "Accounting model + Claude and Codex subscription utilization."],
+          ["Budgets", "Budget policies and open incidents."],
+          ["Quotas", "Provider rate-limit windows."],
+          ["Ledger", "Finance events by biller, by kind, and over time."],
+        ].map(([title, desc]) => (
+          <Card key={title}>
+            <CardContent className="p-4 space-y-1.5">
+              <h3 className="text-sm font-semibold">{title}</h3>
+              <p className="text-xs text-muted-foreground">{desc}</p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BudgetPageShowcase() {
+  return (
+    <Section title="Budget Page">
+      <p className="text-sm text-muted-foreground">
+        Standalone Budget page at <code className="font-mono text-xs">/:companyPrefix/budget</code>.
+        Shell renders a header + date range picker + summary card + four section
+        placeholders. Breakdown / Budgets / Quotas / Ledger content lands in
+        follow-up tasks (B.6–B.8).
+      </p>
+      <SubSection title="Empty state">
+        <BudgetPagePreview variant="empty" />
+      </SubSection>
+      <SubSection title="Loaded state">
+        <BudgetPagePreview variant="loaded" />
+      </SubSection>
+    </Section>
+  );
+}
+
+function makeDemoPolicy(overrides: Partial<BudgetPolicySummary> = {}): BudgetPolicySummary {
+  return {
+    id: "demo-policy",
+    companyId: "demo",
+    scopeType: "company",
+    scopeId: "demo",
+    scopeName: "Acme Inc",
+    metric: "cost_usd",
+    windowKind: "month_utc",
+    amountCents: 10_000,
+    warnPercent: 80,
+    hardStopEnabled: true,
+    isActive: true,
+    observedCents: 2_500,
+    utilizationPercent: 25,
+    status: "ok",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+function makeDemoIncident(overrides: Partial<BudgetIncident> = {}): BudgetIncident {
+  return {
+    id: "demo-incident",
+    companyId: "demo",
+    policyId: "demo-policy",
+    scopeType: "company",
+    scopeId: "demo",
+    scopeName: "Acme Inc",
+    windowStart: new Date(),
+    windowEnd: new Date(),
+    thresholdType: "hard_stop",
+    amountLimitCents: 10_000,
+    amountObservedCents: 11_250,
+    status: "open",
+    approvalId: null,
+    resolvedAt: null,
+    createdAt: new Date(),
+    ...overrides,
+  };
+}
+
+function BudgetComponentsShowcase() {
+  return (
+    <Section title="Budget Components">
+      <p className="text-sm text-muted-foreground">
+        Policy cards and incident cards used on the Budget page. The sidebar
+        marker is a compact warning chip shown under the sidebar Budget nav when
+        any active policy crosses its warn or hard-stop threshold.
+      </p>
+
+      <SubSection title="BudgetPolicyCard">
+        <div className="grid gap-4 md:grid-cols-2">
+          <BudgetPolicyCard
+            policy={makeDemoPolicy()}
+            onEdit={() => {}}
+          />
+          <BudgetPolicyCard
+            policy={makeDemoPolicy({
+              status: "warning",
+              utilizationPercent: 85,
+              observedCents: 8_500,
+            })}
+            onEdit={() => {}}
+          />
+          <BudgetPolicyCard
+            policy={makeDemoPolicy({
+              status: "hard_stop",
+              utilizationPercent: 112,
+              observedCents: 11_200,
+            })}
+            onEdit={() => {}}
+          />
+          <BudgetPolicyCard
+            policy={makeDemoPolicy({ isActive: false, scopeName: "Legacy agent" })}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="BudgetIncidentCard">
+        <div className="grid gap-4 md:grid-cols-2">
+          <BudgetIncidentCard incident={makeDemoIncident({ thresholdType: "warning", amountObservedCents: 8_500 })} />
+          <BudgetIncidentCard incident={makeDemoIncident()} />
+        </div>
+      </SubSection>
+
+      <SubSection title="BudgetSidebarMarker">
+        <p className="text-sm text-muted-foreground">
+          Rendered inline in the sidebar beneath the Budget nav item. Hidden when
+          all active policies are healthy; amber when any policy is in warning
+          state; red when any policy has hit hard stop. Sample appearance:
+        </p>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="rounded-md border border-border p-3 space-y-2">
+            <p className="text-xs text-muted-foreground">Warning (expanded sidebar)</p>
+            <div
+              data-tone="warning"
+              className="flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-700 dark:text-amber-300 w-fit"
+            >
+              <span aria-hidden>⚠</span>
+              Warn · Budget 85% used
+            </div>
+          </div>
+          <div className="rounded-md border border-border p-3 space-y-2">
+            <p className="text-xs text-muted-foreground">Hard stop (expanded sidebar)</p>
+            <div
+              data-tone="hard"
+              className="flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] font-medium text-red-600 dark:text-red-400 w-fit"
+            >
+              <span aria-hidden>⚠</span>
+              Over · Budget 112% used
+            </div>
+          </div>
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Quota Components showcase                                          */
+/* ------------------------------------------------------------------ */
+
+function makeDemoQuotaWindow(
+  overrides: Partial<ProviderQuotaWindow> = {},
+): ProviderQuotaWindow {
+  return {
+    id: "qw-demo-1",
+    companyId: "comp-demo",
+    provider: "anthropic",
+    model: null,
+    windowKind: "5h",
+    label: "5h",
+    limitValue: 100,
+    usedValue: 20,
+    usedPercent: 20,
+    valueLabel: "20 / 100 msgs",
+    resetAt: null,
+    lastUpdatedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function QuotaComponentsShowcase() {
+  const freshTs = new Date().toISOString();
+  const staleTs = new Date(Date.now() - 42 * 60_000).toISOString();
+
+  return (
+    <Section title="Quota Components">
+      <p className="text-sm text-muted-foreground">
+        QuotaBar shows a single provider window's utilization with a
+        threshold-tinted fill. ProviderQuotaCard groups the 5h / 24h / 7d
+        windows for one provider and surfaces last-refreshed freshness. Used
+        on the Budget page's Quotas section.
+      </p>
+
+      <SubSection title="QuotaBar">
+        <div className="space-y-3 max-w-md">
+          <QuotaBar label="Healthy (5h)" used={20} limit={100} valueLabel="20 / 100 msgs" />
+          <QuotaBar label="Near-limit (24h)" used={75} limit={100} valueLabel="75 / 100 msgs" />
+          <QuotaBar label="Over-limit (7d)" used={95} limit={100} valueLabel="95 / 100 msgs" />
+          <QuotaBar label="Clamped at 100%+" used={150} limit={100} />
+        </div>
+      </SubSection>
+
+      <SubSection title="ProviderQuotaCard">
+        <div className="grid gap-4 md:grid-cols-2">
+          <ProviderQuotaCard
+            provider="anthropic"
+            windows={[
+              makeDemoQuotaWindow({ id: "q-5h", windowKind: "5h", label: "5h", usedValue: 20, usedPercent: 20, valueLabel: "20 / 100 msgs" }),
+              makeDemoQuotaWindow({ id: "q-24h", windowKind: "24h", label: "24h", usedValue: 180, limitValue: 300, usedPercent: 60, valueLabel: "180 / 300 msgs" }),
+              makeDemoQuotaWindow({ id: "q-7d", windowKind: "7d", label: "7d", usedValue: 600, limitValue: 2000, usedPercent: 30, valueLabel: "600 / 2000 msgs" }),
+            ]}
+            lastUpdatedAt={freshTs}
+            onRefresh={() => {}}
+          />
+          <ProviderQuotaCard
+            provider="openai"
+            windows={[
+              makeDemoQuotaWindow({ id: "q-o-5h", provider: "openai", windowKind: "5h", label: "5h", usedValue: 90, limitValue: 100, usedPercent: 90, valueLabel: "90 / 100 msgs" }),
+              makeDemoQuotaWindow({ id: "q-o-24h", provider: "openai", windowKind: "24h", label: "24h", usedValue: 240, limitValue: 300, usedPercent: 80, valueLabel: "240 / 300 msgs" }),
+            ]}
+            lastUpdatedAt={staleTs}
+            onRefresh={() => {}}
+          />
+          <ProviderQuotaCard
+            provider="google"
+            windows={[]}
+            lastUpdatedAt={null}
+            onRefresh={() => {}}
+          />
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Finance ledger showcase                                           */
+/* ------------------------------------------------------------------ */
+
+function makeDemoBillerRow(overrides: Partial<FinanceBillerRow> = {}): FinanceBillerRow {
+  return {
+    biller: "anthropic",
+    debitCents: 5_000,
+    creditCents: 1_000,
+    estimatedDebitCents: 0,
+    eventCount: 4,
+    kindCount: 2,
+    netCents: 4_000,
+    ...overrides,
+  };
+}
+
+function makeDemoKindRow(overrides: Partial<FinanceKindRow> = {}): FinanceKindRow {
+  return {
+    eventKind: "top_up",
+    debitCents: 10_000,
+    creditCents: 0,
+    estimatedDebitCents: 0,
+    eventCount: 1,
+    billerCount: 1,
+    netCents: 10_000,
+    ...overrides,
+  };
+}
+
+function makeDemoFinanceEvent(overrides: Partial<FinanceEvent> = {}): FinanceEvent {
+  return {
+    id: "fe-demo-1",
+    companyId: "comp-demo",
+    agentId: null,
+    issueId: null,
+    projectId: null,
+    goalId: null,
+    heartbeatRunId: null,
+    costEventId: null,
+    billingCode: null,
+    description: "Monthly subscription top-up",
+    eventKind: "top_up",
+    direction: "credit",
+    biller: "anthropic",
+    provider: null,
+    executionAdapterType: null,
+    pricingTier: null,
+    region: null,
+    model: null,
+    quantity: null,
+    unit: null,
+    amountCents: 10_000,
+    currency: "USD",
+    estimated: false,
+    externalInvoiceId: "INV-2026-001",
+    metadataJson: null,
+    occurredAt: new Date("2026-04-15T12:00:00Z").toISOString(),
+    createdAt: new Date("2026-04-15T12:00:00Z").toISOString(),
+    ...overrides,
+  };
+}
+
+function FinanceLedgerShowcase() {
+  return (
+    <Section title="Finance Ledger Components">
+      <p className="text-sm text-muted-foreground">
+        Three complementary views of the finance_events ledger. Biller cards
+        give a per-source roll-up; the Kind card groups across billers by
+        event type; the Timeline renders recent events chronologically. Used
+        on the Budget page's Ledger section.
+      </p>
+
+      <SubSection title="FinanceBillerCard">
+        <div className="grid gap-3 md:grid-cols-2">
+          <FinanceBillerCard row={makeDemoBillerRow()} />
+          <FinanceBillerCard
+            row={makeDemoBillerRow({
+              biller: "openai",
+              debitCents: 12_500,
+              creditCents: 0,
+              estimatedDebitCents: 2_500,
+              netCents: 12_500,
+              eventCount: 18,
+              kindCount: 3,
+            })}
+          />
+          <FinanceBillerCard
+            row={makeDemoBillerRow({
+              biller: null,
+              debitCents: 250,
+              creditCents: 0,
+              estimatedDebitCents: 0,
+              netCents: 250,
+              eventCount: 1,
+              kindCount: 1,
+            })}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="FinanceKindCard">
+        <div className="grid gap-3 md:grid-cols-2">
+          <FinanceKindCard rows={[]} />
+          <FinanceKindCard
+            rows={[
+              makeDemoKindRow({ eventKind: "top_up", netCents: 10_000, debitCents: 10_000 }),
+              makeDemoKindRow({
+                eventKind: "fee",
+                netCents: 500,
+                debitCents: 500,
+                eventCount: 2,
+                billerCount: 1,
+              }),
+              makeDemoKindRow({
+                eventKind: "refund",
+                netCents: -250,
+                debitCents: 0,
+                creditCents: 250,
+                eventCount: 1,
+                billerCount: 1,
+              }),
+            ]}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="FinanceTimelineCard">
+        <div className="grid gap-3 md:grid-cols-2">
+          <FinanceTimelineCard rows={[]} />
+          <FinanceTimelineCard
+            rows={[
+              makeDemoFinanceEvent(),
+              makeDemoFinanceEvent({
+                id: "fe-demo-2",
+                eventKind: "fee",
+                direction: "debit",
+                amountCents: 500,
+                biller: "openai",
+                provider: "openai",
+                model: "gpt-4o",
+                description: "Overage processing fee",
+                estimated: true,
+                occurredAt: new Date("2026-04-18T09:30:00Z").toISOString(),
+              }),
+              makeDemoFinanceEvent({
+                id: "fe-demo-3",
+                eventKind: "refund",
+                direction: "credit",
+                amountCents: 1_200,
+                biller: "anthropic",
+                description: "Credit for duplicated charge",
+                occurredAt: new Date("2026-04-20T14:00:00Z").toISOString(),
+              }),
+            ]}
+          />
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Breakdown showcase                                                */
+/* ------------------------------------------------------------------ */
+
+function makeDemoModelRow(overrides: Partial<CostByModelRow> = {}): CostByModelRow {
+  return {
+    model: "claude-3-5-sonnet",
+    totalCostCents: 1_200,
+    totalInputTokens: 50_000,
+    totalCachedInputTokens: 10_000,
+    totalOutputTokens: 5_000,
+    eventCount: 3,
+    ...overrides,
+  };
+}
+
+function BreakdownComponentsShowcase() {
+  const claudeRollup: SubscriptionRollup = {
+    spendCents: 3_500,
+    eventCount: 12,
+    inputTokens: 100_000,
+    cachedInputTokens: 25_000,
+    outputTokens: 15_000,
+  };
+  const codexRollup: SubscriptionRollup = {
+    spendCents: 1_800,
+    eventCount: 6,
+    inputTokens: 40_000,
+    cachedInputTokens: 0,
+    outputTokens: 8_000,
+  };
+
+  return (
+    <Section title="Breakdown Components">
+      <p className="text-sm text-muted-foreground">
+        Per-model cost breakdown + subscription utilization panels. These
+        populate the Budget page's Breakdown section alongside the ledger
+        views.
+      </p>
+
+      <SubSection title="AccountingModelCard">
+        <div className="grid gap-3 md:grid-cols-2">
+          <AccountingModelCard rows={[]} />
+          <AccountingModelCard
+            rows={[
+              makeDemoModelRow({ model: "gpt-4o", totalCostCents: 500, totalInputTokens: 20_000, totalOutputTokens: 2_000, totalCachedInputTokens: 0, eventCount: 2 }),
+              makeDemoModelRow({ model: "claude-3-5-sonnet", totalCostCents: 2_500, totalInputTokens: 80_000, totalOutputTokens: 10_000, totalCachedInputTokens: 15_000, eventCount: 7 }),
+              makeDemoModelRow({ model: "gemini-1.5-pro", totalCostCents: 100, totalInputTokens: 5_000, totalOutputTokens: 800, totalCachedInputTokens: 0, eventCount: 1 }),
+              makeDemoModelRow({ model: null, totalCostCents: 50, totalInputTokens: 1_000, totalOutputTokens: 200, totalCachedInputTokens: 0, eventCount: 1 }),
+            ]}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="ClaudeSubscriptionPanel">
+        <div className="grid gap-3 md:grid-cols-2">
+          <ClaudeSubscriptionPanel rollup={null} />
+          <ClaudeSubscriptionPanel rollup={claudeRollup} />
+        </div>
+      </SubSection>
+
+      <SubSection title="CodexSubscriptionPanel">
+        <div className="grid gap-3 md:grid-cols-2">
+          <CodexSubscriptionPanel rollup={null} />
+          <CodexSubscriptionPanel rollup={codexRollup} />
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  CompanyExport showcase                                             */
+/* ------------------------------------------------------------------ */
+
+function CompanyExportShowcase() {
+  const cleanPreview = {
+    counts: {
+      agents: 5,
+      projects: 2,
+      issues: 18,
+      skills: 3,
+      routines: 1,
+      envInputs: 4,
+      internalAgentConfig: 1 as const,
+    },
+    files: ["README.md", "agents/ceo.md", "agents/eng-lead.md", "skills/readme-gen/SKILL.md"],
+    estimatedBytes: 12_800,
+    warnings: [],
+  };
+  const financePreview = {
+    counts: {
+      agents: 5,
+      projects: 2,
+      issues: 18,
+      skills: 3,
+      routines: 1,
+      envInputs: 4,
+      internalAgentConfig: 1 as const,
+      budgetPolicies: 6,
+      costEvents: 1284,
+      financeEvents: 12,
+      quotaWindows: 4,
+      workflowTemplates: 3,
+    },
+    files: ["README.md", "agents/ceo.md"],
+    estimatedBytes: 512_000,
+    warnings: [
+      "Large bundle: 1284 cost events included.",
+      "Quota windows are point-in-time snapshots; consider refresh post-import.",
+    ],
+  };
+  const warningPreview = {
+    counts: { agents: 5, projects: 2, issues: 18, skills: 3, routines: 1, envInputs: 4 },
+    files: ["README.md", "agents/ceo.md"],
+    estimatedBytes: 8_192,
+    warnings: [
+      "Agent eng-lead env PATH was omitted because it is system-dependent.",
+      "Skill custom-tool missing source metadata; exported markdown only.",
+    ],
+  };
+
+  return (
+    <Section title="Company Export">
+      <p className="text-sm text-muted-foreground">
+        Standalone export page at <code>/export</code>. Entity inclusion toggles,
+        preview summary, and download action. Warnings render with amber tone.
+      </p>
+
+      <SubSection title="Initial state (no preview)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyExportPage showcase />
+        </div>
+      </SubSection>
+
+      <SubSection title="Preview shown (no warnings)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyExportPage showcase initialPreview={cleanPreview} />
+        </div>
+      </SubSection>
+
+      <SubSection title="Preview with Budget & Finance entities (E.2)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyExportPage showcase initialPreview={financePreview} />
+        </div>
+      </SubSection>
+
+      <SubSection title="Preview with warnings">
+        <div className="rounded-md border border-border p-4">
+          <CompanyExportPage showcase initialPreview={warningPreview} />
+        </div>
+      </SubSection>
+    </Section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  CompanyImport showcase                                             */
+/* ------------------------------------------------------------------ */
+
+function CompanyImportShowcase() {
+  const sampleBundle = {
+    manifest: {
+      schemaVersion: 2,
+      generatedAt: "2026-04-21T00:00:00Z",
+      source: { companyId: "comp-sample", companyName: "Acme Portable" },
+      includes: {
+        company: true,
+        agents: true,
+        projects: true,
+        issues: true,
+        skills: false,
+        routines: false,
+        envInputs: false,
+      },
+      company: {
+        path: "company.md",
+        name: "Acme Portable",
+        description: "Sample bundle for the design guide",
+        brandColor: null,
+        requireBoardApprovalForNewAgents: false,
+      },
+      agents: [],
+      requiredSecrets: [],
+    },
+    files: { "company.md": "# Acme Portable" },
+  };
+
+  const cleanPreview = {
+    include: {
+      company: true,
+      agents: true,
+      projects: true,
+      issues: true,
+      skills: false,
+      routines: false,
+      envInputs: false,
+    },
+    targetCompanyId: null,
+    targetCompanyName: "Acme Portable",
+    collisionStrategy: "rename" as const,
+    selectedAgentSlugs: ["cxo", "lead"],
+    plan: {
+      companyAction: "create" as const,
+      agentPlans: [
+        { slug: "cxo", action: "create" as const, plannedName: "Chief of Staff", existingAgentId: null, reason: null },
+        { slug: "lead", action: "create" as const, plannedName: "Eng Lead", existingAgentId: null, reason: null },
+      ],
+      projectPlans: [
+        { slug: "eng", action: "create" as const, plannedName: "Engineering", existingProjectId: null, reason: null },
+      ],
+      issuePlans: [
+        { slug: "launch", action: "create" as const, plannedTitle: "Ship MVP", reason: null },
+      ],
+      skillPlans: [],
+      routinePlans: [],
+    },
+    requiredSecrets: [],
+    warnings: [],
+    errors: [],
+  };
+
+  const warningPreview = {
+    ...cleanPreview,
+    plan: {
+      ...cleanPreview.plan,
+      agentPlans: [
+        { slug: "cxo", action: "create" as const, plannedName: "Chief of Staff", existingAgentId: null, reason: null },
+        { slug: "lead", action: "skip" as const, plannedName: "Eng Lead", existingAgentId: "a-1", reason: "Slug already exists" },
+      ],
+    },
+    warnings: [
+      { kind: "unknown_section" as const, section: "memory", message: "Unknown section: memory (12 items skipped)" },
+      { kind: "deprecated_field" as const, message: "PATH env var was omitted on agent cxo" },
+    ],
+    requiredSecrets: [
+      {
+        key: "GITHUB_TOKEN",
+        description: "Required for git operations",
+        agentSlug: "cxo",
+        providerHint: null,
+      },
+    ],
+  };
+
+  const financeBundle = {
+    manifest: {
+      ...sampleBundle.manifest,
+      internalAgentConfig: {
+        executionMode: "api",
+        provider: "anthropic",
+        model: "claude-opus-4-7",
+        autonomyLevel: 2,
+        notificationPreference: "mentions",
+        contextTokenBudget: 8000,
+        proactiveIntervalMinutes: 240,
+      },
+      budgetPolicies: new Array(6).fill(null).map((_, i) => ({ slug: `policy-${i}` })),
+      costEvents: new Array(1284).fill(null).map((_, i) => ({ slug: `ce-${i}` })),
+      financeEvents: new Array(12).fill(null).map((_, i) => ({ slug: `fe-${i}` })),
+      quotaWindows: new Array(4).fill(null).map((_, i) => ({ slug: `qw-${i}` })),
+      workflowTemplates: new Array(3).fill(null).map((_, i) => ({ slug: `wt-${i}` })),
+    } as unknown as typeof sampleBundle.manifest,
+    files: sampleBundle.files,
+  };
+
+  return (
+    <Section title="Company Import">
+      <p className="text-sm text-muted-foreground">
+        Standalone import page at <code>/import</code>. File upload, collision strategy,
+        preview with plan summary, warnings, and required secrets.
+      </p>
+
+      <SubSection title="Initial state (no file)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyImportPage showcase="initial" />
+        </div>
+      </SubSection>
+
+      <SubSection title="Bundle parsed (ready to preview)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyImportPage showcase="parsed" initialBundle={sampleBundle} />
+        </div>
+      </SubSection>
+
+      <SubSection title="Preview shown (clean)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyImportPage
+            showcase="preview"
+            initialBundle={sampleBundle}
+            initialPreview={cleanPreview}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Preview with warnings + secrets">
+        <div className="rounded-md border border-border p-4">
+          <CompanyImportPage
+            showcase="preview-warnings"
+            initialBundle={sampleBundle}
+            initialPreview={warningPreview}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Preview with Budget & Finance entity counts (E.2)">
+        <div className="rounded-md border border-border p-4">
+          <CompanyImportPage
+            showcase="preview"
+            initialBundle={financeBundle}
+            initialPreview={cleanPreview}
+          />
+        </div>
+      </SubSection>
+    </Section>
   );
 }

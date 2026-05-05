@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   agents,
   companySecrets,
@@ -11,7 +11,7 @@ import {
   routineRuns,
   routines,
   routineTriggers,
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 import type {
   CreateRoutine,
   CreateRoutineTrigger,
@@ -24,7 +24,12 @@ import type {
   RunRoutine,
   UpdateRoutine,
   UpdateRoutineTrigger,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
+import {
+  getBuiltinRoutineVariableValues,
+  interpolateRoutineTemplate,
+  normalizeAgentUrlKey,
+} from "@armyofagents/shared";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { issueService } from "./issues.js";
@@ -33,6 +38,11 @@ import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
+import {
+  mergeRoutineRunPayload,
+  resolveRoutineRunVariables,
+  resolveRoutineVariableValues,
+} from "./routine-variable-runtime.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
@@ -138,6 +148,62 @@ function normalizeWebhookTimestampMs(rawTimestamp: string) {
   return parsed > 1e12 ? parsed : parsed * 1000;
 }
 
+const toIso = (d: Date): string => d.toISOString();
+const toIsoOrNull = (d: Date | null): string | null => (d ? d.toISOString() : null);
+
+function toRoutine(row: typeof routines.$inferSelect): Routine {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    projectId: row.projectId,
+    goalId: row.goalId,
+    parentIssueId: row.parentIssueId,
+    title: row.title,
+    description: row.description,
+    assigneeAgentId: row.assigneeAgentId,
+    priority: row.priority,
+    status: row.status as Routine["status"],
+    concurrencyPolicy: row.concurrencyPolicy as Routine["concurrencyPolicy"],
+    catchUpPolicy: row.catchUpPolicy as Routine["catchUpPolicy"],
+    variables: row.variables ?? [],
+    createdByAgentId: row.createdByAgentId,
+    createdByUserId: row.createdByUserId,
+    updatedByAgentId: row.updatedByAgentId,
+    updatedByUserId: row.updatedByUserId,
+    lastTriggeredAt: toIsoOrNull(row.lastTriggeredAt),
+    lastEnqueuedAt: toIsoOrNull(row.lastEnqueuedAt),
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+  };
+}
+
+function toRoutineTrigger(row: typeof routineTriggers.$inferSelect): RoutineTrigger {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    routineId: row.routineId,
+    kind: row.kind as RoutineTrigger["kind"],
+    label: row.label,
+    enabled: row.enabled,
+    cronExpression: row.cronExpression,
+    timezone: row.timezone,
+    nextRunAt: toIsoOrNull(row.nextRunAt),
+    lastFiredAt: toIsoOrNull(row.lastFiredAt),
+    publicId: row.publicId ?? "",
+    secretId: row.secretId,
+    signingMode: row.signingMode as RoutineTrigger["signingMode"],
+    replayWindowSec: row.replayWindowSec,
+    lastRotatedAt: toIsoOrNull(row.lastRotatedAt),
+    lastResult: row.lastResult,
+    createdByAgentId: row.createdByAgentId,
+    createdByUserId: row.createdByUserId,
+    updatedByAgentId: row.updatedByAgentId,
+    updatedByUserId: row.updatedByUserId,
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+  };
+}
+
 export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
@@ -218,7 +284,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     const map = new Map<string, RoutineTrigger[]>();
     for (const row of rows) {
       const list = map.get(row.routineId) ?? [];
-      list.push(row);
+      list.push(toRoutineTrigger(row));
       map.set(row.routineId, list);
     }
     return map;
@@ -266,23 +332,21 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         triggerId: row.triggerId,
         source: row.source as RoutineRunSummary["source"],
         status: row.status as RoutineRunSummary["status"],
-        triggeredAt: row.triggeredAt,
+        triggeredAt: toIso(row.triggeredAt),
         idempotencyKey: row.idempotencyKey,
         triggerPayload: row.triggerPayload as Record<string, unknown> | null,
         linkedIssueId: row.linkedIssueId,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
-        completedAt: row.completedAt,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
+        completedAt: toIsoOrNull(row.completedAt),
+        createdAt: toIso(row.createdAt),
+        updatedAt: toIso(row.updatedAt),
         linkedIssue: row.linkedIssueId
           ? {
             id: row.linkedIssueId,
-            identifier: row.issueIdentifier,
+            identifier: row.issueIdentifier ?? "",
             title: row.issueTitle ?? "Routine execution",
             status: row.issueStatus ?? "todo",
-            priority: row.issuePriority ?? "medium",
-            updatedAt: row.issueUpdatedAt ?? row.updatedAt,
           }
           : null,
         trigger: row.triggerId
@@ -377,11 +441,9 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (!row.originId) continue;
       map.set(row.originId, {
         id: row.id,
-        identifier: row.identifier,
+        identifier: row.identifier ?? "",
         title: row.title,
         status: row.status,
-        priority: row.priority,
-        updatedAt: row.updatedAt,
       });
     }
     return map;
@@ -515,8 +577,30 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     trigger: typeof routineTriggers.$inferSelect | null;
     source: "schedule" | "manual" | "api" | "webhook";
     payload?: Record<string, unknown> | null;
+    variables?: Record<string, unknown> | null;
+    /** Strict per-run variable overrides; merged with stored defaults; unknown keys throw. */
+    variableOverrides?: Record<string, string> | null;
     idempotencyKey?: string | null;
   }) {
+    const routineVariables = input.routine.variables ?? [];
+    // Apply explicit variableOverrides on top of stored defaults first, then
+    // run through the full resolver so type coercion and required-field checks apply.
+    const effectiveVariables = input.variableOverrides
+      ? { ...(input.variables ?? {}), ...resolveRoutineRunVariables(input.routine, input.variableOverrides) }
+      : input.variables;
+    const resolvedVariables = resolveRoutineVariableValues(routineVariables, {
+      source: input.source,
+      payload: input.payload,
+      variables: effectiveVariables,
+    });
+    const interpolationContext = { ...getBuiltinRoutineVariableValues(), ...resolvedVariables };
+    const interpolatedTitle =
+      interpolateRoutineTemplate(input.routine.title, interpolationContext) ?? input.routine.title;
+    const interpolatedDescription = interpolateRoutineTemplate(
+      input.routine.description,
+      interpolationContext,
+    );
+    const mergedPayload = mergeRoutineRunPayload(input.payload ?? null, resolvedVariables);
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
@@ -553,7 +637,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           status: "received",
           triggeredAt,
           idempotencyKey: input.idempotencyKey ?? null,
-          triggerPayload: input.payload ?? null,
+          triggerPayload: mergedPayload,
         })
         .returning();
 
@@ -588,8 +672,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             projectId: input.routine.projectId,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
-            title: input.routine.title,
-            description: input.routine.description,
+            title: interpolatedTitle,
+            description: interpolatedDescription,
             status: "todo",
             priority: input.routine.priority,
             assigneeAgentId: input.routine.assigneeAgentId,
@@ -715,18 +799,34 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         listLiveIssueByRoutineIds(companyId, routineIds),
       ]);
       return rows.map((row) => ({
-        ...row,
+        ...toRoutine(row),
         triggers: (triggersByRoutine.get(row.id) ?? []).map((trigger) => ({
           id: trigger.id,
-          kind: trigger.kind as RoutineListItem["triggers"][number]["kind"],
+          kind: trigger.kind,
           label: trigger.label,
           enabled: trigger.enabled,
+          cronExpression: trigger.cronExpression,
+          timezone: trigger.timezone,
           nextRunAt: trigger.nextRunAt,
-          lastFiredAt: trigger.lastFiredAt,
-          lastResult: trigger.lastResult,
         })),
         lastRun: latestRunByRoutine.get(row.id) ?? null,
         activeIssue: activeIssueByRoutine.get(row.id) ?? null,
+      }));
+    },
+
+    listForExport: async (
+      companyId: string,
+    ): Promise<Array<{ routine: Routine; triggers: RoutineTrigger[] }>> => {
+      const rows = await db
+        .select()
+        .from(routines)
+        .where(eq(routines.companyId, companyId))
+        .orderBy(asc(routines.createdAt), asc(routines.id));
+      const routineIds = rows.map((row) => row.id);
+      const triggersByRoutine = await listTriggersForRoutineIds(companyId, routineIds);
+      return rows.map((row) => ({
+        routine: toRoutine(row),
+        triggers: triggersByRoutine.get(row.id) ?? [],
       }));
     },
 
@@ -734,8 +834,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       const row = await getRoutineById(id);
       if (!row) return null;
       const [project, assignee, parentIssue, triggers, recentRuns, activeIssue] = await Promise.all([
-        db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null),
-        db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null),
+        row.projectId ? db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null) : null,
+        row.assigneeAgentId ? db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null) : null,
         row.parentIssueId ? issueSvc.getById(row.parentIssueId) : null,
         db.select().from(routineTriggers).where(eq(routineTriggers.routineId, row.id)).orderBy(asc(routineTriggers.createdAt)),
         db
@@ -769,7 +869,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           .where(eq(routineRuns.routineId, row.id))
           .orderBy(desc(routineRuns.createdAt))
           .limit(25)
-          .then((runs) =>
+          .then((runs): RoutineRunSummary[] =>
             runs.map((run) => ({
               id: run.id,
               companyId: run.companyId,
@@ -777,23 +877,21 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
               triggerId: run.triggerId,
               source: run.source as RoutineRunSummary["source"],
               status: run.status as RoutineRunSummary["status"],
-              triggeredAt: run.triggeredAt,
+              triggeredAt: toIso(run.triggeredAt),
               idempotencyKey: run.idempotencyKey,
               triggerPayload: run.triggerPayload as Record<string, unknown> | null,
               linkedIssueId: run.linkedIssueId,
               coalescedIntoRunId: run.coalescedIntoRunId,
               failureReason: run.failureReason,
-              completedAt: run.completedAt,
-              createdAt: run.createdAt,
-              updatedAt: run.updatedAt,
+              completedAt: toIsoOrNull(run.completedAt),
+              createdAt: toIso(run.createdAt),
+              updatedAt: toIso(run.updatedAt),
               linkedIssue: run.linkedIssueId
                 ? {
                   id: run.linkedIssueId,
-                  identifier: run.issueIdentifier,
+                  identifier: run.issueIdentifier ?? "",
                   title: run.issueTitle ?? "Routine execution",
                   status: run.issueStatus ?? "todo",
-                  priority: run.issuePriority ?? "medium",
-                  updatedAt: run.issueUpdatedAt ?? run.updatedAt,
                 }
                 : null,
               trigger: run.triggerId
@@ -809,42 +907,63 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       ]);
 
       return {
-        ...row,
-        project,
-        assignee,
-        parentIssue,
-        triggers: triggers as RoutineTrigger[],
+        ...toRoutine(row),
+        project: project ? { id: project.id, name: project.name } : null,
+        assignee: assignee
+          ? {
+            id: assignee.id,
+            name: assignee.name,
+            urlKey: normalizeAgentUrlKey(assignee.name) ?? assignee.id,
+            role: assignee.role,
+          }
+          : null,
+        parentIssue: parentIssue
+          ? {
+            id: parentIssue.id,
+            title: parentIssue.title,
+            identifier: parentIssue.identifier ?? "",
+          }
+          : null,
+        triggers: triggers.map(toRoutineTrigger),
         recentRuns,
-        activeIssue,
+        activeIssue: activeIssue
+          ? {
+            id: activeIssue.id,
+            title: activeIssue.title,
+            identifier: activeIssue.identifier ?? "",
+            status: activeIssue.status,
+          }
+          : null,
       };
     },
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
-      await assertProject(companyId, input.projectId);
-      await assertAssignableAgent(companyId, input.assigneeAgentId);
+      if (input.projectId) await assertProject(companyId, input.projectId);
+      if (input.assigneeAgentId) await assertAssignableAgent(companyId, input.assigneeAgentId);
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
       const [created] = await db
         .insert(routines)
         .values({
           companyId,
-          projectId: input.projectId,
+          projectId: input.projectId ?? null,
           goalId: input.goalId ?? null,
           parentIssueId: input.parentIssueId ?? null,
           title: input.title,
           description: input.description ?? null,
-          assigneeAgentId: input.assigneeAgentId,
+          assigneeAgentId: input.assigneeAgentId ?? null,
           priority: input.priority,
           status: input.status,
           concurrencyPolicy: input.concurrencyPolicy,
           catchUpPolicy: input.catchUpPolicy,
+          variables: input.variables ?? [],
           createdByAgentId: actor.agentId ?? null,
           createdByUserId: actor.userId ?? null,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         })
         .returning();
-      return created;
+      return toRoutine(created);
     },
 
     update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<Routine | null> => {
@@ -852,8 +971,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (!existing) return null;
       const nextProjectId = patch.projectId ?? existing.projectId;
       const nextAssigneeAgentId = patch.assigneeAgentId ?? existing.assigneeAgentId;
-      if (patch.projectId) await assertProject(existing.companyId, nextProjectId);
-      if (patch.assigneeAgentId) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
+      if (patch.projectId) await assertProject(existing.companyId, patch.projectId);
+      if (patch.assigneeAgentId) await assertAssignableAgent(existing.companyId, patch.assigneeAgentId);
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
       const [updated] = await db
@@ -869,13 +988,14 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           status: patch.status ?? existing.status,
           concurrencyPolicy: patch.concurrencyPolicy ?? existing.concurrencyPolicy,
           catchUpPolicy: patch.catchUpPolicy ?? existing.catchUpPolicy,
+          variables: patch.variables === undefined ? existing.variables : patch.variables,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
           updatedAt: new Date(),
         })
         .where(eq(routines.id, id))
         .returning();
-      return updated ?? null;
+      return updated ? toRoutine(updated) : null;
     },
 
     createTrigger: async (
@@ -904,7 +1024,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         const created = await createWebhookSecret(routine.companyId, routine.id, actor);
         secretId = created.secret.id;
         secretMaterial = {
-          webhookUrl: `${process.env.AOA_API_URL ?? process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
+          webhookUrl: `${process.env.AOA_API_URL ?? process.env.AOA_API_URL}/api/routine-triggers/public/${publicId}/fire`,
           webhookSecret: created.secretValue,
         };
       }
@@ -916,7 +1036,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           routineId: routine.id,
           kind: input.kind,
           label: input.label ?? null,
-          enabled: input.enabled ?? true,
+          enabled: true,
           cronExpression: input.kind === "schedule" ? input.cronExpression : null,
           timezone: input.kind === "schedule" ? (input.timezone || "UTC") : null,
           nextRunAt,
@@ -933,7 +1053,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         .returning();
 
       return {
-        trigger: trigger as RoutineTrigger,
+        trigger: toRoutineTrigger(trigger),
         secretMaterial,
       };
     },
@@ -980,7 +1100,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         .where(eq(routineTriggers.id, id))
         .returning();
 
-      return (updated as RoutineTrigger | undefined) ?? null;
+      return updated ? toRoutineTrigger(updated) : null;
     },
 
     deleteTrigger: async (id: string): Promise<boolean> => {
@@ -1014,9 +1134,9 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         .returning();
 
       return {
-        trigger: updated as RoutineTrigger,
+        trigger: toRoutineTrigger(updated),
         secretMaterial: {
-          webhookUrl: `${process.env.AOA_API_URL ?? process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${existing.publicId}/fire`,
+          webhookUrl: `${process.env.AOA_API_URL ?? process.env.AOA_API_URL}/api/routine-triggers/public/${existing.publicId}/fire`,
           webhookSecret: secretValue,
         },
       };
@@ -1032,8 +1152,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       return dispatchRoutineRun({
         routine,
         trigger,
-        source: input.source,
+        source: input.source ?? "manual",
         payload: input.payload as Record<string, unknown> | null | undefined,
+        variables: input.variables as Record<string, unknown> | null | undefined,
+        variableOverrides: input.variableOverrides as Record<string, string> | null | undefined,
         idempotencyKey: input.idempotencyKey,
       });
     },
@@ -1142,23 +1264,21 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         triggerId: row.triggerId,
         source: row.source as RoutineRunSummary["source"],
         status: row.status as RoutineRunSummary["status"],
-        triggeredAt: row.triggeredAt,
+        triggeredAt: toIso(row.triggeredAt),
         idempotencyKey: row.idempotencyKey,
         triggerPayload: row.triggerPayload as Record<string, unknown> | null,
         linkedIssueId: row.linkedIssueId,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
-        completedAt: row.completedAt,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
+        completedAt: toIsoOrNull(row.completedAt),
+        createdAt: toIso(row.createdAt),
+        updatedAt: toIso(row.updatedAt),
         linkedIssue: row.linkedIssueId
           ? {
             id: row.linkedIssueId,
-            identifier: row.issueIdentifier,
+            identifier: row.issueIdentifier ?? "",
             title: row.issueTitle ?? "Routine execution",
             status: row.issueStatus ?? "todo",
-            priority: row.issuePriority ?? "medium",
-            updatedAt: row.issueUpdatedAt ?? row.updatedAt,
           }
           : null,
         trigger: row.triggerId

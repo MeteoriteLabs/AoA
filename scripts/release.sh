@@ -182,7 +182,7 @@ console.log(names.join('\n'));
   else
     echo "Promoted all packages to @latest at v$NEW_VERSION"
     echo ""
-    echo "Verify: npm view paperclipai@latest version"
+    echo "Verify: npm view @armyofagents/cli@latest version"
     echo ""
     echo "To push:"
     echo "  git push && git push origin v$NEW_VERSION"
@@ -273,17 +273,17 @@ echo "==> Step 4/7: Building all packages..."
 cd "$REPO_ROOT"
 
 # Build packages in dependency order (excluding CLI)
-pnpm --filter @paperclipai/shared build
-pnpm --filter @paperclipai/adapter-utils build
-pnpm --filter @paperclipai/db build
-pnpm --filter @paperclipai/adapter-claude-local build
-pnpm --filter @paperclipai/adapter-codex-local build
-pnpm --filter @paperclipai/adapter-opencode-local build
-pnpm --filter @paperclipai/adapter-openclaw build
-pnpm --filter @paperclipai/server build
+pnpm --filter @armyofagents/shared build
+pnpm --filter @armyofagents/adapter-utils build
+pnpm --filter @armyofagents/db build
+pnpm --filter @armyofagents/adapter-claude-local build
+pnpm --filter @armyofagents/adapter-codex-local build
+pnpm --filter @armyofagents/adapter-opencode-local build
+pnpm --filter @armyofagents/adapter-openclaw build
+pnpm --filter @armyofagents/server build
 
 # Build UI and bundle into server package for static serving
-pnpm --filter @paperclipai/ui build
+pnpm --filter @armyofagents/ui build
 rm -rf "$REPO_ROOT/server/ui-dist"
 cp -r "$REPO_ROOT/ui/dist" "$REPO_ROOT/server/ui-dist"
 
@@ -398,7 +398,7 @@ if [ "$canary" = true ]; then
   else
     echo "Published canary at v$NEW_VERSION"
     echo ""
-    echo "Verify: npm view paperclipai@canary version"
+    echo "Verify: npm view @armyofagents/cli@canary version"
     echo ""
     echo "To promote to latest:"
     echo "  ./scripts/release.sh --promote $NEW_VERSION"

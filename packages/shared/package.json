@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/shared",
+  "name": "@armyofagents/shared",
   "version": "0.2.7",
   "type": "module",
   "exports": {
@@ -27,12 +27,15 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "zod": "^3.24.2"
   },
   "devDependencies": {
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
   }
 }

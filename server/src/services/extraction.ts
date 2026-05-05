@@ -1,6 +1,6 @@
 import { eq, and, desc, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, internalAgentRuns } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, internalAgentRuns } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getProviderApiKey, createProvider } from "./internal-agent/providers/index.js";
@@ -642,6 +642,32 @@ export function extractionService(db: Db) {
           type: "discussion.extraction.failed",
           payload: { discussionId, entryId, error: err instanceof Error ? err.message : String(err) },
         });
+      }
+    },
+
+    /**
+     * Extract structured memory items from raw text (e.g. imported file content).
+     * Returns ExtractedItem[] — does NOT persist anything. Caller handles DB writes.
+     * Falls back gracefully: if LLM is unavailable, returns [].
+     * Caller should fall back to paragraph chunking when this returns [].
+     */
+    extractFromRawText: async (
+      companyId: string,
+      rawText: string,
+    ): Promise<ExtractedItem[]> => {
+      if (!rawText || rawText.trim().length < 10) return [];
+
+      try {
+        const { text: deptList } = await buildDepartmentsList(db, companyId);
+        const systemPrompt = EXTRACTION_PROMPT_TEMPLATE.replace(
+          "{{DEPARTMENTS_AND_PROJECTS_LIST}}",
+          deptList,
+        );
+        return await callLLM(systemPrompt, rawText, db, companyId);
+      } catch (err) {
+        // LLM unavailable or quota exceeded — caller falls back to paragraph chunking
+        logger.warn({ err, companyId }, "extractFromRawText: LLM call failed, falling back to chunking");
+        return [];
       }
     },
   };

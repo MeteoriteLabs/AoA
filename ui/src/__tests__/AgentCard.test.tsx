@@ -61,7 +61,7 @@ vi.mock("./StatusBadge", () => ({
 }));
 
 vi.mock("./agent-config-primitives", () => ({
-  adapterLabels: { claude_api: "Claude API", openai_api: "OpenAI API" } as Record<string, string>,
+  adapterLabels: { claude_local: "Claude (local)", codex_local: "Codex (local)" } as Record<string, string>,
   roleLabels: { engineer: "Engineer", designer: "Designer" } as Record<string, string>,
 }));
 

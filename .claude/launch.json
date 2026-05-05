@@ -2,9 +2,18 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "app",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "set AOA_MIGRATION_AUTO_APPLY=true && cd server && pnpm exec tsx src\\index.ts"
+      ],
+      "port": 3100
+    },
+    {
       "name": "server",
       "runtimeExecutable": "cmd",
-      "runtimeArgs": ["/c", "pnpm", "dev:server"],
+      "runtimeArgs": ["/c", "set AOA_MIGRATION_AUTO_APPLY=true && pnpm dev"],
       "port": 3100
     },
     {

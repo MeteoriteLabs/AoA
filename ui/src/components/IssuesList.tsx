@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { getCollapsedSet, toggleCollapsed } from "@/lib/inbox";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
@@ -19,7 +20,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search, ArrowDown, Link2, ListTree } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@armyofagents/shared";
 
 /* ── Helpers ── */
 
@@ -146,6 +147,8 @@ interface IssuesListProps {
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
   onSelectIssue?: (issueIdentifier: string) => void;
+  /** When true, issues are grouped into parent-child trees with collapsible children. */
+  nestingEnabled?: boolean;
 }
 
 export function IssuesList({
@@ -161,6 +164,7 @@ export function IssuesList({
   onSearchChange,
   onUpdateIssue,
   onSelectIssue,
+  nestingEnabled = false,
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
@@ -239,6 +243,29 @@ export function IssuesList({
     const filteredByControls = applyFilters(sourceIssues, viewState);
     return sortIssues(filteredByControls, viewState);
   }, [issues, searchedIssues, viewState, normalizedIssueSearch]);
+
+  // Parent-child nesting: group filtered issues into top-level + children
+  const nestingGrouped = useMemo(() => {
+    if (!nestingEnabled) return null;
+    const issueIds = new Set(filtered.map((i) => i.id));
+    const childrenByParent = new Map<string, Issue[]>();
+    for (const i of filtered) {
+      if (i.parentId && issueIds.has(i.parentId)) {
+        const arr = childrenByParent.get(i.parentId) ?? [];
+        arr.push(i);
+        childrenByParent.set(i.parentId, arr);
+      }
+    }
+    const topLevel = filtered.filter((i) => !i.parentId || !issueIds.has(i.parentId));
+    return { childrenByParent, topLevel };
+  }, [filtered, nestingEnabled]);
+
+  const [nestingCollapsed, setNestingCollapsed] = useState<Set<string>>(() => getCollapsedSet());
+
+  function handleNestingToggleCollapse(parentId: string) {
+    const next = toggleCollapsed(parentId);
+    setNestingCollapsed(new Set(next));
+  }
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
@@ -582,6 +609,186 @@ export function IssuesList({
         />
       )}
 
+      {viewState.viewMode === "list" && nestingGrouped && (
+        <div>
+          {nestingGrouped.topLevel.map((parent) => {
+            const children = nestingGrouped.childrenByParent.get(parent.id) ?? [];
+            const isCollapsed = nestingCollapsed.has(parent.id);
+            const subtaskStat = subtaskStats.get(parent.id);
+            const descriptionPreview = parent.description
+              ? parent.description.split("\n")[0].slice(0, 120)
+              : null;
+            return (
+              <div key={parent.id}>
+                {/* Parent row */}
+                <div className="relative flex items-center">
+                  {children.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => handleNestingToggleCollapse(parent.id)}
+                      className="absolute left-0 z-10 flex h-full items-center pl-1 text-muted-foreground hover:text-foreground"
+                      aria-label={isCollapsed ? "Expand children" : "Collapse children"}
+                      aria-expanded={!isCollapsed}
+                    >
+                      <ChevronRight
+                        className={cn(
+                          "h-3.5 w-3.5 shrink-0 transition-transform",
+                          !isCollapsed && "rotate-90",
+                        )}
+                      />
+                    </button>
+                  )}
+                  <Link
+                    to={`/issues/${parent.identifier ?? parent.id}`}
+                    className="group/row flex flex-1 items-start gap-2 py-2.5 pl-6 pr-3 text-sm border-b border-border last:border-b-0 cursor-pointer hover:bg-accent/50 transition-all duration-150 no-underline text-inherit border-l-2 border-l-transparent hover:border-l-[var(--entity-task)]"
+                    onClick={onSelectIssue ? (e) => {
+                      e.preventDefault();
+                      onSelectIssue(parent.identifier ?? parent.id);
+                    } : undefined}
+                  >
+                    <div className="shrink-0 mt-0.5" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                      <StatusIcon
+                        status={parent.status}
+                        onChange={(s) => onUpdateIssue(parent.id, { status: s })}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground font-mono shrink-0">
+                          {parent.identifier ?? parent.id.slice(0, 8)}
+                        </span>
+                        <span className="truncate">{parent.title}</span>
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                        {descriptionPreview && (
+                          <span className="text-xs text-muted-foreground/70 truncate max-w-[300px] hidden md:inline">
+                            {descriptionPreview}
+                          </span>
+                        )}
+                        {(parent.labels ?? []).length > 0 && (
+                          <div className="hidden md:flex items-center gap-1">
+                            {(parent.labels ?? []).slice(0, 3).map((label) => (
+                              <span
+                                key={label.id}
+                                className="inline-flex items-center rounded-full border px-1.5 py-0 text-[10px] font-medium leading-4"
+                                style={{
+                                  borderColor: label.color,
+                                  color: label.color,
+                                  backgroundColor: `${label.color}1f`,
+                                }}
+                              >
+                                {label.name}
+                              </span>
+                            ))}
+                            {(parent.labels ?? []).length > 3 && (
+                              <span className="text-[10px] text-muted-foreground">+{(parent.labels ?? []).length - 3}</span>
+                            )}
+                          </div>
+                        )}
+                        {parent.status === "blocked" && (
+                          <span className="hidden sm:inline-flex items-center gap-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+                            <Link2 className="h-3 w-3" />
+                          </span>
+                        )}
+                        {subtaskStat && (
+                          <span className="hidden sm:inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
+                            <ListTree className="h-3 w-3" />
+                            {subtaskStat.done}/{subtaskStat.total}
+                          </span>
+                        )}
+                        {children.length > 0 && (
+                          <span className="hidden sm:inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
+                            <ListTree className="h-3 w-3" />
+                            {children.length} {children.length === 1 ? "subtask" : "subtasks"}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto mt-0.5">
+                      {liveIssueIds?.has(parent.id) && (
+                        <span className="inline-flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2 py-0.5 rounded-full bg-blue-500/10">
+                          <span className="relative flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                          </span>
+                          <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400 hidden sm:inline">Live</span>
+                        </span>
+                      )}
+                      <div className="hidden sm:block">
+                        {parent.assigneeAgentId && agentName(parent.assigneeAgentId) ? (
+                          <Identity name={agentName(parent.assigneeAgentId)!} size="xs" />
+                        ) : null}
+                      </div>
+                      <span className="text-xs text-muted-foreground hidden sm:inline">
+                        {formatDate(parent.createdAt)}
+                      </span>
+                    </div>
+                  </Link>
+                </div>
+                {/* Children rows (visible when not collapsed) */}
+                {!isCollapsed && children.map((child) => {
+                  const childDescPreview = child.description
+                    ? child.description.split("\n")[0].slice(0, 120)
+                    : null;
+                  return (
+                    <Link
+                      key={child.id}
+                      to={`/issues/${child.identifier ?? child.id}`}
+                      className="group/row flex items-start gap-2 py-2 pl-10 pr-3 text-sm border-b border-border last:border-b-0 cursor-pointer hover:bg-accent/50 transition-all duration-150 no-underline text-inherit border-l-2 border-l-transparent hover:border-l-[var(--entity-task)] bg-muted/20"
+                      onClick={onSelectIssue ? (e) => {
+                        e.preventDefault();
+                        onSelectIssue(child.identifier ?? child.id);
+                      } : undefined}
+                    >
+                      <div className="shrink-0 mt-0.5" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                        <StatusIcon
+                          status={child.status}
+                          onChange={(s) => onUpdateIssue(child.id, { status: s })}
+                        />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-muted-foreground font-mono shrink-0">
+                            {child.identifier ?? child.id.slice(0, 8)}
+                          </span>
+                          <span className="truncate">{child.title}</span>
+                        </div>
+                        {childDescPreview && (
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-xs text-muted-foreground/70 truncate max-w-[300px] hidden md:inline">
+                              {childDescPreview}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto mt-0.5">
+                        {liveIssueIds?.has(child.id) && (
+                          <span className="inline-flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2 py-0.5 rounded-full bg-blue-500/10">
+                            <span className="relative flex h-2 w-2">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                            </span>
+                            <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400 hidden sm:inline">Live</span>
+                          </span>
+                        )}
+                        <div className="hidden sm:block">
+                          {child.assigneeAgentId && agentName(child.assigneeAgentId) ? (
+                            <Identity name={agentName(child.assigneeAgentId)!} size="xs" />
+                          ) : null}
+                        </div>
+                        <span className="text-xs text-muted-foreground hidden sm:inline">
+                          {formatDate(child.createdAt)}
+                        </span>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {viewState.viewMode === "board" ? (
         <KanbanBoard
           issues={filtered}
@@ -590,8 +797,7 @@ export function IssuesList({
           onUpdateIssue={onUpdateIssue}
           onSelectIssue={onSelectIssue}
         />
-      ) : (
-        groupedContent.map((group) => (
+      ) : (!nestingGrouped && groupedContent.map((group) => (
           <Collapsible
             key={group.key}
             open={!viewState.collapsedGroups.includes(group.key)}

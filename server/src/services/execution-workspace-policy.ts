@@ -4,7 +4,7 @@ import type {
   IssueExecutionWorkspaceSettings,
   ProjectExecutionWorkspaceDefaultMode,
   ProjectExecutionWorkspacePolicy,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { asString, parseObject } from "../adapters/utils.js";
 
 type ParsedExecutionWorkspaceMode = Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing">;
@@ -53,6 +53,13 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     if (defaultMode === "isolated") return "isolated_workspace";
     return undefined;
   })();
+  const ttlDays = (() => {
+    if (typeof parsed.ttlDays === "number" && Number.isFinite(parsed.ttlDays) && parsed.ttlDays > 0) {
+      return Math.floor(parsed.ttlDays);
+    }
+    if (parsed.ttlDays === null) return null;
+    return undefined;
+  })();
   return {
     enabled,
     ...(normalizedDefaultMode ? { defaultMode: normalizedDefaultMode } : {}),
@@ -74,6 +81,7 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(parsed.cleanupPolicy && typeof parsed.cleanupPolicy === "object" && !Array.isArray(parsed.cleanupPolicy)
       ? { cleanupPolicy: { ...(parsed.cleanupPolicy as Record<string, unknown>) } }
       : {}),
+    ...(ttlDays !== undefined ? { ttlDays } : {}),
   };
 }
 

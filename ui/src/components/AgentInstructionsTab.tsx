@@ -2,20 +2,29 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
 import { assetsApi } from "../api/assets";
+import { companySkillsApi } from "../api/companySkills";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
+import { useNavigate } from "@/lib/router";
 import { PackageFileTree, buildFileTree } from "./PackageFileTree";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { CopyText } from "./CopyText";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ChevronRight, Copy, FolderOpen, HelpCircle } from "lucide-react";
+import { ChevronRight, Copy, FolderOpen, HelpCircle, Sparkles } from "lucide-react";
 import { cn } from "../lib/utils";
-import type { Agent, AgentInstructionsBundle, AgentInstructionsFileDetail } from "@paperclipai/shared";
+import type {
+  Agent,
+  AgentInstructionsBundle,
+  AgentInstructionsFileDetail,
+  CompanySkillListItem,
+} from "@armyofagents/shared";
 
 function isMarkdown(pathValue: string) {
   return pathValue.toLowerCase().endsWith(".md");
@@ -71,6 +80,7 @@ export function AgentInstructionsTab({
   const [filePanelWidth, setFilePanelWidth] = useState(260);
   const containerRef = useRef<HTMLDivElement>(null);
   const [awaitingRefresh, setAwaitingRefresh] = useState(false);
+  const [deleteFileConfirmOpen, setDeleteFileConfirmOpen] = useState(false);
   const lastFileVersionRef = useRef<string | null>(null);
   const externalBundleRef = useRef<{
     rootPath: string;
@@ -369,6 +379,12 @@ export function AgentInstructionsTab({
           ))}
         </div>
       )}
+
+      <LoadedSkillsPanel
+        agent={agent}
+        companyId={companyId}
+        skillKeys={((agent as unknown) as { skillKeys?: string[] }).skillKeys ?? []}
+      />
 
       <Collapsible defaultOpen={currentMode === "external"}>
         <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
@@ -687,16 +703,7 @@ export function AgentInstructionsTab({
                 type="button"
                 size="sm"
                 variant="outline"
-                onClick={() => {
-                  if (confirm(`Delete ${selectedOrEntryFile}?`)) {
-                    deleteFile.mutate(selectedOrEntryFile, {
-                      onSuccess: () => {
-                        setSelectedFile(currentEntryFile);
-                        setDraft(null);
-                      },
-                    });
-                  }
-                }}
+                onClick={() => setDeleteFileConfirmOpen(true)}
                 disabled={deleteFile.isPending}
               >
                 Delete
@@ -729,6 +736,22 @@ export function AgentInstructionsTab({
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={deleteFileConfirmOpen}
+        onOpenChange={setDeleteFileConfirmOpen}
+        title={`Delete ${selectedOrEntryFile}?`}
+        confirmLabel="Delete"
+        onConfirm={() => {
+          deleteFile.mutate(selectedOrEntryFile, {
+            onSuccess: () => {
+              setSelectedFile(currentEntryFile);
+              setDraft(null);
+            },
+          });
+          setDeleteFileConfirmOpen(false);
+        }}
+      />
     </div>
   );
 }
@@ -741,6 +764,139 @@ export function AgentInstructionsTabSkeleton() {
         <Skeleton className="h-[500px] w-[260px] shrink-0" />
         <Skeleton className="h-[500px] flex-1" />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Read-only summary of skills attached to this agent. Skills are part of
+ * the agent's runtime context (injected at every heartbeat run alongside
+ * the AGENTS.md bundle), so surfacing them on the Instructions tab puts
+ * the full picture of "what the agent sees" in one place. Toggling skills
+ * on/off still happens on the Skills tab.
+ */
+function LoadedSkillsPanel({
+  agent,
+  companyId,
+  skillKeys,
+}: {
+  agent: Agent;
+  companyId?: string;
+  skillKeys: string[];
+}) {
+  const navigate = useNavigate();
+
+  const { data: allSkills, isLoading } = useQuery({
+    queryKey: queryKeys.companySkills.list(companyId ?? ""),
+    queryFn: () => companySkillsApi.list(companyId!),
+    enabled: Boolean(companyId),
+  });
+
+  const skillsRoute = `/agents/${agent.urlKey ?? agent.id}/skills`;
+
+  const attached = useMemo<CompanySkillListItem[]>(() => {
+    if (!allSkills) return [];
+    const set = new Set(skillKeys);
+    return allSkills.filter((s) => set.has(s.key));
+  }, [allSkills, skillKeys]);
+
+  // Keys that are attached to the agent but no longer exist in the
+  // company library (e.g. a skill was deleted while still referenced).
+  // Surface them so the founder isn't surprised when behavior changes.
+  const orphanKeys = useMemo<string[]>(() => {
+    if (!allSkills) return [];
+    const have = new Set(allSkills.map((s) => s.key));
+    return skillKeys.filter((k) => !have.has(k));
+  }, [allSkills, skillKeys]);
+
+  if (!companyId) return null;
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/20 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-3.5 w-3.5 text-muted-foreground" />
+          <h4 className="text-sm font-medium">Loaded skills</h4>
+          <Badge variant="outline" className="text-[10px]">
+            {isLoading ? "…" : attached.length}
+          </Badge>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 text-xs"
+          onClick={() => navigate(skillsRoute)}
+        >
+          Manage in Skills tab
+        </Button>
+      </div>
+      <p className="mb-2 text-xs text-muted-foreground">
+        Skills below are injected into this agent's context on every run, alongside the AGENTS.md
+        bundle.
+      </p>
+
+      {isLoading ? (
+        <div className="space-y-1.5">
+          <Skeleton className="h-5 w-full" />
+          <Skeleton className="h-5 w-3/4" />
+        </div>
+      ) : attached.length === 0 && orphanKeys.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No skills attached.{" "}
+          <button
+            type="button"
+            onClick={() => navigate(skillsRoute)}
+            className="underline underline-offset-2 hover:text-foreground"
+          >
+            Attach skills
+          </button>{" "}
+          from the company library.
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {attached.map((s) => (
+            <Tooltip key={s.id}>
+              <TooltipTrigger asChild>
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 font-mono text-[11px]",
+                  )}
+                  title={s.key}
+                >
+                  {s.name}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={4}>
+                <div className="max-w-xs space-y-0.5">
+                  <div className="font-mono text-[11px]">{s.key}</div>
+                  {s.description && (
+                    <div className="text-xs text-muted-foreground">{s.description}</div>
+                  )}
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          ))}
+          {orphanKeys.map((k) => (
+            <Tooltip key={k}>
+              <TooltipTrigger asChild>
+                <span
+                  className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[11px] text-amber-200"
+                  title={k}
+                >
+                  ! {k.split("/").pop()}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={4}>
+                <div className="max-w-xs">
+                  Skill <span className="font-mono">{k}</span> is attached but missing from the
+                  company library. It won't be injected at runtime.
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
