@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import {
   Select,
   SelectContent,
@@ -21,6 +22,9 @@ import {
   pathToItemType,
   TYPE_LABELS_PLURAL,
 } from "@/lib/marketplace-constants";
+import { pluginsApi } from "@/api/plugins";
+import { queryKeys } from "@/lib/queryKeys";
+import type { PluginRecord } from "@armyofagents/shared";
 
 export default function MarketplaceType() {
   const { type: typeParam } = useParams<{ type: string }>();
@@ -29,6 +33,16 @@ export default function MarketplaceType() {
   const { data: catalog, isLoading, error } = useCatalog();
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [sort, setSort] = useState<CatalogSortOption>("recent");
+
+  const { data: installedPlugins } = useQuery({
+    queryKey: queryKeys.plugins.all,
+    queryFn: () => pluginsApi.list(),
+  });
+
+  const installedByPackageName = useMemo(
+    () => new Map((installedPlugins ?? []).map((p: PluginRecord) => [p.packageName, p])),
+    [installedPlugins],
+  );
 
   const filteredAndSorted = useMemo(() => {
     if (!catalog || !itemType) return [];
@@ -132,7 +146,7 @@ export default function MarketplaceType() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredAndSorted.map((item) => (
-              <CatalogCard key={item.id} item={item} />
+              <CatalogCard key={item.id} item={item} installedByPackageName={installedByPackageName} />
             ))}
           </div>
         )}

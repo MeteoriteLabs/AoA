@@ -1,12 +1,15 @@
 import { useMemo } from "react";
 import { useSearchParams, Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCatalog } from "@/hooks/useCatalog";
 import { CatalogCard } from "@/components/marketplace/CatalogCard";
 import { MarketplaceLayout } from "@/components/marketplace/MarketplaceLayout";
 import { searchItems, filterByCategory, groupByType } from "@/api/marketplace";
 import { TYPE_LABELS_PLURAL } from "@/lib/marketplace-constants";
-import type { MarketplaceItemType } from "@armyofagents/shared";
+import { pluginsApi } from "@/api/plugins";
+import { queryKeys } from "@/lib/queryKeys";
+import type { MarketplaceItemType, PluginRecord } from "@armyofagents/shared";
 
 const TYPES: MarketplaceItemType[] = ["plugin", "skill", "agent", "team"];
 
@@ -16,6 +19,16 @@ export default function MarketplaceSearch() {
   const category = searchParams.get("category") ?? "";
 
   const { data: catalog, isLoading, error } = useCatalog();
+
+  const { data: installedPlugins } = useQuery({
+    queryKey: queryKeys.plugins.all,
+    queryFn: () => pluginsApi.list(),
+  });
+
+  const installedByPackageName = useMemo(
+    () => new Map((installedPlugins ?? []).map((p: PluginRecord) => [p.packageName, p])),
+    [installedPlugins],
+  );
 
   const grouped = useMemo(() => {
     if (!catalog) return null;
@@ -99,7 +112,7 @@ export default function MarketplaceSearch() {
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {items.map((item) => (
-                    <CatalogCard key={item.id} item={item} />
+                    <CatalogCard key={item.id} item={item} installedByPackageName={installedByPackageName} />
                   ))}
                 </div>
               </section>
