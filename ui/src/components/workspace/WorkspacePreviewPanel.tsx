@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { GitCompareArrows, Eye, Terminal, X, RefreshCw, Globe } from "lucide-react";
 import { formatBytes, sourceLabel, fileIcon } from "./workspace-utils";
-import type { ArtifactWithVersions, ArtifactVersion, DetectedOutput } from "@paperclipai/shared";
+import type { ArtifactWithVersions, ArtifactVersion, DetectedOutput } from "@armyofagents/shared";
 
 export type PreviewMode = "changes" | "preview" | "logs";
 

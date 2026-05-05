@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Company } from "@paperclipai/shared";
+import type { Company } from "@armyofagents/shared";
 import { assertDeleteConfirmation, resolveCompanyForDeletion } from "../commands/client/company.js";
 
 function makeCompany(overrides: Partial<Company>): Company {
@@ -17,6 +17,8 @@ function makeCompany(overrides: Partial<Company>): Company {
     mission: null,
     values: null,
     brandColor: null,
+    logoAssetId: null,
+    rootFolder: null,
     mcpEnabled: false,
     createdAt: new Date(),
     updatedAt: new Date(),

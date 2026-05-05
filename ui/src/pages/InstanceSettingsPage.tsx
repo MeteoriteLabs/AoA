@@ -2,18 +2,30 @@ import { useCallback, useState } from "react";
 import { useNavigate } from "@/lib/router";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Settings } from "lucide-react";
+import { ArrowLeft, LogOut, Settings } from "lucide-react";
+import type { PatchInstanceGeneralSettings } from "@armyofagents/shared";
 import { PluginManager } from "./PluginManager";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
+import { PrivacyTab } from "@/components/settings/PrivacyTab";
+import { BackupsTab } from "@/components/settings/BackupsTab";
+import { HeartbeatsTab } from "@/components/settings/HeartbeatsTab";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { feedbackApi } from "@/api/feedback";
+import { authApi } from "@/api/auth";
+import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { healthApi } from "@/api/health";
 
 const TABS = [
   { value: "general", label: "General" },
+  { value: "privacy", label: "Privacy" },
+  { value: "backups", label: "Backups" },
+  { value: "heartbeats", label: "Heartbeats" },
   { value: "experimental", label: "Experimental" },
   { value: "plugins", label: "Plugins" },
+  { value: "access", label: "Access" },
 ];
 
 export function InstanceSettingsPage() {
@@ -25,13 +37,17 @@ export function InstanceSettingsPage() {
 
   const handleTabChange = useCallback(
     (value: string) => {
+      if (value === "access") {
+        navigate("/instance/access");
+        return;
+      }
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
         next.set("tab", value);
         return next;
       });
     },
-    [setSearchParams],
+    [navigate, setSearchParams],
   );
 
   // ── General settings ──────────────────────────────────────────────────────
@@ -41,9 +57,16 @@ export function InstanceSettingsPage() {
     queryFn: () => instanceSettingsApi.getGeneral(),
   });
 
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
+  const isLocalTrusted = healthQuery.data?.deploymentMode === "local_trusted";
+
   const generalMutation = useMutation({
-    mutationFn: async (enabled: boolean) =>
-      instanceSettingsApi.updateGeneral({ censorUsernameInLogs: enabled }),
+    mutationFn: async (patch: PatchInstanceGeneralSettings) =>
+      instanceSettingsApi.updateGeneral(patch),
     onSuccess: async () => {
       setActionError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.instanceSettings.general });
@@ -61,8 +84,11 @@ export function InstanceSettingsPage() {
   });
 
   const experimentalMutation = useMutation({
-    mutationFn: async (patch: { enableIsolatedWorkspaces?: boolean; autoRestartDevServerWhenIdle?: boolean }) =>
-      instanceSettingsApi.updateExperimental(patch),
+    mutationFn: async (patch: {
+      enableIsolatedWorkspaces?: boolean;
+      autoRestartDevServerWhenIdle?: boolean;
+      enableWorkspaceTtlSweeper?: boolean;
+    }) => instanceSettingsApi.updateExperimental(patch),
     onSuccess: async () => {
       setActionError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.instanceSettings.experimental });
@@ -72,9 +98,22 @@ export function InstanceSettingsPage() {
     },
   });
 
+  const signOutMutation = useMutation({
+    mutationFn: () => authApi.signOut(),
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to sign out.");
+    },
+  });
+
   const censorUsernameInLogs = generalQuery.data?.censorUsernameInLogs === true;
+  const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
+  const enableWorkspaceTtlSweeper = experimentalQuery.data?.enableWorkspaceTtlSweeper === true;
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
@@ -111,7 +150,8 @@ export function InstanceSettingsPage() {
               <div className="space-y-1">
                 <h2 className="text-base font-semibold">General</h2>
                 <p className="text-sm text-muted-foreground">
-                  Instance-wide defaults that affect how operator-visible logs are displayed.
+                  Instance-wide defaults that affect how operator-visible logs are displayed and how
+                  teammates interact with the app.
                 </p>
               </div>
 
@@ -120,14 +160,75 @@ export function InstanceSettingsPage() {
               ) : generalQuery.error ? (
                 <div className="text-sm text-destructive">Failed to load general settings.</div>
               ) : (
-                <ToggleCard
-                  title="Censor username in logs"
-                  description="Hide the username segment in home-directory paths and similar operator-visible log output. Standalone username mentions outside of paths are not yet masked in the live transcript view."
-                  checked={censorUsernameInLogs}
-                  disabled={generalMutation.isPending}
-                  onToggle={() => generalMutation.mutate(!censorUsernameInLogs)}
-                />
+                <>
+                  <ToggleCard
+                    title="Censor username in logs"
+                    description="Hide the username segment in home-directory paths and similar operator-visible log output. Standalone username mentions outside of paths are not yet masked in the live transcript view."
+                    checked={censorUsernameInLogs}
+                    disabled={generalMutation.isPending}
+                    onToggle={() =>
+                      generalMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })
+                    }
+                  />
+                  <ToggleCard
+                    title="Keyboard shortcuts"
+                    description="Enable app-wide keyboard shortcuts, including inbox navigation and global shortcuts like creating a task or toggling panels. Off by default. Individual key bindings are read-only for now."
+                    checked={keyboardShortcuts}
+                    disabled={generalMutation.isPending}
+                    onToggle={() =>
+                      generalMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })
+                    }
+                  />
+                </>
               )}
+
+              {!isLocalTrusted && (
+                <section className="rounded-xl border border-border bg-card p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1.5">
+                      <h2 className="text-sm font-semibold">Sign out</h2>
+                      <p className="max-w-2xl text-sm text-muted-foreground">
+                        Sign out of this AoA instance. You will be redirected to the login page.
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={signOutMutation.isPending}
+                      onClick={() => signOutMutation.mutate()}
+                    >
+                      <LogOut className="size-4" />
+                      {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                    </Button>
+                  </div>
+                </section>
+              )}
+            </TabsContent>
+
+            {/* ── Privacy tab ──────────────────────────────────────────── */}
+            <TabsContent value="privacy" className="mt-6">
+              <PrivacyPanel
+                generalQuery={generalQuery}
+                onChange={(patch) => generalMutation.mutate(patch)}
+                isSaving={generalMutation.isPending}
+                isPrivacyActive={activeTab === "privacy"}
+              />
+            </TabsContent>
+
+            {/* ── Backups tab ──────────────────────────────────────────── */}
+            <TabsContent value="backups" className="mt-6">
+              <BackupsTab
+                settings={generalQuery.data}
+                isLoading={generalQuery.isLoading}
+                error={generalQuery.error}
+                isSaving={generalMutation.isPending}
+                onChange={(patch) => generalMutation.mutate(patch)}
+              />
+            </TabsContent>
+
+            {/* ── Heartbeats tab ───────────────────────────────────────── */}
+            <TabsContent value="heartbeats" className="mt-6">
+              <HeartbeatsTab />
             </TabsContent>
 
             {/* ── Experimental tab ─────────────────────────────────────── */}
@@ -159,6 +260,13 @@ export function InstanceSettingsPage() {
                     disabled={experimentalMutation.isPending}
                     onToggle={() => experimentalMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
                   />
+                  <ToggleCard
+                    title="Workspace TTL Sweeper"
+                    description="Periodically mark inactive execution workspaces as cleanup-eligible once their project's TTL (days) expires. Does not archive automatically — it only stamps cleanupEligibleAt; the founder still confirms via the Archive dialog."
+                    checked={enableWorkspaceTtlSweeper}
+                    disabled={experimentalMutation.isPending}
+                    onToggle={() => experimentalMutation.mutate({ enableWorkspaceTtlSweeper: !enableWorkspaceTtlSweeper })}
+                  />
                 </>
               )}
             </TabsContent>
@@ -171,6 +279,43 @@ export function InstanceSettingsPage() {
         </div>
       </main>
     </div>
+  );
+}
+
+// ── Privacy panel (wraps PrivacyTab + bundle-history fetch) ─────────────────
+
+const BUNDLE_HISTORY_LIMIT = 3;
+
+function PrivacyPanel({
+  generalQuery,
+  onChange,
+  isSaving,
+  isPrivacyActive,
+}: {
+  generalQuery: ReturnType<typeof useQuery<Awaited<ReturnType<typeof instanceSettingsApi.getGeneral>>>>;
+  onChange: (patch: PatchInstanceGeneralSettings) => void;
+  isSaving: boolean;
+  isPrivacyActive: boolean;
+}) {
+  // Fetch bundle history only when the Privacy tab is actually being viewed —
+  // avoids a request when the user lands on General and never visits Privacy.
+  const exportsQuery = useQuery({
+    queryKey: queryKeys.feedback.exports(BUNDLE_HISTORY_LIMIT),
+    queryFn: () => feedbackApi.listExports(BUNDLE_HISTORY_LIMIT),
+    enabled: isPrivacyActive,
+  });
+
+  return (
+    <PrivacyTab
+      settings={generalQuery.data}
+      isLoading={generalQuery.isLoading}
+      error={generalQuery.error}
+      isSaving={isSaving}
+      onChange={onChange}
+      bundleHistory={exportsQuery.data}
+      bundleHistoryLoading={exportsQuery.isLoading}
+      bundleHistoryError={exportsQuery.error}
+    />
   );
 }
 

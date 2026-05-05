@@ -1,0 +1,190 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+
+import { mockCompanyContext } from "./test-utils";
+
+const mockStatus = vi.fn();
+const mockSetPat = vi.fn();
+const mockRemovePat = vi.fn();
+const mockPushToast = vi.fn();
+
+vi.mock("../api/github-integration", () => ({
+  githubIntegrationApi: {
+    status: (...args: unknown[]) => mockStatus(...args),
+    setPat: (...args: unknown[]) => mockSetPat(...args),
+    removePat: (...args: unknown[]) => mockRemovePat(...args),
+  },
+}));
+
+vi.mock("../context/ToastContext", () => ({
+  useToast: () => ({
+    toasts: [],
+    pushToast: (...args: unknown[]) => mockPushToast(...args),
+    dismissToast: vi.fn(),
+    clearToasts: vi.fn(),
+  }),
+}));
+
+let mockSelectedCompanyId: string | null = "co-1";
+vi.mock("../context/CompanyContext", () => ({
+  useCompany: () => ({
+    ...mockCompanyContext,
+    selectedCompanyId: mockSelectedCompanyId,
+  }),
+}));
+
+import { GitHubIntegrationCard } from "../components/GitHubIntegrationCard";
+
+function renderCard() {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: 0 },
+      mutations: { retry: false },
+    },
+  });
+  function Wrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  }
+  return render(<GitHubIntegrationCard />, { wrapper: Wrapper });
+}
+
+describe("GitHubIntegrationCard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSelectedCompanyId = "co-1";
+  });
+
+  it("renders nothing when selectedCompanyId is null", () => {
+    mockSelectedCompanyId = null;
+    const { container } = renderCard();
+    expect(container.firstChild).toBeNull();
+    expect(mockStatus).not.toHaveBeenCalled();
+  });
+
+  it("renders disconnected state with Connect button + PAT input when not configured", async () => {
+    mockStatus.mockResolvedValue({ configured: false });
+
+    renderCard();
+
+    await waitFor(() => expect(mockStatus).toHaveBeenCalledWith("co-1"));
+
+    const input = await screen.findByLabelText(/github personal access token/i);
+    expect(input).toBeInTheDocument();
+    expect(input).toHaveAttribute("type", "password");
+    expect(screen.getByRole("button", { name: /^connect$/i })).toBeInTheDocument();
+    // Link to PAT docs.
+    const link = screen.getByRole("link", { name: /create a github pat/i });
+    expect(link).toHaveAttribute("href", expect.stringContaining("github.com/settings/tokens"));
+  });
+
+  it("renders connected state + username + Disconnect when configured", async () => {
+    mockStatus.mockResolvedValue({
+      configured: true,
+      githubUser: "octocat",
+      createdAt: "2026-04-22T10:00:00Z",
+    });
+
+    renderCard();
+
+    await waitFor(() =>
+      expect(screen.getByText(/connected as/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/@octocat/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /disconnect/i })).toBeInTheDocument();
+    // Input for PAT should not be visible.
+    expect(
+      screen.queryByLabelText(/github personal access token/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("typing + clicking Connect calls setPat and clears the input on success", async () => {
+    mockStatus.mockResolvedValueOnce({ configured: false });
+    mockStatus.mockResolvedValueOnce({
+      configured: true,
+      githubUser: "octocat",
+      createdAt: "2026-04-22T10:00:00Z",
+    });
+    mockSetPat.mockResolvedValue({ configured: true, githubUser: "octocat" });
+
+    const user = userEvent.setup();
+    renderCard();
+
+    const input = (await screen.findByLabelText(
+      /github personal access token/i,
+    )) as HTMLInputElement;
+
+    await user.type(input, "ghp_validtoken");
+    await user.click(screen.getByRole("button", { name: /^connect$/i }));
+
+    await waitFor(() => {
+      expect(mockSetPat).toHaveBeenCalledWith("co-1", "ghp_validtoken");
+    });
+    // Success toast fires.
+    await waitFor(() => {
+      expect(mockPushToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: expect.stringContaining("octocat"),
+          tone: "success",
+        }),
+      );
+    });
+    // Status query invalidated → refetch.
+    await waitFor(() => expect(mockStatus).toHaveBeenCalledTimes(2));
+    // Connected state should now be visible.
+    expect(await screen.findByText(/connected as/i)).toBeInTheDocument();
+  });
+
+  it("clicking Disconnect calls removePat and refetches status", async () => {
+    mockStatus.mockResolvedValueOnce({
+      configured: true,
+      githubUser: "octocat",
+      createdAt: "2026-04-22T10:00:00Z",
+    });
+    mockStatus.mockResolvedValueOnce({ configured: false });
+    mockRemovePat.mockResolvedValue({ configured: false, removed: true });
+
+    const user = userEvent.setup();
+    renderCard();
+
+    const disconnectBtn = await screen.findByRole("button", { name: /disconnect/i });
+    await user.click(disconnectBtn);
+
+    await waitFor(() => expect(mockRemovePat).toHaveBeenCalledWith("co-1"));
+    await waitFor(() => expect(mockStatus).toHaveBeenCalledTimes(2));
+    // Should flip to disconnected state.
+    expect(
+      await screen.findByLabelText(/github personal access token/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows inline error when setPat throws + keeps input value", async () => {
+    mockStatus.mockResolvedValue({ configured: false });
+    mockSetPat.mockRejectedValue(new Error("Invalid GitHub PAT"));
+
+    const user = userEvent.setup();
+    renderCard();
+
+    const input = (await screen.findByLabelText(
+      /github personal access token/i,
+    )) as HTMLInputElement;
+
+    await user.type(input, "ghp_bogus");
+    await user.click(screen.getByRole("button", { name: /^connect$/i }));
+
+    // Inline error shown
+    expect(await screen.findByText(/invalid github pat/i)).toBeInTheDocument();
+    // Input value retained so user can fix/retry.
+    expect(input).toHaveValue("ghp_bogus");
+  });
+
+  it("Connect button is disabled when input is empty", async () => {
+    mockStatus.mockResolvedValue({ configured: false });
+    renderCard();
+
+    const btn = await screen.findByRole("button", { name: /^connect$/i });
+    expect(btn).toBeDisabled();
+  });
+});

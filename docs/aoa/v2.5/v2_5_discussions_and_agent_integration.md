@@ -311,7 +311,7 @@ V2 uses WebSocket for real-time push events (task status changes, heartbeat upda
 
 ### Integration Pattern
 
-Events are published from backend services via the `publishLiveEvent()` function (from `server/src/services/live-events.ts`). New event types must be added to `LiveEventType` in `@paperclipai/shared`:
+Events are published from backend services via the `publishLiveEvent()` function (from `server/src/services/live-events.ts`). New event types must be added to `LiveEventType` in `@armyofagents/shared`:
 
 ```typescript
 // In DiscussionService

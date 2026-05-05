@@ -2,7 +2,7 @@
  * Core types for the Paperclip plugin worker-side SDK.
  *
  * These types define the stable public API surface that plugin workers import
- * from `@paperclipai/plugin-sdk`.  The host provides a concrete implementation
+ * from `@armyofagents/plugin-sdk`.  The host provides a concrete implementation
  * of `PluginContext` to the plugin at initialisation time.
  *
  * @see PLUGIN_SPEC.md §14 — SDK Surface
@@ -23,10 +23,10 @@ import type {
   IssueDocumentSummary,
   Agent,
   Goal,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 
 // ---------------------------------------------------------------------------
-// Re-exports from @paperclipai/shared (plugin authors import from one place)
+// Re-exports from @armyofagents/shared (plugin authors import from one place)
 // ---------------------------------------------------------------------------
 
 export type {
@@ -67,7 +67,7 @@ export type {
   IssueDocumentSummary,
   Agent,
   Goal,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 
 // ---------------------------------------------------------------------------
 // Scope key — identifies where plugin state is stored
@@ -762,6 +762,28 @@ export interface PluginMetricsClient {
 }
 
 /**
+ * `ctx.telemetry` — emit plugin-scoped telemetry to the host's external
+ * telemetry pipeline.
+ *
+ * Requires `telemetry.track` capability.
+ */
+export interface PluginTelemetryClient {
+  /**
+   * Track a plugin telemetry event.
+   *
+   * The host prefixes the final event name as `plugin.<pluginId>.<eventName>`
+   * before forwarding it to the shared telemetry client.
+   *
+   * @param eventName - Bare plugin event slug (for example `"sync_completed"`)
+   * @param dimensions - Optional structured dimensions
+   */
+  track(
+    eventName: string,
+    dimensions?: Record<string, string | number | boolean>,
+  ): Promise<void>;
+}
+
+/**
  * `ctx.companies` — read company metadata.
  *
  * Requires `companies.read` capability.
@@ -872,6 +894,7 @@ export interface PluginIssuesClient {
     projectId?: string;
     goalId?: string;
     parentId?: string;
+    inheritExecutionWorkspaceFromIssueId?: string;
     title: string;
     description?: string;
     priority?: Issue["priority"];
@@ -1039,7 +1062,7 @@ export interface PluginGoalsClient {
  * ctx.streams.close("chat");
  * ```
  *
- * @see usePluginStream in `@paperclipai/plugin-sdk/ui`
+ * @see usePluginStream in `@armyofagents/plugin-sdk/ui`
  */
 export interface PluginStreamsClient {
   /**
@@ -1076,7 +1099,7 @@ export interface PluginStreamsClient {
  *
  * @example
  * ```ts
- * import { definePlugin } from "@paperclipai/plugin-sdk";
+ * import { definePlugin } from "@armyofagents/plugin-sdk";
  *
  * export default definePlugin({
  *   async setup(ctx) {
@@ -1154,6 +1177,9 @@ export interface PluginContext {
 
   /** Write plugin metrics. Requires `metrics.write`. */
   metrics: PluginMetricsClient;
+
+  /** Emit plugin-scoped external telemetry. Requires `telemetry.track`. */
+  telemetry: PluginTelemetryClient;
 
   /** Structured logger. Output is captured and surfaced in the plugin health dashboard. */
   logger: PluginLogger;

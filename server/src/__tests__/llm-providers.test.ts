@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /* ------------------------------------------------------------------ */
-/*  Mock drizzle-orm + @paperclipai/db (standard project pattern)     */
+/*  Mock drizzle-orm + @armyofagents/db (standard project pattern)     */
 /* ------------------------------------------------------------------ */
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
@@ -17,7 +17,7 @@ vi.mock("drizzle-orm", () => ({
   ),
 }));
 
-vi.mock("@paperclipai/db", () => ({
+vi.mock("@armyofagents/db", () => ({
   companySecrets: {
     id: "cs_id",
     companyId: "cs_company_id",

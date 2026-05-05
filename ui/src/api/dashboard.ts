@@ -1,4 +1,4 @@
-import type { DashboardSummary, HomeSummary } from "@paperclipai/shared";
+import type { DashboardSummary, HomeSummary } from "@armyofagents/shared";
 import { api } from "./client";
 
 export const dashboardApi = {

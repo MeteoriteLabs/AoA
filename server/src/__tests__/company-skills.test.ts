@@ -155,7 +155,7 @@ describe("project workspace skill discovery", () => {
         "  sources:",
         "    - kind: github-dir",
         "      repo: paperclipai/paperclip",
-        "      path: skills/paperclip",
+        "      path: skills/aoa",
         "---",
         "",
         "# Inline Metadata Skill",
@@ -176,7 +176,7 @@ describe("project workspace skill discovery", () => {
         {
           kind: "github-dir",
           repo: "paperclipai/paperclip",
-          path: "skills/paperclip",
+          path: "skills/aoa",
         },
       ],
     });

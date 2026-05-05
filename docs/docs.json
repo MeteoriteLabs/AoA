@@ -1,6 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "name": "Paperclip",
+  "name": "AoA",
   "description": "The control plane for autonomous AI companies",
   "theme": "mint",
   "colors": {
@@ -16,7 +16,7 @@
   "topbarLinks": [
     {
       "name": "GitHub",
-      "url": "https://github.com/paperclip-ai/paperclip"
+      "url": "https://github.com/meteoritelabs/aoa"
     }
   ],
   "navigation": {
@@ -27,10 +27,12 @@
           {
             "group": "Introduction",
             "pages": [
-              "start/what-is-paperclip",
+              "start/what-is-aoa",
               "start/quickstart",
               "start/core-concepts",
-              "start/architecture"
+              "start/architecture",
+              "start/paperclip-vs-aoa",
+              "start/openclaw-integration"
             ]
           }
         ]
@@ -48,7 +50,8 @@
               "guides/board-operator/managing-tasks",
               "guides/board-operator/approvals",
               "guides/board-operator/costs-and-budgets",
-              "guides/board-operator/activity-log"
+              "guides/board-operator/activity-log",
+              "guides/board-operator/execution-workspaces"
             ]
           },
           {
@@ -79,7 +82,10 @@
               "deploy/database",
               "deploy/secrets",
               "deploy/storage",
-              "deploy/environment-variables"
+              "deploy/environment-variables",
+              "deploy/upgrade-guide",
+              "deploy/distribution",
+              "deploy/telemetry"
             ]
           }
         ]
@@ -91,6 +97,7 @@
             "group": "Agent Adapters",
             "pages": [
               "adapters/overview",
+              "adapters/runtime",
               "adapters/claude-local",
               "adapters/codex-local",
               "adapters/process",
@@ -137,6 +144,6 @@
     ]
   },
   "footerSocials": {
-    "github": "https://github.com/paperclip-ai/paperclip"
+    "github": "https://github.com/meteoritelabs/aoa"
   }
 }

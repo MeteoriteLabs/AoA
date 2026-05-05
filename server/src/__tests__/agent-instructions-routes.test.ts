@@ -58,20 +58,20 @@ vi.mock("../adapters/index.js", () => ({
   listAdapterModels: vi.fn(),
 }));
 
-vi.mock("@paperclipai/adapter-claude-local/server", () => ({
+vi.mock("@armyofagents/adapter-claude-local/server", () => ({
   runClaudeLogin: vi.fn(),
 }));
 
-vi.mock("@paperclipai/adapter-codex-local", () => ({
+vi.mock("@armyofagents/adapter-codex-local", () => ({
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX: false,
   DEFAULT_CODEX_LOCAL_MODEL: "gpt-4.1",
 }));
 
-vi.mock("@paperclipai/adapter-cursor-local", () => ({
+vi.mock("@armyofagents/adapter-cursor-local", () => ({
   DEFAULT_CURSOR_LOCAL_MODEL: "claude-sonnet-4-20250514",
 }));
 
-vi.mock("@paperclipai/adapter-opencode-local/server", () => ({
+vi.mock("@armyofagents/adapter-opencode-local/server", () => ({
   ensureOpenCodeModelConfiguredAndAvailable: vi.fn(),
 }));
 

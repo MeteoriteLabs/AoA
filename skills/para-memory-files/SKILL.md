@@ -1,16 +1,36 @@
 ---
 name: para-memory-files
 description: >
-  File-based memory system using Tiago Forte's PARA method. Use this skill whenever
-  you need to store, retrieve, update, or organize knowledge across sessions. Covers
-  three memory layers: (1) Knowledge graph in PARA folders with atomic YAML facts,
-  (2) Daily notes as raw timeline, (3) Tacit knowledge about user patterns. Also
-  handles planning files, memory decay, weekly synthesis, and recall via qmd.
-  Trigger on any memory operation: saving facts, writing daily notes, creating
-  entities, running weekly synthesis, recalling past context, or managing plans.
+  File-based memory for **workspace-local working notes only** — your private
+  scratch space within a single agent run / heartbeat chain. Use this for
+  cross-heartbeat continuity ("halfway through subtask 3, picked up Y next"),
+  daily timeline entries, and tacit user-pattern observations. Trigger on
+  saving working notes, writing daily entries, recalling your own mid-task
+  state. Do NOT use this for company-shared knowledge (brand voice, decisions,
+  procedures) — those belong in AoA's company-shared memory, not in local
+  files.
 ---
 
-# PARA Memory Files
+# PARA Memory Files (workspace-local only)
+
+> **Scope reminder (V2.6):** This skill is for **your private working notes**.
+> For company-shared knowledge that other agents and the founder need to see,
+> use the AoA memory MCP tools instead:
+>
+> - **Read company memory**: call the `memory.search` MCP tool (semantic +
+>   keyword + temporal multi-pathway retrieval) or `memory.get` to fetch one
+>   item by id. Pinned items are also auto-delivered as a separate
+>   `company-knowledge` skill, so you may already see what you need without
+>   a tool call.
+> - **Save your own observation to memory**: call `memory.retain` with
+>   `scopeToSelf: true` to persist a fact to YOUR personal scope (auto-
+>   approved into your agent-personal bucket). For broader company-level
+>   memory, omit `scopeToSelf` — the item lands as a `pending` suggestion
+>   for founder review (Critical Rule #6).
+>
+> Files in `$AGENT_HOME/life/` and `$AGENT_HOME/memory/YYYY-MM-DD.md` are
+> still useful for purely local working notes that don't need to persist
+> across workspaces or be visible to anyone else.
 
 Persistent, file-based memory organized by Tiago Forte's PARA method. Three layers: a knowledge graph, daily notes, and tacit knowledge. All paths are relative to `$AGENT_HOME`.
 

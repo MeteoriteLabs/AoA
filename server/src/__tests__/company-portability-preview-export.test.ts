@@ -1,0 +1,437 @@
+import express from "express";
+import request from "supertest";
+import { describe, expect, it, vi } from "vitest";
+
+type AgentRow = {
+  id: string;
+  companyId: string;
+  name: string;
+  status: string;
+  role: string;
+  title: string | null;
+  icon: string | null;
+  capabilities: string | null;
+  reportsTo: string | null;
+  parentType: string | null;
+  parentId: string | null;
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+  runtimeConfig: Record<string, unknown>;
+  permissions: Record<string, unknown>;
+  budgetMonthlyCents: number;
+  metadata: Record<string, unknown> | null;
+};
+
+type ProjectRow = {
+  id: string;
+  companyId: string;
+  name: string;
+  type: "department" | "project";
+  description: string | null;
+  status: string;
+  color: string | null;
+  targetDate: string | null;
+  leadAgentId: string | null;
+  functionType: string | null;
+  executionWorkspacePolicy: Record<string, unknown> | null;
+  archivedAt: Date | null;
+};
+
+type IssueRow = {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  title: string;
+  description: string | null;
+  status: string;
+  priority: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  identifier: string | null;
+  billingCode: string | null;
+  assigneeAdapterOverrides: Record<string, unknown> | null;
+  executionWorkspaceSettings: Record<string, unknown> | null;
+  dueDate: Date | null;
+  labels: Array<{ id: string; name: string; color: string }>;
+  labelIds: string[];
+};
+
+type SkillRow = {
+  id: string;
+  companyId: string;
+  key: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  markdown: string;
+  sourceType: string;
+  sourceLocator: string | null;
+  sourceRef: string | null;
+  trustLevel: string;
+  compatibility: string;
+  fileInventory: Array<{ path: string; kind: string }>;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type RoutineRow = {
+  id: string;
+  companyId: string;
+  projectId: string;
+  goalId: string | null;
+  parentIssueId: string | null;
+  title: string;
+  description: string | null;
+  assigneeAgentId: string;
+  priority: string;
+  status: "active" | "paused" | "archived";
+  concurrencyPolicy: "coalesce_if_active" | "always_enqueue" | "skip_if_active";
+  catchUpPolicy: "skip_missed" | "enqueue_missed_with_cap";
+  variables: Array<{
+    name: string;
+    label: string | null;
+    type: "text" | "textarea" | "number" | "boolean" | "select";
+    defaultValue: string | number | boolean | null;
+    required: boolean;
+    options: string[];
+  }>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+const SRC_CO_ID = "11111111-1111-4111-8111-111111111111";
+const OTHER_CO_ID = "99999999-9999-4999-8999-999999999999";
+
+const companyStore: Record<string, { id: string; name: string; requireBoardApprovalForNewAgents?: boolean }> = {
+  [SRC_CO_ID]: { id: SRC_CO_ID, name: "Source Co", requireBoardApprovalForNewAgents: true },
+};
+
+let sourceAgents: AgentRow[] = [];
+let sourceProjects: ProjectRow[] = [];
+let sourceIssues: IssueRow[] = [];
+let sourceSkills: SkillRow[] = [];
+let sourceRoutines: RoutineRow[] = [];
+
+vi.mock("../services/companies.js", () => ({
+  companyService: () => ({
+    getById: vi.fn(async (id: string) => companyStore[id] ?? null),
+    create: vi.fn(),
+    update: vi.fn(),
+  }),
+}));
+
+vi.mock("../services/agents.js", () => ({
+  agentService: () => ({
+    list: vi.fn(async (companyId: string) => (companyId === SRC_CO_ID ? sourceAgents : [])),
+    create: vi.fn(),
+    update: vi.fn(),
+  }),
+}));
+
+vi.mock("../services/access.js", () => ({
+  accessService: () => ({
+    ensureMembership: vi.fn(async () => undefined),
+  }),
+}));
+
+vi.mock("../services/projects.js", () => ({
+  projectService: () => ({
+    list: vi.fn(async (companyId: string) => (companyId === SRC_CO_ID ? sourceProjects : [])),
+    create: vi.fn(),
+    update: vi.fn(),
+  }),
+}));
+
+vi.mock("../services/issues.js", () => ({
+  issueService: () => ({
+    list: vi.fn(async (companyId: string) => (companyId === SRC_CO_ID ? sourceIssues : [])),
+    create: vi.fn(),
+  }),
+}));
+
+vi.mock("../services/company-skills.js", () => ({
+  companySkillService: () => ({
+    listFull: vi.fn(async (companyId: string) => (companyId === SRC_CO_ID ? sourceSkills : [])),
+    upsertImportedSkills: vi.fn(async () => []),
+  }),
+}));
+
+vi.mock("../services/routines.js", () => ({
+  routineService: () => ({
+    listForExport: vi.fn(async (companyId: string) => {
+      if (companyId !== SRC_CO_ID) return [];
+      return sourceRoutines.map((routine) => ({ routine, triggers: [] }));
+    }),
+    list: vi.fn(async () => []),
+    create: vi.fn(),
+    update: vi.fn(),
+    createTrigger: vi.fn(),
+  }),
+}));
+
+import { companyPortabilityService } from "../services/company-portability.js";
+import { companyRoutes } from "../routes/companies.js";
+import { errorHandler } from "../middleware/error-handler.js";
+
+function makeAgent(overrides: Partial<AgentRow> & { id: string; name: string }): AgentRow {
+  return {
+    companyId: SRC_CO_ID,
+    status: "active",
+    role: "Engineer",
+    title: null,
+    icon: null,
+    capabilities: null,
+    reportsTo: null,
+    parentType: null,
+    parentId: null,
+    adapterType: "claude_local",
+    adapterConfig: {},
+    runtimeConfig: {},
+    permissions: {},
+    budgetMonthlyCents: 0,
+    metadata: null,
+    ...overrides,
+  };
+}
+
+function makeProject(overrides: Partial<ProjectRow> & { id: string; name: string }): ProjectRow {
+  return {
+    companyId: SRC_CO_ID,
+    type: "department",
+    description: null,
+    status: "backlog",
+    color: null,
+    targetDate: null,
+    leadAgentId: null,
+    functionType: "general",
+    executionWorkspacePolicy: null,
+    archivedAt: null,
+    ...overrides,
+  };
+}
+
+function makeIssue(overrides: Partial<IssueRow> & { id: string; title: string }): IssueRow {
+  return {
+    companyId: SRC_CO_ID,
+    projectId: null,
+    description: null,
+    status: "backlog",
+    priority: "medium",
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    identifier: null,
+    billingCode: null,
+    assigneeAdapterOverrides: null,
+    executionWorkspaceSettings: null,
+    dueDate: null,
+    labels: [],
+    labelIds: [],
+    ...overrides,
+  };
+}
+
+function makeSkill(overrides: Partial<SkillRow> & { id: string; key: string; slug: string; name: string }): SkillRow {
+  return {
+    companyId: SRC_CO_ID,
+    description: null,
+    markdown: "# Skill\n",
+    sourceType: "builtin",
+    sourceLocator: null,
+    sourceRef: null,
+    trustLevel: "trusted",
+    compatibility: "any",
+    fileInventory: [],
+    metadata: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+function makeRoutine(overrides: Partial<RoutineRow> & { id: string; title: string; projectId: string; assigneeAgentId: string }): RoutineRow {
+  return {
+    companyId: SRC_CO_ID,
+    goalId: null,
+    parentIssueId: null,
+    description: null,
+    priority: "medium",
+    status: "active",
+    concurrencyPolicy: "coalesce_if_active",
+    catchUpPolicy: "skip_missed",
+    variables: [],
+    createdAt: "2026-04-21T00:00:00.000Z",
+    updatedAt: "2026-04-21T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function resetState() {
+  sourceAgents = [];
+  sourceProjects = [];
+  sourceIssues = [];
+  sourceSkills = [];
+  sourceRoutines = [];
+}
+
+describe("company-portability previewExport (service)", () => {
+  const svc = companyPortabilityService({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any);
+
+  it("returns agent count with DEFAULT_INCLUDE (company + agents only)", async () => {
+    resetState();
+    sourceAgents = [
+      makeAgent({ id: "a1", name: "Ada" }),
+      makeAgent({ id: "a2", name: "Bob" }),
+    ];
+    const preview = await svc.previewExport(SRC_CO_ID, {});
+    expect(preview.counts.agents).toBe(2);
+    expect(preview.counts.projects).toBe(0);
+    expect(preview.counts.issues).toBe(0);
+    expect(preview.counts.skills).toBe(0);
+    expect(preview.counts.routines).toBe(0);
+    expect(preview.counts.envInputs).toBe(0);
+    expect(preview.files.length).toBeGreaterThan(0);
+    expect(preview.estimatedBytes).toBeGreaterThan(0);
+  });
+
+  it("returns project count when include.projects=true", async () => {
+    resetState();
+    sourceProjects = [
+      makeProject({ id: "p1", name: "Engineering", type: "department" }),
+      makeProject({ id: "p2", name: "Auth", type: "project" }),
+      makeProject({ id: "p3", name: "Billing", type: "project" }),
+    ];
+    const preview = await svc.previewExport(SRC_CO_ID, { include: { projects: true } });
+    expect(preview.counts.projects).toBe(3);
+  });
+
+  it("returns issue count when include.issues=true", async () => {
+    resetState();
+    sourceProjects = [makeProject({ id: "p1", name: "Eng", type: "department" })];
+    sourceIssues = [
+      makeIssue({ id: "i1", title: "Task One", projectId: "p1" }),
+      makeIssue({ id: "i2", title: "Task Two", projectId: "p1" }),
+    ];
+    const preview = await svc.previewExport(SRC_CO_ID, { include: { projects: true, issues: true } });
+    expect(preview.counts.issues).toBe(2);
+  });
+
+  it("returns skill count with file inventory paths listed", async () => {
+    resetState();
+    sourceSkills = [
+      makeSkill({ id: "s1", key: "skill.one", slug: "skill-one", name: "Skill One" }),
+      makeSkill({ id: "s2", key: "skill.two", slug: "skill-two", name: "Skill Two" }),
+    ];
+    const preview = await svc.previewExport(SRC_CO_ID, { include: { skills: true } });
+    expect(preview.counts.skills).toBe(2);
+    // File inventory should include the SKILL.md paths emitted by exportBundle
+    expect(preview.files.some((path) => path.startsWith("skills/skill-one/"))).toBe(true);
+    expect(preview.files.some((path) => path.startsWith("skills/skill-two/"))).toBe(true);
+  });
+
+  it("returns routine count when include.routines=true", async () => {
+    resetState();
+    sourceAgents = [makeAgent({ id: "a1", name: "Ada" })];
+    sourceProjects = [makeProject({ id: "p1", name: "Eng", type: "department" })];
+    sourceRoutines = [
+      makeRoutine({ id: "r1", title: "Nightly", projectId: "p1", assigneeAgentId: "a1" }),
+    ];
+    const preview = await svc.previewExport(SRC_CO_ID, {
+      include: { agents: true, projects: true, routines: true },
+    });
+    expect(preview.counts.routines).toBe(1);
+  });
+
+  it("returns envInput count when include.envInputs=true", async () => {
+    resetState();
+    sourceAgents = [
+      makeAgent({
+        id: "a1",
+        name: "Ada",
+        adapterConfig: {
+          env: {
+            API_BASE_URL: { type: "plain", value: "https://api.example.com" },
+            OPENAI_API_KEY: { type: "plain", value: "sk-xxx" },
+          },
+        },
+      }),
+    ];
+    const preview = await svc.previewExport(SRC_CO_ID, { include: { agents: true, envInputs: true } });
+    expect(preview.counts.envInputs).toBe(2);
+  });
+
+  it("includes README.md in the file inventory", async () => {
+    resetState();
+    sourceAgents = [makeAgent({ id: "a1", name: "Ada" })];
+    const preview = await svc.previewExport(SRC_CO_ID, {});
+    expect(preview.files).toContain("README.md");
+  });
+
+  it("does NOT return the manifest or file bodies (only summary fields)", async () => {
+    resetState();
+    sourceAgents = [makeAgent({ id: "a1", name: "Ada" })];
+    const preview = await svc.previewExport(SRC_CO_ID, {});
+    // Summary-only response shape
+    expect(preview).toHaveProperty("counts");
+    expect(preview).toHaveProperty("files");
+    expect(preview).toHaveProperty("estimatedBytes");
+    // files is a string[] (paths), not a Record with bodies
+    expect(Array.isArray(preview.files)).toBe(true);
+    for (const entry of preview.files) {
+      expect(typeof entry).toBe("string");
+    }
+  });
+});
+
+describe("company-portability previewExport (route)", () => {
+  function buildApp(actorOverrides: Partial<any> = {}) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "board",
+        userId: "user-1",
+        companyIds: [SRC_CO_ID],
+        source: "session",
+        isInstanceAdmin: false,
+        ...actorOverrides,
+      };
+      next();
+    });
+    app.use("/api/companies", companyRoutes({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any));
+    app.use(errorHandler);
+    return app;
+  }
+
+  it("POST /companies/:companyId/export/preview returns preview JSON", async () => {
+    resetState();
+    sourceAgents = [makeAgent({ id: "a1", name: "Ada" })];
+    const app = buildApp();
+    const res = await request(app)
+      .post(`/api/companies/${SRC_CO_ID}/export/preview`)
+      .send({ include: { agents: true } });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("counts");
+    expect(res.body.counts.agents).toBe(1);
+    expect(Array.isArray(res.body.files)).toBe(true);
+    expect(typeof res.body.estimatedBytes).toBe("number");
+  });
+
+  it("POST /companies/:companyId/export/preview returns 403 for cross-company access", async () => {
+    resetState();
+    const app = buildApp({ companyIds: [OTHER_CO_ID] });
+    const res = await request(app)
+      .post(`/api/companies/${SRC_CO_ID}/export/preview`)
+      .send({ include: {} });
+    expect(res.status).toBe(403);
+  });
+
+  it("POST /companies/:companyId/export/preview returns 400 for invalid body", async () => {
+    resetState();
+    const app = buildApp();
+    const res = await request(app)
+      .post(`/api/companies/${SRC_CO_ID}/export/preview`)
+      .send({ include: "not-an-object" });
+    expect(res.status).toBe(400);
+  });
+});

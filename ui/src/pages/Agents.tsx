@@ -19,12 +19,13 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { Bot, Plus, List, GitBranch, LayoutGrid, SlidersHorizontal, ChevronRight } from "lucide-react";
+import { Bot, Plus, List, GitBranch, LayoutGrid, SlidersHorizontal, ChevronRight, Store } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
-import type { Agent } from "@paperclipai/shared";
-import type { AgentTrustScore } from "@paperclipai/shared";
+import type { Agent } from "@armyofagents/shared";
+import type { AgentTrustScore } from "@armyofagents/shared";
+import { AGENT_ROLE_LABELS as roleLabels } from "@armyofagents/shared";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
@@ -36,12 +37,6 @@ const adapterLabels: Record<string, string> = {
   http: "HTTP",
   hermes_local: "Hermes",
   gemini_local: "Gemini CLI",
-};
-
-const roleLabels: Record<string, string> = {
-  ceo: "CEO", cto: "CTO", cmo: "CMO", cfo: "CFO",
-  engineer: "Engineer", designer: "Designer", pm: "PM",
-  qa: "QA", devops: "DevOps", researcher: "Researcher", general: "General",
 };
 
 type FilterTab = "all" | "active" | "paused" | "error";
@@ -296,14 +291,22 @@ export function Agents() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {agents && agents.length === 0 && (
-        <EmptyState
-          icon={Bot}
-          message="No agents yet"
-          description="Agents are AI workers that execute tasks on your behalf. Create your first agent to start building your team."
-          action="Create your first agent"
-          onAction={openNewAgent}
-          entityColor="var(--entity-agent)"
-        />
+        <div className="flex flex-col items-center">
+          <EmptyState
+            icon={Bot}
+            message="No agents yet"
+            description="Agents are AI workers that execute tasks on your behalf. Create your first agent to start building your team."
+            action="Create your first agent"
+            onAction={openNewAgent}
+            entityColor="var(--entity-agent)"
+          />
+          <Button asChild variant="outline" size="sm" className="-mt-8 mb-4">
+            <Link to="/marketplace/agent">
+              <Store className="h-4 w-4 mr-1.5" />
+              Browse Marketplace
+            </Link>
+          </Button>
+        </div>
       )}
 
       {/* Cards view */}

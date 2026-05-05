@@ -30,7 +30,15 @@ export interface UsageSummary {
   cachedInputTokens?: number;
 }
 
-export type AdapterBillingType = "api" | "subscription" | "unknown";
+export type AdapterBillingType =
+  | "api"
+  | "subscription"
+  | "metered_api"
+  | "subscription_included"
+  | "subscription_overage"
+  | "credits"
+  | "fixed"
+  | "unknown";
 
 export interface AdapterExecutionResult {
   exitCode: number | null;
@@ -109,6 +117,12 @@ export interface AdapterExecutionContext {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   authToken?: string;
+  /**
+   * Optional hook called by the adapter immediately after spawning the
+   * underlying subprocess. The adapter forwards (pid, pgid, startedAt)
+   * so the controller (heartbeat) can persist them for cleanup + watchdog.
+   */
+  onSpawn?: (pid: number | null, pgid: number | null, startedAt: Date) => void;
 }
 
 export interface AdapterModel {
@@ -133,6 +147,55 @@ export interface AdapterEnvironmentTestResult {
   status: AdapterEnvironmentTestStatus;
   checks: AdapterEnvironmentCheck[];
   testedAt: string;
+}
+
+export type AdapterSkillSyncMode = "unsupported" | "persistent" | "ephemeral";
+
+export type AdapterSkillState =
+  | "available"
+  | "configured"
+  | "installed"
+  | "missing"
+  | "stale"
+  | "external";
+
+export type AdapterSkillOrigin =
+  | "company_managed"
+  | "aoa_required"
+  | "user_installed"
+  | "external_unknown";
+
+export interface AdapterSkillEntry {
+  key: string;
+  runtimeName: string | null;
+  desired: boolean;
+  managed: boolean;
+  required?: boolean;
+  requiredReason?: string | null;
+  state: AdapterSkillState;
+  origin?: AdapterSkillOrigin;
+  originLabel?: string | null;
+  locationLabel?: string | null;
+  readOnly?: boolean;
+  sourcePath?: string | null;
+  targetPath?: string | null;
+  detail?: string | null;
+}
+
+export interface AdapterSkillSnapshot {
+  adapterType: string;
+  supported: boolean;
+  mode: AdapterSkillSyncMode;
+  desiredSkills: string[];
+  entries: AdapterSkillEntry[];
+  warnings: string[];
+}
+
+export interface AdapterSkillContext {
+  agentId: string;
+  companyId: string;
+  adapterType: string;
+  config: Record<string, unknown>;
 }
 
 export interface AdapterEnvironmentTestContext {
@@ -172,6 +235,11 @@ export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
+  listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
+  syncSkills?: (
+    ctx: AdapterSkillContext,
+    desiredSkills: string[],
+  ) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
@@ -185,6 +253,26 @@ export interface ServerAdapterModule {
     payload: HireApprovedPayload,
     adapterConfig: Record<string, unknown>,
   ) => Promise<HireApprovedHookResult>;
+
+  /**
+   * Adapter supports managed instructions bundle (AGENTS.md files).
+   * When true, the server uses instructionsPathKey (default "instructionsFilePath")
+   * to resolve the instructions config key, and the UI shows the bundle editor.
+   */
+  supportsInstructionsBundle?: boolean;
+
+  /**
+   * The adapterConfig key that holds the instructions file path.
+   * Defaults to "instructionsFilePath" when supportsInstructionsBundle is true.
+   */
+  instructionsPathKey?: string;
+
+  /**
+   * Adapter needs runtime skill entries materialized (written to disk)
+   * before being passed via config. Used by adapters that scan a directory
+   * rather than reading config.aoaRuntimeSkills.
+   */
+  requiresMaterializedRuntimeSkills?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +316,7 @@ export interface CreateConfigValues {
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
   search: boolean;
+  fastMode?: boolean;
   dangerouslyBypassSandbox: boolean;
   command: string;
   args: string;

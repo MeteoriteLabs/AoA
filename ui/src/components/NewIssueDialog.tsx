@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
+import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
@@ -15,6 +16,7 @@ import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "
 import {
   Dialog,
   DialogContent,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,13 +40,14 @@ import {
   Paperclip,
 } from "lucide-react";
 import { cn } from "../lib/utils";
+import { pruneStaleId } from "../lib/issueDraft";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
 import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 
-const DRAFT_KEY = "paperclip:issue-draft";
+const DRAFT_KEY = "aoa:issue-draft";
 const DEBOUNCE_MS = 800;
 
 /** Return black or white hex based on background luminance (WCAG perceptual weights). */
@@ -186,7 +189,20 @@ export function NewIssueDialog() {
   const [assigneeUseProjectWorkspace, setAssigneeUseProjectWorkspace] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
+  // Per-field server-side validation errors (populated from 422 responses with
+  // a `fieldError` payload). Keyed by the server's field name (e.g.
+  // "assigneeAgentId") so it lines up with the API contract.
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function clearFieldError(field: "assigneeAgentId" | "projectId") {
+    setFieldErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  }
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
@@ -279,6 +295,28 @@ export function NewIssueDialog() {
         action: { label: `View ${issue.identifier ?? "task"}`, href: `/issues/${issue.identifier ?? issue.id}` },
       });
     },
+    onError: (error: unknown) => {
+      // FK reference errors land here as a 422 with { details: { field, id } }.
+      // Surface them under the offending picker instead of a toast — the toast
+      // is too easy to miss when the bad value is sitting right there in the
+      // form. Other errors (validation, auth, network) keep the toast path.
+      if (error instanceof ApiError) {
+        const fe = error.fieldError;
+        if (fe && (fe.field === "assigneeAgentId" || fe.field === "projectId")) {
+          setFieldErrors((prev) => ({ ...prev, [fe.field]: fe.message }));
+          return;
+        }
+      }
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Something went wrong. Please try again.";
+      pushToast({
+        title: "Couldn't create task",
+        body: message,
+        tone: "error",
+      });
+    },
   });
 
   const uploadDescriptionImage = useMutation({
@@ -363,6 +401,17 @@ export function NewIssueDialog() {
     }
   }, [newIssueOpen, newIssueDefaults]);
 
+  // Drop rehydrated assigneeId / projectId once we know the live agent &
+  // project lists, in case the persisted draft was pointing at an entity
+  // that has since been deleted (DB nuke, manual delete, etc).
+  useEffect(() => {
+    if (!newIssueOpen || !agents || !projects) return;
+    const agentIds = new Set(agents.map((a) => a.id));
+    const projectIds = new Set(projects.map((p) => p.id));
+    setAssigneeId((prev) => pruneStaleId(prev, agentIds));
+    setProjectId((prev) => pruneStaleId(prev, projectIds));
+  }, [newIssueOpen, agents, projects]);
+
   useEffect(() => {
     if (!supportsAssigneeOverrides) {
       setAssigneeOptionsOpen(false);
@@ -406,6 +455,7 @@ export function NewIssueDialog() {
     setExpanded(false);
     setDialogCompanyId(null);
     setCompanyOpen(false);
+    setFieldErrors({});
   }
 
   function handleCompanyChange(companyId: string) {
@@ -417,6 +467,7 @@ export function NewIssueDialog() {
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
     setAssigneeUseProjectWorkspace(true);
+    setFieldErrors({});
   }
 
   function discardDraft() {
@@ -427,6 +478,7 @@ export function NewIssueDialog() {
 
   function handleSubmit() {
     if (!effectiveCompanyId || !title.trim()) return;
+    setFieldErrors({});
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       modelOverride: assigneeModelOverride,
@@ -558,6 +610,7 @@ export function NewIssueDialog() {
           }
         }}
       >
+        <DialogTitle className="sr-only">New task</DialogTitle>
         {/* Header bar */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -623,6 +676,7 @@ export function NewIssueDialog() {
               size="icon-xs"
               className="text-muted-foreground"
               onClick={() => setExpanded(!expanded)}
+              aria-label={expanded ? "Collapse dialog" : "Expand dialog"}
             >
               {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
             </Button>
@@ -631,6 +685,7 @@ export function NewIssueDialog() {
               size="icon-xs"
               className="text-muted-foreground"
               onClick={() => closeNewIssue()}
+              aria-label="Close new task dialog"
             >
               <span className="text-lg leading-none">&times;</span>
             </Button>
@@ -677,7 +732,11 @@ export function NewIssueDialog() {
                   noneLabel="No assignee"
                   searchPlaceholder="Search assignees..."
                   emptyMessage="No assignees found."
-                  onChange={(id) => { if (id) trackRecentAssignee(id); setAssigneeId(id); }}
+                  onChange={(id) => {
+                    if (id) trackRecentAssignee(id);
+                    setAssigneeId(id);
+                    clearFieldError("assigneeAgentId");
+                  }}
                   onConfirm={() => {
                     projectSelectorRef.current?.focus();
                   }}
@@ -717,7 +776,10 @@ export function NewIssueDialog() {
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
                 emptyMessage="No projects found."
-                onChange={setProjectId}
+                onChange={(id) => {
+                  setProjectId(id);
+                  clearFieldError("projectId");
+                }}
                 onConfirm={() => {
                   descriptionEditorRef.current?.focus();
                 }}
@@ -750,6 +812,20 @@ export function NewIssueDialog() {
               />
             </div>
           </div>
+          {(fieldErrors.assigneeAgentId || fieldErrors.projectId) && (
+            <div className="mt-1 space-y-0.5 text-xs text-destructive">
+              {fieldErrors.assigneeAgentId && (
+                <div data-testid="field-error-assigneeAgentId">
+                  <span className="font-medium">Assignee:</span> {fieldErrors.assigneeAgentId}
+                </div>
+              )}
+              {fieldErrors.projectId && (
+                <div data-testid="field-error-projectId">
+                  <span className="font-medium">Project:</span> {fieldErrors.projectId}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {supportsAssigneeOverrides && (

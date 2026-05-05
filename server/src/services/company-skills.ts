@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { and, asc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companySkills, agents as agentsTable } from "@paperclipai/db";
-import { normalizeAgentUrlKey } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { companySkills, agents as agentsTable } from "@armyofagents/db";
+import { normalizeAgentUrlKey } from "@armyofagents/shared";
 import type {
   CompanySkill,
   CompanySkillCreateRequest,
@@ -23,11 +23,14 @@ import type {
   CompanySkillTrustLevel,
   CompanySkillUpdateStatus,
   CompanySkillUsageAgent,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { notFound, unprocessable } from "../errors.js";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveAoaInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
+import { findActiveServerAdapter } from "../adapters/registry.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
+import { secretService } from "./secrets.js";
 
 // ---------------------------------------------------------------------------
 // RuntimeSkillEntry — replaces PaperclipSkillEntry from Paperclip
@@ -124,7 +127,7 @@ const PROJECT_SCAN_DIRECTORY_ROOTS = [
   ".vibe/skills",
   ".mux/skills",
   ".openhands/skills",
-  ".paperclip/skills",
+  ".aoa/skills",
   ".pi/skills",
   ".qoder/skills",
   ".qwen/skills",
@@ -234,7 +237,7 @@ function buildSkillRuntimeName(slug: string, name: string): string {
 }
 
 function resolveManagedSkillsRoot(companyId: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId);
+  return path.resolve(resolveAoaInstanceRoot(), "skills", companyId);
 }
 
 function normalizeSkillDirectory(skill: CompanySkill): string | null {
@@ -1303,6 +1306,7 @@ const skillPackageImportQueue = new Map<string, Promise<unknown>>();
 export function companySkillService(db: Db) {
   const agents = agentService(db);
   const projects = projectService(db);
+  const secrets = secretService(db);
 
   // -----------------------------------------------------------------------
   // Inventory health: prune stale local_path skills, then cache promise
@@ -1402,19 +1406,52 @@ export function companySkillService(db: Db) {
 
   async function usage(companyId: string, key: string): Promise<CompanySkillUsageAgent[]> {
     const agentRows = await agents.list(companyId);
-    return agentRows
-      .filter((agent: any) => {
-        const skillKeys: string[] = Array.isArray(agent.skillKeys) ? agent.skillKeys : [];
-        return skillKeys.includes(key);
-      })
-      .map((agent: any) => ({
-        id: agent.id,
-        name: agent.name,
-        urlKey: normalizeAgentUrlKey(agent.name) ?? agent.id,
-        adapterType: agent.adapterType ?? "process",
-        desired: true,
-        actualState: null, // not tracked in v1
-      }));
+    const desiredAgents = agentRows.filter((agent: any) => {
+      const skillKeys: string[] = Array.isArray(agent.skillKeys) ? agent.skillKeys : [];
+      return skillKeys.includes(key);
+    });
+
+    return Promise.all(
+      desiredAgents.map(async (agent: any) => {
+        const adapterType = agent.adapterType ?? "process";
+        const adapter = findActiveServerAdapter(adapterType);
+        let actualState: string | null = null;
+
+        if (!adapter?.listSkills) {
+          actualState = "unsupported";
+        } else {
+          try {
+            const runtimeConfig = await secrets.resolveAdapterConfigForRuntime(
+              agent.companyId,
+              (agent.adapterConfig ?? {}) as Record<string, unknown>,
+            );
+            const snapshot = await adapter.listSkills({
+              agentId: agent.id,
+              companyId: agent.companyId,
+              adapterType,
+              config: runtimeConfig,
+            });
+            actualState = snapshot.entries.find((entry) => entry.key === key)?.state
+              ?? (snapshot.supported ? "missing" : "unsupported");
+          } catch (err) {
+            logger.warn(
+              { err, agentId: agent.id, adapterType },
+              "adapter.listSkills failed in company-skills usage dispatcher",
+            );
+            actualState = "unknown";
+          }
+        }
+
+        return {
+          id: agent.id,
+          name: agent.name,
+          urlKey: normalizeAgentUrlKey(agent.name) ?? agent.id,
+          adapterType,
+          desired: true,
+          actualState,
+        };
+      }),
+    );
   }
 
   async function detail(companyId: string, id: string): Promise<CompanySkillDetail | null> {
@@ -1513,7 +1550,8 @@ export function companySkillService(db: Db) {
           await fs.mkdir(path.dirname(fullPath), { recursive: true });
           await fs.writeFile(fullPath, content, "utf8");
         } catch {
-          // Filesystem write failed — still update DB if SKILL.md
+          // Filesystem write failed — DB write proceeds regardless (for SKILL.md it
+          // updates the markdown column; for other paths it sets customized=true).
         }
       }
     }
@@ -1529,8 +1567,16 @@ export function companySkillService(db: Db) {
           markdown: content,
           name: newName,
           description: newDescription,
+          customized: true, // Atomic: folded in here so no separate route-level write is needed
           updatedAt: new Date(),
         })
+        .where(eq(companySkills.id, skillId));
+    } else {
+      // For non-SKILL.md paths (filesystem-only edit), mark customized in a standalone write.
+      // The DB markdown column wasn't changed, so there is no two-step atomicity risk.
+      await db
+        .update(companySkills)
+        .set({ customized: true })
         .where(eq(companySkills.id, skillId));
     }
 
@@ -2326,5 +2372,7 @@ export function companySkillService(db: Db) {
     installUpdate,
     listRuntimeSkillEntries,
     resolveSkillKeys,
+    upsertImportedSkills,
+    usage,
   };
 }

@@ -1,5 +1,5 @@
 import { and, eq, gt, gte, lte, sql, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   discussions,
   issues,
@@ -11,8 +11,8 @@ import {
   companies,
   projects,
   agents,
-} from "@paperclipai/db";
-import type { HomeSummary, GoalProgress, GoalGapNudge, RecentActivityItem, SetupStatus } from "@paperclipai/shared";
+} from "@armyofagents/db";
+import type { HomeSummary, GoalProgress, GoalGapNudge, RecentActivityItem, SetupStatus } from "@armyofagents/shared";
 
 const TERMINAL_STATUSES = ["done", "cancelled"];
 

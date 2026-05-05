@@ -27,7 +27,7 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 // ── DB table stubs ───────────────────────────────────────────────────────────
-vi.mock("@paperclipai/db", () => ({
+vi.mock("@armyofagents/db", () => ({
   issues: {
     id: "issue_id",
     companyId: "issue_company_id",

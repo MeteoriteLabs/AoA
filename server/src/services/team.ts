@@ -1,6 +1,6 @@
 import { and, count, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import crypto from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   agents,
   authUsers,
@@ -11,15 +11,15 @@ import {
   principalPermissionGrants,
   projects,
   userRoles,
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 import type {
   MemberDependencies,
   PermissionKey,
   TeamSummary,
   UpdateTeamMemberRole,
   UserRole,
-} from "@paperclipai/shared";
-import { PERMISSION_KEYS } from "@paperclipai/shared";
+} from "@armyofagents/shared";
+import { PERMISSION_KEYS } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
 import { accessService } from "./access.js";
 import { orgHierarchyService } from "./org-hierarchy.js";

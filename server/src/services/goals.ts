@@ -1,7 +1,7 @@
 import { eq, and, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { goals, projectGoals, projects } from "@paperclipai/db";
-import type { GoalStatus } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { goals, projectGoals, projects } from "@armyofagents/db";
+import type { GoalStatus } from "@armyofagents/shared";
 import { badRequest } from "../errors.js";
 
 const GOAL_TRANSITIONS: Record<string, GoalStatus[]> = {

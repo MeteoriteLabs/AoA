@@ -4,7 +4,7 @@ import type {
   UpdateDiscussion,
   ApproveItems,
   CreateAnnotation,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { api } from "./client";
 
 export interface DiscussionListItem {

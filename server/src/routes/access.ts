@@ -4,24 +4,27 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
-import { and, eq, isNull, desc } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import { and, eq, inArray, isNull, desc } from "drizzle-orm";
+import type { Db } from "@armyofagents/db";
 import {
   agentApiKeys,
   authUsers,
+  companies,
+  companyMemberships,
   invites,
   joinRequests
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 import {
   acceptInviteSchema,
   claimJoinRequestApiKeySchema,
   createCompanyInviteSchema,
   listJoinRequestsQuerySchema,
+  searchAdminUsersQuerySchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS
-} from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+} from "@armyofagents/shared";
+import type { DeploymentExposure, DeploymentMode } from "@armyofagents/shared";
 import {
   forbidden,
   conflict,
@@ -49,7 +52,7 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-const INVITE_TOKEN_PREFIX = "pcp_invite_";
+const INVITE_TOKEN_PREFIX = "aoa_invite_";
 const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const INVITE_TOKEN_SUFFIX_LENGTH = 8;
 const INVITE_TOKEN_MAX_RETRIES = 5;
@@ -65,7 +68,7 @@ function createInviteToken() {
 }
 
 function createClaimSecret() {
-  return `pcp_claim_${randomBytes(24).toString("hex")}`;
+  return `aoa_claim_${randomBytes(24).toString("hex")}`;
 }
 
 export function companyInviteExpiresAt(nowMs: number = Date.now()) {
@@ -92,7 +95,7 @@ function requestBaseUrl(req: Request) {
 
 function readSkillMarkdown(skillName: string): string | null {
   const normalized = skillName.trim().toLowerCase();
-  if (normalized !== "paperclip" && normalized !== "paperclip-create-agent")
+  if (normalized !== "aoa" && normalized !== "aoa-create-agent")
     return null;
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
@@ -342,8 +345,8 @@ export function buildJoinDefaultsPayloadForAccept(input: {
   }
 
   if (!nonEmptyTrimmedString(merged.paperclipApiUrl)) {
-    const legacyPaperclipApiUrl = nonEmptyTrimmedString(input.paperclipApiUrl);
-    if (legacyPaperclipApiUrl) merged.paperclipApiUrl = legacyPaperclipApiUrl;
+    const legacyAoaApiUrl = nonEmptyTrimmedString(input.paperclipApiUrl);
+    if (legacyAoaApiUrl) merged.paperclipApiUrl = legacyAoaApiUrl;
   }
 
   if (!nonEmptyTrimmedString(merged.webhookAuthHeader)) {
@@ -550,7 +553,7 @@ function buildJoinConnectivityDiagnostics(input: {
         code: "openclaw_private_bind_loopback",
         level: "warn",
         message:
-          "Paperclip is bound to loopback in authenticated/private mode.",
+          "AoA is bound to loopback in authenticated/private mode.",
         hint: "Bind to a reachable private hostname/IP for remote OpenClaw callbacks."
       });
     }
@@ -558,8 +561,8 @@ function buildJoinConnectivityDiagnostics(input: {
       diagnostics.push({
         code: "openclaw_private_bind_not_allowed",
         level: "warn",
-        message: `Paperclip bind host \"${bindHost}\" is not in allowed hostnames.`,
-        hint: `Run pnpm paperclipai allowed-hostname ${bindHost}`
+        message: `AoA bind host \"${bindHost}\" is not in allowed hostnames.`,
+        hint: `Run pnpm aoa allowed-hostname ${bindHost}`
       });
     }
     if (callbackHost && !isLoopbackHost(callbackHost) && allowSet.size === 0) {
@@ -568,7 +571,7 @@ function buildJoinConnectivityDiagnostics(input: {
         level: "warn",
         message:
           "No explicit allowed hostnames are configured for authenticated/private mode.",
-        hint: "Set one with pnpm paperclipai allowed-hostname <host> when OpenClaw runs off-host."
+        hint: "Set one with pnpm aoa allowed-hostname <host> when OpenClaw runs off-host."
       });
     }
   }
@@ -612,7 +615,7 @@ function normalizeAgentDefaultsForJoin(input: {
       level: "warn",
       message:
         "No OpenClaw callback config was provided in agentDefaultsPayload.",
-      hint: "Include agentDefaultsPayload.url so Paperclip can invoke the OpenClaw endpoint immediately after approval."
+      hint: "Include agentDefaultsPayload.url so AoA can invoke the OpenClaw endpoint immediately after approval."
     });
     return { normalized: null as Record<string, unknown> | null, diagnostics };
   }
@@ -739,35 +742,35 @@ function normalizeAgentDefaultsForJoin(input: {
     normalized.payloadTemplate = defaults.payloadTemplate;
   }
 
-  const rawPaperclipApiUrl =
+  const rawAoaApiUrl =
     typeof defaults.paperclipApiUrl === "string"
       ? defaults.paperclipApiUrl.trim()
       : "";
-  if (rawPaperclipApiUrl) {
+  if (rawAoaApiUrl) {
     try {
-      const parsedPaperclipApiUrl = new URL(rawPaperclipApiUrl);
+      const parsedAoaApiUrl = new URL(rawAoaApiUrl);
       if (
-        parsedPaperclipApiUrl.protocol !== "http:" &&
-        parsedPaperclipApiUrl.protocol !== "https:"
+        parsedAoaApiUrl.protocol !== "http:" &&
+        parsedAoaApiUrl.protocol !== "https:"
       ) {
         diagnostics.push({
           code: "openclaw_paperclip_api_url_protocol",
           level: "warn",
-          message: `paperclipApiUrl must use http:// or https:// (got ${parsedPaperclipApiUrl.protocol}).`
+          message: `paperclipApiUrl must use http:// or https:// (got ${parsedAoaApiUrl.protocol}).`
         });
       } else {
-        normalized.paperclipApiUrl = parsedPaperclipApiUrl.toString();
+        normalized.paperclipApiUrl = parsedAoaApiUrl.toString();
         diagnostics.push({
           code: "openclaw_paperclip_api_url_configured",
           level: "info",
-          message: `paperclipApiUrl set to ${parsedPaperclipApiUrl.toString()}`
+          message: `paperclipApiUrl set to ${parsedAoaApiUrl.toString()}`
         });
-        if (isLoopbackHost(parsedPaperclipApiUrl.hostname)) {
+        if (isLoopbackHost(parsedAoaApiUrl.hostname)) {
           diagnostics.push({
             code: "openclaw_paperclip_api_url_loopback",
             level: "warn",
             message:
-              "paperclipApiUrl uses loopback hostname. Remote OpenClaw workers cannot reach localhost on the Paperclip host.",
+              "paperclipApiUrl uses loopback hostname. Remote OpenClaw workers cannot reach localhost on the AoA host.",
             hint: "Use a reachable hostname/IP and keep it in allowed hostnames for authenticated/private deployments."
           });
         }
@@ -776,7 +779,7 @@ function normalizeAgentDefaultsForJoin(input: {
       diagnostics.push({
         code: "openclaw_paperclip_api_url_invalid",
         level: "warn",
-        message: `Invalid paperclipApiUrl: ${rawPaperclipApiUrl}`
+        message: `Invalid paperclipApiUrl: ${rawAoaApiUrl}`
       });
     }
   }
@@ -852,7 +855,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
       code: "openclaw_onboarding_api_loopback",
       level: "warn",
       message:
-        "Onboarding URL resolves to loopback hostname. Remote OpenClaw agents cannot reach localhost on your Paperclip host.",
+        "Onboarding URL resolves to loopback hostname. Remote OpenClaw agents cannot reach localhost on your AoA host.",
       hint: "Use a reachable hostname/IP (for example Tailscale hostname, Docker host alias, or public domain)."
     });
   }
@@ -865,7 +868,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
     diagnostics.push({
       code: "openclaw_onboarding_private_loopback_bind",
       level: "warn",
-      message: "Paperclip is bound to loopback in authenticated/private mode.",
+      message: "AoA is bound to loopback in authenticated/private mode.",
       hint: "Run with a reachable bind host or use pnpm dev --tailscale-auth for private-network onboarding."
     });
   }
@@ -882,7 +885,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
       code: "openclaw_onboarding_private_host_not_allowed",
       level: "warn",
       message: `Onboarding host "${apiHost}" is not in allowed hostnames for authenticated/private mode.`,
-      hint: `Run pnpm paperclipai allowed-hostname ${apiHost}`
+      hint: `Run pnpm aoa allowed-hostname ${apiHost}`
     });
   }
 
@@ -941,7 +944,7 @@ function buildInviteOnboardingManifest(
   }
 ) {
   const baseUrl = requestBaseUrl(req);
-  const skillPath = "/api/skills/paperclip";
+  const skillPath = "/api/skills/aoa";
   const skillUrl = baseUrl ? `${baseUrl}${skillPath}` : skillPath;
   const registrationEndpointPath = `/api/invites/${token}/accept`;
   const registrationEndpointUrl = baseUrl
@@ -972,7 +975,7 @@ function buildInviteOnboardingManifest(
     invite: toInviteSummaryResponse(req, token, invite),
     onboarding: {
       instructions:
-        "Join as an OpenClaw agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST include agentDefaultsPayload.headers.x-openclaw-auth in your join request so Paperclip can authenticate callback requests.",
+        "Join as an OpenClaw agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json (filename is wire-compat with existing OpenClaw clients) and load AOA_API_KEY from that file before starting heartbeat loops. You MUST include agentDefaultsPayload.headers.x-openclaw-auth in your join request so AoA can authenticate callback requests.",
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: "openclaw",
       requiredFields: {
@@ -1015,8 +1018,8 @@ function buildInviteOnboardingManifest(
         guidance:
           opts.deploymentMode === "authenticated" &&
           opts.deploymentExposure === "private"
-            ? "If OpenClaw runs on another machine, ensure the Paperclip hostname is reachable and allowed via `pnpm paperclipai allowed-hostname <host>`."
-            : "Ensure OpenClaw can reach this Paperclip API base URL for callbacks and claims."
+            ? "If OpenClaw runs on another machine, ensure the AoA hostname is reachable and allowed via `pnpm aoa allowed-hostname <host>`."
+            : "Ensure OpenClaw can reach this AoA API base URL for callbacks and claims."
       },
       textInstructions: {
         path: onboardingTextPath,
@@ -1024,10 +1027,10 @@ function buildInviteOnboardingManifest(
         contentType: "text/plain"
       },
       skill: {
-        name: "paperclip",
+        name: "aoa",
         path: skillPath,
         url: skillUrl,
-        installPath: "~/.openclaw/skills/paperclip/SKILL.md"
+        installPath: "~/.openclaw/skills/aoa/SKILL.md"
       }
     }
   };
@@ -1077,7 +1080,7 @@ export function buildInviteOnboardingTextDocument(
   };
 
   appendBlock(`
-    # Paperclip OpenClaw Onboarding
+    # AoA OpenClaw Onboarding
 
     This document is meant to be readable by both humans and agents.
 
@@ -1137,7 +1140,7 @@ export function buildInviteOnboardingTextDocument(
   }
 
     IMPORTANT: You MUST include agentDefaultsPayload.headers.x-openclaw-auth with your gateway token.
-    Without this token, Paperclip callback requests to your OpenClaw endpoint will fail with 401 Unauthorized.
+    Without this token, AoA callback requests to your OpenClaw endpoint will fail with 401 Unauthorized.
     Set "streamTransport" to "sse" for streaming /v1/responses endpoints, or "webhook" for wake-style callbacks.
 
     Body (JSON):
@@ -1148,7 +1151,7 @@ export function buildInviteOnboardingTextDocument(
       "capabilities": "Optional summary",
       "agentDefaultsPayload": {
         "url": "https://your-openclaw-agent.example/v1/responses",
-        "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
+        "paperclipApiUrl": "https://aoa-hostname-your-agent-can-reach:3100",
         "streamTransport": "sse",
         "method": "POST",
         "headers": { "x-openclaw-auth": "replace-me" },
@@ -1167,7 +1170,7 @@ export function buildInviteOnboardingTextDocument(
     'openclaw_auth_header_missing'
 
     ## Step 2: Wait for board approval
-    The board approves the join request in Paperclip before key claim is allowed.
+    The board approves the join request in AoA before key claim is allowed.
 
     ## Step 3: Claim API key (one-time)
     ${
@@ -1184,30 +1187,30 @@ export function buildInviteOnboardingTextDocument(
     - ~/.openclaw/workspace/paperclip-claimed-api-key.json
     chmod 600 ~/.openclaw/workspace/paperclip-claimed-api-key.json
 
-    And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
+    And set the AOA_API_KEY and AOA_API_URL in your environment variables as specified here:
     https://docs.openclaw.ai/help/environment
 
     e.g. 
 
     {
       env: {
-        PAPERCLIP_API_KEY: "...",
-        PAPERCLIP_API_URL: "...",
+        AOA_API_KEY: "...",
+        AOA_API_URL: "...",
       },
     }
 
-    Then set PAPERCLIP_API_KEY and PAPERCLIP_API_URL from the saved token field for every heartbeat run.
+    Then set AOA_API_KEY and AOA_API_URL from the saved token field for every heartbeat run.
 
     Important:
     - claim secrets expire
     - claim secrets are single-use
     - claim fails before board approval
 
-    ## Step 4: Install Paperclip skill in OpenClaw
+    ## Step 4: Install AoA skill in OpenClaw
     GET ${onboarding.skill.url}
     Install path: ${onboarding.skill.installPath}
 
-    Be sure to prepend your PAPERCLIP_API_URL to the top of your skill and note the path to your PAPERCLIP_API_URL
+    Be sure to prepend your AOA_API_URL to the top of your skill and note the path to your AOA_API_URL
 
     ## Text onboarding URL
     ${onboarding.textInstructions.url}
@@ -1215,18 +1218,18 @@ export function buildInviteOnboardingTextDocument(
     ## Connectivity guidance
     ${
       onboarding.connectivity?.guidance ??
-      "Ensure Paperclip is reachable from your OpenClaw runtime."
+      "Ensure AoA is reachable from your OpenClaw runtime."
     }
   `);
 
   if (onboarding.connectivity?.testResolutionEndpoint?.url) {
     appendBlock(`
-      ## Optional: test callback resolution from Paperclip
+      ## Optional: test callback resolution from AoA
       ${onboarding.connectivity.testResolutionEndpoint.method ?? "GET"} ${
       onboarding.connectivity.testResolutionEndpoint.url
     }?url=https%3A%2F%2Fyour-openclaw-agent.example%2Fv1%2Fresponses
 
-      This endpoint checks whether Paperclip can reach your OpenClaw endpoint and reports reachable, timeout, or unreachable.
+      This endpoint checks whether AoA can reach your OpenClaw endpoint and reports reachable, timeout, or unreachable.
     `);
   }
 
@@ -1239,7 +1242,7 @@ export function buildInviteOnboardingTextDocument(
     : [];
 
   if (connectionCandidates.length > 0) {
-    lines.push("## Suggested Paperclip base URLs to try");
+    lines.push("## Suggested AoA base URLs to try");
     for (const candidate of connectionCandidates) {
       lines.push(`- ${candidate}`);
     }
@@ -1251,8 +1254,8 @@ export function buildInviteOnboardingTextDocument(
 
       If none are reachable: ask your human operator for a reachable hostname/address and help them update network configuration.
       For authenticated/private mode, they may need:
-      - pnpm paperclipai allowed-hostname <host>
-      - then restart Paperclip and retry onboarding.
+      - pnpm aoa allowed-hostname <host>
+      - then restart AoA and retry onboarding.
     `);
   }
 
@@ -1387,14 +1390,17 @@ type JoinRequestManagerCandidate = {
 export function resolveJoinRequestAgentManagerId(
   candidates: JoinRequestManagerCandidate[]
 ): string | null {
-  const ceoCandidates = candidates.filter(
-    (candidate) => candidate.role === "ceo"
+  // Route join requests to a CXO-tier agent (apex preferred, but any CXO is
+  // acceptable as a manager candidate). Was historically `=== "ceo"` before
+  // the role-enum cleanup.
+  const cxoCandidates = candidates.filter(
+    (candidate) => candidate.role === "cxo"
   );
-  if (ceoCandidates.length === 0) return null;
-  const rootCeo = ceoCandidates.find(
+  if (cxoCandidates.length === 0) return null;
+  const apexCxo = cxoCandidates.find(
     (candidate) => !candidate.parentId && candidate.reportsTo === null
   );
-  return (rootCeo ?? ceoCandidates[0] ?? null)?.id ?? null;
+  return (apexCxo ?? cxoCandidates[0] ?? null)?.id ?? null;
 }
 
 function isInviteTokenHashCollisionError(error: unknown) {
@@ -1500,6 +1506,80 @@ async function probeInviteResolutionTarget(
   }
 }
 
+function toUserProfile(
+  user:
+    | {
+      id: string;
+      email: string | null;
+      name: string | null;
+      image?: string | null;
+    }
+    | null
+    | undefined,
+) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    email: user.email ?? null,
+    name: user.name ?? null,
+    image: user.image ?? null,
+  };
+}
+
+async function loadUserCompanyAccessResponse(
+  db: Db,
+  access: ReturnType<typeof accessService>,
+  userId: string,
+) {
+  const [memberships, user, isInstanceAdmin] = await Promise.all([
+    access.listUserCompanyAccess(userId),
+    db
+      .select({
+        id: authUsers.id,
+        email: authUsers.email,
+        name: authUsers.name,
+        image: authUsers.image,
+      })
+      .from(authUsers)
+      .where(eq(authUsers.id, userId))
+      .then((rows) => rows[0] ?? null),
+    access.isInstanceAdmin(userId),
+  ]);
+  const companyIds = [...new Set(memberships.map((membership) => membership.companyId))];
+  const companyRows = companyIds.length
+    ? await db
+        .select({
+          id: companies.id,
+          name: companies.name,
+          status: companies.status,
+        })
+        .from(companies)
+        .where(inArray(companies.id, companyIds))
+    : [];
+  const companyMap = new Map(companyRows.map((company) => [company.id, company]));
+
+  return {
+    user: user
+      ? {
+          id: user.id,
+          email: user.email ?? null,
+          name: user.name ?? null,
+          image: user.image ?? null,
+          isInstanceAdmin,
+        }
+      : null,
+    companyAccess: memberships.map((membership) => {
+      const company = companyMap.get(membership.companyId) ?? null;
+      return {
+        ...membership,
+        principalType: "user" as const,
+        companyName: company?.name ?? null,
+        companyStatus: company?.status ?? null,
+      };
+    }),
+  };
+}
+
 export function accessRoutes(
   db: Db,
   opts: {
@@ -1599,10 +1679,10 @@ export function accessRoutes(
   router.get("/skills/index", (_req, res) => {
     res.json({
       skills: [
-        { name: "paperclip", path: "/api/skills/paperclip" },
+        { name: "aoa", path: "/api/skills/aoa" },
         {
-          name: "paperclip-create-agent",
-          path: "/api/skills/paperclip-create-agent"
+          name: "aoa-create-agent",
+          path: "/api/skills/aoa-create-agent"
         }
       ]
     });
@@ -2593,6 +2673,66 @@ export function accessRoutes(
     }
   );
 
+  router.get("/admin/users", async (req, res) => {
+    await assertInstanceAdmin(req);
+    const query = searchAdminUsersQuerySchema.parse(req.query);
+    const needle = query.query.trim().toLowerCase();
+    const users = await db
+      .select({
+        id: authUsers.id,
+        email: authUsers.email,
+        name: authUsers.name,
+        image: authUsers.image,
+      })
+      .from(authUsers)
+      .orderBy(desc(authUsers.updatedAt));
+    const filteredUsers = needle
+      ? users.filter((user) =>
+          [user.name, user.email]
+            .filter((value): value is string => Boolean(value))
+            .some((value) => value.toLowerCase().includes(needle)),
+        )
+      : users;
+    const userIds = filteredUsers.slice(0, 50).map((user) => user.id);
+    const memberships = userIds.length
+      ? await db
+          .select({
+            principalId: companyMemberships.principalId,
+          })
+          .from(companyMemberships)
+          .where(
+            and(
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.status, "active"),
+              inArray(companyMemberships.principalId, userIds),
+            ),
+          )
+      : [];
+    const membershipCountByUserId = new Map<string, number>();
+    for (const membership of memberships) {
+      membershipCountByUserId.set(
+        membership.principalId,
+        (membershipCountByUserId.get(membership.principalId) ?? 0) + 1,
+      );
+    }
+    const adminIds = new Set(
+      await Promise.all(
+        userIds.map(async (userId) =>
+          (await access.isInstanceAdmin(userId)) ? userId : null,
+        ),
+      ).then((values) => values.filter((value): value is string => Boolean(value))),
+    );
+
+    res.json(
+      filteredUsers.slice(0, 50).map((user) => ({
+        ...toUserProfile(user)!,
+        isInstanceAdmin: adminIds.has(user.id),
+        activeCompanyMembershipCount:
+          membershipCountByUserId.get(user.id) ?? 0,
+      })),
+    );
+  });
+
   router.post(
     "/admin/users/:userId/demote-instance-admin",
     async (req, res) => {
@@ -2607,8 +2747,7 @@ export function accessRoutes(
   router.get("/admin/users/:userId/company-access", async (req, res) => {
     await assertInstanceAdmin(req);
     const userId = req.params.userId as string;
-    const memberships = await access.listUserCompanyAccess(userId);
-    res.json(memberships);
+    res.json(await loadUserCompanyAccessResponse(db, access, userId));
   });
 
   router.put(
@@ -2617,11 +2756,11 @@ export function accessRoutes(
     async (req, res) => {
       await assertInstanceAdmin(req);
       const userId = req.params.userId as string;
-      const memberships = await access.setUserCompanyAccess(
+      await access.setUserCompanyAccess(
         userId,
         req.body.companyIds ?? []
       );
-      res.json(memberships);
+      res.json(await loadUserCompanyAccessResponse(db, access, userId));
     }
   );
 

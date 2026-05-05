@@ -1,9 +1,9 @@
 import { Router } from "express";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, issues } from "@paperclipai/db";
-import { confirmDetectedOutputSchema } from "@paperclipai/shared";
-import type { DetectedOutput, DetectedOutputForUI } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { heartbeatRuns, issues } from "@armyofagents/db";
+import { confirmDetectedOutputSchema } from "@armyofagents/shared";
+import type { DetectedOutput, DetectedOutputForUI } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { artifactService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Project, TeamMemberSummary, UserRole } from "@paperclipai/shared";
+import type { Project, TeamMemberSummary, UserRole } from "@armyofagents/shared";
 import { accessApi } from "../../api/access";
 import { teamApi } from "../../api/team";
 import { queryKeys } from "../../lib/queryKeys";

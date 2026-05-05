@@ -94,6 +94,9 @@ export interface UnifiedOrgNode {
   departmentName?: string;
   avatarUrl?: string;
 
-  // Hierarchy
+  // Hierarchy. `parentType` is included on agent nodes so the org-tree UI
+  // can compute the apex CXO (= Chief of Staff) without an extra fetch:
+  //   apexCxo = role === "cxo" && (parentType === "user" || parentType === null).
+  parentType?: "agent" | "user" | null;
   children: UnifiedOrgNode[];
 }

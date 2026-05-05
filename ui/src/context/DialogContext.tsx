@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@armyofagents/shared";
 
 interface NewIssueDefaults {
   title?: string;

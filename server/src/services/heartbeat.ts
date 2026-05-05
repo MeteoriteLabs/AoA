@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import { and, asc, desc, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
+import type { Db } from "@armyofagents/db";
 import {
   agents,
   agentRuntimeState,
@@ -19,8 +19,12 @@ import {
   issueComments,
   assets,
   projects,
-} from "@paperclipai/db";
-import { conflict, notFound } from "../errors.js";
+  companySkills,
+  teamMembers,
+  teamCoordinations,
+  teams,
+} from "@armyofagents/db";
+import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -30,6 +34,18 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { companySkillService } from "./company-skills.js";
+import type { RuntimeSkillEntry } from "./company-skills.js";
+import { buildPinnedMemorySkillEntries } from "./memory-skill-sync.js";
+import { memoryService, type MultiPathSearchResult } from "./memory.js";
+import { recordMemoryRetrievals } from "./memory-retrieval-audit.js";
+import { issueService as createIssueService } from "./issues.js";
+import { quotaWindowsService } from "./quota-windows.js";
+import { extractSkillMentionIds } from "@armyofagents/shared";
+import {
+  readAoaSkillSyncPreference,
+  writeAoaSkillSyncPreference,
+  signalRunningProcess,
+} from "@armyofagents/adapter-utils/server-utils";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 
 /** Strip non-Latin1 characters that crash WIN1252-encoded embedded Postgres on Windows. */
@@ -49,6 +65,7 @@ import { formatRunSummary } from "./run-summary.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
+  ensurePersistedExecutionWorkspaceAvailable,
   ensureRuntimeServicesForRun,
   persistAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
@@ -65,13 +82,51 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import {
+  hasSessionCompactionThresholds,
+  resolveSessionCompactionPolicy,
+  type SessionCompactionPolicy,
+} from "@armyofagents/adapter-utils";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
-const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
+// AoA canonical names. Existing rows still using the legacy paperclip-
+// names are read transparently via the helpers below; writes only emit
+// the AoA names and strip the legacy keys from the same blob so we
+// converge over time.
+const DEFERRED_WAKE_CONTEXT_KEY = "_aoaWakeContext";
+const LEGACY_DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const REPO_ONLY_CWD_SENTINEL = "/__aoa_repo_only__";
+const LEGACY_REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+// Context key set during executeRun when the harness pre-claims the issue via
+// issueService.checkout. Downstream (renderAoaWakePrompt) reads this from the
+// wake payload to suppress the redundant /issues/{id}/checkout agent call.
+const AOA_HARNESS_CHECKOUT_KEY = "aoaHarnessCheckedOut";
+
+/**
+ * True if `cwd` is the "repo-only / no-local-cwd" sentinel,
+ * regardless of whether the row holds the legacy or new value.
+ */
+export function isRepoOnlySentinel(cwd: string | null | undefined): boolean {
+  return cwd === REPO_ONLY_CWD_SENTINEL || cwd === LEGACY_REPO_ONLY_CWD_SENTINEL;
+}
+
 const startLocksByAgent = new Map<string, Promise<void>>();
-const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+
+/**
+ * Returns true when the thrown error is a checkout-conflict from
+ * issueService.checkout (HTTP 409 "Issue checkout conflict").
+ * Exported so unit tests can import it directly.
+ */
+export function isCheckoutConflictError(error: unknown): boolean {
+  return (
+    error instanceof HttpError &&
+    error.status === 409 &&
+    error.message === "Issue checkout conflict"
+  );
+}
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
@@ -354,6 +409,288 @@ function resolveNextSessionState(input: {
   };
 }
 
+type UsageTotals = {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+};
+
+type SessionCompactionDecision = {
+  rotate: boolean;
+  reason: string | null;
+  handoffMarkdown: string | null;
+  previousRunId: string | null;
+};
+
+const heartbeatRunListResultColumns = {
+  resultSummary: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultSummary"),
+  resultResult: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultResult"),
+  resultMessage: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultMessage"),
+  resultError: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultError"),
+  resultTotalCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'total_cost_usd'`.as("resultTotalCostUsd"),
+  resultCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'cost_usd'`.as("resultCostUsd"),
+  resultCostUsdCamel: sql<string | null>`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
+} as const;
+
+function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
+  const parsed = parseObject(usageJson);
+  if (Object.keys(parsed).length === 0) return null;
+
+  const inputTokens = Math.max(
+    0,
+    Math.floor(asNumber(parsed.rawInputTokens, asNumber(parsed.inputTokens, 0))),
+  );
+  const cachedInputTokens = Math.max(
+    0,
+    Math.floor(asNumber(parsed.rawCachedInputTokens, asNumber(parsed.cachedInputTokens, 0))),
+  );
+  const outputTokens = Math.max(
+    0,
+    Math.floor(asNumber(parsed.rawOutputTokens, asNumber(parsed.outputTokens, 0))),
+  );
+
+  if (inputTokens <= 0 && cachedInputTokens <= 0 && outputTokens <= 0) {
+    return null;
+  }
+
+  return {
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+  };
+}
+
+function summarizeHeartbeatRunListResultJson(input: {
+  summary?: string | null;
+  result?: string | null;
+  message?: string | null;
+  error?: string | null;
+  totalCostUsd?: string | null;
+  costUsd?: string | null;
+  costUsdCamel?: string | null;
+}): Record<string, unknown> | null {
+  const summary: Record<string, unknown> = {};
+  for (const [key, value] of [
+    ["summary", input.summary],
+    ["result", input.result],
+    ["message", input.message],
+    ["error", input.error],
+  ] as const) {
+    const normalized = readNonEmptyString(value);
+    if (normalized) summary[key] = normalized;
+  }
+
+  for (const [key, value] of [
+    ["total_cost_usd", input.totalCostUsd],
+    ["cost_usd", input.costUsd],
+    ["costUsd", input.costUsdCamel],
+  ] as const) {
+    const normalized = readNonEmptyString(value);
+    if (!normalized) continue;
+    const parsed = Number(normalized);
+    if (Number.isFinite(parsed)) summary[key] = parsed;
+  }
+
+  return Object.keys(summary).length > 0 ? summary : null;
+}
+
+function formatCount(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "0";
+  return value.toLocaleString("en-US");
+}
+
+export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect): SessionCompactionPolicy {
+  return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
+}
+
+// ---------------------------------------------------------------------------
+// Run-scoped mentioned-skill helpers (Task 17 upstream resync)
+// ---------------------------------------------------------------------------
+
+/**
+ * Collect all unique skill IDs referenced via skill:// mention links across
+ * an array of nullable markdown strings (issue title + description + comments).
+ */
+export function extractMentionedSkillIdsFromSources(
+  sources: Array<string | null | undefined>,
+): string[] {
+  const seen = new Set<string>();
+  for (const src of sources) {
+    if (!src) continue;
+    for (const id of extractSkillMentionIds(src)) seen.add(id);
+  }
+  return [...seen];
+}
+
+/**
+ * Look up the skill keys for any skill-mention IDs found in the issue title,
+ * description, and comments. Returns an empty array when no issue is active.
+ */
+async function resolveRunScopedMentionedSkillKeys(
+  db: Db,
+  companyId: string,
+  issueId: string | null,
+): Promise<string[]> {
+  if (!issueId) return [];
+
+  const [issueRow] = await db
+    .select({ title: issues.title, description: issues.description })
+    .from(issues)
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+    .limit(1);
+  if (!issueRow) return [];
+
+  const commentRows = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(eq(issueComments.issueId, issueId));
+
+  const sources = [
+    issueRow.title,
+    issueRow.description,
+    ...commentRows.map((c) => c.body),
+  ];
+  const mentionedIds = extractMentionedSkillIdsFromSources(sources);
+  if (mentionedIds.length === 0) return [];
+
+  const rows = await db
+    .select({ key: companySkills.key })
+    .from(companySkills)
+    .where(
+      and(
+        eq(companySkills.companyId, companyId),
+        inArray(companySkills.id, mentionedIds),
+      ),
+    );
+
+  return rows.map((r) => r.key);
+}
+
+/**
+ * Merge run-scoped mentioned skill keys into the adapter config's
+ * aoaSkillSync.desiredSkills (preserving any existing selections).
+ * Also dual-writes paperclipSkillSync for external back-compat.
+ */
+export function applyRunScopedMentionedSkillKeys<T extends Record<string, unknown>>(
+  config: T,
+  skillKeys: string[],
+): T {
+  if (skillKeys.length === 0) return config;
+  const existing = readAoaSkillSyncPreference(config);
+  const merged = Array.from(new Set([...(existing.desiredSkills ?? []), ...skillKeys]));
+  return writeAoaSkillSyncPreference(config, merged) as T;
+}
+
+const MAX_TEAMS_PER_AGENT_HEARTBEAT = 10;
+
+/**
+ * Build skill-shaped entries from team coordinations the assigned agent belongs to.
+ *
+ * Returns [] when:
+ *   - The company has not enabled teams (companies.enableTeams = false).
+ *   - The agent has no team memberships.
+ *   - No published coordinations exist for those teams.
+ *
+ * Throws on DB error. Callers MUST wrap in try/catch — failures here cannot
+ * propagate to break the heartbeat run. See the call site in heartbeat for
+ * the canonical try/catch + sanitized warn-log pattern.
+ *
+ * Each returned entry is a synthetic skill that adapters materialize as a
+ * markdown file in skillsDir alongside the agent's normal skills. The CLI
+ * discovers and loads them via its skill mechanism.
+ */
+export async function buildTeamCoordinationSkillEntries(
+  db: Db,
+  companyId: string,
+  agentId: string,
+): Promise<RuntimeSkillEntry[]> {
+  const companyRow = await db
+    .select({ enableTeams: companies.enableTeams })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .then((rows) => rows[0]);
+
+  if (!companyRow?.enableTeams) return [];
+
+  const memberships = await db
+    .select({ teamId: teamMembers.teamId })
+    .from(teamMembers)
+    .where(eq(teamMembers.agentId, agentId))
+    .limit(MAX_TEAMS_PER_AGENT_HEARTBEAT);
+
+  if (memberships.length >= MAX_TEAMS_PER_AGENT_HEARTBEAT) {
+    // The cap is observable but doesn't fail the run. If this fires regularly,
+    // the cap should be raised or write-time validation should reject the (N+1)th
+    // team_members insert.
+    logger.warn(
+      { companyId, agentId, cap: MAX_TEAMS_PER_AGENT_HEARTBEAT },
+      "agent has reached team-coordination cap; further team coords (if any) will not be injected this run",
+    );
+  }
+
+  if (memberships.length === 0) return [];
+  const teamIds = memberships.map((m) => m.teamId);
+
+  const coords = await db
+    .select({
+      teamId: teamCoordinations.teamId,
+      markdown: teamCoordinations.markdown,
+      trustLevel: teamCoordinations.trustLevel,
+    })
+    .from(teamCoordinations)
+    .innerJoin(teams, eq(teamCoordinations.teamId, teams.id))
+    .where(
+      and(
+        inArray(teamCoordinations.teamId, teamIds),
+        eq(teamCoordinations.status, "published"),
+        // P1-D defense-in-depth: even if a coordination row escapes the
+        // archive cascade in teamsService.archive (data drift, manual SQL,
+        // future bug), the team-level archive status hides it from injection.
+        ne(teams.status, "archived"),
+      ),
+    );
+
+  if (coords.length === 0) return [];
+
+  const teamRows = await db
+    .select({ id: teams.id, name: teams.name })
+    .from(teams)
+    .where(inArray(teams.id, teamIds));
+  const teamNameById = new Map(teamRows.map((t) => [t.id, t.name]));
+
+  // "Team" fallback covers a race where a team is deleted between the
+  // memberships and teams queries — schema cascade makes this rare but possible.
+  return coords.map((c) => {
+    const teamName = teamNameById.get(c.teamId) ?? "Team";
+    // Prepend YAML frontmatter so Claude Code's skill-discovery mechanism
+    // registers the file correctly. Without `name` + `description`, the CLI
+    // either skips the file or registers it without enough metadata for the
+    // agent to know when to load it.
+    //
+    // Founder-authored coordination markdown (from team-scaffolder + the
+    // CoordinationEditor UI) does NOT include frontmatter — they're authoring
+    // a team contract, not a Claude skill. We synthesize the frontmatter here.
+    const frontmatter = [
+      "---",
+      `name: team-coord-${c.teamId}`,
+      "description: >",
+      `  Team coordination contract for the ${teamName} team. Read this any time`,
+      "  you need to understand how this team handles work, member roles, routing",
+      "  rules, escalation paths, or coordination conventions. Always relevant when",
+      "  working on tasks assigned via this team or coordinating with team members.",
+      "---",
+      "",
+      "",
+    ].join("\n");
+    return {
+      key: `team-coord-${c.teamId}`,
+      name: `${teamName} Coordination`,
+      markdown: frontmatter + c.markdown,
+      trustLevel: c.trustLevel,
+    };
+  });
+}
+
 export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
@@ -437,137 +774,68 @@ export function heartbeatService(db: Db) {
 
   const CONTEXT_MODE_LIMITS: Record<string, number> = { minimal: 3, standard: 10, full: 25 };
 
-  async function fetchMemoryContext(companyId: string, issueId: string | null, contextMode: string = "standard") {
+  async function fetchMemoryContext(
+    companyId: string,
+    issueId: string | null,
+    contextMode: string = "standard",
+    auditContext?: { agentId?: string | null; runId?: string | null },
+  ) {
     const itemLimit = CONTEXT_MODE_LIMITS[contextMode] ?? 10;
+
     // Fetch company info (name/description — vision/mission added in V2)
     const company = await db
-      .select({
-        name: companies.name,
-        description: companies.description,
-      })
+      .select({ name: companies.name, description: companies.description })
       .from(companies)
       .where(eq(companies.id, companyId))
       .then((rows) => rows[0] ?? null);
 
-    // Determine issue's department/project and get title+description for semantic ranking
-    let issueProjectId: string | null = null;
+    // Resolve task text used by the semantic + keyword pathways
     let issueText: string | null = null;
     if (issueId) {
       const issueRow = await db
-        .select({
-          projectId: issues.projectId,
-          title: issues.title,
-          description: issues.description,
-        })
+        .select({ title: issues.title, description: issues.description })
         .from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
       if (issueRow) {
-        issueProjectId = issueRow.projectId;
         issueText = [issueRow.title, issueRow.description].filter(Boolean).join("\n");
       }
     }
 
-    // Query approved memory items:
-    // - company-wide preferences (category='preference')
-    // - department-scoped items matching the task's project/department
-    // Priority: preferences first, then department-specific, then recent
-    // Cap based on contextMode (minimal=3, standard=10, full=25)
-    const conditions = [
-      eq(memoryItems.companyId, companyId),
-      eq(memoryItems.status, "approved"),
-    ];
+    // Multi-pathway retrieval: semantic + keyword + temporal fused via RRF,
+    // then trust-weighted (validationCount + recency). Replaces the old manual
+    // pgvector query + preference-category fallback with a single unified call.
+    const memorySvc = memoryService(db);
+    const items: MultiPathSearchResult[] = await memorySvc
+      .searchMultiPath(companyId, issueText ?? "", { limit: itemLimit })
+      .catch((err) => {
+        logger.warn(
+          { companyId, issueId, err },
+          "searchMultiPath failed in fetchMemoryContext; returning empty memory",
+        );
+        return [] as MultiPathSearchResult[];
+      });
 
-    const scopeConditions = issueProjectId
-      ? or(
-          eq(memoryItems.category, "preference"),
-          eq(memoryItems.departmentId, issueProjectId),
-          eq(memoryItems.projectId, issueProjectId),
-        )
-      : eq(memoryItems.category, "preference");
-
-    // Try semantic ranking when task has text and we can generate embeddings
-    if (issueText) {
-      try {
-        const { resolveApiKey: resolveKey } = await import("../adapters/api-common.js");
-        const { generateEmbedding: genEmbed } = await import("./embeddings.js");
-        const apiKey = await resolveKey(companyId, "openai");
-        const queryEmbedding = await genEmbed(issueText, apiKey);
-        const vectorStr = `[${queryEmbedding.join(",")}]`;
-
-        // Check if any items in scope have embeddings
-        const embeddedCount = await db
-          .select({ count: sql<number>`count(*)` })
-          .from(memoryItems)
-          .where(
-            and(
-              ...conditions,
-              scopeConditions,
-              sql`${memoryItems.embedding} IS NOT NULL`,
-            ),
-          )
-          .then((rows) => Number(rows[0]?.count ?? 0));
-
-        if (embeddedCount > 0) {
-          // Fetch items ranked by semantic similarity to the task
-          const items = await db
-            .select({
-              title: memoryItems.title,
-              content: memoryItems.content,
-              category: memoryItems.category,
-              tags: memoryItems.tags,
-            })
-            .from(memoryItems)
-            .where(
-              and(
-                ...conditions,
-                scopeConditions,
-                sql`${memoryItems.embedding} IS NOT NULL`,
-              ),
-            )
-            .orderBy(
-              // preferences first (0), then others (1)
-              sql`CASE WHEN ${memoryItems.category} = 'preference' THEN 0 ELSE 1 END`,
-              sql`${memoryItems.embedding} <=> ${vectorStr}::vector`,
-            )
-            .limit(itemLimit);
-
-          return {
-            company: company
-              ? { name: company.name, description: company.description }
-              : null,
-            memory: items.map((item) => ({
-              title: item.title,
-              content: item.content,
-              category: item.category,
-              tags: item.tags ?? [],
-            })),
-          };
-        }
-      } catch {
-        // Fall through to priority + recency ranking
-      }
+    // Audit: fire-and-forget — one row per item → memory_retrievals table.
+    // Powers the "Auto-retrieved" group in the workspace Memory section.
+    if (items.length > 0 && issueId) {
+      recordMemoryRetrievals(db, {
+        companyId,
+        agentId: auditContext?.agentId ?? null,
+        runId: auditContext?.runId ?? null,
+        taskId: issueId,
+        triggeredBy: "auto",
+        query: issueText ?? null,
+        items: items.map((item, i) => ({
+          id: item.id,
+          rank: i + 1,
+          similarityScore: item.similarity,
+          shownToAgent: true,
+        })),
+      }).catch(() => {});
     }
 
-    // Fallback: rank by priority + recency (original behavior)
-    const items = await db
-      .select({
-        id: memoryItems.id,
-        title: memoryItems.title,
-        content: memoryItems.content,
-        category: memoryItems.category,
-        tags: memoryItems.tags,
-      })
-      .from(memoryItems)
-      .where(and(...conditions, scopeConditions))
-      .orderBy(
-        // preferences first (0), then others (1)
-        sql`CASE WHEN ${memoryItems.category} = 'preference' THEN 0 ELSE 1 END`,
-        desc(memoryItems.updatedAt),
-      )
-      .limit(itemLimit);
-
-    // Batch update accessedAt for all served items (after assembly, not per-item)
+    // Batch-touch accessedAt so temporal pathway recency decay stays accurate
     const servedIds = items.map((item) => item.id);
     if (servedIds.length > 0) {
       db.update(memoryItems)
@@ -580,9 +848,7 @@ export function heartbeatService(db: Db) {
     }
 
     return {
-      company: company
-        ? { name: company.name, description: company.description }
-        : null,
+      company: company ? { name: company.name, description: company.description } : null,
       memory: items.map((item) => ({
         title: item.title,
         content: item.content,
@@ -710,7 +976,7 @@ export function heartbeatService(db: Db) {
       let hasConfiguredProjectCwd = false;
       for (const workspace of projectWorkspaceRows) {
         const projectCwd = readNonEmptyString(workspace.cwd);
-        if (!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL) {
+        if (!projectCwd || isRepoOnlySentinel(projectCwd)) {
           continue;
         }
         hasConfiguredProjectCwd = true;
@@ -1349,6 +1615,163 @@ export function heartbeatService(db: Db) {
     });
   }
 
+  async function getLatestRunForSession(
+    agentId: string,
+    sessionId: string,
+    opts?: { excludeRunId?: string | null },
+  ) {
+    const conditions = [
+      eq(heartbeatRuns.agentId, agentId),
+      eq(heartbeatRuns.sessionIdAfter, sessionId),
+    ];
+    if (opts?.excludeRunId) {
+      conditions.push(sql`${heartbeatRuns.id} <> ${opts.excludeRunId}`);
+    }
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        usageJson: heartbeatRuns.usageJson,
+      })
+      .from(heartbeatRuns)
+      .where(and(...conditions))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getOldestRunForSession(agentId: string, sessionId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.sessionIdAfter, sessionId)))
+      .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function evaluateSessionCompaction(input: {
+    agent: typeof agents.$inferSelect;
+    sessionId: string | null;
+    issueId: string | null;
+  }): Promise<SessionCompactionDecision> {
+    const { agent, sessionId, issueId } = input;
+    if (!sessionId) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: null,
+      };
+    }
+
+    const policy = parseSessionCompactionPolicy(agent);
+    if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: null,
+      };
+    }
+
+    const fetchLimit = Math.max(policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0, 4);
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        createdAt: heartbeatRuns.createdAt,
+        usageJson: heartbeatRuns.usageJson,
+        error: heartbeatRuns.error,
+        ...heartbeatRunListResultColumns,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.sessionIdAfter, sessionId)))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(fetchLimit);
+
+    if (runs.length === 0) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: null,
+      };
+    }
+
+    const latestRun = runs[0] ?? null;
+    const oldestRun =
+      policy.maxSessionAgeHours > 0
+        ? await getOldestRunForSession(agent.id, sessionId)
+        : runs[runs.length - 1] ?? latestRun;
+    const latestRawUsage = readRawUsageTotals(latestRun?.usageJson);
+    const sessionAgeHours =
+      latestRun && oldestRun
+        ? Math.max(
+            0,
+            (new Date(latestRun.createdAt).getTime() - new Date(oldestRun.createdAt).getTime()) / (1000 * 60 * 60),
+          )
+        : 0;
+
+    let reason: string | null = null;
+    if (policy.maxSessionRuns > 0 && runs.length > policy.maxSessionRuns) {
+      reason = `session exceeded ${policy.maxSessionRuns} runs`;
+    } else if (
+      policy.maxRawInputTokens > 0 &&
+      latestRawUsage &&
+      latestRawUsage.inputTokens >= policy.maxRawInputTokens
+    ) {
+      reason =
+        `session raw input reached ${formatCount(latestRawUsage.inputTokens)} tokens ` +
+        `(threshold ${formatCount(policy.maxRawInputTokens)})`;
+    } else if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
+      reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
+    }
+
+    if (!reason || !latestRun) {
+      return {
+        rotate: false,
+        reason: null,
+        handoffMarkdown: null,
+        previousRunId: latestRun?.id ?? null,
+      };
+    }
+
+    const latestSummary = summarizeHeartbeatRunListResultJson({
+      summary: latestRun?.resultSummary,
+      result: latestRun?.resultResult,
+      message: latestRun?.resultMessage,
+      error: latestRun?.resultError,
+      totalCostUsd: latestRun?.resultTotalCostUsd,
+      costUsd: latestRun?.resultCostUsd,
+      costUsdCamel: latestRun?.resultCostUsdCamel,
+    });
+    const latestTextSummary =
+      readNonEmptyString(latestSummary?.summary) ??
+      readNonEmptyString(latestSummary?.result) ??
+      readNonEmptyString(latestSummary?.message) ??
+      readNonEmptyString(latestRun.error);
+
+    const handoffMarkdown = [
+      "AoA session handoff:",
+      `- Previous session: ${sessionId}`,
+      issueId ? `- Issue: ${issueId}` : "",
+      `- Rotation reason: ${reason}`,
+      latestTextSummary ? `- Last run summary: ${latestTextSummary}` : "",
+      "Continue from the current task state. Rebuild only the minimum context you need.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    return {
+      rotate: true,
+      reason,
+      handoffMarkdown,
+      previousRunId: latestRun.id,
+    };
+  }
+
   async function executeRun(runId: string) {
     let run = await getRun(runId);
     if (!run) return;
@@ -1401,6 +1824,54 @@ export function heartbeatService(db: Db) {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    // ── Auto-checkout for scoped wakes (T22 / PR #3538 upstream) ────────────
+    // When the wake is scoped to an issue and the wake reason is comment-driven,
+    // pre-claim the issue server-side before the adapter runs so the agent
+    // prompt can skip the redundant /api/issues/{id}/checkout round-trip.
+    // Best-effort: any failure (conflict or other) is caught and logged.
+    if (
+      issueId &&
+      issueContext &&
+      issueContext.assigneeAgentId === agent.id
+    ) {
+      const wakeReason = readNonEmptyString(context.wakeReason);
+      // Mirror Paperclip's shouldAutoCheckoutIssueForWake: only fire for
+      // comment-driven wakes; skip execution_* and issue_comment_mentioned.
+      const shouldAutoCheckout =
+        wakeReason !== null &&
+        wakeReason !== "issue_comment_mentioned" &&
+        !wakeReason.startsWith("execution_") &&
+        (
+          issueContext.assigneeAgentId === agent.id
+        );
+      if (shouldAutoCheckout) {
+        try {
+          const issueSvc = createIssueService(db);
+          await issueSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked", "in_progress"], run.id);
+          context[AOA_HARNESS_CHECKOUT_KEY] = true;
+          logger.info(
+            { runId: run.id, issueId, agentId: agent.id },
+            "[heartbeat] Harness pre-checked out issue for scoped wake",
+          );
+        } catch (err) {
+          if (isCheckoutConflictError(err)) {
+            logger.info(
+              { runId: run.id, issueId },
+              "[heartbeat] Harness checkout skipped — already claimed",
+            );
+          } else {
+            logger.warn(
+              { runId: run.id, issueId, err },
+              "[heartbeat] Harness checkout failed — continuing without pre-claim",
+            );
+          }
+          context[AOA_HARNESS_CHECKOUT_KEY] = false;
+        }
+        context.checkedOutByHarness = context[AOA_HARNESS_CHECKOUT_KEY] === true;
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(
@@ -1423,17 +1894,20 @@ export function heartbeatService(db: Db) {
       : null;
     const contextProjectId = readNonEmptyString(context.projectId);
     const executionProjectId = issueContext?.projectId ?? contextProjectId;
-    const projectExecutionWorkspacePolicy = executionProjectId
+    const projectRow = executionProjectId
       ? await db
-          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy, env: projects.env })
           .from(projects)
           .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
-          .then((rows) =>
-            gateProjectExecutionWorkspacePolicy(
-              parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy),
-              isolatedWorkspacesEnabled,
-            ))
+          .then((rows) => rows[0] ?? null)
       : null;
+    const projectExecutionWorkspacePolicy = projectRow
+      ? gateProjectExecutionWorkspacePolicy(
+          parseProjectExecutionWorkspacePolicy(projectRow.executionWorkspacePolicy),
+          isolatedWorkspacesEnabled,
+        )
+      : null;
+    const projectEnv = projectRow?.env ?? null;
     const executionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
@@ -1458,9 +1932,20 @@ export function heartbeatService(db: Db) {
     const mergedConfig = issueAssigneeOverrides?.adapterConfig
       ? { ...workspaceManagedConfig, ...issueAssigneeOverrides.adapterConfig }
       : workspaceManagedConfig;
+    // ── Project env merge (system → instance → company → project → agent) ──
+    // projectEnv underlies the agent's own adapterConfig.env — agent overrides project.
+    const mergedConfigWithProjectEnv = projectEnv
+      ? {
+          ...mergedConfig,
+          env: {
+            ...(projectEnv as Record<string, unknown>),
+            ...parseObject(mergedConfig.env),
+          },
+        }
+      : mergedConfig;
     const resolvedConfig = await secretsSvc.resolveAdapterConfigForRuntime(
       agent.companyId,
-      mergedConfig,
+      mergedConfigWithProjectEnv,
     );
 
     // ── Issue ref for execution workspace ───────────────────────────
@@ -1489,35 +1974,68 @@ export function heartbeatService(db: Db) {
         heartbeatRunId: run.id,
         executionWorkspaceId: existingExecutionWorkspace?.id ?? null,
       });
-      const executionWorkspace = await realizeExecutionWorkspace({
-        base: {
-          baseCwd: resolvedWorkspace.cwd,
-          source: resolvedWorkspace.source,
-          projectId: resolvedWorkspace.projectId,
-          workspaceId: resolvedWorkspace.workspaceId,
-          repoUrl: resolvedWorkspace.repoUrl,
-          repoRef: resolvedWorkspace.repoRef,
-        },
-        config: resolvedConfig,
-        issue: issueRef,
-        agent: {
-          id: agent.id,
-          name: agent.name,
-          companyId: agent.companyId,
-        },
-        recorder: workspaceOperationRecorder,
-      });
+      // Short-circuit: if issue prefers reusing an existing workspace, build the
+      // realized descriptor from the persisted row instead of re-provisioning.
+      const shouldReuseExisting =
+        issueRef?.executionWorkspacePreference === "reuse_existing" &&
+        existingExecutionWorkspace &&
+        existingExecutionWorkspace.status !== "archived";
+      const realizeBase = {
+        baseCwd: resolvedWorkspace.cwd,
+        source: resolvedWorkspace.source,
+        projectId: resolvedWorkspace.projectId,
+        workspaceId: resolvedWorkspace.workspaceId,
+        repoUrl: resolvedWorkspace.repoUrl,
+        repoRef: resolvedWorkspace.repoRef,
+      };
+      const executionWorkspace = shouldReuseExisting && existingExecutionWorkspace
+        ? await ensurePersistedExecutionWorkspaceAvailable(
+            existingExecutionWorkspace,
+            realizeBase,
+            workspaceOperationRecorder,
+          )
+        : await realizeExecutionWorkspace({
+            base: realizeBase,
+            config: resolvedConfig,
+            issue: issueRef,
+            agent: {
+              id: agent.id,
+              name: agent.name,
+              companyId: agent.companyId,
+            },
+            recorder: workspaceOperationRecorder,
+          });
       effectiveCwd = executionWorkspace.cwd;
       executionWorkspaceWarnings = executionWorkspace.warnings;
       realizedWorkspace = executionWorkspace;
       const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
       const resolvedProjectWorkspaceId = resolvedWorkspace.workspaceId ?? null;
 
+      // Snapshot the workspace config at creation so it survives across runs
+      // (provisionCommand / teardownCommand / cleanupCommand / workspaceRuntime).
+      // desiredState / serviceStates remain null placeholders for Task 7.
+      const workspaceStrategyObject = parseObject(workspaceManagedConfig.workspaceStrategy);
+      const workspaceRuntimeObject = parseObject(workspaceManagedConfig.workspaceRuntime);
+      const configSnapshot = {
+        provisionCommand: typeof workspaceStrategyObject.provisionCommand === "string"
+          ? workspaceStrategyObject.provisionCommand
+          : null,
+        teardownCommand: typeof workspaceStrategyObject.teardownCommand === "string"
+          ? workspaceStrategyObject.teardownCommand
+          : null,
+        cleanupCommand: typeof workspaceStrategyObject.cleanupCommand === "string"
+          ? workspaceStrategyObject.cleanupCommand
+          : null,
+        workspaceRuntime: Object.keys(workspaceRuntimeObject).length > 0 ? workspaceRuntimeObject : null,
+        desiredState: null as "running" | "stopped" | null,
+        serviceStates: null as Record<string, "running" | "stopped"> | null,
+      };
+      const hasConfigSnapshot = configSnapshot.provisionCommand !== null
+        || configSnapshot.teardownCommand !== null
+        || configSnapshot.cleanupCommand !== null
+        || configSnapshot.workspaceRuntime !== null;
+
       // ── Persist execution workspace ─────────────────────────────────
-      const shouldReuseExisting =
-        issueRef?.executionWorkspacePreference === "reuse_existing" &&
-        existingExecutionWorkspace &&
-        existingExecutionWorkspace.status !== "archived";
       try {
         persistedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
           ? await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
@@ -1563,6 +2081,7 @@ export function heartbeatService(db: Db) {
                 metadata: {
                   source: executionWorkspace.source,
                   createdByRuntime: executionWorkspace.created,
+                  ...(hasConfigSnapshot ? { config: configSnapshot } : {}),
                 },
               })
             : null;
@@ -1590,6 +2109,7 @@ export function heartbeatService(db: Db) {
                 cwd: resolvedWorkspace.cwd,
                 cleanupCommand: null,
               },
+              cleanupCommand: configSnapshot.cleanupCommand,
               teardownCommand: projectExecutionWorkspacePolicy?.workspaceStrategy?.teardownCommand ?? null,
               recorder: workspaceOperationRecorder,
             });
@@ -1753,7 +2273,12 @@ export function heartbeatService(db: Db) {
     if (injectCompanyContext) {
       try {
         const agentContextMode = (agentRc.contextMode as string) ?? "standard";
-        const memoryContext = await fetchMemoryContext(agent.companyId, issueId, agentContextMode);
+        const memoryContext = await fetchMemoryContext(
+          agent.companyId,
+          issueId,
+          agentContextMode,
+          { agentId: agent.id, runId: run.id },
+        );
         if (memoryContext.company) {
           context.company = memoryContext.company;
         }
@@ -1784,15 +2309,42 @@ export function heartbeatService(db: Db) {
     }
 
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
-    const previousSessionDisplayId = truncateDisplayId(
+    let previousSessionDisplayId = truncateDisplayId(
       taskSessionForRun?.sessionDisplayId ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
         readNonEmptyString(runtimeSessionParams?.sessionId) ??
         runtimeSessionFallback,
     );
+    let runtimeSessionIdForAdapter =
+      readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
+    let runtimeSessionParamsForAdapter = runtimeSessionParams;
+
+    const sessionCompaction = await evaluateSessionCompaction({
+      agent,
+      sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
+      issueId,
+    });
+    if (sessionCompaction.rotate) {
+      context.aoaSessionHandoffMarkdown = sessionCompaction.handoffMarkdown;
+      context.aoaSessionRotationReason = sessionCompaction.reason;
+      context.aoaPreviousSessionId = previousSessionDisplayId ?? runtimeSessionIdForAdapter;
+      runtimeSessionIdForAdapter = null;
+      runtimeSessionParamsForAdapter = null;
+      previousSessionDisplayId = null;
+      if (sessionCompaction.reason) {
+        runtimeWorkspaceWarnings.push(
+          `Starting a fresh session because ${sessionCompaction.reason}.`,
+        );
+      }
+    } else {
+      delete context.aoaSessionHandoffMarkdown;
+      delete context.aoaSessionRotationReason;
+      delete context.aoaPreviousSessionId;
+    }
+
     const runtimeForAdapter = {
-      sessionId: readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback,
-      sessionParams: runtimeSessionParams,
+      sessionId: runtimeSessionIdForAdapter,
+      sessionParams: runtimeSessionParamsForAdapter,
       sessionDisplayId: previousSessionDisplayId,
       taskKey,
     };
@@ -1888,7 +2440,7 @@ export function heartbeatService(db: Db) {
         });
       };
       for (const warning of runtimeWorkspaceWarnings) {
-        await onLog("stderr", `[paperclip] ${warning}\n`);
+        await onLog("stderr", `[aoa] ${warning}\n`);
       }
 
       // ── Runtime services (ensureRuntimeServicesForRun) — gated ─────
@@ -1941,7 +2493,7 @@ export function heartbeatService(db: Db) {
           } catch (err) {
             await onLog(
               "stderr",
-              `[paperclip] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
+              `[aoa] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
         }
@@ -1969,7 +2521,7 @@ export function heartbeatService(db: Db) {
             runId: run.id,
             adapterType: agent.adapterType,
           },
-          "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
+          "local agent jwt secret missing or invalid; running without injected AOA_API_KEY",
         );
       }
       // Fetch company skills attached to this agent and inject into context
@@ -1987,6 +2539,91 @@ export function heartbeatService(db: Db) {
         logger.warn(
           { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
           "Failed to fetch company skills for agent run; continuing without skill injection",
+        );
+      }
+
+      // Inject team coordinations as skill-shaped entries into context.skills.
+      // Adapters already materialize context.skills as files in skillsDir, so the
+      // CLI discovers team coordinations via its skill mechanism — no adapter
+      // changes needed.
+      //
+      // SAFETY:
+      //   1. Feature-flag gate (companies.enableTeams) is the first query inside try.
+      //   2. try/catch isolates failures — never breaks the heartbeat run.
+      //   3. Append-only merge into context.skills — preserves any prior skills.
+      //   4. Sanitized error logging — never logs raw err (may contain SQL/credentials).
+      try {
+        const teamCoordEntries = await buildTeamCoordinationSkillEntries(
+          db,
+          agent.companyId,
+          agent.id,
+        );
+        if (teamCoordEntries.length > 0) {
+          const prior = context.skills;
+          const existing: RuntimeSkillEntry[] = Array.isArray(prior) ? (prior as RuntimeSkillEntry[]) : [];
+          context.skills = [...existing, ...teamCoordEntries];
+          logger.info(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              coordCount: teamCoordEntries.length,
+            },
+            "Injected team coordinations into context.skills",
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
+          },
+          "Failed to fetch team coordinations for agent run; continuing without team injection",
+        );
+      }
+
+      // V2.6 Phase 2: synthesize a `company-knowledge` skill from founder-pinned
+      // memory items and inject it as a skill-shaped entry alongside the others.
+      // Resolution: agent's memoryProfile.pinnedSkillItems config drives which
+      // items get materialized (department inheritance + per-agent additions/
+      // removals). See server/src/services/memory-skill-sync.ts for the algo.
+      //
+      // SAFETY:
+      //   1. try/catch isolates failures — never breaks the heartbeat run.
+      //   2. Append-only merge into context.skills — preserves prior skills.
+      //   3. Sanitized error logging — never logs raw err (may contain
+      //      SQL/credentials).
+      try {
+        const pinnedMemoryEntries = await buildPinnedMemorySkillEntries(
+          db,
+          agent.companyId,
+          agent.id,
+        );
+        if (pinnedMemoryEntries.length > 0) {
+          const prior = context.skills;
+          const existing: RuntimeSkillEntry[] = Array.isArray(prior) ? (prior as RuntimeSkillEntry[]) : [];
+          context.skills = [...existing, ...pinnedMemoryEntries];
+          logger.info(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              pinnedSkillCount: pinnedMemoryEntries.length,
+            },
+            "Injected pinned memory items as company-knowledge skill",
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
+          },
+          "Failed to synthesize pinned-memory skill for agent run; continuing without",
         );
       }
 
@@ -2011,15 +2648,82 @@ export function heartbeatService(db: Db) {
         );
       }
 
+      // ── Auto-enable skills mentioned in the issue body/comments ──────
+      let runScopedConfig: Record<string, unknown> = resolvedConfig;
+      try {
+        const mentionedSkillKeys = await resolveRunScopedMentionedSkillKeys(
+          db,
+          agent.companyId,
+          issueId,
+        );
+        runScopedConfig = applyRunScopedMentionedSkillKeys(resolvedConfig, mentionedSkillKeys);
+        if (mentionedSkillKeys.length > 0) {
+          logger.info(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              skills: mentionedSkillKeys,
+              issueId,
+            },
+            "[heartbeat] auto-enabled run-scoped skills from issue mentions",
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
+          "Failed to resolve run-scoped mentioned skills; continuing without auto-enable",
+        );
+      }
+
+      // ── onSpawn: persist PID/PGID/startedAt immediately after fork ──────
+      const onSpawn = (pid: number | null, pgid: number | null, startedAt: Date) => {
+        // pgid is now reliably populated on POSIX (= child.pid for detached:true spawns).
+        // Persisting it lets an out-of-process watchdog kill the group if needed.
+        void db
+          .update(heartbeatRuns)
+          .set({ processPid: pid, processGroupId: pgid, processStartedAt: startedAt })
+          .where(eq(heartbeatRuns.id, run.id))
+          .catch((err: unknown) =>
+            logger.warn({ err, runId: run.id }, "Failed to persist process metadata"),
+          );
+      };
+
+      // ── Debounced lastOutputAt: update at most once per second ───────────
+      let outputSeq = 0;
+      let lastOutputDbMs = 0;
+      const originalOnLog = onLog;
+      const onLogWithOutput = async (stream: "stdout" | "stderr", chunk: string) => {
+        outputSeq += 1;
+        const now = Date.now();
+        if (now - lastOutputDbMs > 1000) {
+          lastOutputDbMs = now;
+          void db
+            .update(heartbeatRuns)
+            .set({
+              lastOutputAt: new Date(now),
+              lastOutputSeq: outputSeq,
+              lastOutputStream: stream,
+              lastOutputBytes: Buffer.byteLength(chunk),
+            })
+            .where(eq(heartbeatRuns.id, run.id))
+            .catch((err: unknown) =>
+              logger.warn({ err, runId: run.id }, "Failed to update lastOutputAt"),
+            );
+        }
+        await originalOnLog(stream, chunk);
+      };
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
         runtime: runtimeForAdapter,
-        config: resolvedConfig,
+        config: runScopedConfig,
         context,
-        onLog,
+        onLog: onLogWithOutput,
         onMeta: onAdapterMeta,
         authToken: authToken ?? undefined,
+        onSpawn,
       });
 
       // ── Persist adapter-managed runtime services (gated) ───────────
@@ -2067,7 +2771,7 @@ export function heartbeatService(db: Db) {
             } catch (err) {
               await onLog(
                 "stderr",
-                `[paperclip] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
+                `[aoa] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
               );
             }
           }
@@ -2238,6 +2942,15 @@ export function heartbeatService(db: Db) {
           detectedFiles,
         });
       }
+
+      // ── Phase B.2: Refresh provider quota snapshots (fire-and-forget) ─
+      // Adapters that expose getQuotaWindows() report fresh rate-limit
+      // windows to the DB so the Costs UI reads recent snapshots without
+      // blocking on live provider polls. Errors are swallowed — stale quota
+      // data is strictly better than a failed heartbeat completion.
+      quotaWindowsService(db)
+        .refresh(agent.companyId, agent.adapterType)
+        .catch((err) => logger.warn({ err, adapterType: agent.adapterType }, "quota refresh after heartbeat failed"));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown adapter failure";
       logger.error({ err, runId }, "heartbeat execution failed");
@@ -2394,7 +3107,9 @@ export function heartbeatService(db: Db) {
         }
 
         const deferredPayload = parseObject(deferred.payload);
-        const deferredContextSeed = parseObject(deferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
+        const deferredContextSeed = parseObject(
+          deferredPayload[DEFERRED_WAKE_CONTEXT_KEY] ?? deferredPayload[LEGACY_DEFERRED_WAKE_CONTEXT_KEY],
+        );
         const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =
@@ -2403,6 +3118,7 @@ export function heartbeatService(db: Db) {
           (readNonEmptyString(deferred.triggerDetail) as WakeupOptions["triggerDetail"]) ?? null;
         const promotedPayload = deferredPayload;
         delete promotedPayload[DEFERRED_WAKE_CONTEXT_KEY];
+        delete promotedPayload[LEGACY_DEFERRED_WAKE_CONTEXT_KEY];
 
         const {
           contextSnapshot: promotedContextSnapshot,
@@ -2708,13 +3424,18 @@ export function heartbeatService(db: Db) {
 
           if (existingDeferred) {
             const existingDeferredPayload = parseObject(existingDeferred.payload);
-            const existingDeferredContext = parseObject(existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
+            const existingDeferredContext = parseObject(
+              existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY] ?? existingDeferredPayload[LEGACY_DEFERRED_WAKE_CONTEXT_KEY],
+            );
             const mergedDeferredContext = mergeCoalescedContextSnapshot(
               existingDeferredContext,
               enrichedContextSnapshot,
             );
+            // Spread existing payload then overwrite with AoA key; also strip the legacy
+            // key so that every write converges the row toward the new name.
+            const { [LEGACY_DEFERRED_WAKE_CONTEXT_KEY]: _stripLegacy, ...existingWithoutLegacy } = existingDeferredPayload;
             const mergedDeferredPayload = {
-              ...existingDeferredPayload,
+              ...existingWithoutLegacy,
               ...(payload ?? {}),
               issueId,
               [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
@@ -3107,12 +3828,34 @@ export function heartbeatService(db: Db) {
 
       const running = runningProcesses.get(run.id);
       if (running) {
-        running.child.kill("SIGTERM");
+        logger.info(
+          {
+            runId: run.id,
+            agentId: run.agentId,
+            pid: running.child.pid,
+            processGroupId: running.processGroupId,
+            reason: "cancelRun",
+          },
+          "heartbeat.cancel: signaling SIGTERM",
+        );
+        signalRunningProcess(running, "SIGTERM");
         const graceMs = Math.max(1, running.graceSec) * 1000;
         setTimeout(() => {
-          if (!running.child.killed) {
-            running.child.kill("SIGKILL");
-          }
+          // If the process exited cleanly during the grace period, the
+          // normal completion path will have removed the entry from
+          // runningProcesses. Don't log/signal a process that's gone.
+          if (!runningProcesses.has(run.id)) return;
+          logger.info(
+            {
+              runId: run.id,
+              agentId: run.agentId,
+              pid: running.child.pid,
+              processGroupId: running.processGroupId,
+              reason: "cancelRun.grace-expired",
+            },
+            "heartbeat.cancel: signaling SIGKILL",
+          );
+          signalRunningProcess(running, "SIGKILL");
         }, graceMs);
       }
 
@@ -3163,12 +3906,96 @@ export function heartbeatService(db: Db) {
 
         const running = runningProcesses.get(run.id);
         if (running) {
-          running.child.kill("SIGTERM");
+          logger.info(
+            {
+              runId: run.id,
+              agentId: run.agentId,
+              pid: running.child.pid,
+              processGroupId: running.processGroupId,
+              reason: "cancelActiveForAgent",
+            },
+            "heartbeat.cancel: signaling SIGTERM",
+          );
+          signalRunningProcess(running, "SIGTERM");
           runningProcesses.delete(run.id);
         }
         await releaseIssueExecutionAndPromote(run);
       }
 
+      return runs.length;
+    },
+
+    cancelBudgetScopeWork: async (scope: { companyId: string; scopeType: "company" | "agent"; scopeId: string }) => {
+      // Agent scope: kill all queued/running runs for that agent.
+      if (scope.scopeType === "agent") {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.agentId, scope.scopeId), inArray(heartbeatRuns.status, ["queued", "running"])));
+
+        for (const run of runs) {
+          await setRunStatus(run.id, "cancelled", {
+            finishedAt: new Date(),
+            error: "Cancelled due to budget hard-stop",
+            errorCode: "cancelled",
+          });
+          await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+            finishedAt: new Date(),
+            error: "Cancelled due to budget hard-stop",
+          });
+          const running = runningProcesses.get(run.id);
+          if (running) {
+            logger.info(
+              {
+                runId: run.id,
+                agentId: run.agentId,
+                pid: running.child.pid,
+                processGroupId: running.processGroupId,
+                reason: "cancelBudgetScopeWork.agent",
+              },
+              "heartbeat.cancel: signaling SIGTERM",
+            );
+            signalRunningProcess(running, "SIGTERM");
+            runningProcesses.delete(run.id);
+          }
+          await releaseIssueExecutionAndPromote(run);
+        }
+        return runs.length;
+      }
+
+      // Company scope: kill all queued/running runs in the company.
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, scope.companyId), inArray(heartbeatRuns.status, ["queued", "running"])));
+
+      for (const run of runs) {
+        await setRunStatus(run.id, "cancelled", {
+          finishedAt: new Date(),
+          error: "Cancelled due to company budget hard-stop",
+          errorCode: "cancelled",
+        });
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: "Cancelled due to company budget hard-stop",
+        });
+        const running = runningProcesses.get(run.id);
+        if (running) {
+          logger.info(
+            {
+              runId: run.id,
+              agentId: run.agentId,
+              pid: running.child.pid,
+              processGroupId: running.processGroupId,
+              reason: "cancelBudgetScopeWork.company",
+            },
+            "heartbeat.cancel: signaling SIGTERM",
+          );
+          signalRunningProcess(running, "SIGTERM");
+          runningProcesses.delete(run.id);
+        }
+        await releaseIssueExecutionAndPromote(run);
+      }
       return runs.length;
     },
 

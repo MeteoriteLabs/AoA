@@ -1,34 +1,51 @@
 {
-  "name": "paperclip",
+  "name": "aoa",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev-runner.mjs watch",
-    "dev:watch": "PAPERCLIP_MIGRATION_PROMPT=never node scripts/dev-runner.mjs watch",
+    "dev:watch": "AOA_MIGRATION_PROMPT=never node scripts/dev-runner.mjs watch",
     "dev:once": "node scripts/dev-runner.mjs dev",
-    "dev:server": "pnpm --filter @paperclipai/server dev",
-    "dev:ui": "pnpm --filter @paperclipai/ui dev",
+    "dev:server": "pnpm --filter @armyofagents/server dev",
+    "dev:ui": "pnpm --filter @armyofagents/ui dev",
+    "dev:list": "ps aux | grep -i 'pnpm.*dev' | grep -v grep",
+    "dev:stop": "pkill -f 'pnpm.*dev' || true",
+    "fetch-catalog": "pnpm --filter @armyofagents/db exec -- tsx ../../scripts/fetch-bundled-catalog.ts",
+    "prebuild": "pnpm fetch-catalog",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "vitest",
     "test:run": "vitest run",
-    "db:generate": "pnpm --filter @paperclipai/db generate",
-    "db:migrate": "pnpm --filter @paperclipai/db migrate",
+    "test:e2e": "playwright test --config=tests/e2e/playwright.config.ts",
+    "test:e2e:headed": "playwright test --config=tests/e2e/playwright.config.ts --headed",
+    "test:release-smoke": "playwright test --config=tests/release-smoke/playwright.config.ts",
+    "test:release-smoke:headed": "playwright test --config=tests/release-smoke/playwright.config.ts --headed",
+    "db:generate": "pnpm --filter @armyofagents/db generate",
+    "db:migrate": "pnpm --filter @armyofagents/db migrate",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
+    "aoa": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
     "release": "./scripts/release.sh",
+    "release:rollback": "./scripts/rollback-latest.sh",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "docs:dev": "cd docs && npx mintlify dev",
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",
-    "smoke:openclaw-sse-standalone": "./scripts/smoke/openclaw-sse-standalone.sh"
+    "smoke:openclaw-sse-standalone": "./scripts/smoke/openclaw-sse-standalone.sh",
+    "docker:build-test": "./scripts/docker-build-test.sh",
+    "docker:smoke": "./scripts/docker-onboard-smoke.sh",
+    "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
+    "evals:validate": "cd evals/promptfoo && npx promptfoo@0.103.3 validate"
   },
   "devDependencies": {
     "@changesets/cli": "^2.30.0",
+    "@playwright/test": "^1.58.2",
+    "cross-env": "^7.0.3",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
@@ -36,5 +53,13 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@9.15.4"
+  "packageManager": "pnpm@9.15.4",
+  "pnpm": {
+    "patchedDependencies": {
+      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
+    },
+    "overrides": {
+      "rollup": ">=4.59.0"
+    }
+  }
 }

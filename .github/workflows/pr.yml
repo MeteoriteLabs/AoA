@@ -1,0 +1,636 @@
+name: PR
+
+on:
+  pull_request:
+    branches:
+      - master
+      - main
+      - Porting1.1
+  push:
+    branches:
+      - master
+      - main
+      - Porting1.1
+
+concurrency:
+  group: pr-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Block manual lockfile edits
+        if: github.event_name == 'pull_request' && github.head_ref != 'chore/refresh-lockfile'
+        run: |
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
+          if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
+            manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
+            if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
+              echo "Lockfile edit accompanies manifest changes — allowed."
+            else
+              echo "Do not commit pnpm-lock.yaml in pull requests without manifest changes. CI owns lockfile-only updates."
+              exit 1
+            fi
+          fi
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Validate Dockerfile deps stage
+        run: |
+          missing=0
+
+          # Extract only the deps stage from the Dockerfile
+          deps_stage="$(awk '/^FROM .* AS deps$/{found=1; next} found && /^FROM /{exit} found{print}' Dockerfile)"
+
+          if [ -z "$deps_stage" ]; then
+            echo "::error::Could not extract deps stage from Dockerfile (expected 'FROM ... AS deps')"
+            exit 1
+          fi
+
+          # Derive workspace search roots from pnpm-workspace.yaml (exclude dev-only packages)
+          search_roots="$(grep '^ *- ' pnpm-workspace.yaml | sed 's/^ *- //' | sed 's/\*$//' | grep -v 'examples' | tr '\n' ' ')"
+
+          if [ -z "$search_roots" ]; then
+            echo "::error::Could not derive workspace roots from pnpm-workspace.yaml"
+            exit 1
+          fi
+
+          # Check all workspace package.json files are copied in the deps stage
+          for pkg in $(find $search_roots -maxdepth 2 -name package.json -not -path '*/examples/*' -not -path '*/node_modules/*' 2>/dev/null | sort -u); do
+            dir="$(dirname "$pkg")"
+            if ! echo "$deps_stage" | grep -q "^COPY ${dir}/package.json"; then
+              echo "::error::Dockerfile deps stage missing: COPY ${pkg} ${dir}/"
+              missing=1
+            fi
+          done
+
+          # Check patches directory is copied if it exists
+          if [ -d patches ] && ! echo "$deps_stage" | grep -q '^COPY patches/'; then
+            echo "::error::Dockerfile deps stage missing: COPY patches/ patches/"
+            missing=1
+          fi
+
+          if [ "$missing" -eq 1 ]; then
+            echo "Dockerfile deps stage is out of sync. Update it to include the missing files."
+            exit 1
+          fi
+
+      - name: Validate dependency resolution when manifests change
+        if: github.event_name == 'pull_request'
+        run: |
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
+          manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
+          if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
+            pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          fi
+
+  brand-check:
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check for stale Paperclip references in user-facing surfaces
+        run: |
+          # Guard against regressions of the AoA rebrand (Sprint 3 polish, rc.4).
+          # Only the highest-signal user-facing patterns are enforced.
+          # Intentional wire-compat/backward-compat residuals are documented
+          # in docs/telemetry.md and CLAUDE.md and explicitly allowed here:
+          #   - PAPERCLIP_* env vars (mirrored to AOA_*)
+          #   - paperclipai CLI bin alias
+          #   - paperclipPlugin / __paperclipPluginBridge__ (plugin wire protocol)
+          #   - paperclip-feedback-envelope-v2 / paperclip-feedback-bundle-v2
+          #   - hermes-paperclip-adapter (external npm package)
+          #   - PaperclipPluginManifest / paperclipConfigSchema (type aliases)
+          # Guards 5-7 have their own allow-list:
+          #   Guard 5: paperclip:/. localStorage legacy reads allowed only in
+          #            lib/storage-migrations.ts, __tests__/storage-migration,
+          #            and ui/index.html (FOUC bootstrap legacy fallback read).
+          #   Guard 6: [paperclip] allowed only in normalize-transcript.ts
+          #            (matches upstream CLI binary's stderr output, not our
+          #            own log prefix — see brand-check-ignore comment there).
+          #   Guard 7: no allow-list; paperclip-* CSS classes are fully renamed.
+          #   Guard 8: quoted "Paperclip <Word>" prose strings; allow-listed for
+          #            wire-compat field-name prose ("paperclipApiUrl ..."),
+          #            test fixtures using "Paperclip" as a literal name
+          #            ("Paperclip Hook", "Paperclip Test", "Paperclip runtime
+          #            note:" assertions in cursor-local-execute.test.ts which
+          #            mirror the renamed AoA prompt text — these are now
+          #            "AoA runtime note:" so they no longer trip), and the
+          #            historical changelog title in cli/CHANGELOG.md.
+          #
+          # Guards (1-9): pcp_ tokens, paperclip plugin keys, PAPERCLIP banner,
+          #               user-visible Paperclip strings, paperclip:/. localStorage
+          #               keys, [paperclip] log prefix, paperclip-* CSS classes,
+          #               quoted "Paperclip <Word>" prose in shipping code,
+          #               AOA_* env-var doc completeness (catches docs drift).
+          failed=0
+
+          # 1. No pcp_ token prefixes in source (all renamed to aoa_).
+          pcp_hits=$(grep -rnE '"pcp_(invite|mcp|claim)_|'\''pcp_(invite|mcp|claim)_' \
+            --include='*.ts' --include='*.tsx' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src ui/src cli/src packages/plugins/examples 2>/dev/null || true)
+          if [ -n "$pcp_hits" ]; then
+            echo "::error::Found pcp_ token prefixes in source (should be aoa_):"
+            printf '%s\n' "$pcp_hits"
+            failed=1
+          fi
+
+          # 2. No "paperclip.*-example" plugin keys in source (renamed to aoa.*).
+          plugin_hits=$(grep -rnE '"paperclip[.-](hello-world|file-browser|kitchen-sink)' \
+            --include='*.ts' --include='*.tsx' --include='*.md' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src ui/src cli/src packages/plugins/examples 2>/dev/null \
+            | grep -v 'mapLegacyPaperclipKey' || true)
+          if [ -n "$plugin_hits" ]; then
+            echo "::error::Found paperclip.* plugin keys in source (should be aoa.*):"
+            printf '%s\n' "$plugin_hits"
+            failed=1
+          fi
+
+          # 3. No "PAPERCLIP" ASCII art blocks (renamed to AOA).
+          banner_hits=$(grep -rnE '"██████╗.*PAPERCLIP|PAPERCLIP.*██████╗' \
+            --include='*.ts' --include='*.tsx' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src ui/src cli/src packages/plugins/examples 2>/dev/null || true)
+          if [ -n "$banner_hits" ]; then
+            echo "::error::Found PAPERCLIP ASCII banner in source (rename to AOA):"
+            printf '%s\n' "$banner_hits"
+            failed=1
+          fi
+
+          # 4. No "Start Paperclip" or "Paperclip dashboard" user-visible strings.
+          ui_hits=$(grep -rnE '"Start Paperclip|Paperclip dashboard|Paperclip plugin API|Paperclip setup' \
+            --include='*.ts' --include='*.tsx' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src ui/src cli/src packages/plugins/examples 2>/dev/null || true)
+          if [ -n "$ui_hits" ]; then
+            echo "::error::Found user-visible Paperclip strings in source (should say AoA):"
+            printf '%s\n' "$ui_hits"
+            failed=1
+          fi
+
+          # 5. No paperclip:/. localStorage keys outside the migration registry.
+          # ui/index.html FOUC bootstrap has one intentional legacy fallback read
+          # (paperclip.theme → aoa.theme) and is excluded from this guard.
+          ls_hits=$(grep -rnE 'localStorage\.(set|get|remove)Item\([^)]*paperclip|paperclip[:.][a-zA-Z]' \
+            --include='*.ts' --include='*.tsx' --include='*.html' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            ui/src ui/index.html 2>/dev/null \
+            | grep -v 'lib/storage-migrations\|__tests__/storage-migration\|ui/index\.html' || true)
+          if [ -n "$ls_hits" ]; then
+            echo "::error::Found paperclip:/. localStorage keys in ui/ outside the migration registry (use aoa: prefix; legacy reads only allowed in lib/storage-migrations.ts and ui/index.html FOUC bootstrap):"
+            printf '%s\n' "$ls_hits"
+            failed=1
+          fi
+
+          # 6. No [paperclip] log prefix outside docs (renamed to [aoa]).
+          # Two files are excluded:
+          #   - normalize-transcript.ts — matches the upstream Claude CLI
+          #     binary's stderr output, not an AoA-emitted prefix.
+          #   - find-dead-paperclip-filters.mjs — the audit script that LOOKS
+          #     FOR this exact pattern; the literal occurrences are the
+          #     script's search target and documentation, not log emissions.
+          log_hits=$(grep -rnE '\[paperclip\]' \
+            --include='*.ts' --include='*.tsx' --include='*.mjs' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src ui/src cli/src packages/adapters scripts 2>/dev/null \
+            | grep -v 'normalize-transcript\|find-dead-paperclip-filters' || true)
+          if [ -n "$log_hits" ]; then
+            echo "::error::Found [paperclip] log prefix (rename to [aoa]):"
+            printf '%s\n' "$log_hits"
+            failed=1
+          fi
+
+          # 7. No paperclip-* CSS classes (renamed to aoa-*).
+          css_hits=$(grep -rnE 'paperclip-(mdxeditor|project-mention-chip)' \
+            --include='*.css' --include='*.tsx' --include='*.ts' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            ui/src 2>/dev/null || true)
+          if [ -n "$css_hits" ]; then
+            echo "::error::Found paperclip-* CSS classes (rename to aoa-*):"
+            printf '%s\n' "$css_hits"
+            failed=1
+          fi
+
+          # 8. No quoted "Paperclip <Word>" prose in shipping code (renamed to "AoA <Word>").
+          # Catches the OpenClaw onboarding prose class ("Paperclip is bound to...",
+          # "Paperclip callback requests...", "Suggested Paperclip base URLs to try",
+          # "# Paperclip OpenClaw Onboarding", etc.). Allow-listed:
+          #   - paperclipApiUrl wire-compat field references (the regex matches a
+          #     literal SPACE after "Paperclip", so identifiers like
+          #     "paperclipApiUrl" don't trip)
+          #   - test fixtures using "Paperclip" as a literal name (Hook, Test, etc.)
+          #     — those now read "AoA <Word>" after the OpenClaw prose sweep
+          #   - historical entries in cli/CHANGELOG.md (excluded by path)
+          prose_hits=$(grep -rnE '"Paperclip [A-Za-z]|`Paperclip [A-Za-z]|# Paperclip [A-Za-z]' \
+            --include='*.ts' --include='*.tsx' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src ui/src cli/src packages/plugins/examples 2>/dev/null \
+            | grep -v 'Paperclip Hook\|Paperclip Test' || true)
+          if [ -n "$prose_hits" ]; then
+            echo "::error::Found quoted \"Paperclip <Word>\" prose in shipping code (rename to AoA):"
+            printf '%s\n' "$prose_hits"
+            failed=1
+          fi
+
+          # 9. env-var doc completeness — every AOA_* env var read by code must
+          #    appear in docs/deploy/environment-variables.md. Catches silent
+          #    drift when a feature lands a new env var without doc update.
+          declared_env=$(grep -rhoE 'process\.env\.AOA_[A-Z_]+' \
+            --include='*.ts' \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build \
+            server/src cli/src packages 2>/dev/null \
+            | sed 's/process\.env\.//' | sort -u)
+          documented_env=$(grep -oE 'AOA_[A-Z_]+' docs/deploy/environment-variables.md 2>/dev/null | sort -u)
+          missing_env=$(comm -23 <(printf '%s\n' "$declared_env") <(printf '%s\n' "$documented_env") || true)
+          if [ -n "$missing_env" ]; then
+            echo "::error::AOA_* env vars read by code but not documented in docs/deploy/environment-variables.md:"
+            printf '%s\n' "$missing_env"
+            echo "::error::Add these to docs/deploy/environment-variables.md or remove them from code."
+            failed=1
+          fi
+
+          if [ "$failed" -eq 1 ]; then
+            exit 1
+          fi
+          echo "Brand check passed: no user-facing Paperclip regressions."
+
+      - name: Forbidden tokens scan (.forbidden-tokens.json)
+        run: pnpm exec node scripts/check-forbidden-tokens.mjs
+
+  # verify and e2e run independently of policy. Failing policy (e.g.,
+  # contributor accidentally committed pnpm-lock.yaml) should not mask
+  # verify's test failures or e2e's UI failures — contributors deserve
+  # to see all their PR's failure signal, not just the first gate.
+  # Branch protection rules require ALL of policy/verify/e2e/brand-check
+  # to pass for merge — that's the right gate, not a pipeline dependency.
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Run tests
+        run: pnpm test:run
+
+      - name: Build
+        run: pnpm build
+
+  # Advisory cross-platform coverage — matches the verify job but runs on
+  # macOS + Windows. continue-on-error: true so failures don't block PR
+  # merges (existing `verify` Linux job remains the required gate via
+  # branch protection). Failures here become follow-up issues, not
+  # in-PR scope expansions. Once a platform stabilizes, flip its matrix
+  # entry to required by adding it to branch protection rules.
+  verify-cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Run tests
+        run: pnpm test:run
+
+      - name: Build
+        run: pnpm build
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Pin marketplace catalog fixture for stable e2e
+        # `pnpm build` ran prebuild → fetched the live CDN catalog, which
+        # evolves independently of this repo. Override with a frozen fixture
+        # so e2e assertions don't depend on whichever items are currently on
+        # the CDN. Server reads the snapshot lazily on first /api/marketplace
+        # request, so overwriting before `Run e2e tests` is sufficient.
+        run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
+
+      - name: Install Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Generate Paperclip config
+        run: |
+          mkdir -p ~/.aoa/instances/default
+          cat > ~/.aoa/instances/default/config.json << 'CONF'
+          {
+            "$meta": { "version": 1, "updatedAt": "2026-01-01T00:00:00.000Z", "source": "onboard" },
+            "database": { "mode": "embedded-postgres" },
+            "logging": { "mode": "file" },
+            "server": { "deploymentMode": "local_trusted", "host": "127.0.0.1", "port": 3100 },
+            "auth": { "baseUrlMode": "auto" },
+            "storage": { "provider": "local_disk" },
+            "secrets": { "provider": "local_encrypted", "strictMode": false }
+          }
+          CONF
+
+      - name: Run e2e tests
+        env:
+          AOA_E2E_SKIP_LLM: "true"
+        run: pnpm run test:e2e
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: |
+            tests/e2e/playwright-report/
+            tests/e2e/test-results/
+          retention-days: 14
+
+  # Advisory cross-platform coverage for e2e — matches the e2e job but
+  # runs on macOS + Windows. continue-on-error: true so failures don't
+  # block PR merges. Some steps differ from the Linux e2e job:
+  #   - playwright install runs without --with-deps (Linux apt-only flag)
+  #   - config file generation uses `shell: bash` for HEREDOC support
+  #     (Windows runners ship Git Bash and provide bash as a shell option)
+  e2e-cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Pin marketplace catalog fixture for stable e2e
+        shell: bash
+        run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
+
+      - name: Install Playwright
+        run: npx playwright install chromium
+
+      - name: Generate Paperclip config
+        shell: bash
+        run: |
+          mkdir -p ~/.aoa/instances/default
+          cat > ~/.aoa/instances/default/config.json << 'CONF'
+          {
+            "$meta": { "version": 1, "updatedAt": "2026-01-01T00:00:00.000Z", "source": "onboard" },
+            "database": { "mode": "embedded-postgres" },
+            "logging": { "mode": "file" },
+            "server": { "deploymentMode": "local_trusted", "host": "127.0.0.1", "port": 3100 },
+            "auth": { "baseUrlMode": "auto" },
+            "storage": { "provider": "local_disk" },
+            "secrets": { "provider": "local_encrypted", "strictMode": false }
+          }
+          CONF
+
+      - name: Run e2e tests
+        env:
+          AOA_E2E_SKIP_LLM: "true"
+        run: pnpm run test:e2e
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.os }}
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Validates that all migrations apply cleanly from scratch against a
+  # fresh postgres + that the journal chain integrity is intact. Catches
+  # the bug pattern from PR #94 (renumbered migrations had a broken
+  # prevId chain that would have failed on first-DB apply but no CI test
+  # caught it pre-merge).
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aoa_test
+          POSTGRES_PASSWORD: aoa_test
+          POSTGRES_DB: aoa_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aoa_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages/db (drizzle config reads from dist/)
+        run: pnpm --filter @armyofagents/db build
+
+      - name: Apply all migrations from scratch
+        env:
+          DATABASE_URL: postgres://aoa_test:aoa_test@localhost:5432/aoa_test
+        run: pnpm db:migrate
+
+      - name: Verify migration chain integrity
+        run: |
+          python <<'PYEOF'
+          import json
+          from pathlib import Path
+
+
+          def load_json_with_bom(path):
+              # Some snapshots are committed with a UTF-8 BOM (\xef\xbb\xbf).
+              # `utf-8-sig` strips the BOM before decoding.
+              return json.loads(path.read_bytes().decode("utf-8-sig"))
+
+
+          meta_dir = Path("packages/db/src/migrations/meta")
+          journal = load_json_with_bom(meta_dir / "_journal.json")
+
+          # Check 1: idx values are 0..N-1, contiguous (catches PR #94-style
+          # renumber bugs where a migration is dropped or duplicated in the
+          # journal).
+          ids = [e["idx"] for e in journal["entries"]]
+          expected = list(range(len(ids)))
+          assert ids == expected, (
+              f"Journal idx not contiguous: first 5 = {ids[:5]}, expected {expected[:5]}"
+          )
+
+          # Check 2: every journal entry must have a matching SQL file.
+          missing_sql = []
+          for entry in journal["entries"]:
+              sql_path = meta_dir.parent / f"{entry['tag']}.sql"
+              if not sql_path.exists():
+                  missing_sql.append(entry["tag"])
+          assert not missing_sql, f"Missing SQL files: {missing_sql}"
+
+          # Check 3: each snapshot's prevId matches the previous snapshot's id.
+          # Snapshot files are auto-generated by `drizzle-kit generate` and many
+          # historical migrations never had their snapshots committed (drizzle
+          # only consults snapshots for `generate`, not for `migrate` runtime
+          # apply — so missing snapshots are not a runtime hazard). We therefore
+          # ONLY validate the chain among snapshots that ARE committed: a break
+          # here is the PR #94 signal (a committed snapshot whose prevId points
+          # to a stale predecessor).
+          #
+          # KNOWN LIMITATION: gap-then-corruption is not catchable here.
+          # If an attacker drops snapshot B AND alters C's prevId to point to a
+          # stale id (e.g., A's pre-renumber id), this check cannot distinguish
+          # that from the legitimate case where B was renumbered and its
+          # snapshot was never committed but C correctly points through the
+          # gap to B's renumbered id. Drizzle-kit produces this pattern
+          # legitimately (see commit b5570de — PR #94's chain repair). To
+          # detect this attack would require maintaining an out-of-band
+          # "expected predecessor ids" manifest, which is outside the scope of
+          # this CI check. Reviewer flagged this in the v2 plan retrospective
+          # (2026-05-05); the check stays as-is intentionally.
+          prev_id = None
+          checked = 0
+          for entry in journal["entries"]:
+              snap_path = meta_dir / f"{entry['idx']:04d}_snapshot.json"
+              if not snap_path.exists():
+                  prev_id = None  # break chain context across the gap
+                  continue
+              snap = load_json_with_bom(snap_path)
+              if prev_id is not None and snap["prevId"] != prev_id:
+                  raise AssertionError(
+                      f"Chain broken at {entry['tag']} (idx {entry['idx']}): "
+                      f"prevId={snap['prevId']} expected={prev_id}"
+                  )
+              prev_id = snap["id"]
+              checked += 1
+
+          print(
+              f"OK: {len(ids)} journal entries, "
+              f"{checked} snapshots chain-checked, all SQL files present"
+          )
+          PYEOF

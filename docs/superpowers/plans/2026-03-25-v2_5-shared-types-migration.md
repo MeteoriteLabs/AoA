@@ -602,7 +602,7 @@ import {
   createWorkflowTemplateSchema,
   updateWorkflowTemplateSchema,
   workflowDependencySchema,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -1057,7 +1057,7 @@ import {
   discussions,
   discussionEntries,
   discussionExtractedItems,
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 
 type Db = NodePgDatabase<Record<string, never>>;
 

@@ -12,10 +12,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { AgentIcon } from "./AgentIconPicker";
 import { describeSchedule } from "./ScheduleEditor";
+import { RoutineTitleWithVariables } from "./routines/RoutineTitleWithVariables";
 import { runStatusStyle } from "../lib/routine-constants";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
-import type { Agent, RoutineListItem } from "@paperclipai/shared";
+import type { Agent, RoutineListItem } from "@armyofagents/shared";
 
 interface Project {
   id: string;
@@ -73,7 +74,9 @@ export const RoutineCard = memo(function RoutineCard({
           <Repeat className="h-4 w-4 text-muted-foreground" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="truncate font-semibold leading-tight">{routine.title}</p>
+          <p className="font-semibold leading-tight">
+            <RoutineTitleWithVariables template={routine.title} />
+          </p>
         </div>
         {/* Toggle — stop propagation so click doesn't navigate */}
         <button

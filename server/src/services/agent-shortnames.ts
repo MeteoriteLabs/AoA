@@ -1,4 +1,4 @@
-import { normalizeAgentUrlKey } from "@paperclipai/shared";
+import { normalizeAgentUrlKey } from "@armyofagents/shared";
 
 interface AgentShortnameRow {
   id: string;

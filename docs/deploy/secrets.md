@@ -3,15 +3,19 @@ title: Secrets Management
 summary: Master key, encryption, and strict mode
 ---
 
-Paperclip encrypts secrets at rest using a local master key. Agent environment variables that contain sensitive values (API keys, tokens) are stored as encrypted secret references.
+AoA encrypts secrets at rest using a local master key. Agent environment variables that contain sensitive values (API keys, tokens) are stored as encrypted secret references.
+
+> **Warning:** `aws_secrets_manager`, `gcp_secret_manager`, and `vault` are stub providers only. Every `createVersion` and `resolveVersion` call throws `"not configured in this deployment"` (see `server/src/secrets/external-stub-providers.ts`). They appear in `SECRET_PROVIDERS` as a roadmap placeholder. **Only `local_encrypted` is production-ready today.**
 
 ## Default Provider: `local_encrypted`
 
 Secrets are encrypted with a local master key stored at:
 
 ```
-~/.paperclip/instances/default/secrets/master.key
+~/.aoa/instances/default/secrets/master.key
 ```
+
+> Note: existing installs that still have `~/.paperclip/` are read via the legacy fallback in `cli/src/config/home.ts`. On a fresh install, AoA writes only to `~/.aoa/`.
 
 This key is auto-created during onboarding. The key never leaves your machine.
 
@@ -22,35 +26,35 @@ This key is auto-created during onboarding. The key never leaves your machine.
 Onboarding writes default secrets config:
 
 ```sh
-pnpm paperclipai onboard
+pnpm aoa onboard
 ```
 
 Update secrets settings:
 
 ```sh
-pnpm paperclipai configure --section secrets
+pnpm aoa configure --section secrets
 ```
 
 Validate secrets config:
 
 ```sh
-pnpm paperclipai doctor
+pnpm aoa doctor
 ```
 
 ### Environment Overrides
 
 | Variable | Description |
 |----------|-------------|
-| `PAPERCLIP_SECRETS_MASTER_KEY` | 32-byte key as base64, hex, or raw string |
-| `PAPERCLIP_SECRETS_MASTER_KEY_FILE` | Custom key file path |
-| `PAPERCLIP_SECRETS_STRICT_MODE` | Set to `true` to enforce secret refs |
+| `AOA_SECRETS_MASTER_KEY` | 32-byte key as base64, hex, or raw string |
+| `AOA_SECRETS_MASTER_KEY_FILE` | Custom key file path |
+| `AOA_SECRETS_STRICT_MODE` | Set to `true` to enforce secret refs |
 
 ## Strict Mode
 
 When strict mode is enabled, sensitive env keys (matching `*_API_KEY`, `*_TOKEN`, `*_SECRET`) must use secret references instead of inline plain values.
 
 ```sh
-PAPERCLIP_SECRETS_STRICT_MODE=true
+AOA_SECRETS_STRICT_MODE=true
 ```
 
 Recommended for any deployment beyond local trusted.

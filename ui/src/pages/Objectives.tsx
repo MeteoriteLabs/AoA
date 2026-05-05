@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { Link, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Goal } from "@paperclipai/shared";
+import type { Goal } from "@armyofagents/shared";
 import { goalsApi } from "../api/goals";
 import { companiesApi } from "../api/companies";
 import { useCompany } from "../context/CompanyContext";
@@ -117,6 +117,8 @@ function IdentityCard({
           size="icon-sm"
           className="shrink-0 text-muted-foreground hover:text-foreground"
           onClick={onEdit}
+          aria-label={`Edit ${label}`}
+          title={`Edit ${label}`}
         >
           <Pencil className="h-3.5 w-3.5" />
         </Button>

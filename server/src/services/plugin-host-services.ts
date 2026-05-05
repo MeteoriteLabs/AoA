@@ -1,5 +1,5 @@
-import type { Db } from "@paperclipai/db";
-import { pluginLogs, agentTaskSessions as agentTaskSessionsTable } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { pluginLogs, agentTaskSessions as agentTaskSessionsTable } from "@armyofagents/db";
 import { eq, and, like, desc } from "drizzle-orm";
 import type {
   HostServices,
@@ -10,7 +10,7 @@ import type {
   Goal,
   PluginWorkspace,
   IssueComment,
-} from "@paperclipai/plugin-sdk";
+} from "@armyofagents/plugin-sdk";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -34,6 +34,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
+import { transmitPluginTelemetry } from "./feedback-transmission.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -47,6 +48,13 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
 /** Only these protocols are allowed for plugin HTTP requests. */
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
+
+/**
+ * Validation for plugin telemetry event names (F.D4 infra port, Task F.5).
+ * Matches Paperclip parity: lowercase slug of letters, numbers, `_` or `-`,
+ * leading char must be alphanumeric.
+ */
+const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
 /**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
@@ -559,7 +567,7 @@ export function buildHostServices(
         await scopedBus.emit(params.name, params.companyId, params.payload);
       },
       async subscribe(params: { eventPattern: string; filter?: Record<string, unknown> | null }) {
-        const handler = async (event: import("@paperclipai/plugin-sdk").PluginEvent) => {
+        const handler = async (event: import("@armyofagents/plugin-sdk").PluginEvent) => {
           if (notifyWorker) {
             notifyWorker("onEvent", { event });
           }
@@ -633,6 +641,27 @@ export function buildHostServices(
             console.error("[plugin-host-services] Triggered metric flush failed:", err);
           });
         }
+      },
+    },
+
+    telemetry: {
+      async track(params) {
+        const eventName = String(params.eventName ?? "").trim();
+        if (!TELEMETRY_EVENT_NAME_REGEX.test(eventName)) {
+          throw new Error(
+            'Plugin telemetry event names must be lowercase slugs using letters, numbers, "_" or "-".',
+          );
+        }
+        // Phase I.2 Task 11 (PF.2): hand off to the env-gated transmission
+        // path. Fire-and-forget — if AOA_FEEDBACK_ENDPOINT is unset, this is
+        // a no-op; if set, the POST runs in the background. The host always
+        // logs at debug so operators can tail plugin telemetry locally
+        // regardless of transmission config.
+        await transmitPluginTelemetry(eventName, params.dimensions);
+        logger.debug(
+          { pluginId, pluginKey, eventName, dimensions: params.dimensions },
+          "Plugin telemetry event (transmitted if AOA_FEEDBACK_ENDPOINT set)",
+        );
       },
     },
 

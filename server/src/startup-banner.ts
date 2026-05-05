@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { resolveAoaConfigPath, resolveAoaEnvPath } from "./paths.js";
+import type { DeploymentExposure, DeploymentMode } from "@armyofagents/shared";
 
 import { parse as parseEnvFileContents } from "dotenv";
 
@@ -31,7 +31,6 @@ type StartupBannerOptions = {
   heartbeatSchedulerIntervalMs: number;
   databaseBackupEnabled: boolean;
   databaseBackupIntervalMinutes: number;
-  databaseBackupRetentionDays: number;
   databaseBackupDir: string;
 };
 
@@ -71,7 +70,7 @@ function resolveAgentJwtSecretStatus(
   status: "pass" | "warn";
   message: string;
 } {
-  const envValue = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
+  const envValue = process.env.AOA_AGENT_JWT_SECRET?.trim();
   if (envValue) {
     return {
       status: "pass",
@@ -81,7 +80,7 @@ function resolveAgentJwtSecretStatus(
 
   if (existsSync(envFilePath)) {
     const parsed = parseEnvFileContents(readFileSync(envFilePath, "utf-8"));
-    const fileValue = typeof parsed.PAPERCLIP_AGENT_JWT_SECRET === "string" ? parsed.PAPERCLIP_AGENT_JWT_SECRET.trim() : "";
+    const fileValue = typeof parsed.AOA_AGENT_JWT_SECRET === "string" ? parsed.AOA_AGENT_JWT_SECRET.trim() : "";
     if (fileValue) {
       return {
         status: "warn",
@@ -92,7 +91,7 @@ function resolveAgentJwtSecretStatus(
 
   return {
     status: "warn",
-    message: "missing (run `pnpm paperclipai onboard`)",
+    message: "missing (run `pnpm aoa onboard`)",
   };
 }
 
@@ -101,8 +100,8 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
   const baseUrl = `http://${baseHost}:${opts.listenPort}`;
   const apiUrl = `${baseUrl}/api`;
   const uiUrl = opts.uiMode === "none" ? "disabled" : baseUrl;
-  const configPath = resolvePaperclipConfigPath();
-  const envFilePath = resolvePaperclipEnvPath();
+  const configPath = resolveAoaConfigPath();
+  const envFilePath = resolveAoaEnvPath();
   const agentJwtSecret = resolveAgentJwtSecretStatus(envFilePath);
 
   const dbMode =
@@ -130,16 +129,16 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
     ? `enabled ${color(`(${opts.heartbeatSchedulerIntervalMs}ms)`, "dim")}`
     : color("disabled", "yellow");
   const dbBackup = opts.databaseBackupEnabled
-    ? `enabled ${color(`(every ${opts.databaseBackupIntervalMinutes}m, keep ${opts.databaseBackupRetentionDays}d)`, "dim")}`
+    ? `enabled ${color(`(every ${opts.databaseBackupIntervalMinutes}m, tiered retention)`, "dim")}`
     : color("disabled", "yellow");
 
   const art = [
-    color("██████╗  █████╗ ██████╗ ███████╗██████╗  ██████╗██╗     ██╗██████╗ ", "cyan"),
-    color("██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔════╝██║     ██║██╔══██╗", "cyan"),
-    color("██████╔╝███████║██████╔╝█████╗  ██████╔╝██║     ██║     ██║██████╔╝", "cyan"),
-    color("██╔═══╝ ██╔══██║██╔═══╝ ██╔══╝  ██╔══██╗██║     ██║     ██║██╔═══╝ ", "cyan"),
-    color("██║     ██║  ██║██║     ███████╗██║  ██║╚██████╗███████╗██║██║     ", "cyan"),
-    color("╚═╝     ╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝╚═╝     ", "cyan"),
+    color(" █████╗  ██████╗  █████╗ ", "cyan"),
+    color("██╔══██╗██╔═══██╗██╔══██╗", "cyan"),
+    color("███████║██║   ██║███████║", "cyan"),
+    color("██╔══██║██║   ██║██╔══██║", "cyan"),
+    color("██║  ██║╚██████╔╝██║  ██║", "cyan"),
+    color("╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝", "cyan"),
   ];
 
   const lines = [

@@ -1,8 +1,9 @@
 import { and, eq, lt, isNotNull, inArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { memoryItems, issues, taskDependencies, suggestions } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
+import { memoryItems, issues, taskDependencies, suggestions } from "@armyofagents/db";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
+import { memoryItemsSelection } from "./memory-projection.js";
 
 const log = logger.child({ service: "memory-lifecycle" });
 
@@ -97,7 +98,7 @@ export function memoryLifecycleService(db: Db) {
      */
     onGoalCompleted: async (companyId: string, goalId: string): Promise<number> => {
       const itemsToArchive = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(
           and(
@@ -138,7 +139,7 @@ export function memoryLifecycleService(db: Db) {
      */
     archiveExpiredWorkingMemory: async (companyId: string): Promise<number> => {
       const workingItems = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(
           and(
@@ -191,7 +192,7 @@ export function memoryLifecycleService(db: Db) {
     archiveExpiredItems: async (companyId: string): Promise<number> => {
       const now = new Date();
       const expiredItems = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(
           and(
@@ -231,6 +232,52 @@ export function memoryLifecycleService(db: Db) {
     },
 
     /**
+     * Condition 4 — archive working-layer items scoped to a completed/cancelled task.
+     * Called from routes/issues.ts when issue status → done or cancelled.
+     * Returns the number of items archived.
+     */
+    onTaskCompleted: async (companyId: string, taskId: string): Promise<number> => {
+      const itemsToArchive = await db
+        .select(memoryItemsSelection())
+        .from(memoryItems)
+        .where(
+          and(
+            eq(memoryItems.companyId, companyId),
+            eq(memoryItems.taskId, taskId),
+            eq(memoryItems.layer, "working"),
+            eq(memoryItems.status, "approved"),
+          ),
+        );
+
+      if (itemsToArchive.length === 0) return 0;
+
+      const ids = itemsToArchive.map((i) => i.id);
+      await db
+        .update(memoryItems)
+        .set({ status: "archived", updatedAt: new Date() })
+        .where(inArray(memoryItems.id, ids));
+
+      for (const item of itemsToArchive) {
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "system",
+          action: "memory.auto_archived",
+          entityType: "memory_item",
+          entityId: item.id,
+          details: {
+            title: item.title,
+            layer: "working",
+            reason: "task_completed",
+            taskId,
+          },
+        });
+      }
+
+      return itemsToArchive.length;
+    },
+
+    /**
      * Flag identity/domain items not accessed in 90+ days by creating suggestions.
      * Does NOT auto-archive — founder decides.
      */
@@ -238,7 +285,7 @@ export function memoryLifecycleService(db: Db) {
       const cutoff = new Date(Date.now() - STALENESS_THRESHOLD_DAYS * 24 * 60 * 60 * 1000);
 
       const staleItems = await db
-        .select()
+        .select(memoryItemsSelection())
         .from(memoryItems)
         .where(
           and(

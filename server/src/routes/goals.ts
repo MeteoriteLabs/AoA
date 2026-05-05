@@ -1,11 +1,14 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
+import type { Db } from "@armyofagents/db";
+import { createGoalSchema, updateGoalSchema } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { goalService, memoryLifecycleService, logActivity } from "../services/index.js";
 import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
+import { logger } from "../middleware/logger.js";
+
+const log = logger.child({ route: "goals" });
 
 export function goalRoutes(db: Db) {
   const router = Router();
@@ -94,9 +97,23 @@ export function goalRoutes(db: Db) {
       details: req.body,
     });
 
-    // Auto-archive active_context memory when goal reaches terminal state
+    // Auto-archive active_context memory when goal reaches terminal state.
+    // Wrapped in try/catch so a memory-hook failure (e.g. pgvector absent,
+    // transient DB error) doesn't 500 the goal update — the status transition
+    // already committed and should be returned successfully. See Finding S.
     if (req.body.status === "achieved" || req.body.status === "cancelled") {
-      await lifecycle.onGoalCompleted(goal.companyId, goal.id);
+      try {
+        await lifecycle.onGoalCompleted(goal.companyId, goal.id);
+      } catch (err) {
+        log.warn(
+          {
+            goalId: goal.id,
+            companyId: goal.companyId,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "memory archive hook failed after goal completion; continuing",
+        );
+      }
     }
 
     res.json(goal);

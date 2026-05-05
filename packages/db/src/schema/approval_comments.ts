@@ -7,9 +7,9 @@ export const approvalComments = pgTable(
   "approval_comments",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
-    approvalId: uuid("approval_id").notNull().references(() => approvals.id),
-    authorAgentId: uuid("author_agent_id").references(() => agents.id),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    approvalId: uuid("approval_id").notNull().references(() => approvals.id, { onDelete: "cascade" }),
+    authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
     authorUserId: text("author_user_id"),
     body: text("body").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

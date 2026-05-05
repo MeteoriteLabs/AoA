@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { testEnvironment } from "@paperclipai/adapter-codex-local/server";
+import { testEnvironment } from "@armyofagents/adapter-codex-local/server";
 
 describe("codex_local environment diagnostics", () => {
   it("creates a missing working directory when cwd is absolute", async () => {

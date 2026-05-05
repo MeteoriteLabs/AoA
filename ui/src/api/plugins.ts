@@ -1,5 +1,5 @@
 /**
- * @fileoverview Frontend API client for the Paperclip plugin system.
+ * @fileoverview Frontend API client for the AoA plugin system.
  *
  * All functions in `pluginsApi` map 1:1 to REST endpoints on
  * `server/src/routes/plugins.ts`. Call sites should consume these functions
@@ -17,7 +17,7 @@ import type {
   PluginRecord,
   PluginConfig,
   PluginStatus,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { api } from "./client";
 
 /**
@@ -450,4 +450,35 @@ export const pluginsApi = {
     data: { enabled?: boolean; settingsJson?: Record<string, unknown> },
   ) =>
     api.put<unknown>(`/companies/${companyId}/plugin-settings/${pluginId}`, data),
+
+  // ===========================================================================
+  // Plugin version history + rollback
+  // ===========================================================================
+
+  /**
+   * Fetch the installation version history for a plugin.
+   *
+   * Returns an array of historical version records, oldest first. Each entry
+   * represents a distinct install or upgrade event. The last entry is the
+   * most recently installed version prior to the current one and is the
+   * target for a rollback operation.
+   *
+   * @param pluginId - UUID of the plugin.
+   */
+  listVersionHistory: (pluginId: string) =>
+    api.get<Array<{ id: string; version: string; packageName: string; createdAt: string }>>(
+      `/plugins/${pluginId}/version-history`,
+    ),
+
+  /**
+   * Roll back a plugin to its previous installed version.
+   *
+   * The server re-installs the package at the version recorded in the most
+   * recent version-history entry. The plugin is restarted automatically.
+   * Throws if no rollback target exists or if the reinstall fails.
+   *
+   * @param pluginId - UUID of the plugin to roll back.
+   */
+  rollback: (pluginId: string) =>
+    api.post<{ ok: boolean }>(`/plugins/${pluginId}/rollback`, {}),
 };

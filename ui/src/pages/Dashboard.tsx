@@ -11,7 +11,7 @@ import {
   type RecentActivityItem,
   type SetupStatus,
   type Suggestion,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { homeApi } from "../api/dashboard";
 import { authApi } from "../api/auth";
 import { suggestionsApi } from "../api/suggestions";
@@ -34,6 +34,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Activity,
   AlertCircle,
@@ -596,6 +597,7 @@ export function Dashboard() {
   const [showAllSuggestions, setShowAllSuggestions] = useState(false);
   const [exitingSuggestionIds, setExitingSuggestionIds] = useState<string[]>([]);
   const [busySuggestionIds, setBusySuggestionIds] = useState<string[]>([]);
+  const [archiveConfirm, setArchiveConfirm] = useState<Suggestion | null>(null);
   const [memoryDraft, setMemoryDraft] = useState<SuggestedMemoryDraft | null>(null);
 
   const { data: session } = useQuery({
@@ -699,9 +701,7 @@ export function Dashboard() {
           setMemoryDraft(getSuggestedMemoryDraft(suggestion));
           return;
         case "archive_memory":
-          if (!window.confirm(`Archive '${getArchiveTargetTitle(suggestion)}'?`)) return;
-          await acceptAndRemove(suggestion);
-          pushToast({ title: "Suggestion accepted", body: "Memory item archived", tone: "success" });
+          setArchiveConfirm(suggestion);
           return;
         case "flag_risk":
           await acceptAndRemove(suggestion);
@@ -711,6 +711,19 @@ export function Dashboard() {
           await acceptAndRemove(suggestion);
           pushToast({ title: "Suggestion accepted", tone: "success" });
       }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to accept suggestion";
+      pushToast({ title: "Unable to accept suggestion", body: message, tone: "error" });
+    }
+  }
+
+  async function handleArchiveConfirm() {
+    if (!archiveConfirm || !selectedCompanyId) return;
+    const suggestion = archiveConfirm;
+    setArchiveConfirm(null);
+    try {
+      await acceptAndRemove(suggestion);
+      pushToast({ title: "Suggestion accepted", body: "Memory item archived", tone: "success" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to accept suggestion";
       pushToast({ title: "Unable to accept suggestion", body: message, tone: "error" });
@@ -972,6 +985,17 @@ export function Dashboard() {
           <p className="text-sm text-muted-foreground">Nothing needs your attention right now.</p>
         </div>
       )}
+
+      <ConfirmDialog
+        open={archiveConfirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setArchiveConfirm(null);
+        }}
+        title={archiveConfirm ? `Archive '${getArchiveTargetTitle(archiveConfirm)}'?` : ""}
+        description="This memory item will be archived."
+        confirmLabel="Archive"
+        onConfirm={handleArchiveConfirm}
+      />
 
       <SuggestedMemoryDialog
         companyId={selectedCompanyId}

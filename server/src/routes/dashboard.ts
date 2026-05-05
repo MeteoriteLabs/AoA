@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import { dashboardService } from "../services/dashboard.js";
 import { homeService } from "../services/home.js";
 import { suggestionService } from "../services/suggestions.js";

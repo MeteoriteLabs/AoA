@@ -1,5 +1,5 @@
 import { asc, eq, ne, sql, and } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@armyofagents/db";
 import {
   plugins,
   pluginConfig,
@@ -7,7 +7,7 @@ import {
   pluginJobs,
   pluginJobRuns,
   pluginWebhookDeliveries,
-} from "@paperclipai/db";
+} from "@armyofagents/db";
 import type {
   PaperclipPluginManifestV1,
   PluginStatus,
@@ -24,7 +24,7 @@ import type {
   PluginJobRunStatus,
   PluginJobRunTrigger,
   PluginWebhookDeliveryStatus,
-} from "@paperclipai/shared";
+} from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
 
 // ---------------------------------------------------------------------------
@@ -40,6 +40,12 @@ function isPluginKeyConflict(error: unknown): boolean {
   const err = error as { code?: string; constraint?: string; constraint_name?: string };
   const constraint = err.constraint ?? err.constraint_name;
   return err.code === "23505" && constraint === "plugins_plugin_key_idx";
+}
+
+function mapLegacyPaperclipKey(pluginKey: string): string | null {
+  if (pluginKey.startsWith("aoa.")) return `paperclip.${pluginKey.slice(4)}`;
+  if (pluginKey.startsWith("aoa-")) return `paperclip-${pluginKey.slice(4)}`;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,10 +78,18 @@ export function pluginRegistryService(db: Db) {
   }
 
   async function getByKey(pluginKey: string) {
-    return db
+    const row = await db
       .select()
       .from(plugins)
       .where(eq(plugins.pluginKey, pluginKey))
+      .then((rows) => rows[0] ?? null);
+    if (row) return row;
+    const legacyAlias = mapLegacyPaperclipKey(pluginKey);
+    if (!legacyAlias) return null;
+    return db
+      .select()
+      .from(plugins)
+      .where(eq(plugins.pluginKey, legacyAlias))
       .then((rows) => rows[0] ?? null);
   }
 

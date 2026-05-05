@@ -86,7 +86,7 @@ Inline expansion below the button:
 - **Changelog**: optional single-line text input
 - **parentVersionId**: auto-populated from `artifact.currentVersionId` (the latest version). Not exposed in UI — every new version branches from current. Sent in payload.
 - **sourceDetail**: omitted from UI for founder uploads. Sent as `null`.
-- Submit calls `POST /artifacts/:id/versions` using the existing `CreateArtifactVersion` type from `@paperclipai/shared`
+- Submit calls `POST /artifacts/:id/versions` using the existing `CreateArtifactVersion` type from `@armyofagents/shared`
 - On success: invalidate `artifacts.byIssue` query, collapse form
 - On error: show inline error message
 
@@ -136,7 +136,7 @@ export interface ArtifactWithVersions extends Artifact {
 }
 ```
 
-**Existing type** — reuse `CreateArtifactVersion` from `@paperclipai/shared` validators (already exported). Do NOT create a duplicate payload type.
+**Existing type** — reuse `CreateArtifactVersion` from `@armyofagents/shared` validators (already exported). Do NOT create a duplicate payload type.
 
 ### Version List
 

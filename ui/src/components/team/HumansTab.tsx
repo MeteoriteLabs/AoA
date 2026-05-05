@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Users, UserPlus, Shield, ArrowRightLeft, RotateCw, X } from "lucide-react";
-import type { TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@paperclipai/shared";
+import type { TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@armyofagents/shared";
 import { useNavigate } from "@/lib/router";
 import { teamApi } from "../../api/team";
 import { projectsApi } from "../../api/projects";

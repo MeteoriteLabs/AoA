@@ -5,7 +5,7 @@ import { queryKeys } from "../../../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FileTree } from "../FileTree";
-import type { DetectedOutput } from "@paperclipai/shared";
+import type { DetectedOutput } from "@armyofagents/shared";
 
 interface ChangesContextSectionProps {
   issueId: string;

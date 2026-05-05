@@ -548,11 +548,11 @@ Follow existing V2 test patterns:
 - Pure function tests for tool logic
 - Sequence-based mock DB for service tests (Proxy-based table stubs)
 - Contract tests for API shapes
-- **ESM/Drizzle workaround required:** All tests must mock `drizzle-orm` and `@paperclipai/db` with vi.mock() to avoid the ESM cycle issue:
+- **ESM/Drizzle workaround required:** All tests must mock `drizzle-orm` and `@armyofagents/db` with vi.mock() to avoid the ESM cycle issue:
 
 ```typescript
 vi.mock("drizzle-orm", () => ({ and: vi.fn(), eq: vi.fn(), sql: vi.fn() }));
-vi.mock("@paperclipai/db", () => ({
+vi.mock("@armyofagents/db", () => ({
   discussions: { id: "id", companyId: "company_id", status: "status" },
 }));
 ```

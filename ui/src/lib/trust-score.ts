@@ -1,4 +1,4 @@
-import type { AgentTrustScore } from "@paperclipai/shared";
+import type { AgentTrustScore } from "@armyofagents/shared";
 
 export type TrustScoreTone = "high" | "moderate" | "low";
 export type TrustScoreTrend = "up" | "down" | "stable";

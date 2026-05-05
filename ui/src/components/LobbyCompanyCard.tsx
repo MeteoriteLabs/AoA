@@ -3,7 +3,7 @@ import { CompanyPatternIcon } from "./CompanyPatternIcon";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import type { CompanyStats } from "@/api/companies";
-import type { Company } from "@paperclipai/shared";
+import type { Company } from "@armyofagents/shared";
 
 interface LobbyCompanyCardProps {
   company: Company;
