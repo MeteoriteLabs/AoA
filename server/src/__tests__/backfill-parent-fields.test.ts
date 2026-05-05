@@ -22,7 +22,7 @@ vi.mock("drizzle-orm", () => ({
   isNotNull: vi.fn((a: unknown) => ({ isNotNull: a })),
 }));
 
-vi.mock("@armyofagents/db", () => {
+vi.mock("@paperclipai/db", () => {
   const cols: Record<string, symbol> = {};
   const makeTable = (name: string) =>
     new Proxy({} as Record<string, unknown>, {
@@ -49,7 +49,7 @@ vi.mock("@armyofagents/db", () => {
   };
 });
 
-vi.mock("@armyofagents/shared", () => ({
+vi.mock("@paperclipai/shared", () => ({
   isUuidLike: vi.fn(() => false),
   normalizeAgentUrlKey: vi.fn((name: string) => name?.toLowerCase().replace(/\s+/g, "-") ?? null),
 }));

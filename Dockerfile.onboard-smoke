@@ -1,12 +1,12 @@
 FROM ubuntu:24.04
 
 ARG NODE_MAJOR=20
-ARG AOA_CLI_VERSION=latest
+ARG PAPERCLIPAI_VERSION=latest
 ARG HOST_UID=10001
 
 ENV DEBIAN_FRONTEND=noninteractive \
-  AOA_HOME=/aoa \
-  AOA_OPEN_ON_LISTEN=false \
+  PAPERCLIP_HOME=/paperclip \
+  PAPERCLIP_OPEN_ON_LISTEN=false \
   HOST=0.0.0.0 \
   PORT=3100 \
   HOME=/home/paperclip \
@@ -14,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
   LC_ALL=en_US.UTF-8 \
   NPM_CONFIG_UPDATE_NOTIFIER=false \
   NODE_MAJOR=${NODE_MAJOR} \
-  AOA_CLI_VERSION=${AOA_CLI_VERSION}
+  PAPERCLIPAI_VERSION=${PAPERCLIPAI_VERSION}
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl gnupg locales \
@@ -28,13 +28,13 @@ RUN apt-get update \
   && locale-gen en_US.UTF-8 \
   && groupadd --gid 10001 paperclip \
   && useradd --create-home --shell /bin/bash --uid "${HOST_UID}" --gid 10001 paperclip \
-  && mkdir -p /aoa /home/paperclip/workspace \
-  && chown -R paperclip:paperclip /aoa /home/paperclip \
+  && mkdir -p /paperclip /home/paperclip/workspace \
+  && chown -R paperclip:paperclip /paperclip /home/paperclip \
   && rm -rf /var/lib/apt/lists/*
 
-VOLUME ["/aoa"]
+VOLUME ["/paperclip"]
 WORKDIR /home/paperclip/workspace
 EXPOSE 3100
 USER paperclip
 
-CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$AOA_HOME\"; npx --yes \"@armyofagents/cli@${AOA_CLI_VERSION}\" onboard --yes --data-dir \"$AOA_HOME\""]
+CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$PAPERCLIP_HOME\"; npx --yes \"paperclipai@${PAPERCLIPAI_VERSION}\" onboard --yes --data-dir \"$PAPERCLIP_HOME\""]

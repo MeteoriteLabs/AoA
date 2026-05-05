@@ -1,8 +1,8 @@
 // server/src/services/internal-agent/event-listener.ts
 // Event-driven triggers for the internal agent — T12
-import type { Db } from "@armyofagents/db";
-import type { LiveEvent } from "@armyofagents/shared";
-import { internalAgentRuns } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
+import type { LiveEvent } from "@paperclipai/shared";
+import { internalAgentRuns } from "@paperclipai/db";
 import { subscribeCompanyLiveEvents } from "../live-events.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────

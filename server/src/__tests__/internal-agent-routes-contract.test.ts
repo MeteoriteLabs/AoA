@@ -20,7 +20,7 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 // ── DB table stubs ───────────────────────────────────────────────────────────
-vi.mock("@armyofagents/db", () => ({
+vi.mock("@paperclipai/db", () => ({
   internalAgentConfig: {
     id: "config_id",
     companyId: "config_company_id",

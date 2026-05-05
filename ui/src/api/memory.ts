@@ -1,4 +1,4 @@
-import type { MemoryItem, MemoryItemVersion, PendingMemoryQueue, Suggestion } from "@armyofagents/shared";
+import type { MemoryItem, MemoryItemVersion, PendingMemoryQueue, Suggestion } from "@paperclipai/shared";
 import { api } from "./client";
 
 export type SimilarMemoryItem = MemoryItem & {
@@ -84,48 +84,6 @@ export const memoryApi = {
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/restore`, {}),
   touchAccessedAt: (companyId: string, id: string) =>
     api.post<MemoryItem>(`/companies/${companyId}/memory/${id}/touch`, {}),
-  moveItem: async (
-    companyId: string,
-    id: string,
-    folderPath: string,
-  ): Promise<MemoryItem> => {
-    return api.patch<MemoryItem>(
-      `/companies/${companyId}/memory/items/${id}/move`,
-      { folderPath },
-    );
-  },
-  setPinnedToTop: async (
-    companyId: string,
-    id: string,
-    pinned: boolean,
-  ): Promise<MemoryItem> => {
-    return api.patch<MemoryItem>(
-      `/companies/${companyId}/memory/items/${id}/pin-to-top`,
-      { pinned },
-    );
-  },
-  changeLayer: async (
-    companyId: string,
-    id: string,
-    input: {
-      newLayer: "identity" | "domain" | "active_context" | "working";
-      departmentId?: string | null;
-      goalId?: string | null;
-      taskId?: string | null;
-      expiresAt?: string | Date | null;
-    },
-  ): Promise<MemoryItem> => {
-    return api.post<MemoryItem>(
-      `/companies/${companyId}/memory/items/${id}/change-layer`,
-      {
-        ...input,
-        expiresAt:
-          input.expiresAt instanceof Date
-            ? input.expiresAt.toISOString()
-            : input.expiresAt ?? null,
-      },
-    );
-  },
   searchSemantic: (
     companyId: string,
     q: string,

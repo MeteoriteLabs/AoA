@@ -1,19 +1,19 @@
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { formatDatabaseBackupResult, runDatabaseBackup } from "@armyofagents/db";
-import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
+import { formatDatabaseBackupResult, runDatabaseBackup } from "@paperclipai/db";
 import {
   expandHomePrefix,
   resolveDefaultBackupDir,
-  resolveAoaInstanceId,
+  resolvePaperclipInstanceId,
 } from "../config/home.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
-import { printAoaCliBanner } from "../utils/banner.js";
+import { printPaperclipCliBanner } from "../utils/banner.js";
 
 type DbBackupOptions = {
   config?: string;
   dir?: string;
+  retentionDays?: number;
   filenamePrefix?: string;
   json?: boolean;
 };
@@ -34,26 +34,38 @@ function resolveConnectionString(configPath?: string): { value: string; source: 
   };
 }
 
+function normalizeRetentionDays(value: number | undefined, fallback: number): number {
+  const candidate = value ?? fallback;
+  if (!Number.isInteger(candidate) || candidate < 1) {
+    throw new Error(`Invalid retention days '${String(candidate)}'. Use a positive integer.`);
+  }
+  return candidate;
+}
+
 function resolveBackupDir(raw: string): string {
   return path.resolve(expandHomePrefix(raw.trim()));
 }
 
 export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
-  printAoaCliBanner();
-  p.intro(pc.bgCyan(pc.black(" aoa db:backup ")));
+  printPaperclipCliBanner();
+  p.intro(pc.bgCyan(pc.black(" paperclip db:backup ")));
 
   const configPath = resolveConfigPath(opts.config);
   const config = readConfig(opts.config);
   const connection = resolveConnectionString(opts.config);
-  const defaultDir = resolveDefaultBackupDir(resolveAoaInstanceId());
+  const defaultDir = resolveDefaultBackupDir(resolvePaperclipInstanceId());
   const configuredDir = opts.dir?.trim() || config?.database.backup.dir || defaultDir;
   const backupDir = resolveBackupDir(configuredDir);
-  const filenamePrefix = opts.filenamePrefix?.trim() || "aoa";
+  const retentionDays = normalizeRetentionDays(
+    opts.retentionDays,
+    config?.database.backup.retentionDays ?? 30,
+  );
+  const filenamePrefix = opts.filenamePrefix?.trim() || "paperclip";
 
   p.log.message(pc.dim(`Config: ${configPath}`));
   p.log.message(pc.dim(`Connection source: ${connection.source}`));
   p.log.message(pc.dim(`Backup dir: ${backupDir}`));
-  p.log.message(pc.dim(`Retention: daily=${DEFAULT_BACKUP_RETENTION.dailyDays}d / weekly=${DEFAULT_BACKUP_RETENTION.weeklyWeeks}w / monthly=${DEFAULT_BACKUP_RETENTION.monthlyMonths}mo`));
+  p.log.message(pc.dim(`Retention: ${retentionDays} day(s)`));
 
   const spinner = p.spinner();
   spinner.start("Creating database backup...");
@@ -61,7 +73,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
     const result = await runDatabaseBackup({
       connectionString: connection.value,
       backupDir,
-      retention: DEFAULT_BACKUP_RETENTION,
+      retentionDays,
       filenamePrefix,
     });
     spinner.stop(`Backup saved: ${formatDatabaseBackupResult(result)}`);
@@ -74,7 +86,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
             sizeBytes: result.sizeBytes,
             prunedCount: result.prunedCount,
             backupDir,
-            retention: DEFAULT_BACKUP_RETENTION,
+            retentionDays,
             connectionSource: connection.source,
           },
           null,

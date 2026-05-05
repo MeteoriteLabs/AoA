@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
-import { issues, taskDependencies } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
+import { issues, taskDependencies } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
 import { heartbeatService } from "./heartbeat.js";
 import { conflict, notFound, unprocessable } from "../errors.js";

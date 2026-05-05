@@ -4,7 +4,7 @@
  */
 
 import { Loader2, Check, X as XIcon, FileText, FileCode, FileImage, File } from "lucide-react";
-import type { DetectedOutput } from "@armyofagents/shared";
+import type { DetectedOutput } from "@paperclipai/shared";
 
 /* ── Duration ──────────────────────────────────────────────────────────────── */
 

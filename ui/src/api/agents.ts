@@ -10,8 +10,8 @@ import type {
   UnifiedOrgNode,
   AgentInstructionsBundle,
   AgentInstructionsFileDetail,
-} from "@armyofagents/shared";
-import { isUuidLike, normalizeAgentUrlKey } from "@armyofagents/shared";
+} from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
 
 export interface AgentKey {
@@ -35,7 +35,7 @@ export interface ClaudeLoginResult {
   stderr: string;
 }
 
-/** @deprecated Use UnifiedOrgNode from @armyofagents/shared directly */
+/** @deprecated Use UnifiedOrgNode from @paperclipai/shared directly */
 export type OrgNode = UnifiedOrgNode;
 
 export interface AgentHireResponse {

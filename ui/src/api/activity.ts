@@ -1,4 +1,4 @@
-import type { ActivityEvent, DetectedOutput } from "@armyofagents/shared";
+import type { ActivityEvent, DetectedOutput } from "@paperclipai/shared";
 import { api } from "./client";
 
 export interface RunForIssue {

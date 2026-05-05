@@ -6,9 +6,9 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { PluginRecord } from "@armyofagents/shared";
+import type { PluginRecord } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Store, Trash } from "lucide-react";
+import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
@@ -29,7 +29,6 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
-import { PluginRollbackButton } from "@/components/marketplace/PluginRollbackButton";
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -47,7 +46,7 @@ function getPluginErrorSummary(plugin: PluginRecord): string {
 /**
  * PluginManager page component.
  *
- * Provides a management UI for the AoA plugin system:
+ * Provides a management UI for the Paperclip plugin system:
  * - Lists all installed plugins with their status, version, and category badges.
  * - Allows installing new plugins by npm package name.
  * - Provides per-plugin actions: enable, disable, navigate to settings.
@@ -186,7 +185,7 @@ export function PluginManager() {
                 <Label htmlFor="packageName">npm Package Name</Label>
                 <Input
                   id="packageName"
-                  placeholder="@armyofagents/plugin-example"
+                  placeholder="@paperclipai/plugin-example"
                   value={installPackage}
                   onChange={(e) => setInstallPackage(e.target.value)}
                 />
@@ -318,12 +317,6 @@ export function PluginManager() {
               <p className="text-xs text-muted-foreground mt-1">
                 Install a plugin to extend functionality.
               </p>
-              <Button asChild variant="outline" size="sm" className="mt-4">
-                <Link to="/marketplace/plugin">
-                  <Store className="h-4 w-4 mr-1.5" />
-                  Browse Marketplace
-                </Link>
-              </Button>
             </CardContent>
           </Card>
         ) : (
@@ -413,10 +406,6 @@ export function PluginManager() {
                         >
                           <Power className={cn("h-4 w-4", plugin.status === "ready" ? "text-green-600" : "")} />
                         </Button>
-                        <PluginRollbackButton
-                          pluginId={plugin.id}
-                          currentVersion={plugin.manifestJson.version ?? plugin.version}
-                        />
                         <Button
                           variant="outline"
                           size="icon-sm"

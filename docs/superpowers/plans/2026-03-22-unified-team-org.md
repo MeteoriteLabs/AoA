@@ -217,7 +217,7 @@ parentId: z.string().nullable().optional(),
 
 - [ ] **Step 5: Verify TypeScript compiles**
 
-Run: `pnpm --filter @armyofagents/shared build` (or `pnpm typecheck` if available)
+Run: `pnpm --filter @paperclipai/shared build` (or `pnpm typecheck` if available)
 Expected: No type errors
 
 - [ ] **Step 6: Commit**
@@ -298,8 +298,8 @@ Create `server/src/services/org-hierarchy.ts`:
 
 ```typescript
 import { eq, and } from "drizzle-orm";
-import { agents, companyMemberships } from "@armyofagents/db";
-import type { Db } from "@armyofagents/db";
+import { agents, companyMemberships } from "@paperclipai/db";
+import type { Db } from "@paperclipai/db";
 import { unprocessable, notFound } from "../errors.js";
 
 export function orgHierarchyService(db: Db) {
@@ -435,7 +435,7 @@ git commit -m "feat: add org-hierarchy service with cycle detection and parent v
 At top of `agents.ts`, add:
 
 ```typescript
-import { companyMemberships } from "@armyofagents/db";
+import { companyMemberships } from "@paperclipai/db";
 import { orgHierarchyService } from "./org-hierarchy.js";
 ```
 
@@ -550,7 +550,7 @@ git commit -m "feat: update agent service to use parentType/parentId with D7 syn
 
 - [ ] **Step 1: Add imports for user data queries**
 
-Ensure agents.ts imports: `companyMemberships`, `authUsers`, `userRoles`, `projects` from `@armyofagents/db`.
+Ensure agents.ts imports: `companyMemberships`, `authUsers`, `userRoles`, `projects` from `@paperclipai/db`.
 
 - [ ] **Step 2: Rewrite orgForCompany**
 
@@ -1103,7 +1103,7 @@ Expected: All pass. Fix any failures from new column additions (mock updates may
 
 - [ ] **Step 2: Run type checking**
 
-Run: `pnpm typecheck` or `pnpm --filter server tsc --noEmit && pnpm --filter @armyofagents/shared tsc --noEmit`
+Run: `pnpm typecheck` or `pnpm --filter server tsc --noEmit && pnpm --filter @paperclipai/shared tsc --noEmit`
 Expected: No type errors.
 
 - [ ] **Step 3: Run frontend build**

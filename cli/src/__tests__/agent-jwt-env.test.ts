@@ -21,7 +21,7 @@ function tempConfigPath(): string {
 describe("agent jwt env helpers", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
-    delete process.env.AOA_AGENT_JWT_SECRET;
+    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
   });
 
   afterEach(() => {
@@ -37,23 +37,23 @@ describe("agent jwt env helpers", () => {
     const envPath = resolveAgentJwtEnvFile(configPath);
     expect(fs.existsSync(envPath)).toBe(true);
     const contents = fs.readFileSync(envPath, "utf-8");
-    expect(contents).toContain("AOA_AGENT_JWT_SECRET=");
+    expect(contents).toContain("PAPERCLIP_AGENT_JWT_SECRET=");
   });
 
   it("loads secret from .env next to explicit config path", () => {
     const configPath = tempConfigPath();
     const envPath = resolveAgentJwtEnvFile(configPath);
-    fs.writeFileSync(envPath, "AOA_AGENT_JWT_SECRET=test-secret\n", { mode: 0o600 });
+    fs.writeFileSync(envPath, "PAPERCLIP_AGENT_JWT_SECRET=test-secret\n", { mode: 0o600 });
 
     const loaded = readAgentJwtSecretFromEnv(configPath);
     expect(loaded).toBe("test-secret");
-    expect(process.env.AOA_AGENT_JWT_SECRET).toBe("test-secret");
+    expect(process.env.PAPERCLIP_AGENT_JWT_SECRET).toBe("test-secret");
   });
 
   it("doctor check passes when secret exists in adjacent .env", () => {
     const configPath = tempConfigPath();
     const envPath = resolveAgentJwtEnvFile(configPath);
-    fs.writeFileSync(envPath, "AOA_AGENT_JWT_SECRET=check-secret\n", { mode: 0o600 });
+    fs.writeFileSync(envPath, "PAPERCLIP_AGENT_JWT_SECRET=check-secret\n", { mode: 0o600 });
 
     const result = agentJwtSecretCheck(configPath);
     expect(result.status).toBe("pass");

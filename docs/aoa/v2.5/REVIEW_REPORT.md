@@ -211,7 +211,7 @@ The integration doc shows `liveEvents.publish(companyId, { type, data })`. The a
 publishLiveEvent({ companyId, type, payload });  // not .publish()
 ```
 
-And event types are typed via `LiveEventType` from `@armyofagents/shared`, not arbitrary strings. New event types for v2.5 must be added to the `LiveEventType` union in the shared package.
+And event types are typed via `LiveEventType` from `@paperclipai/shared`, not arbitrary strings. New event types for v2.5 must be added to the `LiveEventType` union in the shared package.
 
 **Fix:** Use `publishLiveEvent()` (named export from `services/live-events.ts`) and add new types to `LiveEventType`.
 
@@ -359,13 +359,13 @@ api.use(workflowTemplateRoutes(db));
 
 ### G9. Test File Import Patterns (ESM/Drizzle Workaround)
 
-**Gap:** The testing doc describes test suites but doesn't mention the critical ESM/Drizzle mock workaround. All v2.5 tests MUST use the proxy-based mock pattern for `@armyofagents/db` and `drizzle-orm` to avoid the ESM cycle issue.
+**Gap:** The testing doc describes test suites but doesn't mention the critical ESM/Drizzle mock workaround. All v2.5 tests MUST use the proxy-based mock pattern for `@paperclipai/db` and `drizzle-orm` to avoid the ESM cycle issue.
 
 ```typescript
 vi.mock("drizzle-orm", () => ({
   and: vi.fn(), eq: vi.fn(), sql: vi.fn(), // etc.
 }));
-vi.mock("@armyofagents/db", () => ({
+vi.mock("@paperclipai/db", () => ({
   discussions: { id: "id", companyId: "company_id", /* ... */ },
 }));
 ```

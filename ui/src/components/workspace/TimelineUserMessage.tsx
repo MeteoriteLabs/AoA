@@ -2,7 +2,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Identity } from "../Identity";
 import { cn, relativeTime } from "@/lib/utils";
-import type { IssueComment } from "@armyofagents/shared";
+import type { IssueComment } from "@paperclipai/shared";
 
 interface TimelineUserMessageProps {
   comment: IssueComment;

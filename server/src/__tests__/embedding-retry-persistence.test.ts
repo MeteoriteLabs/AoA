@@ -1,17 +1,34 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { makeTableProxy, drizzleOperatorStubs, mockDbCapabilities } from "./helpers/drizzle-mock.js";
 
-// Mock @armyofagents/db to avoid drizzle-orm ESM cycle
-vi.mock("@armyofagents/db", () => ({
-  memoryItems: makeTableProxy("memory_items"),
-}));
+// Mock @paperclipai/db to avoid drizzle-orm ESM cycle
+vi.mock("@paperclipai/db", () => {
+  const makeTable = (name: string) => {
+    const cols: Record<string, symbol> = {};
+    return new Proxy({} as Record<string, unknown>, {
+      get(_target, prop) {
+        if (prop === "_") return { name };
+        if (prop === "$inferSelect" || prop === "$inferInsert") return {};
+        if (typeof prop === "string") {
+          if (!cols[prop]) cols[prop] = Symbol(prop);
+          return cols[prop];
+        }
+        return undefined;
+      },
+    });
+  };
+
+  return {
+    memoryItems: makeTable("memory_items"),
+  };
+});
 
 // Mock drizzle-orm operators
-vi.mock("drizzle-orm", () => drizzleOperatorStubs());
-
-// Mock db-capabilities: all tests in this file exercise the embedding-queue
-// worker which returns early when hasVectorSupport is false.
-vi.mock("../services/db-capabilities.js", () => mockDbCapabilities());
+vi.mock("drizzle-orm", () => ({
+  and: (..._args: unknown[]) => "and",
+  eq: (..._args: unknown[]) => "eq",
+  isNull: (..._args: unknown[]) => "isNull",
+  sql: new Proxy(() => "sql", { get: () => () => "sql", apply: () => "sql" }),
+}));
 
 // Mock logger
 vi.mock("../middleware/logger.js", () => ({
@@ -34,7 +51,7 @@ import { resolveApiKey } from "../adapters/api-common.js";
 import { processEmbeddingQueue, invalidateEmbedding } from "../services/embeddings.js";
 
 // ---------------------------------------------------------------------------
-// Sequence-based mock DB (with setCalls tracking for update assertions)
+// Sequence-based mock DB
 // ---------------------------------------------------------------------------
 type MockRow = Record<string, unknown>;
 

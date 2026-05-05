@@ -9,18 +9,6 @@ export {
   portabilitySecretRequirementSchema,
   portabilityCompanyManifestEntrySchema,
   portabilityAgentManifestEntrySchema,
-  portabilityProjectManifestEntrySchema,
-  portabilitySkillManifestEntrySchema,
-  portabilitySkillFileInventoryEntrySchema,
-  portabilityRoutineManifestEntrySchema,
-  portabilityRoutineTriggerManifestEntrySchema,
-  portabilityRoutineVariableManifestEntrySchema,
-  portabilityEnvInputManifestEntrySchema,
-  portabilityInternalAgentConfigManifestSchema,
-  portabilityBudgetPolicyManifestSchema,
-  portabilityFinanceEventManifestSchema,
-  portabilityQuotaWindowManifestSchema,
-  portabilityWorkflowTemplateManifestSchema,
   portabilityManifestSchema,
   portabilitySourceSchema,
   portabilityTargetSchema,
@@ -109,33 +97,7 @@ export {
   type UpdateMemoryItem,
   type SuggestMemoryUpdate,
   type SuggestMemoryArchive,
-  // V2.6: memory infrastructure
-  memoryProfileSchema,
-  memoryWriteCapabilitiesSchema,
-  createMemoryRelationSchema,
-  memoryRetrievalRowSchema,
-  memoryExtractionProgressSchema,
-  createMemoryExtractionSchema,
-  createMemoryExtractionBatchSchema,
-  type MemoryProfile,
-  type MemoryWriteCapabilities,
-  type CreateMemoryRelation,
-  type MemoryRetrievalRow,
-  type MemoryExtractionProgress,
-  type CreateMemoryExtraction,
-  type CreateMemoryExtractionBatch,
 } from "./memory.js";
-
-export {
-  memoryFolderCreateSchema,
-  memoryFolderUpdateSchema,
-  normalizeMemoryFolderPath,
-} from "./memory-folder.js";
-
-export {
-  memoryAssetUpdateSchema,
-  memoryAssetMoveSchema,
-} from "./memory-asset.js";
 
 export {
   createDebriefSchema,
@@ -191,15 +153,6 @@ export {
 } from "./cost.js";
 
 export {
-  financeDirectionSchema,
-  createFinanceEventSchema,
-  financeDateRangeQuerySchema,
-  financeListQuerySchema,
-  type CreateFinanceEvent,
-  type FinanceListQuery,
-} from "./finance.js";
-
-export {
   createAssetImageMetadataSchema,
   createAssetFileMetadataSchema,
   type CreateAssetImageMetadata,
@@ -236,7 +189,6 @@ export {
   claimJoinRequestApiKeySchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
-  searchAdminUsersQuerySchema,
   boardCliAuthAccessLevelSchema,
   createCliAuthChallengeSchema,
   resolveCliAuthChallengeSchema,
@@ -246,7 +198,6 @@ export {
   type ClaimJoinRequestApiKey,
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
-  type SearchAdminUsersQuery,
 } from "./access.js";
 
 export {
@@ -259,13 +210,6 @@ export {
   type TransferAdmin,
   type ReassignAndRemove,
 } from "./team.js";
-
-export {
-  currentUserProfileSchema,
-  updateCurrentUserProfileSchema,
-  type CurrentUserProfile,
-  type UpdateCurrentUserProfile,
-} from "./auth-profile.js";
 
 export {
   workflowStepSchema,
@@ -330,7 +274,6 @@ export {
 } from "./company-skill.js";
 
 export {
-  routineVariableSchema,
   createRoutineSchema,
   updateRoutineSchema,
   createRoutineTriggerSchema,
@@ -349,50 +292,17 @@ export {
   patchInstanceGeneralSettingsSchema,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
-  backupRetentionPolicySchema,
-  feedbackDataSharingPreferenceSchema,
   type PatchInstanceGeneralSettings,
   type PatchInstanceExperimentalSettings,
 } from "./instance.js";
 
 export {
   executionWorkspaceStatusSchema,
-  executionWorkspaceConfigSchema,
-  workspaceRuntimeControlTargetSchema,
-  executionWorkspaceCloseReadinessStateSchema,
-  executionWorkspaceCloseActionKindSchema,
-  executionWorkspaceCloseActionSchema,
-  executionWorkspaceCloseLinkedIssueSchema,
-  executionWorkspaceCloseGitReadinessSchema,
-  workspaceRuntimeServiceSchema,
-  executionWorkspaceCloseReadinessSchema,
   updateExecutionWorkspaceSchema,
   type UpdateExecutionWorkspace,
 } from "./execution-workspace.js";
 
 export {
-  feedbackTargetTypeSchema,
-  feedbackVoteValueSchema,
-  upsertIssueFeedbackVoteSchema,
-  type UpsertIssueFeedbackVote,
-} from "./feedback.js";
-
-export {
   pluginManifestV1Schema,
   type PluginManifestV1Input,
 } from "./plugin.js";
-
-export {
-  sidebarPreferencesSchema,
-  updateSidebarPreferencesSchema,
-  type SidebarPreferences,
-  type UpdateSidebarPreferences,
-} from "./sidebar-preferences.js";
-
-export {
-  INBOX_DISMISSAL_ITEM_KEY_REGEX,
-  inboxDismissalSchema,
-  createInboxDismissalSchema,
-  type InboxDismissal,
-  type CreateInboxDismissal,
-} from "./inbox-dismissals.js";

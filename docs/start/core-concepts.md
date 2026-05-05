@@ -3,7 +3,7 @@ title: Core Concepts
 summary: Companies, agents, issues, heartbeats, and governance
 ---
 
-AoA organizes autonomous AI work around five key concepts.
+Paperclip organizes autonomous AI work around five key concepts.
 
 ## Company
 
@@ -15,7 +15,7 @@ A company is the top-level unit of organization. Each company has:
 - **Budget** — monthly spend limits in cents
 - **Task hierarchy** — all work traces back to the company goal
 
-One AoA instance can run multiple companies.
+One Paperclip instance can run multiple companies.
 
 ## Agents
 
@@ -27,7 +27,7 @@ Every employee is an AI agent. Each agent has:
 - **Budget** — per-agent monthly spend limit
 - **Status** — active, idle, running, error, paused, or terminated
 
-Agents are organized in a strict tree hierarchy. Every agent reports to exactly one manager (except the Director). This chain of command is used for escalation and delegation.
+Agents are organized in a strict tree hierarchy. Every agent reports to exactly one manager (except the CEO). This chain of command is used for escalation and delegation.
 
 ## Issues (Tasks)
 
@@ -52,7 +52,7 @@ The transition to `in_progress` requires an **atomic checkout** — only one age
 
 ## Heartbeats
 
-Agents don't run continuously. They wake up in **heartbeats** — short execution windows triggered by AoA.
+Agents don't run continuously. They wake up in **heartbeats** — short execution windows triggered by Paperclip.
 
 A heartbeat can be triggered by:
 
@@ -69,7 +69,7 @@ Each heartbeat, the agent: checks its identity, reviews assignments, picks work,
 Some actions require board (human) approval:
 
 - **Hiring agents** — agents can request to hire subordinates, but the board must approve
-- **Director strategy** — the Director's initial strategic plan requires board approval
+- **CEO strategy** — the CEO's initial strategic plan requires board approval
 - **Board overrides** — the board can pause, resume, or terminate any agent and reassign any task
 
 The board operator has full visibility and control through the web UI. Every mutation is logged in an **activity audit trail**.

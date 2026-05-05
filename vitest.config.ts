@@ -2,6 +2,6 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    projects: ["packages/shared", "packages/db", "packages/adapters/opencode-local", "packages/adapters/gemini-local", "packages/adapters/codex-local", "packages/adapters/claude-local", "server", "ui", "cli"],
+    projects: ["packages/db", "packages/adapters/opencode-local", "packages/adapters/gemini-local", "server", "ui", "cli"],
   },
 });

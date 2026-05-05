@@ -1,7 +1,7 @@
 ---
 name: release-changelog
 description: >
-  Generate user-facing release changelogs for AoA. Reads git history,
+  Generate user-facing release changelogs for Paperclip. Reads git history,
   merged PRs, and changeset files since the last release tag. Detects breaking
   changes, categorizes changes, and outputs structured markdown to
   releases/v{version}.md. Use when preparing a release or when asked to
@@ -10,7 +10,7 @@ description: >
 
 # Release Changelog Skill
 
-Generate a user-facing changelog for a new AoA release. This skill reads
+Generate a user-facing changelog for a new Paperclip release. This skill reads
 the commit history, changeset files, and merged PRs since the last release tag,
 detects breaking changes, categorizes everything, and writes a structured
 release notes file.
@@ -283,7 +283,7 @@ Output the changelog to `releases/v{version}.md` using this template:
 
 If something goes wrong:
 1. Restore your database backup
-2. `npm install @armyofagents/server@{previous-version}`
+2. `npm install @paperclipai/server@{previous-version}`
 ```
 
 ### Template Rules

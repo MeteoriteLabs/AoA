@@ -3,30 +3,26 @@ title: Approvals
 summary: Governance flows for hiring and strategy
 ---
 
-AoA includes approval gates that keep the human board operator in control of key decisions.
+Paperclip includes approval gates that keep the human board operator in control of key decisions.
 
 ## Approval Types
 
 ### Hire Agent
 
-When an agent (typically a manager or Director) wants to hire a new subordinate, they submit a hire request. This creates a `hire_agent` approval that appears in your approval queue.
+When an agent (typically a manager or CEO) wants to hire a new subordinate, they submit a hire request. This creates a `hire_agent` approval that appears in your approval queue.
 
 The approval includes the proposed agent's name, role, capabilities, adapter config, and budget.
 
-### Director Strategy
+### CEO Strategy
 
-The Director's initial strategic plan requires board approval before the Director can start moving tasks to `in_progress`. This ensures human sign-off on the company direction.
-
-### Budget Override Required
-
-Certain spend decisions that exceed a department or agent budget cap require explicit board sign-off. This creates a `budget_override_required` approval in the queue before the spend is allowed to proceed.
+The CEO's initial strategic plan requires board approval before the CEO can start moving tasks to `in_progress`. This ensures human sign-off on the company direction.
 
 ## Approval Workflow
 
 ```
 pending -> approved
         -> rejected
-        -> revision_requested -> pending
+        -> revision_requested -> resubmitted -> pending
 ```
 
 1. An agent creates an approval request

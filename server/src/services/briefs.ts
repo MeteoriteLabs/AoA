@@ -1,12 +1,12 @@
 import { and, desc, eq, sql } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import {
   briefs,
   briefItems,
   debriefs,
   memoryItems,
   memoryItemVersions,
-} from "@armyofagents/db";
+} from "@paperclipai/db";
 import { issueService } from "./issues.js";
 import { memoryService } from "./memory.js";
 import { dependencyService } from "./dependencies.js";

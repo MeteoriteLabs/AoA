@@ -2,26 +2,25 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@armyofagents/adapter-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
   asBoolean,
   asStringArray,
   parseObject,
-  buildAoaEnv,
+  buildPaperclipEnv,
   redactEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
   renderTemplate,
   runChildProcess,
-} from "@armyofagents/adapter-utils/server-utils";
+} from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
-import { isCodexLocalFastModeSupported, CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const AOA_SKILLS_CANDIDATES = [
+const PAPERCLIP_SKILLS_CANDIDATES = [
   path.resolve(__moduleDir, "../../skills"),         // published: <pkg>/dist/server/ -> <pkg>/skills/
   path.resolve(__moduleDir, "../../../../../skills"), // dev: src/server/ -> repo root/skills/
 ];
@@ -69,7 +68,7 @@ function codexHomeDir(): string {
 }
 
 async function resolvePaperclipSkillsDir(): Promise<string | null> {
-  for (const candidate of AOA_SKILLS_CANDIDATES) {
+  for (const candidate of PAPERCLIP_SKILLS_CANDIDATES) {
     const isDir = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
     if (isDir) return candidate;
   }
@@ -94,23 +93,23 @@ async function ensureCodexSkillsInjected(onLog: AdapterExecutionContext["onLog"]
       await fs.symlink(source, target);
       await onLog(
         "stderr",
-        `[aoa] Injected Codex skill "${entry.name}" into ${skillsHome}\n`,
+        `[paperclip] Injected Codex skill "${entry.name}" into ${skillsHome}\n`,
       );
     } catch (err) {
       await onLog(
         "stderr",
-        `[aoa] Failed to inject Codex skill "${entry.name}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[paperclip] Failed to inject Codex skill "${entry.name}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
   }
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, authToken } = ctx;
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your AoA work.",
+    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
   const command = asString(config.command, "codex");
   const model = asString(config.model, "");
@@ -123,8 +122,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.dangerouslyBypassApprovalsAndSandbox,
     asBoolean(config.dangerouslyBypassSandbox, false),
   );
-  const fastModeRequested = asBoolean(config.fastMode, false);
-  const fastModeApplied = fastModeRequested && isCodexLocalFastModeSupported(model);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -145,9 +142,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureCodexSkillsInjected(onLog);
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
-    typeof envConfig.AOA_API_KEY === "string" && envConfig.AOA_API_KEY.trim().length > 0;
-  const env: Record<string, string> = { ...buildAoaEnv(agent) };
-  env.AOA_RUN_ID = runId;
+    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
     (typeof context.issueId === "string" && context.issueId.trim().length > 0 && context.issueId.trim()) ||
@@ -172,46 +169,46 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
   if (wakeTaskId) {
-    env.AOA_TASK_ID = wakeTaskId;
+    env.PAPERCLIP_TASK_ID = wakeTaskId;
   }
   if (wakeReason) {
-    env.AOA_WAKE_REASON = wakeReason;
+    env.PAPERCLIP_WAKE_REASON = wakeReason;
   }
   if (wakeCommentId) {
-    env.AOA_WAKE_COMMENT_ID = wakeCommentId;
+    env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
   }
   if (approvalId) {
-    env.AOA_APPROVAL_ID = approvalId;
+    env.PAPERCLIP_APPROVAL_ID = approvalId;
   }
   if (approvalStatus) {
-    env.AOA_APPROVAL_STATUS = approvalStatus;
+    env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   }
   if (linkedIssueIds.length > 0) {
-    env.AOA_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+    env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   }
   if (effectiveWorkspaceCwd) {
-    env.AOA_WORKSPACE_CWD = effectiveWorkspaceCwd;
+    env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
   }
   if (workspaceSource) {
-    env.AOA_WORKSPACE_SOURCE = workspaceSource;
+    env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
   }
   if (workspaceId) {
-    env.AOA_WORKSPACE_ID = workspaceId;
+    env.PAPERCLIP_WORKSPACE_ID = workspaceId;
   }
   if (workspaceRepoUrl) {
-    env.AOA_WORKSPACE_REPO_URL = workspaceRepoUrl;
+    env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
   }
   if (workspaceRepoRef) {
-    env.AOA_WORKSPACE_REPO_REF = workspaceRepoRef;
+    env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
   }
   if (workspaceHints.length > 0) {
-    env.AOA_WORKSPACES_JSON = JSON.stringify(workspaceHints);
+    env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
   }
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
   }
   if (!hasExplicitApiKey && authToken) {
-    env.AOA_API_KEY = authToken;
+    env.PAPERCLIP_API_KEY = authToken;
   }
   const billingType = resolveCodexBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
@@ -235,7 +232,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stderr",
-      `[aoa] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
     );
   }
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
@@ -250,13 +247,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
       await onLog(
         "stderr",
-        `[aoa] Loaded agent instructions file: ${instructionsFilePath}\n`,
+        `[paperclip] Loaded agent instructions file: ${instructionsFilePath}\n`,
       );
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
         "stderr",
-        `[aoa] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
       );
     }
   }
@@ -289,24 +286,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
     if (model) args.push("--model", model);
     if (modelReasoningEffort) args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
-    if (fastModeApplied) {
-      // service_tier expects a quoted string ("fast"); features.fast_mode expects an
-      // unquoted boolean (true). JSON.stringify happens to produce both correctly.
-      args.push("-c", `service_tier=${JSON.stringify("fast")}`);
-      args.push("-c", `features.fast_mode=${JSON.stringify(true)}`);
-    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     if (resumeSessionId) args.push("resume", resumeSessionId, "-");
     else args.push("-");
     return args;
   };
-
-  if (fastModeRequested && !fastModeApplied) {
-    await onLog(
-      "stderr",
-      `[aoa] fastMode requested but model "${model || "(none)"}" does not support it (supported: ${CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ")}); ignoring.\n`,
-    );
-  }
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const args = buildArgs(resumeSessionId);
@@ -341,7 +325,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (!cleaned.trim()) return;
         await onLog(stream, cleaned);
       },
-      onSpawn,
     });
     const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
     return {
@@ -419,7 +402,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   ) {
     await onLog(
       "stderr",
-      `[aoa] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+      `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
     );
     const retry = await runAttempt(null);
     return toResult(retry, true);

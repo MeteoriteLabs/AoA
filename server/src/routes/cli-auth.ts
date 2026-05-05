@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
-import type { Db } from "@armyofagents/db";
-import { createCliAuthChallengeSchema, resolveCliAuthChallengeSchema } from "@armyofagents/shared";
+import type { Db } from "@paperclipai/db";
+import { createCliAuthChallengeSchema, resolveCliAuthChallengeSchema } from "@paperclipai/shared";
 import { badRequest, notFound, unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { boardAuthService, logActivity } from "../services/index.js";

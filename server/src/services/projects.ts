@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
-import { projects, projectGoals, goals, projectWorkspaces, issues } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
+import { projects, projectGoals, goals, projectWorkspaces, issues } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
@@ -8,15 +8,12 @@ import {
   normalizeProjectUrlKey,
   type ProjectGoalRef,
   type ProjectWorkspace,
-} from "@armyofagents/shared";
+} from "@paperclipai/shared";
 import { conflict } from "../errors.js";
-import { isRepoOnlySentinel } from "./heartbeat.js";
-import { logger } from "../middleware/logger.js";
-import { memoryFoldersService, seedFoldersOnDepartmentCreate } from "./memory-folders.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
-
+const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 type CreateWorkspaceInput = {
   name?: string | null;
   cwd?: string | null;
@@ -158,7 +155,7 @@ function readNonEmptyString(value: unknown): string | null {
 function normalizeWorkspaceCwd(value: unknown): string | null {
   const cwd = readNonEmptyString(value);
   if (!cwd) return null;
-  return isRepoOnlySentinel(cwd) ? null : cwd;
+  return cwd === REPO_ONLY_CWD_SENTINEL ? null : cwd;
 }
 
 function deriveNameFromCwd(cwd: string): string {
@@ -292,20 +289,6 @@ export function projectService(db: Db) {
         await syncGoalLinks(db, row.id, companyId, ids);
       }
 
-      // Best-effort: seed default memory folders for new departments.
-      await seedFoldersOnDepartmentCreate(memoryFoldersService(db), {
-        companyId,
-        project: {
-          id: row.id,
-          type: row.type,
-          name: row.name,
-          urlKey: deriveProjectUrlKey(row.name, row.id),
-          functionType: row.functionType ?? null,
-        },
-      }).catch((err: unknown) => {
-        logger.warn({ err, projectId: row.id }, "memory folder seeding failed");
-      });
-
       const [withGoals] = await attachGoals(db, [row]);
       const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
       return enriched!;
@@ -342,16 +325,6 @@ export function projectService(db: Db) {
       const [withGoals] = await attachGoals(db, [row]);
       const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
       return enriched ?? null;
-    },
-
-    updateEnvironment: async (id: string, env: Record<string, unknown> | null): Promise<ProjectRow | null> => {
-      const row = await db
-        .update(projects)
-        .set({ env: env as typeof projects.$inferInsert["env"], updatedAt: new Date() })
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return row;
     },
 
     remove: async (id: string) => {

@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AGENT_ADAPTER_TYPES, AGENT_ROLES } from "@armyofagents/shared";
+import { AGENT_ADAPTER_TYPES, AGENT_ROLES } from "@paperclipai/shared";
 import type {
   Agent,
   AdapterEnvironmentTestResult,
   CompanySecret,
   EnvBinding,
-} from "@armyofagents/shared";
+} from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { secretsApi } from "../api/secrets";
@@ -14,8 +14,8 @@ import { assetsApi } from "../api/assets";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
-} from "@armyofagents/adapter-codex-local";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "@armyofagents/adapter-cursor-local";
+} from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import {
   Popover,
   PopoverContent,
@@ -55,10 +55,10 @@ import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 
 /* ---- Create mode values ---- */
 
-// Canonical type lives in @armyofagents/adapter-utils; re-exported here
+// Canonical type lives in @paperclipai/adapter-utils; re-exported here
 // so existing imports from this file keep working.
-export type { CreateConfigValues } from "@armyofagents/adapter-utils";
-import type { CreateConfigValues } from "@armyofagents/adapter-utils";
+export type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
 /* ---- Props ---- */
 
@@ -303,6 +303,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "hermes_local" ||
     adapterType === "gemini_local" ||
     adapterType === "cursor";
+  const isApiAdapter =
+    adapterType === "claude_api" ||
+    adapterType === "openai_api" ||
+    adapterType === "gemini_api";
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
 
   // Fetch adapter models for the effective adapter type
@@ -524,7 +528,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     String(config.promptTemplate ?? ""),
                   )}
                   onChange={(v) => mark("adapterConfig", "promptTemplate", v || undefined)}
-                  placeholder="You are agent {{ agent.name }}..."
+                  placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
                   contentClassName="min-h-[88px] text-sm font-mono"
                   imageUploadHandler={async (file) => {
                     const namespace = `agents/${props.agent.id}/prompt-template`;
@@ -633,6 +637,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <AdapterEnvironmentResult result={testEnvironment.data} />
           )}
 
+          {isApiAdapter && (
+            <p className="text-xs text-muted-foreground mt-1">
+              API key must be configured in Settings &gt; LLM Providers.
+            </p>
+          )}
+
           {/* Working directory */}
           {isLocal && (
             <Field label="Working directory" hint={help.cwd}>
@@ -685,7 +695,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               <MarkdownEditor
                 value={val!.promptTemplate}
                 onChange={(v) => set!({ promptTemplate: v })}
-                placeholder="You are agent {{ agent.name }}..."
+                placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
                 contentClassName="min-h-[88px] text-sm font-mono"
                 imageUploadHandler={async (file) => {
                   const namespace = "agents/drafts/prompt-template";
@@ -1052,7 +1062,7 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local", "cursor", "hermes_local", "gemini_local"]);
+const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local", "cursor", "claude_api", "openai_api", "gemini_api", "hermes_local", "gemini_local"]);
 
 /** Display list includes all real adapter types plus UI-only coming-soon entries. */
 const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [
@@ -1354,7 +1364,7 @@ function EnvVarEditor({
       })}
       {sealError && <p className="text-[11px] text-destructive">{sealError}</p>}
       <p className="text-[11px] text-muted-foreground/60">
-        AOA_* variables are injected automatically at runtime.
+        PAPERCLIP_* variables are injected automatically at runtime.
       </p>
     </div>
   );

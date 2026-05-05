@@ -1,13 +1,11 @@
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
   assets,
-  authUsers,
   companies,
   companyMemberships,
-  executionWorkspaces,
   goals,
   heartbeatRuns,
   issueAttachments,
@@ -19,17 +17,13 @@ import {
   projectWorkspaces,
   projects,
   taskDependencies,
-  userRoles,
-} from "@armyofagents/db";
-import { extractProjectMentionIds } from "@armyofagents/shared";
+} from "@paperclipai/db";
+import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { logger } from "../middleware/logger.js";
 import { dependencyService } from "./dependencies.js";
 import { heartbeatService } from "./heartbeat.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { deriveIssueUserContext } from "./issue-user-context.js";
-import { issueExecutionWorkspaceModeForPersistedWorkspace } from "./execution-workspace-policy.js";
-import { notificationService } from "./notifications.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -67,50 +61,6 @@ export interface IssueFilters {
   projectId?: string;
   labelId?: string;
   q?: string;
-  /**
-   * Filter by parent task. Use `null` to select only top-level tasks (no parent).
-   * Use a UUID string to select children of a specific parent.
-   * Omit to include all tasks regardless of parentage.
-   */
-  parentId?: string | null;
-}
-
-export function pickWorkspaceInheritanceSourceIssueId(input: {
-  inheritExecutionWorkspaceFromIssueId?: string | null;
-  parentId?: string | null;
-}): string | null {
-  return input.inheritExecutionWorkspaceFromIssueId ?? input.parentId ?? null;
-}
-
-export interface WorkspaceInheritanceSource {
-  executionWorkspaceId: string | null;
-  executionWorkspaceSettings: Record<string, unknown> | null;
-}
-
-export interface ResolvedWorkspaceInheritance {
-  executionWorkspaceId: string;
-  executionWorkspacePreference: "reuse_existing";
-  executionWorkspaceSettings: Record<string, unknown>;
-}
-
-export function resolveExecutionWorkspaceInheritance(input: {
-  sourceIssue: WorkspaceInheritanceSource | null;
-  sourceWorkspaceMode: string | null | undefined;
-  isolatedWorkspacesEnabled: boolean;
-  hasExplicitOverride: boolean;
-}): ResolvedWorkspaceInheritance | null {
-  if (!input.sourceIssue) return null;
-  if (!input.isolatedWorkspacesEnabled) return null;
-  if (input.hasExplicitOverride) return null;
-  if (!input.sourceIssue.executionWorkspaceId) return null;
-  return {
-    executionWorkspaceId: input.sourceIssue.executionWorkspaceId,
-    executionWorkspacePreference: "reuse_existing",
-    executionWorkspaceSettings: {
-      ...((input.sourceIssue.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? {}),
-      mode: issueExecutionWorkspaceModeForPersistedWorkspace(input.sourceWorkspaceMode),
-    },
-  };
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -487,13 +437,6 @@ export function issueService(db: Db) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
-      if (filters && Object.prototype.hasOwnProperty.call(filters, "parentId")) {
-        conditions.push(
-          filters.parentId === null
-            ? isNull(issues.parentId)
-            : eq(issues.parentId, filters.parentId as string),
-        );
-      }
       if (filters?.labelId) {
         const labeledIssueIds = await db
           .select({ issueId: issueLabels.issueId })
@@ -655,13 +598,10 @@ export function issueService(db: Db) {
 
     create: async (
       companyId: string,
-      data: Omit<typeof issues.$inferInsert, "companyId"> & {
-        labelIds?: string[];
-        inheritExecutionWorkspaceFromIssueId?: string | null;
-      },
+      data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
       outerTx?: Parameters<Parameters<typeof db.transaction>[0]>[0],
     ) => {
-      const { labelIds: inputLabelIds, inheritExecutionWorkspaceFromIssueId, ...issueData } = data;
+      const { labelIds: inputLabelIds, ...issueData } = data;
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
@@ -675,55 +615,6 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       const run = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
-        const workspaceInheritanceIssueId = pickWorkspaceInheritanceSourceIssueId({
-          inheritExecutionWorkspaceFromIssueId,
-          parentId: (issueData as { parentId?: string | null }).parentId ?? null,
-        });
-        const hasExplicitExecutionWorkspaceOverride =
-          (issueData as Record<string, unknown>).executionWorkspaceId !== undefined ||
-          (issueData as Record<string, unknown>).executionWorkspacePreference !== undefined ||
-          (issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined;
-
-        let inheritedExecutionWorkspaceId: string | null = null;
-        let inheritedExecutionWorkspacePreference: string | null = null;
-        let inheritedExecutionWorkspaceSettings: Record<string, unknown> | null = null;
-
-        if (workspaceInheritanceIssueId) {
-          const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental())
-            .enableIsolatedWorkspaces;
-          const sourceIssue = await tx
-            .select({
-              executionWorkspaceId: issues.executionWorkspaceId,
-              executionWorkspaceSettings: issues.executionWorkspaceSettings,
-            })
-            .from(issues)
-            .where(and(eq(issues.id, workspaceInheritanceIssueId), eq(issues.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
-          if (sourceIssue == null && inheritExecutionWorkspaceFromIssueId) {
-            throw notFound("Workspace inheritance issue not found");
-          }
-          let sourceWorkspaceMode: string | null = null;
-          if (sourceIssue?.executionWorkspaceId) {
-            const sourceWorkspace = await tx
-              .select({ mode: executionWorkspaces.mode })
-              .from(executionWorkspaces)
-              .where(eq(executionWorkspaces.id, sourceIssue.executionWorkspaceId))
-              .then((rows) => rows[0] ?? null);
-            sourceWorkspaceMode = sourceWorkspace?.mode ?? null;
-          }
-          const resolved = resolveExecutionWorkspaceInheritance({
-            sourceIssue,
-            sourceWorkspaceMode,
-            isolatedWorkspacesEnabled,
-            hasExplicitOverride: hasExplicitExecutionWorkspaceOverride,
-          });
-          if (resolved) {
-            inheritedExecutionWorkspaceId = resolved.executionWorkspaceId;
-            inheritedExecutionWorkspacePreference = resolved.executionWorkspacePreference;
-            inheritedExecutionWorkspaceSettings = resolved.executionWorkspaceSettings;
-          }
-        }
-
         const [company] = await tx
           .update(companies)
           .set({ issueCounter: sql`${companies.issueCounter} + 1` })
@@ -733,19 +624,7 @@ export function issueService(db: Db) {
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
 
-        const values = {
-          ...issueData,
-          ...(inheritedExecutionWorkspaceId ? { executionWorkspaceId: inheritedExecutionWorkspaceId } : {}),
-          ...(inheritedExecutionWorkspacePreference
-            ? { executionWorkspacePreference: inheritedExecutionWorkspacePreference }
-            : {}),
-          ...(inheritedExecutionWorkspaceSettings
-            ? { executionWorkspaceSettings: inheritedExecutionWorkspaceSettings }
-            : {}),
-          companyId,
-          issueNumber,
-          identifier,
-        } as typeof issues.$inferInsert;
+        const values = { ...issueData, companyId, issueNumber, identifier } as typeof issues.$inferInsert;
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }
@@ -1428,191 +1307,6 @@ export function issueService(db: Db) {
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
       return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
-    },
-
-    /**
-     * Resolve @username mentions to human user IDs in the same company.
-     *
-     * Pattern mirrors `findMentionedAgents` above:
-     *   - Regex extracts @-tokens from the body, stops at whitespace/punctuation.
-     *   - Tokens are lowercased.
-     *   - Tokens ending in "-h" have the suffix stripped — disambiguates from
-     *     agent mentions when both share a name (`@alice-h` = "the human alice").
-     *   - Matched against `authUsers.name` OR the email-local-part (the bit
-     *     before `@` in the email), both case-insensitive (C5). `authUsers.name`
-     *     is a free-form display name like "Alice Smith" — matching that
-     *     against `@alice` would fail. The email fallback is what most users
-     *     actually expect.
-     *
-     * Returns matching user IDs (text, not uuid — `authUsers.id` is text).
-     */
-    findMentionedHumans: async (companyId: string, body: string): Promise<string[]> => {
-      // Tighter token class than findMentionedAgents above — `\w` + `-` only.
-      // Stops cleanly at trailing punctuation like `;`, `)`, `:`, etc., which
-      // matters more for human display names than for agent slugs. Future:
-      // extract a shared MENTION_TOKEN_RE and unify both resolvers (followup).
-      const re = /\B@([\w-]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) {
-        let token = m[1].toLowerCase();
-        if (token.endsWith("-h")) token = token.slice(0, -2);
-        tokens.add(token);
-      }
-      if (tokens.size === 0) return [];
-      const rows = await db
-        .select({
-          id: authUsers.id,
-          name: authUsers.name,
-          // C5: pull email so we can match the local-part. authUsers.email is
-          // notNull at the schema level, so `u.email.split("@")[0]` is safe.
-          email: authUsers.email,
-        })
-        .from(authUsers)
-        .innerJoin(userRoles, eq(userRoles.userId, authUsers.id))
-        .where(eq(userRoles.companyId, companyId));
-      return [
-        ...new Set(
-          rows
-            .filter((u) => {
-              const nameMatch = tokens.has(u.name.toLowerCase());
-              const emailLocalPart = u.email.split("@")[0]?.toLowerCase() ?? "";
-              const emailMatch =
-                emailLocalPart.length > 0 && tokens.has(emailLocalPart);
-              return nameMatch || emailMatch;
-            })
-            .map((u) => u.id),
-        ),
-      ];
-    },
-
-    /**
-     * Resolve @human mentions in `body` and emit notification rows for matched
-     * users. Self-mention is skipped (a user @-mentioning themselves does NOT
-     * receive a notification). Notification inserts run in parallel with
-     * per-promise error isolation — one failure does not abort the batch.
-     *
-     * SAFETY:
-     *   1. Feature-flag gated via companies.enableTeams (queried internally)
-     *   2. Internal try/catch wraps the whole flow — never throws
-     *   3. Sanitized error logging (err.name + err.message only)
-     *   4. Best-effort: if a notification mid-batch fails, prior rows persist;
-     *      the catch logs and the rest of the batch still runs (per-promise catch)
-     *
-     * Note: `relatedEntityId` is the ISSUE id (not the comment id) so deep-links
-     * navigate to the task — the task page renders the comment inline.
-     *
-     * The mention-resolution regex+query is inlined here (not delegated to
-     * findMentionedHumans) so this helper stays self-contained and the
-     * existing helper is untouched. Future: extract a shared private
-     * `_resolveMentionedHumans` to dedupe — see Slice 9 followup.
-     *
-     * @returns the count of notification rows inserted (0 when flag off, no
-     * mentions, or the catch fired).
-     */
-    notifyMentionedHumans: async (
-      companyId: string,
-      body: string,
-      taskId: string,
-      actor: { actorType: string; actorId: string | null },
-    ): Promise<number> => {
-      try {
-        const companyRow = await db
-          .select({ enableTeams: companies.enableTeams })
-          .from(companies)
-          .where(eq(companies.id, companyId))
-          .then((rows) => rows[0]);
-
-        if (!companyRow?.enableTeams) return 0;
-
-        // Inline mirror of findMentionedHumans regex+query — kept local so the
-        // existing helper is untouched (per Slice 7 review constraint).
-        // C5: match against EITHER name OR email-local-part — this is the
-        // notification path that fires the actual user-visible alert, so it
-        // must mirror the helper's resolution logic.
-        const re = /\B@([\w-]+)/g;
-        const tokens = new Set<string>();
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(body)) !== null) {
-          let token = m[1].toLowerCase();
-          if (token.endsWith("-h")) token = token.slice(0, -2);
-          tokens.add(token);
-        }
-        if (tokens.size === 0) return 0;
-
-        const rows = await db
-          .select({
-            id: authUsers.id,
-            name: authUsers.name,
-            email: authUsers.email,
-          })
-          .from(authUsers)
-          .innerJoin(userRoles, eq(userRoles.userId, authUsers.id))
-          .where(eq(userRoles.companyId, companyId));
-        const mentionedIds = [
-          ...new Set(
-            rows
-              .filter((u) => {
-                const nameMatch = tokens.has(u.name.toLowerCase());
-                const emailLocalPart =
-                  u.email.split("@")[0]?.toLowerCase() ?? "";
-                const emailMatch =
-                  emailLocalPart.length > 0 && tokens.has(emailLocalPart);
-                return nameMatch || emailMatch;
-              })
-              .map((u) => u.id),
-          ),
-        ];
-        if (mentionedIds.length === 0) return 0;
-
-        const notifSvc = notificationService(db);
-        const message = body.slice(0, 200);
-
-        // Parallel inserts with per-promise catch — one failure does not abort
-        // the batch. The outer catch is a backstop for anything outside the
-        // per-promise wrappers (e.g., the company/users queries above).
-        const results = await Promise.all(
-          mentionedIds.map(async (userId) => {
-            // Self-mention skip: a human @-mentioning themselves doesn't get notified.
-            // For agent actors, actorId is an agentId UUID and never matches a userId,
-            // so this comparison correctly never fires for agents.
-            if (actor.actorType === "user" && actor.actorId === userId) return false;
-            try {
-              await notifSvc.create(companyId, {
-                userId,
-                type: "mention",
-                title: "You were mentioned in a comment",
-                message,
-                relatedEntityType: "task",
-                relatedEntityId: taskId,
-              });
-              return true;
-            } catch (err) {
-              logger.warn(
-                {
-                  err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
-                  companyId,
-                  userId,
-                  taskId,
-                },
-                "@human mention notification failed for one recipient; batch continues",
-              );
-              return false;
-            }
-          }),
-        );
-        return results.filter(Boolean).length;
-      } catch (err) {
-        logger.warn(
-          {
-            err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
-            companyId,
-            taskId,
-          },
-          "@human mention notifications failed at outer try/catch; comment creation continues",
-        );
-        return 0;
-      }
     },
 
     findMentionedProjectIds: async (issueId: string) => {

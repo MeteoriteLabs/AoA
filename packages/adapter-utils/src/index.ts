@@ -12,12 +12,6 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentTestResult,
   AdapterEnvironmentTestContext,
-  AdapterSkillSyncMode,
-  AdapterSkillState,
-  AdapterSkillOrigin,
-  AdapterSkillEntry,
-  AdapterSkillSnapshot,
-  AdapterSkillContext,
   AdapterSessionCodec,
   AdapterModel,
   HireApprovedPayload,
@@ -28,17 +22,3 @@ export type {
   CLIAdapterModule,
   CreateConfigValues,
 } from "./types.js";
-export type {
-  SessionCompactionPolicy,
-  NativeContextManagement,
-  AdapterSessionManagement,
-  ResolvedSessionCompactionPolicy,
-} from "./session-compaction.js";
-export {
-  ADAPTER_SESSION_MANAGEMENT,
-  LEGACY_SESSIONED_ADAPTER_TYPES,
-  getAdapterSessionManagement,
-  readSessionCompactionOverride,
-  resolveSessionCompactionPolicy,
-  hasSessionCompactionThresholds,
-} from "./session-compaction.js";

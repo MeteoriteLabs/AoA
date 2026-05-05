@@ -2,7 +2,7 @@ import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@armyofagents/db", () => {
+vi.mock("@paperclipai/db", () => {
   const makeTable = () =>
     new Proxy(
       {},
@@ -18,7 +18,6 @@ vi.mock("@armyofagents/db", () => {
     issues: makeTable(),
     userRoles: makeTable(),
     projectGoals: makeTable(),
-    agentProjects: makeTable(),
   };
 });
 
@@ -31,7 +30,6 @@ vi.mock("drizzle-orm", () => ({
 vi.mock("../services/index.js", () => {
   const noopFactory = () => ({});
   return {
-    agentService: noopFactory,
     artifactService: noopFactory,
     companyService: noopFactory,
     debriefService: noopFactory,
@@ -40,10 +38,6 @@ vi.mock("../services/index.js", () => {
     issueService: noopFactory,
     memoryService: noopFactory,
     mcpService: noopFactory,
-    permissionService: noopFactory,
-    projectService: noopFactory,
-    approvalService: noopFactory,
-    issueApprovalService: noopFactory,
     logActivity: vi.fn().mockResolvedValue(undefined),
   };
 });

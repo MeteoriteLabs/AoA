@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 
-vi.mock("@armyofagents/db", () => {
+vi.mock("@paperclipai/db", () => {
   const makeTable = () =>
     new Proxy({}, { get: (_target, prop) => (prop === "$inferSelect" || prop === "$inferInsert" ? {} : Symbol(String(prop))) });
   return { instanceUserRoles: makeTable() };

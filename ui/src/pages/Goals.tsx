@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { Goal } from "@armyofagents/shared";
+import type { Goal } from "@paperclipai/shared";
 import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";

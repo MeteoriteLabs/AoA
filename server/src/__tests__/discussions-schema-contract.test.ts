@@ -4,7 +4,7 @@ import {
   discussionEntries,
   discussionExtractedItems,
   discussionAnnotations,
-} from "@armyofagents/db";
+} from "@paperclipai/db";
 
 /**
  * Discussion Schema Contract Tests (V2.5 Session 1)

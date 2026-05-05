@@ -5,13 +5,11 @@ import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
-import { AGENT_ROLES } from "@armyofagents/shared";
-import type { UnifiedOrgNode } from "@armyofagents/shared";
+import { AGENT_ROLES } from "@paperclipai/shared";
+import type { UnifiedOrgNode } from "@paperclipai/shared";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -80,16 +78,14 @@ export function NewAgentDialog() {
   });
 
   const isFirstAgent = !agents || agents.length === 0;
-  // First agent in a company auto-promotes to CXO tier (apex Chief of Staff).
-  // Was `"ceo"` before the role-enum cleanup.
-  const effectiveRole = isFirstAgent ? "cxo" : role;
+  const effectiveRole = isFirstAgent ? "ceo" : role;
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Auto-fill the apex agent name for the first hire.
+  // Auto-fill for CEO
   useEffect(() => {
     if (newAgentOpen && isFirstAgent) {
-      if (!name) setName("Director");
-      if (!title) setTitle("Director");
+      if (!name) setName("CEO");
+      if (!title) setTitle("CEO");
     }
   }, [newAgentOpen, isFirstAgent]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -233,8 +229,6 @@ export function NewAgentDialog() {
         className={cn("p-0 gap-0 overflow-hidden", expanded ? "sm:max-w-2xl" : "sm:max-w-lg")}
         onKeyDown={handleKeyDown}
       >
-        <DialogTitle className="sr-only">New agent</DialogTitle>
-        <DialogDescription className="sr-only">Configure a new agent to assign tasks</DialogDescription>
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -247,22 +241,10 @@ export function NewAgentDialog() {
             <span>New agent</span>
           </div>
           <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className="text-muted-foreground"
-              onClick={() => setExpanded(!expanded)}
-              aria-label={expanded ? "Collapse dialog" : "Expand dialog"}
-            >
+            <Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={() => setExpanded(!expanded)}>
               {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
             </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className="text-muted-foreground"
-              onClick={() => { reset(); closeNewAgent(); }}
-              aria-label="Close new agent dialog"
-            >
+            <Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={() => { reset(); closeNewAgent(); }}>
               <span className="text-lg leading-none">&times;</span>
             </Button>
           </div>
@@ -367,7 +349,7 @@ export function NewAgentDialog() {
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
           <span className="text-xs text-muted-foreground">
-            {isFirstAgent ? "This will be the Director" : ""}
+            {isFirstAgent ? "This will be the CEO" : ""}
           </span>
         </div>
         {formError && (

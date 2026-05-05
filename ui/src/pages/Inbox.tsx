@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getInboxNestingEnabled, setInboxNestingEnabled, subscribeInboxNestingChange } from "@/lib/inbox";
-import { cn } from "@/lib/utils";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
@@ -14,7 +12,6 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { useInboxBadge } from "../hooks/useInboxBadge";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { EmptyState } from "../components/EmptyState";
@@ -42,11 +39,10 @@ import {
   MessageSquare,
   RotateCcw,
   FileText,
-  ListTree,
 } from "lucide-react";
 import { Identity } from "../components/Identity";
 import { PageTabBar } from "../components/PageTabBar";
-import type { HeartbeatRun, Issue, JoinRequest } from "@armyofagents/shared";
+import type { HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 
 const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
 const RECENT_ISSUES_LIMIT = 100;
@@ -72,6 +68,36 @@ type SectionKey =
   | "failed_runs"
   | "alerts"
   | "stale_work";
+
+const DISMISSED_KEY = "paperclip:inbox:dismissed";
+
+function loadDismissed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISMISSED_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissed(ids: Set<string>) {
+  localStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids]));
+}
+
+function useDismissedItems() {
+  const [dismissed, setDismissed] = useState<Set<string>>(loadDismissed);
+
+  const dismiss = useCallback((id: string) => {
+    setDismissed((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      saveDismissed(next);
+      return next;
+    });
+  }, []);
+
+  return { dismissed, dismiss };
+}
 
 const RUN_SOURCE_LABELS: Record<string, string> = {
   timer: "Scheduled",
@@ -146,77 +172,16 @@ function readIssueIdFromRun(run: HeartbeatRun): string | null {
   return null;
 }
 
-function AlertRow({
-  to,
-  icon,
-  children,
-  dismissed,
-  onDismiss,
-  onUndismiss,
-}: {
-  to: string;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-  dismissed: boolean;
-  onDismiss: () => void;
-  onUndismiss: () => void;
-}) {
-  return (
-    <div
-      className={`group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50 ${
-        dismissed ? "opacity-60" : ""
-      }`}
-    >
-      <Link
-        to={to}
-        className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
-      >
-        {icon}
-        <span className="text-sm">{children}</span>
-      </Link>
-      {dismissed ? (
-        <div className="flex items-center gap-2">
-          <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-            Dismissed
-          </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 px-2 text-xs"
-            onClick={onUndismiss}
-          >
-            Undismiss
-          </Button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
-          aria-label="Dismiss"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      )}
-    </div>
-  );
-}
-
 function FailedRunCard({
   run,
   issueById,
   agentName: linkedAgentName,
   onDismiss,
-  dismissed = false,
-  onUndismiss,
 }: {
   run: HeartbeatRun;
   issueById: Map<string, Issue>;
   agentName: string | null;
   onDismiss: () => void;
-  dismissed?: boolean;
-  onUndismiss?: () => void;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -253,39 +218,16 @@ function FailedRunCard({
   });
 
   return (
-    <div
-      className={`group relative overflow-hidden rounded-xl border border-red-500/30 bg-gradient-to-br from-red-500/10 via-card to-card p-4 ${
-        dismissed ? "opacity-60" : ""
-      }`}
-    >
+    <div className="group relative overflow-hidden rounded-xl border border-red-500/30 bg-gradient-to-br from-red-500/10 via-card to-card p-4">
       <div className="absolute right-0 top-0 h-24 w-24 rounded-full bg-red-500/10 blur-2xl" />
-      {dismissed ? (
-        <div className="absolute right-2 top-2 z-10 flex items-center gap-2">
-          <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-            Dismissed
-          </span>
-          {onUndismiss && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={onUndismiss}
-            >
-              Undismiss
-            </Button>
-          )}
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="absolute right-2 top-2 z-10 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
-          aria-label="Dismiss"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="absolute right-2 top-2 z-10 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+        aria-label="Dismiss"
+      >
+        <X className="h-4 w-4" />
+      </button>
       <div className="relative space-y-3">
         {issue ? (
           <Link
@@ -372,10 +314,9 @@ export function Inbox() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
-  const [nestingEnabled, setNestingEnabled] = useState(() => getInboxNestingEnabled());
   const [allCategoryFilter, setAllCategoryFilter] = useState<InboxCategoryFilter>("everything");
   const [allApprovalFilter, setAllApprovalFilter] = useState<InboxApprovalFilter>("all");
-  const { isDismissed, dismiss, undismiss } = useInboxBadge(selectedCompanyId);
+  const { dismissed, dismiss } = useDismissedItems();
 
   const pathSegment = location.pathname.split("/").pop() ?? "new";
   const tab: InboxTab = pathSegment === "all" ? "all" : "new";
@@ -389,10 +330,6 @@ export function Inbox() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Inbox" }]);
   }, [setBreadcrumbs]);
-
-  useEffect(() => {
-    return subscribeInboxNestingChange((enabled) => setNestingEnabled(enabled));
-  }, []);
 
   const {
     data: approvals,
@@ -460,13 +397,9 @@ export function Inbox() {
     select: (res) => res.discussions,
   });
 
-  const staleIssuesAll = useMemo(
-    () => (issues ? getStaleIssues(issues) : []),
-    [issues],
-  );
   const staleIssues = useMemo(
-    () => staleIssuesAll.filter((i) => !isDismissed(`stale:${i.id}`)),
-    [staleIssuesAll, isDismissed],
+    () => (issues ? getStaleIssues(issues) : []).filter((i) => !dismissed.has(`stale:${i.id}`)),
+    [issues, dismissed],
   );
   const sortByMostRecentActivity = useCallback(
     (a: Issue, b: Issue) => {
@@ -494,13 +427,9 @@ export function Inbox() {
     return map;
   }, [issues]);
 
-  const failedRunsAll = useMemo(
-    () => getLatestFailedRunsByAgent(heartbeatRuns ?? []),
-    [heartbeatRuns],
-  );
   const failedRuns = useMemo(
-    () => failedRunsAll.filter((r) => !isDismissed(`run:${r.id}`)),
-    [failedRunsAll, isDismissed],
+    () => getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((r) => !dismissed.has(`run:${r.id}`)),
+    [heartbeatRuns, dismissed],
   );
 
   const allApprovals = useMemo(
@@ -613,20 +542,14 @@ export function Inbox() {
   }
 
   const hasRunFailures = failedRuns.length > 0;
-  const hasRunFailuresAll = failedRunsAll.length > 0;
-  const agentErrorsEligible =
-    !!dashboard && dashboard.agents.error > 0 && !hasRunFailuresAll;
-  const budgetAlertEligible =
+  const showAggregateAgentError = !!dashboard && dashboard.agents.error > 0 && !hasRunFailures && !dismissed.has("alert:agent-errors");
+  const showBudgetAlert =
     !!dashboard &&
     dashboard.costs.monthBudgetCents > 0 &&
-    dashboard.costs.monthUtilizationPercent >= 80;
-  const showAggregateAgentError =
-    agentErrorsEligible && !isDismissed("alert:agent-errors");
-  const showBudgetAlert = budgetAlertEligible && !isDismissed("alert:budget");
+    dashboard.costs.monthUtilizationPercent >= 80 &&
+    !dismissed.has("alert:budget");
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
-  const hasAlertsAll = agentErrorsEligible || budgetAlertEligible;
   const hasStale = staleIssues.length > 0;
-  const hasStaleAll = staleIssuesAll.length > 0;
   const hasJoinRequests = joinRequests.length > 0;
   const hasDiscussions = pendingDiscussions.length > 0;
   const hasTouchedIssues = touchedIssues.length > 0;
@@ -661,16 +584,9 @@ export function Inbox() {
   const showDiscussionsSection =
     tab === "new" ? hasDiscussions : showDiscussionsCategory && hasDiscussions;
   const showFailedRunsSection =
-    tab === "new" ? hasRunFailures : showFailedRunsCategory && hasRunFailuresAll;
-  const showAlertsSection =
-    tab === "new" ? hasAlerts : showAlertsCategory && hasAlertsAll;
-  const showStaleSection =
-    tab === "new" ? hasStale : showStaleCategory && hasStaleAll;
-
-  const failedRunsToRender = tab === "new" ? failedRuns : failedRunsAll;
-  const staleIssuesToRender = tab === "new" ? staleIssues : staleIssuesAll;
-  const showAggregateAgentErrorInAll = tab === "all" && agentErrorsEligible;
-  const showBudgetAlertInAll = tab === "all" && budgetAlertEligible;
+    tab === "new" ? hasRunFailures : showFailedRunsCategory && hasRunFailures;
+  const showAlertsSection = tab === "new" ? hasAlerts : showAlertsCategory && hasAlerts;
+  const showStaleSection = tab === "new" ? hasStale : showStaleCategory && hasStale;
 
   const visibleSections = [
     showDiscussionsSection ? "discussions_pending_review" : null,
@@ -716,24 +632,6 @@ export function Inbox() {
             ]}
           />
         </Tabs>
-
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setInboxNestingEnabled(!nestingEnabled)}
-            aria-pressed={nestingEnabled}
-            aria-label={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
-            title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
-            className={cn(
-              "rounded p-1.5 transition-colors",
-              nestingEnabled
-                ? "text-primary bg-primary/10"
-                : "text-muted-foreground hover:text-foreground hover:bg-accent",
-            )}
-          >
-            <ListTree className="h-4 w-4" />
-          </button>
-        </div>
 
         {tab === "all" && (
           <div className="flex flex-wrap items-center gap-2">
@@ -922,22 +820,15 @@ export function Inbox() {
               Failed Runs
             </h3>
             <div className="grid gap-3">
-              {failedRunsToRender.map((run) => {
-                const runDismissed = isDismissed(`run:${run.id}`);
-                return (
-                  <FailedRunCard
-                    key={run.id}
-                    run={run}
-                    issueById={issueById}
-                    agentName={agentName(run.agentId)}
-                    onDismiss={() => dismiss(`run:${run.id}`)}
-                    dismissed={runDismissed}
-                    onUndismiss={
-                      runDismissed ? () => undismiss(`run:${run.id}`) : undefined
-                    }
-                  />
-                );
-              })}
+              {failedRuns.map((run) => (
+                <FailedRunCard
+                  key={run.id}
+                  run={run}
+                  issueById={issueById}
+                  agentName={agentName(run.agentId)}
+                  onDismiss={() => dismiss(`run:${run.id}`)}
+                />
+              ))}
             </div>
           </div>
         </>
@@ -951,30 +842,50 @@ export function Inbox() {
               Alerts
             </h3>
             <div className="divide-y divide-border border border-border">
-              {(showAggregateAgentError || showAggregateAgentErrorInAll) && (
-                <AlertRow
-                  to="/agents"
-                  icon={<AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />}
-                  dismissed={isDismissed("alert:agent-errors")}
-                  onDismiss={() => dismiss("alert:agent-errors")}
-                  onUndismiss={() => undismiss("alert:agent-errors")}
-                >
-                  <span className="font-medium">{dashboard!.agents.error}</span>{" "}
-                  {dashboard!.agents.error === 1 ? "agent has" : "agents have"} errors
-                </AlertRow>
+              {showAggregateAgentError && (
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                  <Link
+                    to="/agents"
+                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
+                  >
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
+                    <span className="text-sm">
+                      <span className="font-medium">{dashboard!.agents.error}</span>{" "}
+                      {dashboard!.agents.error === 1 ? "agent has" : "agents have"} errors
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => dismiss("alert:agent-errors")}
+                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               )}
-              {(showBudgetAlert || showBudgetAlertInAll) && (
-                <AlertRow
-                  to="/costs"
-                  icon={<AlertTriangle className="h-4 w-4 shrink-0 text-yellow-400" />}
-                  dismissed={isDismissed("alert:budget")}
-                  onDismiss={() => dismiss("alert:budget")}
-                  onUndismiss={() => undismiss("alert:budget")}
-                >
-                  Budget at{" "}
-                  <span className="font-medium">{dashboard!.costs.monthUtilizationPercent}%</span>{" "}
-                  utilization this month
-                </AlertRow>
+              {showBudgetAlert && (
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                  <Link
+                    to="/costs"
+                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
+                  >
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-yellow-400" />
+                    <span className="text-sm">
+                      Budget at{" "}
+                      <span className="font-medium">{dashboard!.costs.monthUtilizationPercent}%</span>{" "}
+                      utilization this month
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => dismiss("alert:budget")}
+                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -989,69 +900,47 @@ export function Inbox() {
               Stale Work
             </h3>
             <div className="divide-y divide-border border border-border">
-              {staleIssuesToRender.map((issue) => {
-                const staleDismissed = isDismissed(`stale:${issue.id}`);
-                return (
-                  <div
-                    key={issue.id}
-                    className={`group/stale relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50 ${
-                      staleDismissed ? "opacity-60" : ""
-                    }`}
+              {staleIssues.map((issue) => (
+                <div
+                  key={issue.id}
+                  className="group/stale relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50"
+                >
+                  <Link
+                    to={`/issues/${issue.identifier ?? issue.id}`}
+                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
                   >
-                    <Link
-                      to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
-                    >
-                      <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      <PriorityIcon priority={issue.priority} />
-                      <StatusIcon status={issue.status} />
-                      <span className="text-xs font-mono text-muted-foreground">
-                        {issue.identifier ?? issue.id.slice(0, 8)}
-                      </span>
-                      <span className="flex-1 truncate text-sm">{issue.title}</span>
-                      {issue.assigneeAgentId &&
-                        (() => {
-                          const name = agentName(issue.assigneeAgentId);
-                          return name ? (
-                            <Identity name={name} size="sm" />
-                          ) : (
-                            <span className="font-mono text-xs text-muted-foreground">
-                              {issue.assigneeAgentId.slice(0, 8)}
-                            </span>
-                          );
-                        })()}
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        updated {timeAgo(issue.updatedAt)}
-                      </span>
-                    </Link>
-                    {staleDismissed ? (
-                      <div className="flex items-center gap-2">
-                        <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                          Dismissed
-                        </span>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          onClick={() => undismiss(`stale:${issue.id}`)}
-                        >
-                          Undismiss
-                        </Button>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => dismiss(`stale:${issue.id}`)}
-                        className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/stale:opacity-100"
-                        aria-label="Dismiss"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+                    <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <PriorityIcon priority={issue.priority} />
+                    <StatusIcon status={issue.status} />
+                    <span className="text-xs font-mono text-muted-foreground">
+                      {issue.identifier ?? issue.id.slice(0, 8)}
+                    </span>
+                    <span className="flex-1 truncate text-sm">{issue.title}</span>
+                    {issue.assigneeAgentId &&
+                      (() => {
+                        const name = agentName(issue.assigneeAgentId);
+                        return name ? (
+                          <Identity name={name} size="sm" />
+                        ) : (
+                          <span className="font-mono text-xs text-muted-foreground">
+                            {issue.assigneeAgentId.slice(0, 8)}
+                          </span>
+                        );
+                      })()}
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      updated {timeAgo(issue.updatedAt)}
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => dismiss(`stale:${issue.id}`)}
+                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/stale:opacity-100"
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         </>

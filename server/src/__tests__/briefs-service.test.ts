@@ -14,7 +14,7 @@ vi.mock("drizzle-orm", () => ({
   ),
 }));
 
-vi.mock("@armyofagents/db", () => ({
+vi.mock("@paperclipai/db", () => ({
   briefs: {
     id: "brief_id",
     companyId: "brief_company_id",

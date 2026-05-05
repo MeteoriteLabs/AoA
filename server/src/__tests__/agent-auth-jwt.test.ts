@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 describe("agent local JWT", () => {
-  const secretEnv = "AOA_AGENT_JWT_SECRET";
-  const ttlEnv = "AOA_AGENT_JWT_TTL_SECONDS";
-  const issuerEnv = "AOA_AGENT_JWT_ISSUER";
-  const audienceEnv = "AOA_AGENT_JWT_AUDIENCE";
+  const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
+  const ttlEnv = "PAPERCLIP_AGENT_JWT_TTL_SECONDS";
+  const issuerEnv = "PAPERCLIP_AGENT_JWT_ISSUER";
+  const audienceEnv = "PAPERCLIP_AGENT_JWT_AUDIENCE";
 
   const originalEnv = {
     secret: process.env[secretEnv],
@@ -75,60 +75,5 @@ describe("agent local JWT", () => {
     process.env[issuerEnv] = "paperclip";
     process.env[audienceEnv] = "paperclip-api";
     expect(verifyLocalAgentJwt(token!)).toBeNull();
-  });
-});
-
-describe("AOA_AGENT_JWT_SECRET fallback", () => {
-  const secretEnv = "AOA_AGENT_JWT_SECRET";
-  const betterAuthEnv = "BETTER_AUTH_SECRET";
-
-  afterEach(() => {
-    // Clean up any env vars set during these tests
-    delete process.env[secretEnv];
-    delete process.env[betterAuthEnv];
-  });
-
-  it("falls back to BETTER_AUTH_SECRET when AOA_AGENT_JWT_SECRET is unset", () => {
-    delete process.env[secretEnv];
-    process.env[betterAuthEnv] = "test-better-auth-secret-32chars";
-
-    const token = createLocalAgentJwt("a1", "c1", "claude_local", "r1");
-    expect(token).toBeTruthy();
-
-    const decoded = verifyLocalAgentJwt(token!);
-    expect(decoded).not.toBeNull();
-    expect(decoded!.sub).toBe("a1");
-  });
-
-  it("trims whitespace from AOA_AGENT_JWT_SECRET", () => {
-    process.env[secretEnv] = "  whitespace-secret-32chars-x  ";
-    delete process.env[betterAuthEnv];
-
-    const token = createLocalAgentJwt("a1", "c1", "claude_local", "r1");
-    expect(token).toBeTruthy();
-
-    const decoded = verifyLocalAgentJwt(token!);
-    expect(decoded).not.toBeNull();
-    expect(decoded!.sub).toBe("a1");
-  });
-
-  it("trims whitespace from BETTER_AUTH_SECRET when used as fallback", () => {
-    delete process.env[secretEnv];
-    process.env[betterAuthEnv] = "  whitespace-better-auth-secret  ";
-
-    const token = createLocalAgentJwt("a1", "c1", "claude_local", "r1");
-    expect(token).toBeTruthy();
-
-    const decoded = verifyLocalAgentJwt(token!);
-    expect(decoded).not.toBeNull();
-    expect(decoded!.sub).toBe("a1");
-  });
-
-  it("returns null when both secrets are unset", () => {
-    delete process.env[secretEnv];
-    delete process.env[betterAuthEnv];
-
-    const token = createLocalAgentJwt("a1", "c1", "claude_local", "r1");
-    expect(token).toBeNull();
   });
 });

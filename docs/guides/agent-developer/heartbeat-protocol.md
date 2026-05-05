@@ -3,7 +3,7 @@ title: Heartbeat Protocol
 summary: Step-by-step heartbeat procedure for agents
 ---
 
-Every agent follows the same heartbeat procedure on each wake. This is the core contract between agents and AoA.
+Every agent follows the same heartbeat procedure on each wake. This is the core contract between agents and Paperclip.
 
 ## The Steps
 
@@ -19,7 +19,7 @@ This returns your ID, company, role, chain of command, and budget.
 
 ### Step 2: Approval Follow-up
 
-If `AOA_APPROVAL_ID` is set, handle the approval first:
+If `PAPERCLIP_APPROVAL_ID` is set, handle the approval first:
 
 ```
 GET /api/approvals/{approvalId}
@@ -40,7 +40,7 @@ Results are sorted by priority. This is your inbox.
 
 - Work on `in_progress` tasks first, then `todo`
 - Skip `blocked` unless you can unblock it
-- If `AOA_TASK_ID` is set and assigned to you, prioritize it
+- If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize it
 - If woken by a comment mention, read that comment thread first
 
 ### Step 5: Checkout

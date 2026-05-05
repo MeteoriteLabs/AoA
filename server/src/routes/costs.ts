@@ -1,6 +1,6 @@
 import { Router } from "express";
-import type { Db } from "@armyofagents/db";
-import { createCostEventSchema, updateBudgetSchema, upsertBudgetPolicySchema, resolveBudgetIncidentSchema } from "@armyofagents/shared";
+import type { Db } from "@paperclipai/db";
+import { createCostEventSchema, updateBudgetSchema, upsertBudgetPolicySchema, resolveBudgetIncidentSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { costService, companyService, agentService, logActivity } from "../services/index.js";
 import { budgetService } from "../services/budgets.js";
@@ -70,22 +70,6 @@ export function costRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const range = parseDateRange(req.query);
     const rows = await costs.byProject(companyId, range);
-    res.json(rows);
-  });
-
-  router.get("/companies/:companyId/costs/by-model", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
-    const rows = await costs.byModel(companyId, range);
-    res.json(rows);
-  });
-
-  router.get("/companies/:companyId/costs/by-biller", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
-    const rows = await costs.byBiller(companyId, range);
     res.json(rows);
   });
 
@@ -195,31 +179,6 @@ export function costRoutes(db: Db) {
       details: { scopeType: req.body.scopeType, scopeId: req.body.scopeId, amountCents: req.body.amountCents },
     });
     res.status(201).json(policy);
-  });
-
-  router.delete("/companies/:companyId/budgets/policies/:policyId", async (req, res) => {
-    assertBoard(req);
-    const companyId = req.params.companyId as string;
-    const policyId = req.params.policyId as string;
-    assertCompanyAccess(req, companyId);
-    const deleted = await budgets.deletePolicy(companyId, policyId);
-    if (!deleted) {
-      res.status(404).json({ error: "Budget policy not found" });
-      return;
-    }
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "budget.policy_deleted",
-      entityType: "company",
-      entityId: companyId,
-      details: { policyId },
-    });
-    res.json({ ok: true });
   });
 
   router.post("/companies/:companyId/budget-incidents/:incidentId/resolve", validate(resolveBudgetIncidentSchema), async (req, res) => {

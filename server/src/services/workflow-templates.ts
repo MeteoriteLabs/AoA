@@ -1,6 +1,6 @@
 import { eq, and, sql, inArray } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
-import { workflowTemplates, issues, taskDependencies } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
+import { workflowTemplates, issues, taskDependencies } from "@paperclipai/db";
 import { notFound, conflict } from "../errors.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 

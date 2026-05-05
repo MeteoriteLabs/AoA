@@ -19,7 +19,7 @@ import { StatusIcon } from "../StatusIcon";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "../../context/ToastContext";
 import { cn } from "../../lib/utils";
-import type { Issue } from "@armyofagents/shared";
+import type { Issue } from "@paperclipai/shared";
 
 interface WorkspaceTaskNavProps {
   companyId: string;

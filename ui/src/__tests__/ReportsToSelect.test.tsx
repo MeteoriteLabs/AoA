@@ -24,16 +24,16 @@ const sampleTree: UnifiedOrgNode[] = [
   makeOrgNode({
     id: "agent-1",
     name: "Claude",
-    role: "cxo",
+    role: "ceo",
     nodeType: "agent",
-    adapterType: "claude_local",
+    adapterType: "claude_api",
     children: [
       makeOrgNode({
         id: "agent-2",
         name: "Gemini",
         role: "engineer",
         nodeType: "agent",
-        adapterType: "gemini_local",
+        adapterType: "gemini_api",
       }),
     ],
   }),
@@ -328,7 +328,7 @@ describe("ReportsToSelect", () => {
     await screen.findByText("Claude");
 
     // Agent detail text shows adapterType
-    expect(screen.getByText("claude_local")).toBeInTheDocument();
+    expect(screen.getByText("claude_api")).toBeInTheDocument();
     // User detail text shows role label
     expect(screen.getByText("Founder")).toBeInTheDocument();
     expect(screen.getByText("Team Lead")).toBeInTheDocument();
@@ -347,80 +347,5 @@ describe("ReportsToSelect", () => {
     );
 
     expect(screen.getByRole("combobox")).toBeDisabled();
-  });
-
-  it("renders terminated label and amber chip when currentValue points to terminated node", () => {
-    const tree: UnifiedOrgNode[] = [
-      makeOrgNode({
-        id: "agent-term",
-        name: "Old Agent",
-        nodeType: "agent",
-        status: "terminated",
-      }),
-      makeOrgNode({
-        id: "agent-active",
-        name: "Active Agent",
-        nodeType: "agent",
-        status: "active",
-      }),
-    ];
-    renderWithProviders(
-      <ReportsToSelect
-        orgTree={tree}
-        currentEntityId="agent-active"
-        currentEntityType="agent"
-        value="agent:agent-term"
-        onChange={mockOnChange}
-      />,
-    );
-
-    expect(screen.getByText(/Old Agent\s*\(terminated\)/)).toBeInTheDocument();
-    const trigger = screen.getByRole("combobox");
-    expect(trigger.className).toMatch(/amber/);
-  });
-
-  it("renders 'Unknown manager' fallback when currentValue points to non-existent node", () => {
-    renderWithProviders(
-      <ReportsToSelect
-        orgTree={sampleTree}
-        currentEntityId="agent-2"
-        currentEntityType="agent"
-        value="agent:ghost-id"
-        onChange={mockOnChange}
-      />,
-    );
-
-    expect(screen.getByText(/Unknown manager/i)).toBeInTheDocument();
-  });
-
-  it("renders custom chooseLabel prop when provided and value is empty", () => {
-    renderWithProviders(
-      <ReportsToSelect
-        orgTree={sampleTree}
-        currentEntityId="agent-2"
-        currentEntityType="agent"
-        value=""
-        onChange={mockOnChange}
-        chooseLabel="Pick a manager"
-      />,
-    );
-
-    expect(screen.getByText("Pick a manager")).toBeInTheDocument();
-  });
-
-  it("renders disabledEmptyLabel prop when disabled with empty orgTree", () => {
-    renderWithProviders(
-      <ReportsToSelect
-        orgTree={[]}
-        currentEntityId="agent-1"
-        currentEntityType="agent"
-        value=""
-        onChange={mockOnChange}
-        disabled
-        disabledEmptyLabel="No managers yet"
-      />,
-    );
-
-    expect(screen.getByText("No managers yet")).toBeInTheDocument();
   });
 });

@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link, useBeforeUnload } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type AgentKey, type ClaudeLoginResult } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
-import type { CompanySkillListItem } from "@armyofagents/shared";
+import type { CompanySkillListItem } from "@paperclipai/shared";
 import { heartbeatsApi } from "../api/heartbeats";
 import { trustScoresApi } from "../api/trust-scores";
 import { ApiError } from "../api/client";
@@ -62,10 +62,9 @@ import {
   History,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { AgentTrustScoreCard } from "../components/AgentTrustScoreCard";
-import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@armyofagents/shared";
+import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@paperclipai/shared";
 import { agentRouteRef } from "../lib/utils";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
@@ -833,7 +832,7 @@ function AgentOverview({
   directReports: Agent[];
   agentId: string;
   agentRouteId: string;
-  trustScore?: import("@armyofagents/shared").AgentTrustScore | null;
+  trustScore?: import("@paperclipai/shared").AgentTrustScore | null;
 }) {
   // Compute quick stats
   const now = new Date();
@@ -1500,7 +1499,6 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
   const metrics = runMetrics(run);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
-  const [clearSessionConfirmOpen, setClearSessionConfirmOpen] = useState(false);
 
   useEffect(() => {
     setClaudeLoginResult(null);
@@ -1826,7 +1824,14 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
                       type="button"
                       className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-60"
                       disabled={clearSessionsForTouchedIssues.isPending}
-                      onClick={() => setClearSessionConfirmOpen(true)}
+                      onClick={() => {
+                        const issueCount = touchedIssueIds.length;
+                        const confirmed = window.confirm(
+                          `Clear session for ${issueCount} task${issueCount === 1 ? "" : "s"} touched by this run?`,
+                        );
+                        if (!confirmed) return;
+                        clearSessionsForTouchedIssues.mutate();
+                      }}
                     >
                       {clearSessionsForTouchedIssues.isPending
                         ? "clearing session..."
@@ -1887,18 +1892,6 @@ function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agen
 
       {/* Log viewer */}
       <LogViewer run={run} adapterType={adapterType} />
-
-      <ConfirmDialog
-        open={clearSessionConfirmOpen}
-        onOpenChange={setClearSessionConfirmOpen}
-        title={`Clear session for ${touchedIssueIds.length} task${touchedIssueIds.length === 1 ? "" : "s"} touched by this run?`}
-        description="Any in-progress work by those tasks' agents will be discarded on next run."
-        confirmLabel="Clear session"
-        onConfirm={() => {
-          clearSessionsForTouchedIssues.mutate();
-          setClearSessionConfirmOpen(false);
-        }}
-      />
     </div>
   );
 }

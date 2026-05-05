@@ -32,16 +32,6 @@ export type {
 } from "./issue.js";
 export type { Goal, GoalProjectRef } from "./goal.js";
 export type { MemoryItem } from "./memory.js";
-export type {
-  MemoryAssetRecord,
-  MemoryAssetCreateInput,
-  MemoryAssetUpdateInput,
-} from "./memory-asset.js";
-export type {
-  MemoryFolderRecord,
-  MemoryFolderCreateInput,
-  MemoryFolderUpdateInput,
-} from "./memory-folder.js";
 export type { Debrief } from "./debrief.js";
 export type { Brief, BriefItem } from "./brief.js";
 export type { Approval, ApprovalComment } from "./approval.js";
@@ -62,7 +52,6 @@ export type {
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
-  InstanceSchedulerHeartbeatAgent,
   DetectedOutput,
   DetectedOutputForUI,
 } from "./heartbeat.js";
@@ -77,10 +66,6 @@ export type {
   Invite,
   JoinRequest,
   InstanceUserRoleGrant,
-  AccessUserProfile,
-  AdminUserDirectoryEntry,
-  UserCompanyAccessEntry,
-  UserCompanyAccessResponse,
 } from "./access.js";
 export type { TaskDependency } from "./task-dependency.js";
 export type { Artifact, ArtifactVersion, ArtifactWithVersions } from "./artifact.js";
@@ -117,46 +102,16 @@ export type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityExportResult,
-  CompanyPortabilityExportPreviewCounts,
-  CompanyPortabilityExportPreviewResult,
   CompanyPortabilitySource,
   CompanyPortabilityImportTarget,
   CompanyPortabilityAgentSelection,
   CompanyPortabilityCollisionStrategy,
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewAgentPlan,
-  CompanyPortabilityPreviewProjectPlan,
-  CompanyPortabilityPreviewIssuePlan,
-  CompanyPortabilityProjectManifestEntry,
-  CompanyPortabilityProjectType,
-  CompanyPortabilityIssueManifestEntry,
-  CompanyPortabilitySkillManifestEntry,
-  CompanyPortabilitySkillFileInventoryEntry,
-  CompanyPortabilityPreviewSkillPlan,
-  CompanyPortabilityRoutineManifestEntry,
-  CompanyPortabilityRoutineTriggerManifestEntry,
-  CompanyPortabilityRoutineVariableManifestEntry,
-  CompanyPortabilityEnvInputManifestEntry,
-  CompanyPortabilityEnvInputKind,
-  CompanyPortabilityEnvInputRequirement,
-  CompanyPortabilityEnvInputPortability,
-  CompanyPortabilityInternalAgentConfigManifestEntry,
-  CompanyPortabilityBudgetPolicyManifestEntry,
-  CompanyPortabilityBudgetPolicyScopeType,
-  CompanyPortabilityCostEventManifestEntry,
-  CompanyPortabilityCostEventsInclude,
-  CompanyPortabilityCostEventsDateRange,
-  CompanyPortabilityFinanceEventManifestEntry,
-  CompanyPortabilityFinanceEventDirection,
-  CompanyPortabilityQuotaWindowManifestEntry,
-  CompanyPortabilityWorkflowTemplateManifestEntry,
-  CompanyPortabilityPreviewRoutinePlan,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportRequest,
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
-  ImportWarning,
-  ImportWarningKind,
 } from "./company-portability.js";
 export type {
   BudgetPolicy,
@@ -196,38 +151,12 @@ export type {
   RoutineDetail,
   RoutineRunSummary,
   RoutineListItem,
-  RoutineVariable,
-  RoutineVariableDefaultValue,
 } from "./routine.js";
 export type {
   InstanceGeneralSettings,
   InstanceExperimentalSettings,
   InstanceSettings,
-  BackupRetentionPolicy,
 } from "./instance.js";
-export {
-  DAILY_RETENTION_PRESETS,
-  WEEKLY_RETENTION_PRESETS,
-  MONTHLY_RETENTION_PRESETS,
-  DEFAULT_BACKUP_RETENTION,
-} from "./instance.js";
-export type {
-  FeedbackDataSharingPreference,
-  FeedbackExportSummary,
-  FeedbackRedactionState,
-  FeedbackRedactionSummary,
-  FeedbackTargetType,
-  FeedbackTraceTargetSummary,
-  FeedbackVoteValue,
-  FeedbackVote,
-  FeedbackVoteSummary,
-} from "./feedback.js";
-export {
-  FEEDBACK_DATA_SHARING_PREFERENCES,
-  DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
-  FEEDBACK_TARGET_TYPES,
-  FEEDBACK_VOTE_VALUES,
-} from "./feedback.js";
 export type {
   ExecutionWorkspaceStrategyType,
   ProjectExecutionWorkspaceDefaultMode,
@@ -238,19 +167,7 @@ export type {
   ProjectExecutionWorkspacePolicy,
   IssueExecutionWorkspaceSettings,
   ExecutionWorkspace,
-  ExecutionWorkspaceSummary,
   WorkspaceRuntimeService,
-  ExecutionWorkspaceCloseReadinessState,
-  ExecutionWorkspaceCloseActionKind,
-  ExecutionWorkspaceCloseAction,
-  ExecutionWorkspaceCloseLinkedIssue,
-  ExecutionWorkspaceCloseGitReadiness,
-  ExecutionWorkspaceCloseReadiness,
-  ExecutionWorkspaceConfig,
-  WorkspaceRuntimeDesiredState,
-  WorkspaceRuntimeServiceStateMap,
-  ProjectWorkspaceRuntimeConfig,
-  WorkspaceRuntimeControlTarget,
 } from "./workspace-runtime.js";
 
 export type {
@@ -258,12 +175,6 @@ export type {
   WorkspaceOperationStatus,
   WorkspaceOperation,
 } from "./workspace-operation.js";
-
-export type {
-  GitHubPrCreateRequest,
-  GitHubPrCreateResponse,
-  GitHubPrMetadata,
-} from "./github.js";
 
 export type {
   JsonSchema,

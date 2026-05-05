@@ -13,8 +13,6 @@ interface InlineEditorProps {
   multiline?: boolean;
   imageUploadHandler?: (file: File) => Promise<string>;
   mentions?: MentionOption[];
-  /** Company ID to enable skill `/`-autocomplete inside the markdown editor. */
-  companyId?: string | null;
 }
 
 /** Shared padding so display and edit modes occupy the exact same box. */
@@ -29,7 +27,6 @@ export function InlineEditor({
   multiline = false,
   imageUploadHandler,
   mentions,
-  companyId,
 }: InlineEditorProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -87,7 +84,6 @@ export function InlineEditor({
             contentClassName={className}
             imageUploadHandler={imageUploadHandler}
             mentions={mentions}
-            companyId={companyId}
             onSubmit={commit}
           />
           <div className="flex items-center justify-end gap-2">

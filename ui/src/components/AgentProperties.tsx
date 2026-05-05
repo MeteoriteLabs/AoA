@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import type { Agent, AgentRuntimeState } from "@armyofagents/shared";
+import type { Agent, AgentRuntimeState } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -22,6 +22,9 @@ const adapterLabels: Record<string, string> = {
   cursor: "Cursor (local)",
   process: "Process",
   http: "HTTP",
+  claude_api: "Claude (API)",
+  openai_api: "OpenAI (API)",
+  gemini_api: "Gemini (API)",
 };
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {

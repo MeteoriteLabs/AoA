@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, inArray, not, sql } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
-import { agents, approvals, discussions, discussionEntries, heartbeatRuns } from "@armyofagents/db";
-import type { SidebarBadges } from "@armyofagents/shared";
+import type { Db } from "@paperclipai/db";
+import { agents, approvals, discussions, discussionEntries, heartbeatRuns } from "@paperclipai/db";
+import type { SidebarBadges } from "@paperclipai/shared";
 
 const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
 const FAILED_HEARTBEAT_STATUSES = ["failed", "timed_out"];

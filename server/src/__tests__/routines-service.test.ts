@@ -1,25 +1,50 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── DB table stubs ────────────────────────────────────────────────────────────
-import { makeTableProxy, drizzleOperatorStubs } from "./helpers/drizzle-mock.js";
 
-vi.mock("drizzle-orm", () => drizzleOperatorStubs());
-
-vi.mock("@armyofagents/db", () => ({
-  routines: makeTableProxy("routines"),
-  routineTriggers: makeTableProxy("routine_triggers"),
-  routineRuns: makeTableProxy("routine_runs"),
-  issues: makeTableProxy("issues"),
-  agents: makeTableProxy("agents"),
-  projects: makeTableProxy("projects"),
-  activityLog: makeTableProxy("activity_log"),
-  heartbeatRuns: makeTableProxy("heartbeat_runs"),
-  // heartbeat.ts also accesses these at module level
-  agentRuntimeState: makeTableProxy("agent_runtime_state"),
-  memoryItems: makeTableProxy("memory_items"),
-  agentWakeupRequests: makeTableProxy("agent_wakeup_requests"),
-  costEvents: makeTableProxy("cost_events"),
+vi.mock("drizzle-orm", () => ({
+  and: vi.fn((...args: unknown[]) => ({ and: args })),
+  eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
+  desc: vi.fn((col: unknown) => ({ desc: col })),
+  gte: vi.fn((a: unknown, b: unknown) => ({ gte: [a, b] })),
+  lt: vi.fn((a: unknown, b: unknown) => ({ lt: [a, b] })),
+  lte: vi.fn((a: unknown, b: unknown) => ({ lte: [a, b] })),
+  isNull: vi.fn((col: unknown) => ({ isNull: col })),
+  or: vi.fn((...args: unknown[]) => ({ or: args })),
+  sql: new Proxy(() => ({ sql: true }), {
+    get: () => () => ({ sql: true }),
+    apply: () => ({ sql: true }),
+  }),
+  asc: vi.fn((col: unknown) => ({ asc: col })),
+  inArray: vi.fn((col: unknown, vals: unknown) => ({ inArray: [col, vals] })),
 }));
+
+vi.mock("@paperclipai/db", () => {
+  const makeTable = (name: string) => {
+    const cols: Record<string, symbol> = {};
+    return new Proxy({} as Record<string, unknown>, {
+      get(_t, prop) {
+        if (prop === "_") return { name };
+        if (prop === "$inferSelect" || prop === "$inferInsert") return {};
+        if (typeof prop === "string") {
+          if (!cols[prop]) cols[prop] = Symbol(`${name}.${prop}`);
+          return cols[prop];
+        }
+        return undefined;
+      },
+    });
+  };
+  return {
+    routines: makeTable("routines"),
+    routineTriggers: makeTable("routine_triggers"),
+    routineRuns: makeTable("routine_runs"),
+    issues: makeTable("issues"),
+    agents: makeTable("agents"),
+    projects: makeTable("projects"),
+    activityLog: makeTable("activity_log"),
+    heartbeatRuns: makeTable("heartbeat_runs"),
+  };
+});
 
 // ── Service mocks injected via deps ──────────────────────────────────────────
 
@@ -208,32 +233,6 @@ describe("routineService — list", () => {
     const result = await svc.list(companyId);
     expect(result).toEqual([]);
   });
-
-  it("includes cronExpression and timezone in trigger list response", async () => {
-    const cronTrigger = {
-      ...baseTrigger,
-      cronExpression: "0 9 * * 1",
-      timezone: "America/New_York",
-    };
-    // Sequence: [routines], [triggers], [latestRuns], [liveIssues]
-    const db = createSequenceDb({
-      selects: [
-        [baseRoutine],   // select from routines
-        [cronTrigger],   // listTriggersForRoutineIds → select from routineTriggers
-        [],              // listLatestRunByRoutineIds → selectDistinctOn from routineRuns
-        [],              // listLiveIssueByRoutineIds → selectDistinctOn from issues
-      ],
-    });
-    const svc = routineService(db as any);
-    const result = await svc.list(companyId);
-    expect(result).toHaveLength(1);
-    const found = result[0];
-    expect(found.triggers).toHaveLength(1);
-    expect(found.triggers[0]).toMatchObject({
-      cronExpression: "0 9 * * 1",
-      timezone: "America/New_York",
-    });
-  });
 });
 
 describe("routineService — syncRunStatusForIssue", () => {
@@ -311,116 +310,5 @@ describe("routineService — constants contract", () => {
     for (const m of methods) {
       expect(typeof (svc as any)[m], `missing method: ${m}`).toBe("function");
     }
-  });
-});
-
-// ── Draft routine (null project / null assignee) ──────────────────────────────
-
-describe("routineService — draft defaults (null project + null assignee)", () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it("creates a draft routine with null projectId and null assigneeAgentId", async () => {
-    const draftRoutineRow = {
-      ...baseRoutine,
-      projectId: null,
-      assigneeAgentId: null,
-      variables: [],
-    };
-    const db = createSequenceDb({
-      inserts: [[draftRoutineRow]],
-    });
-    const svc = routineService(db as any);
-    const result = await svc.create(companyId, {
-      title: "Draft routine",
-      priority: "medium",
-      status: "active",
-      concurrencyPolicy: "coalesce_if_active",
-      catchUpPolicy: "skip_missed",
-    }, { userId: "board" });
-    expect(result).toMatchObject({ projectId: null, assigneeAgentId: null });
-  });
-
-  it("get returns a routine with null projectId and null assigneeAgentId", async () => {
-    const draftRoutineRow = {
-      ...baseRoutine,
-      projectId: null,
-      assigneeAgentId: null,
-      variables: [],
-    };
-    const db = createSequenceDb({ selects: [[draftRoutineRow]] });
-    const svc = routineService(db as any);
-    const result = await svc.get(routineId);
-    expect(result).toMatchObject({ id: routineId, projectId: null, assigneeAgentId: null });
-  });
-});
-
-// ── Run-time variable overrides ───────────────────────────────────────────────
-
-import { resolveRoutineRunVariables } from "../services/routine-variable-runtime.js";
-
-describe("resolveRoutineRunVariables — pure function", () => {
-  it("pre-fills defaults for all variables", () => {
-    const result = resolveRoutineRunVariables(
-      { variables: [{ name: "environment", label: null, type: "text", defaultValue: "staging", required: true, options: [] }] },
-      undefined,
-    );
-    expect(result).toEqual({ environment: "staging" });
-  });
-
-  it("merges variableOverrides with stored defaults — overrides win", () => {
-    const result = resolveRoutineRunVariables(
-      { variables: [{ name: "environment", label: null, type: "text", defaultValue: "staging", required: true, options: [] }] },
-      { environment: "production" },
-    );
-    expect(result).toEqual({ environment: "production" });
-  });
-
-  it("rejects unknown variable names in overrides", () => {
-    expect(() =>
-      resolveRoutineRunVariables(
-        { variables: [{ name: "environment", label: null, type: "text", defaultValue: "staging", required: true, options: [] }] },
-        { unknownVar: "x" },
-      ),
-    ).toThrow('Unknown routine variable: "unknownVar"');
-  });
-
-  it("handles null defaultValue by coercing to empty string", () => {
-    const result = resolveRoutineRunVariables(
-      { variables: [{ name: "region", label: null, type: "text", defaultValue: null, required: false, options: [] }] },
-      undefined,
-    );
-    expect(result).toEqual({ region: "" });
-  });
-
-  it("rejects any override key when routine has no variables", () => {
-    // no known keys → any override key would be unknown
-    expect(() =>
-      resolveRoutineRunVariables({ variables: [] }, { anything: "val" }),
-    ).toThrow('Unknown routine variable: "anything"');
-  });
-
-  it("variableOverrides take precedence over input.variables for matching keys", () => {
-    // Mirrors the merge at routines.ts:589:
-    //   effectiveVariables = { ...input.variables, ...resolveRoutineRunVariables(routine, overrides) }
-    // So variableOverrides (resolved last) always win over input.variables for the same key.
-    const routine = {
-      variables: [
-        { name: "foo", label: null, type: "text" as const, defaultValue: "stored-default", required: false, options: [] },
-        { name: "bar", label: null, type: "text" as const, defaultValue: "bar-default", required: false, options: [] },
-      ],
-    };
-
-    // resolveRoutineRunVariables represents the variableOverrides layer:
-    // it takes stored defaults from the routine and applies caller overrides on top.
-    const resolvedOverrides = resolveRoutineRunVariables(routine, { foo: "from-overrides" });
-    // "foo" came from the override; "bar" came from stored default.
-    expect(resolvedOverrides).toEqual({ foo: "from-overrides", bar: "bar-default" });
-
-    // Simulate the full merge: input.variables provides "from-variables" for "foo",
-    // but overrides spread last so "from-overrides" wins.
-    const inputVariables = { foo: "from-variables", bar: "bar-default" };
-    const effectiveVariables = { ...inputVariables, ...resolvedOverrides };
-    expect(effectiveVariables.foo).toBe("from-overrides");
-    expect(effectiveVariables.bar).toBe("bar-default");
   });
 });

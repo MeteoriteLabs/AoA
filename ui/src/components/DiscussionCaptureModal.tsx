@@ -11,7 +11,6 @@ import { queryKeys } from "../lib/queryKeys";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -234,9 +233,6 @@ export function DiscussionCaptureModal() {
           <DialogTitle>
             {existingDiscussionId ? "Add to Discussion" : "New Discussion"}
           </DialogTitle>
-          <DialogDescription className="sr-only">
-            {existingDiscussionId ? "Add a new entry to this discussion" : "Start a new discussion thread"}
-          </DialogDescription>
         </DialogHeader>
 
         {isSubmitting ? (

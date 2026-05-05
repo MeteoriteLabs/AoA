@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import { assertCxoParentConstraint } from "../services/agents.js";
 
 /**
  * Tests for the agent service parentType/parentId integration.
@@ -9,42 +8,6 @@ import { assertCxoParentConstraint } from "../services/agents.js";
  * We import the module-level functions by testing them through their observable
  * effects on the agent service contract.
  */
-
-describe("assertCxoParentConstraint", () => {
-  it("allows cxo with parentType=null (root)", () => {
-    expect(() => assertCxoParentConstraint("cxo", null)).not.toThrow();
-  });
-
-  it("allows cxo with parentType='user'", () => {
-    expect(() => assertCxoParentConstraint("cxo", "user")).not.toThrow();
-  });
-
-  it("rejects cxo with parentType='agent'", () => {
-    expect(() => assertCxoParentConstraint("cxo", "agent")).toThrow(
-      /CXO agents can only report to a human user or sit at the root/i,
-    );
-  });
-
-  it("allows lead with parentType='agent' (only cxo is constrained)", () => {
-    expect(() => assertCxoParentConstraint("lead", "agent")).not.toThrow();
-  });
-
-  it("allows general with parentType='agent'", () => {
-    expect(() => assertCxoParentConstraint("general", "agent")).not.toThrow();
-  });
-
-  it("treats undefined role as no-op (no enforcement on partial patches)", () => {
-    // When a PATCH only updates parentType and not role, the caller passes
-    // the existing role. If somehow the role is undefined the function
-    // must not throw — only `cxo` is constrained.
-    expect(() => assertCxoParentConstraint(undefined, "agent")).not.toThrow();
-    expect(() => assertCxoParentConstraint(null, "agent")).not.toThrow();
-  });
-
-  it("treats undefined parentType as no-op", () => {
-    expect(() => assertCxoParentConstraint("cxo", undefined)).not.toThrow();
-  });
-});
 
 describe("CONFIG_REVISION_FIELDS includes parent fields", () => {
   it("parentType and parentId are tracked in config revisions", async () => {

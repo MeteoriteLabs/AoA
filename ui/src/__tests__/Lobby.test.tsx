@@ -48,10 +48,6 @@ vi.mock("@/components/LobbyCompanyCard", () => ({
   ),
 }));
 
-vi.mock("@/components/UserMenu", () => ({
-  UserMenu: () => <div data-testid="user-menu" />,
-}));
-
 // --- Tests ---
 
 describe("Lobby", () => {

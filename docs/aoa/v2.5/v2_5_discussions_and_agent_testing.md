@@ -27,7 +27,7 @@ Tests live in `server/src/__tests__/` alongside existing V2 tests.
 
 ### CRITICAL: ESM/Drizzle Mock Pattern
 
-All v2.5 test files MUST mock `drizzle-orm` and `@armyofagents/db` before importing any service code to avoid the ESM cycle issue. This is the same pattern used by all existing V2 tests:
+All v2.5 test files MUST mock `drizzle-orm` and `@paperclipai/db` before importing any service code to avoid the ESM cycle issue. This is the same pattern used by all existing V2 tests:
 
 ```typescript
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -43,7 +43,7 @@ vi.mock("drizzle-orm", () => ({
   sql: vi.fn(),
 }));
 
-vi.mock("@armyofagents/db", () => ({
+vi.mock("@paperclipai/db", () => ({
   discussions: {
     id: "id", companyId: "company_id", title: "title",
     status: "status", scopeType: "scope_type", scopeId: "scope_id",

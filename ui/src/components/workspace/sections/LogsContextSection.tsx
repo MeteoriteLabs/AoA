@@ -5,7 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn, relativeTime } from "@/lib/utils";
 import { GitBranch, Copy } from "lucide-react";
 import { formatDuration, RunStatusIcon } from "../workspace-utils";
-import type { ExecutionWorkspace } from "@armyofagents/shared";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 
 interface LogsContextSectionProps {
   issueId: string;

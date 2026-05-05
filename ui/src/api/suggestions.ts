@@ -1,4 +1,4 @@
-import type { Suggestion } from "@armyofagents/shared";
+import type { Suggestion } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const suggestionsApi = {

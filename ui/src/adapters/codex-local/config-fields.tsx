@@ -81,20 +81,6 @@ export function CodexLocalConfigFields({
             : mark("adapterConfig", "search", v)
         }
       />
-      <ToggleField
-        label="Fast mode (gpt-5.4 only)"
-        hint="Use Codex Fast tier for lower latency. Consumes credits faster. Ignored on unsupported models."
-        checked={
-          isCreate
-            ? !!values!.fastMode
-            : eff("adapterConfig", "fastMode", !!config.fastMode)
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ fastMode: v })
-            : mark("adapterConfig", "fastMode", v)
-        }
-      />
     </>
   );
 }

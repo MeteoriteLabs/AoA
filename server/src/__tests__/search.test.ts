@@ -11,7 +11,7 @@ vi.mock("drizzle-orm", () => ({
   ),
 }));
 
-vi.mock("@armyofagents/db", () => ({
+vi.mock("@paperclipai/db", () => ({
   userRoles: {
     role: "role",
     projectId: "project_id",

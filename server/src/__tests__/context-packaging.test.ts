@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 /**
  * Context packaging service tests.
  *
- * Note: The service imports @armyofagents/db (drizzle-orm) which has a known
+ * Note: The service imports @paperclipai/db (drizzle-orm) which has a known
  * ESM cycle issue in the test environment. We test the service logic through
  * the route layer via the API, and do structural/contract tests here.
  *

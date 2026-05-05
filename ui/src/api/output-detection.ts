@@ -1,7 +1,7 @@
-import type { DetectedOutputForUI } from "@armyofagents/shared";
+import type { DetectedOutputForUI } from "@paperclipai/shared";
 import { api } from "./client.js";
 
-export type { DetectedOutputForUI } from "@armyofagents/shared";
+export type { DetectedOutputForUI } from "@paperclipai/shared";
 
 export interface ConfirmDetectedOutputPayload {
   artifactId?: string;

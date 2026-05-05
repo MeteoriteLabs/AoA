@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import {
   agents,
   companies,
@@ -9,14 +9,14 @@ import {
   memoryItems,
   projects,
   suggestions,
-} from "@armyofagents/db";
+} from "@paperclipai/db";
 import {
   MEMORY_ITEM_CATEGORIES,
   MEMORY_ITEM_LAYERS,
   SUGGESTION_CATEGORIES,
   SUGGESTION_STATUSES,
   type SuggestionCategory,
-} from "@armyofagents/shared";
+} from "@paperclipai/shared";
 import { z } from "zod";
 import { badRequest, notFound } from "../errors.js";
 import { issueService } from "./issues.js";

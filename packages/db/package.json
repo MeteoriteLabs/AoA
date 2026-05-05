@@ -1,5 +1,5 @@
 {
-  "name": "@armyofagents/db",
+  "name": "@paperclipai/db",
   "version": "0.2.7",
   "type": "module",
   "exports": {
@@ -33,7 +33,7 @@
     "seed": "tsx src/seed.ts"
   },
   "dependencies": {
-    "@armyofagents/shared": "workspace:*",
+    "@paperclipai/shared": "workspace:*",
     "drizzle-orm": "^0.38.4",
     "postgres": "^3.4.5"
   },

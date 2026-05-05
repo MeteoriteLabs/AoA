@@ -3,7 +3,6 @@ import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity as ActivityIcon,
-  Braces,
   Clock3,
   Copy,
   Play,
@@ -51,16 +50,11 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import type { RoutineTrigger } from "@armyofagents/shared";
-import { ROUTINE_VARIABLE_NAME_PATTERN } from "@armyofagents/shared";
-import { RoutineVariablesEditor } from "@/components/routines/RoutineVariablesEditor";
-import { RoutineRunDialog } from "@/components/routines/RoutineRunDialog";
-import { RoutineTitleWithVariables } from "@/components/routines/RoutineTitleWithVariables";
+import type { RoutineTrigger } from "@paperclipai/shared";
 
 const triggerKinds = ["schedule", "webhook"];
 const signingModes = ["bearer", "hmac_sha256"];
-const HAS_VALID_VARIABLE_TOKEN_RE = new RegExp(`\\{\\{\\s*${ROUTINE_VARIABLE_NAME_PATTERN}\\s*\\}\\}`);
-const routineTabs = ["triggers", "runs", "variables", "activity"] as const;
+const routineTabs = ["triggers", "runs", "activity"] as const;
 
 type RoutineTab = (typeof routineTabs)[number];
 
@@ -259,9 +253,7 @@ function TriggerCard({
                   <Label className="text-xs">Signing mode</Label>
                   <Select
                     value={draft.signingMode}
-                    onValueChange={(signingMode) =>
-                      setDraft((c) => ({ ...c, signingMode: signingMode as typeof c.signingMode }))
-                    }
+                    onValueChange={(signingMode) => setDraft((c) => ({ ...c, signingMode }))}
                   >
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -393,11 +385,11 @@ export function RoutineDetail() {
         ? {
             title: routine.title,
             description: routine.description ?? "",
-            projectId: routine.projectId ?? "",
-            assigneeAgentId: routine.assigneeAgentId ?? "",
+            projectId: routine.projectId,
+            assigneeAgentId: routine.assigneeAgentId,
             priority: routine.priority,
-            concurrencyPolicy: routine.concurrencyPolicy as string,
-            catchUpPolicy: routine.catchUpPolicy as string,
+            concurrencyPolicy: routine.concurrencyPolicy,
+            catchUpPolicy: routine.catchUpPolicy,
           }
         : null,
     [routine],
@@ -485,16 +477,26 @@ export function RoutineDetail() {
     },
   });
 
-  const [runDialogOpen, setRunDialogOpen] = useState(false);
-  const handleRunComplete = async () => {
-    setActiveTab("runs");
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.routines.runs(routineId!) }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
-    ]);
-  };
+  const runRoutine = useMutation({
+    mutationFn: () => routinesApi.run(routineId!, { source: "manual" }),
+    onSuccess: async () => {
+      pushToast({ title: "Routine run started", tone: "success" });
+      setActiveTab("runs");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.runs(routineId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
+      ]);
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Routine run failed",
+        body: error instanceof Error ? error.message : "AoA could not start the routine run.",
+        tone: "error",
+      });
+    },
+  });
 
   const updateRoutineStatus = useMutation({
     mutationFn: (status: string) => routinesApi.update(routineId!, { status }),
@@ -682,45 +684,38 @@ export function RoutineDetail() {
       <div className="border border-border rounded-lg bg-card p-5 space-y-4">
         {/* Header: editable title + actions */}
         <div className="flex items-start gap-4">
-          <div className="flex-1 min-w-0 space-y-1">
-            <textarea
-              ref={titleInputRef}
-              className="w-full resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
-              placeholder="Routine title"
-              rows={1}
-              value={editDraft.title}
-              onChange={(event) => {
-                setEditDraft((current) => ({ ...current, title: event.target.value }));
-                autoResizeTextarea(event.target);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  descriptionEditorRef.current?.focus();
-                  return;
-                }
-                if (event.key === "Tab" && !event.shiftKey) {
-                  event.preventDefault();
-                  if (editDraft.assigneeAgentId) {
-                    if (editDraft.projectId) {
-                      descriptionEditorRef.current?.focus();
-                    } else {
-                      projectSelectorRef.current?.focus();
-                    }
+          <textarea
+            ref={titleInputRef}
+            className="flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
+            placeholder="Routine title"
+            rows={1}
+            value={editDraft.title}
+            onChange={(event) => {
+              setEditDraft((current) => ({ ...current, title: event.target.value }));
+              autoResizeTextarea(event.target);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                descriptionEditorRef.current?.focus();
+                return;
+              }
+              if (event.key === "Tab" && !event.shiftKey) {
+                event.preventDefault();
+                if (editDraft.assigneeAgentId) {
+                  if (editDraft.projectId) {
+                    descriptionEditorRef.current?.focus();
                   } else {
-                    assigneeSelectorRef.current?.focus();
+                    projectSelectorRef.current?.focus();
                   }
+                } else {
+                  assigneeSelectorRef.current?.focus();
                 }
-              }}
-            />
-            {HAS_VALID_VARIABLE_TOKEN_RE.test(editDraft.title) && (
-              <div className="text-sm text-muted-foreground">
-                <RoutineTitleWithVariables template={editDraft.title} />
-              </div>
-            )}
-          </div>
+              }
+            }}
+          />
           <div className="flex shrink-0 items-center gap-3 pt-1">
-            <Button size="sm" variant="outline" onClick={() => setRunDialogOpen(true)}>
+            <Button size="sm" variant="outline" onClick={() => runRoutine.mutate()} disabled={runRoutine.isPending}>
               <Play className="mr-1.5 h-3.5 w-3.5" /> Run now
             </Button>
             <button
@@ -968,15 +963,6 @@ export function RoutineDetail() {
             )}
             {hasLiveRun && <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />}
           </TabsTrigger>
-          <TabsTrigger value="variables" className="gap-1.5">
-            <Braces className="h-3.5 w-3.5" />
-            Variables
-            {routine.variables.length > 0 && (
-              <span className="ml-0.5 rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                {routine.variables.length}
-              </span>
-            )}
-          </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
@@ -1130,15 +1116,6 @@ export function RoutineDetail() {
           )}
         </TabsContent>
 
-        <TabsContent value="variables">
-          <RoutineVariablesEditor
-            routineId={routine.id}
-            title={routine.title}
-            description={routine.description}
-            initialVariables={routine.variables}
-          />
-        </TabsContent>
-
         <TabsContent value="activity">
           {(activity ?? []).length === 0 ? (
             <p className="py-8 text-center text-sm text-muted-foreground">No activity yet.</p>
@@ -1167,16 +1144,6 @@ export function RoutineDetail() {
           )}
         </TabsContent>
       </Tabs>
-      {routine ? (
-        <RoutineRunDialog
-          open={runDialogOpen}
-          onOpenChange={setRunDialogOpen}
-          routineId={routine.id}
-          routineTitle={routine.title}
-          variables={routine.variables}
-          onRunComplete={handleRunComplete}
-        />
-      ) : null}
     </div>
   );
 }

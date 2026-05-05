@@ -1,4 +1,4 @@
-import type { SecretProvider, SecretProviderDescriptor } from "@armyofagents/shared";
+import type { SecretProvider, SecretProviderDescriptor } from "@paperclipai/shared";
 
 export interface StoredSecretVersionMaterial {
   [key: string]: unknown;

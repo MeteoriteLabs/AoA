@@ -4,7 +4,7 @@ import { queryKeys } from "../../../lib/queryKeys";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FileCode, FileText, Image, File, Package } from "lucide-react";
-import type { ArtifactWithVersions, ArtifactVersion, ArtifactType } from "@armyofagents/shared";
+import type { ArtifactWithVersions, ArtifactVersion, ArtifactType } from "@paperclipai/shared";
 
 function typeIcon(type: ArtifactType) {
   switch (type) {

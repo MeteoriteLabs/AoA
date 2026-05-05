@@ -87,7 +87,7 @@ export const pluginManifestV1Schema = z.object({
   author: z.string().min(1).max(200),
   categories: z.array(z.enum(PLUGIN_CATEGORIES)).min(1),
   minimumHostVersion: z.string().optional(),
-  minimumAoaVersion: z.string().optional(),
+  minimumPaperclipVersion: z.string().optional(),
   capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)),
   entrypoints: z.object({
     worker: z.string().min(1),

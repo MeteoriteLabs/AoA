@@ -1,4 +1,4 @@
-import type { AgentTrustScore } from "@armyofagents/shared";
+import type { AgentTrustScore } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const trustScoresApi = {

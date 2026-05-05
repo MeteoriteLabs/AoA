@@ -1,14 +1,13 @@
 import { Router, type Request } from "express";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { Db } from "@armyofagents/db";
-import { agents as agentsTable, companies, heartbeatRuns } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
+import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
-  deriveAgentUrlKey,
   isUuidLike,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
@@ -18,8 +17,7 @@ import {
   upsertAgentInstructionsFileSchema,
   wakeAgentSchema,
   updateAgentSchema,
-  type InstanceSchedulerHeartbeatAgent,
-} from "@armyofagents/shared";
+} from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
   agentService,
@@ -36,19 +34,15 @@ import {
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
-import { findActiveServerAdapter, findServerAdapter, listAdapterModels } from "../adapters/index.js";
+import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
-import { runClaudeLogin } from "@armyofagents/adapter-claude-local/server";
+import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
-} from "@armyofagents/adapter-codex-local";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "@armyofagents/adapter-cursor-local";
-import { ensureOpenCodeModelConfiguredAndAvailable } from "@armyofagents/adapter-opencode-local/server";
-import {
-  loadDefaultAgentInstructionsBundle,
-  resolveDefaultAgentInstructionsBundleRole,
-} from "../services/default-agent-instructions.js";
+} from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
+import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -57,14 +51,7 @@ export function agentRoutes(db: Db) {
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
   };
-  const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set(Object.keys(DEFAULT_INSTRUCTIONS_PATH_KEYS));
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
-
-  function adapterSupportsInstructionsBundle(adapterType: string): boolean {
-    const adapter = findActiveServerAdapter(adapterType);
-    if (adapter?.supportsInstructionsBundle !== undefined) return adapter.supportsInstructionsBundle;
-    return DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES.has(adapterType);
-  }
 
   const router = Router();
   const svc = agentService(db);
@@ -75,7 +62,7 @@ export function agentRoutes(db: Db) {
   const secretsSvc = secretService(db);
   const skillSvc = companySkillService(db);
   const instructions = agentInstructionsService();
-  const strictSecretsMode = process.env.AOA_SECRETS_STRICT_MODE === "true";
+  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   function canCreateAgents(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
@@ -135,9 +122,7 @@ export function agentRoutes(db: Db) {
     }
 
     if (actorAgent.id === targetAgent.id) return;
-    // CXO-tier agents (apex Chief of Staff or any executive) can manage
-    // any agent in their company.
-    if (actorAgent.role === "cxo") return;
+    if (actorAgent.role === "ceo") return;
     const allowedByGrant = await access.hasPermission(
       targetAgent.companyId,
       "agent",
@@ -145,7 +130,7 @@ export function agentRoutes(db: Db) {
       "agents:create",
     );
     if (allowedByGrant || canCreateAgents(actorAgent)) return;
-    throw forbidden("Only CXO or agent creators can modify other agents");
+    throw forbidden("Only CEO or agent creators can modify other agents");
   }
 
   async function resolveCompanyIdForAgentReference(req: Request): Promise<string | null> {
@@ -204,37 +189,6 @@ export function agentRoutes(db: Db) {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
-  }
-
-  function parseBooleanLike(value: unknown): boolean | null {
-    if (typeof value === "boolean") return value;
-    if (typeof value === "string") {
-      const trimmed = value.trim().toLowerCase();
-      if (trimmed === "true" || trimmed === "1") return true;
-      if (trimmed === "false" || trimmed === "0") return false;
-    }
-    if (typeof value === "number") {
-      if (value === 1) return true;
-      if (value === 0) return false;
-    }
-    return null;
-  }
-
-  function parseNumberLike(value: unknown): number | null {
-    if (typeof value === "number") return Number.isFinite(value) ? value : null;
-    if (typeof value === "string") {
-      const parsed = Number(value.trim());
-      return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
-  }
-
-  function parseSchedulerHeartbeatPolicy(runtimeConfig: unknown) {
-    const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat) ?? {};
-    return {
-      enabled: parseBooleanLike(heartbeat.enabled) ?? false,
-      intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 0),
-    };
   }
 
   function applyCreateDefaultsByAdapterType(
@@ -458,71 +412,6 @@ export function agentRoutes(db: Db) {
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
   });
 
-  router.get("/instance/scheduler-heartbeats", async (req, res) => {
-    if (req.actor.type !== "board" || !req.actor.isInstanceAdmin) {
-      throw forbidden("Instance admin required");
-    }
-
-    const rows = await db
-      .select({
-        id: agentsTable.id,
-        companyId: agentsTable.companyId,
-        agentName: agentsTable.name,
-        role: agentsTable.role,
-        title: agentsTable.title,
-        status: agentsTable.status,
-        adapterType: agentsTable.adapterType,
-        runtimeConfig: agentsTable.runtimeConfig,
-        lastHeartbeatAt: agentsTable.lastHeartbeatAt,
-        companyName: companies.name,
-        companyIssuePrefix: companies.issuePrefix,
-      })
-      .from(agentsTable)
-      .innerJoin(companies, eq(agentsTable.companyId, companies.id))
-      .orderBy(companies.name, agentsTable.name);
-
-    const items: InstanceSchedulerHeartbeatAgent[] = rows
-      .map((row) => {
-        const policy = parseSchedulerHeartbeatPolicy(row.runtimeConfig);
-        const statusEligible =
-          row.status !== "paused" &&
-          row.status !== "terminated" &&
-          row.status !== "pending_approval";
-
-        return {
-          id: row.id,
-          companyId: row.companyId,
-          companyName: row.companyName,
-          companyIssuePrefix: row.companyIssuePrefix,
-          agentName: row.agentName,
-          agentUrlKey: deriveAgentUrlKey(row.agentName, row.id),
-          role: row.role as InstanceSchedulerHeartbeatAgent["role"],
-          title: row.title,
-          status: row.status as InstanceSchedulerHeartbeatAgent["status"],
-          adapterType: row.adapterType,
-          intervalSec: policy.intervalSec,
-          heartbeatEnabled: policy.enabled,
-          schedulerActive: statusEligible && policy.enabled && policy.intervalSec > 0,
-          lastHeartbeatAt: row.lastHeartbeatAt,
-        };
-      })
-      .filter((item) =>
-        item.status !== "paused" &&
-        item.status !== "terminated" &&
-        item.status !== "pending_approval",
-      )
-      .sort((left, right) => {
-        if (left.schedulerActive !== right.schedulerActive) {
-          return left.schedulerActive ? -1 : 1;
-        }
-        const companyOrder = left.companyName.localeCompare(right.companyName);
-        if (companyOrder !== 0) return companyOrder;
-        return left.agentName.localeCompare(right.agentName);
-      });
-
-    res.json(items);
-  });
-
   router.get("/companies/:companyId/org", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -708,47 +597,6 @@ export function agentRoutes(db: Db) {
     res.json(state);
   });
 
-  async function materializeDefaultInstructionsBundleForNewAgent<T extends {
-    id: string;
-    companyId: string;
-    name: string;
-    role: string;
-    adapterType: string;
-    adapterConfig: unknown;
-  }>(agent: T): Promise<T> {
-    if (!adapterSupportsInstructionsBundle(agent.adapterType)) {
-      return agent;
-    }
-
-    const adapterConfig = asRecord(agent.adapterConfig) ?? {};
-    const hasExplicitInstructionsBundle =
-      Boolean(asNonEmptyString(adapterConfig.instructionsBundleMode))
-      || Boolean(asNonEmptyString(adapterConfig.instructionsRootPath))
-      || Boolean(asNonEmptyString(adapterConfig.instructionsEntryFile))
-      || Boolean(asNonEmptyString(adapterConfig.instructionsFilePath))
-      || Boolean(asNonEmptyString(adapterConfig.agentsMdPath));
-    if (hasExplicitInstructionsBundle) {
-      return agent;
-    }
-
-    const promptTemplate = typeof adapterConfig.promptTemplate === "string"
-      ? adapterConfig.promptTemplate
-      : "";
-    const files = promptTemplate.trim().length === 0
-      ? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role))
-      : { "AGENTS.md": promptTemplate };
-    const materialized = await instructions.materializeManagedBundle(
-      agent,
-      files,
-      { entryFile: "AGENTS.md", replaceExisting: false },
-    );
-    const nextAdapterConfig = { ...materialized.adapterConfig };
-    delete nextAdapterConfig.promptTemplate;
-
-    const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig });
-    return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
-  }
-
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
@@ -785,13 +633,12 @@ export function agentRoutes(db: Db) {
 
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";
-    const createdAgent = await svc.create(companyId, {
+    const agent = await svc.create(companyId, {
       ...normalizedHireInput,
       status,
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
@@ -911,14 +758,13 @@ export function agentRoutes(db: Db) {
       normalizedAdapterConfig,
     );
 
-    const createdAgent = await svc.create(companyId, {
+    const agent = await svc.create(companyId, {
       ...req.body,
       adapterConfig: normalizedAdapterConfig,
       status: "idle",
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -951,8 +797,8 @@ export function agentRoutes(db: Db) {
         res.status(403).json({ error: "Forbidden" });
         return;
       }
-      if (actorAgent.role !== "cxo") {
-        res.status(403).json({ error: "Only CXO can manage permissions" });
+      if (actorAgent.role !== "ceo") {
+        res.status(403).json({ error: "Only CEO can manage permissions" });
         return;
       }
     }

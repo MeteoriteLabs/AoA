@@ -162,7 +162,7 @@ Create `ui/src/components/workspace/tools/GitPanel.tsx`:
 ```tsx
 import { useState } from "react";
 import { GitBranch, Copy, Check, ExternalLink, GitPullRequest } from "lucide-react";
-import type { ExecutionWorkspace } from "@armyofagents/shared";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 
 interface GitPanelProps {
@@ -620,7 +620,7 @@ Replace the full content of `ui/src/components/workspace/sections/ToolsSection.t
 import { useState } from "react";
 import { GitBranch, Terminal, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ExecutionWorkspace } from "@armyofagents/shared";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { GitPanel } from "../tools/GitPanel";
 import { TerminalPanel } from "../tools/TerminalPanel";
 
@@ -693,7 +693,7 @@ In `ui/src/components/workspace/WorkspaceRightPanel.tsx`, make these changes:
 
 ```tsx
 // Add to imports
-import type { ExecutionWorkspace } from "@armyofagents/shared";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 
 // Update interface — replace workspaceId with workspace
 interface WorkspaceRightPanelProps {

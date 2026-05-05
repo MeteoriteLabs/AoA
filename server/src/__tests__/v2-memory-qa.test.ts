@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { makeTableProxy, drizzleOperatorStubs, mockDbCapabilities } from "./helpers/drizzle-mock.js";
 
 /**
  * V2 Memory QA Tests (Session 29)
@@ -18,21 +17,51 @@ import { makeTableProxy, drizzleOperatorStubs, mockDbCapabilities } from "./help
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-vi.mock("drizzle-orm", () => drizzleOperatorStubs());
-
-// The "Embedding lifecycle" describe block (create always sets embedding=null,
-// update invalidates on content change) requires hasVectorSupport: true —
-// those code paths are gated and silently no-op otherwise.
-vi.mock("../services/db-capabilities.js", () => mockDbCapabilities());
-
-vi.mock("@armyofagents/db", () => ({
-  memoryItems: makeTableProxy("memory_items"),
-  memoryItemVersions: makeTableProxy("memory_item_versions"),
-  issues: makeTableProxy("issues"),
-  taskDependencies: makeTableProxy("task_dependencies"),
-  suggestions: makeTableProxy("suggestions"),
-  activityLog: makeTableProxy("activity_log"),
+vi.mock("drizzle-orm", () => ({
+  and: vi.fn((...args: unknown[]) => args),
+  eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
+  ilike: vi.fn((a: unknown, b: unknown) => ({ ilike: [a, b] })),
+  or: vi.fn((...args: unknown[]) => args),
+  desc: vi.fn((a: unknown) => ({ desc: a })),
+  inArray: vi.fn((a: unknown, b: unknown) => ({ inArray: [a, b] })),
+  isNull: vi.fn((a: unknown) => ({ isNull: a })),
+  isNotNull: vi.fn((a: unknown) => ({ isNotNull: a })),
+  lt: vi.fn((a: unknown, b: unknown) => ({ lt: [a, b] })),
+  sql: Object.assign(
+    vi.fn((strings: unknown, ...values: unknown[]) => ({
+      sql: strings,
+      values,
+      as: vi.fn().mockReturnValue("aliased_column"),
+    })),
+    { raw: vi.fn((s: unknown) => s) },
+  ),
 }));
+
+vi.mock("@paperclipai/db", () => {
+  const makeTable = (name: string) => {
+    const cols: Record<string, symbol> = {};
+    return new Proxy({} as Record<string, unknown>, {
+      get(_target, prop) {
+        if (prop === "_") return { name };
+        if (prop === "$inferSelect" || prop === "$inferInsert") return {};
+        if (typeof prop === "string") {
+          if (!cols[prop]) cols[prop] = Symbol(prop);
+          return cols[prop];
+        }
+        return undefined;
+      },
+    });
+  };
+
+  return {
+    memoryItems: makeTable("memory_items"),
+    memoryItemVersions: makeTable("memory_item_versions"),
+    issues: makeTable("issues"),
+    taskDependencies: makeTable("task_dependencies"),
+    suggestions: makeTable("suggestions"),
+    activityLog: makeTable("activity_log"),
+  };
+});
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
@@ -62,22 +91,6 @@ vi.mock("../services/activity-log.js", () => ({
 vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: vi.fn(),
 }));
-
-// Spy on buildMemoryInsert so tests can inspect the `values` object the
-// service passes before the raw INSERT is executed.
-const capturedBuildInsertValues: Record<string, unknown>[] = [];
-vi.mock("../services/memory-projection.js", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("../services/memory-projection.js")>();
-  return {
-    ...orig,
-    buildMemoryInsert: vi.fn(
-      (db: unknown, values: Record<string, unknown>, hasVector: boolean) => {
-        capturedBuildInsertValues.push({ ...values });
-        return orig.buildMemoryInsert(db as any, values, hasVector);
-      },
-    ),
-  };
-});
 
 import { logActivity } from "../services/activity-log.js";
 import { memoryService } from "../services/memory.js";
@@ -614,14 +627,17 @@ describe("V2 Memory QA", () => {
 
   describe("Embedding lifecycle", () => {
     it("create always sets embedding to null", async () => {
-      // svc.create() routes through buildMemoryInsert (mocked above to capture values).
-      // The service always sets embedding=null in the values before calling buildMemoryInsert.
-      capturedBuildInsertValues.length = 0;
+      let insertedValues: any = null;
       const db = {
         insert: vi.fn().mockReturnThis(),
-        values: vi.fn().mockReturnThis(),
-        returning: vi.fn().mockReturnThis(),
-        execute: vi.fn().mockResolvedValue([{ id: "new-item", embedding: null }]),
+        values: vi.fn((data: any) => {
+          insertedValues = data;
+          return {
+            returning: vi.fn().mockReturnValue({
+              then: vi.fn().mockResolvedValue({ id: "new-item" }),
+            }),
+          };
+        }),
       } as any;
 
       const svc = memoryService(db);
@@ -633,7 +649,7 @@ describe("V2 Memory QA", () => {
         createdBy: "user-1",
       });
 
-      expect(capturedBuildInsertValues[0]).toEqual(expect.objectContaining({ embedding: null }));
+      expect(insertedValues.embedding).toBeNull();
     });
 
     it("update invalidates embedding when content changes", async () => {
@@ -702,14 +718,17 @@ describe("V2 Memory QA", () => {
 
   describe("Critical Rule #6: Agents cannot write directly", () => {
     it("founder-created items are auto-approved", async () => {
-      // svc.create() routes through buildMemoryInsert (mocked above to capture values).
-      // The service sets status="approved" for founder items before calling buildMemoryInsert.
-      capturedBuildInsertValues.length = 0;
+      let insertedValues: any = null;
       const db = {
         insert: vi.fn().mockReturnThis(),
-        values: vi.fn().mockReturnThis(),
-        returning: vi.fn().mockReturnThis(),
-        execute: vi.fn().mockResolvedValue([{ id: "new", status: "approved" }]),
+        values: vi.fn((data: any) => {
+          insertedValues = data;
+          return {
+            returning: vi.fn().mockReturnValue({
+              then: vi.fn().mockResolvedValue({ id: "new" }),
+            }),
+          };
+        }),
       } as any;
 
       const svc = memoryService(db);
@@ -721,16 +740,21 @@ describe("V2 Memory QA", () => {
         createdBy: "founder-1",
       });
 
-      expect(capturedBuildInsertValues[0]).toEqual(expect.objectContaining({ status: "approved" }));
+      expect(insertedValues.status).toBe("approved");
     });
 
     it("agent-created items default to pending", async () => {
-      capturedBuildInsertValues.length = 0;
+      let insertedValues: any = null;
       const db = {
         insert: vi.fn().mockReturnThis(),
-        values: vi.fn().mockReturnThis(),
-        returning: vi.fn().mockReturnThis(),
-        execute: vi.fn().mockResolvedValue([{ id: "new", status: "pending" }]),
+        values: vi.fn((data: any) => {
+          insertedValues = data;
+          return {
+            returning: vi.fn().mockReturnValue({
+              then: vi.fn().mockResolvedValue({ id: "new" }),
+            }),
+          };
+        }),
       } as any;
 
       const svc = memoryService(db);
@@ -744,16 +768,21 @@ describe("V2 Memory QA", () => {
         createdBy: "agent-1",
       });
 
-      expect(capturedBuildInsertValues[0]).toEqual(expect.objectContaining({ status: "pending" }));
+      expect(insertedValues.status).toBe("pending");
     });
 
     it("agent status is always forced to pending regardless of explicit status", async () => {
-      capturedBuildInsertValues.length = 0;
+      let insertedValues: any = null;
       const db = {
         insert: vi.fn().mockReturnThis(),
-        values: vi.fn().mockReturnThis(),
-        returning: vi.fn().mockReturnThis(),
-        execute: vi.fn().mockResolvedValue([{ id: "new", status: "pending" }]),
+        values: vi.fn((data: any) => {
+          insertedValues = data;
+          return {
+            returning: vi.fn().mockReturnValue({
+              then: vi.fn().mockResolvedValue({ id: "new" }),
+            }),
+          };
+        }),
       } as any;
 
       const svc = memoryService(db);
@@ -768,7 +797,7 @@ describe("V2 Memory QA", () => {
         createdBy: "agent-1",
       } as any);
 
-      expect(capturedBuildInsertValues[0]).toEqual(expect.objectContaining({ status: "pending" }));
+      expect(insertedValues.status).toBe("pending");
     });
   });
 

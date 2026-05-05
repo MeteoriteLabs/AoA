@@ -67,7 +67,7 @@ function shouldIgnorePath(filename: string | null | undefined): boolean {
       segment === "node_modules" ||
       segment === ".git" ||
       segment === ".vite" ||
-      segment === ".aoa-sdk" ||
+      segment === ".paperclip-sdk" ||
       segment.startsWith("."),
   );
 }

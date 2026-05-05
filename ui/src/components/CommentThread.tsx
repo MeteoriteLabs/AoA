@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
-import type { IssueComment, Agent, FeedbackVote } from "@armyofagents/shared";
+import type { IssueComment, Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Paperclip } from "lucide-react";
 import { Identity } from "./Identity";
@@ -9,7 +9,6 @@ import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
-import { FeedbackThumbs } from "./FeedbackThumbs";
 import { formatDateTime } from "../lib/utils";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -45,14 +44,6 @@ interface CommentThreadProps {
   reassignOptions?: InlineEntityOption[];
   currentAssigneeValue?: string;
   mentions?: MentionOption[];
-  /**
-   * When provided, agent-authored comments render a thumbs up/down widget. The
-   * existingVotes map lets the widget reflect the user's prior choice without
-   * flicker. Both must be set for the widget to appear.
-   */
-  feedbackIssueId?: string;
-  existingVotesByCommentId?: Map<string, FeedbackVote>;
-  onVoteChange?: () => void;
 }
 
 const CLOSED_STATUSES = new Set(["done", "cancelled"]);
@@ -109,16 +100,10 @@ const TimelineList = memo(function TimelineList({
   timeline,
   agentMap,
   highlightCommentId,
-  feedbackIssueId,
-  existingVotesByCommentId,
-  onVoteChange,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
   highlightCommentId?: string | null;
-  feedbackIssueId?: string;
-  existingVotesByCommentId?: Map<string, FeedbackVote>;
-  onVoteChange?: () => void;
 }) {
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No comments or runs yet.</p>;
@@ -199,17 +184,6 @@ const TimelineList = memo(function TimelineList({
                 )}
               </div>
             )}
-            {feedbackIssueId && comment.authorAgentId ? (
-              <div className="mt-2 pt-2 border-t border-border/60">
-                <FeedbackThumbs
-                  issueId={feedbackIssueId}
-                  targetType="issue_comment"
-                  targetId={comment.id}
-                  initialVote={existingVotesByCommentId?.get(comment.id) ?? null}
-                  onChange={onVoteChange}
-                />
-              </div>
-            ) : null}
           </div>
         );
       })}
@@ -231,9 +205,6 @@ export function CommentThread({
   reassignOptions = [],
   currentAssigneeValue = "",
   mentions: providedMentions,
-  feedbackIssueId,
-  existingVotesByCommentId,
-  onVoteChange,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
@@ -358,14 +329,7 @@ export function CommentThread({
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
 
-      <TimelineList
-        timeline={timeline}
-        agentMap={agentMap}
-        highlightCommentId={highlightCommentId}
-        feedbackIssueId={feedbackIssueId}
-        existingVotesByCommentId={existingVotesByCommentId}
-        onVoteChange={onVoteChange}
-      />
+      <TimelineList timeline={timeline} agentMap={agentMap} highlightCommentId={highlightCommentId} />
 
       {liveRunSlot}
 

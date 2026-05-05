@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Issue, IssueDocument } from "@armyofagents/shared";
+import type { Issue, IssueDocument } from "@paperclipai/shared";
 import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
@@ -11,7 +11,6 @@ import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption } from "./MarkdownEditor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -386,7 +385,6 @@ export function IssueDocumentsSection({
   const [drafts, setDrafts] = useState<Map<string, DraftState>>(new Map());
   const [conflict, setConflict] = useState<DocumentConflictState | null>(null);
   const [showNewForm, setShowNewForm] = useState(false);
-  const [deleteDocKey, setDeleteDocKey] = useState<string | null>(null);
 
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -631,9 +629,13 @@ export function IssueDocumentsSection({
     [scheduleAutosave],
   );
 
-  const handleDelete = useCallback((key: string) => {
-    setDeleteDocKey(key);
-  }, []);
+  const handleDelete = useCallback(
+    (key: string) => {
+      if (!window.confirm("Delete this document? This cannot be undone.")) return;
+      deleteDocMutation.mutate(key);
+    },
+    [deleteDocMutation],
+  );
 
   const handleCreateDocument = useCallback(
     (key: string, title: string) => {
@@ -752,21 +754,6 @@ export function IssueDocumentsSection({
           ))}
         </div>
       )}
-
-      <ConfirmDialog
-        open={deleteDocKey !== null}
-        onOpenChange={(open) => {
-          if (!open) setDeleteDocKey(null);
-        }}
-        title="Delete this document?"
-        description="This cannot be undone."
-        confirmLabel="Delete"
-        onConfirm={() => {
-          if (!deleteDocKey) return;
-          deleteDocMutation.mutate(deleteDocKey);
-          setDeleteDocKey(null);
-        }}
-      />
     </div>
   );
 }

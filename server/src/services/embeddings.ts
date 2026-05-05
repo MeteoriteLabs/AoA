@@ -1,9 +1,8 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
-import { memoryItems } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
+import { memoryItems } from "@paperclipai/db";
 import { resolveApiKey } from "../adapters/api-common.js";
 import { logger } from "../middleware/logger.js";
-import { getDbCapabilities } from "./db-capabilities.js";
 
 const EMBEDDING_MODEL = "text-embedding-3-small";
 const EMBEDDING_API_URL = "https://api.openai.com/v1/embeddings";
@@ -114,14 +113,6 @@ export async function generateEmbeddingsBatch(
  * and generates embeddings for them in batches.
  */
 export async function processEmbeddingQueue(db: Db, companyId: string): Promise<number> {
-  // Short-circuit when pgvector is unavailable — the embedding column doesn't
-  // exist and every query below would 500. Semantic search is gated at the
-  // query layer; this worker has nothing to do either.
-  if (!getDbCapabilities().hasVectorSupport) {
-    log.debug("pgvector unavailable — skipping embedding generation");
-    return 0;
-  }
-
   let apiKey: string;
   try {
     apiKey = await resolveApiKey(companyId, "openai");
@@ -196,10 +187,6 @@ export async function processEmbeddingQueue(db: Db, companyId: string): Promise<
  * Called when content is updated to trigger re-generation.
  */
 export async function invalidateEmbedding(db: Db, itemId: string): Promise<void> {
-  if (!getDbCapabilities().hasVectorSupport) {
-    // No embedding column to invalidate.
-    return;
-  }
   await db
     .update(memoryItems)
     .set({ embedding: sql`NULL`, embeddingRetries: 0 } as any)

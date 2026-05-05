@@ -1,4 +1,4 @@
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@armyofagents/adapter-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   appendWakeTextToOpenResponsesInput,
   buildExecutionState,
@@ -275,7 +275,7 @@ function buildSseBody(input: {
       input: openResponsesInput,
       metadata: {
         ...toStringRecord(state.payloadTemplate.metadata),
-        ...state.aoaEnv,
+        ...state.paperclipEnv,
         paperclip_session_key: state.sessionKey,
       },
     }
@@ -284,11 +284,11 @@ function buildSseBody(input: {
       stream: true,
       sessionKey: state.sessionKey,
       text: payloadText,
-      aoa: {
+      paperclip: {
         ...state.wakePayload,
         sessionKey: state.sessionKey,
         streamTransport: "sse",
-        env: state.aoaEnv,
+        env: state.paperclipEnv,
         context,
       },
     };

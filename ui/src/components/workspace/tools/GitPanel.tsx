@@ -1,29 +1,30 @@
 import { useState } from "react";
-import { GitBranch, Copy, Check, ExternalLink, GitPullRequest, Github } from "lucide-react";
-import type { ExecutionWorkspace, GitHubPrMetadata } from "@armyofagents/shared";
+import { GitBranch, Copy, Check, ExternalLink, GitPullRequest } from "lucide-react";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
-import { OpenInIdeButton } from "../OpenInIdeButton";
-import { CreatePrDialog } from "../CreatePrDialog";
 
 interface GitPanelProps {
   workspace: ExecutionWorkspace;
-  issueId?: string | null;
 }
 
-const prStateColor: Record<string, string> = {
+interface PrMetadata {
+  url: string;
+  status: string;
+  number: number;
+}
+
+const prStatusColor: Record<string, string> = {
   open: "bg-green-500/15 text-green-400",
   merged: "bg-purple-500/15 text-purple-400",
   closed: "bg-red-500/15 text-red-400",
 };
 
-export function GitPanel({ workspace, issueId }: GitPanelProps) {
+export function GitPanel({ workspace }: GitPanelProps) {
   const [copied, setCopied] = useState(false);
-  const [createPrOpen, setCreatePrOpen] = useState(false);
   const raw = (workspace.metadata as Record<string, unknown> | null)?.pr;
   const pr =
-    typeof raw === "object" && raw !== null && "url" in raw && "number" in raw && "state" in raw
-      ? (raw as GitHubPrMetadata)
+    typeof raw === "object" && raw !== null && "url" in raw && "status" in raw && "number" in raw
+      ? (raw as PrMetadata)
       : undefined;
 
   const handleCopy = async () => {
@@ -37,26 +38,8 @@ export function GitPanel({ workspace, issueId }: GitPanelProps) {
     }
   };
 
-  const hasRepoUrl = Boolean(workspace.repoUrl);
-  const hasBranchName = Boolean(workspace.branchName);
-  const canCreatePr = Boolean(issueId) && hasRepoUrl && hasBranchName;
-  const disabledReason = !issueId
-    ? "Link a task to this workspace to create a PR"
-    : !hasRepoUrl
-      ? "Configure repo URL first"
-      : !hasBranchName
-        ? "Workspace branch not yet provisioned"
-        : null;
-
   return (
     <div className="space-y-2 text-sm" data-testid="git-panel">
-      {/* Open in IDE — launches VS Code / Cursor / Zed or reveals in file manager */}
-      {workspace.cwd && (
-        <div className="pb-2 border-b border-border" data-testid="git-panel-open-in-ide">
-          <OpenInIdeButton cwd={workspace.cwd} />
-        </div>
-      )}
-
       {/* Branch */}
       {workspace.branchName && (
         <div className="flex items-center gap-2" data-testid="branch-row">
@@ -104,7 +87,7 @@ export function GitPanel({ workspace, issueId }: GitPanelProps) {
         </div>
       )}
 
-      {/* PR state */}
+      {/* PR status */}
       <div className="flex items-center gap-2" data-testid="pr-row">
         <GitPullRequest className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
         {pr ? (
@@ -120,10 +103,10 @@ export function GitPanel({ workspace, issueId }: GitPanelProps) {
             <span
               className={cn(
                 "text-[10px] px-1.5 py-0.5 rounded-full font-medium",
-                prStateColor[pr.state] ?? "bg-muted text-muted-foreground",
+                prStatusColor[pr.status] ?? "bg-muted text-muted-foreground",
               )}
             >
-              {pr.state}
+              {pr.status}
             </span>
           </div>
         ) : (
@@ -131,41 +114,14 @@ export function GitPanel({ workspace, issueId }: GitPanelProps) {
         )}
       </div>
 
-      {/* Create PR button (or link to existing PR) */}
-      {pr ? (
-        <a
-          href={pr.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground mt-1"
-          data-testid="pr-link"
-        >
-          <ExternalLink className="h-3 w-3" />
-          View PR #{pr.number}
-        </a>
-      ) : (
-        <Button
-          size="sm"
-          variant="outline"
-          className="w-full mt-1"
-          disabled={!canCreatePr}
-          title={disabledReason ?? "Open pull request on GitHub"}
-          onClick={() => setCreatePrOpen(true)}
-          data-testid="create-pr-btn"
-        >
-          <Github className="h-4 w-4 mr-2" />
-          Create PR
-        </Button>
-      )}
-
-      {issueId && (
-        <CreatePrDialog
-          issueId={issueId}
-          workspace={workspace}
-          open={createPrOpen}
-          onOpenChange={setCreatePrOpen}
-        />
-      )}
+      {/* Create PR — placeholder */}
+      <button
+        disabled
+        className="w-full mt-1 text-xs py-1.5 rounded-md border border-dashed border-muted-foreground/30 text-muted-foreground cursor-not-allowed"
+        title="Coming soon"
+      >
+        Create PR
+      </button>
     </div>
   );
 }

@@ -3,7 +3,7 @@ title: Costs and Budgets
 summary: Budget caps, cost tracking, and auto-pause enforcement
 ---
 
-AoA tracks every token spent by every agent and enforces budget limits to prevent runaway costs.
+Paperclip tracks every token spent by every agent and enforces budget limits to prevent runaway costs.
 
 ## How Cost Tracking Works
 
@@ -39,7 +39,7 @@ PATCH /api/agents/{agentId}
 
 ## Budget Enforcement
 
-AoA enforces budgets automatically:
+Paperclip enforces budgets automatically:
 
 | Threshold | Action |
 |-----------|--------|
@@ -67,4 +67,4 @@ GET /api/companies/{companyId}/costs/by-project   # Per-project breakdown
 - Set conservative budgets initially and increase as you see results
 - Monitor the dashboard regularly for unexpected cost spikes
 - Use per-agent budgets to limit exposure from any single agent
-- Critical agents (Director, CTO) may need higher budgets than ICs
+- Critical agents (CEO, CTO) may need higher budgets than ICs

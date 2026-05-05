@@ -1,4 +1,4 @@
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import { secretService } from "../../secrets.js";
 import { createAnthropicProvider } from "./anthropic.js";
 import { createGeminiProvider } from "./gemini.js";

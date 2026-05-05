@@ -108,7 +108,7 @@ export function makeAgent(overrides: Record<string, any> = {}) {
     role: "engineer",
     title: "Senior Engineer",
     status: "active",
-    adapterType: "claude_local",
+    adapterType: "claude_api",
     icon: null,
     lastHeartbeatAt: new Date().toISOString(),
     companyId: "comp-1",

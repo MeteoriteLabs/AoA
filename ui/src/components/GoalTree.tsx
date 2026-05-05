@@ -1,4 +1,4 @@
-import type { Goal } from "@armyofagents/shared";
+import type { Goal } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { StatusBadge } from "./StatusBadge";
 import { ChevronRight, AlertTriangle } from "lucide-react";

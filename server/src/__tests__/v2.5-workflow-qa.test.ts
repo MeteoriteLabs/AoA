@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Mock tables ──────────────────────────────────────────────────────────────
-vi.mock("@armyofagents/db", () => {
+vi.mock("@paperclipai/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {

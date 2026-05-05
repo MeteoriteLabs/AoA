@@ -1,4 +1,3 @@
-import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -75,7 +74,7 @@ const mockAgent = {
   parentType: null,
   parentId: null,
   capabilities: null,
-  adapterType: "claude_local",
+  adapterType: "claude_api",
   adapterConfig: {},
   runtimeConfig: {},
   lastHeartbeatAt: new Date().toISOString(),
@@ -224,26 +223,11 @@ vi.mock("@xterm/addon-fit", () => ({
 
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
-// Mock MemorySection so the expanded memory section renders a known placeholder
-// testid rather than spinning up the full memoryRetrievalsApi query.
-vi.mock("../components/workspace/sections/MemorySection", () => ({
-  MemorySection: () => <div data-testid="memory-placeholder" />,
-}));
-
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
     ...mockCompanyContext,
     selectedCompanyId: "comp-1",
     selectedCompany: { id: "comp-1", issuePrefix: "TC", name: "Test Corp" },
-  }),
-}));
-
-vi.mock("../context/ToastContext", () => ({
-  useToast: () => ({
-    toasts: [],
-    pushToast: vi.fn(),
-    dismissToast: vi.fn(),
-    clearToasts: vi.fn(),
   }),
 }));
 
@@ -294,7 +278,6 @@ describe("WorkspaceRightPanel — section rendering", () => {
     });
 
     expect(screen.getByTestId("section-process")).toBeInTheDocument();
-    expect(screen.getByTestId("section-services")).toBeInTheDocument();
     expect(screen.getByTestId("section-terminal")).toBeInTheDocument();
     expect(screen.getByTestId("section-notes")).toBeInTheDocument();
 
@@ -322,7 +305,6 @@ describe("WorkspaceRightPanel — section rendering", () => {
     });
 
     expect(screen.queryByTestId("section-terminal")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("section-services")).not.toBeInTheDocument();
   });
 });
 
@@ -434,7 +416,7 @@ describe("ProcessSection", () => {
     });
 
     expect(screen.getByText("Claude Agent")).toBeInTheDocument();
-    expect(screen.getByText("claude_local")).toBeInTheDocument();
+    expect(screen.getByText("claude_api")).toBeInTheDocument();
   });
 
   it("shows run count", async () => {
@@ -544,7 +526,6 @@ describe("WorkspaceRightPanel — collapsed icon rail", () => {
 
     expect(screen.getByTestId("workspace-rail-section-artifacts")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-rail-section-process")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-rail-section-services")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-rail-section-memory")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-rail-section-git")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-rail-section-terminal")).toBeInTheDocument();
@@ -558,7 +539,6 @@ describe("WorkspaceRightPanel — collapsed icon rail", () => {
     expect(screen.getByTestId("workspace-rail-section-process")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-rail-section-memory")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-rail-section-notes")).toBeInTheDocument();
-    expect(screen.queryByTestId("workspace-rail-section-services")).not.toBeInTheDocument();
     expect(screen.queryByTestId("workspace-rail-section-git")).not.toBeInTheDocument();
     expect(screen.queryByTestId("workspace-rail-section-terminal")).not.toBeInTheDocument();
   });

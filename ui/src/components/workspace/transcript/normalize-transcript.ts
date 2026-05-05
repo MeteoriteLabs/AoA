@@ -1,7 +1,7 @@
 // ui/src/components/workspace/transcript/normalize-transcript.ts
 // Ported from Paperclip's RunTranscriptView.tsx — adapted for AoA TranscriptEntry types.
 
-import type { TranscriptEntry } from "@armyofagents/adapter-utils";
+import type { TranscriptEntry } from "@paperclipai/adapter-utils";
 import type { TranscriptBlock } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -217,12 +217,6 @@ function parseSystemActivity(
 
 function shouldHideNiceModeStderr(text: string): boolean {
   const normalized = compactWhitespace(text).toLowerCase();
-  // NOTE: "[paperclip]" here matches the *upstream Claude CLI binary's* stderr
-  // output — not an AoA-emitted log prefix. The CLI binary itself uses this
-  // prefix. This is intentionally left as-is so the filter keeps working even
-  // if the user has an older CLI version installed. Do not rename to "[aoa]"
-  // without confirming the upstream CLI has been updated.
-  // brand-check-ignore: external-tool-output
   return normalized.startsWith("[paperclip] skipping saved session resume");
 }
 

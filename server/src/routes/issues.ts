@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -9,7 +9,7 @@ import {
   createIssueSchema,
   linkIssueApprovalSchema,
   updateIssueSchema,
-} from "@armyofagents/shared";
+} from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import {
@@ -20,18 +20,17 @@ import {
   issueApprovalService,
   issueService,
   logActivity,
-  memoryLifecycleService,
   projectService,
   routineService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
+import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { documentService } from "../services/documents.js";
-import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
+import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@paperclipai/shared";
 
-const MAX_ATTACHMENT_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -83,17 +82,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(403).json({ error: "Forbidden" });
       return false;
     }
-    if (actorAgent.role === "cxo" || Boolean(actorAgent.permissions?.canCreateAgents)) return true;
+    if (actorAgent.role === "ceo" || Boolean(actorAgent.permissions?.canCreateAgents)) return true;
     res.status(403).json({ error: "Missing permission to link approvals" });
     return false;
   }
 
   function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
-    // CXO-tier agents bypass the explicit permission check — they're
-    // categorically empowered to hire. (Was historically `=== "ceo"`
-    // before the role-enum cleanup; see plan
-    // docs/superpowers/plans/2026-04-30-agent-role-3-tier-cleanup.md.)
-    if (agent.role === "cxo") return true;
+    if (agent.role === "ceo") return true;
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
@@ -225,12 +220,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
-    const parentIdRaw = req.query.parentId;
-    let parentIdFilter: string | null | undefined;
-    if (typeof parentIdRaw === "string") {
-      parentIdFilter = parentIdRaw === "null" || parentIdRaw === "" ? null : parentIdRaw;
-    }
-
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
@@ -240,21 +229,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       projectId: req.query.projectId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       q: req.query.q as string | undefined,
-      ...(parentIdFilter !== undefined ? { parentId: parentIdFilter } : {}),
     });
     res.json(result);
-  });
-
-  // Explicit 404 for the common mis-path /companies/:cid/issues/:id — the
-  // canonical issue-by-id endpoint is unprefixed at /api/issues/:id. Placed
-  // AFTER the list handler so it doesn't intercept GET /companies/:cid/issues.
-  router.all("/companies/:companyId/issues/:id", (req, res) => {
-    const id = req.params.id as string;
-    res.status(404).json({
-      error: "Issue endpoint is unprefixed",
-      hint: `Use /api/issues/${id} instead`,
-      correctRoute: `/api/issues/${id}`,
-    });
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -442,63 +418,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
       await assertCanAssignTasks(req, companyId);
     }
 
-    // Validate FK references up-front so the client gets a typed 422 (with
-    // field/id details) instead of a generic 404 from the service or a 500
-    // from a DB-level FK constraint failure.  Out-of-company hits are treated
-    // as "not found" — leaking existence across tenants would be a bug.
-    const fkLookups: Array<{
-      field: "assigneeAgentId" | "projectId" | "goalId" | "parentId" | "inheritExecutionWorkspaceFromIssueId";
-      id: string;
-      label: string;
-      fetch: () => Promise<{ companyId: string } | null>;
-    }> = [];
-    if (req.body.assigneeAgentId) {
-      fkLookups.push({
-        field: "assigneeAgentId",
-        id: req.body.assigneeAgentId,
-        label: "Assignee agent",
-        fetch: () => agentsSvc.getById(req.body.assigneeAgentId),
-      });
-    }
-    if (req.body.projectId) {
-      fkLookups.push({
-        field: "projectId",
-        id: req.body.projectId,
-        label: "Project",
-        fetch: () => projectsSvc.getById(req.body.projectId),
-      });
-    }
-    if (req.body.goalId) {
-      fkLookups.push({
-        field: "goalId",
-        id: req.body.goalId,
-        label: "Goal",
-        fetch: () => goalsSvc.getById(req.body.goalId),
-      });
-    }
-    if (req.body.parentId) {
-      fkLookups.push({
-        field: "parentId",
-        id: req.body.parentId,
-        label: "Parent task",
-        fetch: () => svc.getById(req.body.parentId),
-      });
-    }
-    if (req.body.inheritExecutionWorkspaceFromIssueId) {
-      fkLookups.push({
-        field: "inheritExecutionWorkspaceFromIssueId",
-        id: req.body.inheritExecutionWorkspaceFromIssueId,
-        label: "Workspace inheritance task",
-        fetch: () => svc.getById(req.body.inheritExecutionWorkspaceFromIssueId),
-      });
-    }
-    for (const check of fkLookups) {
-      const row = await check.fetch();
-      if (!row || row.companyId !== companyId) {
-        throw unprocessable(`${check.label} not found`, { field: check.field, id: check.id });
-      }
-    }
-
     const actor = getActorInfo(req);
     const issue = await svc.create(companyId, {
       ...req.body,
@@ -631,13 +550,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
         .catch((err) => logger.warn({ err, issueId: issue.id }, "syncRunStatusForIssue failed"));
     }
 
-    // Archive working-layer memory items scoped to this task when it reaches terminal state
-    if (issue.status === "done" || issue.status === "cancelled") {
-      void memoryLifecycleService(db)
-        .onTaskCompleted(issue.companyId, issue.id)
-        .catch((err) => logger.warn({ err, issueId: issue.id }, "onTaskCompleted memory lifecycle failed"));
-    }
-
     let comment = null;
     if (commentBody) {
       comment = await svc.addComment(id, commentBody, {
@@ -693,12 +605,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
         for (const mentionedId of mentionedIds) {
           if (wakeups.has(mentionedId)) continue;
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
-          // P3-G: also check the persisted comment's authorAgentId — when an
-          // agent posts via local-board / user / service actor (e.g.
-          // local_trusted curl with no auth), actor.actorType isn't "agent"
-          // and the above check is bypassed, but authorAgentId correctly
-          // identifies the agent.
-          if (comment?.authorAgentId === mentionedId) continue;
           wakeups.set(mentionedId, {
             source: "automation",
             triggerDetail: "system",
@@ -716,9 +622,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
             },
           });
         }
-
-        // @human mention notifications — see issueService.notifyMentionedHumans for safety contract.
-        await svc.notifyMentionedHumans(issue.companyId, commentBody, issue.id, actor);
       }
 
       for (const [agentId, wakeup] of wakeups.entries()) {
@@ -1076,12 +979,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
       for (const mentionedId of mentionedIds) {
         if (wakeups.has(mentionedId)) continue;
         if (actorIsAgent && actor.actorId === mentionedId) continue;
-        // P3-G: also check the persisted comment's authorAgentId — when an
-        // agent posts via local-board / user / service actor (e.g.
-        // local_trusted curl with no auth), actorIsAgent is false and the
-        // above check is bypassed, but authorAgentId correctly identifies
-        // the agent.
-        if (comment?.authorAgentId === mentionedId) continue;
         wakeups.set(mentionedId, {
           source: "automation",
           triggerDetail: "system",
@@ -1099,9 +996,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
           },
         });
       }
-
-      // @human mention notifications — see issueService.notifyMentionedHumans for safety contract.
-      await svc.notifyMentionedHumans(issue.companyId, req.body.body, currentIssue.id, actor);
 
       for (const [agentId, wakeup] of wakeups.entries()) {
         heartbeat

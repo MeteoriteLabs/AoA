@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { parseProjectMentionHref, parseSkillMentionHref } from "@armyofagents/shared";
+import { parseProjectMentionHref } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import { useTheme } from "../context/ThemeContext";
 
@@ -47,26 +47,16 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
         remarkPlugins={[remarkGfm]}
         components={{
           a: ({ href, children: linkChildren }) => {
-            const parsedProject = href ? parseProjectMentionHref(href) : null;
-            if (parsedProject) {
+            const parsed = href ? parseProjectMentionHref(href) : null;
+            if (parsed) {
+              const label = linkChildren;
               return (
                 <a
-                  href={`/projects/${parsedProject.projectId}`}
-                  className="aoa-project-mention-chip"
-                  style={mentionChipStyle(parsedProject.color)}
+                  href={`/projects/${parsed.projectId}`}
+                  className="paperclip-project-mention-chip"
+                  style={mentionChipStyle(parsed.color)}
                 >
-                  {linkChildren}
-                </a>
-              );
-            }
-            const parsedSkill = href ? parseSkillMentionHref(href) : null;
-            if (parsedSkill) {
-              return (
-                <a
-                  href={`#skill:${parsedSkill.skillId}`}
-                  className="aoa-skill-mention-chip"
-                >
-                  {linkChildren}
+                  {label}
                 </a>
               );
             }

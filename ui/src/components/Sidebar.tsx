@@ -12,26 +12,19 @@ import {
   Repeat,
   ChevronsLeft,
   Shield,
-  Store,
   Puzzle,
-  DollarSign,
-  FolderGit2,
-  ArrowUpCircle,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjectsByType } from "./SidebarProjectsByType";
-import { BudgetSidebarMarker } from "./finance/BudgetSidebarMarker";
-import { UserMenu } from "./UserMenu";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { pluginsApi } from "../api/plugins";
 import { queryKeys } from "../lib/queryKeys";
 import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
-import { usePendingUpdates } from "../hooks/usePendingUpdates";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -46,10 +39,6 @@ export function Sidebar() {
     enabled: !!selectedCompanyId,
   });
   const liveRunCount = useLiveAgentCount();
-  const { data: pendingUpdates } = usePendingUpdates();
-  const pendingUpdatesCount = (pendingUpdates ?? []).filter(
-    (u) => u.status === "pending" || u.status === "conflict",
-  ).length;
   const { data: pluginContributions } = useQuery({
     queryKey: queryKeys.plugins.uiContributions,
     queryFn: () => pluginsApi.listUiContributions(),
@@ -145,16 +134,6 @@ export function Sidebar() {
             collapsed={collapsed}
           />
           <SidebarNavItem to="/commander" label="Commander" icon={Shield} collapsed={collapsed} />
-          <SidebarNavItem to="/marketplace" label="Marketplace" icon={Store} collapsed={collapsed} noPrefix />
-          {pendingUpdatesCount > 0 && (
-            <SidebarNavItem
-              to="/marketplace-updates"
-              label={`Updates (${pendingUpdatesCount})`}
-              icon={ArrowUpCircle}
-              badge={pendingUpdatesCount}
-              collapsed={collapsed}
-            />
-          )}
         </div>
 
         {/* WORK section */}
@@ -163,7 +142,6 @@ export function Sidebar() {
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} entityColor="var(--entity-task)" collapsed={collapsed} />
           <SidebarNavItem to="/agents/all" label="Agents" icon={Bot} entityColor="var(--entity-agent)" collapsed={collapsed} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} collapsed={collapsed} />
-          <SidebarNavItem to="/workspaces" label="Workspaces" icon={FolderGit2} collapsed={collapsed} />
         </SidebarSection>
 
         {/* DEPARTMENTS section */}
@@ -178,8 +156,6 @@ export function Sidebar() {
           <SidebarNavItem to="/memory" label="Memory" icon={Brain} entityColor="var(--entity-memory)" collapsed={collapsed} />
           <SidebarNavItem to="/org" label="Team" icon={Users} collapsed={collapsed} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} collapsed={collapsed} />
-          <SidebarNavItem to="/budget" label="Budget" icon={DollarSign} collapsed={collapsed} />
-          <BudgetSidebarMarker collapsed={collapsed} />
           <SidebarNavItem to="/settings" label="Settings" icon={Settings} collapsed={collapsed} />
         </SidebarSection>
 
@@ -198,11 +174,6 @@ export function Sidebar() {
           </SidebarSection>
         )}
       </nav>
-
-      {/* User account menu pinned to the bottom of the sidebar. */}
-      <div className={cn("shrink-0 border-t border-border", collapsed ? "py-2" : "p-2")}>
-        <UserMenu collapsed={collapsed} />
-      </div>
     </aside>
   );
 }

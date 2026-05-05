@@ -29,35 +29,28 @@ export const AGENT_ADAPTER_TYPES = [
   "opencode_local",
   "cursor",
   "openclaw",
+  "claude_api",
+  "openai_api",
+  "gemini_api",
   "hermes_local",
   "gemini_local",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
-// 3-tier model:
-//   - cxo:     apex executive. Apex CXO (no agent parent) is the de-facto
-//              "Chief of Staff" — computed live in the org-tree UI, not
-//              stored. CXO agents bypass the canCreateAgents permission
-//              gate and load the 4-file `cxo/` onboarding bundle.
-//   - lead:    manages a team or function. Loads the 4-file `lead/`
-//              onboarding bundle. Permission gate still enforced.
-//   - general: individual contributor. Loads the single `default/AGENTS.md`.
-//
-// Constraint: a `cxo` agent can only report to a user or root (enforced
-// in `services/agents.ts`). Mid-tier executives that real companies would
-// call CTO/CMO/CFO map to `lead` in this model.
-export const AGENT_ROLES = ["cxo", "lead", "general"] as const;
+export const AGENT_ROLES = [
+  "ceo",
+  "cto",
+  "cmo",
+  "cfo",
+  "engineer",
+  "designer",
+  "pm",
+  "qa",
+  "devops",
+  "researcher",
+  "general",
+] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
-
-export const AGENT_ROLE_LABELS: Record<string, string> = {
-  cxo: "Executive",
-  lead: "Lead",
-  general: "General",
-} as const;
-
-export function displayAgentRole(role: string): string {
-  return AGENT_ROLE_LABELS[role] ?? role.toUpperCase();
-}
 
 export const AGENT_ICON_NAMES = [
   "bot",
@@ -231,27 +224,6 @@ export const LIVE_EVENT_TYPES = [
   "budget.policy_updated",
   "budget.incident_created",
   "budget.incident_resolved",
-  // Phase 6: Memory page real-time updates
-  "memory.item.created",
-  "memory.item.updated",
-  "memory.item.moved",
-  "memory.item.deleted",
-  "memory.item.layer-changed",
-  "memory.asset.created",
-  "memory.asset.updated",
-  "memory.asset.deleted",
-  "memory.folder.created",
-  "memory.folder.updated",
-  "memory.folder.deleted",
-  "memory.import.progress",
-  // Marketplace install (M.2)
-  "marketplace.install.started",
-  "marketplace.install.completed",
-  "marketplace.install.failed",
-  "marketplace.install_requested",
-  // Marketplace update (M.4)
-  "marketplace.update.completed",
-  "marketplace.update.failed",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -282,87 +254,8 @@ export const MEMORY_ITEM_CATEGORIES = [
   "context",
   "insight",
   "preference",
-  "procedure",
-  "policy",
 ] as const;
 export type MemoryItemCategory = (typeof MEMORY_ITEM_CATEGORIES)[number];
-
-// V2.6: relations between memory items (graph edges).
-export const MEMORY_RELATION_KINDS = [
-  "supersedes",
-  "related_to",
-  "applies_to",
-  "conflicts_with",
-  "derived_from",
-] as const;
-export type MemoryRelationKind = (typeof MEMORY_RELATION_KINDS)[number];
-
-// V2.6: per-call retrieval audit triggers.
-export const MEMORY_RETRIEVAL_TRIGGERS = [
-  "auto",                  // pre-run injection at heartbeat start
-  "agent_search",          // worker agent called memory.search
-  "agent_get",             // worker agent called memory.get
-  "skill_materialize",     // pinned-item skill synthesis
-  "commander_query",       // commander tool query
-] as const;
-export type MemoryRetrievalTrigger = (typeof MEMORY_RETRIEVAL_TRIGGERS)[number];
-
-// V2.6: extraction pipeline input types.
-export const MEMORY_EXTRACTION_INPUT_TYPES = [
-  "text",
-  "pdf",
-  "docx",
-  "url",
-  "audio",
-  "image",
-  "video",
-] as const;
-export type MemoryExtractionInputType = (typeof MEMORY_EXTRACTION_INPUT_TYPES)[number];
-
-// V2.6: extraction job status.
-export const MEMORY_EXTRACTION_STATUSES = [
-  "queued",
-  "running",
-  "succeeded",
-  "failed",
-  "cancelled",
-] as const;
-export type MemoryExtractionStatus = (typeof MEMORY_EXTRACTION_STATUSES)[number];
-
-// V2.6: extraction batch status (groups multi-file uploads).
-export const MEMORY_EXTRACTION_BATCH_STATUSES = [
-  "queued",
-  "running",
-  "completed",
-  "cancelled",
-] as const;
-export type MemoryExtractionBatchStatus = (typeof MEMORY_EXTRACTION_BATCH_STATUSES)[number];
-
-// V2.6: MCP actor types — controls which tools an actor can call.
-//   "board"     — founder session (existing)
-//   "agent"     — worker agent CLI subprocess (new)
-//   "commander" — internal-agent + sub-agents (new, when commander goes CLI)
-//   "mcp"       — external MCP API key (existing)
-export const MCP_ACTOR_TYPES = ["board", "agent", "commander", "mcp"] as const;
-export type McpActorType = (typeof MCP_ACTOR_TYPES)[number];
-
-// V2.6: per-agent memory profile — controls scope filtering and skill materialization.
-// Stored under agent.runtimeConfig.memoryProfile. See memoryProfileSchema in validators/memory.ts.
-export const MEMORY_RECALL_BUDGETS = ["low", "mid", "high"] as const;
-export type MemoryRecallBudget = (typeof MEMORY_RECALL_BUDGETS)[number];
-
-export const MEMORY_RECALL_BUDGET_LIMITS: Record<MemoryRecallBudget, number> = {
-  low: 3,
-  mid: 10,
-  high: 25,
-};
-
-export const MEMORY_SCOPE_FILTERS = ["self", "department", "all"] as const;
-export type MemoryScopeFilter = (typeof MEMORY_SCOPE_FILTERS)[number];
-
-// V2.6: future-reserved write capability scopes (curator-class agents).
-export const MEMORY_WRITE_SCOPES = ["department", "task_chain", "active_context"] as const;
-export type MemoryWriteScope = (typeof MEMORY_WRITE_SCOPES)[number];
 
 export const MEMORY_ITEM_SOURCES = [
   "brief",
@@ -655,12 +548,6 @@ export const NOTIFICATION_TYPES = [
   "internal_agent.reminder",
   "internal_agent.proactive",
   "internal_agent.action_result",
-  "marketplace.install_completed",
-  "marketplace.install_failed",
-  "marketplace.install_requested",
-  "marketplace.update_available",
-  "marketplace.update_completed",
-  "marketplace.update_failed",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -703,9 +590,6 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
-
-export const ROUTINE_VARIABLE_TYPES = ["text", "textarea", "number", "boolean", "select"] as const;
-export type RoutineVariableType = (typeof ROUTINE_VARIABLE_TYPES)[number];
 
 // ---------------------------------------------------------------------------
 // Plugin system constants
@@ -750,7 +634,6 @@ export const PLUGIN_CAPABILITIES = [
   "issue.documents.write",
   "activity.log.write",
   "metrics.write",
-  "telemetry.track",
   // Plugin state
   "plugin.state.read",
   "plugin.state.write",

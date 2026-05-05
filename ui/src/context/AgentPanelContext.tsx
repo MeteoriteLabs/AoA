@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, useState, useEffect, type ReactNode } from "react";
 import { useSidebar } from "./SidebarContext";
 
-const PANEL_KEY = "aoa:agent-panel-open";
+const PANEL_KEY = "paperclip:agent-panel-open";
 
 interface AgentPanelContextValue {
   isOpen: boolean;

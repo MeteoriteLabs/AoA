@@ -3,7 +3,7 @@ title: Deployment Overview
 summary: Deployment modes at a glance
 ---
 
-AoA supports three deployment configurations, from zero-friction local to internet-facing production.
+Paperclip supports three deployment configurations, from zero-friction local to internet-facing production.
 
 ## Deployment Modes
 
@@ -38,18 +38,18 @@ AoA supports three deployment configurations, from zero-friction local to intern
 
 ## Choosing a Mode
 
-- **Just trying AoA?** Use `local_trusted` (the default)
+- **Just trying Paperclip?** Use `local_trusted` (the default)
 - **Sharing with a team on private network?** Use `authenticated` + `private`
 - **Deploying to the cloud?** Use `authenticated` + `public`
 
 Set the mode during onboarding:
 
 ```sh
-pnpm aoa onboard
+pnpm paperclipai onboard
 ```
 
 Or update it later:
 
 ```sh
-pnpm aoa configure --section server
+pnpm paperclipai configure --section server
 ```

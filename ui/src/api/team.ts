@@ -6,7 +6,7 @@ import type {
   TransferAdmin,
   ReassignAndRemove,
   UpdateTeamMemberRole,
-} from "@armyofagents/shared";
+} from "@paperclipai/shared";
 import { api } from "./client";
 
 export const teamApi = {

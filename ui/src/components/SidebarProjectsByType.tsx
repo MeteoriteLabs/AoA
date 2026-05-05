@@ -15,6 +15,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
+import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectRouteRef } from "../lib/utils";
@@ -25,7 +26,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { Project } from "@armyofagents/shared";
+import type { Project } from "@paperclipai/shared";
 
 function SortableProjectItem({
   activeProjectRef,
@@ -101,6 +102,12 @@ export function SidebarProjectsByType({ type, label, collapsed }: SidebarProject
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
 
   const visibleProjects = useMemo(
     () => (projects ?? []).filter((p: Project) => !p.archivedAt && p.type === type),
@@ -109,7 +116,7 @@ export function SidebarProjectsByType({ type, label, collapsed }: SidebarProject
   const { orderedProjects, persistOrder } = useProjectOrder({
     projects: visibleProjects,
     companyId: selectedCompanyId,
-    type,
+    userId: currentUserId,
   });
 
   const projectMatch = location.pathname.match(/^\/(?:[^/]+\/)?projects\/([^/]+)/);

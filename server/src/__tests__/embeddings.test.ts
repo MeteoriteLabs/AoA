@@ -7,7 +7,7 @@ vi.mock("drizzle-orm", () => ({
   isNull: vi.fn(),
   sql: vi.fn(),
 }));
-vi.mock("@armyofagents/db", () => ({
+vi.mock("@paperclipai/db", () => ({
   memoryItems: {
     id: "id",
     companyId: "company_id",

@@ -1,9 +1,9 @@
 import { and, eq, desc, sql } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import {
   internalAgentConversations,
   internalAgentMessages,
-} from "@armyofagents/db";
+} from "@paperclipai/db";
 import type { LLMProvider, ChatMessage } from "./providers/types.js";
 
 export interface MessageInput {

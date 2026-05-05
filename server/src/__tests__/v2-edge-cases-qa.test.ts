@@ -25,7 +25,7 @@ vi.mock("drizzle-orm", () => ({
   sql: new Proxy(() => "sql", { get: () => () => "sql", apply: () => "sql" }),
 }));
 
-vi.mock("@armyofagents/db", () => {
+vi.mock("@paperclipai/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {

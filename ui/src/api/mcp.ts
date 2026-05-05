@@ -4,7 +4,7 @@ import type {
   McpApiKeyCreated,
   McpClientConnection,
   McpStatus,
-} from "@armyofagents/shared";
+} from "@paperclipai/shared";
 import { api } from "./client";
 
 export const mcpApi = {

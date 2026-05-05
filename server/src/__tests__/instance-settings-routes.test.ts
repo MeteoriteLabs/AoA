@@ -35,9 +35,6 @@ describe("instance settings routes", () => {
     vi.clearAllMocks();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
-      feedbackDataSharingPreference: "not_allowed",
-      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
@@ -47,9 +44,6 @@ describe("instance settings routes", () => {
       id: "instance-settings-1",
       general: {
         censorUsernameInLogs: true,
-        keyboardShortcuts: false,
-        feedbackDataSharingPreference: "not_allowed",
-        backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       },
     });
     mockInstanceSettingsService.updateExperimental.mockResolvedValue({
@@ -116,12 +110,7 @@ describe("instance settings routes", () => {
 
     const getRes = await request(app).get("/api/instance/settings/general");
     expect(getRes.status).toBe(200);
-    expect(getRes.body).toEqual({
-      censorUsernameInLogs: false,
-      keyboardShortcuts: false,
-      feedbackDataSharingPreference: "not_allowed",
-      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
-    });
+    expect(getRes.body).toEqual({ censorUsernameInLogs: false });
 
     const patchRes = await request(app)
       .patch("/api/instance/settings/general")
@@ -132,108 +121,6 @@ describe("instance settings routes", () => {
       censorUsernameInLogs: true,
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
-  });
-
-  it("accepts patching keyboardShortcuts", async () => {
-    const app = createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    const res = await request(app)
-      .patch("/api/instance/settings/general")
-      .send({ keyboardShortcuts: true });
-
-    expect(res.status).toBe(200);
-    expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
-      keyboardShortcuts: true,
-    });
-  });
-
-  it("accepts patching feedbackDataSharingPreference", async () => {
-    const app = createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    const res = await request(app)
-      .patch("/api/instance/settings/general")
-      .send({ feedbackDataSharingPreference: "allowed" });
-
-    expect(res.status).toBe(200);
-    expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
-      feedbackDataSharingPreference: "allowed",
-    });
-  });
-
-  it("rejects invalid feedbackDataSharingPreference", async () => {
-    const app = createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    const res = await request(app)
-      .patch("/api/instance/settings/general")
-      .send({ feedbackDataSharingPreference: "maybe" });
-
-    expect(res.status).toBe(400);
-    expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
-  });
-
-  it("accepts patching backupRetention with preset values", async () => {
-    const app = createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    const res = await request(app)
-      .patch("/api/instance/settings/general")
-      .send({ backupRetention: { dailyDays: 14, weeklyWeeks: 2, monthlyMonths: 6 } });
-
-    expect(res.status).toBe(200);
-    expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
-      backupRetention: { dailyDays: 14, weeklyWeeks: 2, monthlyMonths: 6 },
-    });
-  });
-
-  it("rejects non-preset backupRetention values", async () => {
-    const app = createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    const res = await request(app)
-      .patch("/api/instance/settings/general")
-      .send({ backupRetention: { dailyDays: 30, weeklyWeeks: 4, monthlyMonths: 1 } });
-
-    expect(res.status).toBe(400);
-    expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
-  });
-
-  it("rejects negative backupRetention values", async () => {
-    const app = createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    const res = await request(app)
-      .patch("/api/instance/settings/general")
-      .send({ backupRetention: { dailyDays: -1, weeklyWeeks: 4, monthlyMonths: 1 } });
-
-    expect(res.status).toBe(400);
-    expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
   });
 
   it("rejects non-admin board users", async () => {

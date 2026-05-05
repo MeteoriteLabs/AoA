@@ -3,7 +3,7 @@ title: Companies
 summary: Company CRUD endpoints
 ---
 
-Manage companies within your AoA instance.
+Manage companies within your Paperclip instance.
 
 ## List Companies
 

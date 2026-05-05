@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { dependencyService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";

@@ -7,7 +7,7 @@ import {
   discussions,
   discussionEntries,
   discussionExtractedItems,
-} from "@armyofagents/db";
+} from "@paperclipai/db";
 
 type Db = NodePgDatabase<Record<string, never>>;
 

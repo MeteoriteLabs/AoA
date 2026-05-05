@@ -5,7 +5,10 @@ import type { ComponentType } from "react";
 type IconComponent = ComponentType<{ className?: string }>;
 
 const ADAPTER_ICONS: Record<string, { icon: IconComponent; color: string; label: string }> = {
+  claude_api: { icon: Sparkles, color: "text-purple-500", label: "Claude" },
   claude_local: { icon: Sparkles, color: "text-purple-500", label: "Claude" },
+  openai_api: { icon: Brain, color: "text-green-500", label: "OpenAI" },
+  gemini_api: { icon: Gem, color: "text-blue-500", label: "Gemini" },
   gemini_local: { icon: Gem, color: "text-blue-500", label: "Gemini" },
   opencode_local: { icon: Terminal, color: "text-gray-400", label: "OpenCode" },
   codex_local: { icon: Brain, color: "text-green-500", label: "Codex" },
@@ -16,8 +19,14 @@ const ADAPTER_ICONS: Record<string, { icon: IconComponent; color: string; label:
   openclaw: { icon: Bot, color: "text-gray-400", label: "OpenClaw" },
 };
 
+const API_ADAPTERS = new Set(["claude_api", "openai_api", "gemini_api"]);
+
 export function getAdapterInfo(adapterType: string) {
   return ADAPTER_ICONS[adapterType] ?? { icon: Bot, color: "text-gray-400", label: adapterType };
+}
+
+export function isApiAdapter(adapterType: string): boolean {
+  return API_ADAPTERS.has(adapterType);
 }
 
 const MODEL_CONTEXT_LIMITS: Array<[string, number]> = [

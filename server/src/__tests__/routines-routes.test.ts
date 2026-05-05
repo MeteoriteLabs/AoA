@@ -307,10 +307,7 @@ describe("routine routes — authorization", () => {
     expect(mockRoutineService.create).toHaveBeenCalled();
   });
 
-  it("rejects routine creation with an invalid body (missing title)", async () => {
-    // Draft defaults (T11): assigneeAgentId and projectId are now optional — a
-    // routine can be saved without them.  The only remaining hard-required field
-    // at the zod layer is `title`.
+  it("rejects routine creation with an invalid body (missing required fields)", async () => {
     mockAccessService.canUser.mockResolvedValue(true);
     const app = createApp({
       type: "board",
@@ -322,7 +319,7 @@ describe("routine routes — authorization", () => {
 
     const res = await request(app)
       .post(`/api/companies/${companyId}/routines`)
-      .send({}); // missing title → zod rejects
+      .send({ title: "No assignee" }); // missing assigneeAgentId
 
     expect(res.status).toBe(400);
     expect(mockRoutineService.create).not.toHaveBeenCalled();

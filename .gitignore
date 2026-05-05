@@ -1,6 +1,5 @@
 node_modules/
 dist/
-build/
 .env
 *.tsbuildinfo
 drizzle/meta/
@@ -12,7 +11,6 @@ data/
 .pnpm-store/
 tmp-*
 cli/tmp/
-out.log
 
 # Scratch/seed scripts (but not scripts/ dir)
 check-*.mjs
@@ -39,20 +37,7 @@ tmp/
 *.tmp
 .vscode/
 .claude/settings.local.json
-.claude/worktrees/
 .paperclip-local/
 .worktrees/
 docs/superpowers/
 plans/
-.superpowers/
-
-# Playwright e2e outputs
-tests/e2e/playwright-report/
-tests/e2e/test-results/
-
-# Playwright release-smoke outputs
-tests/release-smoke/playwright-report/
-tests/release-smoke/test-results/
-
-# Marketplace catalog snapshot — fetched at build time, not committed
-ui/src/aoa-marketplace-snapshot.json

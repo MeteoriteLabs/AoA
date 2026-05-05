@@ -1,8 +1,6 @@
-import type { Db } from "@armyofagents/db";
-import { companies, instanceSettings } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
+import { companies, instanceSettings } from "@paperclipai/db";
 import {
-  DEFAULT_BACKUP_RETENTION,
-  DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
@@ -10,7 +8,7 @@ import {
   type PatchInstanceGeneralSettings,
   type InstanceSettings,
   type PatchInstanceExperimentalSettings,
-} from "@armyofagents/shared";
+} from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 
 const DEFAULT_SINGLETON_KEY = "default";
@@ -20,17 +18,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   if (parsed.success) {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
-      keyboardShortcuts: parsed.data.keyboardShortcuts ?? false,
-      feedbackDataSharingPreference:
-        parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
-      backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
     };
   }
   return {
     censorUsernameInLogs: false,
-    keyboardShortcuts: false,
-    feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
-    backupRetention: DEFAULT_BACKUP_RETENTION,
   };
 }
 
@@ -40,13 +31,11 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
     return {
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? true,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
-      enableWorkspaceTtlSweeper: parsed.data.enableWorkspaceTtlSweeper ?? false,
     };
   }
   return {
     enableIsolatedWorkspaces: true,
     autoRestartDevServerWhenIdle: false,
-    enableWorkspaceTtlSweeper: false,
   };
 }
 

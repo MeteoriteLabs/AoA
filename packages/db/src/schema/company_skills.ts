@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex, boolean,
+  pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
@@ -7,7 +7,7 @@ export const companySkills = pgTable(
   "company_skills",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id").notNull().references(() => companies.id),
     key: text("key").notNull(),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
@@ -23,7 +23,6 @@ export const companySkills = pgTable(
       .notNull()
       .default([]),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
-    customized: boolean("customized").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

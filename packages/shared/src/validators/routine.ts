@@ -6,17 +6,7 @@ import {
   ROUTINE_TRIGGER_KINDS,
   ROUTINE_TRIGGER_SIGNING_MODES,
   ROUTINE_RUN_SOURCES,
-  ROUTINE_VARIABLE_TYPES,
 } from "../constants.js";
-
-export const routineVariableSchema = z.object({
-  name: z.string().min(1).max(200).regex(/^[A-Za-z][A-Za-z0-9_]*$/),
-  label: z.string().max(200).nullable(),
-  type: z.enum(ROUTINE_VARIABLE_TYPES),
-  defaultValue: z.union([z.string(), z.number(), z.boolean(), z.null()]),
-  required: z.boolean(),
-  options: z.array(z.string()),
-});
 
 export const createRoutineSchema = z.object({
   projectId: z.string().uuid().nullable().optional(),
@@ -24,12 +14,11 @@ export const createRoutineSchema = z.object({
   parentIssueId: z.string().uuid().nullable().optional(),
   title: z.string().min(1).max(500),
   description: z.string().max(10000).nullable().optional(),
-  assigneeAgentId: z.string().uuid().nullable().optional(),
+  assigneeAgentId: z.string().uuid(),
   priority: z.enum(["urgent", "high", "medium", "low"]).optional(),
   status: z.enum(ROUTINE_STATUSES).optional(),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional(),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional(),
-  variables: z.array(routineVariableSchema).optional(),
 });
 
 export const updateRoutineSchema = createRoutineSchema.partial();
@@ -68,14 +57,9 @@ export const updateRoutineTriggerSchema = z.object({
   replayWindowSec: z.number().int().min(0).max(86400).optional(),
 });
 
-const routineVariableValueSchema = z.union([z.string(), z.number().finite(), z.boolean()]);
-
 export const runRoutineSchema = z.object({
   triggerId: z.string().uuid().optional(),
   payload: z.record(z.unknown()).optional(),
-  variables: z.record(routineVariableValueSchema).optional(),
-  /** Run-time variable overrides: merged with stored defaults; unknown keys rejected. */
-  variableOverrides: z.record(z.string()).optional(),
   idempotencyKey: z.string().max(200).optional(),
   source: z.enum(ROUTINE_RUN_SOURCES).optional(),
 });

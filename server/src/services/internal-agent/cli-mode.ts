@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import type { AgentTool } from "./types.js";
 import type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
 import { createCLISessionStore } from "./cli-session-store.js";
@@ -42,7 +42,7 @@ export async function detectCliTool(tool: string): Promise<CLIDetectionResult> {
   } catch {
     return {
       available: false,
-      error: `CLI tool '${tool}' (binary: '${binary}') not found in PATH. Install the CLI and ensure it's on your PATH, then try again.`,
+      error: `CLI tool '${tool}' (binary: '${binary}') not found in PATH. Install it or switch to API mode in Settings.`,
     };
   }
 }
@@ -141,7 +141,7 @@ export function cliModeService(db: Db) {
       if (!config.cliTool) {
         yield {
           type: "error",
-          message: "No CLI tool configured. Go to Settings → Commander and select a CLI tool (claude, codex, or opencode).",
+          message: "No CLI tool configured. Go to Settings and select a CLI tool, or switch to API mode.",
         };
         return;
       }
@@ -178,22 +178,10 @@ export function cliModeService(db: Db) {
             return;
           }
 
-          // Windows note: CLI tools like `claude`, `codex`, `opencode` are
-          // installed as .cmd wrappers. Node's `spawn` can only launch
-          // .bat/.cmd files with `shell: true` (direct spawn raises
-          // EINVAL). `shell: true` invokes cmd.exe which forwards args to
-          // the shell — so user-controlled content (params.content) must
-          // be escaped to prevent cmd injection. Other args (config path,
-          // flag literals) come from constants and tmpdir, not user input.
-          const isWin = platform() === "win32";
-          const safeContent = isWin
-            ? `"${params.content.replace(/"/g, '""').replace(/%/g, "%%").replace(/\^/g, "^^")}"`
-            : params.content;
-          const args = argsBuilder(configPath, safeContent);
+          const args = argsBuilder(configPath, params.content);
           const cliProcess = spawn(binary, args, {
             stdio: ["pipe", "pipe", "pipe"],
             env: { ...process.env },
-            shell: isWin,
           });
 
           session = {

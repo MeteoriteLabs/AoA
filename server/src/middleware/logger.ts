@@ -4,10 +4,9 @@ import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
-import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 
 function resolveServerLogDir(): string {
-  const envOverride = process.env.AOA_LOG_DIR?.trim();
+  const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
   if (envOverride) return resolveHomeAwarePath(envOverride);
 
   const fileLogDir = readConfigFile()?.logging.logDir?.trim();
@@ -46,9 +45,6 @@ export const logger = pino({
 export const httpLogger = pinoHttp({
   logger,
   customLogLevel(_req, res, err) {
-    if (shouldSilenceHttpSuccessLog(_req.method, _req.url, res.statusCode)) {
-      return "silent";
-    }
     if (err || res.statusCode >= 500) return "error";
     if (res.statusCode >= 400) return "warn";
     return "info";

@@ -1,4 +1,4 @@
-import type { HeartbeatRun } from "@armyofagents/shared";
+import type { HeartbeatRun } from "@paperclipai/shared";
 
 /* ---- Utilities ---- */
 

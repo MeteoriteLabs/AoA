@@ -10,9 +10,9 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-AOA_API_URL="${AOA_API_URL:-http://localhost:3100}"
-API_BASE="${AOA_API_URL%/}/api"
-COMPANY_ID="${COMPANY_ID:-${AOA_COMPANY_ID:-}}"
+PAPERCLIP_API_URL="${PAPERCLIP_API_URL:-http://localhost:3100}"
+API_BASE="${PAPERCLIP_API_URL%/}/api"
+COMPANY_ID="${COMPANY_ID:-${PAPERCLIP_COMPANY_ID:-}}"
 OPENCLAW_AGENT_NAME="${OPENCLAW_AGENT_NAME:-OpenClaw Smoke Agent}"
 OPENCLAW_WEBHOOK_URL="${OPENCLAW_WEBHOOK_URL:-}"
 OPENCLAW_WEBHOOK_AUTH="${OPENCLAW_WEBHOOK_AUTH:-Bearer openclaw-smoke-secret}"
@@ -23,11 +23,11 @@ SMOKE_PORT="${SMOKE_PORT:-19091}"
 SMOKE_TIMEOUT_SEC="${SMOKE_TIMEOUT_SEC:-45}"
 
 AUTH_HEADERS=()
-if [[ -n "${AOA_AUTH_HEADER:-}" ]]; then
-  AUTH_HEADERS+=(-H "Authorization: ${AOA_AUTH_HEADER}")
+if [[ -n "${PAPERCLIP_AUTH_HEADER:-}" ]]; then
+  AUTH_HEADERS+=(-H "Authorization: ${PAPERCLIP_AUTH_HEADER}")
 fi
-if [[ -n "${AOA_COOKIE:-}" ]]; then
-  AUTH_HEADERS+=(-H "Cookie: ${AOA_COOKIE}")
+if [[ -n "${PAPERCLIP_COOKIE:-}" ]]; then
+  AUTH_HEADERS+=(-H "Cookie: ${PAPERCLIP_COOKIE}")
 fi
 
 STARTED_CONTAINER=0
@@ -50,8 +50,8 @@ fail_board_auth_required() {
 [openclaw-smoke] ERROR: ${operation} requires board/operator auth.
 
 Provide one of:
-  AOA_AUTH_HEADER=\"Bearer <board-token>\"
-  AOA_COOKIE=\"<board-session-cookie>\"
+  PAPERCLIP_AUTH_HEADER=\"Bearer <board-token>\"
+  PAPERCLIP_COOKIE=\"<board-session-cookie>\"
 
 Current auth context appears insufficient (HTTP ${RESPONSE_CODE}).
 EOF
@@ -75,7 +75,7 @@ api_request() {
   if [[ "$path" == http://* || "$path" == https://* ]]; then
     url="$path"
   elif [[ "$path" == /api/* ]]; then
-    url="${AOA_API_URL%/}${path}"
+    url="${PAPERCLIP_API_URL%/}${path}"
   else
     url="${API_BASE}${path}"
   fi
@@ -260,7 +260,7 @@ for _ in $(seq 1 "$SMOKE_TIMEOUT_SEC"); do
   else
     break
   fi
-  MATCH_COUNT="$(jq -r --arg agentId "$CREATED_AGENT_ID" '[.events[] | select(((.body.aoa.agentId // "") == $agentId))] | length' <<<"$LAST_EVENTS")"
+  MATCH_COUNT="$(jq -r --arg agentId "$CREATED_AGENT_ID" '[.events[] | select(((.body.paperclip.agentId // "") == $agentId))] | length' <<<"$LAST_EVENTS")"
   if [[ "$MATCH_COUNT" -gt 0 ]]; then
     FOUND_EVENT="1"
     break

@@ -80,7 +80,7 @@ export async function startBridge(): Promise<void> {
     process.exit(1);
   }
 
-  const { createDb } = await import("@armyofagents/db");
+  const { createDb } = await import("@paperclipai/db");
   const { createServiceContainer } = await import("./service-container.js");
   const { createToolRegistry, executeTool } = await import("./tool-registry.js");
 

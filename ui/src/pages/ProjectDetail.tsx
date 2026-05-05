@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation, Navigate, Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike } from "@armyofagents/shared";
+import { PROJECT_COLORS, isUuidLike } from "@paperclipai/shared";
 import { projectsApi } from "../api/projects";
 import type { ProjectAgentAssignment, ProjectBudget } from "../api/projects";
 import { TaskSlideOver } from "../components/TaskSlideOver";
@@ -25,12 +25,12 @@ import { Button } from "@/components/ui/button";
 import { Plus, Bot, X, DollarSign, AlertTriangle, MessageSquare, ClipboardPen, PenLine, Mic, Plug, ChevronDown, ChevronRight } from "lucide-react";
 import { discussionsApi, type DiscussionListItem } from "../api/discussions";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { useToast } from "../context/ToastContext";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { ExecutionWorkspaceCloseDialog } from "../components/workspace/ExecutionWorkspaceCloseDialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { EmptyState } from "../components/EmptyState";
-import { ProjectEnvironmentSection } from "../components/ProjectEnvironmentSection";
-import type { ExecutionWorkspace } from "@armyofagents/shared";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 
 /* ── Top-level tab types ── */
 
@@ -58,13 +58,11 @@ function OverviewContent({
   onUpdate,
   imageUploadHandler,
   propertiesContent,
-  environmentContent,
 }: {
   project: { description: string | null; status: string; targetDate: string | null };
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
   propertiesContent: React.ReactNode;
-  environmentContent?: React.ReactNode;
 }) {
   return (
     <div className="space-y-6">
@@ -83,9 +81,6 @@ function OverviewContent({
         <h3 className="text-sm font-medium text-muted-foreground mb-3">Properties</h3>
         {propertiesContent}
       </div>
-
-      {/* Environment variables section */}
-      {environmentContent}
     </div>
   );
 }
@@ -204,7 +199,7 @@ function ProjectIssuesList({
       agents={agents}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
-      viewStateKey={`aoa:project-view:${projectId}`}
+      viewStateKey={`paperclip:project-view:${projectId}`}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
       onSelectIssue={onSelectIssue}
     />
@@ -560,6 +555,7 @@ function ProjectWorkspaces({
   companyPrefix: string;
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<string | null>(null);
 
@@ -567,6 +563,21 @@ function ProjectWorkspaces({
     queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
     queryFn: () => executionWorkspacesApi.list(companyId, { projectId }),
     enabled: !!companyId && !!projectId,
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: (id: string) => executionWorkspacesApi.update(id, { status: "archived" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
+      });
+      pushToast({ tone: "success", title: "Workspace archived" });
+      setArchiveTarget(null);
+    },
+    onError: () => {
+      pushToast({ tone: "error", title: "Failed to archive workspace" });
+      setArchiveTarget(null);
+    },
   });
 
   if (isLoading) {
@@ -640,19 +651,29 @@ function ProjectWorkspaces({
         </Collapsible>
       )}
 
-      {archiveTarget && (
-        <ExecutionWorkspaceCloseDialog
-          workspaceId={archiveTarget}
-          open={!!archiveTarget}
-          onOpenChange={(open) => { if (!open) setArchiveTarget(null); }}
-          onArchived={() => {
-            queryClient.invalidateQueries({
-              queryKey: queryKeys.executionWorkspaces.listForProject(companyId, projectId),
-            });
-            setArchiveTarget(null);
-          }}
-        />
-      )}
+      {/* Archive confirmation dialog */}
+      <Dialog open={!!archiveTarget} onOpenChange={(open) => { if (!open) setArchiveTarget(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Archive workspace?</DialogTitle>
+            <DialogDescription>
+              This workspace will be moved to the archived section. You can still view it but agents will no longer use it.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={() => setArchiveTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => { if (archiveTarget) archiveMutation.mutate(archiveTarget); }}
+              data-testid="confirm-archive-workspace"
+            >
+              Archive
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1011,7 +1032,6 @@ export function ProjectDetail() {
             return asset.contentPath;
           }}
           propertiesContent={propertiesContent}
-          environmentContent={project.id ? <ProjectEnvironmentSection projectId={project.id} /> : undefined}
         />
       )}
 

@@ -1,39 +1,17 @@
 import { useState, useCallback } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionWorkspace } from "@armyofagents/shared";
-import type { Project } from "@armyofagents/shared";
-import type { ArtifactWithVersions, ArtifactVersion } from "@armyofagents/shared";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
+import type { Project } from "@paperclipai/shared";
+import type { ArtifactWithVersions, ArtifactVersion } from "@paperclipai/shared";
 import { WorkspaceTaskNav } from "./WorkspaceTaskNav";
 import { DependencyChain } from "./DependencyChain";
 import { WorkspaceTimeline } from "./WorkspaceTimeline";
 import { WorkspacePreviewPanel, PreviewModeToolbar, type PreviewMode } from "./WorkspacePreviewPanel";
 import { WorkspaceRightPanel } from "./WorkspaceRightPanel";
-import { ExecutionWorkspaceCloseDialog } from "./ExecutionWorkspaceCloseDialog";
-import { WorkspaceSettingsSheet } from "./WorkspaceSettingsSheet";
-import { OpenInIdeButton } from "./OpenInIdeButton";
 import { useSidebar } from "../../context/SidebarContext";
 import { useSidebarCollapsed } from "./useSidebarCollapsed";
-import { executionWorkspacesApi } from "../../api/execution-workspaces";
-import { queryKeys } from "../../lib/queryKeys";
-import { ListTodo, MessageSquare, Eye, Layers, AlertTriangle, MoreHorizontal, Archive, Settings } from "lucide-react";
+import { ListTodo, MessageSquare, Eye, Layers, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
 
 const MOBILE_TABS = [
   { key: "tasks" as const, label: "Tasks", icon: ListTodo },
@@ -76,34 +54,6 @@ export function WorkspaceLayout({
     version: ArtifactVersion;
   } | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-
-  // Header action state — Settings, Archive, and close report wire up the kebab actions.
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [archiveOpen, setArchiveOpen] = useState(false);
-  const [closeReportOpen, setCloseReportOpen] = useState(false);
-  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
-
-  const queryClient = useQueryClient();
-
-  const invalidateWorkspace = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.detail(workspace.id) });
-    if (workspace.projectId) {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.executionWorkspaces.listForProject(workspace.companyId, workspace.projectId),
-      });
-    }
-  }, [queryClient, workspace.id, workspace.companyId, workspace.projectId]);
-
-  const unarchiveMutation = useMutation({
-    mutationFn: () => executionWorkspacesApi.update(workspace.id, { status: "active" }),
-    onSuccess: invalidateWorkspace,
-  });
-
-  const closeReportQuery = useQuery({
-    queryKey: ["close-readiness", workspace.id, "report"],
-    queryFn: () => executionWorkspacesApi.getCloseReadiness(workspace.id),
-    enabled: closeReportOpen,
-  });
 
   // Sidebar collapse state (desktop only; persisted per workspace)
   const [leftCollapsed, setLeftCollapsed] = useSidebarCollapsed(workspace.id, "left");
@@ -155,91 +105,11 @@ export function WorkspaceLayout({
     <div className="flex flex-col h-full overflow-hidden" data-testid="workspace-layout">
       {/* Archived banner */}
       {workspace.status === "archived" && (
-        <div
-          className="flex items-center justify-between gap-2 px-4 py-2 text-sm bg-amber-50 border-b border-amber-200 text-amber-800 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-300 shrink-0"
-          data-testid="workspace-archived-banner"
-        >
-          <div className="flex items-center gap-2 min-w-0">
-            <AlertTriangle className="h-4 w-4 shrink-0" />
-            <span>This workspace is archived</span>
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setCloseReportOpen(true)}
-              data-testid="workspace-view-close-report"
-            >
-              View close report
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => unarchiveMutation.mutate()}
-              disabled={unarchiveMutation.isPending}
-              data-testid="workspace-unarchive"
-            >
-              {unarchiveMutation.isPending ? "Unarchiving..." : "Unarchive"}
-            </Button>
-          </div>
+        <div className="flex items-center gap-2 px-4 py-2 text-sm bg-amber-50 border-b border-amber-200 text-amber-800 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-300 shrink-0" data-testid="workspace-archived-banner">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          This workspace is archived
         </div>
       )}
-
-      {/* Header chrome — workspace title + actions kebab. Menu items are disabled pending later Phase I tasks. */}
-      <header
-        className="flex items-center justify-between gap-2 border-b border-border bg-background px-4 py-2 shrink-0"
-        data-testid="workspace-header"
-      >
-        <div className="flex items-center gap-2 min-w-0">
-          <h1 className="text-sm font-medium truncate" data-testid="workspace-header-name">
-            {workspace.name}
-          </h1>
-          {workspace.branchName && (
-            <span
-              className="text-xs text-muted-foreground truncate"
-              data-testid="workspace-header-branch"
-            >
-              on {workspace.branchName}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          {workspace.cwd && <OpenInIdeButton cwd={workspace.cwd} />}
-          <DropdownMenu open={headerMenuOpen} onOpenChange={setHeaderMenuOpen}>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Workspace actions"
-                data-testid="workspace-header-menu-trigger"
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            {headerMenuOpen && (
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={() => setSettingsOpen(true)}
-                  data-testid="workspace-header-menu-settings"
-                >
-                  <Settings className="h-4 w-4 mr-2" />
-                  Settings
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => setArchiveOpen(true)}
-                  variant="destructive"
-                  disabled={workspace.status === "archived"}
-                  data-testid="workspace-header-menu-archive"
-                >
-                  <Archive className="h-4 w-4 mr-2" />
-                  Archive
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            )}
-          </DropdownMenu>
-        </div>
-      </header>
 
       {isMobile ? (
         <>
@@ -463,84 +333,6 @@ export function WorkspaceLayout({
             )}
           </div>
         </div>
-      )}
-
-      {/* Archive / close flow dialog — opens from kebab. Only mounted when open
-          to avoid unnecessary portal/query work on every WorkspaceLayout render. */}
-      {archiveOpen && (
-        <ExecutionWorkspaceCloseDialog
-          workspaceId={workspace.id}
-          open={archiveOpen}
-          onOpenChange={setArchiveOpen}
-          onArchived={invalidateWorkspace}
-        />
-      )}
-
-      {/* Close report — read-only view of readiness data for archived workspaces.
-          Conditional mount so test environments without portal polyfills stay quiet. */}
-      <Sheet open={closeReportOpen} onOpenChange={setCloseReportOpen}>
-        {closeReportOpen && (
-        <SheetContent side="right" className="w-full sm:max-w-md overflow-y-auto" data-testid="workspace-close-report">
-          <SheetHeader>
-            <SheetTitle>Close report</SheetTitle>
-            <SheetDescription>
-              What happened (or would happen) when this workspace is archived.
-            </SheetDescription>
-          </SheetHeader>
-          <div className="px-4 pb-4 space-y-4">
-            {closeReportQuery.isLoading && (
-              <p className="text-sm text-muted-foreground">Loading report...</p>
-            )}
-            {closeReportQuery.data && (
-              <>
-                <div>
-                  <div className="text-xs font-medium text-muted-foreground mb-1">State</div>
-                  <Badge variant={closeReportQuery.data.state === "blocked" ? "destructive" : "secondary"}>
-                    {closeReportQuery.data.state}
-                  </Badge>
-                </div>
-                {closeReportQuery.data.warnings.length > 0 && (
-                  <div>
-                    <div className="text-xs font-medium text-muted-foreground mb-1">Warnings</div>
-                    <ul className="text-sm space-y-1">
-                      {closeReportQuery.data.warnings.map((w, i) => (
-                        <li key={i}>• {w}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {closeReportQuery.data.plannedActions.length > 0 && (
-                  <div>
-                    <div className="text-xs font-medium text-muted-foreground mb-1">Planned actions</div>
-                    <ol className="space-y-2 list-decimal ml-4">
-                      {closeReportQuery.data.plannedActions.map((action, i) => (
-                        <li key={i}>
-                          <div className="text-sm font-medium">{action.label}</div>
-                          <div className="text-xs text-muted-foreground">{action.description}</div>
-                          {action.command && (
-                            <code className="mt-1 block px-2 py-1 bg-muted rounded text-xs font-mono break-all">
-                              {action.command}
-                            </code>
-                          )}
-                        </li>
-                      ))}
-                    </ol>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </SheetContent>
-        )}
-      </Sheet>
-
-      {settingsOpen && (
-        <WorkspaceSettingsSheet
-          workspaceId={workspace.id}
-          companyId={workspace.companyId}
-          open={settingsOpen}
-          onOpenChange={setSettingsOpen}
-        />
       )}
     </div>
   );

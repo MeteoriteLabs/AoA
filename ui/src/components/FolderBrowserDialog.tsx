@@ -4,7 +4,6 @@ import { filesystemApi, type FsBrowseEntry } from "../api/filesystem";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -173,7 +172,7 @@ export function FolderBrowserDialog({
       <DialogContent className="sm:max-w-[560px] max-h-[80vh] flex flex-col gap-0 p-0">
         <DialogHeader className="px-5 pt-5 pb-3">
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription className="text-sm">{description}</DialogDescription>
+          <p className="text-sm text-muted-foreground">{description}</p>
           <p className="text-xs text-muted-foreground mt-0.5">
             Click folder names to navigate &middot; Use action buttons to select
           </p>

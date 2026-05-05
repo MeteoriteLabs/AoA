@@ -1,1 +1,0 @@
-ALTER TABLE "routines" ADD COLUMN "variables" jsonb DEFAULT '[]'::jsonb NOT NULL;

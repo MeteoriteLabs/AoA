@@ -9,7 +9,6 @@ import { healthApi } from "./api/health";
 import { Dashboard } from "./pages/Dashboard";
 import { Lobby } from "./pages/Lobby";
 import { InstanceSettingsPage } from "./pages/InstanceSettingsPage";
-import { InstanceAccessPage } from "./pages/InstanceAccessPage";
 import { Companies } from "./pages/Companies";
 import { Agents } from "./pages/Agents";
 import { AgentDetail } from "./pages/AgentDetail";
@@ -19,7 +18,6 @@ import { Issues } from "./pages/Issues";
 import { Goals } from "./pages/Goals";
 import { GoalDetail } from "./pages/GoalDetail";
 import { Memory } from "./pages/Memory";
-import { MemoryExplorer } from "./pages/MemoryExplorer";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Inbox } from "./pages/Inbox";
@@ -29,34 +27,22 @@ import { VisionMission } from "./pages/VisionMission";
 import { Objectives } from "./pages/Objectives";
 import { Commander } from "./pages/Commander";
 import { DesignGuide } from "./pages/DesignGuide";
-import { Costs } from "./pages/Costs";
 import { TeamPage } from "./pages/TeamPage";
-import { TeamDetail } from "./pages/TeamDetail";
 import { HumanDetail } from "./pages/HumanDetail";
 import { ActiveAgents } from "./pages/ActiveAgents";
 import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
-import { MemoryQuickSwitcher } from "./components/memory/MemoryQuickSwitcher";
 import { Discussions } from "./pages/Discussions";
 import { DiscussionDetail } from "./pages/DiscussionDetail";
 import { Skills } from "./pages/Skills";
 import { WorkspaceView } from "./pages/WorkspaceView";
-import { WorkspacesList } from "./pages/WorkspacesList";
 import { Routines } from "./pages/Routines";
 import { RoutineDetail } from "./pages/RoutineDetail";
 import { AuthPage } from "./pages/Auth";
-import { Me } from "./pages/Me";
-import { CompanyExport } from "./pages/CompanyExport";
-import { CompanyImport } from "./pages/CompanyImport";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { PluginPage } from "./pages/PluginPage";
 import { PluginSettings } from "./pages/PluginSettings";
-import Marketplace from "./pages/Marketplace";
-import { Navigate as RawNavigate, useParams as useRawParams } from "react-router-dom";
-import MarketplaceDetail from "./pages/MarketplaceDetail";
-import MarketplaceSearch from "./pages/MarketplaceSearch";
-import MarketplaceUpdates from "./pages/MarketplaceUpdates";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -71,7 +57,7 @@ function BootstrapPendingPage() {
           the first admin invite URL:
         </p>
         <pre className="mt-4 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-{`pnpm aoa auth bootstrap-ceo`}
+{`pnpm paperclipai auth bootstrap-ceo`}
         </pre>
       </div>
     </div>
@@ -132,7 +118,6 @@ function boardRoutes() {
       <Route path="settings/internal-agent" element={<Navigate to="../settings/commander" replace />} />
       <Route path="company/settings" element={<Navigate to="../settings" replace />} />
       <Route path="org" element={<TeamPage />} />
-      <Route path="team/teams/:slug" element={<TeamDetail />} />
       <Route path="team/:userId" element={<HumanDetail />} />
       <Route path="team/:userId/:tab" element={<HumanDetail />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
@@ -171,25 +156,19 @@ function boardRoutes() {
       <Route path="briefs/:briefId" element={<Navigate to="/discussions" replace />} />
       <Route path="debriefs" element={<Navigate to="/discussions" replace />} />
       <Route path="active-agents" element={<ActiveAgents />} />
-      {/* Phase 6.2a: explorer is the only memory page; home content lives in its center pane when no scope is selected. /memory redirects in. */}
-      <Route path="memory" element={<Navigate to="explore" replace />} />
-      <Route path="memory/explore" element={<MemoryExplorer />} />
-      <Route path="memory/legacy" element={<Memory />} />
+      <Route path="memory" element={<Memory />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
-      <Route path="budget" element={<Costs />} />
-      <Route path="costs" element={<Navigate to="../budget" replace />} />
+      <Route path="costs" element={<Navigate to="../settings" replace />} />
       <Route path="activity" element={<Navigate to="../settings" replace />} />
       <Route path="inbox" element={<Navigate to="/inbox/new" replace />} />
       <Route path="inbox/new" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />
       <Route path="design-guide" element={<DesignGuide />} />
-      <Route path="workspaces" element={<WorkspacesList />} />
       <Route path="workspaces/:workspaceId" element={<WorkspaceView />} />
       <Route path="plugins/:pluginId" element={<PluginPage />} />
-      <Route path="marketplace-updates" element={<MarketplaceUpdates />} />
     </>
   );
 }
@@ -262,12 +241,6 @@ function NoCompaniesStartPage({ autoOpen = true }: { autoOpen?: boolean }) {
   );
 }
 
-/** Redirect /marketplace/:type → /marketplace?type={type} without company-prefix logic. */
-function MarketplaceTypeRedirect() {
-  const { type } = useRawParams<{ type: string }>();
-  return <RawNavigate to={`/marketplace${type ? `?type=${type}` : ""}`} replace />;
-}
-
 export function App() {
   return (
     <>
@@ -279,20 +252,8 @@ export function App() {
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<Lobby />} />
-          <Route path="me" element={<Me />} />
-          <Route path="export" element={<Layout />}>
-            <Route index element={<CompanyExport />} />
-          </Route>
-          <Route path="import" element={<Layout />}>
-            <Route index element={<CompanyImport />} />
-          </Route>
           <Route path="instance/settings" element={<InstanceSettingsPage />} />
           <Route path="instance/settings/plugins/:pluginId" element={<PluginSettings />} />
-          <Route path="instance/access" element={<InstanceAccessPage />} />
-          <Route path="marketplace" element={<Marketplace />} />
-          <Route path="marketplace/search" element={<MarketplaceSearch />} />
-          <Route path="marketplace/:type" element={<MarketplaceTypeRedirect />} />
-          <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
@@ -308,10 +269,8 @@ export function App() {
           <Route path="objectives" element={<UnprefixedBoardRedirect />} />
           <Route path="commander" element={<UnprefixedBoardRedirect />} />
           <Route path="memory" element={<UnprefixedBoardRedirect />} />
-          <Route path="budget" element={<UnprefixedBoardRedirect />} />
           <Route path="projects" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
-          <Route path="team/teams/:slug" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
@@ -319,7 +278,6 @@ export function App() {
           <Route path="projects/:projectId/team" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/budget" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
-          <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}
           </Route>
@@ -327,7 +285,6 @@ export function App() {
       </Routes>
       <OnboardingWizard />
       <DiscussionCaptureModal />
-      <MemoryQuickSwitcher />
     </>
   );
 }

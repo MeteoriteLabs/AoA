@@ -19,7 +19,7 @@ vi.mock("drizzle-orm", () => ({
   sql: new Proxy(() => "sql", { get: () => () => "sql", apply: () => "sql" }),
 }));
 
-vi.mock("@armyofagents/db", () => {
+vi.mock("@paperclipai/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {
@@ -51,7 +51,7 @@ vi.mock("@armyofagents/db", () => {
   };
 });
 
-vi.mock("@armyofagents/shared", () => ({
+vi.mock("@paperclipai/shared", () => ({
   isUuidLike: (s: string) => /^[0-9a-f-]{36}$/i.test(s),
   normalizeAgentUrlKey: (name: string) => name.toLowerCase().replace(/\s+/g, "-"),
 }));
@@ -164,7 +164,7 @@ describe("Unified Org Tree (T7)", () => {
     });
 
     it("builds agent-only tree using reportsTo fallback", async () => {
-      const ceo = makeAgent({ id: "a-ceo", name: "CEO Agent", role: "cxo", reportsTo: null });
+      const ceo = makeAgent({ id: "a-ceo", name: "CEO Agent", role: "ceo", reportsTo: null });
       const worker = makeAgent({ id: "a-worker", name: "Worker", reportsTo: "a-ceo" });
 
       const db = createSequenceDb({
@@ -434,7 +434,7 @@ describe("Unified Org Tree (T7)", () => {
     it("walks agent-only chain via reportsTo fallback", async () => {
       const worker = makeAgent({ id: "a-worker", reportsTo: "a-manager" });
       const manager = makeAgent({ id: "a-manager", name: "Manager", reportsTo: "a-ceo", role: "manager" });
-      const ceo = makeAgent({ id: "a-ceo", name: "CEO", role: "cxo", reportsTo: null });
+      const ceo = makeAgent({ id: "a-ceo", name: "CEO", role: "ceo", reportsTo: null });
 
       const db = createSequenceDb({
         selects: [

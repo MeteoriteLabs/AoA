@@ -1,13 +1,11 @@
 import { Router } from "express";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import {
   createMemoryItemSchema,
-  memoryFolderUpdateSchema,
   suggestMemoryArchiveSchema,
   suggestMemoryUpdateSchema,
   updateMemoryItemSchema,
-} from "@armyofagents/shared";
-import { z } from "zod";
+} from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { forbidden } from "../errors.js";
 import { memoryService, logActivity } from "../services/index.js";
@@ -539,140 +537,6 @@ export function memoryRoutes(db: Db) {
     }
     res.json(item);
   });
-
-  // Phase 6: tree move + pin-to-top
-  router.patch(
-    "/companies/:companyId/memory/items/:id/move",
-    async (req, res, next) => {
-      try {
-        const companyId = req.params.companyId as string;
-        const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
-        const moveBodySchema = z.object({
-          folderPath: z.string().min(1).max(512),
-        });
-        const parsed = moveBodySchema.safeParse(req.body);
-        if (!parsed.success) {
-          res.status(400).json({ error: parsed.error.flatten() });
-          return;
-        }
-        // Validate path shape via the shared validator.
-        const pathCheck = memoryFolderUpdateSchema.pick({ path: true }).safeParse({ path: parsed.data.folderPath });
-        if (!pathCheck.success) {
-          res.status(400).json({ error: pathCheck.error.flatten() });
-          return;
-        }
-        const updated = await svc.moveItem(id, companyId, parsed.data.folderPath);
-        if (!updated) {
-          res.status(404).json({ error: "Memory item not found" });
-          return;
-        }
-        res.json(updated);
-      } catch (err) {
-        next(err);
-      }
-    },
-  );
-
-  router.patch(
-    "/companies/:companyId/memory/items/:id/pin-to-top",
-    async (req, res, next) => {
-      try {
-        const companyId = req.params.companyId as string;
-        const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
-        const parsed = z.object({ pinned: z.boolean() }).safeParse(req.body);
-        if (!parsed.success) {
-          res.status(400).json({ error: parsed.error.flatten() });
-          return;
-        }
-        const updated = await svc.setPinnedToTop(id, companyId, parsed.data.pinned);
-        if (!updated) {
-          res.status(404).json({ error: "Memory item not found" });
-          return;
-        }
-        res.json(updated);
-      } catch (err) {
-        next(err);
-      }
-    },
-  );
-
-  router.post(
-    "/companies/:companyId/memory/items/:id/change-layer",
-    async (req, res, next) => {
-      try {
-        const companyId = req.params.companyId as string;
-        const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
-        const bodySchema = z.object({
-          newLayer: z.enum(["identity", "domain", "active_context", "working"]),
-          departmentId: z.string().nullable().optional(),
-          goalId: z.string().nullable().optional(),
-          taskId: z.string().nullable().optional(),
-          expiresAt: z
-            .union([z.string().datetime(), z.date(), z.null()])
-            .optional()
-            .transform((v) => (typeof v === "string" ? new Date(v) : v ?? null)),
-        });
-        const parsed = bodySchema.safeParse(req.body);
-        if (!parsed.success) {
-          res.status(400).json({ error: parsed.error.flatten() });
-          return;
-        }
-        // Phase 6.2c follow-up: a layer change is effectively a re-classification
-        // / re-approval at a different layer (e.g. promoting a working note to a
-        // domain policy). Match the approve/reject pattern and gate on the
-        // SAME role check (founder, or team_lead for the destination dept).
-        const existing = await svc.getById(companyId, id);
-        if (!existing) {
-          res.status(404).json({ error: "Memory item not found" });
-          return;
-        }
-        await assertMemoryApproval(db, req, companyId, {
-          layer: parsed.data.newLayer,
-          departmentId:
-            parsed.data.departmentId !== undefined
-              ? parsed.data.departmentId
-              : existing.departmentId,
-        });
-        const actor = getActorInfo(req);
-        const updated = await svc.changeLayer(id, companyId, {
-          ...parsed.data,
-          actorId: actor.actorId ?? null,
-        });
-        if (!updated) {
-          res.status(404).json({ error: "Memory item not found" });
-          return;
-        }
-        // Phase 6.2c follow-up: record the layer change in the activity log so
-        // it surfaces on the Activity page alongside approve/reject.
-        await logActivity(db, {
-          companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          action: "memory.layer_changed",
-          entityType: "memory_item",
-          entityId: updated.id,
-          details: {
-            title: updated.title,
-            fromLayer: existing.layer,
-            toLayer: parsed.data.newLayer,
-          },
-        });
-        res.json(updated);
-      } catch (err) {
-        const e = err as Error;
-        if (/required/i.test(e.message) || /invalid layer/i.test(e.message)) {
-          res.status(400).json({ error: e.message });
-          return;
-        }
-        next(err);
-      }
-    },
-  );
 
   return router;
 }

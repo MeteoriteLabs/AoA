@@ -1,9 +1,9 @@
 import fs from "node:fs";
-import { paperclipConfigSchema, type AoaConfig } from "@armyofagents/shared";
-import { resolveAoaConfigPath } from "./paths.js";
+import { paperclipConfigSchema, type PaperclipConfig } from "@paperclipai/shared";
+import { resolvePaperclipConfigPath } from "./paths.js";
 
-export function readConfigFile(): AoaConfig | null {
-  const configPath = resolveAoaConfigPath();
+export function readConfigFile(): PaperclipConfig | null {
+  const configPath = resolvePaperclipConfigPath();
 
   if (!fs.existsSync(configPath)) return null;
 

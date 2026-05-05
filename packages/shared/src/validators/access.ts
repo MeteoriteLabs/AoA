@@ -61,12 +61,6 @@ export const updateUserCompanyAccessSchema = z.object({
 
 export type UpdateUserCompanyAccess = z.infer<typeof updateUserCompanyAccessSchema>;
 
-export const searchAdminUsersQuerySchema = z.object({
-  query: z.string().trim().max(120).optional().default(""),
-});
-
-export type SearchAdminUsersQuery = z.infer<typeof searchAdminUsersQuerySchema>;
-
 export const boardCliAuthAccessLevelSchema = z.enum([
   "board",
   "instance_admin_required",

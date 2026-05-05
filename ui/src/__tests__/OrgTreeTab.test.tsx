@@ -3,7 +3,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./test-utils";
 import { OrgTreeTab } from "../components/team/OrgTreeTab";
-import type { UnifiedOrgNode } from "@armyofagents/shared";
+import type { UnifiedOrgNode } from "@paperclipai/shared";
 
 // --- Mocks ---
 
@@ -16,34 +16,12 @@ vi.mock("../components/AgentIconPicker", () => ({
 }));
 
 vi.mock("../components/agent-config-primitives", () => ({
-  adapterLabels: { claude_local: "Claude (local)", codex_local: "Codex (local)" } as Record<string, string>,
+  adapterLabels: { claude_api: "Claude (API)", openai_api: "OpenAI (API)" } as Record<string, string>,
   roleLabels: { engineer: "Engineer", designer: "Designer" } as Record<string, string>,
 }));
 
 vi.mock("@/lib/utils", () => ({
   cn: (...args: any[]) => args.filter(Boolean).join(" "),
-}));
-
-// OrgTreeTab now reads `selectedCompanyId` from CompanyContext to fetch
-// teams + memberships for the team-overlay box. The shared test wrapper
-// (test-utils.tsx) provides QueryClient + Router but intentionally NOT
-// CompanyProvider — wiring the real provider here would require auth
-// setup we don't need. With `selectedCompanyId: null` both team queries
-// are disabled (their `enabled: Boolean(selectedCompanyId)` short-circuits
-// to false), so the overlay simply doesn't render. None of the existing
-// test assertions touch the overlay, so this is a clean no-op.
-vi.mock("../context/CompanyContext", () => ({
-  useCompany: () => ({
-    selectedCompanyId: null,
-    selectedCompany: null,
-    companies: [],
-    selectionSource: "bootstrap",
-    loading: false,
-    error: null,
-    setSelectedCompanyId: vi.fn(),
-    reloadCompanies: vi.fn().mockResolvedValue(undefined),
-    createCompany: vi.fn().mockResolvedValue({}),
-  }),
 }));
 
 // --- Fixtures ---
@@ -55,7 +33,7 @@ function makeAgentNode(overrides: Partial<UnifiedOrgNode> = {}): UnifiedOrgNode 
     nodeType: "agent",
     role: "engineer",
     status: "active",
-    adapterType: "claude_local",
+    adapterType: "claude_api",
     pendingApproval: false,
     children: [],
     ...overrides,
@@ -211,11 +189,11 @@ describe("OrgTreeTab", () => {
 
   it("renders adapter type label for agents", () => {
     const onClick = vi.fn();
-    const tree = [makeAgentNode({ adapterType: "claude_local" })];
+    const tree = [makeAgentNode({ adapterType: "claude_api" })];
 
     renderWithProviders(<OrgTreeTab orgTree={tree} onNodeClick={onClick} />);
 
-    expect(screen.getByText("Claude (local)")).toBeInTheDocument();
+    expect(screen.getByText("Claude (API)")).toBeInTheDocument();
   });
 
   it("renders role badge for users", () => {

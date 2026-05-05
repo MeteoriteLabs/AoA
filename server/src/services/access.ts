@@ -1,17 +1,17 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import {
   companyMemberships,
   instanceUserRoles,
   invites,
   principalPermissionGrants,
-} from "@armyofagents/db";
-import type { PermissionKey, PrincipalType } from "@armyofagents/shared";
+} from "@paperclipai/db";
+import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 
-const INVITE_TOKEN_PREFIX = "aoa_invite_";
+const INVITE_TOKEN_PREFIX = "pcp_invite_";
 const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const INVITE_TOKEN_SUFFIX_LENGTH = 24;
 const INVITE_TOKEN_MAX_RETRIES = 5;

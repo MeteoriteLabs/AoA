@@ -112,7 +112,7 @@ export function createActionTools(): AgentTool[] {
         type: "object",
         properties: {
           name: { type: "string", description: "Agent name (required)" },
-          adapter: { type: "string", description: "Adapter type (required, e.g. claude_local, codex_local, opencode_local)" },
+          adapter: { type: "string", description: "Adapter type (required, e.g. claude_local, openai_api)" },
           context: { type: "string", description: "Agent context/instructions" },
         },
         required: ["name", "adapter"],

@@ -1,9 +1,9 @@
 import fs from "node:fs";
-import type { AoaConfig } from "../config/schema.js";
+import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
 
-export function storageCheck(config: AoaConfig, configPath?: string): CheckResult {
+export function storageCheck(config: PaperclipConfig, configPath?: string): CheckResult {
   if (config.storage.provider === "local_disk") {
     const baseDir = resolveRuntimeLikePath(config.storage.localDisk.baseDir, configPath);
     if (!fs.existsSync(baseDir)) {
@@ -36,7 +36,7 @@ export function storageCheck(config: AoaConfig, configPath?: string): CheckResul
       status: "fail",
       message: "S3 storage requires non-empty bucket and region",
       canRepair: false,
-      repairHint: "Run `aoa configure --section storage`",
+      repairHint: "Run `paperclipai configure --section storage`",
     };
   }
 

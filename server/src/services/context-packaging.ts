@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import {
   agents,
   artifacts,
@@ -10,7 +10,7 @@ import {
   memoryItems,
   projects,
   taskDependencies,
-} from "@armyofagents/db";
+} from "@paperclipai/db";
 
 /**
  * Assembles a full context package for a task, formatted as markdown

@@ -1,5 +1,5 @@
 import { and, eq, desc, sql, inArray } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import {
   discussions,
   discussionEntries,
@@ -7,7 +7,7 @@ import {
   discussionAnnotations,
   projects,
   goals,
-} from "@armyofagents/db";
+} from "@paperclipai/db";
 import { badRequest, notFound } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { publishLiveEvent } from "./live-events.js";

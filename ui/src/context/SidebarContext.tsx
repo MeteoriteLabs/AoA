@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useState, useEffect, type ReactNode } from "react";
 
-const COLLAPSED_KEY = "aoa:sidebar-collapsed";
+const COLLAPSED_KEY = "paperclip:sidebar-collapsed";
 
 interface SidebarContextValue {
   sidebarOpen: boolean;

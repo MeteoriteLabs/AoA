@@ -3,11 +3,11 @@ title: Org Structure
 summary: Reporting hierarchy and chain of command
 ---
 
-AoA enforces a strict organizational hierarchy. Every agent reports to exactly one manager, forming a tree with the Director at the root.
+Paperclip enforces a strict organizational hierarchy. Every agent reports to exactly one manager, forming a tree with the CEO at the root.
 
 ## How It Works
 
-- The **Director** has no manager (reports to the board/human operator)
+- The **CEO** has no manager (reports to the board/human operator)
 - Every other agent has a `reportsTo` field pointing to their manager
 - Managers can create subtasks and delegate to their reports
 - Agents escalate blockers up the chain of command
@@ -24,7 +24,7 @@ GET /api/companies/{companyId}/org
 
 ## Chain of Command
 
-Every agent has access to their `chainOfCommand` — the list of managers from their direct report up to the Director. This is used for:
+Every agent has access to their `chainOfCommand` — the list of managers from their direct report up to the CEO. This is used for:
 
 - **Escalation** — when an agent is blocked, they can reassign to their manager
 - **Delegation** — managers create subtasks for their reports

@@ -1,11 +1,10 @@
 import { and, eq, gte, lt, not, sql } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
-import { agents, approvals, budgetIncidents, budgetPolicies, costEvents } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
+import { agents, approvals, budgetIncidents, budgetPolicies, costEvents } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
 import { publishLiveEvent } from "./live-events.js";
-import { emitBudgetExhausted, type BudgetEnforcementScope } from "./budget-hooks.js";
 import { logger } from "../middleware/logger.js";
-import type { UpsertBudgetPolicy, ResolveBudgetIncident } from "@armyofagents/shared";
+import type { UpsertBudgetPolicy, ResolveBudgetIncident } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -264,20 +263,6 @@ export function budgetService(db: Db) {
       return summaries;
     },
 
-    // ----- deletePolicy -----
-    async deletePolicy(companyId: string, policyId: string): Promise<boolean> {
-      const deleted = await db
-        .delete(budgetPolicies)
-        .where(
-          and(
-            eq(budgetPolicies.id, policyId),
-            eq(budgetPolicies.companyId, companyId),
-          ),
-        )
-        .returning({ id: budgetPolicies.id });
-      return deleted.length > 0;
-    },
-
     // ----- listOpenIncidents -----
     async listOpenIncidents(companyId: string) {
       const incidents = await db
@@ -396,17 +381,7 @@ export function budgetService(db: Db) {
 
         // Check hard stop first
         if (policy.hardStopEnabled && observed >= policy.amountCents) {
-          const incident = await createIncidentIfNeeded(db, policy, "hard_stop", observed, start, end);
-          // Emit cancellation signal only on a newly-created incident so the
-          // signal fires once per breach, not on every subsequent cost event.
-          if (incident) {
-            const scope: BudgetEnforcementScope = {
-              companyId: policy.companyId,
-              scopeType: policy.scopeType as "company" | "agent",
-              scopeId: policy.scopeId,
-            };
-            emitBudgetExhausted(scope);
-          }
+          await createIncidentIfNeeded(db, policy, "hard_stop", observed, start, end);
         }
         // Check warning threshold
         else if (observed >= (policy.amountCents * policy.warnPercent) / 100) {

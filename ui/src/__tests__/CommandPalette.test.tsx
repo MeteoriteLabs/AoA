@@ -68,7 +68,7 @@ const globalSearchMock = vi.fn().mockResolvedValue({
           type: "memory",
           title: "Shared playbook",
           subtitle: "Reusable process guidance",
-          href: "/memory/explore?item=memory-1",
+          href: "/memory?item=memory-1",
           score: 0.9,
           category: "reference",
           layer: "domain",

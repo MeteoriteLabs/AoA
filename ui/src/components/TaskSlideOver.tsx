@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
-import { feedbackApi } from "../api/feedback";
 import { contextPackagingApi } from "../api/context-packaging";
 import { artifactsApi } from "../api/artifacts";
 import { outputDetectionApi, type DetectedOutputForUI } from "../api/output-detection";
@@ -25,8 +24,6 @@ import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { IssueProperties } from "./IssueProperties";
 import { LiveRunWidget } from "./LiveRunWidget";
 import { WorkspaceTimeline } from "./workspace/WorkspaceTimeline";
-import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
-import { ImageGalleryModal } from "./ImageGalleryModal";
 import type { MentionOption } from "./MarkdownEditor";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
@@ -36,8 +33,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Sheet, SheetContent, SheetTitle, SheetDescription } from "@/components/ui/sheet";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -69,8 +66,8 @@ import {
   Sparkles,
 } from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import type { ActivityEvent } from "@armyofagents/shared";
-import type { Agent, IssueAttachment, ArtifactWithVersions, CreateArtifactVersion } from "@armyofagents/shared";
+import type { ActivityEvent } from "@paperclipai/shared";
+import type { Agent, IssueAttachment, ArtifactWithVersions, CreateArtifactVersion } from "@paperclipai/shared";
 
 /* ── Helpers (shared with IssueDetail) ── */
 
@@ -222,8 +219,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
   const [depPickerOpen, setDepPickerOpen] = useState(false);
   const [depSearch, setDepSearch] = useState("");
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
-  const [galleryOpen, setGalleryOpen] = useState(false);
-  const [galleryInitialIndex, setGalleryInitialIndex] = useState(0);
   const [showAddVersion, setShowAddVersion] = useState(false);
   const [versionMode, setVersionMode] = useState<"text" | "file">("text");
   const [showAllVersions, setShowAllVersions] = useState(false);
@@ -247,20 +242,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     queryFn: () => issuesApi.listComments(issueId!),
     enabled: !!issueId && open,
   });
-
-  const { data: feedbackVotes, refetch: refetchFeedbackVotes } = useQuery({
-    queryKey: ["feedback-votes", issueId],
-    queryFn: () => feedbackApi.listVotes(issueId!),
-    enabled: !!issueId && open,
-  });
-
-  const votesByCommentId = useMemo(() => {
-    const map = new Map<string, NonNullable<typeof feedbackVotes>[number]>();
-    for (const v of feedbackVotes ?? []) {
-      if (v.targetType === "issue_comment") map.set(v.targetId, v);
-    }
-    return map;
-  }, [feedbackVotes]);
 
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId!),
@@ -286,11 +267,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     queryFn: () => issuesApi.listAttachments(issueId!),
     enabled: !!issueId && open,
   });
-
-  const imageAttachments = useMemo(
-    () => (attachments ?? []).filter((a) => a.contentType?.startsWith("image/")),
-    [attachments],
-  );
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId!),
@@ -408,19 +384,12 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
     return options;
   }, [agents, orderedProjects]);
 
-  const { data: childIssuesData } = useQuery({
-    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "children", issue?.id],
-    queryFn: () =>
-      issuesApi.list(selectedCompanyId!, { parentId: issue!.id }),
-    enabled: !!selectedCompanyId && !!issue?.id,
-  });
-
   const childIssues = useMemo(() => {
-    if (!childIssuesData) return [];
-    return [...childIssuesData].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-    );
-  }, [childIssuesData]);
+    if (!allIssues || !issue) return [];
+    return allIssues
+      .filter((i) => i.parentId === issue.id)
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }, [allIssues, issue]);
 
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
@@ -750,8 +719,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
       setShowAddVersion(false);
       setShowAllVersions(false);
       setSidebarMode("task");
-      setGalleryOpen(false);
-      setGalleryInitialIndex(0);
     }
   }, [issueId]);
 
@@ -784,17 +751,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
           }
         }}
       >
-        {/* Screen-reader-only title and description so the underlying Radix
-            Dialog has an accessible name. Sheet is built on Dialog; Task 17's
-            a11y sweep missed SheetContent. Silences the DialogTitle warning
-            emitted 8+ times per task slideover open. (Finding A) */}
-        <SheetTitle className="sr-only">
-          {issue?.identifier ? `${issue.identifier}: ` : ""}
-          {issue?.title ?? "Task details"}
-        </SheetTitle>
-        <SheetDescription className="sr-only">
-          Task details, comments, and workspace actions
-        </SheetDescription>
         {/* Mode 2: Workspace Chat */}
         {sidebarMode === "workspace" && issue && (
           <>
@@ -827,7 +783,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                   <ExternalLink className="h-3.5 w-3.5" />
                   Open Workspace
                 </Button>
-                <Button variant="ghost" size="icon-xs" onClick={onClose} aria-label="Close workspace view">
+                <Button variant="ghost" size="icon-xs" onClick={onClose}>
                   <X className="h-4 w-4" />
                 </Button>
               </div>
@@ -883,7 +839,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                       size="icon-xs"
                       className="shrink-0"
                       title="Open in LLM"
-                      aria-label="Open in LLM"
                       disabled={contextLoading}
                     >
                       <Sparkles className="h-4 w-4" />
@@ -918,7 +873,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                 </Popover>
                 <Popover open={moreOpen} onOpenChange={setMoreOpen}>
                   <PopoverTrigger asChild>
-                    <Button variant="ghost" size="icon-xs" className="shrink-0" aria-label="More task actions">
+                    <Button variant="ghost" size="icon-xs" className="shrink-0">
                       <MoreHorizontal className="h-4 w-4" />
                     </Button>
                   </PopoverTrigger>
@@ -1004,7 +959,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                     placeholder="Add a description..."
                     multiline
                     mentions={mentionOptions}
-                    companyId={selectedCompanyId}
                     imageUploadHandler={async (file) => {
                       const attachment = await uploadAttachment.mutateAsync(file);
                       return attachment.contentPath;
@@ -1106,15 +1060,6 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                   )}
                 </div>
 
-                {/* Issue-level workspace preference (gated by instance flag + software project) */}
-                <IssueWorkspaceCard
-                  issueId={issue.id}
-                  companyId={selectedCompanyId}
-                  projectId={issue.projectId}
-                  issueExecutionWorkspacePreference={issue.executionWorkspacePreference}
-                  issueExecutionWorkspaceSettings={issue.executionWorkspaceSettings}
-                />
-
                 {/* Dependencies */}
                 <div className="space-y-3">
                   <div className="flex items-center justify-between gap-2">
@@ -1198,8 +1143,8 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                   <DialogContent className="sm:max-w-md">
                     <DialogHeader>
                       <DialogTitle>Add Dependency</DialogTitle>
-                      <DialogDescription className="text-xs">Select a task that must be completed before this one can start.</DialogDescription>
                     </DialogHeader>
+                    <p className="text-xs text-muted-foreground">Select a task that must be completed before this one can start.</p>
                     <div className="relative">
                       <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                       <Input
@@ -1292,38 +1237,20 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                             {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
                           </p>
                           {isImageAttachment(attachment) && (
-                            <button
-                              type="button"
-                              className="mt-2 block w-full cursor-zoom-in text-left"
-                              aria-label={`Open ${attachment.originalFilename ?? "image"} in gallery`}
-                              onClick={() => {
-                                const idx = imageAttachments.findIndex((img) => img.id === attachment.id);
-                                if (idx >= 0) {
-                                  setGalleryInitialIndex(idx);
-                                  setGalleryOpen(true);
-                                }
-                              }}
-                            >
+                            <a href={attachment.contentPath} target="_blank" rel="noreferrer">
                               <img
                                 src={attachment.contentPath}
                                 alt={attachment.originalFilename ?? "attachment"}
-                                className="max-h-56 w-full rounded border border-border object-contain bg-accent/10"
+                                className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
                                 loading="lazy"
                               />
-                            </button>
+                            </a>
                           )}
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
-
-                <ImageGalleryModal
-                  images={imageAttachments}
-                  initialIndex={galleryInitialIndex}
-                  open={galleryOpen}
-                  onOpenChange={setGalleryOpen}
-                />
 
                 <Separator />
 
@@ -1399,14 +1326,11 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                       linkedRuns={timelineRuns}
                       issueStatus={issue.status}
                       agentMap={agentMap}
-                      draftKey={`aoa:issue-comment-draft:${issue.id}`}
+                      draftKey={`paperclip:issue-comment-draft:${issue.id}`}
                       enableReassign={permissions.canAssignTasks}
                       reassignOptions={commentReassignOptions}
                       currentAssigneeValue={currentAssigneeValue}
                       mentions={mentionOptions}
-                      feedbackIssueId={issue.id}
-                      existingVotesByCommentId={votesByCommentId}
-                      onVoteChange={() => { void refetchFeedbackVotes(); }}
                       onAdd={async (body, reopen, reassignment) => {
                         if (reassignment) {
                           await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });

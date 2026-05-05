@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -12,53 +11,46 @@ function expandHomePrefix(value: string): string {
   return value;
 }
 
-export function resolveAoaHomeDir(): string {
-  const envHome = process.env.AOA_HOME?.trim();
+export function resolvePaperclipHomeDir(): string {
+  const envHome = process.env.PAPERCLIP_HOME?.trim();
   if (envHome) return path.resolve(expandHomePrefix(envHome));
-  const aoaHome = path.resolve(os.homedir(), ".aoa");
-  // Migration fallback: use legacy ~/.paperclip/ if it exists and the new
-  // ~/.aoa/ hasn't been created yet. Remove after the next major.
-  if (!existsSync(aoaHome)) {
-    const legacyHome = path.resolve(os.homedir(), ".paperclip");
-    if (existsSync(legacyHome)) return legacyHome;
-  }
-  return aoaHome;
+  return path.resolve(os.homedir(), ".paperclip");
 }
 
-export function resolveAoaInstanceId(): string {
-  const raw = process.env.AOA_INSTANCE_ID?.trim() || DEFAULT_INSTANCE_ID;
+export function resolvePaperclipInstanceId(): string {
+  const raw = process.env.PAPERCLIP_INSTANCE_ID?.trim() || DEFAULT_INSTANCE_ID;
   if (!INSTANCE_ID_RE.test(raw)) {
-    throw new Error(`Invalid AOA_INSTANCE_ID '${raw}'.`);
+    throw new Error(`Invalid PAPERCLIP_INSTANCE_ID '${raw}'.`);
   }
   return raw;
 }
 
-export function resolveAoaInstanceRoot(): string {
-  return path.resolve(resolveAoaHomeDir(), "instances", resolveAoaInstanceId());
+export function resolvePaperclipInstanceRoot(): string {
+  return path.resolve(resolvePaperclipHomeDir(), "instances", resolvePaperclipInstanceId());
 }
 
 export function resolveDefaultConfigPath(): string {
-  return path.resolve(resolveAoaInstanceRoot(), "config.json");
+  return path.resolve(resolvePaperclipInstanceRoot(), "config.json");
 }
 
 export function resolveDefaultEmbeddedPostgresDir(): string {
-  return path.resolve(resolveAoaInstanceRoot(), "db");
+  return path.resolve(resolvePaperclipInstanceRoot(), "db");
 }
 
 export function resolveDefaultLogsDir(): string {
-  return path.resolve(resolveAoaInstanceRoot(), "logs");
+  return path.resolve(resolvePaperclipInstanceRoot(), "logs");
 }
 
 export function resolveDefaultSecretsKeyFilePath(): string {
-  return path.resolve(resolveAoaInstanceRoot(), "secrets", "master.key");
+  return path.resolve(resolvePaperclipInstanceRoot(), "secrets", "master.key");
 }
 
 export function resolveDefaultStorageDir(): string {
-  return path.resolve(resolveAoaInstanceRoot(), "data", "storage");
+  return path.resolve(resolvePaperclipInstanceRoot(), "data", "storage");
 }
 
 export function resolveDefaultBackupDir(): string {
-  return path.resolve(resolveAoaInstanceRoot(), "data", "backups");
+  return path.resolve(resolvePaperclipInstanceRoot(), "data", "backups");
 }
 
 export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
@@ -66,7 +58,7 @@ export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
   if (!PATH_SEGMENT_RE.test(trimmed)) {
     throw new Error(`Invalid agent id for workspace path '${agentId}'.`);
   }
-  return path.resolve(resolveAoaInstanceRoot(), "workspaces", trimmed);
+  return path.resolve(resolvePaperclipInstanceRoot(), "workspaces", trimmed);
 }
 
 export function resolveHomeAwarePath(value: string): string {

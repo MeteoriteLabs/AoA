@@ -9,7 +9,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
 
 /**
  * Unified org-tree node containing both agents and humans.
@@ -52,10 +51,6 @@ export interface ReportsToSelectProps {
   filterToType?: "agent" | "user";
   disabled?: boolean;
   className?: string;
-  /** Trigger placeholder when no value is selected. Default: "None (root)". */
-  chooseLabel?: string;
-  /** Trigger label when disabled and no options are available. Default: falls back to chooseLabel. */
-  disabledEmptyLabel?: string;
 }
 
 /** Recursively flatten a UnifiedOrgNode tree into a flat list. */
@@ -88,14 +83,6 @@ function detailText(node: UnifiedOrgNode): string {
   return node.role;
 }
 
-function parseValue(value: string): { nodeType: "agent" | "user"; id: string } | null {
-  if (!value) return null;
-  const [type, ...rest] = value.split(":");
-  const id = rest.join(":");
-  if ((type !== "agent" && type !== "user") || !id) return null;
-  return { nodeType: type, id };
-}
-
 export function ReportsToSelect({
   orgTree,
   currentEntityId,
@@ -105,10 +92,8 @@ export function ReportsToSelect({
   filterToType,
   disabled,
   className,
-  chooseLabel = "None (root)",
-  disabledEmptyLabel,
 }: ReportsToSelectProps) {
-  const { agents, teamMembers, currentNode } = useMemo(() => {
+  const { agents, teamMembers } = useMemo(() => {
     const flat = flattenOrgTree(orgTree);
 
     // Exclude self
@@ -122,26 +107,14 @@ export function ReportsToSelect({
       ? filtered.filter((node) => node.nodeType === filterToType)
       : filtered;
 
-    // Resolve currentValue against the full tree (including self) so warnings
-    // are accurate even for edge cases.
-    const parsed = parseValue(value);
-    const current = parsed
-      ? flat.find((n) => n.nodeType === parsed.nodeType && n.id === parsed.id) ?? null
-      : null;
-
     return {
       agents: applicable.filter((n) => n.nodeType === "agent"),
       teamMembers: applicable.filter((n) => n.nodeType === "user"),
-      currentNode: current,
     };
-  }, [orgTree, currentEntityId, currentEntityType, filterToType, value]);
+  }, [orgTree, currentEntityId, currentEntityType, filterToType]);
 
   const hasAgents = agents.length > 0;
   const hasTeamMembers = teamMembers.length > 0;
-  const hasOptions = hasAgents || hasTeamMembers;
-
-  const isTerminated = currentNode?.status === "terminated";
-  const isStale = Boolean(value && !currentNode);
 
   const selectValue = value || NONE_VALUE;
 
@@ -149,41 +122,10 @@ export function ReportsToSelect({
     onChange(next === NONE_VALUE ? "" : next);
   }
 
-  const triggerContent = (() => {
-    if (disabled && !hasOptions && !currentNode) {
-      return (
-        <span className="text-muted-foreground">
-          {disabledEmptyLabel ?? chooseLabel}
-        </span>
-      );
-    }
-    if (isStale) {
-      return (
-        <span className="text-muted-foreground">Unknown manager (stale ID)</span>
-      );
-    }
-    if (isTerminated && currentNode) {
-      return (
-        <span className="text-amber-700 dark:text-amber-300">
-          {`${currentNode.name} (terminated)`}
-        </span>
-      );
-    }
-    if (!value) {
-      return <span className="text-muted-foreground">{chooseLabel}</span>;
-    }
-    return <SelectValue />;
-  })();
-
   return (
     <Select value={selectValue} onValueChange={handleChange} disabled={disabled}>
-      <SelectTrigger
-        className={cn(
-          isTerminated && "border-amber-500/50 bg-amber-500/10",
-          className,
-        )}
-      >
-        {triggerContent}
+      <SelectTrigger className={className}>
+        <SelectValue placeholder="None (root)" />
       </SelectTrigger>
       <SelectContent>
         <SelectItem value={NONE_VALUE}>None (root)</SelectItem>

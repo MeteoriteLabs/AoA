@@ -8,7 +8,7 @@ import type {
   CompanyPortabilityManifest,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportResult,
-} from "@armyofagents/shared";
+} from "@paperclipai/shared";
 import { ApiRequestError } from "../../client/http.js";
 import {
   addCommonClientOptions,
@@ -55,21 +55,14 @@ function normalizeSelector(input: string): string {
 }
 
 function parseInclude(input: string | undefined): CompanyPortabilityInclude {
-  if (!input || !input.trim()) {
-    return { company: true, agents: true, projects: false, issues: false, skills: false, routines: false, envInputs: false };
-  }
+  if (!input || !input.trim()) return { company: true, agents: true };
   const values = input.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean);
   const include = {
     company: values.includes("company"),
     agents: values.includes("agents"),
-    projects: values.includes("projects"),
-    issues: values.includes("issues"),
-    skills: values.includes("skills"),
-    routines: values.includes("routines"),
-    envInputs: values.includes("envinputs") || values.includes("env-inputs") || values.includes("env_inputs"),
   };
-  if (!include.company && !include.agents && !include.projects && !include.issues && !include.skills && !include.routines && !include.envInputs) {
-    throw new Error("Invalid --include value. Use one or more of: company,agents,projects,issues,skills,routines,envInputs");
+  if (!include.company && !include.agents) {
+    throw new Error("Invalid --include value. Use one or both of: company,agents");
   }
   return include;
 }

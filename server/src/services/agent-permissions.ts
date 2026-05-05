@@ -4,11 +4,7 @@ export type NormalizedAgentPermissions = Record<string, unknown> & {
 
 export function defaultPermissionsForRole(role: string): NormalizedAgentPermissions {
   return {
-    // CXO-tier agents are auto-empowered to hire (no need to set
-    // canCreateAgents explicitly). Was `=== "ceo"` before the role-enum
-    // cleanup; see plan
-    // docs/superpowers/plans/2026-04-30-agent-role-3-tier-cleanup.md.
-    canCreateAgents: role === "cxo",
+    canCreateAgents: role === "ceo",
   };
 }
 

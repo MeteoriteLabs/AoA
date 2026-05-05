@@ -1,20 +1,20 @@
 import pc from "picocolors";
 
-const AOA_ART = [
-  " █████╗  ██████╗  █████╗ ",
-  "██╔══██╗██╔═══██╗██╔══██╗",
-  "███████║██║   ██║███████║",
-  "██╔══██║██║   ██║██╔══██║",
-  "██║  ██║╚██████╔╝██║  ██║",
-  "╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝",
+const PAPERCLIP_ART = [
+  "██████╗  █████╗ ██████╗ ███████╗██████╗  ██████╗██╗     ██╗██████╗ ",
+  "██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔════╝██║     ██║██╔══██╗",
+  "██████╔╝███████║██████╔╝█████╗  ██████╔╝██║     ██║     ██║██████╔╝",
+  "██╔═══╝ ██╔══██║██╔═══╝ ██╔══╝  ██╔══██╗██║     ██║     ██║██╔═══╝ ",
+  "██║     ██║  ██║██║     ███████╗██║  ██║╚██████╗███████╗██║██║     ",
+  "╚═╝     ╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝╚═╝     ",
 ] as const;
 
-const TAGLINE = "Army of Agents — open-source orchestration for zero-human companies";
+const TAGLINE = "Open-source orchestration for zero-human companies";
 
-export function printAoaCliBanner(): void {
+export function printPaperclipCliBanner(): void {
   const lines = [
     "",
-    ...AOA_ART.map((line) => pc.cyan(line)),
+    ...PAPERCLIP_ART.map((line) => pc.cyan(line)),
     pc.blue("  ───────────────────────────────────────────────────────"),
     pc.bold(pc.white(`  ${TAGLINE}`)),
     "",

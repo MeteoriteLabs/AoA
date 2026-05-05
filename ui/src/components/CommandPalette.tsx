@@ -1,7 +1,7 @@
 import { useState, useEffect, useDeferredValue, useMemo } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { GlobalSearchEntityType, GlobalSearchResult } from "@armyofagents/shared";
+import type { GlobalSearchEntityType, GlobalSearchResult } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";

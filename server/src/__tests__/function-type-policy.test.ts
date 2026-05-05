@@ -12,7 +12,7 @@ vi.mock("drizzle-orm", () => ({
   inArray: vi.fn((col: unknown, vals: unknown) => ({ inArray: [col, vals] })),
 }));
 
-vi.mock("@armyofagents/db", () => {
+vi.mock("@paperclipai/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {

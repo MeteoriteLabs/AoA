@@ -1,5 +1,5 @@
 {
-  "name": "@armyofagents/adapter-utils",
+  "name": "@paperclipai/adapter-utils",
   "version": "0.2.7",
   "type": "module",
   "exports": {

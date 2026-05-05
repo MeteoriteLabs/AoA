@@ -1,7 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
-import { userRoles } from "@armyofagents/db";
-import type { UserRole } from "@armyofagents/shared";
+import type { Db } from "@paperclipai/db";
+import { userRoles } from "@paperclipai/db";
+import type { UserRole } from "@paperclipai/shared";
 
 /**
  * Entity types for permission checks.
@@ -80,27 +80,6 @@ export function permissionService(db: Db) {
   ): Promise<boolean> {
     const departments = await getTeamLeadDepartments(companyId, userId);
     return departments.includes(departmentId);
-  }
-
-  /**
-   * Get all team_lead rows for a user within a company, including the
-   * company-wide scope (where projectId is null). Differs from
-   * {@link getTeamLeadDepartments}, which filters out null-projectId rows.
-   */
-  async function getTeamLeadScope(
-    companyId: string,
-    userId: string,
-  ): Promise<{ projectId: string | null }[]> {
-    return db
-      .select({ projectId: userRoles.projectId })
-      .from(userRoles)
-      .where(
-        and(
-          eq(userRoles.companyId, companyId),
-          eq(userRoles.userId, userId),
-          eq(userRoles.role, "team_lead"),
-        ),
-      );
   }
 
   /**
@@ -345,7 +324,6 @@ export function permissionService(db: Db) {
     isFounder,
     getTeamLeadDepartments,
     isTeamLeadForDepartment,
-    getTeamLeadScope,
     canAccessMemory,
     canApproveMemory,
     canAccessEntity,

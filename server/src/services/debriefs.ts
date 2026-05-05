@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
-import { debriefs, briefs } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
+import { debriefs, briefs } from "@paperclipai/db";
 
 export interface DebriefFilters {
   status?: string;

@@ -43,7 +43,6 @@ export const queryKeys = {
     detail: (id: string) => ["projects", "detail", id] as const,
     agents: (projectId: string) => ["projects", "agents", projectId] as const,
     budget: (projectId: string) => ["projects", "budget", projectId] as const,
-    env: (projectId: string) => ["projects", "env", projectId] as const,
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
@@ -55,7 +54,7 @@ export const queryKeys = {
     list: (companyId: string) => ["routines", companyId] as const,
     detail: (id: string) => ["routines", "detail", id] as const,
     runs: (id: string) => ["routines", id, "runs"] as const,
-    activity: (companyId: string, id: string) => ["routines", companyId, id, "activity"] as const,
+    activity: (id: string) => ["routines", id, "activity"] as const,
   },
   approvals: {
     list: (companyId: string, status?: string) =>
@@ -72,39 +71,23 @@ export const queryKeys = {
     joinRequests: (companyId: string, status: string = "pending_approval") =>
       ["access", "join-requests", companyId, status] as const,
     invite: (token: string) => ["access", "invite", token] as const,
-    adminUsers: (query: string) => ["access", "admin-users", query] as const,
-    userCompanyAccess: (userId: string) =>
-      ["access", "user-company-access", userId] as const,
   },
   team: {
     summary: (companyId: string) => ["team", companyId] as const,
     member: (companyId: string, userId: string) => ["team", companyId, "member", userId] as const,
     dependencies: (companyId: string, userId: string) => ["team", companyId, "dependencies", userId] as const,
   },
-  teams: {
-    list: (companyId: string) => ["teams", companyId] as const,
-    detail: (companyId: string, teamId: string) => ["teams", companyId, teamId] as const,
-    detailBySlug: (companyId: string, slug: string) => ["teams", companyId, "by-slug", slug] as const,
-    members: (companyId: string, teamId: string) => ["teams", companyId, teamId, "members"] as const,
-    coordination: (companyId: string, teamId: string) => ["teams", companyId, teamId, "coordination"] as const,
-  },
   auth: {
     session: ["auth", "session"] as const,
-    profile: ["auth", "profile"] as const,
   },
   health: ["health"] as const,
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
   },
-  github: {
-    patStatus: (companyId: string) => ["github", "patStatus", companyId] as const,
-  },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   home: (companyId: string) => ["home", companyId] as const,
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
-  sidebarPreferences: (companyId: string) => ["sidebar-preferences", companyId] as const,
-  inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
@@ -122,38 +105,6 @@ export const queryKeys = {
     detail: (companyId: string, id: string) => ["memory", companyId, id] as const,
     versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"] as const,
     semanticSearch: (companyId: string, q: string) => ["memory", companyId, "semantic-search", q] as const,
-    // V2.6 Phase 3
-    retrievalsForIssue: (companyId: string, issueId: string) =>
-      ["memory", companyId, "retrievals", "issue", issueId] as const,
-    // V2.6 Phase 4
-    starterTemplates: (companyId: string) =>
-      ["memory", companyId, "starter-templates"] as const,
-    importJob: (companyId: string, jobId: string) =>
-      ["memory", companyId, "import-job", jobId] as const,
-    folders: {
-      list: (companyId: string, departmentId?: string) =>
-        ["memory", "folders", companyId, departmentId ?? "_all"] as const,
-    },
-    assets: {
-      list: (
-        companyId: string,
-        params?: {
-          departmentId?: string;
-          folderPath?: string;
-          mimeType?: string;
-        },
-      ) =>
-        [
-          "memory",
-          "assets",
-          companyId,
-          params?.departmentId ?? "_all",
-          params?.folderPath ?? "_all",
-          params?.mimeType ?? "_all",
-        ] as const,
-      detail: (companyId: string, id: string) =>
-        ["memory", "assets", companyId, "detail", id] as const,
-    },
   },
   search: {
     global: (companyId: string, query: string, includeArchived = false) =>
@@ -205,18 +156,12 @@ export const queryKeys = {
   instanceSettings: {
     general: ["instance-settings", "general"] as const,
     experimental: ["instance-settings", "experimental"] as const,
-    schedulerHeartbeats: ["instance-settings", "scheduler-heartbeats"] as const,
-  },
-  feedback: {
-    exports: (limit: number) => ["feedback", "exports", limit] as const,
   },
   executionWorkspaces: {
     list: (companyId: string) => ["executionWorkspaces", companyId] as const,
     listForProject: (companyId: string, projectId: string) =>
       ["executionWorkspaces", companyId, projectId] as const,
     detail: (id: string) => ["executionWorkspaces", "detail", id] as const,
-    runtimeServices: (id: string) =>
-      ["executionWorkspaces", "detail", id, "runtime-services"] as const,
   },
   plugins: {
     all: ["plugins"] as const,

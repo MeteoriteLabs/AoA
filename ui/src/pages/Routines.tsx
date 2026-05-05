@@ -2,11 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { ChevronDown, ChevronRight, LayoutGrid, List, MoreHorizontal, Plus, Repeat } from "lucide-react";
-import type { RoutineListItem } from "@armyofagents/shared";
 import { routinesApi } from "../api/routines";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
-import { RoutineRunDialog } from "../components/routines/RoutineRunDialog";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
@@ -14,7 +12,6 @@ import { queryKeys } from "../lib/queryKeys";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { EmptyState } from "../components/EmptyState";
 import { RoutineCard } from "../components/RoutineCard";
-import { RoutineTitleWithVariables } from "../components/routines/RoutineTitleWithVariables";
 import {
   autoResizeTextarea,
   catchUpPolicies,
@@ -31,7 +28,7 @@ import { MarkdownEditor, type MarkdownEditorRef } from "../components/MarkdownEd
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -62,7 +59,7 @@ export function Routines() {
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
-  const [runDialogRoutine, setRunDialogRoutine] = useState<RoutineListItem | null>(null);
+  const [runningRoutineId, setRunningRoutineId] = useState<string | null>(null);
   const [statusMutationRoutineId, setStatusMutationRoutineId] = useState<string | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -153,12 +150,28 @@ export function Routines() {
     },
   });
 
-  const handleRunComplete = async (id: string) => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(id) }),
-    ]);
-  };
+  const runRoutine = useMutation({
+    mutationFn: (id: string) => routinesApi.run(id, { source: "manual" }),
+    onMutate: (id) => {
+      setRunningRoutineId(id);
+    },
+    onSuccess: async (_, id) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(id) }),
+      ]);
+    },
+    onSettled: () => {
+      setRunningRoutineId(null);
+    },
+    onError: (mutationError) => {
+      pushToast({
+        title: "Routine run failed",
+        body: mutationError instanceof Error ? mutationError.message : "AoA could not start the routine run.",
+        tone: "error",
+      });
+    },
+  });
 
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [composerOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
@@ -277,8 +290,6 @@ export function Routines() {
         }}
       >
         <DialogContent showCloseButton={false} className="max-w-3xl gap-0 overflow-hidden p-0">
-          <DialogTitle className="sr-only">New routine</DialogTitle>
-          <DialogDescription className="sr-only">Create a recurring routine for agents to execute</DialogDescription>
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
             <div>
               <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>
@@ -491,7 +502,7 @@ export function Routines() {
 
           <div className="flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
-              After creation, AoA takes you straight to trigger setup for schedules. Webhook triggers ship in a future release.
+              After creation, AoA takes you straight to trigger setup for schedules, webhooks, or internal runs.
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button
@@ -548,10 +559,10 @@ export function Routines() {
               routine={routine}
               agentById={agentById}
               projectById={projectById}
-              isRunning={runDialogRoutine?.id === routine.id}
+              isRunning={runningRoutineId === routine.id}
               isStatusPending={statusMutationRoutineId === routine.id}
               onNavigate={() => navigate(`/routines/${routine.id}`)}
-              onRun={() => setRunDialogRoutine(routine)}
+              onRun={() => runRoutine.mutate(routine.id)}
               onToggleStatus={() =>
                 updateRoutineStatus.mutate({
                   id: routine.id,
@@ -596,9 +607,7 @@ export function Routines() {
                   >
                     <td className="px-3 py-2.5">
                       <div className="min-w-[180px]">
-                        <span className="font-medium">
-                          <RoutineTitleWithVariables template={routine.title} />
-                        </span>
+                        <span className="font-medium">{routine.title}</span>
                         {(isArchived || routine.status === "paused") && (
                           <div className="mt-0.5 text-xs text-muted-foreground capitalize">{routine.status}</div>
                         )}
@@ -680,10 +689,10 @@ export function Routines() {
                             Edit
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                            disabled={isArchived}
-                            onClick={() => setRunDialogRoutine(routine)}
+                            disabled={runningRoutineId === routine.id || isArchived}
+                            onClick={() => runRoutine.mutate(routine.id)}
                           >
-                            Run now
+                            {runningRoutineId === routine.id ? "Running..." : "Run now"}
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
@@ -718,18 +727,6 @@ export function Routines() {
           </table>
         </div>
       )}
-      {runDialogRoutine ? (
-        <RoutineRunDialog
-          open
-          onOpenChange={(next) => {
-            if (!next) setRunDialogRoutine(null);
-          }}
-          routineId={runDialogRoutine.id}
-          routineTitle={runDialogRoutine.title}
-          variables={runDialogRoutine.variables}
-          onRunComplete={() => handleRunComplete(runDialogRoutine.id)}
-        />
-      ) : null}
     </div>
   );
 }

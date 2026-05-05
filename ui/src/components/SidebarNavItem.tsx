@@ -18,8 +18,6 @@ interface SidebarNavItemProps {
   /** CSS color variable for entity accent (e.g. "var(--entity-task)") */
   entityColor?: string;
   collapsed?: boolean;
-  /** Skip company-prefix injection — use `to` as the absolute path (for global routes like /marketplace). */
-  noPrefix?: boolean;
 }
 
 export function SidebarNavItem({
@@ -34,12 +32,11 @@ export function SidebarNavItem({
   liveCount,
   entityColor,
   collapsed,
-  noPrefix = false,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen } = useSidebar();
   const { selectedCompany } = useCompany();
   const prefix = selectedCompany?.issuePrefix ?? "";
-  const fullPath = noPrefix ? to : `/${prefix}${to}`;
+  const fullPath = `/${prefix}${to}`;
   const location = useLocation();
   // Manual isActive detection needed in collapsed mode because NavLink's
   // render-prop className/children conflict with Radix TooltipTrigger asChild.
@@ -98,7 +95,7 @@ export function SidebarNavItem({
 
   return (
     <NavLink
-      to={noPrefix ? fullPath : to}
+      to={to}
       end={end}
       onClick={() => { if (isMobile) setSidebarOpen(false); }}
       className={({ isActive }) =>

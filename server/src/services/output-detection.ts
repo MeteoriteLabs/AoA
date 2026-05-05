@@ -2,9 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { Db } from "@armyofagents/db";
-import { assets } from "@armyofagents/db";
-import type { DetectedOutput } from "@armyofagents/shared";
+import type { Db } from "@paperclipai/db";
+import { assets } from "@paperclipai/db";
+import type { DetectedOutput } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { getStorageService } from "../storage/index.js";
 import { getContentType } from "../mime-types.js";
@@ -21,6 +21,9 @@ const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
 /** Timeout for git commands */
 const GIT_TIMEOUT_MS = 10_000;
+
+/** API adapter types that have no workspace */
+const API_ADAPTER_TYPES = new Set(["claude_api", "openai_api", "gemini_api"]);
 
 /** Directory patterns to exclude from detection */
 const NOISE_DIR_PATTERNS = [
@@ -77,10 +80,6 @@ export interface OutputDetectionInput {
   agentId: string;
   cwd: string;
   startedAt: Date;
-  // Retained for caller compatibility (heartbeat.ts populates it). No longer
-  // dispatched on since Sprint 2A removed the API adapters; every remaining
-  // adapter has a workspace. Safe to drop in a future cleanup pass once all
-  // call sites are audited.
   adapterType: string | null;
   adapterHints?: Array<{ path: string; label?: string; artifactType?: string }>;
   issueId: string | null;
@@ -242,7 +241,13 @@ async function detectAndCaptureImpl(
   db: Db,
   input: OutputDetectionInput,
 ): Promise<DetectedOutput[]> {
-  const { runId, companyId, agentId, cwd, startedAt, adapterHints } = input;
+  const { runId, companyId, agentId, cwd, startedAt, adapterType, adapterHints } = input;
+
+  // Guard: API adapters have no workspace
+  const isApiAdapter = adapterType != null && API_ADAPTER_TYPES.has(adapterType);
+  if (isApiAdapter && (!adapterHints || adapterHints.length === 0)) {
+    return [];
+  }
 
   // Guard: verify cwd exists
   try {
@@ -254,16 +259,20 @@ async function detectAndCaptureImpl(
 
   // Detect changed files
   let detectedPaths: string[];
-  const isGit = await isGitRepo(cwd);
-  if (isGit) {
-    try {
-      detectedPaths = await detectChangedFilesGit(cwd);
-    } catch (err) {
-      logger.warn({ err, cwd }, "git detection failed, falling back to mtime");
+  if (!isApiAdapter) {
+    const isGit = await isGitRepo(cwd);
+    if (isGit) {
+      try {
+        detectedPaths = await detectChangedFilesGit(cwd);
+      } catch (err) {
+        logger.warn({ err, cwd }, "git detection failed, falling back to mtime");
+        detectedPaths = await detectChangedFilesMtime(cwd, startedAt);
+      }
+    } else {
       detectedPaths = await detectChangedFilesMtime(cwd, startedAt);
     }
   } else {
-    detectedPaths = await detectChangedFilesMtime(cwd, startedAt);
+    detectedPaths = [];
   }
 
   // Build hint map

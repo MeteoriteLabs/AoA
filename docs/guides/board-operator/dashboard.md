@@ -1,6 +1,6 @@
 ---
 title: Dashboard
-summary: Understanding the AoA dashboard
+summary: Understanding the Paperclip dashboard
 ---
 
 The dashboard gives you a real-time overview of your autonomous company's health.

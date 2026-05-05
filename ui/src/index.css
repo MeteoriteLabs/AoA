@@ -255,8 +255,8 @@
 }
 
 /* MDXEditor theme integration */
-.aoa-mdxeditor-scope,
-.aoa-mdxeditor {
+.paperclip-mdxeditor-scope,
+.paperclip-mdxeditor {
   --baseBase: var(--background);
   --baseBg: transparent;
   --baseBgSubtle: color-mix(in oklab, var(--accent) 35%, transparent);
@@ -287,62 +287,62 @@
   color: var(--foreground);
 }
 
-.aoa-mdxeditor-scope [class*="_iconButton_"],
-.aoa-mdxeditor [class*="_iconButton_"] {
+.paperclip-mdxeditor-scope [class*="_iconButton_"],
+.paperclip-mdxeditor [class*="_iconButton_"] {
   color: var(--baseText);
 }
 
-.aoa-mdxeditor-scope [class*="_iconButton_"]:hover,
-.aoa-mdxeditor [class*="_iconButton_"]:hover {
+.paperclip-mdxeditor-scope [class*="_iconButton_"]:hover,
+.paperclip-mdxeditor [class*="_iconButton_"]:hover {
   color: var(--baseTextContrast);
 }
 
-.aoa-mdxeditor .mdxeditor-root-contenteditable {
+.paperclip-mdxeditor .mdxeditor-root-contenteditable {
   min-height: 2.5rem;
   padding: 0;
   line-height: 1.5;
 }
 
-.aoa-mdxeditor [class*="_contentEditable_"] {
+.paperclip-mdxeditor [class*="_contentEditable_"] {
   padding: 0.375rem 0.625rem !important;
 }
 
-.aoa-mdxeditor--borderless [class*="_contentEditable_"] {
+.paperclip-mdxeditor--borderless [class*="_contentEditable_"] {
   padding: 0 !important;
 }
 
-.aoa-mdxeditor [class*="_placeholder_"] {
+.paperclip-mdxeditor [class*="_placeholder_"] {
   font-family: inherit;
   font-size: 0.875rem;
   line-height: 1.5;
   color: var(--muted-foreground);
 }
 
-.aoa-mdxeditor-content {
+.paperclip-mdxeditor-content {
   font-family: inherit;
   font-size: inherit;
   line-height: inherit;
   color: inherit;
 }
 
-.aoa-mdxeditor-content > *:first-child {
+.paperclip-mdxeditor-content > *:first-child {
   margin-top: 0;
 }
 
-.aoa-mdxeditor-content > *:last-child {
+.paperclip-mdxeditor-content > *:last-child {
   margin-bottom: 0;
 }
 
-.aoa-mdxeditor-content p {
+.paperclip-mdxeditor-content p {
   margin: 0;
   line-height: 1.4;
 }
 
-.aoa-mdxeditor-content p + p {
+.paperclip-mdxeditor-content p + p {
   margin-top: 0.6rem;
 }
 
-.aoa-mdxeditor-content a.aoa-project-mention-chip {
+.paperclip-mdxeditor-content a.paperclip-project-mention-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -358,59 +358,43 @@
   user-select: none;
 }
 
-.aoa-mdxeditor-content a.aoa-skill-mention-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  margin: 0 0.1rem;
-  padding: 0.05rem 0.45rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 0.75rem;
-  line-height: 1.3;
-  text-decoration: none;
-  vertical-align: baseline;
-  white-space: nowrap;
-  user-select: none;
-}
-
-.aoa-mdxeditor-content ul,
-.aoa-mdxeditor-content ol {
+.paperclip-mdxeditor-content ul,
+.paperclip-mdxeditor-content ol {
   margin: 0.35rem 0;
   padding-left: 1.1rem;
 }
 
-.aoa-mdxeditor-content ul {
+.paperclip-mdxeditor-content ul {
   list-style: disc;
 }
 
-.aoa-mdxeditor-content ol {
+.paperclip-mdxeditor-content ol {
   list-style: decimal;
 }
 
-.aoa-mdxeditor-content li {
+.paperclip-mdxeditor-content li {
   display: list-item;
   margin: 0.15rem 0;
   line-height: 1.4;
 }
 
-.aoa-mdxeditor-content li::marker {
+.paperclip-mdxeditor-content li::marker {
   color: var(--muted-foreground);
 }
 
-.aoa-mdxeditor-content h1,
-.aoa-mdxeditor-content h2,
-.aoa-mdxeditor-content h3 {
+.paperclip-mdxeditor-content h1,
+.paperclip-mdxeditor-content h2,
+.paperclip-mdxeditor-content h3 {
   margin: 0.4rem 0 0.25rem;
   line-height: 1.3;
 }
 
-.aoa-mdxeditor-content img {
+.paperclip-mdxeditor-content img {
   max-height: 18rem;
   border-radius: calc(var(--radius) - 2px);
 }
 
-.aoa-mdxeditor-content blockquote {
+.paperclip-mdxeditor-content blockquote {
   margin: 0.45rem 0;
   padding-left: 0.7rem;
   border-left: 2px solid var(--border);
@@ -418,12 +402,12 @@
   line-height: 1.4;
 }
 
-.aoa-mdxeditor-content code {
+.paperclip-mdxeditor-content code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 0.84em;
 }
 
-.aoa-mdxeditor-content pre {
+.paperclip-mdxeditor-content pre {
   margin: 0.5rem 0;
   padding: 0.45rem 0.55rem;
   border: 1px solid var(--border);
@@ -461,23 +445,7 @@
 }
 
 /* Project mention chips rendered inside MarkdownBody */
-a.aoa-project-mention-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  margin: 0 0.1rem;
-  padding: 0.05rem 0.45rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 0.75rem;
-  line-height: 1.3;
-  text-decoration: none;
-  vertical-align: baseline;
-  white-space: nowrap;
-}
-
-/* Skill mention chips rendered inside MarkdownBody */
-a.aoa-skill-mention-chip {
+a.paperclip-project-mention-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -493,24 +461,24 @@ a.aoa-skill-mention-chip {
 }
 
 /* Keep MDXEditor popups above app dialogs when editor is inside a modal. */
-.aoa-mdxeditor-scope [class*="_dialogOverlay_"],
-.aoa-mdxeditor [class*="_dialogOverlay_"] {
+.paperclip-mdxeditor-scope [class*="_dialogOverlay_"],
+.paperclip-mdxeditor [class*="_dialogOverlay_"] {
   z-index: 80;
 }
 
-.aoa-mdxeditor-scope [class*="_dialogContent_"],
-.aoa-mdxeditor-scope [class*="_largeDialogContent_"],
-.aoa-mdxeditor-scope [class*="_popoverContent_"],
-.aoa-mdxeditor-scope [class*="_linkDialogPopoverContent_"],
-.aoa-mdxeditor-scope [class*="_tableColumnEditorPopoverContent_"],
-.aoa-mdxeditor-scope [class*="_toolbarButtonDropdownContainer_"],
-.aoa-mdxeditor-scope [class*="_toolbarNodeKindSelectContainer_"],
-.aoa-mdxeditor [class*="_dialogContent_"],
-.aoa-mdxeditor [class*="_largeDialogContent_"],
-.aoa-mdxeditor [class*="_popoverContent_"],
-.aoa-mdxeditor [class*="_linkDialogPopoverContent_"],
-.aoa-mdxeditor [class*="_tableColumnEditorPopoverContent_"],
-.aoa-mdxeditor [class*="_toolbarButtonDropdownContainer_"],
-.aoa-mdxeditor [class*="_toolbarNodeKindSelectContainer_"] {
+.paperclip-mdxeditor-scope [class*="_dialogContent_"],
+.paperclip-mdxeditor-scope [class*="_largeDialogContent_"],
+.paperclip-mdxeditor-scope [class*="_popoverContent_"],
+.paperclip-mdxeditor-scope [class*="_linkDialogPopoverContent_"],
+.paperclip-mdxeditor-scope [class*="_tableColumnEditorPopoverContent_"],
+.paperclip-mdxeditor-scope [class*="_toolbarButtonDropdownContainer_"],
+.paperclip-mdxeditor-scope [class*="_toolbarNodeKindSelectContainer_"],
+.paperclip-mdxeditor [class*="_dialogContent_"],
+.paperclip-mdxeditor [class*="_largeDialogContent_"],
+.paperclip-mdxeditor [class*="_popoverContent_"],
+.paperclip-mdxeditor [class*="_linkDialogPopoverContent_"],
+.paperclip-mdxeditor [class*="_tableColumnEditorPopoverContent_"],
+.paperclip-mdxeditor [class*="_toolbarButtonDropdownContainer_"],
+.paperclip-mdxeditor [class*="_toolbarNodeKindSelectContainer_"] {
   z-index: 81 !important;
 }

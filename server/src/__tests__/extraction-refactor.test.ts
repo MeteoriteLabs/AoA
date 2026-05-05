@@ -16,7 +16,7 @@ vi.mock("drizzle-orm", () => ({
   ),
 }));
 
-vi.mock("@armyofagents/db", () => {
+vi.mock("@paperclipai/db", () => {
   const makeTable = (name: string) =>
     new Proxy({} as Record<string, unknown>, {
       get(_t, prop) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { upsertBudgetPolicySchema, resolveBudgetIncidentSchema } from "@armyofagents/shared";
+import { upsertBudgetPolicySchema, resolveBudgetIncidentSchema } from "@paperclipai/shared";
 
 describe("upsertBudgetPolicySchema", () => {
   it("accepts valid company policy", () => {

@@ -1,4 +1,4 @@
-import type { Approval, Issue, IssueAttachment, IssueComment, IssueDocument, DocumentRevision, UpsertIssueDocument, IssueLabel } from "@armyofagents/shared";
+import type { Approval, Issue, IssueAttachment, IssueComment, IssueDocument, DocumentRevision, UpsertIssueDocument, IssueLabel } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const issuesApi = {
@@ -13,8 +13,6 @@ export const issuesApi = {
       unreadForUserId?: string;
       labelId?: string;
       q?: string;
-      /** UUID to get children of that parent; `null` for top-level tasks only; omit for all. */
-      parentId?: string | null;
     },
   ) => {
     const params = new URLSearchParams();
@@ -26,9 +24,6 @@ export const issuesApi = {
     if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
     if (filters?.labelId) params.set("labelId", filters.labelId);
     if (filters?.q) params.set("q", filters.q);
-    if (filters && Object.prototype.hasOwnProperty.call(filters, "parentId")) {
-      params.set("parentId", filters.parentId === null ? "null" : (filters.parentId as string));
-    }
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },

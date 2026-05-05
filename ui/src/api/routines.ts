@@ -7,7 +7,7 @@ import type {
   RoutineRunSummary,
   RoutineTrigger,
   RoutineTriggerSecretMaterial,
-} from "@armyofagents/shared";
+} from "@paperclipai/shared";
 import { activityApi } from "./activity";
 import { api } from "./client";
 

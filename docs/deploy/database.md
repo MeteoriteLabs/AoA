@@ -1,9 +1,9 @@
 ---
 title: Database
-summary: Embedded Postgres vs Docker Postgres vs hosted
+summary: Embedded PGlite vs Docker Postgres vs hosted
 ---
 
-AoA uses PostgreSQL via Drizzle ORM. There are three ways to run the database. The "embedded" mode bundles a real Postgres binary via [`embedded-postgres`](https://www.npmjs.com/package/embedded-postgres) — **not** WASM-based PGlite. Drop-in compatibility with regular Postgres clients, dump tools, and migrations.
+Paperclip uses PostgreSQL via Drizzle ORM. There are three ways to run the database.
 
 ## 1. Embedded PostgreSQL (Default)
 
@@ -15,12 +15,12 @@ pnpm dev
 
 On first start, the server:
 
-1. Creates `~/.aoa/instances/default/db/` for storage (legacy `~/.paperclip/` is still used as a fallback if it exists and `~/.aoa/` does not, see `cli/src/config/home.ts`)
-2. Ensures the `paperclip` database exists (database NAME inside Postgres is wire-compat with the embedded cluster bootstrap, separate from the AoA brand)
+1. Creates `~/.paperclip/instances/default/db/` for storage
+2. Ensures the `paperclip` database exists
 3. Runs migrations automatically
 4. Starts serving requests
 
-Data persists across restarts. To reset: `rm -rf ~/.aoa/instances/default/db`.
+Data persists across restarts. To reset: `rm -rf ~/.paperclip/instances/default/db`.
 
 The Docker quickstart also uses embedded PostgreSQL by default.
 

@@ -1,5 +1,5 @@
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import {
   memoryFeedbackPatterns,
   suggestions,
@@ -7,7 +7,7 @@ import {
   briefs,
   debriefs,
   agents,
-} from "@armyofagents/db";
+} from "@paperclipai/db";
 import {
   detectToneCorrections,
   detectFormatChanges,

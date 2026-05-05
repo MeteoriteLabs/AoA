@@ -12,9 +12,8 @@ import { typeLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from ".
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
-import type { ApprovalComment } from "@armyofagents/shared";
+import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
 
 export function ApprovalDetail() {
@@ -27,7 +26,6 @@ export function ApprovalDetail() {
   const [commentBody, setCommentBody] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showRawPayload, setShowRawPayload] = useState(false);
-  const [deleteAgentConfirmOpen, setDeleteAgentConfirmOpen] = useState(false);
 
   const { data: approval, isLoading } = useQuery({
     queryKey: queryKeys.approvals.detail(approvalId!),
@@ -313,7 +311,10 @@ export function ApprovalDetail() {
               size="sm"
               variant="outline"
               className="text-destructive border-destructive/40"
-              onClick={() => setDeleteAgentConfirmOpen(true)}
+              onClick={() => {
+                if (!window.confirm("Delete this disapproved agent? This cannot be undone.")) return;
+                deleteAgentMutation.mutate(linkedAgentId);
+              }}
               disabled={deleteAgentMutation.isPending}
             >
               Delete disapproved agent
@@ -362,19 +363,6 @@ export function ApprovalDetail() {
           </Button>
         </div>
       </div>
-
-      <ConfirmDialog
-        open={deleteAgentConfirmOpen}
-        onOpenChange={setDeleteAgentConfirmOpen}
-        title="Delete disapproved agent?"
-        description="This cannot be undone."
-        confirmLabel="Delete"
-        onConfirm={() => {
-          if (!linkedAgentId) return;
-          deleteAgentMutation.mutate(linkedAgentId);
-          setDeleteAgentConfirmOpen(false);
-        }}
-      />
     </div>
   );
 }

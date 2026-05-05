@@ -123,24 +123,34 @@ describe("InternalAgentSettingsPage", () => {
     expect(screen.getByTestId("tab-history")).toBeInTheDocument();
   });
 
-  // Sprint 2A (Decision #91) — Commander is CLI-only. The page no longer
-  // shows a mode toggle, provider picker, or model picker; just the CLI tool
-  // picker.
-  it("shows CLI tool dropdown (the only execution option)", async () => {
+  it("shows provider and model dropdowns in API mode", async () => {
+    renderWithProviders(<InternalAgentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Provider")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Model")).toBeInTheDocument();
+  });
+
+  it("shows CLI tool dropdown in CLI mode", async () => {
+    apiMock.getConfig.mockResolvedValue(
+      makeAgentConfig({ executionMode: "cli", cliTool: "claude_cli" }),
+    );
     renderWithProviders(<InternalAgentSettingsPage />);
     await waitFor(() => {
       expect(screen.getByText("CLI Tool")).toBeInTheDocument();
     });
   });
 
-  it("does not show API-mode provider or model pickers", async () => {
+  it("hides provider/model when in CLI mode", async () => {
+    apiMock.getConfig.mockResolvedValue(
+      makeAgentConfig({ executionMode: "cli", cliTool: "claude_cli" }),
+    );
     renderWithProviders(<InternalAgentSettingsPage />);
     await waitFor(() => {
       expect(screen.getByText("CLI Tool")).toBeInTheDocument();
     });
     expect(screen.queryByText("Provider")).not.toBeInTheDocument();
     expect(screen.queryByText("Model")).not.toBeInTheDocument();
-    expect(screen.queryByText("Execution Mode")).not.toBeInTheDocument();
   });
 
   it("autonomy level is disabled", async () => {
@@ -270,7 +280,7 @@ describe("InternalAgentSettingsPage", () => {
     });
   });
 
-  it("execution tab save calls updateConfig with CLI-only fields (Sprint 2A)", async () => {
+  it("execution tab save calls updateConfig with execution fields", async () => {
     const user = userEvent.setup();
     renderWithProviders(<InternalAgentSettingsPage />);
     await waitFor(() => {
@@ -279,8 +289,10 @@ describe("InternalAgentSettingsPage", () => {
     await user.click(screen.getByText("Save"));
     await waitFor(() => {
       expect(apiMock.updateConfig).toHaveBeenCalledWith("comp-1", {
-        executionMode: "cli",
-        cliTool: "claude_cli",
+        executionMode: "api",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        cliTool: undefined,
       });
     });
   });

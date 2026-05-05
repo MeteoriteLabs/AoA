@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Db } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
 import { trustScoreService } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
 

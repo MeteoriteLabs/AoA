@@ -24,17 +24,17 @@ import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
 import { and, desc, eq, gte } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
-import { companies, pluginLogs, pluginWebhookDeliveries, pluginCompanySettings, plugins } from "@armyofagents/db";
+import type { Db } from "@paperclipai/db";
+import { companies, pluginLogs, pluginWebhookDeliveries, pluginCompanySettings, plugins } from "@paperclipai/db";
 import type {
   PluginStatus,
   PaperclipPluginManifestV1,
   PluginBridgeErrorCode,
   PluginLauncherRenderContextSnapshot,
-} from "@armyofagents/shared";
+} from "@paperclipai/shared";
 import {
   PLUGIN_STATUSES,
-} from "@armyofagents/shared";
+} from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import { getPluginUiContributionMetadata, pluginLoader } from "../services/plugin-loader.js";
@@ -47,12 +47,10 @@ import type { PluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
-import type { ToolRunContext } from "@armyofagents/plugin-sdk";
-import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@armyofagents/plugin-sdk";
+import type { ToolRunContext } from "@paperclipai/plugin-sdk";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
-import { logger } from "../middleware/logger.js";
-import { pluginRollbackService } from "../services/plugin-rollback.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -120,26 +118,26 @@ const REPO_ROOT = path.resolve(__dirname, "../../..");
 
 const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   {
-    packageName: "@armyofagents/plugin-hello-world-example",
-    pluginKey: "aoa.hello-world-example",
+    packageName: "@paperclipai/plugin-hello-world-example",
+    pluginKey: "paperclip.hello-world-example",
     displayName: "Hello World Widget (Example)",
-    description: "Reference UI plugin that adds a simple Hello World widget to the AoA dashboard.",
+    description: "Reference UI plugin that adds a simple Hello World widget to the Paperclip dashboard.",
     localPath: "packages/plugins/examples/plugin-hello-world-example",
     tag: "example",
   },
   {
-    packageName: "@armyofagents/plugin-file-browser-example",
-    pluginKey: "aoa-file-browser-example",
+    packageName: "@paperclipai/plugin-file-browser-example",
+    pluginKey: "paperclip-file-browser-example",
     displayName: "File Browser (Example)",
     description: "Example plugin that adds a Files link in project navigation plus a project detail file browser.",
     localPath: "packages/plugins/examples/plugin-file-browser-example",
     tag: "example",
   },
   {
-    packageName: "@armyofagents/plugin-kitchen-sink-example",
-    pluginKey: "aoa-kitchen-sink-example",
+    packageName: "@paperclipai/plugin-kitchen-sink-example",
+    pluginKey: "paperclip-kitchen-sink-example",
     displayName: "Kitchen Sink (Example)",
-    description: "Reference plugin that demonstrates the current AoA plugin API surface, bridge flows, UI extension surfaces, jobs, webhooks, tools, streams, and trusted local workspace/process demos.",
+    description: "Reference plugin that demonstrates the current Paperclip plugin API surface, bridge flows, UI extension surfaces, jobs, webhooks, tools, streams, and trusted local workspace/process demos.",
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
     tag: "example",
   },
@@ -1476,16 +1474,6 @@ export function pluginRoutes(
       return;
     }
 
-    // M4.D7: Save a snapshot of the current version BEFORE upgrading so we can
-    // auto-revert if the upgrade fails.
-    const rollback = pluginRollbackService(db);
-    await rollback.saveSnapshot(
-      plugin.id,
-      plugin.version,
-      plugin.packageName,
-      plugin.manifestJson,
-    );
-
     try {
       // Upgrade the plugin - this would typically:
       // 1. Download the new version
@@ -1503,23 +1491,6 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
       res.json(result);
     } catch (err) {
-      // M4.D7 self-healing: upgrade failed — auto-revert to the snapshot we just saved.
-      const target = await rollback.getRollbackTarget(plugin.id).catch(() => null);
-      if (target) {
-        try {
-          await loader.installPlugin({ packageName: target.packageName, version: target.version });
-          await lifecycle.load(plugin.id);
-          logger.info(
-            { pluginId: plugin.id, revertedTo: target.version },
-            "plugin.upgrade: auto-reverted after failed upgrade",
-          );
-        } catch (revertErr) {
-          logger.error(
-            { err: revertErr, pluginId: plugin.id },
-            "plugin.upgrade: auto-revert also failed — plugin may be in broken state",
-          );
-        }
-      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
@@ -2244,91 +2215,6 @@ export function pluginRoutes(
       health,
       checkedAt: new Date().toISOString(),
     });
-  });
-
-  // ===========================================================================
-  // Plugin version history and rollback routes
-  // ===========================================================================
-
-  /**
-   * GET /api/plugins/:pluginId/version-history
-   *
-   * List saved version snapshots for a plugin (oldest first).
-   * These snapshots are saved before each upgrade and can be used
-   * to roll back to a previous version.
-   *
-   * Response: PluginVersionSnapshot[]
-   * Errors: 404 if plugin not found
-   */
-  router.get("/plugins/:pluginId/version-history", async (req, res) => {
-    assertBoard(req);
-    const { pluginId } = req.params;
-
-    const plugin = await resolvePlugin(registry, pluginId);
-    if (!plugin) {
-      res.status(404).json({ error: "Plugin not found" });
-      return;
-    }
-
-    const rollback = pluginRollbackService(db);
-    const snaps = await rollback.listSnapshots(plugin.id);
-    res.json(snaps);
-  });
-
-  /**
-   * POST /api/plugins/:pluginId/rollback
-   *
-   * Roll back a plugin to its most recent saved version snapshot.
-   *
-   * Re-installs the previous version using the saved packageName and version.
-   * Returns 404 if no snapshot is available.
-   *
-   * Response: PluginRecord (updated plugin after rollback)
-   * Errors:
-   * - 404 if plugin not found or no rollback snapshot available
-   * - 400 if re-installation fails
-   */
-  router.post("/plugins/:pluginId/rollback", async (req, res) => {
-    assertBoard(req);
-    const { pluginId } = req.params;
-
-    const plugin = await resolvePlugin(registry, pluginId);
-    if (!plugin) {
-      res.status(404).json({ error: "Plugin not found" });
-      return;
-    }
-
-    const rollback = pluginRollbackService(db);
-    const target = await rollback.getRollbackTarget(plugin.id);
-    if (!target) {
-      res.status(404).json({ error: "No rollback snapshot available" });
-      return;
-    }
-
-    try {
-      // Re-install the previous version
-      await loader.installPlugin({
-        packageName: target.packageName,
-        version: target.version,
-      });
-      await lifecycle.load(plugin.id);
-      const updated = await registry.getById(plugin.id);
-      if (!updated) {
-        res.status(500).json({ error: "Plugin not found after rollback" });
-        return;
-      }
-      await logPluginMutationActivity(req, "plugin.rolledback", plugin.id, {
-        pluginId: plugin.id,
-        pluginKey: plugin.pluginKey,
-        previousVersion: plugin.version,
-        rolledBackTo: target.version,
-      });
-      publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "rolledback" } });
-      res.json(updated);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(400).json({ error: `Rollback failed: ${message}` });
-    }
   });
 
   return router;

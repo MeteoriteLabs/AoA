@@ -1,7 +1,18 @@
 // ui/src/components/workspace/ChatbarControls.tsx
+import { useQuery } from "@tanstack/react-query";
 import { Paperclip, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { shortModelName } from "./adapter-utils";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { agentsApi } from "../../api/agents";
+import { useCompany } from "../../context/CompanyContext";
+import { queryKeys } from "../../lib/queryKeys";
+import { isApiAdapter, shortModelName } from "./adapter-utils";
 
 interface ChatbarControlsProps {
   adapterType: string;
@@ -9,13 +20,7 @@ interface ChatbarControlsProps {
   defaultModel: string | null;
   /** Currently selected model override */
   selectedModel: string | null;
-  /**
-   * Retained for caller compatibility. Sprint 2A removed the API-mode model
-   * picker; CLI tools manage their own model selection. Still accepted by
-   * WorkspaceTimeline so it can wire up `setModelOverride`, but not called
-   * from within this component anymore. Optional from Sprint 2A onward.
-   */
-  onModelChange?: (model: string | null) => void;
+  onModelChange: (model: string | null) => void;
   onSend: () => void;
   onAttach?: () => void;
   sendDisabled: boolean;
@@ -26,13 +31,22 @@ export function ChatbarControls({
   adapterType,
   defaultModel,
   selectedModel,
+  onModelChange,
   onSend,
   onAttach,
   sendDisabled,
   sendPending,
 }: ChatbarControlsProps) {
-  // Sprint 2A: API adapters removed — model is read-only now; CLI tool picks
-  // its own model so onModelChange is no longer wired.
+  const { selectedCompanyId } = useCompany();
+  const showModelSelector = isApiAdapter(adapterType);
+
+  const { data: adapterModels } = useQuery({
+    queryKey: queryKeys.agents.adapterModels(selectedCompanyId!, adapterType),
+    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType),
+    enabled: !!selectedCompanyId && showModelSelector,
+    staleTime: 60_000, // Models don't change often
+  });
+
   const effectiveModel = selectedModel ?? defaultModel ?? "";
   const displayModel = effectiveModel ? shortModelName(effectiveModel) : adapterType;
 
@@ -52,10 +66,34 @@ export function ChatbarControls({
           <Paperclip className="h-3.5 w-3.5" />
         </button>
 
-        {/* Read-only model label — CLI adapters manage model selection themselves */}
-        <span className="text-[11px] text-muted-foreground px-1.5 py-0.5 bg-muted/40 rounded">
-          {displayModel}
-        </span>
+        {/* Model selector (API adapters only) or read-only label */}
+        {showModelSelector && adapterModels && adapterModels.length > 0 ? (
+          <Select
+            value={effectiveModel}
+            onValueChange={(val) => {
+              // If they select the default, clear the override
+              onModelChange(val === defaultModel ? null : val);
+            }}
+          >
+            <SelectTrigger size="sm" className="h-6 text-[11px] border-none bg-muted/40 hover:bg-muted/60 px-2 gap-1 min-w-0 max-w-[120px]">
+              <SelectValue>{displayModel}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {adapterModels.map((m) => (
+                <SelectItem key={m.id} value={m.id} className="text-xs">
+                  {shortModelName(m.id)}
+                  {m.id === defaultModel && (
+                    <span className="ml-1 text-muted-foreground">(default)</span>
+                  )}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <span className="text-[11px] text-muted-foreground px-1.5 py-0.5 bg-muted/40 rounded">
+            {displayModel}
+          </span>
+        )}
       </div>
 
       {/* Spacer */}

@@ -2,8 +2,7 @@ import { Router } from "express";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { execFile, spawn } from "node:child_process";
-import { z } from "zod";
+import { execFile } from "node:child_process";
 
 const SKIP_DIRS = new Set([
   "node_modules",
@@ -146,36 +145,6 @@ export function filesystemRoutes() {
   // Get home directory (useful for client-side path suggestions)
   router.get("/filesystem/home", (_req, res) => {
     res.json({ homePath: os.homedir(), platform: process.platform });
-  });
-
-  // Open a path in the OS file manager (Finder / Explorer / xdg-open)
-  const revealBodySchema = z.object({ path: z.string().min(1) });
-
-  router.post("/filesystem/reveal", async (req, res) => {
-    const parsed = revealBodySchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid path" });
-      return;
-    }
-
-    const target = path.resolve(parsed.data.path);
-
-    try {
-      await fs.access(target);
-    } catch {
-      res.status(404).json({ error: "Path does not exist" });
-      return;
-    }
-
-    const cmd =
-      os.platform() === "darwin"
-        ? "open"
-        : os.platform() === "win32"
-          ? "explorer"
-          : "xdg-open";
-    const child = spawn(cmd, [target], { detached: true, stdio: "ignore" });
-    child.unref();
-    res.json({ ok: true });
   });
 
   // List available drives (Windows) or filesystem roots (macOS/Linux)

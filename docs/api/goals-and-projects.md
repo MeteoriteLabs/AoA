@@ -43,14 +43,6 @@ PATCH /api/goals/{goalId}
 }
 ```
 
-### Delete Goal
-
-```
-DELETE /api/goals/{goalId}
-```
-
-Permanently removes the goal. Returns the deleted goal object. Requires `founder` or `team_lead` role.
-
 ## Projects
 
 Projects group related issues toward a deliverable. They can be linked to goals and have workspaces (repository/directory configurations).
@@ -76,7 +68,7 @@ POST /api/companies/{companyId}/projects
 {
   "name": "Auth System",
   "description": "End-to-end authentication",
-  "projectIds": ["{projectId}"],
+  "goalIds": ["{goalId}"],
   "status": "planned",
   "workspace": {
     "name": "auth-repo",

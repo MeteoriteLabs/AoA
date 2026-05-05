@@ -3,7 +3,7 @@
  * These are pure functions with no database dependencies — they operate on
  * pre-fetched EditRecord arrays and return DetectedPattern arrays.
  */
-import type { MemoryFeedbackPatternType } from "@armyofagents/shared";
+import type { MemoryFeedbackPatternType } from "@paperclipai/shared";
 
 // ── Types ───────────────────────────────────────────────────────────────
 

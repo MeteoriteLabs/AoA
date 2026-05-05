@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
-// Mock @armyofagents/db — Proxy-based tables (project standard pattern)
+// Mock @paperclipai/db — Proxy-based tables (project standard pattern)
 // ---------------------------------------------------------------------------
-vi.mock("@armyofagents/db", () => {
+vi.mock("@paperclipai/db", () => {
   const makeTable = (name: string) => {
     const cols: Record<string, symbol> = {};
     return new Proxy({} as Record<string, unknown>, {

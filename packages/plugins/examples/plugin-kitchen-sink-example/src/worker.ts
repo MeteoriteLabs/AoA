@@ -20,8 +20,8 @@ import {
   type ScopeKey,
   type ToolResult,
   type ToolRunContext,
-} from "@armyofagents/plugin-sdk";
-import type { Goal, Issue } from "@armyofagents/shared";
+} from "@paperclipai/plugin-sdk";
+import type { Goal, Issue } from "@paperclipai/shared";
 import {
   DEFAULT_CONFIG,
   JOB_KEYS,

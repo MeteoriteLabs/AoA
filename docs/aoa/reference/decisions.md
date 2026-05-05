@@ -34,7 +34,7 @@ Decisions made during product design and development. Do not relitigate unless e
 | 11 | Departments + Projects coexist (same table, type field) | Departments are permanent orgs, Projects are temporary. Same mechanics, different lifespan. |
 | 12 | Vision & Mission are company-level text fields | Not goals, not memory items. Strategic anchors stored on companies table. |
 | 13 | Goals must belong to at least one department or project via `project_goals` join table | No floating company-level goals. Use existing many-to-many join table, NOT a new projectId column on goals. A goal CAN span multiple departments/projects. |
-| 14 | MCP inbound with authenticated write permission may create tasks directly; `debrief-push` remains for unstructured content | RBAC + per-user keys provide the quality gate that originally lived in the Discussion pipeline. **[Revised 2026-04-21 — see "Decision #14 (revised 2026-04-21)" entry below for full wording. Original V2.5 wording: "Debrief pipeline" → "Discussion pipeline." See DA-3.]** |
+| 14 | MCP always routes through Debrief pipeline | Prevents dirty data from external LLM conversations. Quality gate. **[Updated V2.5: "Debrief pipeline" → "Discussion pipeline." MCP input creates discussion entries, never raw tasks. See DA-3.]** |
 | 15 | Memory is approval-gated | Founder is sole gatekeeper. Agents suggest, founder approves. **[Extended V2.5: see #52 for team lead extension]** |
 | 16 | Agents have read-only Memory access | Receive context at execution time, cannot write directly. |
 | 17 | Tasks don't care who does them | Same task model for humans and agents. Experience adapts. |
@@ -174,7 +174,6 @@ Decisions made during product design and development. Do not relitigate unless e
 | 88 | Run summary comments auto-generated after each heartbeat run | Auto-generated task comments show duration, token usage, cost, outcome, and detected files. Uses existing `issue_comments` table. Opt-out via `runtimeConfig.autoRunSummary`. Files truncated to 10 shown + "+N more". |
 | 89 | _(not documented — referenced by count only)_ | — |
 | 90 | _(not documented — referenced by count only)_ | — |
-| 91 | AoA drops API adapters (`claude_api`, `openai_api`, `gemini_api`) in favor of CLI-only agent execution | Single-turn API adapters duplicated the multi-turn loop logic CLI adapters already handle correctly. Commander migrates to CLI default (`claude_cli` / `codex` / `opencode`) — no per-company LLM API key required. Data migration (heuristic D): `UPDATE internal_agent_config SET execution_mode='cli', cli_tool=COALESCE(cli_tool, 'claude_cli') WHERE execution_mode='api'`. `internal_agent_config.provider`/`.model` columns stay dormant for rollback safety. `server/src/services/internal-agent/providers/` is preserved as an internal SDK util for extraction + embeddings until the team-under-Commander architecture replaces it. V3 Hosted deployment revised to CLI-in-container. Per-turn run tracking / cost / token accounting / tool confirmations are deferred to the same future sprint. Sprint 2A (2026-04-24). Deferred follow-ups: (a) rehome ~14 non-API-mode tests from the deleted `v2.5-edge-cases-qa.test.ts` (discussion service, proactive checks, goal scope, reminders, approval double-protection) into domain-matching files; (b) add a behavioral agent-loop shell test to complement the import-level static guard; (c) delete or finish the orphaned `/internal-agent/confirm` stub route. |
 
 ---
 
@@ -429,146 +428,3 @@ New table: `internal_agent_runs` with triggerType (conversation / proactive / ev
 **Why separate from worker heartbeat:** Different execution model (conversational + event-driven vs. task-based), no queue, no atomic checkout, no adapter abstraction, no wakeup/assignment lifecycle.
 
 **Background processing:** Event triggers fire even when founder is not in app. Results queued as Inbox notifications. Greeting on next login: "I processed 2 new discussions while you were away."
-
----
-
-## Decision #14 (revised 2026-04-21)
-
-**Status:** Revised. Original locked version superseded.
-
-**Rule:** MCP inbound with authenticated per-user write permission may create tasks, update tasks, and add comments directly. `debrief-push` remains the alternative tool for unstructured content that should pass through AoA's extraction pipeline (meeting notes, emails, paste-dumps). Anonymous / unauthenticated MCP input (if ever exposed) still routes through Discussion pipeline.
-
-**Reasoning:** The original Decision #14 was locked before AoA had per-user MCP keys with RBAC. Discussion-extraction served as the quality gate for external input. With authenticated per-user keys bound to company + user role, the quality gate is now the RBAC layer plus the caller's explicit tool choice. Teammates using external MCP clients (Claude Code, Cursor, etc.) should not need a two-step extraction for tasks they know they want to create.
-
-**What stays the same:**
-- `debrief-push` continues to route through Discussion pipeline
-- Extraction-approval workflow for Discussion items unchanged
-- RBAC scoping (founder / team_lead / team_member) enforced on all MCP writes
-
-**What changes:**
-- `create-task`, `update-task`, `add-comment` tools become first-class MCP writes
-- Callers with write-permission role can bypass Discussion for direct task creation
-
-**Original wording (for reference):** "MCP inbound always routes through Discussion pipeline — never create raw tasks from MCP input."
-
----
-
-## Decision (annotation, 2026-04-21): MCP `upsert-task-document` ≡ artifact operations
-
-Paperclip's `paperclipUpsertIssueDocument` tool wraps a markdown body (identified by a `key`) attached to an issue, with an append-only revision history. AoA's equivalent substrate is the existing `artifacts` + `artifact_versions` subsystem, with a 1:1 link from task to artifact via `issues.artifactId`. Phase C (Task C.4) maps Paperclip's document tool surface onto AoA's artifact subsystem:
-
-- `upsert-task-document` → if the task's artifact exists and is of type `document`, add a new immutable version; else create a new artifact of type `document` and link it via `issues.artifactId`
-- `list-task-documents` → return the task's document artifact (0 or 1 item — AoA has a single artifact per task, unlike Paperclip's per-key multiplicity)
-- `get-task-document` → return the artifact + its latest version (content + metadata)
-- `list-task-document-revisions` → return all artifact versions ordered ascending by `versionNumber` (immutable history)
-- `restore-task-document-revision` → create a **new** artifact version whose content is copied from the specified older version; the old version is **never mutated** (preserves Decisions #43 / #45 — artifact versions are immutable)
-
-**Surface divergence from Paperclip:** AoA does not accept Paperclip's `key` parameter because its data model is 1:1 task↔artifact. If Paperclip-style per-key multiplicity is ever needed, it would require a schema change (e.g., a `task_documents` junction table), not a tool-surface change.
-
-**RBAC:** All five tools enforce company isolation (cross-company access returns 404) and — for scoped users — project-scope membership via the task's `projectId`. Writes additionally require `permissionsSvc.canAccessEntity("artifact", "update", { departmentId: task.projectId })`.
-
----
-
-## Decision #92 — Defer Phase 6 Hermes wire-field rename to upstream coordination
-
-**Status:** Deferred (locked 2026-04-26)
-
-**Context:** The Paperclip → AoA rename plan (`docs/superpowers/plans/2026-04-25-paperclip-to-aoa-rename.md`) defined Phase 6 as renaming `paperclip_session_key` / `paperclip_stream_transport` JSON field names in the OpenClaw / Hermes wire payload (sent during agent execution from `packages/adapters/openclaw/src/server/execute-webhook.ts` and `packages/adapters/openclaw/src/server/execute-sse.ts`). Hermes is owned by an external project; renaming our send-side without coordinating their receive-side breaks the integration for any operator running an older Hermes build.
-
-**Decision:** Phase 6 stays deferred until either (a) the Hermes maintainer confirms readiness for a coordinated rename, or (b) a Hermes adapter version ships that accepts both old and new names (one-release migration window), the minimum-required Hermes version in `package.json` is bumped to that release, and the old field names are removed from the execute files.
-
-**Consequences:**
-- Existing Hermes wire fields keep `paperclip_session_key` / `paperclip_stream_transport` names. Documented as wire-compat surface #8 in `docs/aoa/reference/wire-compat.md`.
-- Brand-check CI (currently 9 guards in `.github/workflows/pr.yml`) must continue to allow `paperclip` matches inside `packages/adapters/openclaw/**`.
-- Re-open this decision when an upstream coordination window opens. Owner: whoever picks up the Hermes adapter or OpenClaw integration work next.
-
-**Reference:** Original Phase 6 spec lives in the rename plan; do not re-litigate without reading it first. Wire-compat surface #8 in `wire-compat.md` cross-references this decision.
-
----
-
-## Decision #93 — Skip standalone `@paperclipai/mcp-server` package port
-
-**Status:** Locked (2026-04-26)
-
-**Context:** Paperclip released `packages/mcp-server` — a stdio-based MCP server that wraps the Paperclip REST API for external MCP clients (e.g., Claude Desktop, Cursor) to call Paperclip from outside a running instance. It's a separate npm package (~1,148 LOC) that ships with its own bin entry and serves as a bridge: external MCP client → stdio → REST → Paperclip backend.
-
-**Decision:** Do NOT port. AoA's existing in-server MCP at `server/src/mcp/server.ts` already exposes 31 RBAC-scoped, rate-limited tools directly to clients connected to the running AoA backend (read tools, write tools, document tools, approval tools — all per-user-keyed via `mcp_api_keys`). The standalone wrapper would only matter when the MCP client cannot reach AoA's HTTP endpoint — a use case AoA's local-first deployment model does not currently have.
-
-**Reasoning:**
-- AoA's deployment model assumes the client and server run on the same host or LAN. The in-server MCP serves that case directly without a stdio bridge.
-- Maintaining the standalone package would mean tracking Paperclip's tool surface separately from AoA's (which has diverged — AoA has 31 tools vs. Paperclip's tool count, with different RBAC scoping and AoA-specific tools like `debrief-push` mapped to discussions).
-- The performance + simplicity argument for stdio-MCP doesn't hold when AoA's MCP is already a single in-process call away.
-
-**Revisit when:** AoA grows a multi-tenant cloud deployment where external Claude Desktop / Cursor / etc. clients on a different machine need to talk to a hosted instance. At that point, port the standalone package and rebrand: `@paperclipai/mcp-server` → `@armyofagents/mcp-server`, bin `paperclip-mcp-server` → `aoa-mcp-server`, env vars stay as wire-protocol contracts (`PAPERCLIP_API_KEY` etc.) per Decision #92's rationale.
-
-**Reference:** Plan `docs/superpowers/plans/2026-04-26-upstream-paperclip-resync.md` (Tier 5 / D1 skipped).
-
----
-
-## Decision #94 — Skip Paperclip `pi-local` skill bin/ PATH support port
-
-**Status:** Locked (2026-04-26)
-
-**Context:** Paperclip commit `854fa817` adds skill `bin/` directories to the child process PATH for the `pi-local` adapter so AGENTS.md-invoked skill helpers (`paperclip-get-issue`, `paperclip-add-comment`, etc.) resolve without absolute paths during agent CLI runs.
-
-**Decision:** Do NOT port. AoA's adapter set is `claude_local | opencode_local | openclaw | http | process | cursor | codex_local | hermes_local | gemini_local`. None of these are Paperclip's `pi-local`. Skill helpers via the PATH-prepending mechanism are not part of AoA's heartbeat protocol today — agents communicate with the AoA backend via the in-server MCP, not via shelling out to skill-bundled CLI binaries.
-
-**Reasoning:**
-- The Paperclip change targets a specific adapter (`pi-local`) that AoA does not have and has no plan to add (Sprint 2A / Decision #91 removed API-mode adapters; the adapter list is curated).
-- AoA's equivalent agent-tool surface is the in-server MCP exposed via per-user keys — agents call MCP tools, not bundled CLI binaries.
-- Adding generic skill-bin PATH support to AoA's other adapters (claude_local, codex_local, etc.) would be feature-creep without a concrete agent workflow that needs it.
-
-**Revisit when:** AoA introduces a similar skill-helper protocol (e.g., bundled CLI binaries that run alongside the agent) or adopts a `pi-local`-family adapter. At that point the PATH-prepending logic in the existing adapter `execute.ts` files is the porting site.
-
-**Reference:** Plan `docs/superpowers/plans/2026-04-26-upstream-paperclip-resync.md` (Tier 5 / D5 skipped).
-
----
-
-## Decision #95 — Defer memory access model (Phase 6.2d) until team-under-Commander work has a concrete consumer
-
-**Status:** Deferred (locked 2026-05-04)
-
-**Context:** Phase 6.2 of the memory page redesign sketched (in `docs/superpowers/specs/2026-05-03-memory-layer-first-redesign-design.md` §11) a `MemoryAccessService` with `ActorContext` + `MemoryScope` enforcement — three caller classes (external MCP, Commander, worker agents) with permission ceilings, a unified scope filter type, and worker-default restrictions (Identity + own-dept Domain + own-task Working + tagged-shared). Phases 6.2a / 6.2b / 6.2c / 6.2e / 6.2f shipped the user-facing redesign; 6.2d (the access model implementation) was scoped as the final architectural slice.
-
-During the 6.2d brainstorm (2026-05-04), the founder pushed for a more aggressive design: **no pre-baked context for any agent class** — full MCP for everything, including worker agents. Workers would receive only their task description + memory tools (`memory.search`, `memory.list`, `memory.create_working_item`) + a default skill prompt instructing them to fetch context as needed. Commander stays tool-based (already is). External MCP stays tool-based (already is). The pre-baked heartbeat context package shrinks dramatically or disappears.
-
-**Decision:** Defer the entire 6.2d implementation. Write only the design notes; do not build until a concrete consumer exists.
-
-**Reasoning:**
-1. **No live consumer for worker scoping today.** Worker adapters (`claude_local`, `codex_local`, `opencode_local`, `openclaw`, `cursor`, `hermes_local`, `gemini_local`, `http`, `process`) do not have memory tools wired up. They consume the heartbeat-built context package and have no way to call `memory.search` mid-task. Adding tools to each adapter is part of the team-under-Commander architecture (Decision #91), not 6.2d.
-2. **Commander already works.** Commander's 30 tools include memory tools today. It uses them. Phase 6.2d would not add functionality there — at best it would refactor the existing scope filter to a unified type.
-3. **External MCP already works.** Tokens authenticate, get full company access. The `folderPath` filter could be added independently as a small polish slice if the founder wants it (see Revisit options).
-4. **Speculative design risk.** Building the access model without a worker consumer means we'd be guessing at usage patterns sub-agents will reveal. When team-under-Commander lands, we'd likely refactor — better to design alongside the consumer.
-5. **Founder's full-MCP preference reinforces this.** The aggressive "no pre-bake" model REQUIRES adapters to have memory tools. That's the team-under-Commander work.
-
-**What we're NOT doing yet (and why):**
-- `MemoryAccessService` + `ActorContext` types — no consumer that exercises them.
-- Worker scope ceiling enforcement — no worker calls memory tools today.
-- `sharedWithAgentIds` / tagged-sharing — no agent-tool surface to share into.
-- Read audit log — workers don't read memory directly.
-- Heartbeat refactor — invisible behavior change with no immediate upside.
-
-**What stays valid in the §11 sketch (preserved for future):**
-- Three consumer classes (external MCP / Commander / worker agents) with different default ceilings.
-- Worker agents get the most restricted default.
-- `MemoryScope` unified type covering layer + departmentId + folderPath + goalId + taskId.
-- `ActorContext` derived from auth middleware (not caller-supplied) — caller can narrow within ceiling, never escalate.
-- Future: per-agent or per-role grants via `sharedWithAgentIds` for explicit cross-scope access.
-
-**Founder's revised vision (captured for future implementation):**
-- Workers: no pre-bake. Task description + memory tools only. Default skill instructs use of `memory.search`, `memory.list`, `memory.create_working_item`. Working memory items lifecycle: archive on task close (current 7-day TTL behavior — keep).
-- Commander: full MCP, no pre-bake. Already operating this way.
-- External MCP: full MCP, token-authed. Already operating this way.
-
-**Open questions to resolve when this is picked back up:**
-1. Worker default scope precise rules (Active Context inclusion logic — by goal lineage, or excluded until tagged?).
-2. `sharedWithAgentIds` design: per-agent UUID grants vs role tags vs both.
-3. Read audit log: when, what, where (Commander's run summary? Settings? Inbox?).
-4. Migration path for existing MCP clients passing `{layer}` only after the unified type lands.
-5. Heartbeat context builder: shrink to bare minimum (task + working memory) when adapters gain tools, or eliminate entirely?
-
-**Revisit when:**
-- Team-under-Commander work begins (Decision #91 follow-up). At that point, sub-agents will need MCP tool access and the access model designs alongside the actual consumer.
-- OR: founder wants the `folderPath` filter exposed via Commander or external MCP today — that's a small standalone slice (~½ day) without the broader access-ceiling infrastructure.
-
-**Reference:** Spec `docs/superpowers/specs/2026-05-03-memory-layer-first-redesign-design.md` §11 (sketch + open questions). Brainstorm conversation logged 2026-05-04. Phase 6.2 shipped a/b/c/e/f without 6.2d.

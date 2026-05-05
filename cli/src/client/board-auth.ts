@@ -63,7 +63,7 @@ function normalizeApiBase(apiBase: string): string {
 export function resolveBoardAuthStorePath(overridePath?: string): string {
   if (overridePath?.trim()) return path.resolve(overridePath.trim());
   if (process.env.AOA_AUTH_STORE?.trim()) return path.resolve(process.env.AOA_AUTH_STORE.trim());
-  if (process.env.AOA_AUTH_STORE?.trim()) return path.resolve(process.env.AOA_AUTH_STORE.trim());
+  if (process.env.PAPERCLIP_AUTH_STORE?.trim()) return path.resolve(process.env.PAPERCLIP_AUTH_STORE.trim());
   return resolveDefaultCliAuthPath();
 }
 
@@ -100,7 +100,7 @@ export function readBoardAuthStore(storePath?: string): BoardAuthStore {
 
 export function writeBoardAuthStore(store: BoardAuthStore, storePath?: string): void {
   const filePath = resolveBoardAuthStorePath(storePath);
-  // NOTE: mkdirSync uses default umask permissions (typically 0o755 on Linux), so the ~/.aoa
+  // NOTE: mkdirSync uses default umask permissions (typically 0o755 on Linux), so the ~/.paperclip
   // directory itself is world-listable — other local users can see that auth.json exists. The file
   // contents are protected by the 0o600 mode below. On multi-user servers, consider setting the
   // directory mode to 0o700 as well.

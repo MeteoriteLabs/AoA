@@ -23,7 +23,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Play, Pause, MoreHorizontal, Settings, History } from "lucide-react";
-import type { Agent, AgentTrustScore } from "@armyofagents/shared";
+import type { Agent, AgentTrustScore } from "@paperclipai/shared";
 import { TrustScoreBadge } from "./TrustScoreBadge";
 
 interface AgentCardProps {
@@ -98,7 +98,6 @@ export const AgentCard = memo(function AgentCard({ agent, liveRun, currentTaskTi
                 size="icon-xs"
                 onClick={() => agentAction.mutate(isPaused ? "resume" : "pause")}
                 disabled={agentAction.isPending || agent.status === "pending_approval" || agent.status === "terminated"}
-                aria-label={isPaused ? `Resume ${agent.name}` : `Pause ${agent.name}`}
               >
                 {isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
               </Button>
@@ -108,7 +107,7 @@ export const AgentCard = memo(function AgentCard({ agent, liveRun, currentTaskTi
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-xs" aria-label={`More actions for ${agent.name}`}>
+              <Button variant="ghost" size="icon-xs">
                 <MoreHorizontal className="h-3.5 w-3.5" />
               </Button>
             </DropdownMenuTrigger>

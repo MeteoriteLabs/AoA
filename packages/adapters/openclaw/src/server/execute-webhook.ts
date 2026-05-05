@@ -1,4 +1,4 @@
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@armyofagents/adapter-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   appendWakeText,
   appendWakeTextToOpenResponsesInput,
@@ -75,7 +75,7 @@ function buildOpenResponsesWebhookBody(input: {
     input: openResponsesInput,
     metadata: {
       ...toStringRecord(state.payloadTemplate.metadata),
-      ...state.aoaEnv,
+      ...state.paperclipEnv,
       paperclip_session_key: state.sessionKey,
       paperclip_stream_transport: "webhook",
     },
@@ -153,11 +153,11 @@ function buildLegacyWebhookBody(input: {
     stream: false,
     sessionKey: state.sessionKey,
     text: payloadText,
-    aoa: {
+    paperclip: {
       ...state.wakePayload,
       sessionKey: state.sessionKey,
       streamTransport: "webhook",
-      env: state.aoaEnv,
+      env: state.paperclipEnv,
       context,
     },
   };

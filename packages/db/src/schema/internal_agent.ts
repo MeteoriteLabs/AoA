@@ -23,15 +23,10 @@ export const internalAgentConfig = pgTable(
       .unique()
       .references(() => companies.id, { onDelete: "cascade" }),
 
-    // Execution mode — Sprint 2A (Decision #91) made CLI the only dispatched
-    // path. 'api' is still a valid historical value in existing rows and the
-    // column stays for rollback safety, but agent-loop.ts no longer branches
-    // on it — every Commander turn goes through cli-mode.ts.
-    executionMode: text("execution_mode").notNull().default("cli"), // 'api' | 'cli'
+    // Execution mode
+    executionMode: text("execution_mode").notNull().default("api"), // 'api' | 'cli'
 
-    // Legacy API-mode settings (dormant post-Sprint-2A, kept for rollback
-    // safety and for the `model` column's potential future reuse as a CLI
-    // flag). Not read by the dispatch path.
+    // API mode settings
     provider: text("provider").default("anthropic"), // 'anthropic' | 'openai' | 'google'
     model: text("model").default("claude-sonnet-4-6"),
 

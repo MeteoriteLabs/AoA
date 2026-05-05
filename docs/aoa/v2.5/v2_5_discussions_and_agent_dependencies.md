@@ -92,14 +92,14 @@ packages/shared
   └── New constants (extraction types, agent capabilities, trigger sources)
 
 server
-  └── Imports from @armyofagents/db (new tables)
-  └── Imports from @armyofagents/shared (new types, validators)
+  └── Imports from @paperclipai/db (new tables)
+  └── Imports from @paperclipai/shared (new types, validators)
   └── New services: discussions.ts, internal-agent/*, workflow-templates.ts
   └── New routes: discussions.ts, internal-agent.ts, workflow-templates.ts
   └── Modified: MCP handlers, search service, inbox/notifications
 
 ui
-  └── Imports from @armyofagents/shared (new types)
+  └── Imports from @paperclipai/shared (new types)
   └── New pages: Discussions.tsx, DiscussionDetail.tsx
   └── New components: InternalAgentPanel.tsx, DiscussionCaptureModal.tsx
   └── New API clients: discussions.ts, internal-agent.ts

@@ -1,4 +1,4 @@
-import type { AgentTrustScore } from "@armyofagents/shared";
+import type { AgentTrustScore } from "@paperclipai/shared";
 import { Info, TrendingDown, TrendingUp, Minus } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "../lib/utils";

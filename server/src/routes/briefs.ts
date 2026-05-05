@@ -1,6 +1,6 @@
 import { Router } from "express";
-import type { Db } from "@armyofagents/db";
-import { updateBriefSchema, updateBriefItemSchema, approveBriefSchema } from "@armyofagents/shared";
+import type { Db } from "@paperclipai/db";
+import { updateBriefSchema, updateBriefItemSchema, approveBriefSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { briefService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";

@@ -8,7 +8,6 @@ import {
   GitBranch,
   PanelRight,
   PanelRightClose,
-  Server,
   StickyNote,
   Terminal as TerminalIcon,
   Workflow,
@@ -17,16 +16,14 @@ import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ArtifactsSection } from "./sections/ArtifactsSection";
 import { ProcessSection } from "./sections/ProcessSection";
-import { ServicesSection } from "./sections/ServicesSection";
 import { NotesSection } from "./sections/NotesSection";
 import { ChangesContextSection } from "./sections/ChangesContextSection";
 import { LogsContextSection } from "./sections/LogsContextSection";
 import { PreviewContextSection } from "./sections/PreviewContextSection";
-import { MemorySection } from "./sections/MemorySection";
 import { GitPanel } from "./tools/GitPanel";
 import { TerminalPanel } from "./tools/TerminalPanel";
 import type { PreviewMode } from "./WorkspacePreviewPanel";
-import type { ArtifactWithVersions, ArtifactVersion, ExecutionWorkspace } from "@armyofagents/shared";
+import type { ArtifactWithVersions, ArtifactVersion, ExecutionWorkspace } from "@paperclipai/shared";
 
 function sectionKey(name: string) {
   return `aoa:workspace:section:${name}`;
@@ -70,16 +67,14 @@ interface SectionDef {
   label: string;
   defaultOpen: boolean;
   icon: LucideIcon;
-  requiresFunctionType?: string;
 }
 
 const PERMANENT_SECTIONS: SectionDef[] = [
   { name: "artifacts", label: "Artifacts", defaultOpen: true, icon: FileBox },
   { name: "process", label: "Process", defaultOpen: true, icon: Workflow },
-  { name: "services", label: "Services", defaultOpen: false, icon: Server, requiresFunctionType: "software_development" },
   { name: "memory", label: "Memory", defaultOpen: true, icon: Brain },
-  { name: "git", label: "Git", defaultOpen: true, icon: GitBranch, requiresFunctionType: "software_development" },
-  { name: "terminal", label: "Terminal", defaultOpen: false, icon: TerminalIcon, requiresFunctionType: "software_development" },
+  { name: "git", label: "Git", defaultOpen: true, icon: GitBranch },
+  { name: "terminal", label: "Terminal", defaultOpen: false, icon: TerminalIcon },
   { name: "notes", label: "Notes", defaultOpen: true, icon: StickyNote },
 ];
 
@@ -143,6 +138,8 @@ export function WorkspaceRightPanel({
     previewMode === "preview" ? "Preview" :
     null;
 
+  const showTerminal = functionType === "software_development";
+
   // ── Collapsed icon rail ──
   if (collapsed) {
     return (
@@ -164,7 +161,7 @@ export function WorkspaceRightPanel({
         <div className="w-6 h-px bg-border my-1" />
 
         {PERMANENT_SECTIONS.map((section) => {
-          if (section.requiresFunctionType && section.requiresFunctionType !== functionType) return null;
+          if ((section.name === "terminal" || section.name === "git") && !showTerminal) return null;
           const Icon = section.icon;
           return (
             <button
@@ -251,8 +248,8 @@ export function WorkspaceRightPanel({
           {/* ── Permanent sections (card style) ── */}
           <div className="px-2 space-y-2">
           {PERMANENT_SECTIONS.map((section) => {
-            // Skip sections that require a specific functionType
-            if (section.requiresFunctionType && section.requiresFunctionType !== functionType) return null;
+            // Skip git + terminal for non-software departments
+            if ((section.name === "terminal" || section.name === "git") && !showTerminal) return null;
 
             const SectionIcon = section.icon;
             const isOpen = expanded[section.name];
@@ -288,12 +285,9 @@ export function WorkspaceRightPanel({
                       {section.name === "process" && (
                         <ProcessSection issueId={issueId} companyId={companyId} companyPrefix={companyPrefix} />
                       )}
-                      {section.name === "services" && (
-                        <ServicesSection workspace={workspace} />
-                      )}
                       {section.name === "git" && (
                         <div className="px-3">
-                          <GitPanel workspace={workspace} issueId={issueId} />
+                          <GitPanel workspace={workspace} />
                         </div>
                       )}
                       {section.name === "terminal" && (
@@ -302,11 +296,15 @@ export function WorkspaceRightPanel({
                         </div>
                       )}
                       {section.name === "memory" && (
-                        <MemorySection
-                          issueId={issueId}
-                          companyId={companyId}
-                          companyPrefix={companyPrefix}
-                        />
+                        <div
+                          className="mx-3 p-3 rounded-md border border-dashed border-muted-foreground/30 flex items-start gap-2"
+                          data-testid="memory-placeholder"
+                        >
+                          <Brain className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                          <div className="text-xs text-muted-foreground">
+                            Memory integration coming soon — agent memory will appear here once configured
+                          </div>
+                        </div>
                       )}
                       {section.name === "notes" && (
                         <NotesSection workspaceId={workspace.id} />

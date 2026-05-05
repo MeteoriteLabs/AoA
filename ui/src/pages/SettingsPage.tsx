@@ -7,7 +7,7 @@ import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { costsApi } from "../api/costs";
 import { budgetsApi } from "../api/budgets";
-import type { ResolveBudgetIncidentInput } from "@armyofagents/shared";
+import type { ResolveBudgetIncidentInput } from "@paperclipai/shared";
 import { activityApi } from "../api/activity";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
@@ -16,11 +16,6 @@ import { goalsApi } from "../api/goals";
 import { mcpApi } from "../api/mcp";
 import { pluginsApi, type CompanyPluginSetting } from "../api/plugins";
 import { internalAgentApi } from "../api/internal-agent";
-import {
-  useMarketplaceSettings,
-  usePatchMarketplaceSettings,
-} from "../hooks/useMarketplaceSettings";
-import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, formatTokens, budgetProgressColor } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -33,15 +28,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Settings,
-  ArrowRight,
   Check,
   ChevronRight,
   DollarSign,
   History,
-  Plus,
   Puzzle,
   Upload,
   X,
@@ -53,15 +45,13 @@ import {
   HintIcon,
 } from "../components/agent-config-primitives";
 import { LLMProvidersSection } from "../components/LLMProvidersSection";
-import { GitHubIntegrationCard } from "../components/GitHubIntegrationCard";
 import { PageTabBar } from "../components/PageTabBar";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Identity } from "../components/Identity";
 import { StatusBadge } from "../components/StatusBadge";
 import { ActivityRow } from "../components/ActivityRow";
-import { CreateBudgetPolicyDialog } from "../components/finance/CreateBudgetPolicyDialog";
-import type { Agent } from "@armyofagents/shared";
+import type { Agent } from "@paperclipai/shared";
 
 const SETTINGS_TABS = [
   { value: "general", label: "General" },
@@ -70,7 +60,6 @@ const SETTINGS_TABS = [
   { value: "activity", label: "Activity" },
   { value: "integrations", label: "Integrations" },
   { value: "plugins", label: "Plugins" },
-  { value: "marketplace", label: "Marketplace" },
 ];
 
 // ─── Agent snippet helpers (from CompanySettings.tsx) ─────────────────
@@ -147,13 +136,13 @@ function buildAgentSnippet(input: AgentSnippetInput) {
       ? `No candidate URLs are available. Ask your user to configure a reachable hostname in AoA, then retry.
 Suggested steps:
 - choose a hostname that resolves to the AoA host from your runtime
-- run: pnpm aoa allowed-hostname <host>
+- run: pnpm paperclipai allowed-hostname <host>
 - restart AoA
 - verify with: curl -fsS http://<host>:3100/api/health
 - regenerate this invite snippet`
       : `If none are reachable, ask your user to add a reachable hostname in AoA, restart, and retry.
 Suggested command:
-- pnpm aoa allowed-hostname <host>
+- pnpm paperclipai allowed-hostname <host>
 Then verify with: curl -fsS <base-url>/api/health`;
 
   const resolutionLine = resolutionTestUrl
@@ -251,7 +240,6 @@ function GeneralSection() {
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
   const [snippetCopied, setSnippetCopied] = useState(false);
   const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
-  const [archiveCompanyConfirmOpen, setArchiveCompanyConfirmOpen] = useState(false);
 
   const generalDirty =
     !!selectedCompany &&
@@ -652,25 +640,6 @@ function GeneralSection() {
         </div>
       </div>
 
-      {/* Company Data */}
-      <div className="space-y-3">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Company Data
-        </div>
-        <Link
-          to="/export"
-          className="flex items-center justify-between rounded-md border border-border p-3 hover:bg-muted/50 transition-colors"
-        >
-          <div>
-            <p className="text-sm font-medium">Export Company</p>
-            <p className="text-xs text-muted-foreground">
-              Package this company into a portable bundle.
-            </p>
-          </div>
-          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-        </Link>
-      </div>
-
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
@@ -689,7 +658,23 @@ function GeneralSection() {
                 archiveMutation.isPending ||
                 selectedCompany.status === "archived"
               }
-              onClick={() => setArchiveCompanyConfirmOpen(true)}
+              onClick={() => {
+                if (!selectedCompanyId) return;
+                const confirmed = window.confirm(
+                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                );
+                if (!confirmed) return;
+                const nextCompanyId =
+                  companies.find(
+                    (company) =>
+                      company.id !== selectedCompanyId &&
+                      company.status !== "archived"
+                  )?.id ?? null;
+                archiveMutation.mutate({
+                  companyId: selectedCompanyId,
+                  nextCompanyId,
+                });
+              }}
             >
               {archiveMutation.isPending
                 ? "Archiving..."
@@ -707,28 +692,6 @@ function GeneralSection() {
           </div>
         </div>
       </div>
-
-      <ConfirmDialog
-        open={archiveCompanyConfirmOpen}
-        onOpenChange={setArchiveCompanyConfirmOpen}
-        title={selectedCompany ? `Archive company "${selectedCompany.name}"?` : "Archive company?"}
-        description="It will be hidden from the sidebar."
-        confirmLabel="Archive"
-        onConfirm={() => {
-          if (!selectedCompanyId) return;
-          const nextCompanyId =
-            companies.find(
-              (company) =>
-                company.id !== selectedCompanyId &&
-                company.status !== "archived"
-            )?.id ?? null;
-          archiveMutation.mutate({
-            companyId: selectedCompanyId,
-            nextCompanyId,
-          });
-          setArchiveCompanyConfirmOpen(false);
-        }}
-      />
     </div>
   );
 }
@@ -740,7 +703,6 @@ function BudgetSection() {
   const [preset, setPreset] = useState<DatePreset>("mtd");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
-  const [newPolicyOpen, setNewPolicyOpen] = useState(false);
 
   const { from, to } = useMemo(() => {
     if (preset === "custom") {
@@ -817,36 +779,6 @@ function BudgetSection() {
 
   return (
     <div className="space-y-6">
-      {/* Cross-link to full Budget page (primary entry point for finance analytics) */}
-      <div className="flex flex-wrap items-stretch gap-3">
-        <Link
-          to="../budget"
-          className="group flex-1 min-w-[260px] flex items-center justify-between gap-3 rounded-md border border-primary/40 bg-primary/5 px-4 py-3 hover:bg-primary/10 hover:border-primary/60 transition-colors"
-        >
-          <div className="min-w-0">
-            <p className="text-sm font-medium">Open full Budget page</p>
-            <p className="text-xs text-muted-foreground">
-              Breakdown, budgets, quotas, and the finance ledger in one place. This tab shows a quick summary.
-            </p>
-          </div>
-          <ArrowRight className="h-4 w-4 text-primary group-hover:translate-x-0.5 transition-transform shrink-0" />
-        </Link>
-        <Button
-          variant="outline"
-          className="shrink-0 self-center"
-          onClick={() => setNewPolicyOpen(true)}
-        >
-          <Plus className="h-3.5 w-3.5 mr-1.5" />
-          New Budget Policy
-        </Button>
-      </div>
-
-      <CreateBudgetPolicyDialog
-        open={newPolicyOpen}
-        onOpenChange={setNewPolicyOpen}
-        onCreated={() => refetchOverview()}
-      />
-
       {/* Date range selector */}
       <div className="flex flex-wrap items-center gap-2">
         {presetKeys.map((p) => (
@@ -961,15 +893,13 @@ function BudgetSection() {
                           {(row.apiRunCount > 0 ||
                             row.subscriptionRunCount > 0) && (
                             <span className="text-xs text-muted-foreground block">
-                              {/* apiRunCount includes 'api' and 'metered_api' variants */}
                               {row.apiRunCount > 0
-                                ? `metered runs: ${row.apiRunCount}`
+                                ? `api runs: ${row.apiRunCount}`
                                 : null}
                               {row.apiRunCount > 0 &&
                               row.subscriptionRunCount > 0
                                 ? " | "
                                 : null}
-                              {/* subscriptionRunCount includes 'subscription', 'subscription_included', 'subscription_overage' */}
                               {row.subscriptionRunCount > 0
                                 ? `subscription runs: ${row.subscriptionRunCount} (${formatTokens(row.subscriptionInputTokens)} in / ${formatTokens(row.subscriptionOutputTokens)} out tok)`
                                 : null}
@@ -1328,13 +1258,6 @@ function IntegrationsSection() {
           )}
         </div>
       </div>
-
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          GitHub
-        </div>
-        <GitHubIntegrationCard />
-      </div>
     </div>
   );
 }
@@ -1636,202 +1559,7 @@ export function SettingsPage() {
         <TabsContent value="plugins">
           <PluginsSection />
         </TabsContent>
-
-        <TabsContent value="marketplace">
-          {selectedCompany ? (
-            <MarketplaceSettingsTab companyId={selectedCompany.id} />
-          ) : (
-            <div className="text-sm text-muted-foreground">
-              No company selected.
-            </div>
-          )}
-        </TabsContent>
       </Tabs>
-    </div>
-  );
-}
-
-// ─── Marketplace Settings Tab ─────────────────────────────────────────
-function MarketplaceSettingsTab({ companyId }: { companyId: string }) {
-  const { data: settings, isLoading } = useMarketplaceSettings(companyId);
-  const patch = usePatchMarketplaceSettings(companyId);
-  const { pushToast } = useToast();
-
-  const applyPatch = useCallback(async (p: Parameters<typeof patch.mutateAsync>[0]) => {
-    try {
-      await patch.mutateAsync(p);
-      pushToast({ title: "Marketplace setting saved", tone: "success" });
-    } catch (err) {
-      pushToast({
-        title: "Failed to save marketplace setting",
-        body: err instanceof Error ? err.message : "Unknown error",
-        tone: "error",
-      });
-    }
-  }, [patch, pushToast]);
-
-  if (isLoading) {
-    return <PageSkeleton variant="list" />;
-  }
-
-  if (!settings) {
-    return (
-      <div className="text-sm text-muted-foreground">
-        Unable to load marketplace settings.
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      {/* Section 1 — Updates */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Updates
-        </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <Field
-            label="Plugin update policy"
-            hint="How plugin updates are applied when a new version is available."
-          >
-            <Select
-              value={settings.pluginUpdatePolicy}
-              onValueChange={(v) =>
-                applyPatch({
-                  pluginUpdatePolicy: v as typeof settings.pluginUpdatePolicy,
-                })
-              }
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto_patch">Auto (patch only)</SelectItem>
-                <SelectItem value="auto_minor">
-                  Auto (patch + minor)
-                </SelectItem>
-                <SelectItem value="notify_all">Notify only</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-          <ToggleField
-            label="Skill updates"
-            hint="Auto-apply skill updates when available."
-            checked={settings.skillUpdatePolicy === "auto"}
-            onChange={(v) =>
-              applyPatch({ skillUpdatePolicy: v ? "auto" : "notify" })
-            }
-          />
-          <ToggleField
-            label="Agent updates"
-            hint="Auto-apply agent updates when available."
-            checked={settings.agentUpdatePolicy === "auto"}
-            onChange={(v) =>
-              applyPatch({ agentUpdatePolicy: v ? "auto" : "notify" })
-            }
-          />
-          <ToggleField
-            label="Team updates"
-            hint="Auto-apply team updates when available."
-            checked={settings.teamUpdatePolicy === "auto"}
-            onChange={(v) =>
-              applyPatch({ teamUpdatePolicy: v ? "auto" : "notify" })
-            }
-          />
-        </div>
-      </div>
-
-      {/* Section 2 — Access */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Access
-        </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <ToggleField
-            label="Show trust badges"
-            hint="Display trust tier badges (verified / community / unverified) on catalog items."
-            checked={settings.showTrustBadges}
-            onChange={(v) => applyPatch({ showTrustBadges: v })}
-          />
-          <ToggleField
-            label="Show source info"
-            hint="Display publisher and source repository links on catalog items."
-            checked={settings.showSourceInfo}
-            onChange={(v) => applyPatch({ showSourceInfo: v })}
-          />
-          <ToggleField
-            label="Team leads can install plugins"
-            hint="Allow team leads to install plugins directly without founder approval."
-            checked={settings.allowTeamLeadPlugins}
-            onChange={(v) => applyPatch({ allowTeamLeadPlugins: v })}
-          />
-          <ToggleField
-            label="Team members can request installs"
-            hint="Allow team members to submit install requests for founder or team lead review."
-            checked={settings.teamMemberCanRequestInstall}
-            onChange={(v) => applyPatch({ teamMemberCanRequestInstall: v })}
-          />
-          <ToggleField
-            label="Require founder approval"
-            hint="All marketplace installs require explicit founder approval before proceeding."
-            checked={settings.requireFounderApproval}
-            onChange={(v) => applyPatch({ requireFounderApproval: v })}
-          />
-        </div>
-      </div>
-
-      {/* Section 3 — Catalog refresh */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Catalog Refresh
-        </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <Field
-            label="Catalog refresh interval"
-            hint="How often the marketplace catalog is re-fetched from the CDN."
-          >
-            <Select
-              value={String(settings.catalogRefreshHours)}
-              onValueChange={(v) =>
-                applyPatch({
-                  catalogRefreshHours: Number(v) as 6 | 12 | 24,
-                })
-              }
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="6">Every 6 hours</SelectItem>
-                <SelectItem value="12">Every 12 hours</SelectItem>
-                <SelectItem value="24">Every 24 hours</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field
-            label="Update check interval"
-            hint="How often installed items are checked for new versions."
-          >
-            <Select
-              value={String(settings.updateCheckHours)}
-              onValueChange={(v) =>
-                applyPatch({
-                  updateCheckHours: Number(v) as 6 | 12 | 24,
-                })
-              }
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="6">Every 6 hours</SelectItem>
-                <SelectItem value="12">Every 12 hours</SelectItem>
-                <SelectItem value="24">Every 24 hours</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-        </div>
-      </div>
     </div>
   );
 }

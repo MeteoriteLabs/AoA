@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { Db } from "@armyofagents/db";
-import { workspaceOperations } from "@armyofagents/db";
-import type { WorkspaceOperation, WorkspaceOperationPhase, WorkspaceOperationStatus } from "@armyofagents/shared";
+import type { Db } from "@paperclipai/db";
+import { workspaceOperations } from "@paperclipai/db";
+import type { WorkspaceOperation, WorkspaceOperationPhase, WorkspaceOperationStatus } from "@paperclipai/shared";
 import { asc, desc, eq, inArray, isNull, or, and } from "drizzle-orm";
 import { notFound } from "../errors.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
@@ -223,16 +223,12 @@ export function workspaceOperationService(db: Db) {
       return rows.map(toWorkspaceOperation);
     },
 
-    listForExecutionWorkspace: async (
-      executionWorkspaceId: string,
-      opts?: { limit?: number },
-    ) => {
-      const query = db
+    listForExecutionWorkspace: async (executionWorkspaceId: string) => {
+      const rows = await db
         .select()
         .from(workspaceOperations)
         .where(eq(workspaceOperations.executionWorkspaceId, executionWorkspaceId))
         .orderBy(desc(workspaceOperations.startedAt), desc(workspaceOperations.createdAt));
-      const rows = opts?.limit && opts.limit > 0 ? await query.limit(opts.limit) : await query;
       return rows.map(toWorkspaceOperation);
     },
 

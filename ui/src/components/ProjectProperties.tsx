@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Project } from "@armyofagents/shared";
+import type { Project } from "@paperclipai/shared";
 import { StatusBadge } from "./StatusBadge";
 import { cn, formatDate } from "../lib/utils";
 import { goalsApi } from "../api/goals";
@@ -11,7 +11,6 @@ import { queryKeys } from "../lib/queryKeys";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ExternalLink, Github, Plus, Trash2, X } from "lucide-react";
@@ -86,11 +85,6 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
   const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [policyAdvancedOpen, setPolicyAdvancedOpen] = useState(false);
-  const [workspaceConfirm, setWorkspaceConfirm] = useState<
-    | { kind: "clearLocal"; workspace: Project["workspaces"][number] }
-    | { kind: "clearRepo"; workspace: Project["workspaces"][number] }
-    | null
-  >(null);
 
   const { data: allGoals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -251,52 +245,39 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
   };
 
   const clearLocalWorkspace = (workspace: Project["workspaces"][number]) => {
-    setWorkspaceConfirm({ kind: "clearLocal", workspace });
+    const confirmed = window.confirm(
+      workspace.repoUrl
+        ? "Clear local folder from this workspace?"
+        : "Delete this workspace local folder?",
+    );
+    if (!confirmed) return;
+    if (workspace.repoUrl) {
+      updateWorkspace.mutate({
+        workspaceId: workspace.id,
+        data: { cwd: null },
+      });
+      return;
+    }
+    removeWorkspace.mutate(workspace.id);
   };
 
   const clearRepoWorkspace = (workspace: Project["workspaces"][number]) => {
-    setWorkspaceConfirm({ kind: "clearRepo", workspace });
-  };
-
-  const handleWorkspaceConfirm = () => {
-    if (!workspaceConfirm) return;
-    const { kind, workspace } = workspaceConfirm;
-    if (kind === "clearLocal") {
-      if (workspace.repoUrl) {
-        updateWorkspace.mutate({
-          workspaceId: workspace.id,
-          data: { cwd: null },
-        });
-      } else {
-        removeWorkspace.mutate(workspace.id);
-      }
-    } else {
-      const hasLocalFolder = Boolean(workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL);
-      if (hasLocalFolder) {
-        updateWorkspace.mutate({
-          workspaceId: workspace.id,
-          data: { repoUrl: null, repoRef: null },
-        });
-      } else {
-        removeWorkspace.mutate(workspace.id);
-      }
-    }
-    setWorkspaceConfirm(null);
-  };
-
-  const workspaceConfirmTitle = (() => {
-    if (!workspaceConfirm) return "";
-    const { kind, workspace } = workspaceConfirm;
-    if (kind === "clearLocal") {
-      return workspace.repoUrl
-        ? "Clear local folder from this workspace?"
-        : "Delete this workspace local folder?";
-    }
     const hasLocalFolder = Boolean(workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL);
-    return hasLocalFolder
-      ? "Clear GitHub repo from this workspace?"
-      : "Delete this workspace repo?";
-  })();
+    const confirmed = window.confirm(
+      hasLocalFolder
+        ? "Clear GitHub repo from this workspace?"
+        : "Delete this workspace repo?",
+    );
+    if (!confirmed) return;
+    if (hasLocalFolder) {
+      updateWorkspace.mutate({
+        workspaceId: workspace.id,
+        data: { repoUrl: null, repoRef: null },
+      });
+      return;
+    }
+    removeWorkspace.mutate(workspace.id);
+  };
 
   return (
     <div className="space-y-4">
@@ -615,36 +596,6 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
                 Allow tasks to override workspace mode
               </label>
 
-              {/* TTL (days) — feeds the instance-level TTL sweeper (Experimental setting).
-                  Leave blank to disable. Sweep marks stale workspaces as cleanup-eligible only. */}
-              <div className="space-y-1">
-                <label htmlFor="project-ttl-days" className="text-xs text-muted-foreground">
-                  Workspace TTL (days)
-                </label>
-                <input
-                  id="project-ttl-days"
-                  data-testid="project-ttl-days-input"
-                  type="number"
-                  min={0}
-                  placeholder="Never expires"
-                  defaultValue={project.executionWorkspacePolicy.ttlDays ?? ""}
-                  onBlur={(e) => {
-                    const raw = e.target.value.trim();
-                    const next = raw === "" ? null : Number(raw);
-                    const current = project.executionWorkspacePolicy?.ttlDays ?? null;
-                    if (Number.isNaN(next as number)) return;
-                    if (next === current) return;
-                    updatePolicy({ ttlDays: next });
-                  }}
-                  disabled={!onUpdate}
-                  className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                />
-                <p className="text-[10px] text-muted-foreground">
-                  After N days without activity, workspaces are marked for cleanup (requires the
-                  Workspace TTL Sweeper to be enabled in Instance Settings). Leave blank for no expiry.
-                </p>
-              </div>
-
               {/* Advanced — software_development only */}
               {project.functionType === "software_development" && (
                 <div className="border-t border-border/60 pt-2 space-y-2">
@@ -691,15 +642,6 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
           <span className="text-sm">{formatDate(project.updatedAt)}</span>
         </PropertyRow>
       </div>
-
-      <ConfirmDialog
-        open={workspaceConfirm !== null}
-        onOpenChange={(open) => {
-          if (!open) setWorkspaceConfirm(null);
-        }}
-        title={workspaceConfirmTitle}
-        onConfirm={handleWorkspaceConfirm}
-      />
     </div>
   );
 }

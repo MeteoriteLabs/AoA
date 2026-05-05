@@ -150,7 +150,7 @@ export function Issues() {
         error={error as Error | null}
         agents={agents}
         liveIssueIds={liveIssueIds}
-        viewStateKey="aoa:issues-view"
+        viewStateKey="paperclip:issues-view"
         initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
         initialSearch={initialSearch}
         onSearchChange={handleSearchChange}

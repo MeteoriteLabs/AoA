@@ -78,8 +78,8 @@ vi.mock("../components/StatusBadge", () => ({
 }));
 
 vi.mock("../components/agent-config-primitives", () => ({
-  adapterLabels: { claude_local: "Claude (local)", codex_local: "Codex (local)" } as Record<string, string>,
-  roleLabels: { engineer: "Engineer", designer: "Designer", cxo: "Director", lead: "Lead", general: "General" } as Record<string, string>,
+  adapterLabels: { claude_api: "Claude API", claude_local: "Claude (local)" } as Record<string, string>,
+  roleLabels: { engineer: "Engineer", designer: "Designer", ceo: "CEO", general: "General" } as Record<string, string>,
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
@@ -137,12 +137,6 @@ vi.mock("../components/NewAgentDialog", () => ({
   NewAgentDialog: () => null,
 }));
 
-// Mock TeamsSection — it has its own data fetching (teams + projects + members)
-// and is covered by its own tests. Stub it out so AgentsTab tests stay focused.
-vi.mock("../components/team/TeamsSection", () => ({
-  TeamsSection: () => <div data-testid="teams-section-stub" />,
-}));
-
 // --- Tests ---
 
 describe("AgentsTab", () => {
@@ -157,7 +151,7 @@ describe("AgentsTab", () => {
 
   function makeAgentList() {
     return [
-      makeAgent({ id: "a1", name: "Alice", role: "cxo", status: "active", adapterType: "codex_local", reportsTo: null, budgetMonthlyCents: 5000, title: "Chief Executive" }),
+      makeAgent({ id: "a1", name: "Alice", role: "ceo", status: "active", adapterType: "claude_api", reportsTo: null, budgetMonthlyCents: 5000, title: "Chief Executive" }),
       makeAgent({ id: "a2", name: "Bob", role: "engineer", status: "paused", adapterType: "claude_local", reportsTo: "a1", parentType: "agent", parentId: "a1", budgetMonthlyCents: 0, title: null }),
     ];
   }
@@ -178,11 +172,11 @@ describe("AgentsTab", () => {
     expect(screen.getByText("Bob")).toBeInTheDocument();
 
     // Roles
-    expect(screen.getByText(/Director/)).toBeInTheDocument();
+    expect(screen.getByText(/CEO/)).toBeInTheDocument();
     expect(screen.getByText(/Engineer/)).toBeInTheDocument();
 
-    // Adapter types (Sprint 2A removed claude_api — Alice now uses codex_local)
-    expect(screen.getByText("Codex (local)")).toBeInTheDocument();
+    // Adapter types
+    expect(screen.getByText("Claude API")).toBeInTheDocument();
     expect(screen.getByText("Claude (local)")).toBeInTheDocument();
 
     // Reports to
@@ -359,7 +353,7 @@ describe("AgentsTab", () => {
   });
 
   it("shows title in agent subtitle when present", () => {
-    const agents = [makeAgent({ id: "a1", name: "Alice", role: "cxo", title: "Chief Executive" })];
+    const agents = [makeAgent({ id: "a1", name: "Alice", role: "ceo", title: "Chief Executive" })];
 
     renderWithProviders(
       <AgentsTab agents={agents as any} orgTree={[]} permissions={defaultPermissions} />,

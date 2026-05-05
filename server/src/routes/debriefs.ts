@@ -1,6 +1,6 @@
 import { Router } from "express";
-import type { Db } from "@armyofagents/db";
-import { createDebriefSchema, mcpDebriefSchema, updateDebriefSchema } from "@armyofagents/shared";
+import type { Db } from "@paperclipai/db";
+import { createDebriefSchema, mcpDebriefSchema, updateDebriefSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { debriefService, discussionService, extractionService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
