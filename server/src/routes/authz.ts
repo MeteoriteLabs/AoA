@@ -54,3 +54,13 @@ export function getActorInfo(req: Request) {
     runId: req.actor.runId ?? null,
   };
 }
+
+export function assertCanManageInstanceSettings(req: Request) {
+  if (req.actor.type !== "board") {
+    throw forbidden("Board access required");
+  }
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+    return;
+  }
+  throw forbidden("Instance admin access required");
+}
