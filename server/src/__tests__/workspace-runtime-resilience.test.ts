@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -276,7 +277,11 @@ describe("realizeExecutionWorkspace — resilience fallbacks", () => {
 
     expect(realized.branchName).toBe("TASK-4");
     expect(realized.created).toBe(false);
-    expect(path.resolve(realized.cwd)).toBe(path.resolve(altPath));
+    // macOS resolves /var → /private/var via symlink; normalize both sides
+    // before comparing so the assertion is platform-agnostic. (Issue #112)
+    const resolveOrPath = (p: string) =>
+      existsSync(p) ? realpathSync(p) : path.resolve(p);
+    expect(resolveOrPath(realized.cwd)).toBe(resolveOrPath(altPath));
   });
 
   it("uses the default origin branch when no baseRef is configured and repoRef is null", async () => {

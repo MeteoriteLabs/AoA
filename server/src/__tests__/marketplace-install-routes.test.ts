@@ -11,12 +11,20 @@ vi.mock("@armyofagents/db", () => {
     teams: tableProxy,
     companySkills: tableProxy,
     projects: tableProxy,
+    // Required because dispatchInstall fires-and-forgets through
+    // marketplace-notifications.notifyFounders, which queries userRoles.
+    // Without this entry, vitest hoisted-mock resolution surfaces an error
+    // on macOS even though the test itself swallows the failure. (Issue #112)
+    userRoles: tableProxy,
   };
 });
 vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
   and: () => Symbol("op:and"),
   gt: () => Symbol("op:gt"),
+  // Used by marketplace-notifications.notifyFounders' fire-and-forget query.
+  // Same hoisted-mock-resolution pathway as userRoles. (Issue #112)
+  isNull: () => Symbol("op:isNull"),
 }));
 vi.mock("../services/live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 vi.mock("../routes/authz.js", () => ({
