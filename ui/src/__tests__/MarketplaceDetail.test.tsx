@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import MarketplaceDetail from "@/pages/MarketplaceDetail";
 import { marketplaceApi } from "@/api/marketplace";
+import { pluginsApi } from "@/api/plugins";
 import { FULL_CATALOG } from "@/__tests__/__fixtures__/marketplace-catalog";
 import { ToastProvider } from "@/components/marketplace/toast/ToastProvider";
 import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
@@ -13,6 +14,17 @@ import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlo
 vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>("@/api/marketplace");
   return { ...actual, marketplaceApi: { getCatalog: vi.fn() } };
+});
+
+vi.mock("@/api/plugins", async () => {
+  const actual = await vi.importActual<typeof import("@/api/plugins")>("@/api/plugins");
+  return {
+    ...actual,
+    pluginsApi: {
+      ...(actual as any).pluginsApi,
+      list: vi.fn(),
+    },
+  };
 });
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -39,7 +51,10 @@ function wrap(initialPath: string) {
 }
 
 describe("MarketplaceDetail", () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(pluginsApi.list).mockResolvedValue([]);
+  });
 
   it("renders skill detail with inline README", async () => {
     vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
@@ -110,5 +125,52 @@ describe("MarketplaceDetail", () => {
     expect(screen.getByText("Dependencies")).toBeInTheDocument();
     expect(screen.getByText(/agent:aoa-curated\/engineer/)).toBeInTheDocument();
     expect(screen.getByText(/skill:aoa-curated\/code-review/)).toBeInTheDocument();
+  });
+
+  it("shows Installed badge instead of Install button when plugin is already installed", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    // aoa-plugin-slack's packageName from the fixture
+    vi.mocked(pluginsApi.list).mockResolvedValueOnce([
+      {
+        id: "plugin-1",
+        packageName: "aoa-plugin-slack",
+        pluginKey: "aoa.plugin-slack",
+        version: "1.0.0",
+        status: "ready",
+        categories: [],
+        manifestJson: {} as any,
+        apiVersion: 1,
+        companyId: "c1",
+        installOrder: 1,
+        packagePath: null,
+        lastError: null,
+        installedAt: new Date().toISOString() as any,
+        updatedAt: new Date().toISOString() as any,
+      },
+    ]);
+
+    wrap("/marketplace/plugin/aoa-curated/aoa-plugin-slack");
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1, name: "Slack" })).toBeInTheDocument(),
+    );
+
+    // Should NOT show Install button
+    expect(screen.queryByRole("button", { name: /^install$/i })).not.toBeInTheDocument();
+    // Should show Installed badge
+    expect(screen.getByText(/installed/i)).toBeInTheDocument();
+  });
+
+  it("shows Install button when plugin is not installed", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    vi.mocked(pluginsApi.list).mockResolvedValueOnce([]);
+
+    wrap("/marketplace/plugin/aoa-curated/aoa-plugin-slack");
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1, name: "Slack" })).toBeInTheDocument(),
+    );
+
+    expect(screen.getByRole("button", { name: /^install$/i })).toBeInTheDocument();
   });
 });
