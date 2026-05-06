@@ -188,6 +188,9 @@ export function companyPluginRoutes(
             companyId,
           });
           await lifecycle.load(plugin.id);
+          await db
+            .delete(pluginVersionSnapshots)
+            .where(eq(pluginVersionSnapshots.id, snapshot.id));
         } catch (revertErr) {
           // Plugin is in broken state — log but don't mask the original error
           console.error("Auto-rollback failed", revertErr);
