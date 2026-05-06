@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { X } from "lucide-react";
 import type { InstalledPlugin } from "../../api/plugins.js";
 import * as pluginsApi from "../../api/plugins.js";
+import { pluginsApi as pluginsApiClient } from "../../api/plugins.js";
 import type { PendingUpdate } from "../../api/marketplace.js";
 import { PluginConfigForm } from "./PluginConfigForm.js";
 import { CapabilityDeltaModal } from "./CapabilityDeltaModal.js";
@@ -44,7 +45,7 @@ export function PluginDetailSlideOver({ companyId, plugin, pendingUpdate, onClos
   });
 
   const retryMutation = useMutation({
-    mutationFn: () => pluginsApi.retryPlugin(plugin.id),
+    mutationFn: () => pluginsApiClient.retryActivation(plugin.id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["company-plugins", companyId] }),
   });
 
@@ -229,7 +230,7 @@ export function PluginDetailSlideOver({ companyId, plugin, pendingUpdate, onClos
                     {retryMutation.isPending ? "Retrying…" : "Retry activation"}
                   </button>
                 )}
-                {retryMutation.isError && (
+                {plugin.status === "error" && retryMutation.isError && (
                   <p className="text-[10px] text-red-400 mt-1">
                     {retryMutation.error instanceof Error
                       ? retryMutation.error.message

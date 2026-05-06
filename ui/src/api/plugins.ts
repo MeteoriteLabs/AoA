@@ -481,6 +481,18 @@ export const pluginsApi = {
    */
   rollback: (pluginId: string) =>
     api.post<{ ok: boolean }>(`/plugins/${pluginId}/rollback`, {}),
+
+  /**
+   * Retry activation for a plugin in `error` state.
+   *
+   * Delegates to the same `/enable` endpoint as `pluginsApi.enable`.
+   * Use this method at call sites where the intent is "recover from error"
+   * rather than an operator-driven enable toggle, for semantic clarity.
+   *
+   * @param pluginId - UUID of the plugin to retry.
+   */
+  retryActivation: (pluginId: string) =>
+    api.post<{ ok: boolean }>(`/plugins/${pluginId}/enable`, {}),
 };
 
 // ─── Company-scoped plugin management (M.4) ──────────────────────────────
@@ -552,5 +564,3 @@ export const patchPluginSettings = (
 ) =>
   api.patch(`/companies/${companyId}/plugins/${pluginId}/settings`, { enabled });
 
-export const retryPlugin = (pluginId: string) =>
-  api.post<{ ok: true }>(`/plugins/${pluginId}/enable`, {});

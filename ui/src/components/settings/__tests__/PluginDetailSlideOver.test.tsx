@@ -7,8 +7,12 @@ import type { ReactNode } from "react";
 import { PluginDetailSlideOver } from "../PluginDetailSlideOver";
 import type { InstalledPlugin } from "@/api/plugins";
 
-// Mock all named exports from plugins API — retryPlugin doesn't exist yet,
-// so defining it here drives the failing → passing TDD cycle.
+// Hoist spy so it can be referenced both inside vi.mock and in test bodies.
+const { retryActivationSpy } = vi.hoisted(() => ({
+  retryActivationSpy: vi.fn(),
+}));
+
+// Mock all named exports from plugins API.
 vi.mock("@/api/plugins", async () => {
   const actual = await vi.importActual<typeof import("@/api/plugins")>("@/api/plugins");
   return {
@@ -16,7 +20,10 @@ vi.mock("@/api/plugins", async () => {
     patchPluginSettings: vi.fn(),
     getPluginConfig: vi.fn().mockResolvedValue({ configJson: {} }),
     upgradePlugin: vi.fn(),
-    retryPlugin: vi.fn(),
+    pluginsApi: {
+      ...(actual.pluginsApi ?? {}),
+      retryActivation: retryActivationSpy,
+    },
   };
 });
 
@@ -119,9 +126,8 @@ describe("PluginDetailSlideOver — Retry activation button", () => {
     expect(screen.getByText("Worker crashed: ECONNREFUSED")).toBeInTheDocument();
   });
 
-  it('calls retryPlugin with the plugin id when "Retry activation" is clicked', async () => {
-    const { retryPlugin } = await import("@/api/plugins");
-    vi.mocked(retryPlugin).mockResolvedValue({ ok: true });
+  it('calls retryActivation with the plugin id when "Retry activation" is clicked', async () => {
+    retryActivationSpy.mockResolvedValue({ ok: true });
 
     const plugin = makePlugin({ status: "error" });
     wrap(
@@ -138,7 +144,29 @@ describe("PluginDetailSlideOver — Retry activation button", () => {
     );
 
     await waitFor(() =>
-      expect(retryPlugin).toHaveBeenCalledWith("plugin-123"),
+      expect(retryActivationSpy).toHaveBeenCalledWith("plugin-123"),
+    );
+  });
+
+  it('shows retry error message when plugin is in error state and retryActivation rejects', async () => {
+    retryActivationSpy.mockRejectedValue(new Error("Network error"));
+
+    const plugin = makePlugin({ status: "error" });
+    wrap(
+      <PluginDetailSlideOver
+        companyId="company-1"
+        plugin={plugin}
+        pendingUpdate={undefined}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /retry activation/i }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("Network error")).toBeInTheDocument(),
     );
   });
 });
