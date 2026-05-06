@@ -26,7 +26,7 @@ export const plugins = pgTable(
   "plugins",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").references(() => companies.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     catalogItemId: text("catalog_item_id"),
     pluginKey: text("plugin_key").notNull(),
     packageName: text("package_name").notNull(),

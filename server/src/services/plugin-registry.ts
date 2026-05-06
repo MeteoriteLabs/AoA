@@ -147,8 +147,13 @@ export function pluginRegistryService(db: Db) {
      * The caller is expected to have already resolved and validated the
      * manifest from the package.  This method persists the plugin row and
      * assigns the next install order.
+     *
+     * @param input - Installation input (packageName, packagePath)
+     * @param manifest - The resolved plugin manifest
+     * @param companyId - Optional companyId. Required for new installs after companyId becomes NOT NULL.
+     *                    If not provided, attempts to use the first company in the database.
      */
-    install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1) => {
+    install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1, companyId?: string) => {
       const existing = await getByKey(manifest.id);
       if (existing) {
         if (existing.status !== "uninstalled") {
@@ -177,11 +182,26 @@ export function pluginRegistryService(db: Db) {
 
       const installOrder = await nextInstallOrder();
 
+      // If companyId not provided, use the first company in the database (single-tenant case).
+      let finalCompanyId = companyId;
+      if (!finalCompanyId) {
+        const [company] = await db
+          .select({ id: sql<string>`${sql.identifier("companies")}."id"` })
+          .from(sql.raw(`"companies"`))
+          .limit(1)
+          .catch(() => []);
+        if (!company) {
+          throw new Error("No companies found in database; cannot install plugin without a company context");
+        }
+        finalCompanyId = company.id;
+      }
+
       try {
         const rows = await db
           .insert(plugins)
           .values({
             pluginKey: manifest.id,
+            companyId: finalCompanyId,
             packageName: input.packageName,
             version: manifest.version,
             apiVersion: manifest.apiVersion,
@@ -304,8 +324,12 @@ export function pluginRegistryService(db: Db) {
      * Create or fully replace a plugin's instance configuration.
      * If a config row already exists for the plugin it is replaced;
      * otherwise a new row is inserted.
+     *
+     * @param pluginId - The plugin UUID
+     * @param input - The upsert payload with configJson
+     * @param companyId - Optional companyId for new rows. If not provided, uses plugin.companyId.
      */
-    upsertConfig: async (pluginId: string, input: UpsertPluginConfig) => {
+    upsertConfig: async (pluginId: string, input: UpsertPluginConfig, companyId?: string) => {
       const plugin = await getById(pluginId);
       if (!plugin) throw notFound("Plugin not found");
 
@@ -314,6 +338,8 @@ export function pluginRegistryService(db: Db) {
         .from(pluginConfig)
         .where(eq(pluginConfig.pluginId, pluginId))
         .then((rows) => rows[0] ?? null);
+
+      const finalCompanyId = companyId ?? plugin.companyId;
 
       if (existing) {
         return db
@@ -332,6 +358,7 @@ export function pluginRegistryService(db: Db) {
         .insert(pluginConfig)
         .values({
           pluginId,
+          companyId: finalCompanyId,
           configJson: input.configJson,
         })
         .returning()
@@ -341,8 +368,12 @@ export function pluginRegistryService(db: Db) {
     /**
      * Partially update a plugin's instance configuration via shallow merge.
      * If no config row exists yet one is created with the supplied values.
+     *
+     * @param pluginId - The plugin UUID
+     * @param input - The patch payload with configJson (partial merge)
+     * @param companyId - Optional companyId for new rows. If not provided, uses plugin.companyId.
      */
-    patchConfig: async (pluginId: string, input: PatchPluginConfig) => {
+    patchConfig: async (pluginId: string, input: PatchPluginConfig, companyId?: string) => {
       const plugin = await getById(pluginId);
       if (!plugin) throw notFound("Plugin not found");
 
@@ -351,6 +382,8 @@ export function pluginRegistryService(db: Db) {
         .from(pluginConfig)
         .where(eq(pluginConfig.pluginId, pluginId))
         .then((rows) => rows[0] ?? null);
+
+      const finalCompanyId = companyId ?? plugin.companyId;
 
       if (existing) {
         const merged = { ...existing.configJson, ...input.configJson };
@@ -370,6 +403,7 @@ export function pluginRegistryService(db: Db) {
         .insert(pluginConfig)
         .values({
           pluginId,
+          companyId: finalCompanyId,
           configJson: input.configJson,
         })
         .returning()
