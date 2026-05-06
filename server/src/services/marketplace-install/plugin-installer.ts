@@ -87,8 +87,8 @@ export async function installMarketplacePlugin(
       return { pluginId: existing[0].id, alreadyInstalled: true };
     }
     throw new Error(
-      `Plugin ${catalogItem.npm.packageName} installed at version ${existing[0].version}; ` +
-      `catalog requests ${catalogItem.npm.version}. Upgrade flow lands in M.4.`,
+      `Plugin ${catalogItem.npm.packageName} installed at version ${existing[0].version} for company ${companyId}; ` +
+      `catalog requests ${catalogItem.npm.version}. Use the upgrade flow to upgrade.`,
     );
   }
 
