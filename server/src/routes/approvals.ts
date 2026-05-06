@@ -131,7 +131,14 @@ export function approvalRoutes(db: Db) {
     assertCompanyAccess(req, existing.companyId);
 
     const decidedBy = req.actor.userId ?? "local-board";
-    const approval = await svc.approve(id, decidedBy, req.body.decisionNote);
+    const approval = await svc.approve(id, existing.companyId, decidedBy, req.body.decisionNote);
+    if (!approval) {
+      // Service returned null — companyId WHERE didn't match (TOCTOU or
+      // upstream guard bypass). Surface as 404 rather than crashing on
+      // downstream property access.
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
     const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
     const linkedIssueIds = linkedIssues.map((issue) => issue.id);
     const primaryIssueId = linkedIssueIds[0] ?? null;
@@ -234,7 +241,11 @@ export function approvalRoutes(db: Db) {
     assertCompanyAccess(req, existing.companyId);
 
     const decidedBy = req.actor.userId ?? "local-board";
-    const approval = await svc.reject(id, decidedBy, req.body.decisionNote);
+    const approval = await svc.reject(id, existing.companyId, decidedBy, req.body.decisionNote);
+    if (!approval) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
 
     await logActivity(db, {
       companyId: approval.companyId,
@@ -273,7 +284,16 @@ export function approvalRoutes(db: Db) {
       assertCompanyAccess(req, existing.companyId);
 
       const decidedBy = req.actor.userId ?? "local-board";
-      const approval = await svc.requestRevision(id, decidedBy, req.body.decisionNote);
+      const approval = await svc.requestRevision(
+        id,
+        existing.companyId,
+        decidedBy,
+        req.body.decisionNote,
+      );
+      if (!approval) {
+        res.status(404).json({ error: "Approval not found" });
+        return;
+      }
 
       await logActivity(db, {
         companyId: approval.companyId,

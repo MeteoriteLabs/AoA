@@ -125,7 +125,9 @@ describe("/approvals cross-tenant", () => {
     const app = makeApp(companyAActor);
     const res = await request(app).post("/api/approvals/ap1/approve").send({ decisionNote: "ok" });
     expect(res.status).toBe(200);
-    expect(approve).toHaveBeenCalledWith("ap1", "user-A", "ok");
+    // companyId is now threaded through as the second arg (defense-in-depth
+    // for the service-layer companyId WHERE clause).
+    expect(approve).toHaveBeenCalledWith("ap1", "company-A", "user-A", "ok");
   });
 
   it("400 when body contains decidedByUserId (strict schema rejects)", async () => {

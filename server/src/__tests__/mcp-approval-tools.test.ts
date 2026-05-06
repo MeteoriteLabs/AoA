@@ -106,15 +106,15 @@ function buildApp(options?: {
     next();
   });
 
-  const approveFn = vi.fn().mockImplementation(async (id: string, userId: string, note?: string | null) => {
+  const approveFn = vi.fn().mockImplementation(async (id: string, _companyId: string, userId: string, note?: string | null) => {
     const existing = approvalList.find((a) => a.id === id);
     return { ...(existing ?? { id }), status: "approved", decidedByUserId: userId, decisionNote: note };
   });
-  const rejectFn = vi.fn().mockImplementation(async (id: string, userId: string, note?: string | null) => {
+  const rejectFn = vi.fn().mockImplementation(async (id: string, _companyId: string, userId: string, note?: string | null) => {
     const existing = approvalList.find((a) => a.id === id);
     return { ...(existing ?? { id }), status: "rejected", decidedByUserId: userId, decisionNote: note };
   });
-  const requestRevisionFn = vi.fn().mockImplementation(async (id: string, userId: string, note?: string | null) => {
+  const requestRevisionFn = vi.fn().mockImplementation(async (id: string, _companyId: string, userId: string, note?: string | null) => {
     const existing = approvalList.find((a) => a.id === id);
     return { ...(existing ?? { id }), status: "revision_requested", decidedByUserId: userId, decisionNote: note };
   });
@@ -569,7 +569,8 @@ describe("MCP approval tools", () => {
         decisionNote: "LGTM",
       });
       expect(res.status).toBe(200);
-      expect(approvalsSvc.approve).toHaveBeenCalledWith(UUID_APPROVAL, "user-1", "LGTM");
+      // companyId now threaded as the second arg (defense-in-depth at service layer).
+      expect(approvalsSvc.approve).toHaveBeenCalledWith(UUID_APPROVAL, "company-1", "user-1", "LGTM");
     });
 
     it("founder can reject", async () => {
