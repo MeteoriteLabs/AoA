@@ -89,14 +89,14 @@ export function CatalogCard({ item, installedByPackageName }: CatalogCardProps) 
         </Card>
       </Link>
 
-      {installOpen && item.type === "plugin" && (
+      {item.type === "plugin" && (
         <PluginInstallModal
           item={item}
           open={installOpen}
           onOpenChange={setInstallOpen}
         />
       )}
-      {installOpen && item.type !== "plugin" && (
+      {item.type !== "plugin" && (
         <SnapshotInstallModal
           item={item}
           open={installOpen}

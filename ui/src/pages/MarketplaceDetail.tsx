@@ -283,14 +283,14 @@ export default function MarketplaceDetail() {
         </section>
       </div>
 
-      {installModalOpen && item.type === "plugin" && (
+      {item.type === "plugin" && (
         <PluginInstallModal
           item={item}
           open={installModalOpen}
           onOpenChange={setInstallModalOpen}
         />
       )}
-      {installModalOpen && item.type !== "plugin" && (
+      {item.type !== "plugin" && (
         <SnapshotInstallModal
           item={item}
           open={installModalOpen}
