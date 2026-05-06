@@ -14,6 +14,12 @@ export interface PluginLoaderLike {
     version?: string;
     localPath?: string;
     installDir?: string;
+    /**
+     * Optional catalog-declared SRI integrity hash. When set, the loader
+     * verifies the installed package's integrity (from package-lock.json)
+     * matches and fail-closes via `IntegrityMismatchError` on mismatch.
+     */
+    catalogIntegrity?: string;
   }): Promise<{
     packagePath: string;
     packageName: string;
@@ -92,9 +98,15 @@ export async function installMarketplacePlugin(
   // 2. Delegate to existing pipeline (returns DiscoveredPlugin).
   // When a tarball URL is present, pass it as packageName (no version) so
   // npm install resolves the exact artifact — standard npm tarball-URL install.
-  const installOpts = catalogItem.npm.tarballUrl
+  // Forward the catalog-declared integrity (if any) so the loader can verify
+  // the resolved package matches what the AoA marketplace published; the
+  // verification step is opt-in per catalog item for backward compat.
+  const baseOpts = catalogItem.npm.tarballUrl
     ? { packageName: catalogItem.npm.tarballUrl }
     : { packageName: catalogItem.npm.packageName, version: catalogItem.npm.version };
+  const installOpts = catalogItem.npm.integrity
+    ? { ...baseOpts, catalogIntegrity: catalogItem.npm.integrity }
+    : baseOpts;
 
   const discovered = await pluginLoader.installPlugin(installOpts);
 
