@@ -99,11 +99,11 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
       // Better Auth will surface invalid base URL separately.
     }
   }
-  if (config.deploymentMode === "authenticated") {
-    for (const hostname of config.allowedHostnames) {
-      const trimmed = hostname.trim().toLowerCase();
-      if (!trimmed) continue;
-      trustedOrigins.add(`https://${trimmed}`);
+  for (const hostname of config.allowedHostnames ?? []) {
+    const trimmed = hostname.trim().toLowerCase();
+    if (!trimmed) continue;
+    trustedOrigins.add(`https://${trimmed}`);
+    if (config.deploymentMode === "local_trusted") {
       trustedOrigins.add(`http://${trimmed}`);
     }
   }
