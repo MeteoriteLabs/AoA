@@ -13,12 +13,13 @@
  *   GET    /adapters/:type/config-schema
  *   GET    /adapters/:type/ui-parser.js
  *
- * All endpoints require board-level authentication (AoA's assertBoard, which
- * is the equivalent of Paperclip's assertBoardOrgAccess — adapter installs
- * are instance-wide, not company-scoped).
+ * All endpoints require instance-admin authorization (AoA's
+ * assertCanManageInstanceSettings, which is the equivalent of Paperclip's
+ * assertBoardOrgAccess — adapter installs are instance-wide and run npm install
+ * + import() in the server process, so any board user is too broad).
  *
  * AoA deviations from Paperclip:
- *   - Uses assertBoard from routes/authz.ts (Paperclip uses assertBoardOrgAccess).
+ *   - Uses assertCanManageInstanceSettings from routes/authz.ts (Paperclip uses assertBoardOrgAccess).
  *   - Does not wrap adapters with getAdapterSessionManagement — AoA's
  *     @armyofagents/adapter-utils@0.3.1 doesn't export that helper, and AoA's
  *     builtin adapters set sessionManagement directly where needed. When
@@ -63,7 +64,7 @@ import {
   reloadExternalAdapter,
 } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
-import { assertBoard } from "./authz.js";
+import { assertCanManageInstanceSettings } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
 const execFileAsync = promisify(execFile);
@@ -195,7 +196,7 @@ export function adapterRoutes() {
    * status.
    */
   router.get("/adapters", async (req, res) => {
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
 
     const registeredAdapters = listServerAdapters();
     const externalRecords = new Map(
@@ -217,7 +218,7 @@ export function adapterRoutes() {
    * creation menus but remain functional for existing agents.
    */
   router.patch("/adapters/:type", async (req, res) => {
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
 
     const adapterType = req.params.type;
     const { disabled } = req.body as { disabled?: boolean };
@@ -248,7 +249,7 @@ export function adapterRoutes() {
    * Unregister an external adapter. Built-in adapters cannot be removed.
    */
   router.delete("/adapters/:type", async (req, res) => {
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
 
     const adapterType = req.params.type;
 
@@ -307,7 +308,7 @@ export function adapterRoutes() {
    * Install an external adapter from an npm package or local path.
    */
   router.post("/adapters/install", async (req, res) => {
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
 
     const { packageName, isLocalPath = false, version } = req.body as AdapterInstallRequest;
 
@@ -426,7 +427,7 @@ export function adapterRoutes() {
    * re-registers it. Cannot be used on built-in adapter types.
    */
   router.post("/adapters/:type/reload", async (req, res) => {
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
 
     const type = req.params.type;
 
@@ -474,7 +475,7 @@ export function adapterRoutes() {
    * Local-path adapters cannot be reinstalled — use Reload instead.
    */
   router.post("/adapters/:type/reinstall", async (req, res) => {
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
 
     const type = req.params.type;
 
@@ -541,7 +542,7 @@ export function adapterRoutes() {
    * Already-running sessions keep the adapter they started with.
    */
   router.patch("/adapters/:type/override", async (req, res) => {
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
 
     const adapterType = req.params.type;
     const { paused } = req.body as { paused?: boolean };
@@ -586,7 +587,7 @@ export function adapterRoutes() {
    * the UI receives a fully hydrated schema in a single fetch.
    */
   router.get("/adapters/:type/config-schema", async (req, res) => {
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { type } = req.params;
 
     const adapter = findActiveServerAdapter(type);
@@ -626,7 +627,7 @@ export function adapterRoutes() {
    * dependencies.
    */
   router.get("/adapters/:type/ui-parser.js", (req, res) => {
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { type } = req.params;
     const source = getOrExtractUiParserSource(type);
     if (!source) {
