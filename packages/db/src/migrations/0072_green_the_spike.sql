@@ -1,4 +1,4 @@
-CREATE TABLE "file_import_jobs" (
+CREATE TABLE IF NOT EXISTS "file_import_jobs" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"file_name" text NOT NULL,
@@ -26,7 +26,7 @@ ALTER TABLE "memory_items" ADD COLUMN "import_job_id" uuid;--> statement-breakpo
 ALTER TABLE "file_import_jobs" ADD CONSTRAINT "file_import_jobs_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "file_import_jobs" ADD CONSTRAINT "file_import_jobs_department_id_projects_id_fk" FOREIGN KEY ("department_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "file_import_jobs" ADD CONSTRAINT "file_import_jobs_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "file_import_jobs_company_idx" ON "file_import_jobs" USING btree ("company_id");--> statement-breakpoint
-CREATE INDEX "file_import_jobs_status_idx" ON "file_import_jobs" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "file_import_jobs_pending_idx" ON "file_import_jobs" USING btree ("status","retry_after","created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "file_import_jobs_company_idx" ON "file_import_jobs" USING btree ("company_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "file_import_jobs_status_idx" ON "file_import_jobs" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "file_import_jobs_pending_idx" ON "file_import_jobs" USING btree ("status","retry_after","created_at");--> statement-breakpoint
 ALTER TABLE "memory_items" ADD CONSTRAINT "memory_items_import_job_id_file_import_jobs_id_fk" FOREIGN KEY ("import_job_id") REFERENCES "public"."file_import_jobs"("id") ON DELETE set null ON UPDATE no action;
