@@ -123,7 +123,15 @@ export function approvalRoutes(db: Db) {
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const approval = await svc.approve(id, req.body.decidedByUserId ?? "board", req.body.decisionNote);
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const decidedBy = req.actor.userId ?? "local-board";
+    const approval = await svc.approve(id, decidedBy, req.body.decisionNote);
     const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
     const linkedIssueIds = linkedIssues.map((issue) => issue.id);
     const primaryIssueId = linkedIssueIds[0] ?? null;
@@ -218,7 +226,15 @@ export function approvalRoutes(db: Db) {
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const approval = await svc.reject(id, req.body.decidedByUserId ?? "board", req.body.decisionNote);
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const decidedBy = req.actor.userId ?? "local-board";
+    const approval = await svc.reject(id, decidedBy, req.body.decisionNote);
 
     await logActivity(db, {
       companyId: approval.companyId,
@@ -249,11 +265,15 @@ export function approvalRoutes(db: Db) {
     async (req, res) => {
       assertBoard(req);
       const id = req.params.id as string;
-      const approval = await svc.requestRevision(
-        id,
-        req.body.decidedByUserId ?? "board",
-        req.body.decisionNote,
-      );
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Approval not found" });
+        return;
+      }
+      assertCompanyAccess(req, existing.companyId);
+
+      const decidedBy = req.actor.userId ?? "local-board";
+      const approval = await svc.requestRevision(id, decidedBy, req.body.decisionNote);
 
       await logActivity(db, {
         companyId: approval.companyId,
