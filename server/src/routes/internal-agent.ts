@@ -13,6 +13,7 @@ import {
 } from "@armyofagents/db";
 import { validate } from "../middleware/index.js";
 import { assertRole } from "../middleware/rbac.js";
+import { internalAgentChatLimiter } from "../middleware/rate-limit.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { HttpError, badRequest, notFound } from "../errors.js";
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
@@ -54,8 +55,12 @@ export function internalAgentRoutes(db: Db) {
   const router = Router();
 
   // ── 2.1 Send Message (SSE Streaming) ─────────────────────────────────
+  // Sprint 4 S4-F: rate-limit chat (LLM-billed). 60 requests per minute per
+  // actor. The route is the chat endpoint and the SSE-streaming variant —
+  // it's a single route, so one limiter covers both.
   router.post(
     "/companies/:companyId/internal-agent/chat",
+    internalAgentChatLimiter,
     validate(chatMessageSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
