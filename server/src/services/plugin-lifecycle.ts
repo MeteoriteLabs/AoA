@@ -672,7 +672,7 @@ export function pluginLifecycleManager(
       // Save rollback snapshot so we can roll back if the upgrade fails
       await db.insert(pluginVersionSnapshots).values({
         pluginId: plugin.id,
-        companyId: (plugin as any).companyId ?? "",
+        companyId: plugin.companyId,
         version: plugin.version,
         packageName: plugin.packageName,
         manifestJson: plugin.manifestJson,
@@ -683,7 +683,7 @@ export function pluginLifecycleManager(
       // 1. Download and validate new package via loader.
       //    upgradePlugin() no longer throws on capability escalation — it
       //    returns escalatedCaps so the lifecycle layer can gate on them.
-      const { oldManifest, newManifest, discovered, escalatedCaps: _ } =
+      const { oldManifest, newManifest, discovered } =
         await pluginLoaderInstance.upgradePlugin(pluginId, { version });
 
       // Lifecycle layer computes capability delta using diffCapabilities
@@ -697,7 +697,6 @@ export function pluginLifecycleManager(
           pluginKey: plugin.pluginKey,
           oldVersion: oldManifest.version,
           newVersion: newManifest.version,
-          escalatedCaps: _,
           addedCaps,
         },
         "plugin lifecycle: package upgraded on disk",

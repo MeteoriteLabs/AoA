@@ -11,6 +11,7 @@ function renderWithRouter(ui: React.ReactElement) {
 
 const INSTALLED_READY: PluginRecord = {
   id: "plugin-uuid",
+  companyId: "company-uuid",
   pluginKey: "aoa.plugin-slack",
   packageName: "aoa-plugin-slack",
   version: "1.0.0",

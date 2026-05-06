@@ -260,6 +260,8 @@ export interface PaperclipPluginManifestV1 {
 export interface PluginRecord {
   /** UUID primary key. */
   id: string;
+  /** UUID of the company this plugin is installed for. */
+  companyId: string;
   /** Unique key derived from `manifest.id`. Used for lookups. */
   pluginKey: string;
   /** npm package name (e.g. `"@acme/plugin-linear"`). */
