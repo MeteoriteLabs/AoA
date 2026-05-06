@@ -821,6 +821,9 @@ async function fetchText(url: string) {
   return response.body;
 }
 
+/** Test-only handle to the module-private fetch helpers. Do not import from production code. */
+export const __test__ = { fetchJson, fetchText };
+
 function dedupeRequiredSecrets(values: CompanyPortabilityManifest["requiredSecrets"]) {
   const seen = new Set<string>();
   const out: CompanyPortabilityManifest["requiredSecrets"] = [];

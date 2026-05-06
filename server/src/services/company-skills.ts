@@ -492,6 +492,9 @@ async function fetchJson(url: string): Promise<unknown | null> {
   }
 }
 
+/** Test-only handle to the module-private fetch helpers. Do not import from production code. */
+export const __test__ = { fetchJson, fetchText };
+
 // ---------------------------------------------------------------------------
 // GitHub resolution helpers
 // ---------------------------------------------------------------------------
