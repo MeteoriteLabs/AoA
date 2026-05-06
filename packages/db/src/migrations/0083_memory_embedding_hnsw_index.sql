@@ -17,6 +17,7 @@ DO $$ BEGIN
       ON "memory_items" USING hnsw ("embedding" vector_cosine_ops)
       WHERE "embedding" IS NOT NULL;
   END IF;
-EXCEPTION WHEN OTHERS THEN
-  RAISE NOTICE 'pgvector HNSW index skipped (extension or pgvector version unavailable)';
+EXCEPTION
+  WHEN feature_not_supported OR undefined_object THEN
+    RAISE NOTICE 'HNSW index skipped: pgvector version does not support HNSW (need ≥ 0.5.0)';
 END $$;
