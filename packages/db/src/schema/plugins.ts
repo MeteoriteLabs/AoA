@@ -8,6 +8,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { companies } from "./companies.js";
 import type { PluginCategory, PluginStatus, PaperclipPluginManifestV1 } from "@armyofagents/shared";
 
 /**
@@ -24,6 +25,8 @@ export const plugins = pgTable(
   "plugins",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").references(() => companies.id, { onDelete: "cascade" }),
+    catalogItemId: text("catalog_item_id"),
     pluginKey: text("plugin_key").notNull(),
     packageName: text("package_name").notNull(),
     version: text("version").notNull(),
@@ -39,7 +42,12 @@ export const plugins = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    pluginKeyIdx: uniqueIndex("plugins_plugin_key_idx").on(table.pluginKey),
+    // After backfill (Task 4), companyId will be NOT NULL.
+    // For now: nullable so the migration applies without breaking existing rows.
+    companyPluginKeyIdx: uniqueIndex("plugins_company_plugin_key_idx").on(
+      table.companyId,
+      table.pluginKey,
+    ),
     statusIdx: index("plugins_status_idx").on(table.status),
   }),
 );
