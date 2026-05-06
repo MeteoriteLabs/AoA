@@ -5,6 +5,7 @@ import { assertCompanyAccess } from "./authz.js";
 import { transcribe } from "../services/transcription.js";
 import { secretService } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
+import { transcribeLimiter } from "../middleware/rate-limit.js";
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // 25MB — Whisper API limit
 
@@ -37,7 +38,7 @@ export function transcriptionRoutes(db: Db) {
     });
   }
 
-  router.post("/companies/:companyId/transcribe", async (req, res) => {
+  router.post("/companies/:companyId/transcribe", transcribeLimiter, async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const log = logger.child({ route: "transcribe", companyId });
