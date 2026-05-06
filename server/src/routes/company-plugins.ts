@@ -127,13 +127,13 @@ export function companyPluginRoutes(
         .set({ configJson, updatedAt: new Date() })
         .where(eq(pluginConfig.id, existing.id))
         .returning();
-      res.json(updated);
+      res.json({ configJson: updated.configJson });
     } else {
       const [inserted] = await db
         .insert(pluginConfig)
         .values({ companyId, pluginId, configJson })
         .returning();
-      res.json(inserted);
+      res.json({ configJson: inserted.configJson });
     }
   });
 
@@ -147,6 +147,11 @@ export function companyPluginRoutes(
     assertCompanyAccess(req, companyId);
 
     const { version } = req.body as { version?: string };
+
+    if (version !== undefined && typeof version !== "string") {
+      res.status(400).json({ error: "version must be a string" });
+      return;
+    }
 
     const [plugin] = await db
       .select()
@@ -226,6 +231,16 @@ export function companyPluginRoutes(
     const { companyId, pluginId } = req.params as { companyId: string; pluginId: string };
     assertCompanyAccess(req, companyId);
 
+    const [plugin] = await db
+      .select({ id: plugins.id })
+      .from(plugins)
+      .where(and(eq(plugins.companyId, companyId), eq(plugins.id, pluginId)));
+
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found for this company" });
+      return;
+    }
+
     const [snapshot] = await db
       .select()
       .from(pluginVersionSnapshots)
@@ -243,20 +258,25 @@ export function companyPluginRoutes(
       return;
     }
 
-    await loader.installPlugin({
-      packageName: snapshot.packageName,
-      version: snapshot.version,
-      companyId,
-    });
+    try {
+      await loader.installPlugin({
+        packageName: snapshot.packageName,
+        version: snapshot.version,
+        companyId,
+      });
 
-    const [updatedPlugin] = await db
-      .select()
-      .from(plugins)
-      .where(and(eq(plugins.companyId, companyId), eq(plugins.id, pluginId)));
+      const [updatedPlugin] = await db
+        .select()
+        .from(plugins)
+        .where(and(eq(plugins.companyId, companyId), eq(plugins.id, pluginId)));
 
-    if (updatedPlugin) await lifecycle.load(updatedPlugin.id);
+      if (updatedPlugin) await lifecycle.load(updatedPlugin.id);
 
-    res.json({ status: "ready", version: snapshot.version });
+      res.json({ status: "ready", version: snapshot.version });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ error: message });
+    }
   });
 
   // ── PATCH /api/companies/:companyId/plugins/:pluginId/settings ───────────
@@ -288,13 +308,13 @@ export function companyPluginRoutes(
         .set({ enabled, updatedAt: new Date() })
         .where(eq(pluginCompanySettings.id, existing.id))
         .returning();
-      res.json(updated);
+      res.json({ enabled: updated.enabled });
     } else {
       const [inserted] = await db
         .insert(pluginCompanySettings)
         .values({ companyId, pluginId, enabled })
         .returning();
-      res.json(inserted);
+      res.json({ enabled: inserted.enabled });
     }
   });
 
