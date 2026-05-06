@@ -223,6 +223,7 @@ async function handleApprovalDecision(
     case "approve":
       updated = await ctx.services.approvalsSvc.approve(
         parsed.approvalId,
+        approval.companyId,
         ctx.actor.userId,
         parsed.decisionNote ?? null,
       );
@@ -230,6 +231,7 @@ async function handleApprovalDecision(
     case "reject":
       updated = await ctx.services.approvalsSvc.reject(
         parsed.approvalId,
+        approval.companyId,
         ctx.actor.userId,
         parsed.decisionNote ?? null,
       );
@@ -237,6 +239,7 @@ async function handleApprovalDecision(
     case "requestRevision":
       updated = await ctx.services.approvalsSvc.requestRevision(
         parsed.approvalId,
+        approval.companyId,
         ctx.actor.userId,
         parsed.decisionNote ?? null,
       );
@@ -244,6 +247,12 @@ async function handleApprovalDecision(
     case "resubmit":
       updated = await ctx.services.approvalsSvc.resubmit(parsed.approvalId, decisionPayload);
       break;
+  }
+  if (!updated) {
+    // Defense-in-depth: service returned null because companyId WHERE didn't
+    // match. The route-level company check already passed, so this only
+    // fires if an upstream race or guard regression slipped through.
+    return notFoundResult("Approval not found");
   }
 
   await logActivity(ctx.db, {
