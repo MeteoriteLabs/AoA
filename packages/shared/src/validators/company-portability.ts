@@ -303,17 +303,46 @@ export const portabilityManifestSchema = z
       })
       .passthrough(),
     company: portabilityCompanyManifestEntrySchema.nullable(),
-    agents: z.array(portabilityAgentManifestEntrySchema),
-    projects: z.array(portabilityProjectManifestEntrySchema).optional(),
-    issues: z.array(portabilityIssueManifestEntrySchema).optional(),
-    skills: z.array(portabilitySkillManifestEntrySchema).optional(),
-    routines: z.array(portabilityRoutineManifestEntrySchema).optional(),
-    envInputs: z.array(portabilityEnvInputManifestEntrySchema).optional(),
+    agents: z
+      .array(portabilityAgentManifestEntrySchema)
+      .max(1000, "agents: cap 1000 per bundle"),
+    projects: z
+      .array(portabilityProjectManifestEntrySchema)
+      .max(1000, "projects: cap 1000 per bundle")
+      .optional(),
+    issues: z
+      .array(portabilityIssueManifestEntrySchema)
+      .max(10_000, "issues: cap 10000 per bundle")
+      .optional(),
+    skills: z
+      .array(portabilitySkillManifestEntrySchema)
+      .max(1000, "skills: cap 1000 per bundle")
+      .optional(),
+    routines: z
+      .array(portabilityRoutineManifestEntrySchema)
+      .max(1000, "routines: cap 1000 per bundle")
+      .optional(),
+    envInputs: z
+      .array(portabilityEnvInputManifestEntrySchema)
+      .max(1000, "envInputs: cap 1000 per bundle")
+      .optional(),
     internalAgentConfig: portabilityInternalAgentConfigManifestSchema.nullable().optional(),
-    budgetPolicies: z.array(portabilityBudgetPolicyManifestSchema).optional(),
-    costEvents: z.array(portabilityCostEventManifestSchema).optional(),
-    financeEvents: z.array(portabilityFinanceEventManifestSchema).optional(),
-    quotaWindows: z.array(portabilityQuotaWindowManifestSchema).optional(),
+    budgetPolicies: z
+      .array(portabilityBudgetPolicyManifestSchema)
+      .max(1000, "budgetPolicies: cap 1000 per bundle")
+      .optional(),
+    costEvents: z
+      .array(portabilityCostEventManifestSchema)
+      .max(100_000, "costEvents: cap 100000 per bundle (above 10K warn threshold)")
+      .optional(),
+    financeEvents: z
+      .array(portabilityFinanceEventManifestSchema)
+      .max(100_000, "financeEvents: cap 100000 per bundle")
+      .optional(),
+    quotaWindows: z
+      .array(portabilityQuotaWindowManifestSchema)
+      .max(10_000, "quotaWindows: cap 10000 per bundle")
+      .optional(),
     workflowTemplates: z.array(portabilityWorkflowTemplateManifestSchema).optional(),
     requiredSecrets: z.array(portabilitySecretRequirementSchema).default([]),
   })
