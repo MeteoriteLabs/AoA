@@ -61,6 +61,8 @@ const mockAgentService = vi.hoisted(() => ({
   backfillParentFields: vi.fn().mockResolvedValue(0),
 }));
 
+const mockLogActivity = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   agentInstructionsService: () => ({
@@ -79,7 +81,7 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => ({}),
   issueApprovalService: () => ({}),
   issueService: () => ({}),
-  logActivity: vi.fn(),
+  logActivity: mockLogActivity,
   secretService: () => ({
     resolveAdapterConfigForRuntime: vi.fn(),
     normalizeAdapterConfigForPersistence: vi.fn(
@@ -207,5 +209,43 @@ describe("/agents/:id/keys cross-tenant", () => {
     const res = await request(makeApp(companyAActor)).get(`/api/agents/${AGENT_A_ID}/keys`);
     expect(res.status).toBe(200);
     expect(mockAgentService.listKeys).toHaveBeenCalledWith(AGENT_A_ID);
+  });
+});
+
+describe("/agents/:id/keys activity log shape", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("POST /agents/:id/keys logs agent.key_created with canonical actor shape", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: AGENT_A_ID,
+      companyId: "company-A",
+    });
+    mockAgentService.createApiKey.mockResolvedValue({
+      id: KEY_ID,
+      agentId: AGENT_A_ID,
+      name: "k",
+      createdAt: new Date(),
+    });
+
+    const res = await request(makeApp(companyAActor))
+      .post(`/api/agents/${AGENT_A_ID}/keys`)
+      .send({ name: "k" });
+    expect(res.status).toBe(201);
+
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "agent.key_created",
+        entityType: "agent",
+        entityId: AGENT_A_ID,
+        actorType: "user",
+        actorId: "user-A",
+        agentId: null,
+        runId: null,
+        details: expect.objectContaining({ keyId: KEY_ID, name: "k" }),
+      }),
+    );
   });
 });
