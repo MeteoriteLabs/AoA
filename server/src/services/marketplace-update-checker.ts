@@ -154,7 +154,7 @@ async function checkCompany(db: Db, catalogItems: CatalogItem[], companyId: stri
  * the catalog, and upserts to marketplacePendingUpdates for any plugins with
  * newer versions available.
  */
-async function checkPluginUpdates(
+export async function checkPluginUpdates(
   db: Db,
   companyId: string,
   catalogItems: CatalogItem[],
