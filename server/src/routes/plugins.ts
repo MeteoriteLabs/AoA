@@ -1486,17 +1486,6 @@ export function pluginRoutes(
       return;
     }
 
-    // M4.D7: Save a snapshot of the current version BEFORE upgrading so we can
-    // auto-revert if the upgrade fails.
-    const rollback = pluginRollbackService(db);
-    await rollback.saveSnapshot(
-      plugin.id,
-      plugin.companyId ?? "",
-      plugin.version,
-      plugin.packageName,
-      plugin.manifestJson,
-    );
-
     try {
       // Upgrade the plugin:
       // 1. Downloads and validates new version via loader (no throw on new caps)
@@ -1514,7 +1503,8 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
       res.json(result);
     } catch (err) {
-      // M4.D7 self-healing: upgrade failed — auto-revert to the snapshot we just saved.
+      // M4.D7 self-healing: upgrade failed — auto-revert to the snapshot saved inside upgrade().
+      const rollback = pluginRollbackService(db);
       const target = await rollback.getRollbackTarget(plugin.id).catch(() => null);
       if (target) {
         try {

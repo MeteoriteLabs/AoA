@@ -12,10 +12,10 @@ describe("plugin lifecycle upgrade helpers", () => {
 
   it("detects newly added capabilities", () => {
     const delta = diffCapabilities(
-      ["tools.register"],
-      ["tools.register", "storage.write", "webhooks.listen"],
+      ["tools.register", "http.outbound"],
+      ["tools.register", "http.outbound", "jobs.create"],
     );
-    expect(delta).toEqual(["storage.write", "webhooks.listen"]);
+    expect(delta).toEqual(["jobs.create"]);
   });
 
   it("does not flag removed capabilities (backward compat is OK)", () => {

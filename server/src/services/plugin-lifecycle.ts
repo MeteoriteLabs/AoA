@@ -37,6 +37,7 @@
  */
 import { EventEmitter } from "node:events";
 import type { Db } from "@armyofagents/db";
+import { pluginVersionSnapshots } from "@armyofagents/db";
 import type {
   PluginStatus,
   PluginRecord,
@@ -668,13 +669,27 @@ export function pluginLifecycleManager(
         "plugin lifecycle: upgrade requested",
       );
 
+      // Save rollback snapshot so we can roll back if the upgrade fails
+      await db.insert(pluginVersionSnapshots).values({
+        pluginId: plugin.id,
+        companyId: (plugin as any).companyId ?? "",
+        version: plugin.version,
+        packageName: plugin.packageName,
+        manifestJson: plugin.manifestJson,
+      });
+
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
 
       // 1. Download and validate new package via loader.
       //    upgradePlugin() no longer throws on capability escalation — it
       //    returns escalatedCaps so the lifecycle layer can gate on them.
-      const { oldManifest, newManifest, discovered, escalatedCaps } =
+      const { oldManifest, newManifest, discovered, escalatedCaps: _ } =
         await pluginLoaderInstance.upgradePlugin(pluginId, { version });
+
+      // Lifecycle layer computes capability delta using diffCapabilities
+      const oldCaps = ((oldManifest as any)?.capabilities ?? []) as string[];
+      const newCaps = ((newManifest as any)?.capabilities ?? []) as string[];
+      const addedCaps = diffCapabilities(oldCaps, newCaps);
 
       log.info(
         {
@@ -682,16 +697,17 @@ export function pluginLifecycleManager(
           pluginKey: plugin.pluginKey,
           oldVersion: oldManifest.version,
           newVersion: newManifest.version,
-          escalatedCaps,
+          escalatedCaps: _,
+          addedCaps,
         },
         "plugin lifecycle: package upgraded on disk",
       );
 
       // 2. Transition state based on capability delta
-      if (escalatedCaps.length > 0) {
+      if (addedCaps.length > 0) {
         // New capabilities require operator approval — worker stays stopped.
         log.info(
-          { pluginId, pluginKey: plugin.pluginKey, escalatedCaps },
+          { pluginId, pluginKey: plugin.pluginKey, addedCaps },
           "plugin lifecycle: new capabilities detected, transitioning to upgrade_pending",
         );
         const result = await transition(pluginId, "upgrade_pending", null, plugin);
@@ -702,7 +718,7 @@ export function pluginLifecycleManager(
         return {
           version: discovered.version,
           status: "upgrade_pending",
-          delta: escalatedCaps,
+          delta: addedCaps,
         };
       } else {
         const result = await transition(pluginId, "ready", null, {
