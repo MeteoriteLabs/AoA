@@ -11,10 +11,27 @@ import {
   updateProjectWorkspaceSchema,
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
+import { assertRole } from "../middleware/rbac.js";
 import { projectService, logActivity, instanceSettingsService } from "../services/index.js";
 import { conflict, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { gateProjectExecutionWorkspacePolicy, parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
+
+/**
+ * Detects whether a request body's executionWorkspacePolicy carries any of the
+ * shell-command fields (provisionCommand / teardownCommand / cleanupCommand)
+ * that are eventually passed to `sh -c` by `runWorkspaceCommand`. Used as the
+ * gate trigger for the founder-only role check on POST/PATCH /projects routes
+ * to mitigate finding C1 (RCE via executionWorkspacePolicy.provisionCommand).
+ */
+export function sniffsShellCommandFields(policy: unknown): boolean {
+  if (!policy || typeof policy !== "object") return false;
+  const p = policy as Record<string, unknown>;
+  const ws = (p.workspaceStrategy ?? {}) as Record<string, unknown>;
+  return typeof ws.provisionCommand === "string"
+      || typeof ws.teardownCommand === "string"
+      || typeof ws.cleanupCommand === "string";
+}
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -84,6 +101,18 @@ export function projectRoutes(db: Db) {
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+
+    // Security finding C1: see PATCH handler comment. Same gate on creation
+    // path so an attacker can't seed a brand-new project with a poisoned
+    // executionWorkspacePolicy and trigger the heartbeat command shell.
+    if (sniffsShellCommandFields(req.body.executionWorkspacePolicy)) {
+      if (req.actor.type === "agent" || req.actor.type === "mcp") {
+        res.status(403).json({ error: "Agents and MCP keys cannot configure workspace commands" });
+        return;
+      }
+      await assertRole(db, req, companyId, "founder");
+    }
+
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
     };
@@ -148,6 +177,18 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+
+    // Security finding C1: shell-command fields on executionWorkspacePolicy are
+    // executed via `sh -c` by the workspace runtime. Restrict the route surface
+    // to founders only and reject agent/MCP actors entirely so a compromised
+    // agent key or low-trust teammate cannot pivot to RCE on the host.
+    if (sniffsShellCommandFields(req.body.executionWorkspacePolicy)) {
+      if (req.actor.type === "agent" || req.actor.type === "mcp") {
+        res.status(403).json({ error: "Agents and MCP keys cannot configure workspace commands" });
+        return;
+      }
+      await assertRole(db, req, existing.companyId, "founder");
+    }
 
     const project = await svc.update(id, req.body);
     if (!project) {

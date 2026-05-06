@@ -13,6 +13,7 @@ import type {
   WorkspaceRuntimeServiceStateMap,
 } from "@armyofagents/shared";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
+import { logger } from "../middleware/logger.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import type { ExecutionWorkspace } from "@armyofagents/shared";
@@ -455,6 +456,23 @@ async function runWorkspaceCommand(input: {
   env: NodeJS.ProcessEnv;
   label: string;
 }) {
+  // Defense-in-depth audit log for security finding C1: every shell command
+  // dispatched through the workspace runtime is recorded with the host context
+  // populated by `buildWorkspaceCommandEnv`. Operators can grep for this in
+  // production logs to detect unexpected provision/teardown/cleanup runs.
+  logger.warn(
+    {
+      label: input.label,
+      command: input.command,
+      cwd: input.cwd,
+      companyId: input.env.AOA_COMPANY_ID ?? null,
+      projectId: input.env.AOA_PROJECT_ID ?? null,
+      projectWorkspaceId: input.env.AOA_PROJECT_WORKSPACE_ID ?? null,
+      issueId: input.env.AOA_ISSUE_ID ?? null,
+      agentId: input.env.AOA_AGENT_ID ?? null,
+    },
+    "Running workspace shell command",
+  );
   const shell = process.env.SHELL?.trim() || "/bin/sh";
   const proc = await executeProcess({
     command: shell,
