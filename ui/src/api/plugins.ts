@@ -482,3 +482,72 @@ export const pluginsApi = {
   rollback: (pluginId: string) =>
     api.post<{ ok: boolean }>(`/plugins/${pluginId}/rollback`, {}),
 };
+
+// ─── Company-scoped plugin management (M.4) ──────────────────────────────
+
+export interface InstalledPlugin {
+  id: string;
+  companyId: string;
+  catalogItemId: string | null;
+  pluginKey: string;
+  packageName: string;
+  version: string;
+  status: string;
+  categories: string[];
+  manifest: {
+    displayName: string;
+    description: string;
+    capabilities: string[];
+    instanceConfigSchema?: Record<string, unknown>;
+  };
+  lastError: string | null;
+  installedAt: string;
+  updatedAt: string;
+  enabled: boolean;
+  configJson: Record<string, unknown>;
+}
+
+export interface UpgradeResult {
+  version: string;
+  status: "ready" | "upgrade_pending";
+  delta?: string[];
+}
+
+export const listCompanyPlugins = (companyId: string) =>
+  api.get<InstalledPlugin[]>(`/companies/${companyId}/plugins`);
+
+export const getPluginConfig = (companyId: string, pluginId: string) =>
+  api.get<{ configJson: Record<string, unknown> }>(
+    `/companies/${companyId}/plugins/${pluginId}/config`,
+  );
+
+export const savePluginConfig = (
+  companyId: string,
+  pluginId: string,
+  configJson: Record<string, unknown>,
+) =>
+  api.post<{ configJson: Record<string, unknown> }>(
+    `/companies/${companyId}/plugins/${pluginId}/config`,
+    { configJson },
+  );
+
+export const upgradePlugin = (companyId: string, pluginId: string, version?: string) =>
+  api.post<UpgradeResult>(`/companies/${companyId}/plugins/${pluginId}/upgrade`, {
+    version,
+  });
+
+export const approvePluginUpgrade = (companyId: string, pluginId: string) =>
+  api.post<{ status: string }>(`/companies/${companyId}/plugins/${pluginId}/upgrade/approve`, {});
+
+export const rollbackPluginUpgrade = (companyId: string, pluginId: string) =>
+  api.post<{ status: string; version: string }>(
+    `/companies/${companyId}/plugins/${pluginId}/upgrade/rollback`,
+    {},
+  );
+
+export const patchPluginSettings = (
+  companyId: string,
+  pluginId: string,
+  enabled: boolean,
+) =>
+  api.patch(`/companies/${companyId}/plugins/${pluginId}/settings`, { enabled });
