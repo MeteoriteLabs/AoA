@@ -1,5 +1,11 @@
+import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
-import { isPrivateIP, validateAndResolveFetchUrl } from "../services/outbound-url-guard.js";
+import {
+  executePinnedRequest,
+  isPrivateIP,
+  validateAndResolveFetchUrl,
+  type ValidatedFetchTarget,
+} from "../services/outbound-url-guard.js";
 
 describe("isPrivateIP", () => {
   it("rejects IPv4 RFC 1918 ranges", () => {
@@ -78,5 +84,108 @@ describe("validateAndResolveFetchUrl — private IP gate (literal IPs in hostnam
   it("rejects IPv6 loopback ([::1])", async () => {
     await expect(validateAndResolveFetchUrl("http://[::1]/"))
       .rejects.toThrow(/private/);
+  });
+});
+
+describe("executePinnedRequest", () => {
+  it("connects to the pinned IP and returns status + body", async () => {
+    // Spin up a tiny HTTP server on 127.0.0.1
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("pinned-ok");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no address");
+    const port = address.port;
+
+    // Construct ValidatedFetchTarget manually (bypasses validate-private-IP gate).
+    // Pretend the URL was http://example.test/whatever and the resolved IP is 127.0.0.1.
+    const target: ValidatedFetchTarget = {
+      parsedUrl: new URL(`http://example.test:${port}/`),
+      resolvedAddress: "127.0.0.1",
+      hostHeader: `example.test:${port}`,
+      tlsServername: undefined,
+      useTls: false,
+    };
+
+    const controller = new AbortController();
+    try {
+      const res = await executePinnedRequest(target, { method: "GET" }, controller.signal);
+      expect(res.status).toBe(200);
+      expect(res.body).toBe("pinned-ok");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("respects maxBodyBytes cap by destroying the response when body exceeds limit", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200);
+      res.end("a".repeat(100)); // 100 bytes
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no address");
+    const port = address.port;
+
+    const target: ValidatedFetchTarget = {
+      parsedUrl: new URL(`http://example.test:${port}/`),
+      resolvedAddress: "127.0.0.1",
+      hostHeader: `example.test:${port}`,
+      tlsServername: undefined,
+      useTls: false,
+    };
+
+    const controller = new AbortController();
+    try {
+      await expect(
+        executePinnedRequest(target, { method: "GET" }, controller.signal, { maxBodyBytes: 10 }),
+      ).rejects.toThrow(/exceeded 10 bytes/);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("sends the request body when init.body is provided", async () => {
+    let receivedBody = "";
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        receivedBody = Buffer.concat(chunks).toString("utf8");
+        res.writeHead(201);
+        res.end("created");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no address");
+    const port = address.port;
+
+    const target: ValidatedFetchTarget = {
+      parsedUrl: new URL(`http://example.test:${port}/`),
+      resolvedAddress: "127.0.0.1",
+      hostHeader: `example.test:${port}`,
+      tlsServername: undefined,
+      useTls: false,
+    };
+
+    const controller = new AbortController();
+    try {
+      const res = await executePinnedRequest(
+        target,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ hello: "world" }),
+        },
+        controller.signal,
+      );
+      expect(res.status).toBe(201);
+      expect(receivedBody).toBe('{"hello":"world"}');
+    } finally {
+      server.close();
+    }
   });
 });
