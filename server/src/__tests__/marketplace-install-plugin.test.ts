@@ -39,7 +39,7 @@ const DISCOVERED = {
 describe("installMarketplacePlugin", () => {
   it("delegates to pluginLoader.installPlugin with packageName+version, then activates via lifecycle.load", async () => {
     const installPluginMock = vi.fn(async () => DISCOVERED);
-    const getByKeyMock = vi.fn(async () => ({ id: "plug-uuid-1", pluginKey: "aoa.slack" }));
+    const getByKeyScopedMock = vi.fn(async () => ({ id: "plug-uuid-1", pluginKey: "aoa.slack" }));
     const lifecycleLoadMock = vi.fn(async () => {});
 
     const mockDb = {
@@ -52,7 +52,7 @@ describe("installMarketplacePlugin", () => {
       db: mockDb as any,
       pluginLoader: {
         installPlugin: installPluginMock,
-        registry: { getByKey: getByKeyMock },
+        registry: { getByKeyScoped: getByKeyScopedMock },
         lifecycle: { load: lifecycleLoadMock },
       } as any,
     });
@@ -60,8 +60,10 @@ describe("installMarketplacePlugin", () => {
     expect(installPluginMock).toHaveBeenCalledWith({
       packageName: "aoa-plugin-slack",
       version: "1.0.0",
+      companyId: "c1",
+      catalogItemId: PLUGIN.id,
     });
-    expect(getByKeyMock).toHaveBeenCalledWith("aoa.slack");
+    expect(getByKeyScopedMock).toHaveBeenCalledWith("aoa.slack", "c1");
     expect(lifecycleLoadMock).toHaveBeenCalledWith("plug-uuid-1");
     expect(result.pluginId).toBe("plug-uuid-1");
     expect(result.alreadyInstalled).toBe(false);
@@ -88,7 +90,7 @@ describe("installMarketplacePlugin", () => {
       db: mockDb as any,
       pluginLoader: {
         installPlugin: installPluginMock,
-        registry: { getByKey: vi.fn() },
+        registry: { getByKeyScoped: vi.fn() },
         lifecycle: { load: lifecycleLoadMock },
       } as any,
     });
@@ -124,7 +126,7 @@ describe("installMarketplacePlugin", () => {
         db: mockDb as any,
         pluginLoader: {
           installPlugin: installPluginMock,
-          registry: { getByKey: vi.fn() },
+          registry: { getByKeyScoped: vi.fn() },
           lifecycle: { load: vi.fn() },
         } as any,
       }),
@@ -153,7 +155,7 @@ describe("installMarketplacePlugin", () => {
         db: mockDb as any,
         pluginLoader: {
           installPlugin: installPluginMock,
-          registry: { getByKey: vi.fn() },
+          registry: { getByKeyScoped: vi.fn() },
           lifecycle: { load: lifecycleLoadMock },
         } as any,
       }),
