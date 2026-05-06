@@ -1,7 +1,7 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { createRateLimiter } from "../middleware/rate-limit.js";
+import { createRateLimiter, signinLimiter } from "../middleware/rate-limit.js";
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 //
@@ -166,5 +166,48 @@ describe("createRateLimiter", () => {
     expect(headers).not.toHaveProperty("x-ratelimit-limit");
     expect(headers).not.toHaveProperty("x-ratelimit-remaining");
     expect(headers).not.toHaveProperty("x-ratelimit-reset");
+  });
+});
+
+describe("trust proxy integration with rate limiter", () => {
+  it("buckets per spoofed IP when trust proxy is true and X-Forwarded-For set", async () => {
+    const app = express();
+    app.set("trust proxy", true);
+    app.use((req, _res, next) => {
+      req.actor = { type: "none", source: "none" };
+      next();
+    });
+    app.post("/test", signinLimiter, (_req, res) => res.status(200).json({ ok: true }));
+
+    // signinLimiter is module-level and shares state across this process.
+    // Use unique IPs per assertion so the test isn't sensitive to prior runs.
+    const ipA = "198.51.100.81";
+    const ipB = "198.51.100.82";
+
+    const ipAResults: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      const r = await request(app).post("/test").set("X-Forwarded-For", ipA);
+      ipAResults.push(r.status);
+    }
+    expect(ipAResults.filter((s) => s === 200).length).toBe(10);
+    expect(ipAResults.filter((s) => s === 429).length).toBe(2);
+
+    // Different XFF IP should still have its own (fresh) bucket.
+    const r = await request(app).post("/test").set("X-Forwarded-For", ipB);
+    expect(r.status).toBe(200);
+  });
+
+  it("ignores X-Forwarded-For when trust proxy is false (default)", async () => {
+    const app = express();
+    app.set("trust proxy", false);
+    app.use((req, _res, next) => {
+      req.actor = { type: "none", source: "none" };
+      next();
+    });
+    app.get("/probe", (req, res) => res.json({ ip: req.ip }));
+
+    const r = await request(app).get("/probe").set("X-Forwarded-For", "1.2.3.4");
+    // With trust proxy false, req.ip is the loopback socket IP, not the XFF.
+    expect(r.body.ip).not.toBe("1.2.3.4");
   });
 });

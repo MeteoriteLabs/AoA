@@ -131,11 +131,13 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    trustProxy: boolean | number | string[];
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
 ) {
   const app = express();
+  app.set("trust proxy", opts.trustProxy);
 
   // Resolve the UI dist directory up-front so CSP can extract inline-script
   // hashes from index.html before the helmet middleware mounts. We try the
