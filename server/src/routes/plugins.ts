@@ -660,7 +660,7 @@ export function pluginRoutes(
       }
 
       // Transition to ready state
-      const existingPlugin = await registry.getByKey(discovered.manifest.id);
+      const existingPlugin = await registry.getByKeyScoped(discovered.manifest.id, companyId);
       if (existingPlugin) {
         await lifecycle.load(existingPlugin.id);
         const updated = await registry.getById(existingPlugin.id);

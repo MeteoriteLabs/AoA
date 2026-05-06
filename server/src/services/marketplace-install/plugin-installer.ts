@@ -51,9 +51,9 @@ export interface InstallMarketplacePluginResult {
  *   3. registry.getByKey(discovered.manifest.id) → existing plugin row.
  *   4. lifecycle.load(existingPlugin.id) → transitions 'installed' → 'ready'.
  *
- * companyId is accepted for parity with other installers (installSkill, installAgent,
- * installTeam) and for future audit logging. Plugin rows themselves are instance-scoped
- * (no companyId column on plugins table) so the parameter does not affect installation.
+ * TODO(Task 5): companyId is now on the plugins table (M.4 Tasks 1-3).
+ * The idempotency check below and the registry.getByKey call must be scoped
+ * by companyId. PluginLoaderLike will be updated in Task 5.
  *
  * @throws Error if catalogItem.npm missing, manifest missing, or any step fails.
  */

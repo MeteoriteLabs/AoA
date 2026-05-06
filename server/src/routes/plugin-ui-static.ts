@@ -255,6 +255,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
       }
     }
     if (!plugin) {
+      // Unscoped: UI assets are not company-specific (same package for all tenants).
       plugin = await registry.getByKey(pluginId);
     }
 
