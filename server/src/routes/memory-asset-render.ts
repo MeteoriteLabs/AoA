@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import mammoth from "mammoth";
+import DOMPurify from "isomorphic-dompurify";
 import type { Db } from "@armyofagents/db";
 import { memoryAssetsService } from "../services/memory-assets.js";
 import type { StorageService } from "../storage/types.js";
@@ -57,9 +58,15 @@ export function memoryAssetRenderRoutes(opts: RoutesOptions) {
         const obj = await storage.getObject(companyId, asset.storageKey);
         const buffer = await streamToBuffer(obj.stream);
         const result = await mammoth.convertToHtml({ buffer });
+        const sanitized = DOMPurify.sanitize(result.value, {
+          ALLOWED_URI_REGEXP: /^(?:https?|mailto|tel|#)/i,
+          FORBID_TAGS: ["script", "iframe", "object", "embed", "form"],
+          FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus"],
+        });
 
         res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.send(`<article class="docx-rendered">${result.value}</article>`);
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        res.send(`<article class="docx-rendered">${sanitized}</article>`);
       } catch (err) {
         next(err);
       }

@@ -1,4 +1,5 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import helmet from "helmet";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -140,6 +141,12 @@ export async function createApp(
     },
   }));
   app.use(httpLogger);
+  app.use(helmet({
+    contentSecurityPolicy: false,        // deferred to Sprint 2 (C7)
+    crossOriginEmbedderPolicy: false,    // can break legitimate embeds; revisit Sprint 2
+    crossOriginOpenerPolicy: false,
+    crossOriginResourcePolicy: false,
+  }));
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
   const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
