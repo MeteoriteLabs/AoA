@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Dialog,
   DialogContent,
@@ -15,6 +16,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useInstallOperation } from "@/hooks/useInstallOperation";
 import { useOperationStatus } from "@/hooks/useOperationStatus";
 import { useInstallToast } from "../toast/useInstallToast";
+import { queryKeys } from "@/lib/queryKeys";
 
 export interface PluginInstallModalProps {
   item: CatalogItem;
@@ -43,6 +45,7 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
   const installCompanyId =
     selectedCompanyId ?? companies.find((c) => c.status !== "archived")?.id ?? null;
 
+  const queryClient = useQueryClient();
   const installMutation = useInstallOperation({ companyId: installCompanyId ?? "" });
   const { show, update } = useInstallToast();
   const [pendingOpId, setPendingOpId] = useState<string | null>(null);
@@ -65,10 +68,12 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
     if (!opStatus || pendingToastId === null || pendingToastId < 1) return;
     if (opStatus.status === "success") {
       update(pendingToastId, { status: "success", message: `Installed ${item.name}` });
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
       setPendingOpId(null);
       setPendingToastId(null);
     } else if (opStatus.status === "requested") {
       update(pendingToastId, { status: "success", message: `Request submitted — a founder will review ${item.name}` });
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
       setPendingOpId(null);
       setPendingToastId(null);
     } else if (opStatus.status === "failure") {
@@ -80,7 +85,7 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
       setPendingOpId(null);
       setPendingToastId(null);
     }
-  }, [opStatus, pendingToastId, update, item.name]);
+  }, [opStatus, pendingToastId, update, item.name, queryClient]);
 
   const handleInstall = async () => {
     if (!installCompanyId) return;

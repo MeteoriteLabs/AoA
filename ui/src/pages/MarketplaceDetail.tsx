@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useCatalog } from "@/hooks/useCatalog";
 import { pluginsApi } from "@/api/plugins";
+import { queryKeys } from "@/lib/queryKeys";
 import { MarketplaceLayout } from "@/components/marketplace/MarketplaceLayout";
 import { TrustBadge } from "@/components/marketplace/TrustBadge";
 import { ReadmeRender } from "@/components/marketplace/ReadmeRender";
@@ -46,7 +47,7 @@ export default function MarketplaceDetail() {
   const [showAllCaps, setShowAllCaps] = useState(false);
 
   const { data: installedPlugins = [] } = useQuery<PluginRecord[]>({
-    queryKey: ["plugins"],
+    queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
 
