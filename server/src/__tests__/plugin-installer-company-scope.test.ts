@@ -1,15 +1,45 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// vi.hoisted() runs at hoist time — before vi.mock factories — so these
+// variables are safe to reference inside the mock factories below.
+const { capturedEqArgs, symbols } = vi.hoisted(() => ({
+  capturedEqArgs: [] as unknown[][],
+  symbols: {} as { companyId?: symbol },
+}));
 
 vi.mock("@armyofagents/db", () => {
-  const tableProxy = new Proxy({}, { get: () => Symbol("col") });
-  return { plugins: tableProxy };
+  const companyIdSym = Symbol("companyId");
+  symbols.companyId = companyIdSym;
+  const pluginsProxy = new Proxy({} as Record<string, unknown>, {
+    get(_t, prop) {
+      if (prop === "companyId") return companyIdSym;
+      return Symbol(String(prop));
+    },
+  });
+  return {
+    plugins: pluginsProxy,
+    companies: new Proxy({}, { get: () => Symbol("col") }),
+  };
 });
+
 vi.mock("drizzle-orm", () => ({
-  eq: () => Symbol("op:eq"),
+  eq: (...args: unknown[]) => {
+    capturedEqArgs.push(args);
+    return Symbol("op:eq");
+  },
   and: () => Symbol("op:and"),
+  asc: () => Symbol("op:asc"),
+  sql: new Proxy(
+    Object.assign(function () { return Symbol("sql"); }, { raw: () => Symbol("sql") }),
+    { get: (_t: any, p: string) => p === "raw" ? () => Symbol("sql") : () => Symbol("sql") },
+  ),
+  ne: () => Symbol("op:ne"),
+  desc: () => Symbol("op:desc"),
 }));
 
 import { installMarketplacePlugin } from "../services/marketplace-install/plugin-installer.js";
+
+beforeEach(() => { capturedEqArgs.length = 0; });
 
 const makeDb = (existingPlugins: any[]) => ({
   select: () => ({
@@ -79,5 +109,59 @@ describe("installMarketplacePlugin companyId scoping", () => {
     expect(load).toHaveBeenCalledWith("plug-2");
     expect(result.pluginId).toBe("plug-2");
     expect(result.alreadyInstalled).toBe(false);
+  });
+});
+
+describe("pluginRegistryService.install — nextInstallOrder company scoping", () => {
+  beforeEach(() => { capturedEqArgs.length = 0; });
+
+  it("passes companyId to eq() when computing MAX install order", async () => {
+    const { pluginRegistryService } = await import(
+      "../services/plugin-registry.js"
+    );
+
+    let selectN = 0;
+    const mockDb = {
+      select: () => ({
+        from: () => ({
+          where: () => {
+            selectN++;
+            // call 1: getByKeyScoped check → no existing row (not found)
+            // call 2: nextInstallOrder MAX query → max is 2
+            return selectN === 1
+              ? Promise.resolve([])
+              : Promise.resolve([{ maxOrder: 2 }]);
+          },
+        }),
+      }),
+      insert: () => ({
+        values: (vals: any) => ({
+          returning: () =>
+            Promise.resolve([{ ...vals, id: "plug-new", installOrder: 3 }]),
+        }),
+      }),
+    };
+
+    const registry = pluginRegistryService(mockDb as any);
+    await registry.install(
+      { packageName: "@test/plugin" } as any,
+      {
+        id: "test.plugin",
+        version: "1.0.0",
+        apiVersion: "1.0",
+        categories: [],
+        capabilities: [],
+      } as any,
+      "co-a",
+    );
+
+    // getByKeyScoped already scopes by companyId (1 call from it).
+    // After the fix, nextInstallOrder ALSO calls eq(plugins.companyId, "co-a"),
+    // so the total count must be >= 2. Without the fix it would be exactly 1.
+    const pluginsCompanyIdSymbol = symbols.companyId!;
+    const scopedCalls = capturedEqArgs.filter(
+      ([col, val]) => col === pluginsCompanyIdSymbol && val === "co-a",
+    );
+    expect(scopedCalls.length).toBeGreaterThanOrEqual(2);
   });
 });

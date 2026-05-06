@@ -110,10 +110,11 @@ export function pluginRegistryService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function nextInstallOrder(): Promise<number> {
+  async function nextInstallOrder(companyId: string): Promise<number> {
     const result = await db
       .select({ maxOrder: sql<number>`coalesce(max(${plugins.installOrder}), 0)` })
-      .from(plugins);
+      .from(plugins)
+      .where(eq(plugins.companyId, companyId));
     return (result[0]?.maxOrder ?? 0) + 1;
   }
 
@@ -223,7 +224,7 @@ export function pluginRegistryService(db: Db) {
           .then((rows) => rows[0] ?? null);
       }
 
-      const installOrder = await nextInstallOrder();
+      const installOrder = await nextInstallOrder(finalCompanyId);
 
       try {
         const rows = await db
