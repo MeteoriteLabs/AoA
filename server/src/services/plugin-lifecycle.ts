@@ -37,7 +37,7 @@
  */
 import { EventEmitter } from "node:events";
 import type { Db } from "@armyofagents/db";
-import { pluginVersionSnapshots } from "@armyofagents/db";
+import { pluginRollbackService } from "./plugin-rollback.js";
 import type {
   PluginStatus,
   PluginRecord,
@@ -670,13 +670,13 @@ export function pluginLifecycleManager(
       );
 
       // Save rollback snapshot so we can roll back if the upgrade fails
-      await db.insert(pluginVersionSnapshots).values({
-        pluginId: plugin.id,
-        companyId: plugin.companyId,
-        version: plugin.version,
-        packageName: plugin.packageName,
-        manifestJson: plugin.manifestJson,
-      });
+      await pluginRollbackService(db).saveSnapshot(
+        plugin.id,
+        plugin.companyId,
+        plugin.version,
+        plugin.packageName,
+        plugin.manifestJson,
+      );
 
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
 
