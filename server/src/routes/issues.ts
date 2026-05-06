@@ -29,6 +29,7 @@ import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js"
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { documentService } from "../services/documents.js";
+import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -1226,11 +1227,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, attachment.companyId);
 
     const object = await storage.getObject(attachment.companyId, attachment.objectKey);
-    res.setHeader("Content-Type", attachment.contentType || object.contentType || "application/octet-stream");
+    const safe = getSafeServingHeaders(
+      attachment.contentType || object.contentType,
+      attachment.originalFilename,
+    );
+    res.setHeader("Content-Type", safe.contentType);
     res.setHeader("Content-Length", String(attachment.byteSize || object.contentLength || 0));
     res.setHeader("Cache-Control", "private, max-age=60");
-    const filename = attachment.originalFilename ?? "attachment";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+    res.setHeader("Content-Disposition", safe.contentDisposition);
+    res.setHeader("X-Content-Type-Options", safe.xContentTypeOptions);
 
     object.stream.on("error", (err) => {
       next(err);
