@@ -29,6 +29,7 @@ import { resolveAoaInstanceRoot } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
 import { findActiveServerAdapter } from "../adapters/registry.js";
 import { agentService } from "./agents.js";
+import { executePinnedRequest, validateAndResolveFetchUrl } from "./outbound-url-guard.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
 
@@ -467,24 +468,32 @@ function parseFrontmatterMarkdown(raw: string): { frontmatter: Record<string, un
 // ---------------------------------------------------------------------------
 
 async function fetchText(url: string): Promise<string | null> {
+  // SSRF guard runs OUTSIDE the try/catch so that private-IP / disallowed-
+  // protocol / DNS-rebind violations propagate to the caller as a thrown
+  // error instead of being silently masked by the existing null-on-failure
+  // contract. Hiding "private IP blocked" behind a null return is a footgun.
+  const target = await validateAndResolveFetchUrl(url);
   try {
-    const response = await fetch(url);
-    if (!response.ok) return null;
-    return await response.text();
+    const response = await executePinnedRequest(target, undefined, AbortSignal.timeout(30_000));
+    if (response.status >= 400) return null;
+    return response.body;
   } catch {
     return null;
   }
 }
 
 async function fetchJson(url: string): Promise<unknown | null> {
+  const body = await fetchText(url);
+  if (body === null) return null;
   try {
-    const response = await fetch(url);
-    if (!response.ok) return null;
-    return await response.json();
+    return JSON.parse(body);
   } catch {
     return null;
   }
 }
+
+/** Test-only handle to the module-private fetch helpers. Do not import from production code. */
+export const __test__ = { fetchJson, fetchText };
 
 // ---------------------------------------------------------------------------
 // GitHub resolution helpers

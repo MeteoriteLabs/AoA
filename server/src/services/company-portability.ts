@@ -47,6 +47,7 @@ import { companyService } from "./companies.js";
 import { companySkillService } from "./company-skills.js";
 import { generateReadme } from "./company-export-readme.js";
 import { issueService } from "./issues.js";
+import { executePinnedRequest, validateAndResolveFetchUrl } from "./outbound-url-guard.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
 
@@ -801,20 +802,27 @@ function parseFrontmatterMarkdown(raw: string): MarkdownDoc {
 }
 
 async function fetchJson(url: string) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
+  const body = await fetchText(url);
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw unprocessable(`Failed to parse JSON from ${url}`);
   }
-  return response.json();
 }
 
 async function fetchText(url: string) {
-  const response = await fetch(url);
-  if (!response.ok) {
+  // SSRF guard: protocol whitelist + DNS resolution + private IP rejection,
+  // then pin the resolved IP into the request to close the DNS-rebind window.
+  const target = await validateAndResolveFetchUrl(url);
+  const response = await executePinnedRequest(target, undefined, AbortSignal.timeout(30_000));
+  if (response.status >= 400) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
-  return response.text();
+  return response.body;
 }
+
+/** Test-only handle to the module-private fetch helpers. Do not import from production code. */
+export const __test__ = { fetchJson, fetchText };
 
 function dedupeRequiredSecrets(values: CompanyPortabilityManifest["requiredSecrets"]) {
   const seen = new Set<string>();
