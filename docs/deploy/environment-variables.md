@@ -129,6 +129,7 @@ The server sets these automatically when invoking adapters. They appear in the s
 | `AOA_SESSION_COMPANY_ID` | Override active company ID in the CLI / MCP session |
 | `AOA_SESSION_USER_ID` | Override active user ID |
 | `AOA_SESSION_USER_ROLE` | Override role (`founder`, `team_lead`, `team_member`) |
+| `AOA_SESSION_ENABLED_CAPABILITIES` | Comma-separated list of `internal_agent_config.enabledCapabilities` consumed by the Commander MCP bridge to gate capability-bound tools (`discussion_processing`, `system_actions`, `memory_management`). Set automatically by the host process when spawning the bridge; set manually only when running the bridge subprocess directly. |
 
 ## LLM Provider Keys (for adapters)
 

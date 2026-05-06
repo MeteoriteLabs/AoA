@@ -27,6 +27,7 @@ function makeCtx(services: ServiceContainer): ToolContext {
     companyId: "comp-1",
     userId: "user-1",
     userRole: "founder",
+    enabledCapabilities: [],
     db: {} as any,
     services,
   };

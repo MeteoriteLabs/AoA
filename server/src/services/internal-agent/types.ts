@@ -43,6 +43,7 @@ export interface ToolContext {
   companyId: string;
   userId: string;
   userRole: string;
+  enabledCapabilities: readonly string[];   // NEW: from internal_agent_config
   db: Db;
   services: ServiceContainer;
 }

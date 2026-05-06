@@ -27,6 +27,9 @@ export interface ChatInput {
   companyId: string;
   userId: string;
   userRole: string;
+  // Threaded through to the MCP bridge so tools can be capability-gated.
+  // Looked up by the chat route from internal_agent_config. (C13)
+  enabledCapabilities: readonly string[];
   content: string;
   pageContext?: string;
   departmentContext?: string;

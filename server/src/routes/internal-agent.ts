@@ -16,6 +16,8 @@ import { assertRole } from "../middleware/rbac.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { HttpError, badRequest, notFound } from "../errors.js";
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
+import { permissionService } from "../services/permissions.js";
+import type { UserRole } from "@armyofagents/shared";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -97,13 +99,49 @@ export function internalAgentRoutes(db: Db) {
 
       try {
         const svc = agentLoopService(db);
-        // Sprint 2A: userRole defaults to "founder" in local_trusted mode
-        // (single-user). A future polish pass should look this up from
-        // user_roles for authenticated multi-user deployments.
+        // C13 fix: look up the caller's actual effective role and
+        // capability set instead of hardcoding "founder". Special-case
+        // local_implicit actors (loopback in local_trusted mode) — they
+        // bypass RBAC elsewhere in the codebase and have no userRoles row,
+        // so getEffectiveRole would return "team_member" by default.
+        const isLocalImplicit =
+          req.actor.type === "board" && req.actor.source === "local_implicit";
+        const isInstanceAdmin =
+          req.actor.type === "board" && req.actor.isInstanceAdmin === true;
+        let userRole: UserRole;
+        // Match middleware/rbac.ts:36-39 bypass semantics: local_implicit (local_trusted
+        // mode) and isInstanceAdmin actors get founder-equivalent access. Note: any
+        // future audit log that records userRole per-tool-call should preserve the
+        // actor's actual identity (the userId is unchanged here) — the coercion to
+        // "founder" applies only to the role string used for tool-dispatch authorization.
+        if (isLocalImplicit || isInstanceAdmin) {
+          userRole = "founder";
+        } else {
+          const role = await permissionService(db).getEffectiveRole(
+            companyId,
+            actor.actorId,
+          );
+          // getEffectiveRole defaults to "team_member" when no role is
+          // assigned; we mirror that fallback here for clarity.
+          userRole = role ?? "team_member";
+        }
+
+        // Look up the company's enabled capabilities. Empty array if no
+        // config row exists — chat will surface "not configured" further
+        // down anyway.
+        const cfgRows = await db
+          .select({ enabledCapabilities: internalAgentConfig.enabledCapabilities })
+          .from(internalAgentConfig)
+          .where(eq(internalAgentConfig.companyId, companyId));
+        const enabledCapabilities = (cfgRows[0]?.enabledCapabilities as
+          | string[]
+          | null) ?? [];
+
         const stream = svc.chat({
           companyId,
           userId: actor.actorId,
-          userRole: "founder",
+          userRole,
+          enabledCapabilities,
           content: req.body.message,
           pageContext: req.body.pageContext ?? undefined,
         });

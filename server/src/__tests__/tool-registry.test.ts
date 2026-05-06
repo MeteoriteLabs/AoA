@@ -12,6 +12,11 @@ const mockCtx: ToolContext = {
   companyId: "comp-1",
   userId: "user-1",
   userRole: "founder",
+  enabledCapabilities: [
+    "discussion_processing",
+    "system_actions",
+    "memory_management",
+  ],
   db: {} as any,
   services: {} as any,
 };
