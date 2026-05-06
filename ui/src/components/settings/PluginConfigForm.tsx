@@ -141,11 +141,6 @@ export function PluginConfigForm({ companyId, pluginId, schema, initialValues, o
         {mutation.isPending ? "Saving…" : "Save settings"}
       </button>
 
-      {mutation.isError && (
-        <p className="text-[10px] text-red-400">
-          {mutation.error instanceof Error ? mutation.error.message : "Save failed"}
-        </p>
-      )}
     </div>
   );
 }
