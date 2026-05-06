@@ -7,12 +7,10 @@ import { plugins } from "./plugins.js";
  * for each plugin (one row per company+plugin pair, enforced by a unique index
  * on `(company_id, plugin_id)`).
  *
- * Plugins are company-scoped. The `config_json` column holds the values that
- * the operator enters in the plugin settings UI. These values are validated at
+ * Plugins are company-scoped. The `companyId` column is NOT NULL and references
+ * the `companies` table. The `config_json` column holds the values that the
+ * operator enters in the plugin settings UI. These values are validated at
  * runtime against the plugin's `instanceConfigSchema` from the manifest.
- *
- * Note: `company_id` is currently nullable (pre-backfill) and will become
- * NOT NULL after Task 3.
  *
  * @see PLUGIN_SPEC.md §21.3
  */

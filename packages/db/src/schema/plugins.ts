@@ -15,10 +15,10 @@ import type { PluginCategory, PluginStatus, PaperclipPluginManifestV1 } from "@a
  * `plugins` table — stores one row per installed plugin.
  *
  * Plugins are scoped per company. The unique constraint is on
- * `(company_id, plugin_key)` (note: `company_id` is currently nullable
- * during backfill and will become NOT NULL in Task 3). The full manifest
- * is persisted as JSONB in `manifest_json` so the host can reconstruct
- * capability and UI slot information without loading the plugin package.
+ * `(company_id, plugin_key)`. The `companyId` column is NOT NULL and
+ * references the `companies` table. The full manifest is persisted as JSONB
+ * in `manifest_json` so the host can reconstruct capability and UI slot
+ * information without loading the plugin package.
  *
  * @see PLUGIN_SPEC.md §21.3
  */
@@ -43,8 +43,6 @@ export const plugins = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    // After backfill (Task 4), companyId will be NOT NULL.
-    // For now: nullable so the migration applies without breaking existing rows.
     companyPluginKeyIdx: uniqueIndex("plugins_company_plugin_key_idx").on(
       table.companyId,
       table.pluginKey,

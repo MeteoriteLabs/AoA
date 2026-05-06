@@ -7,6 +7,7 @@ import {
   pluginJobs,
   pluginJobRuns,
   pluginWebhookDeliveries,
+  companies,
 } from "@armyofagents/db";
 import type {
   PaperclipPluginManifestV1,
@@ -186,8 +187,8 @@ export function pluginRegistryService(db: Db) {
       let finalCompanyId = companyId;
       if (!finalCompanyId) {
         const [company] = await db
-          .select({ id: sql<string>`${sql.identifier("companies")}."id"` })
-          .from(sql.raw(`"companies"`))
+          .select({ id: companies.id })
+          .from(companies)
           .limit(1)
           .catch(() => []);
         if (!company) {
