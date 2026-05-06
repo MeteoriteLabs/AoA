@@ -77,6 +77,15 @@ export function feedbackVotesService(db: Db, deps: FeedbackVotesServiceDeps = {}
   }
 
   return {
+    getById: async (voteId: string): Promise<FeedbackVote | null> => {
+      const rows = await db
+        .select()
+        .from(feedbackVotes)
+        .where(eq(feedbackVotes.id, voteId))
+        .limit(1);
+      return (rows[0] ?? null) as FeedbackVote | null;
+    },
+
     recordVote: async (input: RecordVoteInput): Promise<FeedbackVote> => {
       const now = new Date();
       const normalizedReason = normalizeReason(input.vote, input.reason);

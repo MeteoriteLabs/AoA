@@ -6,6 +6,7 @@ import { feedbackRoutes } from "../routes/feedback.js";
 import { forbidden, notFound } from "../errors.js";
 
 const mockVotesService = vi.hoisted(() => ({
+  getById: vi.fn(),
   recordVote: vi.fn(),
   listVotes: vi.fn(),
   dismissVote: vi.fn(),
@@ -310,6 +311,11 @@ describe("feedback routes — DELETE /feedback-votes/:voteId", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("dismisses the caller's own vote with 204", async () => {
+    mockVotesService.getById.mockResolvedValue({
+      id: VOTE_ID,
+      companyId: COMPANY_A,
+      authorUserId: USER_A,
+    });
     mockVotesService.dismissVote.mockResolvedValue(undefined);
     const app = createApp(boardActor({ userId: USER_A }));
     const res = await request(app).delete(`/api/feedback-votes/${VOTE_ID}`);
@@ -318,17 +324,35 @@ describe("feedback routes — DELETE /feedback-votes/:voteId", () => {
   });
 
   it("propagates service 403 when caller is not the vote's author", async () => {
+    mockVotesService.getById.mockResolvedValue({
+      id: VOTE_ID,
+      companyId: COMPANY_A,
+      authorUserId: USER_A,
+    });
     mockVotesService.dismissVote.mockRejectedValue(forbidden("Only the vote's author can dismiss it"));
     const app = createApp(boardActor({ userId: USER_B }));
     const res = await request(app).delete(`/api/feedback-votes/${VOTE_ID}`);
     expect(res.status).toBe(403);
   });
 
-  it("propagates service 404 for unknown vote", async () => {
-    mockVotesService.dismissVote.mockRejectedValue(notFound("Feedback vote not found"));
+  it("returns 404 when the vote does not exist", async () => {
+    mockVotesService.getById.mockResolvedValue(null);
     const app = createApp(boardActor());
     const res = await request(app).delete(`/api/feedback-votes/${VOTE_ID}`);
     expect(res.status).toBe(404);
+    expect(mockVotesService.dismissVote).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when actor's company differs from vote's company (cross-tenant)", async () => {
+    mockVotesService.getById.mockResolvedValue({
+      id: VOTE_ID,
+      companyId: COMPANY_A,
+      authorUserId: USER_A,
+    });
+    const app = createApp(boardActor({ userId: USER_A, companyIds: [COMPANY_B] }));
+    const res = await request(app).delete(`/api/feedback-votes/${VOTE_ID}`);
+    expect(res.status).toBe(403);
+    expect(mockVotesService.dismissVote).not.toHaveBeenCalled();
   });
 
   it("rejects non-board actors", async () => {

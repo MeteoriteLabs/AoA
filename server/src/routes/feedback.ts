@@ -169,6 +169,14 @@ export function feedbackRoutes(db: Db) {
       return;
     }
     const voteId = req.params.voteId as string;
+
+    const vote = await votes.getById(voteId);
+    if (!vote) {
+      res.status(404).json({ error: "Feedback vote not found" });
+      return;
+    }
+    assertCompanyAccess(req, vote.companyId);
+
     const authorUserId = req.actor.userId ?? "local-board";
     await votes.dismissVote(voteId, authorUserId);
     res.status(204).send();
