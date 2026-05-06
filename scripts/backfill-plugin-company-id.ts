@@ -27,26 +27,28 @@ async function main() {
   const companyId = company.id;
   console.log(`Backfilling companyId = ${companyId}`);
 
-  // Backfill plugins
-  await db
-    .update(plugins)
-    .set({ companyId })
-    .where(isNull(plugins.companyId));
-  console.log("plugins updated");
+  await db.transaction(async (tx) => {
+    // Backfill plugins
+    await tx
+      .update(plugins)
+      .set({ companyId })
+      .where(isNull(plugins.companyId));
+    console.log("plugins updated");
 
-  // Backfill plugin_config
-  await db
-    .update(pluginConfig)
-    .set({ companyId })
-    .where(isNull(pluginConfig.companyId));
-  console.log("plugin_config updated");
+    // Backfill plugin_config
+    await tx
+      .update(pluginConfig)
+      .set({ companyId })
+      .where(isNull(pluginConfig.companyId));
+    console.log("plugin_config updated");
 
-  // Backfill plugin_version_snapshots
-  await db
-    .update(pluginVersionSnapshots)
-    .set({ companyId })
-    .where(isNull(pluginVersionSnapshots.companyId));
-  console.log("plugin_version_snapshots updated");
+    // Backfill plugin_version_snapshots
+    await tx
+      .update(pluginVersionSnapshots)
+      .set({ companyId })
+      .where(isNull(pluginVersionSnapshots.companyId));
+    console.log("plugin_version_snapshots updated");
+  });
 
   console.log("Backfill complete.");
   await pool.end();

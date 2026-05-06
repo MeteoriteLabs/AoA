@@ -190,7 +190,10 @@ export function pluginRegistryService(db: Db) {
           .select({ id: companies.id })
           .from(companies)
           .limit(1)
-          .catch(() => []);
+          .catch((err) => {
+            console.error("[plugin-registry] Failed to fetch fallback company:", err);
+            return [] as { id: string }[];
+          });
         if (!company) {
           throw new Error("No companies found in database; cannot install plugin without a company context");
         }
@@ -350,7 +353,7 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(eq(pluginConfig.pluginId, pluginId))
+          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, finalCompanyId)))
           .returning()
           .then((rows) => rows[0]);
       }
@@ -395,7 +398,7 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(eq(pluginConfig.pluginId, pluginId))
+          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, finalCompanyId)))
           .returning()
           .then((rows) => rows[0]);
       }
