@@ -49,6 +49,19 @@ import { badRequest, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
 // ---------------------------------------------------------------------------
+// Pure helpers (exported for testing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns capabilities present in newCaps but absent in oldCaps.
+ * Used to determine if an upgrade requires operator approval.
+ */
+export function diffCapabilities(oldCaps: string[], newCaps: string[]): string[] {
+  const oldSet = new Set(oldCaps);
+  return newCaps.filter((c) => !oldSet.has(c));
+}
+
+// ---------------------------------------------------------------------------
 // Lifecycle state machine
 // ---------------------------------------------------------------------------
 
@@ -669,9 +682,7 @@ export function pluginLifecycleManager(
       );
 
       // 2. Compare capabilities
-      const addedCaps = newManifest.capabilities.filter(
-        (cap) => !oldManifest.capabilities.includes(cap),
-      );
+      const addedCaps = diffCapabilities(oldManifest.capabilities, newManifest.capabilities);
 
       // 3. Transition state
       if (addedCaps.length > 0) {
