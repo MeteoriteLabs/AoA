@@ -48,7 +48,7 @@ vi.mock("../middleware/logger.js", () => ({
   httpLogger: vi.fn(),
 }));
 
-const { createBetterAuthInstance } = await import("../auth/better-auth.js");
+const { createBetterAuthInstance, deriveAuthTrustedOrigins } = await import("../auth/better-auth.js");
 
 const SECRET_ENV = "BETTER_AUTH_SECRET";
 const FALLBACK_ENV = "AOA_AGENT_JWT_SECRET";
@@ -192,5 +192,29 @@ describe("createBetterAuthInstance — fail-closed secret gate", () => {
     expect(() => createBetterAuthInstance(fakeDb, config, [])).toThrow(
       /BETTER_AUTH_SECRET/,
     );
+  });
+});
+
+describe("deriveAuthTrustedOrigins — scheme rules per deployment mode", () => {
+  it("authenticated mode: HTTPS only, no http:// fallback", () => {
+    const config = makeConfig({
+      deploymentMode: "authenticated",
+      allowedHostnames: ["example.com"],
+      authBaseUrlMode: "auto",
+    });
+    const origins = deriveAuthTrustedOrigins(config);
+    expect(origins).toContain("https://example.com");
+    expect(origins).not.toContain("http://example.com");
+  });
+
+  it("local_trusted mode: both http:// and https:// allowed (loopback dev)", () => {
+    const config = makeConfig({
+      deploymentMode: "local_trusted",
+      allowedHostnames: ["localhost"],
+      authBaseUrlMode: "auto",
+    });
+    const origins = deriveAuthTrustedOrigins(config);
+    expect(origins).toContain("http://localhost");
+    expect(origins).toContain("https://localhost");
   });
 });
