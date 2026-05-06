@@ -32,7 +32,7 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `AOA_AUTH_PUBLIC_BASE_URL` | — | Required when `AOA_AUTH_BASE_URL_MODE=explicit`. Public URL where Better Auth callbacks resolve |
 | `AOA_AUTH_STORE` | `default` | Auth-store backend selection |
 | `BETTER_AUTH_BASE_URL` | (derived) | Override for Better Auth base URL — usually leave unset and let `AOA_AUTH_*` drive it |
-| `BETTER_AUTH_SECRET` | (auto-generated) | Better Auth signing secret. Auto-generated on first onboard; set explicitly for multi-instance setups |
+| `BETTER_AUTH_SECRET` | (required when `AOA_DEPLOYMENT_MODE!="local_trusted"`) | HMAC secret for Better Auth session cookies. **Required** for `authenticated` (and any future non-local-trusted) deployment — the server refuses to start if unset. In `local_trusted` (loopback-only) mode the server boots with a constant dev fallback and logs a one-line WARN. `AOA_AGENT_JWT_SECRET` acts as a fallback if `BETTER_AUTH_SECRET` is not set. Auto-generated on first `pnpm aoa onboard`; set explicitly for multi-instance setups |
 | `BETTER_AUTH_TRUSTED_ORIGINS` | (derived) | CORS allowlist for Better Auth |
 | `BETTER_AUTH_URL` | (derived) | Better Auth canonical URL |
 
