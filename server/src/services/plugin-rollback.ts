@@ -19,12 +19,14 @@ export function pluginRollbackService(db: Db) {
      */
     async saveSnapshot(
       pluginId: string,
+      companyId: string,
       version: string,
       packageName: string,
       manifestJson: unknown,
     ): Promise<void> {
       await db.insert(pluginVersionSnapshots).values({
         pluginId,
+        companyId,
         version,
         packageName,
         manifestJson,

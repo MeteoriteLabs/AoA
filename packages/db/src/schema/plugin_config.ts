@@ -4,12 +4,15 @@ import { plugins } from "./plugins.js";
 
 /**
  * `plugin_config` table — stores operator-provided instance configuration
- * for each plugin (one row per plugin, enforced by a unique index on
- * `plugin_id`).
+ * for each plugin (one row per company+plugin pair, enforced by a unique index
+ * on `(company_id, plugin_id)`).
  *
- * The `config_json` column holds the values that the operator enters in the
- * plugin settings UI. These values are validated at runtime against the
- * plugin's `instanceConfigSchema` from the manifest.
+ * Plugins are company-scoped. The `config_json` column holds the values that
+ * the operator enters in the plugin settings UI. These values are validated at
+ * runtime against the plugin's `instanceConfigSchema` from the manifest.
+ *
+ * Note: `company_id` is currently nullable (pre-backfill) and will become
+ * NOT NULL after Task 3.
  *
  * @see PLUGIN_SPEC.md §21.3
  */

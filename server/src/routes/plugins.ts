@@ -1481,6 +1481,7 @@ export function pluginRoutes(
     const rollback = pluginRollbackService(db);
     await rollback.saveSnapshot(
       plugin.id,
+      plugin.companyId ?? "",
       plugin.version,
       plugin.packageName,
       plugin.manifestJson,
