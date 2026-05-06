@@ -15,6 +15,8 @@ import {
   signupLimiter,
   forgotPasswordLimiter,
 } from "./middleware/rate-limit.js";
+import { buildHelmetOptions } from "./services/helmet-options.js";
+import { extractInlineScriptHashes } from "./services/csp-script-hashes.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { agentRoutes } from "./routes/agents.js";
@@ -135,6 +137,27 @@ export async function createApp(
 ) {
   const app = express();
 
+  // Resolve the UI dist directory up-front so CSP can extract inline-script
+  // hashes from index.html before the helmet middleware mounts. We try the
+  // published location first (server/ui-dist/, where the npm build ships
+  // the SPA bundle) then the monorepo dev location (../../ui/dist).
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const uiDistCandidates = [
+    path.resolve(__dirname, "../ui-dist"),
+    path.resolve(__dirname, "../../ui/dist"),
+  ];
+  const uiDistDir =
+    opts.uiMode === "static"
+      ? uiDistCandidates.find((p) => fs.existsSync(path.join(p, "index.html")))
+      : undefined;
+
+  // Inline-script hashes for CSP `script-src 'sha256-...'`. Empty array in
+  // vite-dev mode (CSP is skipped) and when the dist file is missing
+  // (`extractInlineScriptHashes` returns [] with a warn log).
+  const inlineScriptHashes = uiDistDir
+    ? await extractInlineScriptHashes(path.join(uiDistDir, "index.html"))
+    : [];
+
   // Capture raw request body bytes so plugin webhook handlers can verify HMAC
   // signatures against the exact bytes the provider signed. Without this,
   // (req as any).rawBody is undefined and signature verification breaks.
@@ -146,12 +169,15 @@ export async function createApp(
     },
   }));
   app.use(httpLogger);
-  app.use(helmet({
-    contentSecurityPolicy: false,        // deferred to Sprint 2 (C7)
-    crossOriginEmbedderPolicy: false,    // can break legitimate embeds; revisit Sprint 2
-    crossOriginOpenerPolicy: false,
-    crossOriginResourcePolicy: false,
-  }));
+  // Strict CSP + tightened cross-origin policies in production deployment
+  // modes. Vite-HMR dev (local_trusted + non-production node env) skips CSP
+  // because HMR's runtime needs inline scripts + WebSocket + eval.
+  // See `services/helmet-options.ts` for the full directive set.
+  app.use(helmet(buildHelmetOptions({
+    deploymentMode: opts.deploymentMode,
+    nodeEnv: process.env.NODE_ENV,
+    inlineScriptHashes,
+  })));
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
   const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
@@ -434,20 +460,13 @@ export async function createApp(
     loader: loaderInst,
   };
 
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
-    // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
-    const candidates = [
-      path.resolve(__dirname, "../ui-dist"),
-      path.resolve(__dirname, "../../ui/dist"),
-    ];
-    const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
-    if (uiDist) {
-      app.use(express.static(uiDist));
+    if (uiDistDir) {
+      app.use(express.static(uiDistDir));
       // Catch-all SPA route, but NOT for /api/* (those 404 above, or matched by api router).
       // This prevents unmatched /api/foo from serving the SPA's index.html. Issue #116.
       app.get(/^(?!\/api\/).*/, (_req, res) => {
-        res.sendFile(path.join(uiDist, "index.html"));
+        res.sendFile(path.join(uiDistDir, "index.html"));
       });
     } else {
       console.warn("[aoa] UI dist not found; running in API-only mode");
