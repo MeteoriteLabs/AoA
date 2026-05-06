@@ -1,8 +1,10 @@
 import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
 import {
+  buildPinnedRequestOptions,
   executePinnedRequest,
   isPrivateIP,
+  PinnedRequestBodyCapError,
   validateAndResolveFetchUrl,
   type ValidatedFetchTarget,
 } from "../services/outbound-url-guard.js";
@@ -144,12 +146,108 @@ describe("executePinnedRequest", () => {
 
     const controller = new AbortController();
     try {
-      await expect(
-        executePinnedRequest(target, { method: "GET" }, controller.signal, { maxBodyBytes: 10 }),
-      ).rejects.toThrow(/exceeded 10 bytes/);
+      const promise = executePinnedRequest(
+        target,
+        { method: "GET" },
+        controller.signal,
+        { maxBodyBytes: 10 },
+      );
+      await expect(promise).rejects.toThrow(/exceeded 10 bytes/);
+      await expect(promise).rejects.toBeInstanceOf(PinnedRequestBodyCapError);
     } finally {
       server.close();
     }
+  });
+
+  it("throws PinnedRequestBodyCapError with capBytes on body-cap exceeded", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200);
+      res.end("z".repeat(500));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no address");
+    const port = address.port;
+
+    const target: ValidatedFetchTarget = {
+      parsedUrl: new URL(`http://example.test:${port}/`),
+      resolvedAddress: "127.0.0.1",
+      hostHeader: `example.test:${port}`,
+      tlsServername: undefined,
+      useTls: false,
+    };
+
+    const controller = new AbortController();
+    try {
+      let caught: unknown;
+      try {
+        await executePinnedRequest(
+          target,
+          { method: "GET" },
+          controller.signal,
+          { maxBodyBytes: 64 },
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(PinnedRequestBodyCapError);
+      expect((caught as PinnedRequestBodyCapError).capBytes).toBe(64);
+      expect((caught as PinnedRequestBodyCapError).name).toBe("PinnedRequestBodyCapError");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("does not forward URL-embedded credentials to the pinned request (no Authorization header, no auth field)", async () => {
+    let seenAuthHeader: string | undefined;
+    const server = createServer((req, res) => {
+      seenAuthHeader = req.headers.authorization;
+      res.writeHead(200);
+      res.end("ok");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no address");
+    const port = address.port;
+
+    // Validate a URL with embedded credentials.
+    // `127.0.0.1` is private, so we have to spoof the resolved target by
+    // building a fake target with creds in parsedUrl directly — that
+    // exercises buildPinnedRequestOptions's belt-and-suspenders defense.
+    const targetWithCreds: ValidatedFetchTarget = {
+      parsedUrl: new URL(`http://user:pass@example.test:${port}/path`),
+      resolvedAddress: "127.0.0.1",
+      hostHeader: `example.test:${port}`,
+      tlsServername: undefined,
+      useTls: false,
+    };
+
+    const { options } = buildPinnedRequestOptions(targetWithCreds, { method: "GET" });
+    // Belt-and-suspenders: even with creds in parsedUrl, options.auth must be undefined.
+    expect(options.auth).toBeUndefined();
+
+    const controller = new AbortController();
+    try {
+      const res = await executePinnedRequest(targetWithCreds, { method: "GET" }, controller.signal);
+      expect(res.status).toBe(200);
+      // No Authorization header should leak from URL-embedded credentials.
+      expect(seenAuthHeader).toBeUndefined();
+    } finally {
+      server.close();
+    }
+  });
+
+  it("validateAndResolveFetchUrl strips embedded credentials from parsedUrl", async () => {
+    // Use a public-resolving DNS name so validate doesn't reject.
+    // We're only checking that the returned parsedUrl has no creds.
+    const target = await validateAndResolveFetchUrl("https://user:pass@example.com/path?q=1");
+    expect(target.parsedUrl.username).toBe("");
+    expect(target.parsedUrl.password).toBe("");
+    // Other fields must remain intact.
+    expect(target.parsedUrl.hostname).toBe("example.com");
+    expect(target.parsedUrl.pathname).toBe("/path");
+    expect(target.parsedUrl.search).toBe("?q=1");
+    expect(target.hostHeader).toBe("example.com");
   });
 
   it("sends the request body when init.body is provided", async () => {
