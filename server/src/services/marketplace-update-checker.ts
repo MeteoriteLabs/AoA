@@ -12,6 +12,7 @@ import {
   marketplacePendingUpdates,
   companies,
   companySkills,
+  plugins,
 } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
 import { marketplaceNotifications } from "./marketplace-notifications.js";
@@ -140,8 +141,54 @@ async function checkCompany(db: Db, catalogItems: CatalogItem[], companyId: stri
     }
     // TODO: Add agent + team template checks when templateOrigin/templateVersion
     // columns are added to those schemas.
+
+    await checkPluginUpdates(db, companyId, catalogItems);
   } catch (err) {
     logger.error({ err, companyId }, "marketplace-update-checker: error checking company");
+  }
+}
+
+/**
+ * Check for plugin updates for a single company.
+ * Scans the plugins table for this company, compares installed versions against
+ * the catalog, and upserts to marketplacePendingUpdates for any plugins with
+ * newer versions available.
+ */
+async function checkPluginUpdates(
+  db: Db,
+  companyId: string,
+  catalogItems: CatalogItem[],
+): Promise<void> {
+  const installedPlugins = await db
+    .select()
+    .from(plugins)
+    .where(and(eq(plugins.companyId, companyId), eq(plugins.status, "ready")));
+
+  for (const plugin of installedPlugins) {
+    // Match catalog item by packageName
+    const catalogItem = catalogItems.find(
+      (item) => item.type === "plugin" && item.npm?.packageName === plugin.packageName,
+    );
+    if (!catalogItem || !catalogItem.npm?.version) continue;
+
+    try {
+      const { inserted } = await upsertPendingUpdate(db, companyId, {
+        catalogItemId: catalogItem.id,
+        catalogItemName: catalogItem.name,
+        itemType: "plugin",
+        currentVersion: plugin.version,
+        latestVersion: catalogItem.npm.version,
+      });
+
+      if (!inserted) continue; // Already knew about this update — no action needed
+
+      void marketplaceNotifications
+        .updateAvailable(db, companyId, catalogItem.name, plugin.version, catalogItem.npm.version)
+        .catch((err) => logger.error({ err }, "marketplace: plugin updateAvailable notification failed"));
+    } catch (err) {
+      // Per-plugin isolation: one plugin error doesn't block the rest
+      logger.error({ err, catalogItemId: catalogItem.id, companyId }, "marketplace-update-checker: per-plugin error");
+    }
   }
 }
 
