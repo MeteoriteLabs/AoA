@@ -61,6 +61,35 @@ export interface Config {
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
+  /**
+   * Express trust-proxy setting. Set when AoA runs behind a reverse proxy
+   * (Cloudflare, ALB, nginx). Without this, `req.ip` reads the proxy's IP
+   * and IP-keyed rate limits collapse to one shared bucket.
+   * - `false` (default): trust the socket peer only
+   * - `true`: trust the X-Forwarded-* headers from any source (DANGEROUS without a real proxy)
+   * - `number` N: trust the N-th hop in X-Forwarded-For (recommended for cloud)
+   * - `string[]`: list of CIDRs to trust as proxies
+   */
+  trustProxy: boolean | number | string[];
+}
+
+function parseTrustProxy(raw: string | undefined): boolean | number | string[] {
+  if (raw === undefined) return false;
+  const value = raw.trim();
+  if (value === "") return false;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (/^\d+$/.test(value)) return Number(value);
+  if (value.includes(",") || value.includes("/") || value.includes(".") || value.includes(":")) {
+    return value
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  throw new Error(
+    `AOA_TRUST_PROXY="${raw}" is not a valid value. ` +
+      `Use "true", "false", a hop count (e.g. "1"), or a comma-separated CIDR list.`,
+  );
 }
 
 export function loadConfig(): Config {
@@ -237,5 +266,6 @@ export function loadConfig(): Config {
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
+    trustProxy: parseTrustProxy(process.env.AOA_TRUST_PROXY),
   };
 }
