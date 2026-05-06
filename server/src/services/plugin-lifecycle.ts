@@ -681,8 +681,8 @@ export function pluginLifecycleManager(
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
 
       // 1. Download and validate new package via loader.
-      //    upgradePlugin() no longer throws on capability escalation — it
-      //    returns escalatedCaps so the lifecycle layer can gate on them.
+      //    Capability delta is computed here via diffCapabilities — the loader
+      //    does not gate on capabilities; that decision belongs to this layer.
       const { oldManifest, newManifest, discovered } =
         await pluginLoaderInstance.upgradePlugin(pluginId, { version });
 
