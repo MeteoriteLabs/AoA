@@ -177,35 +177,9 @@ export function pluginRegistryService(db: Db) {
      *                    If not provided, attempts to use the first company in the database.
      */
     install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1, companyId?: string) => {
-      const existing = await getByKey(manifest.id);
-      if (existing) {
-        if (existing.status !== "uninstalled") {
-          throw conflict(`Plugin already installed: ${manifest.id}`);
-        }
-
-        // Reinstall after soft-delete: reactivate the existing row so plugin-scoped
-        // data and references remain stable across uninstall/reinstall cycles.
-        return db
-          .update(plugins)
-          .set({
-            packageName: input.packageName,
-            packagePath: input.packagePath ?? null,
-            version: manifest.version,
-            apiVersion: manifest.apiVersion,
-            categories: manifest.categories,
-            manifestJson: manifest,
-            status: "installed" as PluginStatus,
-            lastError: null,
-            updatedAt: new Date(),
-          })
-          .where(eq(plugins.id, existing.id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
-      }
-
-      const installOrder = await nextInstallOrder();
-
-      // If companyId not provided, use the first company in the database (single-tenant case).
+      // Resolve the target company before checking for an existing row so that
+      // the reinstall path is scoped to the same company (prevents matching
+      // a soft-deleted row from a different tenant).
       let finalCompanyId = companyId;
       if (!finalCompanyId) {
         const [company] = await db
@@ -222,12 +196,42 @@ export function pluginRegistryService(db: Db) {
         finalCompanyId = company.id;
       }
 
+      const existing = await getByKeyScoped(manifest.id, finalCompanyId);
+      if (existing) {
+        if (existing.status !== "uninstalled") {
+          throw conflict(`Plugin already installed: ${manifest.id}`);
+        }
+
+        // Reinstall after soft-delete: reactivate the existing row so plugin-scoped
+        // data and references remain stable across uninstall/reinstall cycles.
+        return db
+          .update(plugins)
+          .set({
+            packageName: input.packageName,
+            packagePath: input.packagePath ?? null,
+            catalogItemId: input.catalogItemId ?? null,
+            version: manifest.version,
+            apiVersion: manifest.apiVersion,
+            categories: manifest.categories,
+            manifestJson: manifest,
+            status: "installed" as PluginStatus,
+            lastError: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(plugins.id, existing.id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      }
+
+      const installOrder = await nextInstallOrder();
+
       try {
         const rows = await db
           .insert(plugins)
           .values({
             pluginKey: manifest.id,
             companyId: finalCompanyId,
+            catalogItemId: input.catalogItemId,
             packageName: input.packageName,
             version: manifest.version,
             apiVersion: manifest.apiVersion,

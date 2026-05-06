@@ -1387,6 +1387,7 @@ export function pluginLoader(
         {
           packageName: discovered.packageName,
           packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
+          catalogItemId: installOptions.catalogItemId,
         },
         discovered.manifest!,
         installOptions.companyId,

@@ -496,6 +496,8 @@ export interface PluginWebhookDeliveryRecord {
 export interface InstallPlugin {
   packageName: string;
   packagePath?: string;
+  /** Marketplace catalog item ID if installing from the plugin catalog. */
+  catalogItemId?: string;
 }
 
 /** Input for updating a plugin's lifecycle status. */
