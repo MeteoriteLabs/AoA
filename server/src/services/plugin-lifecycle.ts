@@ -192,13 +192,13 @@ export interface PluginLifecycleManager {
 
   /**
    * Upgrade a plugin to a newer version.
-   * This is a placeholder that handles the lifecycle state transition.
-   * The actual package installation is handled by plugin-loader.
+   * Handles the lifecycle state transition after the package is installed.
    *
-   * If the upgrade adds new capabilities, transitions to `upgrade_pending`.
-   * Otherwise, transitions to `ready` directly.
+   * If the upgrade adds new capabilities, transitions to `upgrade_pending` and
+   * returns `{ version, status: "upgrade_pending", delta: addedCaps }`.
+   * Otherwise, transitions to `ready` directly and returns `{ version, status: "ready" }`.
    */
-  upgrade(pluginId: string, version?: string): Promise<PluginRecord>;
+  upgrade(pluginId: string, version?: string): Promise<{ version: string; status: string; delta?: string[] }>;
 
   /**
    * Start the worker process for a plugin that is already in `ready` state.
@@ -638,7 +638,7 @@ export function pluginLifecycleManager(
      * Following PLUGIN_SPEC.md §25.3, the upgrade process:
      * 1. Stops the current worker process (if running).
      * 2. Fetches and validates the new plugin package via the `PluginLoader`.
-     * 3. Compares the capabilities declared in the new manifest against the old one.
+     * 3. Inspects the capability delta returned by the loader.
      * 4. If new capabilities are added, transitions the plugin to `upgrade_pending`
      *    to await operator approval (worker stays stopped).
      * 5. If no new capabilities are added, transitions the plugin back to `ready`
@@ -646,10 +646,13 @@ export function pluginLifecycleManager(
      *
      * @param pluginId - The UUID of the plugin to upgrade.
      * @param version - Optional target version specifier.
-     * @returns The updated `PluginRecord`.
+     * @returns `{ version, status, delta? }` — never a raw PluginRecord.
      * @throws {BadRequest} If the plugin is not in a ready or upgrade_pending state.
      */
-    async upgrade(pluginId: string, version?: string): Promise<PluginRecord> {
+    async upgrade(
+      pluginId: string,
+      version?: string,
+    ): Promise<{ version: string; status: string; delta?: string[] }> {
       const plugin = await requirePlugin(pluginId);
 
       // Can only upgrade plugins that are ready or already in upgrade_pending
@@ -667,8 +670,10 @@ export function pluginLifecycleManager(
 
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
 
-      // 1. Download and validate new package via loader
-      const { oldManifest, newManifest, discovered } =
+      // 1. Download and validate new package via loader.
+      //    upgradePlugin() no longer throws on capability escalation — it
+      //    returns escalatedCaps so the lifecycle layer can gate on them.
+      const { oldManifest, newManifest, discovered, escalatedCaps } =
         await pluginLoaderInstance.upgradePlugin(pluginId, { version });
 
       log.info(
@@ -677,27 +682,28 @@ export function pluginLifecycleManager(
           pluginKey: plugin.pluginKey,
           oldVersion: oldManifest.version,
           newVersion: newManifest.version,
+          escalatedCaps,
         },
         "plugin lifecycle: package upgraded on disk",
       );
 
-      // 2. Compare capabilities
-      const addedCaps = diffCapabilities(oldManifest.capabilities, newManifest.capabilities);
-
-      // 3. Transition state
-      if (addedCaps.length > 0) {
-        // New capabilities require operator approval — worker stays stopped
+      // 2. Transition state based on capability delta
+      if (escalatedCaps.length > 0) {
+        // New capabilities require operator approval — worker stays stopped.
         log.info(
-          { pluginId, pluginKey: plugin.pluginKey, addedCaps },
+          { pluginId, pluginKey: plugin.pluginKey, escalatedCaps },
           "plugin lifecycle: new capabilities detected, transitioning to upgrade_pending",
         );
-        // Skip the inner stopWorkerIfRunning since we already stopped above
         const result = await transition(pluginId, "upgrade_pending", null, plugin);
         emitDomain("plugin.upgrade_pending", {
           pluginId,
           pluginKey: result.pluginKey,
         });
-        return result;
+        return {
+          version: discovered.version,
+          status: "upgrade_pending",
+          delta: escalatedCaps,
+        };
       } else {
         const result = await transition(pluginId, "ready", null, {
           ...plugin,
@@ -715,7 +721,10 @@ export function pluginLifecycleManager(
           pluginKey: result.pluginKey,
         });
 
-        return result;
+        return {
+          version: discovered.version,
+          status: "ready",
+        };
       }
     },
 

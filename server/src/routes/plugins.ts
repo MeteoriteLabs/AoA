@@ -1498,11 +1498,11 @@ export function pluginRoutes(
     );
 
     try {
-      // Upgrade the plugin - this would typically:
-      // 1. Download the new version
-      // 2. Compare capabilities
-      // 3. If new capabilities, mark as upgrade_pending
-      // 4. Otherwise, transition to ready
+      // Upgrade the plugin:
+      // 1. Downloads and validates new version via loader (no throw on new caps)
+      // 2. Diffs capabilities; if escalated → upgrade_pending (operator gate)
+      // 3. If no new caps → transitions directly to ready
+      // Returns { version, status, delta? } — not a raw PluginRecord.
       const result = await lifecycle.upgrade(plugin.id, version);
       await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
         pluginId: plugin.id,
