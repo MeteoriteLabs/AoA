@@ -7,6 +7,7 @@ import {
   mockDialogContext,
 } from "./test-utils";
 import { DiscussionCaptureModal } from "../components/DiscussionCaptureModal";
+import { transcriptionApi } from "../api/transcription";
 
 // --- Mocks ---
 
@@ -60,6 +61,20 @@ vi.mock("../api/transcription", () => ({
   transcriptionApi: {
     transcribe: vi.fn().mockResolvedValue({ text: "Transcribed content" }),
   },
+}));
+
+// VoiceRecorder uses MediaRecorder and AudioContext, both unavailable in jsdom.
+// Stub it to expose a button that synthesizes an immediate onRecordingComplete
+// call so we can drive handleRecordingComplete from tests.
+vi.mock("../components/VoiceRecorder", () => ({
+  VoiceRecorder: ({ onRecordingComplete }: { onRecordingComplete: (b: Blob) => void }) => (
+    <button
+      type="button"
+      onClick={() => onRecordingComplete(new Blob(["fake"], { type: "audio/webm" }))}
+    >
+      Start Recording
+    </button>
+  ),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -194,5 +209,33 @@ describe("DiscussionCaptureModal", () => {
       expect(screen.queryByText("Title (optional — auto-generated if empty)")).not.toBeInTheDocument();
     });
     expect(screen.queryByText("Department (optional)")).not.toBeInTheDocument();
+  });
+
+  it("surfaces a graceful 'voice not yet available' state when transcribe returns 501", async () => {
+    vi.mocked(transcriptionApi.transcribe).mockRejectedValueOnce(
+      Object.assign(new Error("Not implemented"), {
+        status: 501,
+        body: { error: "transcription_not_available", message: "..." },
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<DiscussionCaptureModal />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: /Voice/ })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("tab", { name: /Voice/ }));
+    await user.click(await screen.findByRole("button", { name: /Start Recording/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/voice input is not yet available/i),
+      ).toBeInTheDocument();
+    });
+
+    // Paste tab remains usable
+    expect(screen.getByRole("tab", { name: /Paste/ })).toBeEnabled();
   });
 });
