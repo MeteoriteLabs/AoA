@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { companies } from "./companies.js";
 import { plugins } from "./plugins.js";
 
 /**
@@ -16,6 +17,7 @@ export const pluginConfig = pgTable(
   "plugin_config",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").references(() => companies.id, { onDelete: "cascade" }),
     pluginId: uuid("plugin_id")
       .notNull()
       .references(() => plugins.id, { onDelete: "cascade" }),
@@ -25,6 +27,11 @@ export const pluginConfig = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    pluginIdIdx: uniqueIndex("plugin_config_plugin_id_idx").on(table.pluginId),
+    // Replaces old unique-on-pluginId-alone index.
+    companyPluginIdx: uniqueIndex("plugin_config_company_plugin_idx").on(
+      table.companyId,
+      table.pluginId,
+    ),
+    companyIdx: index("plugin_config_company_idx").on(table.companyId),
   }),
 );
