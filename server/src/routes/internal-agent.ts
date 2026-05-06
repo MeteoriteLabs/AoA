@@ -109,6 +109,11 @@ export function internalAgentRoutes(db: Db) {
         const isInstanceAdmin =
           req.actor.type === "board" && req.actor.isInstanceAdmin === true;
         let userRole: UserRole;
+        // Match middleware/rbac.ts:36-39 bypass semantics: local_implicit (local_trusted
+        // mode) and isInstanceAdmin actors get founder-equivalent access. Note: any
+        // future audit log that records userRole per-tool-call should preserve the
+        // actor's actual identity (the userId is unchanged here) — the coercion to
+        // "founder" applies only to the role string used for tool-dispatch authorization.
         if (isLocalImplicit || isInstanceAdmin) {
           userRole = "founder";
         } else {

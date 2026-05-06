@@ -36,6 +36,18 @@ describe("authorizeToolInvocation — role gate", () => {
     const tool = fakeTool({ requiredRole: "team_member" });
     expect(authorizeToolInvocation(tool, "team_lead", []).allowed).toBe(true);
   });
+  it("rejects an unknown role string (fail-closed)", () => {
+    const tool = fakeTool({ requiredRole: "team_member" });
+    const result = authorizeToolInvocation(tool, "admin" as any, []);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) expect(result.error).toBe("FORBIDDEN_ROLE");
+  });
+  it("rejects an empty role string (fail-closed)", () => {
+    const tool = fakeTool({ requiredRole: "team_member" });
+    const result = authorizeToolInvocation(tool, "", []);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) expect(result.error).toBe("FORBIDDEN_ROLE");
+  });
 });
 
 describe("authorizeToolInvocation — capability gate", () => {
