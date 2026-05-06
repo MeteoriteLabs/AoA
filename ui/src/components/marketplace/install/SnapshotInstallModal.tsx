@@ -66,7 +66,7 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
   });
 
   useEffect(() => {
-    if (!opStatus || pendingToastId === null) return;
+    if (!opStatus || pendingToastId === null || pendingToastId < 1) return;
     if (opStatus.status === "success") {
       update(pendingToastId, { status: "success", message: `Installed ${item.name}` });
       setPendingOpId(null);

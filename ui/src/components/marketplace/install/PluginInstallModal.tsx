@@ -62,7 +62,7 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
 
   // React to terminal status — update toast and clear tracking state
   useEffect(() => {
-    if (!opStatus || pendingToastId === null) return;
+    if (!opStatus || pendingToastId === null || pendingToastId < 1) return;
     if (opStatus.status === "success") {
       update(pendingToastId, { status: "success", message: `Installed ${item.name}` });
       setPendingOpId(null);

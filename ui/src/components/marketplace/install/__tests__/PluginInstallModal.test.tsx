@@ -97,9 +97,15 @@ describe("PluginInstallModal", () => {
     vi.mocked(marketplaceApi.getOperation).mockResolvedValueOnce({
       id: "op-success",
       status: "success",
-      // Use a date 10s in the future so the startedAfter stale-guard in
-      // useOperationStatus doesn't reject it (the guard fires when createdAt
-      // is before openedAt, which is set during component mount).
+      // createdAt is set 10 s in the future relative to test execution time so
+      // that `new Date(data.createdAt) > openedAt.current` (the component's
+      // mount timestamp captured in useOperationStatus's stale-guard) always
+      // holds true.  The +10_000 ms offset is intentional: it exceeds any
+      // realistic gap between component mount and mock resolution, making the
+      // stale-operation guard deterministic across slow CI machines.
+      // Note: vi.useFakeTimers() would make this exact, but conflicts with
+      // userEvent's internal timer usage in this test suite; the offset
+      // approach is the accepted trade-off here.
       createdAt: new Date(Date.now() + 10_000).toISOString(),
       errorMessage: null,
     });
