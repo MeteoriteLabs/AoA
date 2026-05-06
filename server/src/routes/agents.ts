@@ -1316,6 +1316,20 @@ export function agentRoutes(db: Db) {
       return;
     }
     await svc.revokeKey(req.params.keyId as string);
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.key_revoked",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { keyId: key.id },
+    });
+
     res.json({ ok: true });
   });
 

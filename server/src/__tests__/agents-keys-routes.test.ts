@@ -248,4 +248,37 @@ describe("/agents/:id/keys activity log shape", () => {
       }),
     );
   });
+
+  it("DELETE /agents/:id/keys/:keyId emits agent.key_revoked activity log", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: AGENT_A_ID,
+      companyId: "company-A",
+    });
+    mockAgentService.getKeyById.mockResolvedValue({
+      id: KEY_ID,
+      agentId: AGENT_A_ID,
+      name: "k",
+      createdAt: new Date(),
+    });
+    mockAgentService.revokeKey.mockResolvedValue(undefined);
+
+    const res = await request(makeApp(companyAActor)).delete(
+      `/api/agents/${AGENT_A_ID}/keys/${KEY_ID}`,
+    );
+    expect(res.status).toBe(200);
+
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "agent.key_revoked",
+        entityType: "agent",
+        entityId: AGENT_A_ID,
+        actorType: "user",
+        actorId: "user-A",
+        agentId: null,
+        runId: null,
+        details: expect.objectContaining({ keyId: KEY_ID }),
+      }),
+    );
+  });
 });
