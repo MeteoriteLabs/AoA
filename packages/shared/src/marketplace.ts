@@ -150,7 +150,7 @@ export interface MarketplaceSettings {
 }
 
 export const MARKETPLACE_SETTINGS_DEFAULTS: MarketplaceSettings = {
-  pluginUpdatePolicy: "auto_minor",
+  pluginUpdatePolicy: "notify_all",
   skillUpdatePolicy: "notify",
   agentUpdatePolicy: "notify",
   teamUpdatePolicy: "notify",
