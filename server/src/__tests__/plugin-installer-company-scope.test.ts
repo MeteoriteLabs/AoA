@@ -113,8 +113,6 @@ describe("installMarketplacePlugin companyId scoping", () => {
 });
 
 describe("pluginRegistryService.install — nextInstallOrder company scoping", () => {
-  beforeEach(() => { capturedEqArgs.length = 0; });
-
   it("passes companyId to eq() when computing MAX install order", async () => {
     const { pluginRegistryService } = await import(
       "../services/plugin-registry.js"
@@ -143,7 +141,7 @@ describe("pluginRegistryService.install — nextInstallOrder company scoping", (
     };
 
     const registry = pluginRegistryService(mockDb as any);
-    await registry.install(
+    const result = await registry.install(
       { packageName: "@test/plugin" } as any,
       {
         id: "test.plugin",
@@ -155,13 +153,15 @@ describe("pluginRegistryService.install — nextInstallOrder company scoping", (
       "co-a",
     );
 
-    // getByKeyScoped already scopes by companyId (1 call from it).
-    // After the fix, nextInstallOrder ALSO calls eq(plugins.companyId, "co-a"),
-    // so the total count must be >= 2. Without the fix it would be exactly 1.
+    // After the fix, eq(plugins.companyId, "co-a") must appear among captured calls
+    // at least twice: once in getByKeyScoped and once in nextInstallOrder.
     const pluginsCompanyIdSymbol = symbols.companyId!;
     const scopedCalls = capturedEqArgs.filter(
       ([col, val]) => col === pluginsCompanyIdSymbol && val === "co-a",
     );
     expect(scopedCalls.length).toBeGreaterThanOrEqual(2);
+
+    // Behavioral check: the install order must be maxOrder(2) + 1 = 3
+    expect(result?.installOrder).toBe(3);
   });
 });

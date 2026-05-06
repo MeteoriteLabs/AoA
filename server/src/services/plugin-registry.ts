@@ -174,8 +174,8 @@ export function pluginRegistryService(db: Db) {
      *
      * @param input - Installation input (packageName, packagePath)
      * @param manifest - The resolved plugin manifest
-     * @param companyId - Optional companyId. Required for new installs after companyId becomes NOT NULL.
-     *                    If not provided, attempts to use the first company in the database.
+     * @param companyId - The owning company. Required. If omitted, falls back to the first company
+     *                    in the database (legacy escape hatch — prefer passing explicitly).
      */
     install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1, companyId?: string) => {
       // Resolve the target company before checking for an existing row so that
@@ -222,6 +222,10 @@ export function pluginRegistryService(db: Db) {
           .where(eq(plugins.id, existing.id))
           .returning()
           .then((rows) => rows[0] ?? null);
+      }
+
+      if (!finalCompanyId) {
+        throw new Error("[plugin-registry] Cannot install plugin: companyId could not be resolved");
       }
 
       const installOrder = await nextInstallOrder(finalCompanyId);
