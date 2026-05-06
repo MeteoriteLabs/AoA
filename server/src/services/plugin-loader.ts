@@ -930,8 +930,10 @@ export function pluginLoader(
         // Cross-platform npm spawn (see utils/npm-spawn). `--ignore-scripts`
         // prevents preinstall/install/postinstall hooks from executing
         // arbitrary code on the host before manifest validation.
+        // `--legacy-peer-deps` skips auto-installation of peer dependencies
+        // (e.g. @armyofagents/plugin-sdk which is provided by the host, not npm).
         await execNpm(
-          ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts"],
+          ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts", "--legacy-peer-deps"],
           { timeoutMs: 120_000 },
         );
       } catch (err) {
