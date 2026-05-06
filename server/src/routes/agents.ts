@@ -893,6 +893,7 @@ export function agentRoutes(db: Db) {
     await assertRole(db, req, companyId, "founder");
 
     if (req.actor.type === "agent") {
+      // rbac: instance-admin-not-required — assertCompanyAccess + assertRole above already enforce scope; this assertBoard rejects agent actors from creating agents.
       assertBoard(req);
     }
 
@@ -1659,6 +1660,8 @@ export function agentRoutes(db: Db) {
   // Temporary admin endpoint — backfill parentType/parentId from reportsTo (T3).
   // Remove after confirming all data migrated.
   router.post("/agents/admin/backfill-parent-fields", async (req, res) => {
+    // rbac: instance-admin-not-required
+    // TODO(plugins-workstream): replace with assertCanManageInstanceSettings(req) — see plugins workstream tracking issue
     assertBoard(req);
     const count = await svc.backfillParentFields();
     res.json({ ok: true, backfilledCount: count });
