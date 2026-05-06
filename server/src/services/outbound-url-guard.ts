@@ -246,6 +246,21 @@ export interface PinnedResponse {
   body: string;
 }
 
+/**
+ * Thrown by `executePinnedRequest` when the response body exceeds the configured
+ * `maxBodyBytes` cap. Tagged so callers (e.g. plugin host with its 200 MB cap)
+ * can programmatically distinguish "response too big" from a transport error
+ * and surface a more specific message to plugins.
+ */
+export class PinnedRequestBodyCapError extends Error {
+  readonly capBytes: number;
+  constructor(capBytes: number) {
+    super(`Response body exceeded ${capBytes} bytes`);
+    this.name = "PinnedRequestBodyCapError";
+    this.capBytes = capBytes;
+  }
+}
+
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 export async function executePinnedRequest(
@@ -273,7 +288,7 @@ export async function executePinnedRequest(
       totalBytes += buf.length;
       if (totalBytes > maxBodyBytes) {
         chunks.length = 0;
-        response.destroy(new Error(`Response body exceeded ${maxBodyBytes} bytes`));
+        response.destroy(new PinnedRequestBodyCapError(maxBodyBytes));
         return;
       }
       chunks.push(buf);

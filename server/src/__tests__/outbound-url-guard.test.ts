@@ -4,6 +4,7 @@ import {
   buildPinnedRequestOptions,
   executePinnedRequest,
   isPrivateIP,
+  PinnedRequestBodyCapError,
   validateAndResolveFetchUrl,
   type ValidatedFetchTarget,
 } from "../services/outbound-url-guard.js";
@@ -145,9 +146,53 @@ describe("executePinnedRequest", () => {
 
     const controller = new AbortController();
     try {
-      await expect(
-        executePinnedRequest(target, { method: "GET" }, controller.signal, { maxBodyBytes: 10 }),
-      ).rejects.toThrow(/exceeded 10 bytes/);
+      const promise = executePinnedRequest(
+        target,
+        { method: "GET" },
+        controller.signal,
+        { maxBodyBytes: 10 },
+      );
+      await expect(promise).rejects.toThrow(/exceeded 10 bytes/);
+      await expect(promise).rejects.toBeInstanceOf(PinnedRequestBodyCapError);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("throws PinnedRequestBodyCapError with capBytes on body-cap exceeded", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200);
+      res.end("z".repeat(500));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no address");
+    const port = address.port;
+
+    const target: ValidatedFetchTarget = {
+      parsedUrl: new URL(`http://example.test:${port}/`),
+      resolvedAddress: "127.0.0.1",
+      hostHeader: `example.test:${port}`,
+      tlsServername: undefined,
+      useTls: false,
+    };
+
+    const controller = new AbortController();
+    try {
+      let caught: unknown;
+      try {
+        await executePinnedRequest(
+          target,
+          { method: "GET" },
+          controller.signal,
+          { maxBodyBytes: 64 },
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(PinnedRequestBodyCapError);
+      expect((caught as PinnedRequestBodyCapError).capBytes).toBe(64);
+      expect((caught as PinnedRequestBodyCapError).name).toBe("PinnedRequestBodyCapError");
     } finally {
       server.close();
     }
