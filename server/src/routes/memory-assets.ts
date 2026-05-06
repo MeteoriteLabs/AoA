@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
 import { memoryAssetUpdateSchema } from "@armyofagents/shared";
 import { memoryAssetsService, type MemoryAssetsService } from "../services/memory-assets.js";
+import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
@@ -82,14 +83,13 @@ export function memoryAssetsRoutes(opts: RoutesOptions) {
           return;
         }
         const obj = await storage.getObject(companyId, asset.storageKey);
-        res.setHeader("Content-Type", asset.mimeType);
+        const safe = getSafeServingHeaders(asset.mimeType, asset.fileName);
+        res.setHeader("Content-Type", safe.contentType);
         if (obj.contentLength !== undefined) {
           res.setHeader("Content-Length", String(obj.contentLength));
         }
-        res.setHeader(
-          "Content-Disposition",
-          `inline; filename="${encodeURIComponent(asset.fileName)}"`,
-        );
+        res.setHeader("Content-Disposition", safe.contentDisposition);
+        res.setHeader("X-Content-Type-Options", safe.xContentTypeOptions);
         obj.stream.pipe(res);
       } catch (err) {
         next(err);

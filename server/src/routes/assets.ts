@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { createAssetImageMetadataSchema, createAssetFileMetadataSchema } from "@armyofagents/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
+import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const MAX_ASSET_IMAGE_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -327,11 +328,15 @@ export function assetRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, asset.companyId);
 
     const object = await storage.getObject(asset.companyId, asset.objectKey);
-    res.setHeader("Content-Type", asset.contentType || object.contentType || "application/octet-stream");
+    const safe = getSafeServingHeaders(
+      asset.contentType || object.contentType,
+      asset.originalFilename,
+    );
+    res.setHeader("Content-Type", safe.contentType);
     res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));
     res.setHeader("Cache-Control", "private, max-age=60");
-    const filename = asset.originalFilename ?? "asset";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+    res.setHeader("Content-Disposition", safe.contentDisposition);
+    res.setHeader("X-Content-Type-Options", safe.xContentTypeOptions);
 
     object.stream.on("error", (err) => {
       next(err);
