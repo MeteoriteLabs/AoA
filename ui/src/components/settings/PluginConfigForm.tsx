@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import * as pluginsApi from "../../api/plugins.js";
+import { useToast } from "../../context/ToastContext.js";
 
 interface JsonSchemaProperty {
   type?: string;
@@ -29,6 +30,7 @@ interface Props {
 
 export function PluginConfigForm({ companyId, pluginId, schema, initialValues, onSaved }: Props) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [values, setValues] = useState<Record<string, unknown>>(initialValues);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
@@ -37,6 +39,7 @@ export function PluginConfigForm({ companyId, pluginId, schema, initialValues, o
       pluginsApi.savePluginConfig(companyId, pluginId, configJson),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["company-plugins", companyId] });
+      pushToast({ title: "Settings saved", tone: "success" });
       onSaved?.();
     },
   });
