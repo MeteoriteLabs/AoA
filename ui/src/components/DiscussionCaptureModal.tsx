@@ -51,6 +51,10 @@ export function DiscussionCaptureModal() {
   const [lastRecordingBlob, setLastRecordingBlob] = useState<Blob | null>(null);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [transcriptionRetries, setTranscriptionRetries] = useState(0);
+  // 501 from /transcribe ⇒ voice not yet wired (Decision #91 / Commander sub-agent migration).
+  const [voiceState, setVoiceState] = useState<
+    { kind: "ok" } | { kind: "unavailable"; message: string }
+  >({ kind: "ok" });
   const MAX_TRANSCRIPTION_RETRIES = 3;
 
   // Sync defaults when modal opens with pre-scoped values
@@ -147,6 +151,7 @@ export function DiscussionCaptureModal() {
     setLastRecordingBlob(null);
     setTranscriptionError(null);
     setTranscriptionRetries(0);
+    setVoiceState({ kind: "ok" });
     closeDiscussionCapture();
   }
 
@@ -202,9 +207,19 @@ export function DiscussionCaptureModal() {
       setTranscription(result.text);
       setTranscriptionEdited(result.text);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Transcription failed";
-      setTranscriptionError(message);
-      setTranscription(null);
+      const status = (err as { status?: number } | null)?.status;
+      if (status === 501) {
+        setVoiceState({
+          kind: "unavailable",
+          message:
+            "Voice input is not yet available in this build. Please use Paste or Write for now.",
+        });
+        setTranscription(null);
+      } else {
+        const message = err instanceof Error ? err.message : "Transcription failed";
+        setTranscriptionError(message);
+        setTranscription(null);
+      }
     } finally {
       setIsTranscribing(false);
     }
@@ -289,9 +304,17 @@ export function DiscussionCaptureModal() {
               </TabsContent>
               <TabsContent value="voice" className="mt-3">
                 <div className="flex flex-col gap-3">
+                  {voiceState.kind === "unavailable" && (
+                    <div
+                      role="alert"
+                      className="rounded-md border border-amber-300/50 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/40 dark:text-amber-200"
+                    >
+                      {voiceState.message}
+                    </div>
+                  )}
                   <VoiceRecorder
                     onRecordingComplete={handleRecordingComplete}
-                    disabled={isTranscribing}
+                    disabled={isTranscribing || voiceState.kind === "unavailable"}
                   />
                   {isTranscribing && (
                     <div className="flex items-center gap-2 rounded-md bg-muted/50 p-4">
