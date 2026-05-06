@@ -96,6 +96,16 @@ export async function validateAndResolveFetchUrl(urlString: string): Promise<Val
     );
   }
 
+  // Strip any embedded basic-auth credentials. Forwarding `https://user:pass@host/`
+  // creds to the pinned IP is a footgun: if a future caller accepts a URL field
+  // from an authenticated user, those creds could leak to a private host post
+  // DNS-rebind. Callers that legitimately need basic-auth should pass it via
+  // explicit headers in `RequestInit`, not embedded in the URL.
+  if (parsed.username || parsed.password) {
+    parsed.username = "";
+    parsed.password = "";
+  }
+
   // Resolve the hostname to an IP and check for private ranges.
   // We pin the resolved IP into the URL to eliminate the TOCTOU window
   // between DNS resolution here and the second resolution fetch() would do.
@@ -193,10 +203,11 @@ export function buildPinnedRequestOptions(
   }
 
   const pathname = `${target.parsedUrl.pathname}${target.parsedUrl.search}`;
-  const auth = target.parsedUrl.username || target.parsedUrl.password
-    ? `${decodeURIComponent(target.parsedUrl.username)}:${decodeURIComponent(target.parsedUrl.password)}`
-    : undefined;
 
+  // Belt-and-suspenders: never forward URL-embedded credentials to the pinned
+  // request. `validateAndResolveFetchUrl` already strips creds from `parsedUrl`,
+  // but we deliberately do not derive an `auth` field here even if a caller
+  // somehow constructs a `ValidatedFetchTarget` with creds bypassing that path.
   return {
     options: {
       protocol: target.parsedUrl.protocol,
@@ -209,7 +220,6 @@ export function buildPinnedRequestOptions(
       path: pathname,
       method,
       headers: Object.fromEntries(headers.entries()),
-      auth,
       servername: target.tlsServername,
     },
     body,
