@@ -10,13 +10,12 @@
 // across the process share the same memory bucket. Constructing a new
 // limiter per request would defeat rate limiting entirely.
 //
-// Trust-proxy: Express's `req.ip` reads the leftmost X-Forwarded-For entry
-// when the app trusts a proxy. AoA does NOT call `app.set("trust proxy")`
-// today, so `req.ip` always reads the raw socket address. That is the
-// safe default — trusting a forwarded header without a proxy in front is
-// itself a spoofing vector. If/when AoA is deployed behind a reverse proxy,
-// the operator must opt in by setting trust proxy in app.ts (per the
-// deployment-mode-aware config). Until then, IP keys here are the socket IP.
+// Note on trust-proxy + req.ip:
+// IP-keyed rate limits read req.ip, which honors Express's `trust proxy`
+// setting. Operators behind a reverse proxy must set AOA_TRUST_PROXY
+// (env var, parsed in config.ts) to a hop count or CIDR list — see
+// docs/deploy/environment-variables.md. Default is `false` to prevent
+// X-Forwarded-For spoofing on directly-exposed deployments.
 
 import type { Request, RequestHandler, Response } from "express";
 import { rateLimit, type Options as RateLimitLibOptions } from "express-rate-limit";
