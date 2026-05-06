@@ -88,9 +88,11 @@ describe("validateAndResolveFetchUrl — private IP gate (literal IPs in hostnam
 });
 
 describe("executePinnedRequest", () => {
-  it("connects to the pinned IP and returns status + body", async () => {
+  it("connects to the pinned IP and returns status + body, forwarding the original Host header", async () => {
     // Spin up a tiny HTTP server on 127.0.0.1
-    const server = createServer((_req, res) => {
+    let seenHost: string | undefined;
+    const server = createServer((req, res) => {
+      seenHost = req.headers.host;
       res.writeHead(200, { "content-type": "text/plain" });
       res.end("pinned-ok");
     });
@@ -114,6 +116,9 @@ describe("executePinnedRequest", () => {
       const res = await executePinnedRequest(target, { method: "GET" }, controller.signal);
       expect(res.status).toBe(200);
       expect(res.body).toBe("pinned-ok");
+      // Wire-level proof of DNS-rebind defense: connect went to 127.0.0.1 (server's
+      // listen address) but the Host header still carries the original hostname.
+      expect(seenHost).toBe(`example.test:${port}`);
     } finally {
       server.close();
     }

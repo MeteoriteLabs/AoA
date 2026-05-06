@@ -164,14 +164,28 @@ export async function validateAndResolveFetchUrl(urlString: string): Promise<Val
 export function buildPinnedRequestOptions(
   target: ValidatedFetchTarget,
   init?: RequestInit,
-): { options: HttpRequestOptions & { servername?: string }; body: string | undefined } {
+): { options: HttpRequestOptions & { servername?: string }; body: string | Buffer | undefined } {
   const headers = new Headers(init?.headers);
   const method = init?.method ?? "GET";
-  const body = init?.body === undefined || init?.body === null
-    ? undefined
-    : typeof init.body === "string"
-      ? init.body
-      : String(init.body);
+
+  const rawBody = init?.body;
+  let body: string | Buffer | undefined;
+  if (rawBody === undefined || rawBody === null) {
+    body = undefined;
+  } else if (typeof rawBody === "string") {
+    body = rawBody;
+  } else if (Buffer.isBuffer(rawBody)) {
+    body = rawBody;
+  } else if (rawBody instanceof Uint8Array) {
+    body = Buffer.from(rawBody.buffer, rawBody.byteOffset, rawBody.byteLength);
+  } else {
+    // RequestInit.body also covers Blob / ReadableStream / FormData / URLSearchParams.
+    // None are exercised by current callers; reject explicitly so a future caller
+    // doesn't get silent String(...) corruption like the previous implementation.
+    throw new TypeError(
+      `Unsupported body type for pinned request: ${Object.prototype.toString.call(rawBody)}`,
+    );
+  }
 
   headers.set("Host", target.hostHeader);
   if (body !== undefined && !headers.has("content-length") && !headers.has("transfer-encoding")) {
