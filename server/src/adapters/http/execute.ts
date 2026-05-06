@@ -1,10 +1,18 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import { asString, asNumber, parseObject } from "../utils.js";
+import { validateAndResolveFetchUrl } from "../../services/outbound-url-guard.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, runId, agent, context } = ctx;
   const url = asString(config.url, "");
   if (!url) throw new Error("HTTP adapter missing url");
+
+  // SSRF guard: parse + protocol whitelist + DNS resolution + private IP rejection.
+  // This blocks the static-misconfig SSRF (e.g. http://169.254.169.254/, http://localhost:6379/).
+  // DNS-rebind defense (pinning the resolved IP into the request) is deferred to
+  // a follow-up: it requires switching from fetch() to https.request/undici dispatcher.
+  // See plugin-host-services.ts for that pattern when we're ready.
+  await validateAndResolveFetchUrl(url);
 
   const method = asString(config.method, "POST");
   const timeoutMs = asNumber(config.timeoutMs, 0);
