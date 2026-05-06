@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
+import { redactSensitiveBodyFields } from "./redact-sensitive.js";
 
 export interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
@@ -23,9 +24,9 @@ export function errorHandler(
         error: { message: err.message, stack: err.stack, name: err.name, details: err.details },
         method: req.method,
         url: req.originalUrl,
-        reqBody: req.body,
-        reqParams: req.params,
-        reqQuery: req.query,
+        reqBody: redactSensitiveBodyFields(req.body),
+        reqParams: redactSensitiveBodyFields(req.params),
+        reqQuery: redactSensitiveBodyFields(req.query),
       } satisfies ErrorContext;
     }
     res.status(err.status).json({
@@ -46,9 +47,9 @@ export function errorHandler(
       : { message: String(err), raw: err },
     method: req.method,
     url: req.originalUrl,
-    reqBody: req.body,
-    reqParams: req.params,
-    reqQuery: req.query,
+    reqBody: redactSensitiveBodyFields(req.body),
+    reqParams: redactSensitiveBodyFields(req.params),
+    reqQuery: redactSensitiveBodyFields(req.query),
   } satisfies ErrorContext;
 
   res.status(500).json({ error: "Internal server error" });
