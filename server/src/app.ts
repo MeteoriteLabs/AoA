@@ -352,6 +352,10 @@ export async function createApp(
       catalogService: marketplaceCatalogService,
       pluginLoader: {
         installPlugin: async (opts) => {
+          // TODO(Task 5): PluginLoaderLike.installPlugin will be updated to include companyId;
+          // the adapter will then forward it from the route param. Temporary suppression:
+          // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+          // @ts-ignore – companyId is added to PluginInstallOptions in Task 4; Task 5 threads it through PluginLoaderLike
           const discovered = await loaderInst.installPlugin(opts);
           return {
             packagePath: discovered.packagePath,

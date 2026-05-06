@@ -638,9 +638,19 @@ export function pluginRoutes(
     }
 
     try {
+      // Resolve companyId for company-scoped plugin install.
+      // Plugin routes are currently global (not per-company in the URL path),
+      // so we derive companyId from the actor context or by fetching the first company.
+      const companyIds = await resolvePluginAuditCompanyIds(req);
+      const companyId = companyIds[0];
+      if (!companyId) {
+        res.status(400).json({ error: "Cannot determine company context for plugin install" });
+        return;
+      }
+
       const installOptions = isLocalPath
-        ? { localPath: trimmedPackage }
-        : { packageName: trimmedPackage, version: version?.trim() };
+        ? { localPath: trimmedPackage, companyId }
+        : { packageName: trimmedPackage, version: version?.trim(), companyId };
 
       const discovered = await loader.installPlugin(installOptions);
 
@@ -1508,7 +1518,7 @@ export function pluginRoutes(
       const target = await rollback.getRollbackTarget(plugin.id).catch(() => null);
       if (target) {
         try {
-          await loader.installPlugin({ packageName: target.packageName, version: target.version });
+          await loader.installPlugin({ packageName: target.packageName, version: target.version, companyId: plugin.companyId ?? "" });
           await lifecycle.load(plugin.id);
           logger.info(
             { pluginId: plugin.id, revertedTo: target.version },
@@ -2311,6 +2321,7 @@ export function pluginRoutes(
       await loader.installPlugin({
         packageName: target.packageName,
         version: target.version,
+        companyId: plugin.companyId ?? "",
       });
       await lifecycle.load(plugin.id);
       const updated = await registry.getById(plugin.id);

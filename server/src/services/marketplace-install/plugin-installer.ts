@@ -96,6 +96,8 @@ export async function installMarketplacePlugin(
     ? { packageName: catalogItem.npm.tarballUrl }
     : { packageName: catalogItem.npm.packageName, version: catalogItem.npm.version };
 
+  // TODO(Task 5): Update PluginLoaderLike.installPlugin to include companyId and pass opts.companyId here.
+  // @ts-ignore – companyId required by PluginInstallOptions (Task 4); PluginLoaderLike updated in Task 5
   const discovered = await pluginLoader.installPlugin(installOpts);
 
   if (!discovered.manifest) {

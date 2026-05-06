@@ -94,6 +94,22 @@ export function pluginRegistryService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getByKeyScoped(pluginKey: string, companyId: string) {
+    const row = await db
+      .select()
+      .from(plugins)
+      .where(and(eq(plugins.companyId, companyId), eq(plugins.pluginKey, pluginKey)))
+      .then((rows) => rows[0] ?? null);
+    if (row) return row;
+    const legacyAlias = mapLegacyPaperclipKey(pluginKey);
+    if (!legacyAlias) return null;
+    return db
+      .select()
+      .from(plugins)
+      .where(and(eq(plugins.companyId, companyId), eq(plugins.pluginKey, legacyAlias)))
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function nextInstallOrder(): Promise<number> {
     const result = await db
       .select({ maxOrder: sql<number>`coalesce(max(${plugins.installOrder}), 0)` })
@@ -139,6 +155,12 @@ export function pluginRegistryService(db: Db) {
 
     /** Get a single plugin by its unique `pluginKey`. */
     getByKey,
+
+    /**
+     * Get a single plugin by its unique `pluginKey` scoped to a specific company.
+     * Preferred over `getByKey` when a companyId is available, to ensure multi-tenant isolation.
+     */
+    getByKeyScoped,
 
     // ----- Install / Register --------------------------------------------
 

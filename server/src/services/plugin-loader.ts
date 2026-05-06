@@ -205,6 +205,19 @@ export interface PluginInstallOptions {
    * Defaults to the localPluginDir configured on the service.
    */
   installDir?: string;
+
+  /**
+   * The company this plugin is being installed for.
+   * Required for company-scoped installation so the plugin row is associated
+   * with the correct tenant and the registry key is scoped per company.
+   */
+  companyId: string;
+
+  /**
+   * Marketplace catalog item ID if installing from the plugin catalog.
+   * Set when the install originates from the marketplace flow.
+   */
+  catalogItemId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -394,7 +407,7 @@ export interface PluginLoader {
    *
    * @see PLUGIN_SPEC.md §25.3 — Upgrade Lifecycle
    */
-  upgradePlugin(pluginId: string, options: Omit<PluginInstallOptions, "installDir">): Promise<{
+  upgradePlugin(pluginId: string, options: Omit<PluginInstallOptions, "installDir" | "companyId" | "catalogItemId">): Promise<{
     oldManifest: PaperclipPluginManifestV1;
     newManifest: PaperclipPluginManifestV1;
     discovered: DiscoveredPlugin;
@@ -886,7 +899,7 @@ export function pluginLoader(
    * @returns A `DiscoveredPlugin` object containing the validated manifest.
    */
   async function fetchAndValidate(
-    installOptions: PluginInstallOptions,
+    installOptions: Pick<PluginInstallOptions, "packageName" | "localPath" | "version" | "installDir">,
   ): Promise<DiscoveredPlugin> {
     const { packageName, localPath, version, installDir } = installOptions;
 
@@ -1376,6 +1389,7 @@ export function pluginLoader(
           packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
         },
         discovered.manifest!,
+        installOptions.companyId,
       );
 
       log.info(
@@ -1410,7 +1424,7 @@ export function pluginLoader(
      */
     async upgradePlugin(
       pluginId: string,
-      upgradeOptions: Omit<PluginInstallOptions, "installDir">,
+      upgradeOptions: Omit<PluginInstallOptions, "installDir" | "companyId" | "catalogItemId">,
     ): Promise<{
       oldManifest: PaperclipPluginManifestV1;
       newManifest: PaperclipPluginManifestV1;
