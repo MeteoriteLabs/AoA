@@ -23,7 +23,7 @@ const executionWorkspaceStrategySchema = z.object({
  * unknown fields that the runtime would otherwise consume verbatim.
  */
 const executionWorkspacePolicySchema = z.object({
-  enabled: z.boolean(),
+  enabled: z.boolean().optional(),
   defaultMode: z.enum([
     "shared_workspace",
     "isolated_workspace",
