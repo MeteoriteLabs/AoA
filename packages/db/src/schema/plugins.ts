@@ -14,10 +14,11 @@ import type { PluginCategory, PluginStatus, PaperclipPluginManifestV1 } from "@a
 /**
  * `plugins` table — stores one row per installed plugin.
  *
- * Each plugin is uniquely identified by `plugin_key` (derived from
- * the manifest `id`). The full manifest is persisted as JSONB in
- * `manifest_json` so the host can reconstruct capability and UI
- * slot information without loading the plugin package.
+ * Plugins are scoped per company. The unique constraint is on
+ * `(company_id, plugin_key)` (note: `company_id` is currently nullable
+ * during backfill and will become NOT NULL in Task 3). The full manifest
+ * is persisted as JSONB in `manifest_json` so the host can reconstruct
+ * capability and UI slot information without loading the plugin package.
  *
  * @see PLUGIN_SPEC.md §21.3
  */

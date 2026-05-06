@@ -33,13 +33,13 @@ import { conflict, notFound } from "../errors.js";
 
 /**
  * Detect if a Postgres error is a unique-constraint violation on the
- * `plugins_plugin_key_idx` unique index.
+ * `plugins_company_plugin_key_idx` unique index.
  */
 function isPluginKeyConflict(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const err = error as { code?: string; constraint?: string; constraint_name?: string };
   const constraint = err.constraint ?? err.constraint_name;
-  return err.code === "23505" && constraint === "plugins_plugin_key_idx";
+  return err.code === "23505" && constraint === "plugins_company_plugin_key_idx";
 }
 
 function mapLegacyPaperclipKey(pluginKey: string): string | null {
