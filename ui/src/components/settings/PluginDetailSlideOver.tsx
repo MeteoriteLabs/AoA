@@ -43,6 +43,11 @@ export function PluginDetailSlideOver({ companyId, plugin, pendingUpdate, onClos
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["company-plugins", companyId] }),
   });
 
+  const retryMutation = useMutation({
+    mutationFn: () => pluginsApi.retryPlugin(plugin.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["company-plugins", companyId] }),
+  });
+
   const statusColor: Record<string, string> = {
     ready: "text-green-400",
     error: "text-red-400",
@@ -214,6 +219,23 @@ export function PluginDetailSlideOver({ companyId, plugin, pendingUpdate, onClos
                 >
                   {plugin.enabled ? "Disable for this company" : "Enable for this company"}
                 </button>
+                {plugin.status === "error" && (
+                  <button
+                    type="button"
+                    disabled={retryMutation.isPending}
+                    onClick={() => retryMutation.mutate()}
+                    className="w-full text-left text-xs text-amber-400 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 border border-amber-900/40 rounded-lg px-3 py-2 transition-colors"
+                  >
+                    {retryMutation.isPending ? "Retrying…" : "Retry activation"}
+                  </button>
+                )}
+                {retryMutation.isError && (
+                  <p className="text-[10px] text-red-400 mt-1">
+                    {retryMutation.error instanceof Error
+                      ? retryMutation.error.message
+                      : "Retry failed"}
+                  </p>
+                )}
               </div>
             </div>
           ) : (

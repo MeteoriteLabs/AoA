@@ -551,3 +551,6 @@ export const patchPluginSettings = (
   enabled: boolean,
 ) =>
   api.patch(`/companies/${companyId}/plugins/${pluginId}/settings`, { enabled });
+
+export const retryPlugin = (pluginId: string) =>
+  api.post<{ ok: true }>(`/plugins/${pluginId}/enable`, {});
