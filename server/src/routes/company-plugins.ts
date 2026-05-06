@@ -39,21 +39,21 @@ export function companyPluginRoutes(
     const companyId = params.companyId;
     assertCompanyAccess(req, companyId);
 
-    const installed = await db
-      .select()
-      .from(plugins)
-      .where(eq(plugins.companyId, companyId))
-      .orderBy(plugins.installedAt);
-
-    const settings = await db
-      .select()
-      .from(pluginCompanySettings)
-      .where(eq(pluginCompanySettings.companyId, companyId));
-
-    const configs = await db
-      .select()
-      .from(pluginConfig)
-      .where(eq(pluginConfig.companyId, companyId));
+    const [installed, settings, configs] = await Promise.all([
+      db
+        .select()
+        .from(plugins)
+        .where(eq(plugins.companyId, companyId))
+        .orderBy(plugins.installedAt),
+      db
+        .select()
+        .from(pluginCompanySettings)
+        .where(eq(pluginCompanySettings.companyId, companyId)),
+      db
+        .select()
+        .from(pluginConfig)
+        .where(eq(pluginConfig.companyId, companyId)),
+    ]);
 
     const settingsMap = new Map(settings.map((s) => [s.pluginId, s]));
     const configMap = new Map(configs.map((c) => [c.pluginId, c]));
