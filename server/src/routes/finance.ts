@@ -31,6 +31,7 @@ export function financeRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
+      // rbac: instance-admin-not-required — assertCompanyAccess on the line above already enforces scope; assertBoard rejects non-board (agent/mcp) actors from posting finance events.
       assertBoard(req);
 
       const event = await finance.createEvent(companyId, {

@@ -22,6 +22,7 @@ export function companyRoutes(db: Db) {
   const access = accessService(db);
 
   router.get("/", async (req, res) => {
+    // rbac: instance-admin-not-required — list endpoint with no companyId in path; result is scope-filtered inline against req.actor.companyIds.
     assertBoard(req);
     const result = await svc.list();
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
@@ -33,6 +34,7 @@ export function companyRoutes(db: Db) {
   });
 
   router.get("/stats", async (req, res) => {
+    // rbac: instance-admin-not-required — stats endpoint with no companyId in path; result is scope-filtered inline against req.actor.companyIds.
     assertBoard(req);
     const allowed = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin
       ? null
@@ -83,6 +85,7 @@ export function companyRoutes(db: Db) {
     if (req.body.target.mode === "existing_company") {
       assertCompanyAccess(req, req.body.target.companyId);
     } else {
+      // rbac: instance-admin-not-required — new-company import branch; no companyId yet, assertBoard is the only meaningful check.
       assertBoard(req);
     }
     const preview = await portability.previewImport(req.body);
@@ -93,6 +96,7 @@ export function companyRoutes(db: Db) {
     if (req.body.target.mode === "existing_company") {
       assertCompanyAccess(req, req.body.target.companyId);
     } else {
+      // rbac: instance-admin-not-required — new-company import branch; no companyId yet, assertBoard is the only meaningful check.
       assertBoard(req);
     }
     const actor = getActorInfo(req);
@@ -117,6 +121,7 @@ export function companyRoutes(db: Db) {
   });
 
   router.post("/", validate(createCompanySchema), async (req, res) => {
+    // rbac: instance-admin-not-required — inline isInstanceAdmin check on the next line is the gate; assertCanManageInstanceSettings would be a synonym refactor.
     assertBoard(req);
     if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
