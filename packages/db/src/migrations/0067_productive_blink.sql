@@ -1,4 +1,4 @@
-CREATE TABLE "teams" (
+CREATE TABLE IF NOT EXISTS "teams" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"parent_project_id" uuid NOT NULL,
@@ -14,7 +14,7 @@ CREATE TABLE "teams" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "team_members" (
+CREATE TABLE IF NOT EXISTS "team_members" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"team_id" uuid NOT NULL,
 	"agent_id" uuid NOT NULL,
@@ -22,7 +22,7 @@ CREATE TABLE "team_members" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "team_coordinations" (
+CREATE TABLE IF NOT EXISTS "team_coordinations" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"team_id" uuid NOT NULL,
@@ -50,12 +50,12 @@ ALTER TABLE "team_members" ADD CONSTRAINT "team_members_team_id_teams_id_fk" FOR
 ALTER TABLE "team_members" ADD CONSTRAINT "team_members_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "team_coordinations" ADD CONSTRAINT "team_coordinations_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "team_coordinations" ADD CONSTRAINT "team_coordinations_team_id_teams_id_fk" FOREIGN KEY ("team_id") REFERENCES "public"."teams"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "teams_company_idx" ON "teams" USING btree ("company_id");--> statement-breakpoint
-CREATE INDEX "teams_parent_project_idx" ON "teams" USING btree ("parent_project_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "teams_company_slug_uq" ON "teams" USING btree ("company_id","slug");--> statement-breakpoint
-CREATE UNIQUE INDEX "team_members_team_agent_uq" ON "team_members" USING btree ("team_id","agent_id");--> statement-breakpoint
-CREATE INDEX "team_members_team_idx" ON "team_members" USING btree ("team_id");--> statement-breakpoint
-CREATE INDEX "team_members_agent_idx" ON "team_members" USING btree ("agent_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "team_coordinations_company_key_uq" ON "team_coordinations" USING btree ("company_id","key");--> statement-breakpoint
-CREATE INDEX "team_coordinations_team_idx" ON "team_coordinations" USING btree ("team_id");--> statement-breakpoint
-CREATE INDEX "team_coordinations_team_status_idx" ON "team_coordinations" USING btree ("team_id","status");
+CREATE INDEX IF NOT EXISTS "teams_company_idx" ON "teams" USING btree ("company_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "teams_parent_project_idx" ON "teams" USING btree ("parent_project_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "teams_company_slug_uq" ON "teams" USING btree ("company_id","slug");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "team_members_team_agent_uq" ON "team_members" USING btree ("team_id","agent_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "team_members_team_idx" ON "team_members" USING btree ("team_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "team_members_agent_idx" ON "team_members" USING btree ("agent_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "team_coordinations_company_key_uq" ON "team_coordinations" USING btree ("company_id","key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "team_coordinations_team_idx" ON "team_coordinations" USING btree ("team_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "team_coordinations_team_status_idx" ON "team_coordinations" USING btree ("team_id","status");
