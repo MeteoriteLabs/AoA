@@ -160,15 +160,21 @@ async function checkPluginUpdates(
   catalogItems: CatalogItem[],
 ): Promise<void> {
   const installedPlugins = await db
-    .select()
+    .select({ packageName: plugins.packageName, version: plugins.version })
     .from(plugins)
     .where(and(eq(plugins.companyId, companyId), eq(plugins.status, "ready")));
 
+  const pluginCatalogMap = new Map<string, CatalogItem>();
+  for (const item of catalogItems) {
+    if (item.type === "plugin" && item.npm?.packageName) {
+      pluginCatalogMap.set(item.npm.packageName, item);
+    }
+  }
+
   for (const plugin of installedPlugins) {
+    if (!plugin.version) continue;
     // Match catalog item by packageName
-    const catalogItem = catalogItems.find(
-      (item) => item.type === "plugin" && item.npm?.packageName === plugin.packageName,
-    );
+    const catalogItem = pluginCatalogMap.get(plugin.packageName);
     if (!catalogItem || !catalogItem.npm?.version) continue;
 
     try {

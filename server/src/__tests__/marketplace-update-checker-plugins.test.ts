@@ -13,4 +13,10 @@ describe("compareVersions", () => {
   it("returns -1 when latest is older", () => {
     expect(compareVersions("0.9.0", "1.0.0")).toBe(-1);
   });
+  it("returns 1 when latest is newer by minor version", () => {
+    expect(compareVersions("1.1.0", "1.0.9")).toBe(1);
+  });
+  it("returns 1 when latest is newer by patch version", () => {
+    expect(compareVersions("1.0.1", "1.0.0")).toBe(1);
+  });
 });
