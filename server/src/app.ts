@@ -163,13 +163,26 @@ export async function createApp(
   // Capture raw request body bytes so plugin webhook handlers can verify HMAC
   // signatures against the exact bytes the provider signed. Without this,
   // (req as any).rawBody is undefined and signature verification breaks.
-  app.use(express.json({
-    verify: (req, _res, buf) => {
-      if (buf && buf.length > 0) {
-        (req as unknown as { rawBody?: Buffer }).rawBody = buf;
-      }
-    },
-  }));
+  const captureRawBody = (
+    req: express.Request,
+    _res: express.Response,
+    buf: Buffer,
+  ) => {
+    if (buf && buf.length > 0) {
+      (req as unknown as { rawBody?: Buffer }).rawBody = buf;
+    }
+  };
+  // Per-route body-size cap for company-bundle import. The global default
+  // (100KB) is too small for legitimate bundles; 20MB sits above realistic
+  // worst-case payloads (per the 10K cost-events warn threshold + the Zod
+  // array caps in packages/shared/src/validators/company-portability.ts) and
+  // below typical reverse-proxy / LB ceilings. Mounting before the global
+  // express.json() ensures it wins on the matching paths.
+  app.use(
+    ["/api/companies/import", "/api/companies/import/preview"],
+    express.json({ limit: "20mb", verify: captureRawBody }),
+  );
+  app.use(express.json({ verify: captureRawBody }));
   app.use(httpLogger);
   // Strict CSP + tightened cross-origin policies in production deployment
   // modes. Vite-HMR dev (local_trusted + non-production node env) skips CSP
