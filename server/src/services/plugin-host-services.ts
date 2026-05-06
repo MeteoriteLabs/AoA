@@ -28,13 +28,11 @@ import { pluginStateStore } from "./plugin-state-store.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
-import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
 import { logger } from "../middleware/logger.js";
 import { transmitPluginTelemetry } from "./feedback-transmission.js";
 import {
   validateAndResolveFetchUrl,
+  executePinnedRequest,
   type ValidatedFetchTarget,
 } from "./outbound-url-guard.js";
 
@@ -42,14 +40,18 @@ import {
 // SSRF protection for plugin HTTP fetch
 // ---------------------------------------------------------------------------
 //
-// `validateAndResolveFetchUrl`, `isPrivateIP`, and `ValidatedFetchTarget` live
-// in `outbound-url-guard.ts` so the http adapter can share them. The
-// plugin-specific request pinning (defeats DNS rebind by connecting to the
-// resolved IP while preserving Host header and TLS SNI) stays here in
-// `buildPinnedRequestOptions` + `executePinnedHttpRequest` below.
+// `validateAndResolveFetchUrl`, `isPrivateIP`, `ValidatedFetchTarget`,
+// `buildPinnedRequestOptions`, and `executePinnedRequest` all live in
+// `outbound-url-guard.ts` so the http adapter can share them. The plugin host
+// wraps `executePinnedRequest` with a heavier body cap (200 MB) below since
+// plugin RPC payloads are legitimately larger than what an adapter status-check
+// would expect.
 
 /** Maximum time (ms) a plugin fetch request may take before being aborted. */
 const PLUGIN_FETCH_TIMEOUT_MS = 30_000;
+
+/** Plugin RPC fetch responses can be substantially larger than the default cap. */
+const PLUGIN_RESPONSE_BODY_BYTES = 200 * 1024 * 1024; // 200 MB
 
 /**
  * Validation for plugin telemetry event names (F.D4 infra port, Task F.5).
@@ -58,99 +60,12 @@ const PLUGIN_FETCH_TIMEOUT_MS = 30_000;
  */
 const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
-function buildPinnedRequestOptions(
-  target: ValidatedFetchTarget,
-  init?: RequestInit,
-): { options: HttpRequestOptions & { servername?: string }; body: string | undefined } {
-  const headers = new Headers(init?.headers);
-  const method = init?.method ?? "GET";
-  const body = init?.body === undefined || init?.body === null
-    ? undefined
-    : typeof init.body === "string"
-      ? init.body
-      : String(init.body);
-
-  headers.set("Host", target.hostHeader);
-  if (body !== undefined && !headers.has("content-length") && !headers.has("transfer-encoding")) {
-    headers.set("content-length", String(Buffer.byteLength(body)));
-  }
-
-  const pathname = `${target.parsedUrl.pathname}${target.parsedUrl.search}`;
-  const auth = target.parsedUrl.username || target.parsedUrl.password
-    ? `${decodeURIComponent(target.parsedUrl.username)}:${decodeURIComponent(target.parsedUrl.password)}`
-    : undefined;
-
-  return {
-    options: {
-      protocol: target.parsedUrl.protocol,
-      host: target.resolvedAddress,
-      port: target.parsedUrl.port
-        ? Number(target.parsedUrl.port)
-        : target.useTls
-          ? 443
-          : 80,
-      path: pathname,
-      method,
-      headers: Object.fromEntries(headers.entries()),
-      auth,
-      servername: target.tlsServername,
-    },
-    body,
-  };
-}
-
 async function executePinnedHttpRequest(
   target: ValidatedFetchTarget,
   init: RequestInit | undefined,
   signal: AbortSignal,
 ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string }> {
-  const { options, body } = buildPinnedRequestOptions(target, init);
-
-  const response = await new Promise<IncomingMessage>((resolve, reject) => {
-    const requestFn = target.useTls ? httpsRequest : httpRequest;
-    const req = requestFn({ ...options, signal }, resolve);
-
-    req.on("error", reject);
-
-    if (body !== undefined) {
-      req.write(body);
-    }
-    req.end();
-  });
-
-  const MAX_RESPONSE_BODY_BYTES = 200 * 1024 * 1024; // 200 MB
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  await new Promise<void>((resolve, reject) => {
-    response.on("data", (chunk: Buffer | string) => {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      totalBytes += buf.length;
-      if (totalBytes > MAX_RESPONSE_BODY_BYTES) {
-        chunks.length = 0;
-        response.destroy(new Error(`Response body exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`));
-        return;
-      }
-      chunks.push(buf);
-    });
-    response.on("end", resolve);
-    response.on("error", reject);
-  });
-
-  const headers: Record<string, string> = {};
-  for (const [key, value] of Object.entries(response.headers)) {
-    if (Array.isArray(value)) {
-      headers[key] = value.join(", ");
-    } else if (value !== undefined) {
-      headers[key] = value;
-    }
-  }
-
-  return {
-    status: response.statusCode ?? 500,
-    statusText: response.statusMessage ?? "",
-    headers,
-    body: Buffer.concat(chunks).toString("utf8"),
-  };
+  return executePinnedRequest(target, init, signal, { maxBodyBytes: PLUGIN_RESPONSE_BODY_BYTES });
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

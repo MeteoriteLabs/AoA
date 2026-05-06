@@ -8,6 +8,12 @@
 
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import {
+  request as httpRequest,
+  type IncomingMessage,
+  type RequestOptions as HttpRequestOptions,
+} from "node:http";
+import { request as httpsRequest } from "node:https";
 
 /** Only these protocols are allowed for outbound HTTP requests. */
 export const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
@@ -141,4 +147,127 @@ export async function validateAndResolveFetchUrl(urlString: string): Promise<Val
     )) throw err;
     throw new Error(`DNS resolution failed for ${originalHostname}: ${(err as Error).message}`);
   }
+}
+
+/**
+ * Build IP-pinned `https.request` / `http.request` options for a previously
+ * validated fetch target. Used by both the plugin HTTP service and the http
+ * adapter to close the DNS-rebind window between `validateAndResolveFetchUrl`
+ * and the actual outbound request: the request connects to `target.resolvedAddress`
+ * directly while preserving the original Host header and TLS SNI so virtual-host
+ * routing and certificate validation continue to work.
+ *
+ * Callers should not invoke this directly with an unvalidated URL — always go
+ * through `validateAndResolveFetchUrl()` first to enforce the protocol whitelist
+ * and private-IP block.
+ */
+export function buildPinnedRequestOptions(
+  target: ValidatedFetchTarget,
+  init?: RequestInit,
+): { options: HttpRequestOptions & { servername?: string }; body: string | undefined } {
+  const headers = new Headers(init?.headers);
+  const method = init?.method ?? "GET";
+  const body = init?.body === undefined || init?.body === null
+    ? undefined
+    : typeof init.body === "string"
+      ? init.body
+      : String(init.body);
+
+  headers.set("Host", target.hostHeader);
+  if (body !== undefined && !headers.has("content-length") && !headers.has("transfer-encoding")) {
+    headers.set("content-length", String(Buffer.byteLength(body)));
+  }
+
+  const pathname = `${target.parsedUrl.pathname}${target.parsedUrl.search}`;
+  const auth = target.parsedUrl.username || target.parsedUrl.password
+    ? `${decodeURIComponent(target.parsedUrl.username)}:${decodeURIComponent(target.parsedUrl.password)}`
+    : undefined;
+
+  return {
+    options: {
+      protocol: target.parsedUrl.protocol,
+      host: target.resolvedAddress,
+      port: target.parsedUrl.port
+        ? Number(target.parsedUrl.port)
+        : target.useTls
+          ? 443
+          : 80,
+      path: pathname,
+      method,
+      headers: Object.fromEntries(headers.entries()),
+      auth,
+      servername: target.tlsServername,
+    },
+    body,
+  };
+}
+
+/**
+ * Executes an HTTP request with the resolved IP pinned (closes the DNS-rebind
+ * window between validation and request). Returns the response status, headers,
+ * and a small body sample.
+ *
+ * Use this from any caller that has a `ValidatedFetchTarget` from
+ * `validateAndResolveFetchUrl()`. The plugin host wraps this with a heavier
+ * 200MB body-capture variant; adapters use this directly because they only
+ * need fire-and-check-status.
+ *
+ * The body is read up to `maxBodyBytes` (default 1 MiB) so error responses
+ * are diagnosable but oversized successful responses don't OOM the server.
+ */
+export interface PinnedResponse {
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024; // 1 MiB
+
+export async function executePinnedRequest(
+  target: ValidatedFetchTarget,
+  init: RequestInit | undefined,
+  signal: AbortSignal,
+  options?: { maxBodyBytes?: number },
+): Promise<PinnedResponse> {
+  const { options: reqOptions, body } = buildPinnedRequestOptions(target, init);
+  const maxBodyBytes = options?.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+
+  const response = await new Promise<IncomingMessage>((resolve, reject) => {
+    const requestFn = target.useTls ? httpsRequest : httpRequest;
+    const req = requestFn({ ...reqOptions, signal }, resolve);
+    req.on("error", reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  await new Promise<void>((resolve, reject) => {
+    response.on("data", (chunk: Buffer | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buf.length;
+      if (totalBytes > maxBodyBytes) {
+        chunks.length = 0;
+        response.destroy(new Error(`Response body exceeded ${maxBodyBytes} bytes`));
+        return;
+      }
+      chunks.push(buf);
+    });
+    response.on("end", resolve);
+    response.on("error", reject);
+  });
+
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(response.headers)) {
+    if (Array.isArray(value)) headers[key] = value.join(", ");
+    else if (value !== undefined) headers[key] = value;
+  }
+
+  return {
+    status: response.statusCode ?? 500,
+    statusText: response.statusMessage ?? "",
+    headers,
+    body: Buffer.concat(chunks).toString("utf8"),
+  };
 }
