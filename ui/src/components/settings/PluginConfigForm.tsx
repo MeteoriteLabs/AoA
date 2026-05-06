@@ -42,6 +42,7 @@ export function PluginConfigForm({ companyId, pluginId, schema, initialValues, o
       pushToast({ title: "Settings saved", tone: "success" });
       onSaved?.();
     },
+    onError: (err: Error) => pushToast({ title: "Save failed", body: err.message, tone: "error" }),
   });
 
   if (!schema?.properties || Object.keys(schema.properties).length === 0) {

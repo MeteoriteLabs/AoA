@@ -68,10 +68,10 @@ describe("PluginConfigForm", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /save settings/i }));
 
-    // The component renders the actual error message ("500") when mutation.error is an Error instance
     await waitFor(() =>
-      expect(screen.getByText("500")).toBeInTheDocument(),
+      expect(toastPush).toHaveBeenCalledWith(
+        expect.objectContaining({ tone: "error" }),
+      ),
     );
-    expect(toastPush).not.toHaveBeenCalled();
   });
 });
