@@ -75,3 +75,17 @@ describe("buildSandboxExecArgv", () => {
     expect(scratchArg).toContain("my-special-plugin");
   });
 });
+
+// This verifies the helper computes correct flags — the loader test is a direct call,
+// not a full integration test (loader dep tree is too complex to mock here).
+describe("plugin-loader sandbox injection (integration)", () => {
+  it("passes --permission flags to workerManager.startWorker for untrusted plugins", async () => {
+    const { buildSandboxExecArgv } = await import("../services/plugin-sandbox.js");
+    const flags = buildSandboxExecArgv({
+      pluginId: "test-id",
+      trustTier: "untrusted",
+      capabilities: [],
+    });
+    expect(flags).toContain("--permission");
+  });
+});

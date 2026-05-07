@@ -24,7 +24,7 @@
  * @see PLUGIN_SPEC.md §10 — Package Contract
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -33,6 +33,7 @@ import { execNpm } from "../utils/npm-spawn.js";
 import type { Db } from "@armyofagents/db";
 import type {
   PaperclipPluginManifestV1,
+  PluginCapability,
   PluginLauncherDeclaration,
   PluginRecord,
   PluginUiSlotDeclaration,
@@ -47,6 +48,7 @@ import type { PluginJobScheduler } from "./plugin-job-scheduler.js";
 import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
+import { buildSandboxExecArgv, pluginScratchDir } from "./plugin-sandbox.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1876,6 +1878,21 @@ export function pluginLoader(
       // to a file:// URL so the loader accepts it cross-platform.
       if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", pathToFileURL(DEV_TSX_LOADER_PATH).href];
+      }
+
+      // Ensure scratch dir exists before worker starts.
+      const scratchPath = pluginScratchDir(pluginId);
+      mkdirSync(scratchPath, { recursive: true });
+
+      // Apply Node permission model for sandboxed plugins.
+      const sandboxFlags = buildSandboxExecArgv({
+        pluginId,
+        trustTier: plugin.trustTier,
+        capabilities: (manifest.capabilities ?? []) as PluginCapability[],
+      });
+
+      if (process.env.NODE_ENV !== "test" && sandboxFlags.length > 0) {
+        workerOptions.execArgv = [...(workerOptions.execArgv ?? []), ...sandboxFlags];
       }
 
       await workerManager.startWorker(pluginId, workerOptions);
