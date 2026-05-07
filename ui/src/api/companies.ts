@@ -8,7 +8,15 @@ import type {
 } from "@armyofagents/shared";
 import { api } from "./client";
 
-export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
+export type CompanyStats = Record<
+  string,
+  {
+    agentCount: number;
+    issueCount: number;
+    pendingApprovalCount: number;
+    unreadNotificationCount: number;
+  }
+>;
 
 export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),

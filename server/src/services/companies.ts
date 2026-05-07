@@ -1,4 +1,4 @@
-import { eq, count } from "drizzle-orm";
+import { eq, count, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
 import { logger } from "../middleware/logger.js";
@@ -39,6 +39,7 @@ import {
   feedbackVotes,
   joinRequests,
   invites,
+  notifications,
   principalPermissionGrants,
   companyMemberships,
   mcpApiKeys,
@@ -207,17 +208,48 @@ export function companyService(db: Db) {
           .select({ companyId: issues.companyId, count: count() })
           .from(issues)
           .groupBy(issues.companyId),
-      ]).then(([agentRows, issueRows]) => {
-        const result: Record<string, { agentCount: number; issueCount: number }> = {};
+        db
+          .select({ companyId: approvals.companyId, count: count() })
+          .from(approvals)
+          .where(eq(approvals.status, "pending"))
+          .groupBy(approvals.companyId),
+        db
+          .select({ companyId: notifications.companyId, count: count() })
+          .from(notifications)
+          .where(isNull(notifications.readAt))
+          .groupBy(notifications.companyId),
+      ]).then(([agentRows, issueRows, approvalRows, notificationRows]) => {
+        const result: Record<
+          string,
+          {
+            agentCount: number;
+            issueCount: number;
+            pendingApprovalCount: number;
+            unreadNotificationCount: number;
+          }
+        > = {};
+        function ensure(companyId: string) {
+          if (!result[companyId]) {
+            result[companyId] = {
+              agentCount: 0,
+              issueCount: 0,
+              pendingApprovalCount: 0,
+              unreadNotificationCount: 0,
+            };
+          }
+          return result[companyId];
+        }
         for (const row of agentRows) {
-          result[row.companyId] = { agentCount: row.count, issueCount: 0 };
+          ensure(row.companyId).agentCount = row.count;
         }
         for (const row of issueRows) {
-          if (result[row.companyId]) {
-            result[row.companyId].issueCount = row.count;
-          } else {
-            result[row.companyId] = { agentCount: 0, issueCount: row.count };
-          }
+          ensure(row.companyId).issueCount = row.count;
+        }
+        for (const row of approvalRows) {
+          ensure(row.companyId).pendingApprovalCount = row.count;
+        }
+        for (const row of notificationRows) {
+          ensure(row.companyId).unreadNotificationCount = row.count;
         }
         return result;
       }),
