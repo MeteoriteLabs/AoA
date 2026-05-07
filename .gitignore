@@ -56,3 +56,4 @@ tests/release-smoke/test-results/
 
 # Marketplace catalog snapshot — fetched at build time, not committed
 ui/src/aoa-marketplace-snapshot.json
+.gstack/
