@@ -1,1 +1,0 @@
-ALTER TABLE "plugins" ADD COLUMN "trust_tier" text DEFAULT 'untrusted' NOT NULL;
