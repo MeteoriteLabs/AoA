@@ -25,58 +25,109 @@ vi.mock("@/components/UserMenu", () => ({
   UserMenu: () => <div data-testid="user-menu" />,
 }));
 
+// Tooltip from Radix needs a TooltipProvider context, which the test renderer
+// doesn't supply. Stub Tooltip+children so collapsed-mode buttons render.
+vi.mock("@/components/ui/tooltip", () => ({
+  Tooltip: ({ children }: any) => <>{children}</>,
+  TooltipTrigger: ({ children, asChild }: any) => asChild ? children : <>{children}</>,
+  TooltipContent: () => null,
+  TooltipProvider: ({ children }: any) => <>{children}</>,
+}));
+
 // --- Tests ---
 
 describe("LobbySidebar", () => {
+  const onCreateCompany = vi.fn();
+
   beforeEach(() => {
     vi.clearAllMocks();
+    onCreateCompany.mockClear();
     mockCompanyContext.companies = [];
     mockCompanyContext.loading = false;
+    // Reset persisted collapse preference between tests so default is expanded.
+    try {
+      localStorage.removeItem("aoa.lobby.sidebar-collapsed");
+    } catch {
+      // noop
+    }
   });
 
-  it("renders the AoA brand", () => {
-    renderWithProviders(<LobbySidebar />);
+  it("renders the AoA brand wordmark", () => {
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    // Expanded brand renders "AoA" + a brand-red period span as siblings.
     expect(screen.getByText("AoA")).toBeInTheDocument();
   });
 
-  it("renders the three nav rows: Companies, Marketplace, Settings", () => {
-    renderWithProviders(<LobbySidebar />);
+  it("renders the + New company button at the top", () => {
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    expect(screen.getByRole("button", { name: /new company/i })).toBeInTheDocument();
+  });
+
+  it("clicking + New company calls the onCreateCompany handler", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    await user.click(screen.getByRole("button", { name: /new company/i }));
+    expect(onCreateCompany).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders Companies (active), Marketplace, Learn, Documentation, Settings", () => {
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
     expect(screen.getByRole("button", { name: /companies/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /marketplace/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /learn/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /documentation/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
   });
 
+  it("Companies row is the active item (data-active=true)", () => {
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    const companies = screen.getByRole("button", { name: /companies/i });
+    expect(companies.getAttribute("data-active")).toBe("true");
+  });
+
   it("renders the UserMenu at the bottom", () => {
-    renderWithProviders(<LobbySidebar />);
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
     expect(screen.getByTestId("user-menu")).toBeInTheDocument();
+  });
+
+  it("renders the external collapse toggle button", () => {
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    expect(screen.getByRole("button", { name: /collapse sidebar/i })).toBeInTheDocument();
   });
 
   it("clicking Marketplace navigates to /marketplace", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<LobbySidebar />);
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
     await user.click(screen.getByRole("button", { name: /marketplace/i }));
     expect(mockNavigate).toHaveBeenCalledWith("/marketplace", undefined);
   });
 
   it("clicking Settings navigates to /instance/settings", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<LobbySidebar />);
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
     await user.click(screen.getByRole("button", { name: /settings/i }));
     expect(mockNavigate).toHaveBeenCalledWith("/instance/settings", undefined);
   });
 
-  it("has an aside element with role complementary", () => {
-    const { container } = renderWithProviders(<LobbySidebar />);
+  it("has an aside element", () => {
+    const { container } = renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
     const aside = container.querySelector("aside");
     expect(aside).toBeTruthy();
   });
 
-  // PR-C polish: sidebar slides in from the left on mount via CSS keyframes.
-  // The animation respects prefers-reduced-motion via a media query in index.css.
   it("applies the lobby-sidebar-enter mount-animation class", () => {
-    const { container } = renderWithProviders(<LobbySidebar />);
+    const { container } = renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
     const aside = container.querySelector("aside");
     expect(aside).toBeTruthy();
     expect(aside!.className).toContain("lobby-sidebar-enter");
+  });
+
+  it("toggling the collapse button flips data-collapsed on the aside", async () => {
+    const user = userEvent.setup();
+    const { container } = renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    const aside = container.querySelector("aside");
+    expect(aside?.getAttribute("data-collapsed")).toBe("false");
+    await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
+    expect(aside?.getAttribute("data-collapsed")).toBe("true");
   });
 });

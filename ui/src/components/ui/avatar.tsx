@@ -39,9 +39,17 @@ const SIZE_CLASSES: Record<AvatarSize, string> = {
 }
 
 export type AvatarSize = "xs" | "sm" | "md" | "default" | "lg" | "xl"
+export type AvatarShape = "circle" | "squircle"
+
+const SHAPE_CLASSES: Record<AvatarShape, string> = {
+  circle: "rounded-full",
+  squircle: "rounded-[28%]",
+}
 
 interface AvatarProps extends React.ComponentProps<typeof AvatarPrimitive.Root> {
   size?: AvatarSize
+  /** Visual shape — default `circle` (people / generic), `squircle` for app/brand icons. */
+  shape?: AvatarShape
   /** Stable seed used to pick a dept color from the data palette (helper mode). */
   seed?: string
   /** Display name — derives initials per §11 rules (helper mode). */
@@ -53,6 +61,7 @@ interface AvatarProps extends React.ComponentProps<typeof AvatarPrimitive.Root> 
 function Avatar({
   className,
   size = "md",
+  shape = "circle",
   seed,
   name,
   src,
@@ -64,6 +73,7 @@ function Avatar({
   // by UserMenu, Identity, HumansTab, etc.
   const useHelpers = seed !== undefined || name !== undefined || src !== undefined
   const sizeClass = SIZE_CLASSES[size] ?? SIZE_CLASSES.md
+  const shapeClass = SHAPE_CLASSES[shape] ?? SHAPE_CLASSES.circle
   // Normalize data-size for downstream selectors (AvatarBadge group-data-*).
   // "default" is canonicalized to "md" so any new selectors only need to know
   // the spec sizes; legacy size="default" still produces data-size="md".
@@ -73,8 +83,10 @@ function Avatar({
     <AvatarPrimitive.Root
       data-slot="avatar"
       data-size={dataSize}
+      data-shape={shape}
       className={cn(
-        "group/avatar relative flex shrink-0 overflow-hidden rounded-full select-none",
+        "group/avatar relative flex shrink-0 overflow-hidden select-none",
+        shapeClass,
         sizeClass,
         className,
       )}

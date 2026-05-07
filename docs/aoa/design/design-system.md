@@ -286,13 +286,27 @@ All neutrals carry a 30° hue undertone (warm) so they belong to the same family
 
 ### 8.2 Sidebar collapse
 
-- Both primary and secondary collapse to icon-only (~48px wide).
+- Both primary and secondary collapse to icon-only (~48–56px wide).
 - Collapsed item shows icon, label appears as tooltip on hover.
 - Default state by viewport:
   - **>1280px (xl):** both expanded
   - **1024–1280px (lg):** primary collapsed, secondary expanded if present
   - **768–1024px (md):** both collapsed
   - **<768px (sm):** neither shown — replaced by hamburger drawer
+
+**Collapse toggle button — external, on the boundary.**
+
+The toggle button sits on the *outside* of the sidebar, straddling the border between sidebar and main content. It is **not** a child of the sidebar's nav area.
+
+- Position: `absolute`, `top: 15px` (vertically aligned with the AoA. wordmark / sidebar header row), `left: calc(<sidebar-width>px - 13px)` so it visually centers on the boundary.
+- Size: 26×26 rounded square with `--border-strong` border, `--card-2` bg, subtle 2px shadow that lifts it off the surface.
+- Icon: Lucide `PanelLeftClose` when expanded (clicking collapses), `PanelLeftOpen` when collapsed (clicking expands). The chevron inside the icon flips direction.
+- Hover: `border-brand` + 5% scale-up.
+- Persisted via `localStorage["aoa.<surface>.sidebar-collapsed"]` so the user's preference survives navigation and reload.
+
+### 8.2.1 Sidebar active item — brand-tinted bg + glow dot
+
+The active nav item uses `bg-brand/[0.08] text-[hsl(15_60%_75%)]` for the bg+text treatment, plus a small 5px brand-red dot at the trailing edge with a soft glow (`box-shadow: 0 0 6px rgba(184,45,28,0.55)`). When the sidebar is collapsed, the dot moves to the top-right corner of the icon area (because the row is icon-only). **Do not** use the inset 2px brand-red border that appeared in early Phase 2 commits — that was replaced by the dot indicator (lighter visual weight, more elegant).
 
 ### 8.3 Page header anatomy
 
