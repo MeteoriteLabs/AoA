@@ -337,6 +337,36 @@ export function pluginRoutes(
     return [];
   }
 
+  /**
+   * Resolve the single companyId to associate with an install operation.
+   *
+   * Distinct from resolvePluginAuditCompanyIds, which fans out to ALL companies
+   * for audit-log purposes. This function returns the ONE company the plugin
+   * row should be scoped to:
+   *   - session/key board actors → their first company membership (from token)
+   *   - local_implicit actors    → first company in DB (single-operator local deploy)
+   *   - agent actors             → the agent's own companyId
+   */
+  async function resolveInstallCompanyId(req: Request): Promise<string | null> {
+    if (req.actor.type === "agent" && req.actor.companyId) {
+      return req.actor.companyId;
+    }
+
+    if (req.actor.type === "board" && req.actor.source !== "local_implicit") {
+      return req.actor.companyIds?.[0] ?? null;
+    }
+
+    // local_implicit or board with no companyIds on token: fall back to first company in DB.
+    // This is the correct path for a single-operator local deployment.
+    const row = await db
+      .select({ id: companies.id })
+      .from(companies)
+      .orderBy(companies.createdAt)
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return row?.id ?? null;
+  }
+
   async function logPluginMutationActivity(
     req: Request,
     action: string,
@@ -639,11 +669,10 @@ export function pluginRoutes(
     }
 
     try {
-      // Resolve companyId for company-scoped plugin install.
-      // Plugin routes are currently global (not per-company in the URL path),
-      // so we derive companyId from the actor context or by fetching the first company.
-      const companyIds = await resolvePluginAuditCompanyIds(req);
-      const companyId = companyIds[0];
+      // Resolve the owning company for this install. Uses actor-scoped resolution
+      // (not the audit fan-out helper) so multi-company instances install into the
+      // correct tenant rather than whichever company is first in the DB.
+      const companyId = await resolveInstallCompanyId(req);
       if (!companyId) {
         res.status(400).json({ error: "Cannot determine company context for plugin install" });
         return;
