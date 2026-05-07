@@ -62,8 +62,21 @@ function LobbyNavRow({ icon: Icon, label, active, collapsed, onClick }: LobbyNav
   );
 }
 
+/** Keys for the lobby-level nav items (the rows visible in {@link LobbySidebar}). */
+export type LobbySidebarItem =
+  | "organizations"
+  | "marketplace"
+  | "learn"
+  | "documentation"
+  | "settings";
+
 interface LobbySidebarProps {
   onCreateCompany: () => void;
+  /**
+   * Which nav row to highlight as active. Defaults to "organizations" so the
+   * Lobby page (the original consumer) keeps working without changes.
+   */
+  activeItem?: LobbySidebarItem;
   /**
    * When true, the sidebar runs in "drawer" mode — always expanded, no
    * external collapse toggle, no localStorage persistence. Used inside a
@@ -72,6 +85,12 @@ interface LobbySidebarProps {
   drawer?: boolean;
   /** Optional callback invoked when a nav item is clicked (for closing the drawer on mobile). */
   onNavigate?: () => void;
+  /**
+   * Override the persisted-collapse default. When provided, the sidebar starts
+   * in this state on first mount and writes through to localStorage as the
+   * user toggles. Used to auto-collapse on page entry (e.g., Settings).
+   */
+  defaultCollapsed?: boolean;
 }
 
 /**
@@ -91,14 +110,23 @@ interface LobbySidebarProps {
  * `onNavigate` callback fires after each nav click so the parent can close
  * the drawer.
  */
-export function LobbySidebar({ onCreateCompany, drawer = false, onNavigate }: LobbySidebarProps) {
+export function LobbySidebar({
+  onCreateCompany,
+  activeItem = "organizations",
+  drawer = false,
+  onNavigate,
+  defaultCollapsed,
+}: LobbySidebarProps) {
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (drawer) return false;
     try {
-      return localStorage.getItem(COLLAPSE_KEY) === "true";
+      const stored = localStorage.getItem(COLLAPSE_KEY);
+      if (stored === "true") return true;
+      if (stored === "false") return false;
+      return defaultCollapsed ?? false;
     } catch {
-      return false;
+      return defaultCollapsed ?? false;
     }
   });
 
@@ -181,8 +209,20 @@ export function LobbySidebar({ onCreateCompany, drawer = false, onNavigate }: Lo
 
         {/* Nav rows */}
         <nav className="flex flex-1 flex-col gap-0.5 p-2">
-          <LobbyNavRow icon={Building2} label="Organizations" active collapsed={collapsed} onClick={() => navTo("/")} />
-          <LobbyNavRow icon={Store} label="Marketplace" collapsed={collapsed} onClick={() => navTo("/marketplace")} />
+          <LobbyNavRow
+            icon={Building2}
+            label="Organizations"
+            active={activeItem === "organizations"}
+            collapsed={collapsed}
+            onClick={() => navTo("/")}
+          />
+          <LobbyNavRow
+            icon={Store}
+            label="Marketplace"
+            active={activeItem === "marketplace"}
+            collapsed={collapsed}
+            onClick={() => navTo("/marketplace")}
+          />
 
           {!collapsed && (
             <div className="mt-2 px-2.5 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.1em] opacity-50">
@@ -190,8 +230,20 @@ export function LobbySidebar({ onCreateCompany, drawer = false, onNavigate }: Lo
             </div>
           )}
           {collapsed && <div className="my-2 mx-1 h-px bg-border-soft" aria-hidden />}
-          <LobbyNavRow icon={BookOpen} label="Learn" collapsed={collapsed} onClick={() => navTo("/learn")} />
-          <LobbyNavRow icon={FileText} label="Documentation" collapsed={collapsed} onClick={() => navTo("/docs")} />
+          <LobbyNavRow
+            icon={BookOpen}
+            label="Learn"
+            active={activeItem === "learn"}
+            collapsed={collapsed}
+            onClick={() => navTo("/learn")}
+          />
+          <LobbyNavRow
+            icon={FileText}
+            label="Documentation"
+            active={activeItem === "documentation"}
+            collapsed={collapsed}
+            onClick={() => navTo("/docs")}
+          />
 
           {!collapsed && (
             <div className="mt-2 px-2.5 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.1em] opacity-50">
@@ -199,7 +251,13 @@ export function LobbySidebar({ onCreateCompany, drawer = false, onNavigate }: Lo
             </div>
           )}
           {collapsed && <div className="my-2 mx-1 h-px bg-border-soft" aria-hidden />}
-          <LobbyNavRow icon={Settings} label="Settings" collapsed={collapsed} onClick={() => navTo("/instance/settings")} />
+          <LobbyNavRow
+            icon={Settings}
+            label="Settings"
+            active={activeItem === "settings"}
+            collapsed={collapsed}
+            onClick={() => navTo("/instance/settings")}
+          />
         </nav>
 
         {/* User menu */}
