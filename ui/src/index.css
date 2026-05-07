@@ -1,124 +1,271 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  /* === Brand === */
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-tint-08: var(--brand-tint-08);
+  --color-brand-tint-15: var(--brand-tint-15);
+
+  /* === Semantic states === */
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+  --color-info: var(--info);
+
+  /* === Data palette === */
+  --color-data-teal: var(--data-teal);
+  --color-data-indigo: var(--data-indigo);
+  --color-data-green: var(--data-green);
+  --color-data-amber: var(--data-amber);
+  --color-data-magenta: var(--data-magenta);
+  --color-data-slate: var(--data-slate);
+
+  /* === Surfaces === */
+  --color-bg: var(--bg);
   --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
+  --color-card-2: var(--card-2);
+  --color-hd: var(--hd);
+  --color-field: var(--field);
+  --color-text: var(--text);
+  --color-dim: var(--dim);
+  --color-very-dim: var(--very-dim);
   --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-  --color-chart-1: var(--chart-1);
-  --color-chart-2: var(--chart-2);
-  --color-chart-3: var(--chart-3);
-  --color-chart-4: var(--chart-4);
-  --color-chart-5: var(--chart-5);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0px;
-  --radius-xl: 0px;
+  --color-border-soft: var(--border-soft);
+  --color-border-strong: var(--border-strong);
+
+  /* === Existing shadcn tokens — remapped to new tokens === */
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--card-2);
+  --color-popover-foreground: var(--text);
+  --color-primary: var(--brand);
+  --color-primary-foreground: white;
+  --color-secondary: var(--card);
+  --color-secondary-foreground: var(--text);
+  --color-muted: var(--card);
+  --color-muted-foreground: var(--dim);
+  --color-accent: var(--card);
+  --color-accent-foreground: var(--text);
+  --color-destructive: var(--error);
+  --color-destructive-foreground: white;
+  --color-input: var(--field);
+  --color-ring: var(--brand);
+
+  /* Charts (preserve existing names; remap to data palette) */
+  --color-chart-1: var(--data-indigo);
+  --color-chart-2: var(--data-teal);
+  --color-chart-3: var(--data-amber);
+  --color-chart-4: var(--data-magenta);
+  --color-chart-5: var(--data-green);
+
+  /* Sidebar (preserve existing shadcn names) */
+  --color-sidebar: var(--card);
+  --color-sidebar-foreground: var(--text);
+  --color-sidebar-primary: var(--brand);
+  --color-sidebar-primary-foreground: white;
+  --color-sidebar-accent: var(--hd);
+  --color-sidebar-accent-foreground: var(--text);
+  --color-sidebar-border: var(--border);
+  --color-sidebar-ring: var(--brand);
+
+  /* === Fonts === */
+  --font-sans: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, monospace;
+
+  /* === Radius === */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-full: 999px;
+  --radius: 6px;
+
+  /* === Motion === */
+  --animate-shimmer: shimmer 1.6s linear infinite;
+  --animate-pulse-glow: pulse-glow 1.5s ease-in-out infinite;
+  --animate-float-gentle: float-gentle 3.5s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -120% 0; }
+  100% { background-position: 220% 0; }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(184, 45, 28, 0.6), 0 0 6px rgba(184, 45, 28, 0.4); }
+  50% { box-shadow: 0 0 0 5px rgba(184, 45, 28, 0), 0 0 12px rgba(184, 45, 28, 0.6); }
+}
+
+@keyframes float-gentle {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
 }
 
 :root {
   color-scheme: light;
-  --radius: 0;
 
-  /* Entity-specific color accents */
-  --entity-task: hsl(210 100% 60%);
-  --entity-agent: hsl(160 60% 50%);
-  --entity-brief: hsl(270 60% 60%);
-  --entity-goal: hsl(40 90% 55%);
-  --entity-memory: hsl(30 10% 50%);
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  /* Brand */
+  --brand: #921a0d;
+  --brand-hover: #b32616;
+  --brand-tint-08: rgba(146, 26, 13, 0.06);
+  --brand-tint-15: rgba(146, 26, 13, 0.12);
+
+  /* Semantic */
+  --success: #0a8a4f;
+  --warning: #a87a1c;
+  --error: #ef4444;
+  --info: #2563eb;
+
+  /* Data palette (same hex on both modes) */
+  --data-teal: #3FA8C7;
+  --data-indigo: #6470DC;
+  --data-green: #4FB67E;
+  --data-amber: #D9A938;
+  --data-magenta: #C25BA8;
+  --data-slate: #7E8AA8;
+
+  /* Surfaces (light) */
+  --bg: oklch(0.99 0.005 30);
+  --card: oklch(0.97 0.005 30);
+  --card-2: oklch(0.95 0.005 30);
+  --hd: oklch(0.94 0.005 30);
+  --field: white;
+  --text: hsl(20 12% 18%);
+  --dim: hsl(20 8% 40%);
+  --very-dim: hsl(20 8% 55%);
+  --border: hsl(20 8% 88%);
+  --border-soft: hsl(20 8% 92%);
+  --border-strong: hsl(20 8% 78%);
+
+  /* Existing shadcn vars — keep names but remap to new tokens */
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card-foreground: var(--text);
+  --popover: var(--card-2);
+  --popover-foreground: var(--text);
+  --primary: var(--brand);
+  --primary-foreground: white;
+  --secondary: var(--card);
+  --secondary-foreground: var(--text);
+  --muted: var(--card);
+  --muted-foreground: var(--dim);
+  --accent: var(--card);
+  --accent-foreground: var(--text);
+  --destructive: var(--error);
+  --destructive-foreground: white;
+  --input: var(--field);
+  --ring: var(--brand);
+
+  /* Charts */
+  --chart-1: var(--data-indigo);
+  --chart-2: var(--data-teal);
+  --chart-3: var(--data-amber);
+  --chart-4: var(--data-magenta);
+  --chart-5: var(--data-green);
+
+  /* Sidebar */
+  --sidebar: var(--card);
+  --sidebar-foreground: var(--text);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: white;
+  --sidebar-accent: var(--hd);
+  --sidebar-accent-foreground: var(--text);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--brand);
+
+  --radius: 6px;
+
+  /* Entity-specific (preserve names — remap to data palette) */
+  --entity-task: var(--data-indigo);
+  --entity-agent: var(--data-green);
+  --entity-brief: var(--data-magenta);
+  --entity-goal: var(--data-amber);
+  --entity-memory: var(--data-slate);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.985 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.637 0.237 25.331);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.269 0 0);
-  --input: oklch(0.269 0 0);
-  --ring: oklch(0.439 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.145 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.269 0 0);
-  --sidebar-ring: oklch(0.439 0 0);
+  /* Brand */
+  --brand: #b82d1c;
+  --brand-hover: #d13a26;
+  --brand-tint-08: rgba(184, 45, 28, 0.08);
+  --brand-tint-15: rgba(184, 45, 28, 0.15);
+
+  /* Semantic */
+  --success: #4FB67E;
+  --warning: #D9A938;
+  --error: #ef4444;
+  --info: #3b82f6;
+
+  /* Data palette (same as light) */
+  --data-teal: #3FA8C7;
+  --data-indigo: #6470DC;
+  --data-green: #4FB67E;
+  --data-amber: #D9A938;
+  --data-magenta: #C25BA8;
+  --data-slate: #7E8AA8;
+
+  /* Surfaces (dark) */
+  --bg: #0a0a0a;
+  --card: oklch(0.19 0.005 30);
+  --card-2: oklch(0.205 0.005 30);
+  --hd: oklch(0.16 0.005 30);
+  --field: oklch(0.13 0.005 30);
+  --text: #eeeeee;
+  --dim: hsl(0 0% 60%);
+  --very-dim: hsl(0 0% 45%);
+  --border: hsl(0 0% 14%);
+  --border-soft: hsl(0 0% 11%);
+  --border-strong: hsl(0 0% 22%);
+
+  /* Existing shadcn vars */
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card-foreground: var(--text);
+  --popover: var(--card-2);
+  --popover-foreground: var(--text);
+  --primary: var(--brand);
+  --primary-foreground: white;
+  --secondary: var(--card);
+  --secondary-foreground: var(--text);
+  --muted: var(--card);
+  --muted-foreground: var(--dim);
+  --accent: var(--card);
+  --accent-foreground: var(--text);
+  --destructive: var(--error);
+  --destructive-foreground: white;
+  --input: var(--field);
+  --ring: var(--brand);
+
+  /* Charts */
+  --chart-1: var(--data-indigo);
+  --chart-2: var(--data-teal);
+  --chart-3: var(--data-amber);
+  --chart-4: var(--data-magenta);
+  --chart-5: var(--data-green);
+
+  /* Sidebar */
+  --sidebar: var(--card);
+  --sidebar-foreground: var(--text);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: white;
+  --sidebar-accent: var(--hd);
+  --sidebar-accent-foreground: var(--text);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--brand);
+
+  /* Entity */
+  --entity-task: var(--data-indigo);
+  --entity-agent: var(--data-green);
+  --entity-brief: var(--data-magenta);
+  --entity-goal: var(--data-amber);
+  --entity-memory: var(--data-slate);
 }
 
 @layer base {
@@ -133,6 +280,8 @@
     @apply bg-background text-foreground;
     height: 100%;
     overflow: hidden;
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
   }
   h1,
   h2,
