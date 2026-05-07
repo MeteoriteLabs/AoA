@@ -32,8 +32,8 @@ We sit between the two: Openclaw's confidence with Anthropic's warmth.
 |-------|-----------|------------|--------------|-----|
 | `--brand` | `#b82d1c` | `#921a0d` | `oklch(0.50 0.18 25)` | Primary CTAs, brand wordmark, accent strokes, focus rings, brand-tinted washes |
 | `--brand-hover` | `#d13a26` | `#b32616` | — | Hover state for primary CTAs |
-| `--brand-tint-08` | `rgba(184,45,28,0.08)` | `rgba(146,26,13,0.06)` | — | Page header radial wash (tinted bg) |
-| `--brand-tint-15` | `rgba(184,45,28,0.15)` | `rgba(146,26,13,0.12)` | — | Focus rings (3px outer glow) |
+| `--brand-wash` | `color-mix(... 8%, transparent)` | `color-mix(... 6%, transparent)` | — | Page header radial wash, modal/empty state bg |
+| `--brand-focus-ring` | `color-mix(... 15%, transparent)` | `color-mix(... 12%, transparent)` | — | Focus rings (3px outer glow) |
 
 **Rules:**
 
@@ -221,7 +221,7 @@ All neutrals carry a 30° hue undertone (warm) so they belong to the same family
 | `--border` | 1px | `--border` | Default — cards, inputs, list rows |
 | `--border-soft` | 1px | `--border-soft` | Internal dividers (between rows in same card) |
 | `--border-strong` | 1px | `--border-strong` | Outline buttons, secondary buttons, interactive borders |
-| `--border-brand` | 1px | `var(--brand)` | Focus ring border (paired with `--brand-tint-15` glow) |
+| `--border-brand` | 1px | `var(--brand)` | Focus ring border (paired with `--brand-focus-ring` glow) |
 | `--border-error` | 1px | `var(--error)` | Field error state |
 
 ---

@@ -8,8 +8,8 @@
   /* === Brand === */
   --color-brand: var(--brand);
   --color-brand-hover: var(--brand-hover);
-  --color-brand-tint-08: var(--brand-tint-08);
-  --color-brand-tint-15: var(--brand-tint-15);
+  --color-brand-wash: var(--brand-wash);
+  --color-brand-focus-ring: var(--brand-focus-ring);
 
   /* === Semantic states === */
   --color-success: var(--success);
@@ -38,7 +38,7 @@
   --color-border-soft: var(--border-soft);
   --color-border-strong: var(--border-strong);
 
-  /* === Existing shadcn tokens — remapped to new tokens === */
+  /* === DEPRECATED shadcn aliases — remove when primitives use new tokens === */
   --color-background: var(--bg);
   --color-foreground: var(--text);
   --color-card-foreground: var(--text);
@@ -99,8 +99,16 @@
 }
 
 @keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(184, 45, 28, 0.6), 0 0 6px rgba(184, 45, 28, 0.4); }
-  50% { box-shadow: 0 0 0 5px rgba(184, 45, 28, 0), 0 0 12px rgba(184, 45, 28, 0.6); }
+  0%, 100% {
+    box-shadow:
+      0 0 0 0 color-mix(in srgb, var(--brand) 60%, transparent),
+      0 0 6px color-mix(in srgb, var(--brand) 40%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 5px color-mix(in srgb, var(--brand) 0%, transparent),
+      0 0 12px color-mix(in srgb, var(--brand) 60%, transparent);
+  }
 }
 
 @keyframes float-gentle {
@@ -114,8 +122,8 @@
   /* Brand */
   --brand: #921a0d;
   --brand-hover: #b32616;
-  --brand-tint-08: rgba(146, 26, 13, 0.06);
-  --brand-tint-15: rgba(146, 26, 13, 0.12);
+  --brand-wash: color-mix(in srgb, var(--brand) 6%, transparent);
+  --brand-focus-ring: color-mix(in srgb, var(--brand) 12%, transparent);
 
   /* Semantic */
   --success: #0a8a4f;
@@ -124,12 +132,12 @@
   --info: #2563eb;
 
   /* Data palette (same hex on both modes) */
-  --data-teal: #3FA8C7;
-  --data-indigo: #6470DC;
-  --data-green: #4FB67E;
-  --data-amber: #D9A938;
-  --data-magenta: #C25BA8;
-  --data-slate: #7E8AA8;
+  --data-teal: #3fa8c7;
+  --data-indigo: #6470dc;
+  --data-green: #4fb67e;
+  --data-amber: #d9a938;
+  --data-magenta: #c25ba8;
+  --data-slate: #7e8aa8;
 
   /* Surfaces (light) */
   --bg: oklch(0.99 0.005 30);
@@ -144,7 +152,7 @@
   --border-soft: hsl(20 8% 92%);
   --border-strong: hsl(20 8% 78%);
 
-  /* Existing shadcn vars — keep names but remap to new tokens */
+  /* === DEPRECATED shadcn aliases — remove when primitives use new tokens === */
   --background: var(--bg);
   --foreground: var(--text);
   --card-foreground: var(--text);
@@ -180,8 +188,6 @@
   --sidebar-border: var(--border);
   --sidebar-ring: var(--brand);
 
-  --radius: 6px;
-
   /* Entity-specific (preserve names — remap to data palette) */
   --entity-task: var(--data-indigo);
   --entity-agent: var(--data-green);
@@ -194,22 +200,22 @@
   /* Brand */
   --brand: #b82d1c;
   --brand-hover: #d13a26;
-  --brand-tint-08: rgba(184, 45, 28, 0.08);
-  --brand-tint-15: rgba(184, 45, 28, 0.15);
+  --brand-wash: color-mix(in srgb, var(--brand) 8%, transparent);
+  --brand-focus-ring: color-mix(in srgb, var(--brand) 15%, transparent);
 
   /* Semantic */
-  --success: #4FB67E;
-  --warning: #D9A938;
+  --success: #4fb67e;
+  --warning: #d9a938;
   --error: #ef4444;
   --info: #3b82f6;
 
   /* Data palette (same as light) */
-  --data-teal: #3FA8C7;
-  --data-indigo: #6470DC;
-  --data-green: #4FB67E;
-  --data-amber: #D9A938;
-  --data-magenta: #C25BA8;
-  --data-slate: #7E8AA8;
+  --data-teal: #3fa8c7;
+  --data-indigo: #6470dc;
+  --data-green: #4fb67e;
+  --data-amber: #d9a938;
+  --data-magenta: #c25ba8;
+  --data-slate: #7e8aa8;
 
   /* Surfaces (dark) */
   --bg: #0a0a0a;
@@ -224,7 +230,7 @@
   --border-soft: hsl(0 0% 11%);
   --border-strong: hsl(0 0% 22%);
 
-  /* Existing shadcn vars */
+  /* === DEPRECATED shadcn aliases — remove when primitives use new tokens === */
   --background: var(--bg);
   --foreground: var(--text);
   --card-foreground: var(--text);

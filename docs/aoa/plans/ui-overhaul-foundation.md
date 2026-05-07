@@ -187,8 +187,8 @@ ui/src/components/lobby/*.tsx                      # Any subcomponents using old
   /* === Brand === */
   --color-brand: var(--brand);
   --color-brand-hover: var(--brand-hover);
-  --color-brand-tint-08: var(--brand-tint-08);
-  --color-brand-tint-15: var(--brand-tint-15);
+  --color-brand-wash: var(--brand-wash);
+  --color-brand-focus-ring: var(--brand-focus-ring);
 
   /* === Semantic states === */
   --color-success: var(--success);
@@ -278,8 +278,8 @@ ui/src/components/lobby/*.tsx                      # Any subcomponents using old
   /* Brand */
   --brand: #921a0d;
   --brand-hover: #b32616;
-  --brand-tint-08: rgba(146, 26, 13, 0.06);
-  --brand-tint-15: rgba(146, 26, 13, 0.12);
+  --brand-wash: color-mix(in srgb, var(--brand) 6%, transparent);
+  --brand-focus-ring: color-mix(in srgb, var(--brand) 12%, transparent);
 
   /* Semantic */
   --success: #0a8a4f;
@@ -343,8 +343,8 @@ ui/src/components/lobby/*.tsx                      # Any subcomponents using old
   /* Brand */
   --brand: #b82d1c;
   --brand-hover: #d13a26;
-  --brand-tint-08: rgba(184, 45, 28, 0.08);
-  --brand-tint-15: rgba(184, 45, 28, 0.15);
+  --brand-wash: color-mix(in srgb, var(--brand) 8%, transparent);
+  --brand-focus-ring: color-mix(in srgb, var(--brand) 15%, transparent);
 
   /* Semantic */
   --success: #4FB67E;
@@ -461,7 +461,7 @@ restyled in later tasks; this commit only adds the token layer."
 
 ```ts
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-tint-15 focus-visible:border-brand disabled:opacity-40 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
+  "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring focus-visible:border-brand disabled:opacity-40 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
   {
     variants: {
       variant: {
@@ -812,7 +812,7 @@ gradient inside pill, colored dot glow, pulsing ring on live."
 ```
 flex h-8 w-full rounded-md border border-border bg-field px-3 py-1.5 text-sm transition-colors
 hover:bg-[oklch(0.15_0.005_30)]
-focus-visible:outline-none focus-visible:border-brand focus-visible:ring-[3px] focus-visible:ring-brand-tint-15
+focus-visible:outline-none focus-visible:border-brand focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring
 placeholder:text-very-dim
 disabled:opacity-50 disabled:cursor-not-allowed
 aria-[invalid=true]:border-error aria-[invalid=true]:focus-visible:ring-error/[0.18]
@@ -948,7 +948,7 @@ const Switch = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <SwitchPrimitive.Root
     className={cn(
-      "peer inline-flex h-[18px] w-8 shrink-0 cursor-pointer items-center rounded-full border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-tint-15 disabled:cursor-not-allowed disabled:opacity-50",
+      "peer inline-flex h-[18px] w-8 shrink-0 cursor-pointer items-center rounded-full border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring disabled:cursor-not-allowed disabled:opacity-50",
       "data-[state=checked]:bg-brand data-[state=unchecked]:bg-[hsl(0_0%_25%)]",
       className
     )}
@@ -986,7 +986,7 @@ const RadioGroupItem = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <RadioGroupPrimitive.Item
     className={cn(
-      "size-4 rounded-full border border-border-strong bg-field text-brand focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-tint-15 disabled:opacity-50",
+      "size-4 rounded-full border border-border-strong bg-field text-brand focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring disabled:opacity-50",
       "data-[state=checked]:border-brand",
       className
     )}
@@ -1238,7 +1238,7 @@ separator, dim parent links + plain current."
 import { cn } from "@/lib/utils";
 
 const colorMap = {
-  active: "bg-success shadow-[0_0_0_2px_var(--brand-tint-08)] [box-shadow:0_0_0_2px_rgba(79,182,126,0.18)]",
+  active: "bg-success shadow-[0_0_0_2px_var(--brand-wash)] [box-shadow:0_0_0_2px_rgba(79,182,126,0.18)]",
   live: "bg-brand animate-pulse-glow",
   idle: "bg-data-slate",
   pending: "bg-warning [box-shadow:0_0_0_2px_rgba(217,169,56,0.18)]",
@@ -1326,12 +1326,12 @@ export function EmptyState({
   variant?: EmptyStateVariant;
   className?: string;
 }) {
-  const iconBg = variant === "first-time" ? "bg-brand-tint-08 border-brand/20 text-brand" : "bg-card-2 border-border text-dim";
+  const iconBg = variant === "first-time" ? "bg-brand-wash border-brand/20 text-brand" : "bg-card-2 border-border text-dim";
   return (
     <div
       className={cn(
         "flex flex-col items-center justify-center text-center p-6",
-        "bg-[radial-gradient(ellipse_70%_60%_at_50%_0%,var(--brand-tint-08)_0%,transparent_70%)]",
+        "bg-[radial-gradient(ellipse_70%_60%_at_50%_0%,var(--brand-wash)_0%,transparent_70%)]",
         className
       )}
     >
@@ -1408,7 +1408,7 @@ export function Stepper({
               key={i}
               className={cn(
                 "size-2 rounded-full bg-[hsl(0_0%_25%)] cursor-pointer transition-all",
-                state === "active" && "w-[22px] bg-brand shadow-[0_0_0_3px_var(--brand-tint-15)]",
+                state === "active" && "w-[22px] bg-brand shadow-[0_0_0_3px_var(--brand-focus-ring)]",
                 state === "done" && "bg-brand opacity-60",
                 onStepClick && state !== "pending" && "cursor-pointer"
               )}
@@ -1436,7 +1436,7 @@ export function Stepper({
                 <span
                   className={cn(
                     "size-[22px] rounded-full bg-[hsl(0_0%_25%)] text-[hsl(0_0%_75%)] font-mono text-[0.7rem] font-semibold inline-flex items-center justify-center shrink-0 z-10",
-                    state === "active" && "bg-brand text-white shadow-[0_0_0_4px_var(--brand-tint-15)]",
+                    state === "active" && "bg-brand text-white shadow-[0_0_0_4px_var(--brand-focus-ring)]",
                     state === "done" && "bg-brand text-white opacity-70"
                   )}
                 >
@@ -1476,7 +1476,7 @@ export function Stepper({
               <span
                 className={cn(
                   "size-[18px] rounded-full bg-[hsl(0_0%_25%)] text-[hsl(0_0%_75%)] font-mono text-[0.66rem] font-semibold inline-flex items-center justify-center shrink-0",
-                  state === "active" && "bg-brand text-white shadow-[0_0_0_3px_var(--brand-tint-15)]",
+                  state === "active" && "bg-brand text-white shadow-[0_0_0_3px_var(--brand-focus-ring)]",
                   state === "done" && "bg-brand text-white opacity-70"
                 )}
               >
@@ -1537,7 +1537,7 @@ export function SectionHeader({
   return (
     <div className={cn("text-[0.62rem] uppercase tracking-[0.1em] text-dim mb-3 flex items-center gap-2 font-semibold", className)}>
       {number !== undefined && (
-        <span className="size-[18px] rounded-full bg-brand-tint-15 text-brand inline-flex items-center justify-center font-mono text-[0.66rem] font-bold">
+        <span className="size-[18px] rounded-full bg-brand-focus-ring text-brand inline-flex items-center justify-center font-mono text-[0.66rem] font-bold">
           {number}
         </span>
       )}
@@ -1592,7 +1592,7 @@ export function PageHeader({ breadcrumb, title, subtitle, filters, search, prima
     <div
       className={cn(
         "px-6 pt-5 pb-4 border-b border-border relative",
-        "bg-[radial-gradient(ellipse_80%_100%_at_30%_-20%,var(--brand-tint-08)_0%,transparent_70%)]",
+        "bg-[radial-gradient(ellipse_80%_100%_at_30%_-20%,var(--brand-wash)_0%,transparent_70%)]",
         "bg-hd",
         className
       )}
@@ -1934,7 +1934,7 @@ find ui/src -type f -name "Lobby*.tsx" -o -name "*lobby*.tsx" 2>/dev/null
 - [ ] **Step 4:** Apply full radial wash to the main content area. The lobby is a landing surface, so it gets the marketing-tier radial wash:
 
 ```tsx
-<div className="min-h-screen bg-[radial-gradient(ellipse_at_top,var(--brand-tint-15)_0%,transparent_60%)] bg-bg">
+<div className="min-h-screen bg-[radial-gradient(ellipse_at_top,var(--brand-focus-ring)_0%,transparent_60%)] bg-bg">
 ```
 
 - [ ] **Step 5:** Replace any old empty state (no-companies) with the new `<EmptyState />` composite:
