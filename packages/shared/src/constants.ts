@@ -786,6 +786,9 @@ export const PLUGIN_CAPABILITIES = [
 ] as const;
 export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
 
+export const PLUGIN_TRUST_TIERS = ["untrusted", "verified", "core"] as const;
+export type PluginTrustTier = (typeof PLUGIN_TRUST_TIERS)[number];
+
 export const CAPABILITY_DESCRIPTIONS: Record<PluginCapability, string> = {
   // Data read
   "companies.read":             "Read your organization's company profile",

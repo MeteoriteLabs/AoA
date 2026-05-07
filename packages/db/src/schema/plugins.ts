@@ -9,7 +9,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
-import type { PluginCategory, PluginStatus, PaperclipPluginManifestV1 } from "@armyofagents/shared";
+import type { PluginCategory, PluginStatus, PluginTrustTier, PaperclipPluginManifestV1 } from "@armyofagents/shared";
 
 /**
  * `plugins` table — stores one row per installed plugin.
@@ -39,6 +39,7 @@ export const plugins = pgTable(
     /** Resolved package path for local-path installs; used to find worker entrypoint. */
     packagePath: text("package_path"),
     lastError: text("last_error"),
+    trustTier: text("trust_tier").$type<PluginTrustTier>().notNull().default("untrusted"),
     installedAt: timestamp("installed_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

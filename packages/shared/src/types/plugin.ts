@@ -9,6 +9,7 @@ import type {
   PluginLauncherAction,
   PluginLauncherBounds,
   PluginLauncherRenderEnvironment,
+  PluginTrustTier,
 } from "../constants.js";
 
 // ---------------------------------------------------------------------------
@@ -282,6 +283,8 @@ export interface PluginRecord {
   packagePath: string | null;
   /** Most recent error message, or operator-provided disable reason. */
   lastError: string | null;
+  /** Trust tier for sandbox capability gating. */
+  trustTier: PluginTrustTier;
   /** Timestamp when the plugin was first installed. */
   installedAt: Date;
   /** Timestamp of the most recent status or metadata change. */
