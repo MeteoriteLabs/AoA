@@ -131,6 +131,28 @@ export const FULL_CATALOG: MarketplaceCatalogFile = {
   ],
 };
 
+export const GSTACK_BROWSE_SKILL: CatalogItem = {
+  id: "skill:github-skills/garrytan/gstack/browse",
+  type: "skill",
+  name: "browse",
+  description: "Canonical web browsing skill for gstack",
+  version: "1.0.0",
+  source: {
+    adapter: "github-skills",
+    url: "https://github.com/garrytan/gstack",
+    locator: "browse",
+    commitSha: "abc123",
+  },
+  resourceUrl:
+    "https://raw.githubusercontent.com/garrytan/gstack/abc123/browse/SKILL.md",
+  trust: { tier: "verified", source: "github-skills" },
+  status: "active",
+  addedAt: "2026-05-07T00:00:00Z",
+  category: "productivity",
+  tags: ["requires-cli-tooling"],
+  runtimeRequires: ["gstack-bin", "gstack-browse-daemon"],
+};
+
 export const EMPTY_CATALOG: MarketplaceCatalogFile = {
   schemaVersion: "1.0.0",
   generatedAt: "2026-04-30T00:00:00Z",

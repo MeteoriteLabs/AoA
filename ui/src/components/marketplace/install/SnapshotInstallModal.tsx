@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { AlertTriangle } from "lucide-react";
 import type { CatalogItem } from "@armyofagents/shared";
 import { TrustBadge } from "../TrustBadge";
 import { CompanyPicker } from "./CompanyPicker";
@@ -19,6 +20,7 @@ import { useInstallOperation } from "@/hooks/useInstallOperation";
 import { useOperationStatus } from "@/hooks/useOperationStatus";
 import { useResolvePlan } from "@/hooks/useResolvePlan";
 import { useInstallToast } from "../toast/useInstallToast";
+import { renderRuntimeRequires } from "@/lib/marketplace-constants";
 
 export interface SnapshotInstallModalProps {
   item: CatalogItem; // type='skill' | 'agent' | 'team'
@@ -125,6 +127,20 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
             <Badge variant="outline" className="text-xs">v{item.version}</Badge>
             <Badge variant="secondary" className="text-xs">{item.type}</Badge>
           </div>
+
+          {item.runtimeRequires && item.runtimeRequires.length > 0 && (
+            <div
+              data-testid="runtime-requires-banner"
+              className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+            >
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              <span>
+                Requires additional tooling:{" "}
+                <strong>{renderRuntimeRequires(item.runtimeRequires)}</strong>.
+                This skill may not work without those tools installed.
+              </span>
+            </div>
+          )}
 
           <CompanyPicker value={companyId} onChange={setCompanyId} />
           {needsDept && <DepartmentPicker companyId={companyId} value={deptId} onChange={setDeptId} />}
