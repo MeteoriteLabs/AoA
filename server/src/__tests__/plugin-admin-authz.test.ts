@@ -30,13 +30,13 @@ describe("assertCanManageInstanceSettings", () => {
     const { assertCanManageInstanceSettings } = await import("../routes/authz.js");
     expect(() =>
       assertCanManageInstanceSettings(makeReq() as any)
-    ).toThrow();
+    ).toThrow(/Instance admin access required/);
   });
 
   it("throws 403 for non-board actor", async () => {
     const { assertCanManageInstanceSettings } = await import("../routes/authz.js");
     expect(() =>
       assertCanManageInstanceSettings({ actor: { type: "agent" } } as any)
-    ).toThrow();
+    ).toThrow(/Board access required/);
   });
 });
