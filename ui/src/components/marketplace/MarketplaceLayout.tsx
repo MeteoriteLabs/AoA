@@ -24,7 +24,7 @@ export function MarketplaceLayout({ breadcrumbs = [], actions, children }: Marke
       <header className="border-b px-6 py-4 flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => navigate("/home")}
+            onClick={() => navigate(-1)}
             aria-label="Go back"
             className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded-md hover:bg-accent"
           >
