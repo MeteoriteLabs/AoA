@@ -54,7 +54,11 @@ function ConfirmDialog({
           <AlertDialogAction
             onClick={onConfirm}
             disabled={disabled}
-            className={cn(destructive && buttonVariants({ variant: "destructive" }))}
+            className={cn(
+              destructive
+                ? buttonVariants({ variant: "destructive" })
+                : buttonVariants({ variant: "default" })
+            )}
           >
             {confirmLabel}
           </AlertDialogAction>
