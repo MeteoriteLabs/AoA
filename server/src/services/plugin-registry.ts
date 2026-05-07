@@ -216,6 +216,7 @@ export function pluginRegistryService(db: Db) {
             categories: manifest.categories,
             manifestJson: manifest,
             status: "installed" as PluginStatus,
+            trustTier: "untrusted",
             lastError: null,
             updatedAt: new Date(),
           })

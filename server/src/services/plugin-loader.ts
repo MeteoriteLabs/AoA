@@ -1891,6 +1891,7 @@ export function pluginLoader(
         capabilities: (manifest.capabilities ?? []) as PluginCapability[],
       });
 
+      // --permission flags break the test runner's module resolver; sandbox is dev/prod only.
       if (process.env.NODE_ENV !== "test" && sandboxFlags.length > 0) {
         workerOptions.execArgv = [...(workerOptions.execArgv ?? []), ...sandboxFlags];
       }

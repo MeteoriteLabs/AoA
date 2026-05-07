@@ -1513,7 +1513,8 @@ export function pluginRoutes(
       const target = await rollback.getRollbackTarget(plugin.id).catch(() => null);
       if (target) {
         try {
-          await loader.installPlugin({ packageName: target.packageName, version: target.version, companyId: plugin.companyId ?? "" });
+          if (!plugin.companyId) throw new Error(`Plugin ${plugin.id} has no companyId — cannot auto-revert`);
+          await loader.installPlugin({ packageName: target.packageName, version: target.version, companyId: plugin.companyId });
           await lifecycle.load(plugin.id);
           logger.info(
             { pluginId: plugin.id, revertedTo: target.version },
@@ -2323,10 +2324,11 @@ export function pluginRoutes(
 
     try {
       // Re-install the previous version
+      if (!plugin.companyId) throw new Error(`Plugin ${plugin.id} has no companyId — cannot rollback`);
       await loader.installPlugin({
         packageName: target.packageName,
         version: target.version,
-        companyId: plugin.companyId ?? "",
+        companyId: plugin.companyId,
       });
       await lifecycle.load(plugin.id);
       const updated = await registry.getById(plugin.id);
@@ -2426,6 +2428,7 @@ export function pluginCompanySettingsRoutes(db: Db) {
    */
   router.put("/companies/:companyId/plugin-settings/:pluginId", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const companyId = req.params.companyId as string;
     const pluginId = req.params.pluginId as string;
     assertCompanyAccess(req, companyId);
