@@ -9,6 +9,7 @@ import type {
   PluginLauncherAction,
   PluginLauncherBounds,
   PluginLauncherRenderEnvironment,
+  PluginTrustTier,
 } from "../constants.js";
 
 // ---------------------------------------------------------------------------
@@ -260,6 +261,8 @@ export interface PaperclipPluginManifestV1 {
 export interface PluginRecord {
   /** UUID primary key. */
   id: string;
+  /** UUID of the company this plugin is installed for. */
+  companyId: string;
   /** Unique key derived from `manifest.id`. Used for lookups. */
   pluginKey: string;
   /** npm package name (e.g. `"@acme/plugin-linear"`). */
@@ -280,6 +283,8 @@ export interface PluginRecord {
   packagePath: string | null;
   /** Most recent error message, or operator-provided disable reason. */
   lastError: string | null;
+  /** Trust tier for sandbox capability gating. */
+  trustTier: PluginTrustTier;
   /** Timestamp when the plugin was first installed. */
   installedAt: Date;
   /** Timestamp of the most recent status or metadata change. */
@@ -496,6 +501,8 @@ export interface PluginWebhookDeliveryRecord {
 export interface InstallPlugin {
   packageName: string;
   packagePath?: string;
+  /** Marketplace catalog item ID if installing from the plugin catalog. */
+  catalogItemId?: string;
 }
 
 /** Input for updating a plugin's lifecycle status. */

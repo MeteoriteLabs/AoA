@@ -61,6 +61,19 @@ export const CATEGORY_ICONS: Record<string, string> = {
   general: "Box",
 };
 
+/** Human-readable labels for runtimeRequires strings emitted by the github-skills adapter. */
+export const RUNTIME_REQUIRES_LABELS: Record<string, string> = {
+  "gstack-bin": "gstack CLI binaries",
+  "gstack-browse-daemon": "gstack browse daemon ($B)",
+  "gbrain": "gbrain module",
+  "gstack-extension": "gstack Chrome extension",
+};
+
+/** Convert a runtimeRequires array to a comma-separated human-readable string. */
+export function renderRuntimeRequires(reqs: string[]): string {
+  return reqs.map((r) => RUNTIME_REQUIRES_LABELS[r] ?? r).join(", ");
+}
+
 /**
  * URL-path slug → MarketplaceItemType. Accepts both "Skills"/"skills"/"skill".
  * Returns null for unrecognized types (caller renders 404).

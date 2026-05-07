@@ -6,6 +6,7 @@ vi.mock("@armyofagents/db", () => {
 });
 vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
+  and: () => Symbol("op:and"),
 }));
 
 import { installMarketplacePlugin } from "../services/marketplace-install/plugin-installer.js";
@@ -44,8 +45,8 @@ const SLACK_PLUGIN_NO_TARBALL: CatalogItem = {
 };
 
 describe("installMarketplacePlugin — tarball routing", () => {
-  const makeLoader = (capturedSpec: { packageName?: string; version?: string }[]) => ({
-    installPlugin: vi.fn(async (opts: { packageName?: string; version?: string }) => {
+  const makeLoader = (capturedSpec: { packageName?: string; version?: string; companyId?: string; catalogItemId?: string }[]) => ({
+    installPlugin: vi.fn(async (opts: { packageName?: string; version?: string; companyId?: string; catalogItemId?: string }) => {
       capturedSpec.push(opts);
       return {
         packagePath: "/plugins/aoa-plugin-slack",
@@ -56,7 +57,7 @@ describe("installMarketplacePlugin — tarball routing", () => {
       };
     }),
     registry: {
-      getByKey: vi.fn(async () => ({ id: "plugin-uuid", pluginKey: "aoa.plugin-slack" })),
+      getByKeyScoped: vi.fn(async () => ({ id: "plugin-uuid", pluginKey: "aoa.plugin-slack" })),
     },
     lifecycle: {
       load: vi.fn(async () => {}),

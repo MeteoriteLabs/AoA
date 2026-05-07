@@ -62,6 +62,9 @@ describe("PluginInstallModal", () => {
     const onOpenChange = vi.fn();
     wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={onOpenChange} />);
 
+    // Check consent checkbox first — required before Install is enabled
+    await userEvent.click(screen.getByRole("checkbox"));
+
     // The Cancel button is variant=outline; the Install button is the primary one
     const installBtn = screen.getByRole("button", { name: "Install" });
     await userEvent.click(installBtn);
@@ -81,11 +84,97 @@ describe("PluginInstallModal", () => {
     );
     wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
 
+    // Check consent checkbox first — required before Install is enabled
+    await userEvent.click(screen.getByRole("checkbox"));
     await userEvent.click(screen.getByRole("button", { name: "Install" }));
 
     await waitFor(() =>
       expect(screen.getByText(/Failed to start install/)).toBeInTheDocument(),
     );
     expect(screen.getByText("503 Service Unavailable")).toBeInTheDocument();
+  });
+
+  describe("capability consent gate", () => {
+    it("Install button is disabled until consent checkbox is checked (SLACK_PLUGIN has capabilities)", async () => {
+      wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
+      const installBtn = screen.getByRole("button", { name: "Install" });
+      expect(installBtn).toBeDisabled();
+    });
+
+    it("Install button is enabled after checking the consent checkbox", async () => {
+      wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
+      const installBtn = screen.getByRole("button", { name: "Install" });
+      expect(installBtn).toBeDisabled();
+
+      // The consent checkbox — find it by its label text fragment
+      const checkbox = screen.getByRole("checkbox");
+      await userEvent.click(checkbox);
+
+      expect(installBtn).not.toBeDisabled();
+    });
+
+    it("Install button is NOT disabled when item has no capabilities", () => {
+      const noCapItem = { ...SLACK_PLUGIN, capabilities: [] };
+      wrap(<PluginInstallModal item={noCapItem} open onOpenChange={() => {}} />);
+      const installBtn = screen.getByRole("button", { name: "Install" });
+      expect(installBtn).not.toBeDisabled();
+    });
+  });
+
+  it("resolves toast to success when component stays mounted after modal closes", async () => {
+    vi.mocked(marketplaceApi.install).mockResolvedValueOnce({
+      operationId: "op-success",
+      status: "pending",
+    });
+    vi.mocked(marketplaceApi.getOperation).mockResolvedValueOnce({
+      id: "op-success",
+      status: "success",
+      // createdAt is set 10 s in the future relative to test execution time so
+      // that `new Date(data.createdAt) > openedAt.current` (the component's
+      // mount timestamp captured in useOperationStatus's stale-guard) always
+      // holds true.  The +10_000 ms offset is intentional: it exceeds any
+      // realistic gap between component mount and mock resolution, making the
+      // stale-operation guard deterministic across slow CI machines.
+      // Note: vi.useFakeTimers() would make this exact, but conflicts with
+      // userEvent's internal timer usage in this test suite; the offset
+      // approach is the accepted trade-off here.
+      createdAt: new Date(Date.now() + 10_000).toISOString(),
+      errorMessage: null,
+    });
+
+    const onOpenChange = vi.fn();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <ToastProvider>
+            <PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={onOpenChange} />
+            <InstallToastSlot />
+          </ToastProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Check consent checkbox first — required before Install is enabled
+    await userEvent.click(screen.getByRole("checkbox"));
+    await userEvent.click(screen.getByRole("button", { name: "Install" }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+
+    // Simulate parent keeping component mounted with open=false (the correct parent behavior)
+    rerender(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <ToastProvider>
+            <PluginInstallModal item={SLACK_PLUGIN} open={false} onOpenChange={onOpenChange} />
+            <InstallToastSlot />
+          </ToastProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(
+      () => expect(screen.getByText(/Installed Slack/)).toBeInTheDocument(),
+      { timeout: 4000 },
+    );
   });
 });

@@ -59,14 +59,15 @@ describe("adapter routes — instance admin gate", () => {
     expect(res.status).toBe(403);
   });
 
-  it("not 403 install as instance admin", async () => {
+  // npm install locks the tmp dir on Windows (EBUSY on cleanup) — skip, authz logic is platform-independent
+  it.skipIf(process.platform === "win32")("not 403 install as instance admin", async () => {
     const res = await request(makeApp(instanceAdmin))
       .post("/api/adapters/install")
       .send({ packageName: "x" });
     expect(res.status).not.toBe(403);
   });
 
-  it("not 403 install as local_implicit (regression guard)", async () => {
+  it.skipIf(process.platform === "win32")("not 403 install as local_implicit (regression guard)", async () => {
     const res = await request(makeApp(localImplicit))
       .post("/api/adapters/install")
       .send({ packageName: "x" });

@@ -7,7 +7,11 @@ import type { ReactNode } from "react";
 import { SnapshotInstallModal } from "../SnapshotInstallModal";
 import { ToastProvider } from "@/components/marketplace/toast/ToastProvider";
 import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
-import { CODE_REVIEW_SKILL, ENGINEERING_TEAM } from "@/__tests__/__fixtures__/marketplace-catalog";
+import {
+  CODE_REVIEW_SKILL,
+  ENGINEERING_TEAM,
+  GSTACK_BROWSE_SKILL,
+} from "@/__tests__/__fixtures__/marketplace-catalog";
 import { marketplaceApi } from "@/api/marketplace";
 import { projectsApi } from "@/api/projects";
 
@@ -71,6 +75,30 @@ describe("SnapshotInstallModal — skill", () => {
       const installBtn = screen.getByRole("button", { name: /^Install$/ });
       expect(installBtn).not.toBeDisabled();
     });
+  });
+});
+
+describe("SnapshotInstallModal — runtime requires banner", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("shows amber banner with human-readable labels when runtimeRequires is non-empty", async () => {
+    wrap(<SnapshotInstallModal item={GSTACK_BROWSE_SKILL} open onOpenChange={() => {}} />);
+    await waitFor(() => {
+      const banner = screen.getByTestId("runtime-requires-banner");
+      expect(banner).toBeInTheDocument();
+      expect(banner).toHaveTextContent("gstack CLI binaries");
+      expect(banner).toHaveTextContent("gstack browse daemon ($B)");
+    });
+  });
+
+  it("does not show banner when runtimeRequires is absent", async () => {
+    wrap(<SnapshotInstallModal item={CODE_REVIEW_SKILL} open onOpenChange={() => {}} />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Install$/ })).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("runtime-requires-banner")).not.toBeInTheDocument();
   });
 });
 

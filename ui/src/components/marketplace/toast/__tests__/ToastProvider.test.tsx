@@ -63,15 +63,16 @@ describe("Toast system", () => {
     expect(screen.queryByText("Installed Slack")).not.toBeInTheDocument();
   });
 
-  it("useInstallToast throws helpful error when used outside provider", () => {
-    function ErrConsumer() {
-      useInstallToast();
+  it("useInstallToast returns no-op fallback when used outside provider", () => {
+    function NoopConsumer() {
+      const { show, update, dismiss, toast } = useInstallToast();
+      // Calling the no-op methods should not throw
+      const id = show({ status: "installing", message: "test" });
+      update(id, { message: "updated" });
+      dismiss();
+      expect(toast).toBeNull();
       return null;
     }
-    // Suppress console.error spam for this expected throw
-    const orig = console.error;
-    console.error = vi.fn();
-    expect(() => render(<ErrConsumer />)).toThrow(/within <ToastProvider>/);
-    console.error = orig;
+    expect(() => render(<NoopConsumer />)).not.toThrow();
   });
 });

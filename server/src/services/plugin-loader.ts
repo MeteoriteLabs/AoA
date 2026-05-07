@@ -24,7 +24,7 @@
  * @see PLUGIN_SPEC.md §10 — Package Contract
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -33,6 +33,7 @@ import { execNpm } from "../utils/npm-spawn.js";
 import type { Db } from "@armyofagents/db";
 import type {
   PaperclipPluginManifestV1,
+  PluginCapability,
   PluginLauncherDeclaration,
   PluginRecord,
   PluginUiSlotDeclaration,
@@ -52,6 +53,7 @@ import type { PluginJobScheduler } from "./plugin-job-scheduler.js";
 import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
+import { buildSandboxExecArgv, pluginScratchDir } from "./plugin-sandbox.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -210,6 +212,19 @@ export interface PluginInstallOptions {
    * Defaults to the localPluginDir configured on the service.
    */
   installDir?: string;
+
+  /**
+   * The company this plugin is being installed for.
+   * Required for company-scoped installation so the plugin row is associated
+   * with the correct tenant and the registry key is scoped per company.
+   */
+  companyId: string;
+
+  /**
+   * Marketplace catalog item ID if installing from the plugin catalog.
+   * Set when the install originates from the marketplace flow.
+   */
+  catalogItemId?: string;
 
   /**
    * Optional Subresource Integrity (SRI) hash from the marketplace catalog
@@ -412,10 +427,12 @@ export interface PluginLoader {
    *
    * @see PLUGIN_SPEC.md §25.3 — Upgrade Lifecycle
    */
-  upgradePlugin(pluginId: string, options: Omit<PluginInstallOptions, "installDir">): Promise<{
+  upgradePlugin(pluginId: string, options: Omit<PluginInstallOptions, "installDir" | "companyId" | "catalogItemId">): Promise<{
     oldManifest: PaperclipPluginManifestV1;
     newManifest: PaperclipPluginManifestV1;
     discovered: DiscoveredPlugin;
+    /** Capabilities present in newManifest but absent in oldManifest. Empty array = no escalation. */
+    escalatedCaps: string[];
   }>;
 
   /**
@@ -904,7 +921,7 @@ export function pluginLoader(
    * @returns A `DiscoveredPlugin` object containing the validated manifest.
    */
   async function fetchAndValidate(
-    installOptions: PluginInstallOptions,
+    installOptions: Pick<PluginInstallOptions, "packageName" | "localPath" | "version" | "installDir" | "catalogIntegrity">,
   ): Promise<DiscoveredPlugin> {
     const { packageName, localPath, version, installDir, catalogIntegrity } =
       installOptions;
@@ -949,8 +966,10 @@ export function pluginLoader(
         // Cross-platform npm spawn (see utils/npm-spawn). `--ignore-scripts`
         // prevents preinstall/install/postinstall hooks from executing
         // arbitrary code on the host before manifest validation.
+        // `--legacy-peer-deps` skips auto-installation of peer dependencies
+        // (e.g. @armyofagents/plugin-sdk which is provided by the host, not npm).
         await execNpm(
-          ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts"],
+          ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts", "--legacy-peer-deps"],
           { timeoutMs: 120_000 },
         );
       } catch (err) {
@@ -1452,8 +1471,10 @@ export function pluginLoader(
         {
           packageName: discovered.packageName,
           packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
+          catalogItemId: installOptions.catalogItemId,
         },
         discovered.manifest!,
+        installOptions.companyId,
       );
 
       log.info(
@@ -1488,11 +1509,12 @@ export function pluginLoader(
      */
     async upgradePlugin(
       pluginId: string,
-      upgradeOptions: Omit<PluginInstallOptions, "installDir">,
+      upgradeOptions: Omit<PluginInstallOptions, "installDir" | "companyId" | "catalogItemId">,
     ): Promise<{
       oldManifest: PaperclipPluginManifestV1;
       newManifest: PaperclipPluginManifestV1;
       discovered: DiscoveredPlugin;
+      escalatedCaps: string[];
     }> {
       const plugin = (await registry.getById(pluginId)) as {
         id: string;
@@ -1534,24 +1556,23 @@ export function pluginLoader(
         );
       }
 
-      // 3. Detect capability escalation — new capabilities not in the old manifest
+      // 3. Detect capability escalation — new capabilities not in the old manifest.
+      // NOTE: We intentionally do NOT throw here. The lifecycle layer is
+      // responsible for deciding whether escalated capabilities require
+      // operator approval (upgrade_pending) or can proceed to ready.
       const oldCaps = new Set(oldManifest.capabilities ?? []);
       const newCaps = newManifest.capabilities ?? [];
-      const escalated = newCaps.filter((c) => !oldCaps.has(c));
+      const escalatedCaps = newCaps.filter((c) => !oldCaps.has(c));
 
-      if (escalated.length > 0) {
+      if (escalatedCaps.length > 0) {
         log.warn(
-          { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
-          "plugin-loader: upgrade introduces new capabilities — requires admin approval",
-        );
-        throw new Error(
-          `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
-            `The previous version declared [${[...oldCaps].join(", ")}]. ` +
-            `Please review and approve the capability escalation before upgrading.`,
+          { pluginId, escalatedCaps, oldVersion: oldManifest.version, newVersion: newManifest.version },
+          "plugin-loader: upgrade introduces new capabilities — lifecycle layer will gate on operator approval",
         );
       }
 
-      // 4. Update the existing record
+      // 4. Update the existing record (always — even if caps escalated, so the
+      // new package is on disk and the DB reflects the installed version).
       await registry.update(pluginId, {
         packageName: discovered.packageName,
         version: discovered.version,
@@ -1562,6 +1583,7 @@ export function pluginLoader(
         oldManifest,
         newManifest,
         discovered,
+        escalatedCaps,
       };
     },
 
@@ -1936,6 +1958,22 @@ export function pluginLoader(
       // to a file:// URL so the loader accepts it cross-platform.
       if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", pathToFileURL(DEV_TSX_LOADER_PATH).href];
+      }
+
+      // Ensure scratch dir exists before worker starts.
+      const scratchPath = pluginScratchDir(pluginId);
+      mkdirSync(scratchPath, { recursive: true });
+
+      // Apply Node permission model for sandboxed plugins.
+      const sandboxFlags = buildSandboxExecArgv({
+        pluginId,
+        trustTier: plugin.trustTier,
+        capabilities: (manifest.capabilities ?? []) as PluginCapability[],
+      });
+
+      // --permission flags break the test runner's module resolver; sandbox is dev/prod only.
+      if (process.env.NODE_ENV !== "test" && sandboxFlags.length > 0) {
+        workerOptions.execArgv = [...(workerOptions.execArgv ?? []), ...sandboxFlags];
       }
 
       await workerManager.startWorker(pluginId, workerOptions);

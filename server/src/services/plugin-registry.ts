@@ -7,6 +7,7 @@ import {
   pluginJobs,
   pluginJobRuns,
   pluginWebhookDeliveries,
+  companies,
 } from "@armyofagents/db";
 import type {
   PaperclipPluginManifestV1,
@@ -33,13 +34,13 @@ import { conflict, notFound } from "../errors.js";
 
 /**
  * Detect if a Postgres error is a unique-constraint violation on the
- * `plugins_plugin_key_idx` unique index.
+ * `plugins_company_plugin_key_idx` unique index.
  */
 function isPluginKeyConflict(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const err = error as { code?: string; constraint?: string; constraint_name?: string };
   const constraint = err.constraint ?? err.constraint_name;
-  return err.code === "23505" && constraint === "plugins_plugin_key_idx";
+  return err.code === "23505" && constraint === "plugins_company_plugin_key_idx";
 }
 
 function mapLegacyPaperclipKey(pluginKey: string): string | null {
@@ -93,10 +94,27 @@ export function pluginRegistryService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function nextInstallOrder(): Promise<number> {
+  async function getByKeyScoped(pluginKey: string, companyId: string) {
+    const row = await db
+      .select()
+      .from(plugins)
+      .where(and(eq(plugins.companyId, companyId), eq(plugins.pluginKey, pluginKey)))
+      .then((rows) => rows[0] ?? null);
+    if (row) return row;
+    const legacyAlias = mapLegacyPaperclipKey(pluginKey);
+    if (!legacyAlias) return null;
+    return db
+      .select()
+      .from(plugins)
+      .where(and(eq(plugins.companyId, companyId), eq(plugins.pluginKey, legacyAlias)))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function nextInstallOrder(companyId: string): Promise<number> {
     const result = await db
       .select({ maxOrder: sql<number>`coalesce(max(${plugins.installOrder}), 0)` })
-      .from(plugins);
+      .from(plugins)
+      .where(eq(plugins.companyId, companyId));
     return (result[0]?.maxOrder ?? 0) + 1;
   }
 
@@ -139,6 +157,12 @@ export function pluginRegistryService(db: Db) {
     /** Get a single plugin by its unique `pluginKey`. */
     getByKey,
 
+    /**
+     * Get a single plugin by its unique `pluginKey` scoped to a specific company.
+     * Preferred over `getByKey` when a companyId is available, to ensure multi-tenant isolation.
+     */
+    getByKeyScoped,
+
     // ----- Install / Register --------------------------------------------
 
     /**
@@ -147,9 +171,33 @@ export function pluginRegistryService(db: Db) {
      * The caller is expected to have already resolved and validated the
      * manifest from the package.  This method persists the plugin row and
      * assigns the next install order.
+     *
+     * @param input - Installation input (packageName, packagePath)
+     * @param manifest - The resolved plugin manifest
+     * @param companyId - The owning company. Required. If omitted, falls back to the first company
+     *                    in the database (legacy escape hatch — prefer passing explicitly).
      */
-    install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1) => {
-      const existing = await getByKey(manifest.id);
+    install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1, companyId?: string) => {
+      // Resolve the target company before checking for an existing row so that
+      // the reinstall path is scoped to the same company (prevents matching
+      // a soft-deleted row from a different tenant).
+      let finalCompanyId = companyId;
+      if (!finalCompanyId) {
+        const [company] = await db
+          .select({ id: companies.id })
+          .from(companies)
+          .limit(1)
+          .catch((err) => {
+            console.error("[plugin-registry] Failed to fetch fallback company:", err);
+            return [] as { id: string }[];
+          });
+        if (!company) {
+          throw new Error("No companies found in database; cannot install plugin without a company context");
+        }
+        finalCompanyId = company.id;
+      }
+
+      const existing = await getByKeyScoped(manifest.id, finalCompanyId);
       if (existing) {
         if (existing.status !== "uninstalled") {
           throw conflict(`Plugin already installed: ${manifest.id}`);
@@ -162,11 +210,13 @@ export function pluginRegistryService(db: Db) {
           .set({
             packageName: input.packageName,
             packagePath: input.packagePath ?? null,
+            catalogItemId: input.catalogItemId ?? null,
             version: manifest.version,
             apiVersion: manifest.apiVersion,
             categories: manifest.categories,
             manifestJson: manifest,
             status: "installed" as PluginStatus,
+            trustTier: "untrusted",
             lastError: null,
             updatedAt: new Date(),
           })
@@ -175,13 +225,19 @@ export function pluginRegistryService(db: Db) {
           .then((rows) => rows[0] ?? null);
       }
 
-      const installOrder = await nextInstallOrder();
+      if (!finalCompanyId) {
+        throw new Error("[plugin-registry] Cannot install plugin: companyId could not be resolved");
+      }
+
+      const installOrder = await nextInstallOrder(finalCompanyId);
 
       try {
         const rows = await db
           .insert(plugins)
           .values({
             pluginKey: manifest.id,
+            companyId: finalCompanyId,
+            catalogItemId: input.catalogItemId,
             packageName: input.packageName,
             version: manifest.version,
             apiVersion: manifest.apiVersion,
@@ -304,8 +360,12 @@ export function pluginRegistryService(db: Db) {
      * Create or fully replace a plugin's instance configuration.
      * If a config row already exists for the plugin it is replaced;
      * otherwise a new row is inserted.
+     *
+     * @param pluginId - The plugin UUID
+     * @param input - The upsert payload with configJson
+     * @param companyId - Optional companyId for new rows. If not provided, uses plugin.companyId.
      */
-    upsertConfig: async (pluginId: string, input: UpsertPluginConfig) => {
+    upsertConfig: async (pluginId: string, input: UpsertPluginConfig, companyId?: string) => {
       const plugin = await getById(pluginId);
       if (!plugin) throw notFound("Plugin not found");
 
@@ -314,6 +374,8 @@ export function pluginRegistryService(db: Db) {
         .from(pluginConfig)
         .where(eq(pluginConfig.pluginId, pluginId))
         .then((rows) => rows[0] ?? null);
+
+      const finalCompanyId = companyId ?? plugin.companyId;
 
       if (existing) {
         return db
@@ -323,7 +385,7 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(eq(pluginConfig.pluginId, pluginId))
+          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, finalCompanyId)))
           .returning()
           .then((rows) => rows[0]);
       }
@@ -332,6 +394,7 @@ export function pluginRegistryService(db: Db) {
         .insert(pluginConfig)
         .values({
           pluginId,
+          companyId: finalCompanyId,
           configJson: input.configJson,
         })
         .returning()
@@ -341,8 +404,12 @@ export function pluginRegistryService(db: Db) {
     /**
      * Partially update a plugin's instance configuration via shallow merge.
      * If no config row exists yet one is created with the supplied values.
+     *
+     * @param pluginId - The plugin UUID
+     * @param input - The patch payload with configJson (partial merge)
+     * @param companyId - Optional companyId for new rows. If not provided, uses plugin.companyId.
      */
-    patchConfig: async (pluginId: string, input: PatchPluginConfig) => {
+    patchConfig: async (pluginId: string, input: PatchPluginConfig, companyId?: string) => {
       const plugin = await getById(pluginId);
       if (!plugin) throw notFound("Plugin not found");
 
@@ -351,6 +418,8 @@ export function pluginRegistryService(db: Db) {
         .from(pluginConfig)
         .where(eq(pluginConfig.pluginId, pluginId))
         .then((rows) => rows[0] ?? null);
+
+      const finalCompanyId = companyId ?? plugin.companyId;
 
       if (existing) {
         const merged = { ...existing.configJson, ...input.configJson };
@@ -361,7 +430,7 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(eq(pluginConfig.pluginId, pluginId))
+          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, finalCompanyId)))
           .returning()
           .then((rows) => rows[0]);
       }
@@ -370,6 +439,7 @@ export function pluginRegistryService(db: Db) {
         .insert(pluginConfig)
         .values({
           pluginId,
+          companyId: finalCompanyId,
           configJson: input.configJson,
         })
         .returning()

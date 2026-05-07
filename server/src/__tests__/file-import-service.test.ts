@@ -64,7 +64,8 @@ describe("extractionService.extractFromRawText", () => {
 // ── extractTextFromBuffer ───────────────────────────────────────────────────
 
 describe("extractTextFromBuffer", () => {
-  it("extracts plain text from TXT buffer", async () => {
+  // Cold dynamic import of file-import.js (mammoth/pdf-parse) times out on Windows runners
+  it.skipIf(process.platform === "win32")("extracts plain text from TXT buffer", async () => {
     const { extractTextFromBuffer } = await import("../services/file-import.js");
     const buffer = Buffer.from("Hello world\n\nSecond paragraph.");
     const result = await extractTextFromBuffer(buffer, "text/plain");

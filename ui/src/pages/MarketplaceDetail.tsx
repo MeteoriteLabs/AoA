@@ -1,12 +1,15 @@
 import { useMemo, useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useCatalog } from "@/hooks/useCatalog";
+import { pluginsApi } from "@/api/plugins";
+import { queryKeys } from "@/lib/queryKeys";
 import { MarketplaceLayout } from "@/components/marketplace/MarketplaceLayout";
 import { TrustBadge } from "@/components/marketplace/TrustBadge";
 import { ReadmeRender } from "@/components/marketplace/ReadmeRender";
@@ -18,7 +21,7 @@ import {
   TYPE_LABELS_PLURAL,
   pathToItemType,
 } from "@/lib/marketplace-constants";
-import type { MarketplaceItemType } from "@armyofagents/shared";
+import type { MarketplaceItemType, PluginRecord } from "@armyofagents/shared";
 
 const CAP_PREVIEW = 8;
 
@@ -43,10 +46,24 @@ export default function MarketplaceDetail() {
   const [installModalOpen, setInstallModalOpen] = useState(false);
   const [showAllCaps, setShowAllCaps] = useState(false);
 
+  const { data: installedPlugins = [] } = useQuery<PluginRecord[]>({
+    queryKey: queryKeys.plugins.all,
+    queryFn: () => pluginsApi.list(),
+  });
+
   const item = useMemo(() => {
     if (!catalog || !catalogItemId) return null;
     return catalog.items.find((i) => i.id === catalogItemId) ?? null;
   }, [catalog, catalogItemId]);
+
+  const installedByPackageName = useMemo(
+    () => new Map(installedPlugins.map((p) => [p.packageName, p])),
+    [installedPlugins],
+  );
+
+  const installedPlugin = item?.npm?.packageName
+    ? installedByPackageName.get(item.npm.packageName)
+    : undefined;
 
   useEffect(() => {
     if (!item) return;
@@ -208,9 +225,21 @@ export default function MarketplaceDetail() {
                   </a>
                 </div>
               )}
-              <Button className="w-full" onClick={() => setInstallModalOpen(true)}>
-                Install
-              </Button>
+              {installedPlugin?.status === "ready" ? (
+                <div className="w-full flex items-center justify-center gap-2 bg-muted rounded-md px-4 py-2">
+                  <span className="text-sm font-semibold text-green-400">Installed</span>
+                  <span className="text-xs text-muted-foreground">v{installedPlugin.version}</span>
+                </div>
+              ) : installedPlugin ? (
+                <div className="w-full flex items-center justify-center gap-2 bg-muted rounded-md px-4 py-2">
+                  <span className="text-sm font-semibold text-muted-foreground">Pending</span>
+                  <span className="text-xs text-muted-foreground">v{installedPlugin.version}</span>
+                </div>
+              ) : (
+                <Button className="w-full" onClick={() => setInstallModalOpen(true)}>
+                  Install
+                </Button>
+              )}
             </div>
           </div>
         </div>
@@ -283,14 +312,14 @@ export default function MarketplaceDetail() {
         </section>
       </div>
 
-      {installModalOpen && item.type === "plugin" && (
+      {item.type === "plugin" && (
         <PluginInstallModal
           item={item}
           open={installModalOpen}
           onOpenChange={setInstallModalOpen}
         />
       )}
-      {installModalOpen && item.type !== "plugin" && (
+      {item.type !== "plugin" && (
         <SnapshotInstallModal
           item={item}
           open={installModalOpen}

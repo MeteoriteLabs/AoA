@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Dialog,
   DialogContent,
@@ -9,12 +10,15 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import type { CatalogItem } from "@armyofagents/shared";
+import type { CatalogItem, PluginCapability } from "@armyofagents/shared";
+import { PLUGIN_CAPABILITIES } from "@armyofagents/shared";
 import { TrustBadge } from "../TrustBadge";
+import { CapabilityConsentStep } from "./CapabilityConsentStep.js";
 import { useCompany } from "@/context/CompanyContext";
 import { useInstallOperation } from "@/hooks/useInstallOperation";
 import { useOperationStatus } from "@/hooks/useOperationStatus";
 import { useInstallToast } from "../toast/useInstallToast";
+import { queryKeys } from "@/lib/queryKeys";
 
 export interface PluginInstallModalProps {
   item: CatalogItem;
@@ -43,10 +47,24 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
   const installCompanyId =
     selectedCompanyId ?? companies.find((c) => c.status !== "archived")?.id ?? null;
 
+  const queryClient = useQueryClient();
   const installMutation = useInstallOperation({ companyId: installCompanyId ?? "" });
   const { show, update } = useInstallToast();
   const [pendingOpId, setPendingOpId] = useState<string | null>(null);
   const [pendingToastId, setPendingToastId] = useState<number | null>(null);
+
+  // Derive PluginCapability[] from the catalog item's capability objects
+  const capabilities = (item.capabilities ?? [])
+    .map((c) => c.id)
+    .filter((id): id is PluginCapability =>
+      (PLUGIN_CAPABILITIES as readonly string[]).includes(id)
+    );
+  const [capabilitiesAgreed, setCapabilitiesAgreed] = useState(capabilities.length === 0);
+
+  // Reset consent whenever the user switches to a different plugin (modal stays mounted)
+  useEffect(() => {
+    setCapabilitiesAgreed(capabilities.length === 0);
+  }, [item.id]); // capabilities is derived from item so safe here
 
   // Capture the timestamp when this modal instance opened.
   const openedAt = useRef<Date>(new Date());
@@ -62,13 +80,15 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
 
   // React to terminal status — update toast and clear tracking state
   useEffect(() => {
-    if (!opStatus || pendingToastId === null) return;
+    if (!opStatus || pendingToastId === null || pendingToastId < 1) return;
     if (opStatus.status === "success") {
       update(pendingToastId, { status: "success", message: `Installed ${item.name}` });
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
       setPendingOpId(null);
       setPendingToastId(null);
     } else if (opStatus.status === "requested") {
       update(pendingToastId, { status: "success", message: `Request submitted — a founder will review ${item.name}` });
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
       setPendingOpId(null);
       setPendingToastId(null);
     } else if (opStatus.status === "failure") {
@@ -80,7 +100,7 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
       setPendingOpId(null);
       setPendingToastId(null);
     }
-  }, [opStatus, pendingToastId, update, item.name]);
+  }, [opStatus, pendingToastId, update, item.name, queryClient]);
 
   const handleInstall = async () => {
     if (!installCompanyId) return;
@@ -119,21 +139,12 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
             </Badge>
           </div>
 
-          {item.capabilities && item.capabilities.length > 0 && (
-            <div>
-              <h4 className="text-sm font-medium mb-2">This plugin will have access to:</h4>
-              <ul className="space-y-1 text-sm max-h-60 overflow-y-auto">
-                {item.capabilities.map((cap) => (
-                  <li key={cap.id} className="flex items-start gap-2">
-                    <code className="text-xs bg-muted px-1.5 py-0.5 rounded shrink-0">
-                      {cap.id}
-                    </code>
-                    <span className="text-muted-foreground">{cap.description}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          <CapabilityConsentStep
+            pluginName={item.name}
+            capabilities={capabilities}
+            agreed={capabilitiesAgreed}
+            onAgreedChange={setCapabilitiesAgreed}
+          />
 
           <p className="text-xs text-muted-foreground">
             Plugins are installed instance-wide and available to all companies.
@@ -146,7 +157,7 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
           </Button>
           <Button
             onClick={handleInstall}
-            disabled={installMutation.isPending || !installCompanyId}
+            disabled={installMutation.isPending || !installCompanyId || !capabilitiesAgreed}
           >
             {installMutation.isPending ? "Starting install…" : "Install"}
           </Button>

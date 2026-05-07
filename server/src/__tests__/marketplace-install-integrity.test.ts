@@ -78,7 +78,7 @@ describe("installMarketplacePlugin — integrity wiring", () => {
       db: makeMockDb() as any,
       pluginLoader: {
         installPlugin: installPluginMock,
-        registry: { getByKey: vi.fn(async () => ({ id: "plug-uuid-1", pluginKey: "aoa.slack" })) },
+        registry: { getByKeyScoped: vi.fn(async () => ({ id: "plug-uuid-1", pluginKey: "aoa.slack" })) },
         lifecycle: { load: vi.fn(async () => {}) },
       } as any,
     });
@@ -105,7 +105,7 @@ describe("installMarketplacePlugin — integrity wiring", () => {
         db: makeMockDb() as any,
         pluginLoader: {
           installPlugin: installPluginMock,
-          registry: { getByKey: vi.fn() },
+          registry: { getByKeyScoped: vi.fn() },
           lifecycle: { load: vi.fn() },
         } as any,
       }),
@@ -125,7 +125,7 @@ describe("installMarketplacePlugin — integrity wiring", () => {
       db: makeMockDb() as any,
       pluginLoader: {
         installPlugin: installPluginMock,
-        registry: { getByKey: vi.fn(async () => ({ id: "plug-uuid-2", pluginKey: "aoa.slack" })) },
+        registry: { getByKeyScoped: vi.fn(async () => ({ id: "plug-uuid-2", pluginKey: "aoa.slack" })) },
         lifecycle: { load: vi.fn(async () => {}) },
       } as any,
     });
@@ -158,7 +158,7 @@ describe("installMarketplacePlugin — integrity wiring", () => {
       db: makeMockDb() as any,
       pluginLoader: {
         installPlugin: installPluginMock,
-        registry: { getByKey: vi.fn(async () => ({ id: "plug-uuid-3", pluginKey: "aoa.slack" })) },
+        registry: { getByKeyScoped: vi.fn(async () => ({ id: "plug-uuid-3", pluginKey: "aoa.slack" })) },
         lifecycle: { load: vi.fn(async () => {}) },
       } as any,
     });

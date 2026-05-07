@@ -55,7 +55,7 @@ export function getActorInfo(req: Request) {
   };
 }
 
-export function assertCanManageInstanceSettings(req: Request) {
+export function assertCanManageInstanceSettings(req: Request): void {
   if (req.actor.type !== "board") {
     throw forbidden("Board access required");
   }

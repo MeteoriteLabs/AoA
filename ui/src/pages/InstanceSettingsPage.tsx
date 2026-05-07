@@ -4,7 +4,6 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, LogOut, Settings } from "lucide-react";
 import type { PatchInstanceGeneralSettings } from "@armyofagents/shared";
-import { PluginManager } from "./PluginManager";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
 import { PrivacyTab } from "@/components/settings/PrivacyTab";
@@ -12,6 +11,7 @@ import { BackupsTab } from "@/components/settings/BackupsTab";
 import { HeartbeatsTab } from "@/components/settings/HeartbeatsTab";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { feedbackApi } from "@/api/feedback";
+import { pluginsApi } from "@/api/plugins";
 import { authApi } from "@/api/auth";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
@@ -272,12 +272,66 @@ export function InstanceSettingsPage() {
             </TabsContent>
 
             {/* ── Plugins tab ─────────────────────────────────────────── */}
+            {/* Plugins tab — diagnostics only (M.4: management moved to Company Settings) */}
             <TabsContent value="plugins" className="mt-6">
-              <PluginManager />
+              <div className="space-y-4">
+                <div className="bg-indigo-950/30 border border-indigo-900/40 rounded-lg px-4 py-3 text-xs text-indigo-300">
+                  Plugin installation and configuration is available in each company's{" "}
+                  <strong>Settings → Plugins</strong> tab.
+                </div>
+                <PluginDiagnosticsPanel />
+              </div>
             </TabsContent>
           </Tabs>
         </div>
       </main>
+    </div>
+  );
+}
+
+// ── Plugin diagnostics panel ──────────────────────────────────────────────────
+
+function PluginDiagnosticsPanel() {
+  const { data: allPlugins } = useQuery({
+    queryKey: ["instance-plugins-health"],
+    queryFn: () => pluginsApi.list(),   // existing GET /api/plugins endpoint
+    refetchInterval: 30_000,
+  });
+
+  if (!allPlugins?.length) {
+    return <p className="text-xs text-zinc-500 py-2">No plugins installed on this instance.</p>;
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide">Worker health</p>
+      {allPlugins.map((plugin) => (
+        <div
+          key={plugin.id}
+          className="flex items-center gap-3 px-3 py-2.5 bg-zinc-900 border border-zinc-800 rounded-lg"
+        >
+          <span
+            className={`w-2 h-2 rounded-full flex-shrink-0 ${
+              plugin.status === "ready" ? "bg-green-400" : "bg-red-400"
+            }`}
+          />
+          <span className="text-xs text-zinc-300 flex-1 truncate">
+            {plugin.manifestJson?.displayName ?? plugin.pluginKey}
+            {plugin.companyId && (
+              <span className="text-zinc-600 ml-1">({plugin.companyId.slice(0, 8)}…)</span>
+            )}
+          </span>
+          <span className="text-[10px] text-zinc-600 whitespace-nowrap">{plugin.status}</span>
+          {plugin.lastError && (
+            <span
+              className="text-[10px] text-red-400 truncate max-w-[160px]"
+              title={plugin.lastError}
+            >
+              {plugin.lastError}
+            </span>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

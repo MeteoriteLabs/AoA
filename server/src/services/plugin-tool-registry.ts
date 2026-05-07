@@ -233,6 +233,14 @@ export function createPluginToolRegistry(
   const byNamespace = new Map<string, RegisteredTool>();
 
   // Secondary index: pluginId → set of namespaced names (for bulk operations)
+  //
+  // INVARIANT: this registry assumes one running worker per pluginKey (instance-wide
+  // plugins). The namespace key passed to registerPlugin() is pluginKey, not pluginDbId,
+  // so two companies installing the same pluginKey and loading separate workers would
+  // cause the second registration to silently overwrite the first.
+  // If per-company worker isolation is ever introduced, the namespace key must change
+  // to pluginDbId (the DB row UUID) throughout the entire runtime stack:
+  // plugin-tool-registry, plugin-tool-dispatcher, plugin-worker-manager, live events.
   const byPlugin = new Map<string, Set<string>>();
 
   // -----------------------------------------------------------------------

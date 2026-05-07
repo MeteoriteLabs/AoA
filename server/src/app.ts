@@ -75,6 +75,7 @@ import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
+import { companyPluginRoutes } from "./routes/company-plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { createMarketplaceRouter } from "./routes/marketplace.js";
 import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js";
@@ -368,6 +369,12 @@ export async function createApp(
   }));
   api.use(pluginCompanySettingsRoutes(db));
 
+  // Company-scoped plugin management (M.4)
+  api.use(
+    "/companies/:companyId/plugins",
+    companyPluginRoutes(db, lifecycleMgr, loaderInst),
+  );
+
   // Marketplace catalog service + routes
   const marketplaceCatalogService = new MarketplaceCatalogService({
     db,
@@ -423,8 +430,8 @@ export async function createApp(
           };
         },
         registry: {
-          getByKey: async (pluginKey) => {
-            const row = await marketplacePluginRegistry.getByKey(pluginKey);
+          getByKeyScoped: async (pluginKey, companyId) => {
+            const row = await marketplacePluginRegistry.getByKeyScoped(pluginKey, companyId);
             return row ? { id: row.id, pluginKey: row.pluginKey } : null;
           },
         },

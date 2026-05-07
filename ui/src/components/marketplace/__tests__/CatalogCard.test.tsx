@@ -1,16 +1,40 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CatalogCard } from "../CatalogCard";
 import { SLACK_PLUGIN, CODE_REVIEW_SKILL } from "@/__tests__/__fixtures__/marketplace-catalog";
 import type { PluginRecord } from "@armyofagents/shared";
 
+// PluginInstallModal and SnapshotInstallModal are now always mounted (no mount guard)
+// so they require these providers even when closed (open=false).
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({
+    selectedCompanyId: "c1",
+    companies: [{ id: "c1", name: "Acme", status: "active" }],
+  }),
+}));
+
+vi.mock("@/api/marketplace", async () => {
+  const actual = await vi.importActual<typeof import("@/api/marketplace")>("@/api/marketplace");
+  return {
+    ...actual,
+    marketplaceApi: { ...actual.marketplaceApi, install: vi.fn(), getOperation: vi.fn() },
+  };
+});
+
 function renderWithRouter(ui: React.ReactElement) {
-  return render(<MemoryRouter>{ui}</MemoryRouter>);
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 const INSTALLED_READY: PluginRecord = {
   id: "plugin-uuid",
+  companyId: "company-uuid",
   pluginKey: "aoa.plugin-slack",
   packageName: "aoa-plugin-slack",
   version: "1.0.0",

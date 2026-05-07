@@ -49,7 +49,7 @@ import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { ToolRunContext } from "@armyofagents/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@armyofagents/plugin-sdk";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCanManageInstanceSettings, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import { logger } from "../middleware/logger.js";
 import { pluginRollbackService } from "../services/plugin-rollback.js";
@@ -337,6 +337,36 @@ export function pluginRoutes(
     return [];
   }
 
+  /**
+   * Resolve the single companyId to associate with an install operation.
+   *
+   * Distinct from resolvePluginAuditCompanyIds, which fans out to ALL companies
+   * for audit-log purposes. This function returns the ONE company the plugin
+   * row should be scoped to:
+   *   - session/key board actors → their first company membership (from token)
+   *   - local_implicit actors    → first company in DB (single-operator local deploy)
+   *   - agent actors             → the agent's own companyId
+   */
+  async function resolveInstallCompanyId(req: Request): Promise<string | null> {
+    if (req.actor.type === "agent" && req.actor.companyId) {
+      return req.actor.companyId;
+    }
+
+    if (req.actor.type === "board" && req.actor.source !== "local_implicit") {
+      return req.actor.companyIds?.[0] ?? null;
+    }
+
+    // local_implicit or board with no companyIds on token: fall back to first company in DB.
+    // This is the correct path for a single-operator local deployment.
+    const row = await db
+      .select({ id: companies.id })
+      .from(companies)
+      .orderBy(companies.createdAt)
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return row?.id ?? null;
+  }
+
   async function logPluginMutationActivity(
     req: Request,
     action: string,
@@ -606,6 +636,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/install", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { packageName, version, isLocalPath } = req.body as PluginInstallRequest;
 
     // Input validation
@@ -638,9 +669,18 @@ export function pluginRoutes(
     }
 
     try {
+      // Resolve the owning company for this install. Uses actor-scoped resolution
+      // (not the audit fan-out helper) so multi-company instances install into the
+      // correct tenant rather than whichever company is first in the DB.
+      const companyId = await resolveInstallCompanyId(req);
+      if (!companyId) {
+        res.status(400).json({ error: "Cannot determine company context for plugin install" });
+        return;
+      }
+
       const installOptions = isLocalPath
-        ? { localPath: trimmedPackage }
-        : { packageName: trimmedPackage, version: version?.trim() };
+        ? { localPath: trimmedPackage, companyId }
+        : { packageName: trimmedPackage, version: version?.trim(), companyId };
 
       const discovered = await loader.installPlugin(installOptions);
 
@@ -650,7 +690,7 @@ export function pluginRoutes(
       }
 
       // Transition to ready state
-      const existingPlugin = await registry.getByKey(discovered.manifest.id);
+      const existingPlugin = await registry.getByKeyScoped(discovered.manifest.id, companyId);
       if (existingPlugin) {
         await lifecycle.load(existingPlugin.id);
         const updated = await registry.getById(existingPlugin.id);
@@ -1233,6 +1273,7 @@ export function pluginRoutes(
    */
   router.delete("/plugins/:pluginId", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
     const purge = req.query.purge === "true";
 
@@ -1269,6 +1310,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/enable", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
@@ -1307,6 +1349,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/disable", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
     const body = req.body as { reason?: string } | undefined;
     const reason = body?.reason;
@@ -1466,6 +1509,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/upgrade", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
     const body = req.body as { version?: string } | undefined;
     const version = body?.version;
@@ -1476,22 +1520,12 @@ export function pluginRoutes(
       return;
     }
 
-    // M4.D7: Save a snapshot of the current version BEFORE upgrading so we can
-    // auto-revert if the upgrade fails.
-    const rollback = pluginRollbackService(db);
-    await rollback.saveSnapshot(
-      plugin.id,
-      plugin.version,
-      plugin.packageName,
-      plugin.manifestJson,
-    );
-
     try {
-      // Upgrade the plugin - this would typically:
-      // 1. Download the new version
-      // 2. Compare capabilities
-      // 3. If new capabilities, mark as upgrade_pending
-      // 4. Otherwise, transition to ready
+      // Upgrade the plugin:
+      // 1. Downloads and validates new version via loader (no throw on new caps)
+      // 2. Diffs capabilities; if escalated → upgrade_pending (operator gate)
+      // 3. If no new caps → transitions directly to ready
+      // Returns { version, status, delta? } — not a raw PluginRecord.
       const result = await lifecycle.upgrade(plugin.id, version);
       await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
         pluginId: plugin.id,
@@ -1503,11 +1537,13 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
       res.json(result);
     } catch (err) {
-      // M4.D7 self-healing: upgrade failed — auto-revert to the snapshot we just saved.
+      // M4.D7 self-healing: upgrade failed — auto-revert to the snapshot saved inside upgrade().
+      const rollback = pluginRollbackService(db);
       const target = await rollback.getRollbackTarget(plugin.id).catch(() => null);
       if (target) {
         try {
-          await loader.installPlugin({ packageName: target.packageName, version: target.version });
+          if (!plugin.companyId) throw new Error(`Plugin ${plugin.id} has no companyId — cannot auto-revert`);
+          await loader.installPlugin({ packageName: target.packageName, version: target.version, companyId: plugin.companyId });
           await lifecycle.load(plugin.id);
           logger.info(
             { pluginId: plugin.id, revertedTo: target.version },
@@ -1572,6 +1608,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/config", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
@@ -1677,6 +1714,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/config/test", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
 
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
@@ -1868,6 +1906,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/jobs/:jobId/trigger", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     if (!jobDeps) {
       res.status(501).json({ error: "Job scheduling is not enabled" });
       return;
@@ -1888,6 +1927,12 @@ export function pluginRoutes(
 
     try {
       const result = await jobDeps.scheduler.triggerJob(jobId, "manual");
+      await logPluginMutationActivity(req, "plugin.job.triggered", plugin.id, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        jobId,
+        trigger: "manual",
+      });
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -2290,6 +2335,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/rollback", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
@@ -2307,9 +2353,11 @@ export function pluginRoutes(
 
     try {
       // Re-install the previous version
+      if (!plugin.companyId) throw new Error(`Plugin ${plugin.id} has no companyId — cannot rollback`);
       await loader.installPlugin({
         packageName: target.packageName,
         version: target.version,
+        companyId: plugin.companyId,
       });
       await lifecycle.load(plugin.id);
       const updated = await registry.getById(plugin.id);
@@ -2409,6 +2457,7 @@ export function pluginCompanySettingsRoutes(db: Db) {
    */
   router.put("/companies/:companyId/plugin-settings/:pluginId", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const companyId = req.params.companyId as string;
     const pluginId = req.params.pluginId as string;
     assertCompanyAccess(req, companyId);
