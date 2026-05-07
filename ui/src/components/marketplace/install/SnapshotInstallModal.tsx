@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   Dialog,
   DialogContent,
@@ -52,6 +54,7 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
     setDeptId(null);
   }, [companyId]);
 
+  const queryClient = useQueryClient();
   const installMutation = useInstallOperation({ companyId: companyId ?? "" });
   const { show, update } = useInstallToast();
 
@@ -71,10 +74,12 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
     if (!opStatus || pendingToastId === null || pendingToastId < 1) return;
     if (opStatus.status === "success") {
       update(pendingToastId, { status: "success", message: `Installed ${item.name}` });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
       setPendingOpId(null);
       setPendingToastId(null);
     } else if (opStatus.status === "requested") {
       update(pendingToastId, { status: "success", message: `Request submitted — a founder will review ${item.name}` });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
       setPendingOpId(null);
       setPendingToastId(null);
     } else if (opStatus.status === "failure") {
@@ -86,7 +91,7 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
       setPendingOpId(null);
       setPendingToastId(null);
     }
-  }, [opStatus, pendingToastId, update, item.name]);
+  }, [opStatus, pendingToastId, update, item.name, queryClient]);
 
   // Skills don't require a department — only agent/team installs do.
   const needsDept = item.type === "agent" || item.type === "team";

@@ -16,15 +16,21 @@ export function buildSandboxExecArgv(opts: SandboxOptions): string[] {
   }
 
   const scratchDir = path.join(os.homedir(), ".aoa", "plugins", pluginId, "scratch");
+  // os.tmpdir() is needed for tsx's compile cache when workers are TypeScript.
+  // Node v24+ requires separate --allow-fs-write flags per path (comma lists removed).
+  const tmpDir = os.tmpdir();
   const args: string[] = [
     "--permission",
     "--allow-fs-read=*",
     `--allow-fs-write=${scratchDir}`,
+    `--allow-fs-write=${tmpDir}`,
+    "--allow-worker",    // plugins may use Worker threads internally
   ];
 
-  if (capabilities.includes("http.outbound")) {
-    args.push("--allow-net");
-  }
+  // Node.js --permission model does not have a --allow-net flag (that's Deno).
+  // Network access is unrestricted in the Node permission model; the capability
+  // is tracked in the manifest for future enforcement at the RPC layer.
+  void capabilities;
 
   return args;
 }

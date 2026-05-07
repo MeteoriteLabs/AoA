@@ -3,6 +3,8 @@ import { buildSandboxExecArgv } from "../services/plugin-sandbox.js";
 import path from "node:path";
 import os from "node:os";
 
+const tmpDir = os.tmpdir();
+
 describe("buildSandboxExecArgv", () => {
   const pluginId = "plugin-abc-123";
   const expectedScratch = path.join(os.homedir(), ".aoa", "plugins", pluginId, "scratch");
@@ -24,25 +26,35 @@ describe("buildSandboxExecArgv", () => {
     });
     expect(args).toContain("--permission");
     expect(args).toContain("--allow-fs-read=*");
-    expect(args).toContain(`--allow-fs-write=${expectedScratch}`);
+    expect(args).toContain("--allow-worker");
+    // --allow-fs-write has separate flags per path (Node v24+ comma lists removed)
+    const writeArgs = args.filter((a) => a.startsWith("--allow-fs-write="));
+    expect(writeArgs.some((a) => a.includes(expectedScratch))).toBe(true);
+    expect(writeArgs.some((a) => a.includes(tmpDir))).toBe(true);
   });
 
-  it("denies network access for 'untrusted' without http.outbound", () => {
+  it("does not include --allow-net (not a valid Node.js permission flag)", () => {
     const args = buildSandboxExecArgv({
       pluginId,
       trustTier: "untrusted",
-      capabilities: ["issues.read"],
+      capabilities: ["issues.read", "http.outbound"],
     });
     expect(args.some((a) => a.startsWith("--allow-net"))).toBe(false);
   });
 
-  it("allows network access for 'untrusted' with http.outbound capability", () => {
-    const args = buildSandboxExecArgv({
+  it("http.outbound capability does not add flags (Node has no --allow-net)", () => {
+    const withNet = buildSandboxExecArgv({
       pluginId,
       trustTier: "untrusted",
       capabilities: ["http.outbound"],
     });
-    expect(args).toContain("--allow-net");
+    const withoutNet = buildSandboxExecArgv({
+      pluginId,
+      trustTier: "untrusted",
+      capabilities: [],
+    });
+    // Network access tracked in manifest; no extra Node flag needed
+    expect(withNet).toEqual(withoutNet);
   });
 
   it("applies sandbox for 'verified' plugins (same as untrusted)", () => {
@@ -53,16 +65,19 @@ describe("buildSandboxExecArgv", () => {
     });
     expect(args).toContain("--permission");
     expect(args).toContain("--allow-fs-read=*");
-    expect(args).toContain(`--allow-fs-write=${expectedScratch}`);
+    const writeArgs = args.filter((a) => a.startsWith("--allow-fs-write="));
+    expect(writeArgs.some((a) => a.includes(expectedScratch))).toBe(true);
+    expect(writeArgs.some((a) => a.includes(tmpDir))).toBe(true);
   });
 
-  it("allows network for 'verified' with http.outbound", () => {
+  it("verified with http.outbound: same flags as without (no --allow-net in Node)", () => {
     const args = buildSandboxExecArgv({
       pluginId,
       trustTier: "verified",
       capabilities: ["http.outbound"],
     });
-    expect(args).toContain("--allow-net");
+    expect(args.some((a) => a.startsWith("--allow-net"))).toBe(false);
+    expect(args).toContain("--permission");
   });
 
   it("scratch dir uses pluginId in the path", () => {
@@ -100,17 +115,20 @@ describe("plugin-loader execArgv injection", () => {
 
     expect(flags).toContain("--permission");
     expect(flags.some((f) => f.startsWith("--allow-fs-read="))).toBe(true);
-    expect(flags.some((f) => f.startsWith("--allow-fs-write="))).toBe(true);
+    const writeArgs = flags.filter((f) => f.startsWith("--allow-fs-write="));
+    expect(writeArgs.some((a) => a.includes("untrusted-plugin"))).toBe(true);
+    expect(writeArgs.some((a) => a.includes(tmpDir))).toBe(true);
     expect(flags.some((f) => f.startsWith("--allow-net"))).toBe(false);
   });
 
-  it("includes --allow-net for untrusted plugin with http.outbound", () => {
+  it("http.outbound capability does not alter sandbox flags (no --allow-net in Node)", () => {
     const flags = buildSandboxExecArgv({
       pluginId: "network-plugin",
       trustTier: "untrusted",
       capabilities: ["http.outbound"],
     });
-    expect(flags).toContain("--allow-net");
+    expect(flags.some((f) => f.startsWith("--allow-net"))).toBe(false);
+    expect(flags).toContain("--permission");
   });
 
   it("does not add --permission for core plugin (bundled)", () => {
