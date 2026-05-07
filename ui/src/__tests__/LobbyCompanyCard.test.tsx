@@ -121,12 +121,16 @@ describe("LobbyCompanyCard", () => {
     expect(container.querySelectorAll(".animate-shimmer").length).toBeGreaterThan(0);
   });
 
-  it("uses the bg-card/85 surface (PR-C gradient prep)", () => {
+  // Phase 2 lobby pilot: card now uses solid bg-card surface + brand-red
+  // hover state per design-system §10 (cards) + §9.1 (focus ring).
+  it("uses the bg-card surface with brand-red hover state", () => {
     const { container } = renderWithProviders(
       <LobbyCompanyCard company={makeCompany()} onClick={vi.fn()} />,
     );
     const button = container.querySelector("button");
-    expect(button?.className).toMatch(/bg-card\/85/);
+    expect(button?.className).toMatch(/bg-card(?!-2)/);
+    expect(button?.className).toMatch(/hover:border-brand/);
+    expect(button?.className).toMatch(/focus-visible:ring-brand-focus-ring/);
   });
 
   // PR-C polish: card hover gets a 1.02 scale via Tailwind, with a

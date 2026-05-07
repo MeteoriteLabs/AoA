@@ -21,11 +21,11 @@ export function LobbyCompanyCard({ company, stats, statsLoading, onClick }: Lobb
       type="button"
       onClick={onClick}
       className={cn(
-        "group relative flex flex-col items-start gap-4 rounded-lg border border-border bg-card/85 p-5",
-        "text-left transition-all duration-150 will-change-transform",
-        "hover:border-foreground/20 hover:shadow-md hover:shadow-black/5 hover:scale-[1.02]",
+        "group relative flex flex-col items-start gap-4 rounded-lg border border-border bg-card p-5",
+        "text-left transition-all duration-180 will-change-transform",
+        "hover:border-brand/30 hover:bg-card-2 hover:shadow-[0_4px_12px_rgba(0,0,0,0.3)] hover:scale-[1.02]",
         "motion-reduce:hover:scale-100",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring focus-visible:border-brand",
       )}
     >
       {/* Brand color top accent */}
@@ -51,21 +51,21 @@ export function LobbyCompanyCard({ company, stats, statsLoading, onClick }: Lobb
           />
         )}
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-foreground truncate">
+          <h3 className="text-sm font-semibold text-text truncate">
             {company.name}
           </h3>
           {company.issuePrefix && (
-            <p className="text-xs text-muted-foreground mt-0.5">{company.issuePrefix}</p>
+            <p className="text-xs text-very-dim mt-0.5 font-mono">{company.issuePrefix}</p>
           )}
         </div>
       </div>
 
       {/* Stats row */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-dim">
         {statsLoading ? (
           <>
-            <Skeleton className="h-3.5 w-16 animate-pulse" />
-            <Skeleton className="h-3.5 w-16 animate-pulse" />
+            <Skeleton className="h-3.5 w-16" />
+            <Skeleton className="h-3.5 w-16" />
           </>
         ) : stats ? (
           <>

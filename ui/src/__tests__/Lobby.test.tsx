@@ -197,16 +197,16 @@ describe("Lobby", () => {
     expect(screen.getByText("Loading...")).toBeInTheDocument();
   });
 
-  // PR-C polish: page background should use the diagonal purple-wash gradient
-  // (bg-background flat fill is replaced with a Tailwind arbitrary-value
-  // linear-gradient utility).
-  it("applies the diagonal purple-wash gradient on the lobby root", () => {
+  // Phase 2 lobby pilot: page background uses brand-red radial wash
+  // anchored top-center (replaces the prior diagonal purple-wash gradient).
+  // Per design-system §8.4: lobby surfaces get full brand-tinted radial wash.
+  it("applies the brand-red radial wash gradient on the lobby root", () => {
     mockCompanyContext.companies = [makeCompany()];
     const { container } = renderWithProviders(<Lobby />);
     const root = container.firstChild as HTMLElement | null;
     expect(root).toBeTruthy();
-    expect(root!.className).toMatch(/linear-gradient/);
-    expect(root!.className).toContain("hsl(260");
+    expect(root!.className).toMatch(/radial-gradient/);
+    expect(root!.className).toContain("brand-focus-ring");
   });
 
   // PR-C polish: mount choreography classes are applied to heading + each card

@@ -15,11 +15,12 @@ function LobbyNavRow({ icon: Icon, label, active, onClick }: LobbyNavRowProps) {
     <button
       type="button"
       onClick={onClick}
+      data-active={active ? "true" : undefined}
       className={cn(
         "flex items-center gap-2.5 w-full px-3 py-2 rounded-md text-[13px] font-medium transition-colors",
         active
-          ? "bg-accent text-foreground"
-          : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+          ? "bg-white/[0.06] text-text shadow-[inset_2px_0_0_var(--brand)]"
+          : "text-text/[0.78] hover:bg-white/[0.04] hover:text-text",
       )}
     >
       <Icon className="h-4 w-4 shrink-0" />
@@ -40,10 +41,12 @@ export function LobbySidebar() {
   const navigate = useNavigate();
 
   return (
-    <aside className="flex flex-col w-[220px] shrink-0 h-dvh border-r border-border bg-background lobby-sidebar-enter">
+    <aside className="flex flex-col w-[220px] shrink-0 h-dvh border-r border-border bg-card/50 backdrop-blur-sm lobby-sidebar-enter">
       {/* Brand */}
       <div className="flex items-center h-14 px-4 shrink-0 border-b border-border">
-        <span className="text-sm font-bold tracking-tight text-foreground">AoA</span>
+        <span className="text-sm font-bold tracking-tight text-text">
+          AoA<span className="text-brand">.</span>
+        </span>
       </div>
 
       {/* Nav rows */}

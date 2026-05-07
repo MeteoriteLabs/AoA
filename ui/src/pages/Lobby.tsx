@@ -9,13 +9,13 @@ import { queryKeys } from "@/lib/queryKeys";
 import { LobbyCompanyCard } from "@/components/LobbyCompanyCard";
 import { LobbyEmptyState } from "@/components/LobbyEmptyState";
 import { LobbySidebar } from "@/components/LobbySidebar";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { cn } from "@/lib/utils";
 
 export function Lobby() {
   const { companies, loading: companiesLoading } = useCompany();
@@ -36,7 +36,7 @@ export function Lobby() {
 
   if (companiesLoading) {
     return (
-      <div className="flex h-dvh items-center justify-center bg-background text-muted-foreground">
+      <div className="flex h-dvh items-center justify-center bg-bg text-dim">
         <span className="text-sm">Loading...</span>
       </div>
     );
@@ -45,29 +45,21 @@ export function Lobby() {
   const isEmpty = visibleCompanies.length === 0;
 
   return (
-    <div className="flex h-dvh text-foreground bg-[linear-gradient(135deg,hsl(260_40%_8%),hsl(240_25%_5%)_60%,hsl(220_30%_4%))]">
+    <div className="flex h-dvh text-text bg-bg bg-[radial-gradient(ellipse_120%_70%_at_50%_-10%,var(--brand-focus-ring)_0%,transparent_55%)]">
       <LobbySidebar />
 
       {/* Main column */}
       <div className="flex flex-1 flex-col min-w-0">
         {/* Header */}
         <header className="flex items-center justify-between px-6 h-14 shrink-0 border-b border-border lobby-heading-enter">
-          <h1 className="text-sm font-semibold text-foreground">Companies</h1>
+          <h1 className="text-sm font-semibold text-text">Companies</h1>
           {!isEmpty && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className={cn(
-                    "inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium",
-                    "bg-primary text-primary-foreground transition-colors",
-                    "hover:bg-primary/90",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                  )}
-                >
+                <Button size="default">
                   <span>+ New</span>
-                  <ChevronDown className="h-3.5 w-3.5 opacity-80" />
-                </button>
+                  <ChevronDown className="opacity-80" />
+                </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" sideOffset={6} className="min-w-48">
                 <DropdownMenuItem onSelect={() => openOnboarding()}>
