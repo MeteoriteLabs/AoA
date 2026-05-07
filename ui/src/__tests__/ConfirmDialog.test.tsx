@@ -78,7 +78,7 @@ describe("ConfirmDialog", () => {
       />,
     );
     const btn = screen.getByRole("button", { name: "Delete" });
-    expect(btn.className).toMatch(/bg-destructive/);
+    expect(btn.className).toMatch(/bg-error/);
   });
 
   it("omits destructive styling when destructive=false", () => {
@@ -93,7 +93,7 @@ describe("ConfirmDialog", () => {
       />,
     );
     const btn = screen.getByRole("button", { name: "OK" });
-    expect(btn.className).not.toMatch(/bg-destructive/);
+    expect(btn.className).not.toMatch(/bg-error/);
   });
 
   it("disables buttons when disabled=true", () => {
