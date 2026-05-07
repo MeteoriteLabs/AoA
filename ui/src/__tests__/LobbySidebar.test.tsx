@@ -58,31 +58,31 @@ describe("LobbySidebar", () => {
     expect(screen.getByText("AoA")).toBeInTheDocument();
   });
 
-  it("renders the + New company button at the top", () => {
+  it("renders the + New organization button at the top", () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(screen.getByRole("button", { name: /new company/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /new organization/i })).toBeInTheDocument();
   });
 
-  it("clicking + New company calls the onCreateCompany handler", async () => {
+  it("clicking + New organization calls the onCreateCompany handler", async () => {
     const user = userEvent.setup();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    await user.click(screen.getByRole("button", { name: /new company/i }));
+    await user.click(screen.getByRole("button", { name: /new organization/i }));
     expect(onCreateCompany).toHaveBeenCalledTimes(1);
   });
 
-  it("renders Companies (active), Marketplace, Learn, Documentation, Settings", () => {
+  it("renders Organizations (active), Marketplace, Learn, Documentation, Settings", () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(screen.getByRole("button", { name: /companies/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /organizations/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /marketplace/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /learn/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /documentation/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
   });
 
-  it("Companies row is the active item (data-active=true)", () => {
+  it("Organizations row is the active item (data-active=true)", () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    const companies = screen.getByRole("button", { name: /companies/i });
-    expect(companies.getAttribute("data-active")).toBe("true");
+    const orgs = screen.getByRole("button", { name: /organizations/i });
+    expect(orgs.getAttribute("data-active")).toBe("true");
   });
 
   it("renders the UserMenu at the bottom", () => {

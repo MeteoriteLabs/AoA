@@ -32,19 +32,19 @@ export function LobbyEmptyState({ onCreate, onImport }: LobbyEmptyStateProps) {
           Welcome to AoA<span className="text-brand">.</span>
         </h1>
         <p className="mt-2 max-w-md text-[0.82rem] sm:text-sm text-dim leading-relaxed">
-          Companies are the workspace for your hybrid team — agents, humans, goals,
-          and tasks. Create your first one to get started, or import an existing
-          bundle.
+          Organizations are the workspace for your hybrid team — agents, humans,
+          goals, and tasks. Create your first one to get started, or import an
+          existing bundle.
         </p>
 
         <div className="mt-6 sm:mt-8 flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3">
           <Button size="lg" onClick={onCreate}>
             <Plus />
-            Create company
+            Create organization
           </Button>
           <Button size="lg" variant="secondary" onClick={onImport}>
             <Upload />
-            Import company
+            Import organization
           </Button>
         </div>
       </div>

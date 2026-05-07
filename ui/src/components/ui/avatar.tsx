@@ -104,7 +104,7 @@ function Avatar({
           ) : null}
           <AvatarPrimitive.Fallback
             data-slot="avatar-fallback"
-            className="flex size-full items-center justify-center rounded-full font-bold tracking-[-0.01em] text-white"
+            className="flex size-full items-center justify-center font-bold tracking-[-0.01em] text-white"
             style={{
               backgroundColor: seed ? avatarColorFor(seed) : "var(--data-slate)",
             }}
@@ -136,11 +136,15 @@ function AvatarFallback({
   className,
   ...props
 }: React.ComponentProps<typeof AvatarPrimitive.Fallback>) {
+  // No `rounded-*` here — the parent Avatar root owns the shape (circle vs
+  // squircle) via `overflow-hidden` + `rounded-full|rounded-[28%]`. Setting
+  // a radius on the fallback would create a circular fill clipped to a
+  // squircle shape, which still renders as a visible circle.
   return (
     <AvatarPrimitive.Fallback
       data-slot="avatar-fallback"
       className={cn(
-        "bg-muted text-muted-foreground flex size-full items-center justify-center rounded-full text-sm group-data-[size=sm]/avatar:text-xs group-data-[size=xs]/avatar:text-[10px]",
+        "bg-muted text-muted-foreground flex size-full items-center justify-center text-sm group-data-[size=sm]/avatar:text-xs group-data-[size=xs]/avatar:text-[10px]",
         className
       )}
       {...props}

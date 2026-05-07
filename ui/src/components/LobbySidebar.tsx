@@ -159,13 +159,13 @@ export function LobbySidebar({ onCreateCompany, drawer = false, onNavigate }: Lo
                 <Button
                   size="icon"
                   onClick={create}
-                  aria-label="New company"
+                  aria-label="New organization"
                   className="size-9 mx-auto"
                 >
                   <Plus />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>New company</TooltipContent>
+              <TooltipContent side="right" sideOffset={8}>New organization</TooltipContent>
             </Tooltip>
           ) : (
             <Button
@@ -174,14 +174,14 @@ export function LobbySidebar({ onCreateCompany, drawer = false, onNavigate }: Lo
               className="w-full justify-center gap-1.5"
             >
               <Plus />
-              New company
+              New organization
             </Button>
           )}
         </div>
 
         {/* Nav rows */}
         <nav className="flex flex-1 flex-col gap-0.5 p-2">
-          <LobbyNavRow icon={Building2} label="Companies" active collapsed={collapsed} onClick={() => navTo("/")} />
+          <LobbyNavRow icon={Building2} label="Organizations" active collapsed={collapsed} onClick={() => navTo("/")} />
           <LobbyNavRow icon={Store} label="Marketplace" collapsed={collapsed} onClick={() => navTo("/marketplace")} />
 
           {!collapsed && (

@@ -63,7 +63,7 @@ export function Lobby() {
     : 0;
   const subtitleParts: string[] = [];
   subtitleParts.push(
-    `${visibleCompanies.length} ${visibleCompanies.length === 1 ? "company" : "companies"}`,
+    `${visibleCompanies.length} ${visibleCompanies.length === 1 ? "organization" : "organizations"}`,
   );
   if (pendingCompanies > 0) {
     subtitleParts.push(
@@ -118,7 +118,7 @@ export function Lobby() {
             </div>
 
             <div className="mb-3 sm:mb-3.5 text-[0.66rem] sm:text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-dim">
-              Your companies
+              Your organizations
             </div>
 
             <div className="flex flex-col gap-3 sm:gap-3.5">
