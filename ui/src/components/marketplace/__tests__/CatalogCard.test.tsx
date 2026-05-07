@@ -1,13 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { CatalogItem, PluginRecord } from "@armyofagents/shared";
 import { CatalogCard } from "../CatalogCard";
-import { SLACK_PLUGIN, CODE_REVIEW_SKILL } from "@/__tests__/__fixtures__/marketplace-catalog";
-import type { PluginRecord } from "@armyofagents/shared";
 
-// PluginInstallModal and SnapshotInstallModal are now always mounted (no mount guard)
-// so they require these providers even when closed (open=false).
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "c1",
@@ -23,82 +21,115 @@ vi.mock("@/api/marketplace", async () => {
   };
 });
 
-function renderWithRouter(ui: React.ReactElement) {
+function makeItem(overrides: Partial<CatalogItem> = {}): CatalogItem {
+  return {
+    id: "skill:office-hours",
+    type: "skill",
+    name: "/office-hours",
+    description: "YC-style product interrogation.",
+    version: "1.4.0",
+    source: { adapter: "github", url: "https://github.com/garrytan/gstack", locator: "office-hours" },
+    trust: { tier: "verified", source: "anthropic" },
+    status: "active",
+    addedAt: "2026-04-01T00:00:00Z",
+    category: "engineering",
+    tags: ["featured"],
+    ...overrides,
+  };
+}
+
+function renderCard(item: CatalogItem, installed?: Map<string, PluginRecord>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter>{ui}</MemoryRouter>
-    </QueryClientProvider>,
+      <MemoryRouter>
+        <CatalogCard item={item} installedByPackageName={installed} />
+      </MemoryRouter>
+    </QueryClientProvider>
   );
 }
 
-const INSTALLED_READY: PluginRecord = {
-  id: "plugin-uuid",
-  companyId: "company-uuid",
-  pluginKey: "aoa.plugin-slack",
-  packageName: "aoa-plugin-slack",
-  version: "1.0.0",
-  apiVersion: 1,
-  categories: ["integrations"],
-  manifestJson: {} as any,
-  status: "ready",
-  installOrder: 1,
-  packagePath: null,
-  lastError: null,
-  installedAt: new Date(),
-  updatedAt: new Date(),
-};
+describe("CatalogCard (v3 chrome)", () => {
+  beforeEach(() => vi.clearAllMocks());
 
-const INSTALLED_LOADING: PluginRecord = { ...INSTALLED_READY, status: "loading" };
-
-describe("CatalogCard", () => {
-  it("renders item name, description, version, type icon, trust badge", () => {
-    renderWithRouter(<CatalogCard item={SLACK_PLUGIN} />);
-    expect(screen.getByText("Slack")).toBeInTheDocument();
-    expect(screen.getByText(/Slack notifications/)).toBeInTheDocument();
-    expect(screen.getByText("v1.0.0")).toBeInTheDocument();
-    // CatalogCard renders TrustBadge with showLabel={false} — visible "Verified"
-    // text is hidden; the verified-tier description lives in the sr-only span.
-    expect(
-      screen.getByText(/reviewed and signed off by aoa team/i),
-    ).toBeInTheDocument();
+  it("renders the item name and description", () => {
+    renderCard(makeItem());
+    expect(screen.getByText("/office-hours")).toBeInTheDocument();
+    expect(screen.getByText(/YC-style product interrogation/)).toBeInTheDocument();
   });
 
-  it("links to detail page with slashes preserved (splat route)", () => {
-    renderWithRouter(<CatalogCard item={SLACK_PLUGIN} />);
+  it("renders TypeChip in the corner with the uppercase type label", () => {
+    renderCard(makeItem({ type: "skill" }));
+    expect(screen.getByText("SKILL")).toBeInTheDocument();
+  });
+
+  it("shows the verified-blue checkmark when trust.tier='verified'", () => {
+    const { container } = renderCard(makeItem({ trust: { tier: "verified", source: "x" } }));
+    expect(container.querySelector('[data-testid="verified-check"]')).toBeTruthy();
+  });
+
+  it("does NOT show the verified checkmark for community items", () => {
+    const { container } = renderCard(makeItem({ trust: { tier: "community", source: "x" } }));
+    expect(container.querySelector('[data-testid="verified-check"]')).toBeNull();
+  });
+
+  it("does NOT show the verified checkmark for unverified items", () => {
+    const { container } = renderCard(makeItem({ trust: { tier: "unverified", source: "x" } }));
+    expect(container.querySelector('[data-testid="verified-check"]')).toBeNull();
+  });
+
+  it("renders the github source as 'owner/repo'", () => {
+    renderCard(makeItem());
+    expect(screen.getByText("garrytan/gstack")).toBeInTheDocument();
+  });
+
+  it("renders an Install button when not yet installed", () => {
+    renderCard(makeItem({ type: "plugin", npm: { packageName: "@a/b", version: "1.0.0" } }));
+    expect(screen.getByRole("button", { name: /install/i })).toBeInTheDocument();
+  });
+
+  it("renders an Installed badge when the plugin is ready", () => {
+    const item = makeItem({ type: "plugin", npm: { packageName: "@a/b", version: "1.0.0" } });
+    const installed = new Map<string, PluginRecord>([
+      ["@a/b", { id: "p1", packageName: "@a/b", status: "ready" } as unknown as PluginRecord],
+    ]);
+    renderCard(item, installed);
+    expect(screen.getByText(/installed/i)).toBeInTheDocument();
+  });
+
+  it("renders a Pending badge when the plugin is loading", () => {
+    const item = makeItem({ type: "plugin", npm: { packageName: "@a/b", version: "1.0.0" } });
+    const installed = new Map<string, PluginRecord>([
+      ["@a/b", { id: "p1", packageName: "@a/b", status: "loading" } as unknown as PluginRecord],
+    ]);
+    renderCard(item, installed);
+    expect(screen.getByText(/pending/i)).toBeInTheDocument();
+  });
+
+  it("preserves slashes in the detail-page link (splat route)", () => {
+    const item = makeItem({ id: "plugin:aoa-curated/slack", type: "plugin", name: "slack" });
+    renderCard(item);
     const link = screen.getByRole("link");
-    // SLACK_PLUGIN.id = "plugin:aoa-curated/aoa-plugin-slack"
-    // detail URL: /marketplace/plugin/aoa-curated/aoa-plugin-slack
-    expect(link.getAttribute("href")).toBe(
-      "/marketplace/plugin/aoa-curated/aoa-plugin-slack",
-    );
+    expect(link.getAttribute("href")).toBe("/marketplace/plugin/aoa-curated/slack");
   });
 
-  it("renders skill type label for skill items", () => {
-    renderWithRouter(<CatalogCard item={CODE_REVIEW_SKILL} />);
-    expect(screen.getByText("Skill")).toBeInTheDocument();
+  it("clicking Install does not navigate to the detail page (preventDefault)", async () => {
+    const user = userEvent.setup();
+    const { container } = renderCard(makeItem({ type: "skill" }));
+    const link = container.querySelector("a") as HTMLAnchorElement;
+    const linkClickSpy = vi.fn();
+    link.addEventListener("click", linkClickSpy);
+    const btn = screen.getByRole("button", { name: /install/i });
+    await user.click(btn);
+    // The link receives the click but the install button preventDefault'd it,
+    // so the SPA navigation never fires. We assert by checking the click
+    // event's defaultPrevented flag.
+    const lastCall = linkClickSpy.mock.calls.at(-1);
+    expect(lastCall?.[0]?.defaultPrevented).toBe(true);
   });
 
-  it("shows green Installed badge when plugin is ready", () => {
-    const map = new Map([["aoa-plugin-slack", INSTALLED_READY]]);
-    renderWithRouter(<CatalogCard item={SLACK_PLUGIN} installedByPackageName={map} />);
-    expect(screen.getByText("Installed")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /install/i })).not.toBeInTheDocument();
-  });
-
-  it("shows Pending badge when plugin is installed but not ready", () => {
-    const map = new Map([["aoa-plugin-slack", INSTALLED_LOADING]]);
-    renderWithRouter(<CatalogCard item={SLACK_PLUGIN} installedByPackageName={map} />);
-    expect(screen.getByText("Pending")).toBeInTheDocument();
-  });
-
-  it("shows Install button when plugin is not installed", () => {
-    renderWithRouter(<CatalogCard item={SLACK_PLUGIN} installedByPackageName={new Map()} />);
-    expect(screen.getByRole("button", { name: /install/i })).toBeInTheDocument();
-  });
-
-  it("shows Install button when installedByPackageName prop is omitted", () => {
-    renderWithRouter(<CatalogCard item={SLACK_PLUGIN} />);
-    expect(screen.getByRole("button", { name: /install/i })).toBeInTheDocument();
+  it("uses StackedIcon for type='team'", () => {
+    const { container } = renderCard(makeItem({ id: "team:x", type: "team", name: "team-x" }));
+    expect(container.querySelectorAll('[data-stacked-layer]').length).toBe(3);
   });
 });
