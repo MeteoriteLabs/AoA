@@ -1,11 +1,11 @@
-import { BookOpen, Bot, Plug, Users, type LucideIcon } from "lucide-react";
+import { Bot, Puzzle, Sparkles, Users, type LucideIcon } from "lucide-react";
 import type { MarketplaceItemType } from "@armyofagents/shared";
 
 /** Type-default icons. */
 export const TYPE_ICONS: Record<MarketplaceItemType, LucideIcon> = {
-  skill: BookOpen,
+  skill: Sparkles,
   agent: Bot,
-  plugin: Plug,
+  plugin: Puzzle,
   team: Users,
 };
 
