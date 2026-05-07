@@ -78,7 +78,7 @@ describe("installMarketplacePlugin — integrity wiring", () => {
       db: makeMockDb() as any,
       pluginLoader: {
         installPlugin: installPluginMock,
-        registry: { getByKeyScopedScoped: vi.fn(async () => ({ id: "plug-uuid-1", pluginKey: "aoa.slack" })) },
+        registry: { getByKeyScoped: vi.fn(async () => ({ id: "plug-uuid-1", pluginKey: "aoa.slack" })) },
         lifecycle: { load: vi.fn(async () => {}) },
       } as any,
     });
