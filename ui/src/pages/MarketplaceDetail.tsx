@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
+import { ChevronDown, ChevronUp, ExternalLink, BadgeCheck, ChevronLeft } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +10,8 @@ import { cn } from "@/lib/utils";
 import { useCatalog } from "@/hooks/useCatalog";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
-import { MarketplaceLayout } from "@/components/marketplace/MarketplaceLayout";
+import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
+import { useDialog } from "@/context/DialogContext";
 import { TrustBadge } from "@/components/marketplace/TrustBadge";
 import { ReadmeRender } from "@/components/marketplace/ReadmeRender";
 import { PluginInstallModal } from "@/components/marketplace/install/PluginInstallModal";
@@ -40,6 +41,7 @@ export default function MarketplaceDetail() {
   const fullSlug = restPath ? `${slugSegment}/${restPath}` : slugSegment;
   const catalogItemId = itemType ? `${itemType}:${fullSlug}` : null;
 
+  const { openOnboarding } = useDialog();
   const { data: catalog, isLoading, error } = useCatalog();
   const [readmeText, setReadmeText] = useState<string | null>(null);
   const [readmeError, setReadmeError] = useState<string | null>(null);
@@ -86,89 +88,73 @@ export default function MarketplaceDetail() {
       .catch((err) => setReadmeError(err.message));
   }, [item]);
 
-  const typeBreadcrumb = (type: MarketplaceItemType) => ({
-    label: TYPE_LABELS_PLURAL[type],
-    to: `/marketplace?type=${type}`,
-  });
-
-  if (!itemType) {
-    return (
-      <MarketplaceLayout breadcrumbs={[{ label: params.type ?? "?" }]}>
-        <div className="text-center py-12">
-          <p className="text-lg font-medium">Unknown item type</p>
-          <Link
-            to="/marketplace"
-            className="text-sm text-primary hover:underline mt-2 inline-block"
-          >
-            ← Back to marketplace
-          </Link>
-        </div>
-      </MarketplaceLayout>
-    );
-  }
-
-  if (isLoading) {
-    return (
-      <MarketplaceLayout breadcrumbs={[typeBreadcrumb(itemType)]}>
-        <div className="space-y-6 max-w-4xl mx-auto">
-          <Skeleton className="h-10 w-64" />
-          <Skeleton className="h-4 w-96" />
-          <Skeleton className="h-4 w-80" />
-          <Separator />
-          <Skeleton className="h-40 w-full" />
-        </div>
-      </MarketplaceLayout>
-    );
-  }
-
-  if (error || !catalog) {
-    return (
-      <MarketplaceLayout breadcrumbs={[typeBreadcrumb(itemType)]}>
-        <div className="text-center py-12">
-          <p className="text-lg font-medium">Could not load this item</p>
-          <p className="text-sm text-muted-foreground mt-2">
-            {error?.message ?? "Catalog unavailable"}
-          </p>
-          <Link
-            to={`/marketplace?type=${itemType}`}
-            className="text-sm text-primary hover:underline mt-3 inline-block"
-          >
-            ← Back to {TYPE_LABELS_PLURAL[itemType]}
-          </Link>
-        </div>
-      </MarketplaceLayout>
-    );
-  }
-
-  if (!item) {
-    return (
-      <MarketplaceLayout breadcrumbs={[typeBreadcrumb(itemType)]}>
-        <div className="text-center py-12">
-          <p className="text-lg font-medium">Item not found: {catalogItemId}</p>
-          <Link
-            to={`/marketplace?type=${itemType}`}
-            className="text-sm text-primary hover:underline mt-2 inline-block"
-          >
-            ← Back to {TYPE_LABELS_PLURAL[itemType]}
-          </Link>
-        </div>
-      </MarketplaceLayout>
-    );
-  }
-
-  const Icon = TYPE_ICONS[item.type];
-  const caps = item.capabilities ?? [];
+  const Icon = itemType ? TYPE_ICONS[itemType] : null;
+  const caps = item?.capabilities ?? [];
   const visibleCaps = showAllCaps ? caps : caps.slice(0, CAP_PREVIEW);
   const hiddenCapsCount = caps.length - CAP_PREVIEW;
 
   return (
-    <MarketplaceLayout
-      breadcrumbs={[
-        typeBreadcrumb(item.type),
-        { label: item.name },
-      ]}
-    >
-      <div className="max-w-4xl mx-auto space-y-8">
+    <LobbyShell activeItem="marketplace" defaultCollapsed onCreateCompany={() => openOnboarding()}>
+      <div className="mx-auto w-full max-w-[920px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
+        <LobbyShellMobileMenuButton className="mb-4" />
+        <Link
+          to="/marketplace"
+          className="mb-4 inline-flex items-center gap-1 text-[12px] text-very-dim hover:text-foreground"
+        >
+          <ChevronLeft className="size-3.5" /> Marketplace · {itemType ? TYPE_LABELS_PLURAL[itemType] : ""}
+        </Link>
+
+        {!itemType && (
+          <div className="text-center py-12">
+            <p className="text-lg font-medium">Unknown item type</p>
+            <Link
+              to="/marketplace"
+              className="text-sm text-primary hover:underline mt-2 inline-block"
+            >
+              ← Back to marketplace
+            </Link>
+          </div>
+        )}
+
+        {itemType && isLoading && (
+          <div className="space-y-6 max-w-4xl mx-auto">
+            <Skeleton className="h-10 w-64" />
+            <Skeleton className="h-4 w-96" />
+            <Skeleton className="h-4 w-80" />
+            <Separator />
+            <Skeleton className="h-40 w-full" />
+          </div>
+        )}
+
+        {itemType && !isLoading && (error || !catalog) && (
+          <div className="text-center py-12">
+            <p className="text-lg font-medium">Could not load this item</p>
+            <p className="text-sm text-muted-foreground mt-2">
+              {error?.message ?? "Catalog unavailable"}
+            </p>
+            <Link
+              to={`/marketplace?type=${itemType}`}
+              className="text-sm text-primary hover:underline mt-3 inline-block"
+            >
+              ← Back to {TYPE_LABELS_PLURAL[itemType]}
+            </Link>
+          </div>
+        )}
+
+        {itemType && !isLoading && catalog && !item && (
+          <div className="text-center py-12">
+            <p className="text-lg font-medium">Item not found: {catalogItemId}</p>
+            <Link
+              to={`/marketplace?type=${itemType}`}
+              className="text-sm text-primary hover:underline mt-2 inline-block"
+            >
+              ← Back to {TYPE_LABELS_PLURAL[itemType]}
+            </Link>
+          </div>
+        )}
+
+        {itemType && !isLoading && item && Icon && (
+        <div className="max-w-4xl mx-auto space-y-8">
 
         {/* ── Hero ───────────────────────────────────────────────────────────── */}
         <div className="flex flex-col lg:flex-row gap-8">
@@ -189,7 +175,16 @@ export default function MarketplaceDetail() {
                   <span>·</span>
                   <Badge variant="outline" className="text-xs">v{item.version}</Badge>
                 </div>
-                <h1 className="text-2xl font-bold leading-tight">{item.name}</h1>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-2xl font-bold leading-tight">{item.name}</h1>
+                  {item.trust.tier === "verified" && (
+                    <BadgeCheck
+                      data-testid="hero-verified"
+                      className="size-5 shrink-0 text-[hsl(208_80%_60%)]"
+                      aria-label="Verified"
+                    />
+                  )}
+                </div>
               </div>
             </div>
             <p className="text-muted-foreground mb-4">{item.description}</p>
@@ -310,22 +305,24 @@ export default function MarketplaceDetail() {
             <ReadmeRender source={readmeText} />
           )}
         </section>
-      </div>
 
-      {item.type === "plugin" && (
-        <PluginInstallModal
-          item={item}
-          open={installModalOpen}
-          onOpenChange={setInstallModalOpen}
-        />
-      )}
-      {item.type !== "plugin" && (
-        <SnapshotInstallModal
-          item={item}
-          open={installModalOpen}
-          onOpenChange={setInstallModalOpen}
-        />
-      )}
-    </MarketplaceLayout>
+          {item.type === "plugin" && (
+            <PluginInstallModal
+              item={item}
+              open={installModalOpen}
+              onOpenChange={setInstallModalOpen}
+            />
+          )}
+          {item.type !== "plugin" && (
+            <SnapshotInstallModal
+              item={item}
+              open={installModalOpen}
+              onOpenChange={setInstallModalOpen}
+            />
+          )}
+        </div>
+        )}
+      </div>
+    </LobbyShell>
   );
 }
