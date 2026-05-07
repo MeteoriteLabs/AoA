@@ -9,18 +9,7 @@ import { issueService } from "../services/issues.js";
 import { logActivity } from "../services/activity-log.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { forbidden } from "../errors.js";
-
-// Mirror of instance-settings.ts's `assertCanManageInstanceSettings`. Bundle
-// history is an admin view — it exposes metadata across every company on this
-// instance (timestamps, sizes, vote direction), matching the scope of the
-// PrivacyTab toggle that triggers the bundles in the first place.
-function assertCanManageInstanceSettings(req: import("express").Request) {
-  if (req.actor.type !== "board") throw forbidden("Board access required");
-  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-  throw forbidden("Instance admin access required");
-}
+import { assertCanManageInstanceSettings, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function feedbackRoutes(db: Db) {
   const router = Router();

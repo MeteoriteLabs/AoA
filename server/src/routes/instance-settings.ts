@@ -1,20 +1,9 @@
 import { Router, type Request } from "express";
 import type { Db } from "@armyofagents/db";
 import { patchInstanceExperimentalSettingsSchema, patchInstanceGeneralSettingsSchema } from "@armyofagents/shared";
-import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService, logActivity } from "../services/index.js";
-import { getActorInfo } from "./authz.js";
-
-function assertCanManageInstanceSettings(req: Request) {
-  if (req.actor.type !== "board") {
-    throw forbidden("Board access required");
-  }
-  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
-    return;
-  }
-  throw forbidden("Instance admin access required");
-}
+import { assertCanManageInstanceSettings, getActorInfo } from "./authz.js";
 
 export function instanceSettingsRoutes(db: Db) {
   const router = Router();
