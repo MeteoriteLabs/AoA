@@ -28,6 +28,7 @@ export const MarketplaceTagSchema = z.enum([
   "requires-api-key",
   "official",
   "partner",
+  "requires-cli-tooling",
 ]);
 export type MarketplaceTag = z.infer<typeof MarketplaceTagSchema>;
 
@@ -103,6 +104,7 @@ export const MarketplaceCatalogItemSchema = z.object({
   category: MarketplaceCategorySchema,
   tags: z.array(MarketplaceTagSchema),
   featured: z.boolean().optional(),
+  runtimeRequires: z.array(z.string()).optional(),
 });
 export type MarketplaceCatalogItem = z.infer<typeof MarketplaceCatalogItemSchema>;
 
