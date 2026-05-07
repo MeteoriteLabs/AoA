@@ -73,12 +73,7 @@ export function CatalogCard({ item, installedByPackageName }: CatalogCardProps) 
             {item.type === "team" ? (
               <StackedIcon icon={Bot} tone="teal" className="size-12 shrink-0" />
             ) : (
-              <div
-                className={cn(
-                  "size-12 shrink-0 rounded-2xl border flex items-center justify-center",
-                  SINGLE_ICON_TONES[item.type as Exclude<MarketplaceItemType, "team">],
-                )}
-              >
+              <div className={cn("size-12 shrink-0 rounded-2xl border flex items-center justify-center", SINGLE_ICON_TONES[item.type])}>
                 <Icon className="size-5" />
               </div>
             )}

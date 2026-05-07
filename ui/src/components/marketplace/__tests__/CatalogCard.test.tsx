@@ -94,7 +94,7 @@ describe("CatalogCard (v3 chrome)", () => {
       ["@a/b", { id: "p1", packageName: "@a/b", status: "ready" } as unknown as PluginRecord],
     ]);
     renderCard(item, installed);
-    expect(screen.getByText(/installed/i)).toBeInTheDocument();
+    expect(screen.getByText("Installed")).toBeInTheDocument();
   });
 
   it("renders a Pending badge when the plugin is loading", () => {
@@ -103,7 +103,7 @@ describe("CatalogCard (v3 chrome)", () => {
       ["@a/b", { id: "p1", packageName: "@a/b", status: "loading" } as unknown as PluginRecord],
     ]);
     renderCard(item, installed);
-    expect(screen.getByText(/pending/i)).toBeInTheDocument();
+    expect(screen.getByText("Pending")).toBeInTheDocument();
   });
 
   it("preserves slashes in the detail-page link (splat route)", () => {

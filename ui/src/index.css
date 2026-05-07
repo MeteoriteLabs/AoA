@@ -465,6 +465,15 @@
   border-color: color-mix(in srgb, var(--entity-agent) 25%, var(--border));
 }
 
+.card-hover {
+  transition: border-color .2s ease, box-shadow .25s ease, transform .15s ease;
+}
+
+.card-hover:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 1px hsl(8 75% 50% / 0.25), 0 8px 28px hsl(8 75% 30% / 0.18);
+}
+
 /* MDXEditor theme integration */
 .aoa-mdxeditor-scope,
 .aoa-mdxeditor {
