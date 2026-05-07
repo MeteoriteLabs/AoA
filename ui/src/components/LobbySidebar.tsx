@@ -40,7 +40,7 @@ export function LobbySidebar() {
   const navigate = useNavigate();
 
   return (
-    <aside className="flex flex-col w-[220px] shrink-0 h-dvh border-r border-border bg-background">
+    <aside className="flex flex-col w-[220px] shrink-0 h-dvh border-r border-border bg-background lobby-sidebar-enter">
       {/* Brand */}
       <div className="flex items-center h-14 px-4 shrink-0 border-b border-border">
         <span className="text-sm font-bold tracking-tight text-foreground">AoA</span>
