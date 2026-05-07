@@ -89,3 +89,36 @@ describe("plugin-loader sandbox injection (integration)", () => {
     expect(flags).toContain("--permission");
   });
 });
+
+describe("plugin-loader execArgv injection", () => {
+  it("includes --permission in execArgv for untrusted plugin with no capabilities", () => {
+    const flags = buildSandboxExecArgv({
+      pluginId: "untrusted-plugin",
+      trustTier: "untrusted",
+      capabilities: [],
+    });
+
+    expect(flags).toContain("--permission");
+    expect(flags.some((f) => f.startsWith("--allow-fs-read="))).toBe(true);
+    expect(flags.some((f) => f.startsWith("--allow-fs-write="))).toBe(true);
+    expect(flags.some((f) => f.startsWith("--allow-net"))).toBe(false);
+  });
+
+  it("includes --allow-net for untrusted plugin with http.outbound", () => {
+    const flags = buildSandboxExecArgv({
+      pluginId: "network-plugin",
+      trustTier: "untrusted",
+      capabilities: ["http.outbound"],
+    });
+    expect(flags).toContain("--allow-net");
+  });
+
+  it("does not add --permission for core plugin (bundled)", () => {
+    const flags = buildSandboxExecArgv({
+      pluginId: "core-plugin",
+      trustTier: "core",
+      capabilities: ["http.outbound"],
+    });
+    expect(flags).toEqual([]);
+  });
+});
