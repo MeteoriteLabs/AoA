@@ -23,7 +23,7 @@ describe("buildSandboxExecArgv", () => {
       capabilities: [],
     });
     expect(args).toContain("--permission");
-    expect(args).toContain(`--allow-fs-read=${expectedScratch}`);
+    expect(args).toContain("--allow-fs-read=*");
     expect(args).toContain(`--allow-fs-write=${expectedScratch}`);
   });
 
@@ -52,7 +52,7 @@ describe("buildSandboxExecArgv", () => {
       capabilities: [],
     });
     expect(args).toContain("--permission");
-    expect(args).toContain(`--allow-fs-read=${expectedScratch}`);
+    expect(args).toContain("--allow-fs-read=*");
     expect(args).toContain(`--allow-fs-write=${expectedScratch}`);
   });
 
@@ -71,7 +71,7 @@ describe("buildSandboxExecArgv", () => {
       trustTier: "untrusted",
       capabilities: [],
     });
-    const scratchArg = args.find((a) => a.startsWith("--allow-fs-read="));
+    const scratchArg = args.find((a) => a.startsWith("--allow-fs-write="));
     expect(scratchArg).toContain("my-special-plugin");
   });
 });

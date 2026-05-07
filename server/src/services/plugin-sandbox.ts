@@ -18,7 +18,7 @@ export function buildSandboxExecArgv(opts: SandboxOptions): string[] {
   const scratchDir = path.join(os.homedir(), ".aoa", "plugins", pluginId, "scratch");
   const args: string[] = [
     "--permission",
-    `--allow-fs-read=${scratchDir}`,
+    "--allow-fs-read=*",
     `--allow-fs-write=${scratchDir}`,
   ];
 

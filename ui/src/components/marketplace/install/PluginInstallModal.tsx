@@ -63,8 +63,8 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
 
   // Reset consent whenever the user switches to a different plugin (modal stays mounted)
   useEffect(() => {
-    setCapabilitiesAgreed((item.capabilities ?? []).length === 0);
-  }, [item.id]);
+    setCapabilitiesAgreed(capabilities.length === 0);
+  }, [item.id]); // capabilities is derived from item so safe here
 
   // Capture the timestamp when this modal instance opened.
   const openedAt = useRef<Date>(new Date());
