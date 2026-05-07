@@ -49,7 +49,7 @@ import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { ToolRunContext } from "@armyofagents/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@armyofagents/plugin-sdk";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCanManageInstanceSettings, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import { logger } from "../middleware/logger.js";
 import { pluginRollbackService } from "../services/plugin-rollback.js";
@@ -606,6 +606,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/install", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { packageName, version, isLocalPath } = req.body as PluginInstallRequest;
 
     // Input validation
@@ -1243,6 +1244,7 @@ export function pluginRoutes(
    */
   router.delete("/plugins/:pluginId", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
     const purge = req.query.purge === "true";
 
@@ -1279,6 +1281,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/enable", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
@@ -1317,6 +1320,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/disable", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
     const body = req.body as { reason?: string } | undefined;
     const reason = body?.reason;
@@ -1476,6 +1480,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/upgrade", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
     const body = req.body as { version?: string } | undefined;
     const version = body?.version;
@@ -1573,6 +1578,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/config", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
@@ -1678,6 +1684,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/config/test", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
 
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
@@ -1869,6 +1876,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/jobs/:jobId/trigger", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     if (!jobDeps) {
       res.status(501).json({ error: "Job scheduling is not enabled" });
       return;
@@ -2291,6 +2299,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/rollback", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
