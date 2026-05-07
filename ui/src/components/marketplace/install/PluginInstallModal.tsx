@@ -11,6 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import type { CatalogItem, PluginCapability } from "@armyofagents/shared";
+import { PLUGIN_CAPABILITIES } from "@armyofagents/shared";
 import { TrustBadge } from "../TrustBadge";
 import { CapabilityConsentStep } from "./CapabilityConsentStep.js";
 import { useCompany } from "@/context/CompanyContext";
@@ -53,8 +54,17 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
   const [pendingToastId, setPendingToastId] = useState<number | null>(null);
 
   // Derive PluginCapability[] from the catalog item's capability objects
-  const capabilities = ((item.capabilities ?? []).map((c) => c.id) as PluginCapability[]);
+  const capabilities = (item.capabilities ?? [])
+    .map((c) => c.id)
+    .filter((id): id is PluginCapability =>
+      (PLUGIN_CAPABILITIES as readonly string[]).includes(id)
+    );
   const [capabilitiesAgreed, setCapabilitiesAgreed] = useState(capabilities.length === 0);
+
+  // Reset consent whenever the user switches to a different plugin (modal stays mounted)
+  useEffect(() => {
+    setCapabilitiesAgreed((item.capabilities ?? []).length === 0);
+  }, [item.id]);
 
   // Capture the timestamp when this modal instance opened.
   const openedAt = useRef<Date>(new Date());

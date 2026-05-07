@@ -11,21 +11,10 @@ interface Props {
 export function CapabilityConsentStep({ pluginName, capabilities, agreed, onAgreedChange }: Props) {
   if (capabilities.length === 0) {
     return (
-      <div className="space-y-4">
-        <label className="flex items-start gap-2 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={agreed}
-            onChange={(e) => onAgreedChange(e.target.checked)}
-            className="mt-0.5 accent-indigo-500"
-          />
-          <span className="text-xs text-zinc-400">
-            No special permissions required —{" "}
-            <span className="font-semibold text-zinc-200">{pluginName}</span> does not request
-            access to any protected resources.
-          </span>
-        </label>
-      </div>
+      <p className="text-xs text-zinc-400">
+        <span className="font-semibold text-zinc-200">{pluginName}</span> requests no special
+        permissions.
+      </p>
     );
   }
 

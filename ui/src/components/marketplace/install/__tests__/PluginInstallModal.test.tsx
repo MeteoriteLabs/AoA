@@ -94,29 +94,31 @@ describe("PluginInstallModal", () => {
     expect(screen.getByText("503 Service Unavailable")).toBeInTheDocument();
   });
 
-  it("Install button is disabled until consent checkbox is checked (SLACK_PLUGIN has capabilities)", async () => {
-    wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
-    const installBtn = screen.getByRole("button", { name: "Install" });
-    expect(installBtn).toBeDisabled();
-  });
+  describe("capability consent gate", () => {
+    it("Install button is disabled until consent checkbox is checked (SLACK_PLUGIN has capabilities)", async () => {
+      wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
+      const installBtn = screen.getByRole("button", { name: "Install" });
+      expect(installBtn).toBeDisabled();
+    });
 
-  it("Install button is enabled after checking the consent checkbox", async () => {
-    wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
-    const installBtn = screen.getByRole("button", { name: "Install" });
-    expect(installBtn).toBeDisabled();
+    it("Install button is enabled after checking the consent checkbox", async () => {
+      wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
+      const installBtn = screen.getByRole("button", { name: "Install" });
+      expect(installBtn).toBeDisabled();
 
-    // The consent checkbox — find it by its label text fragment
-    const checkbox = screen.getByRole("checkbox");
-    await userEvent.click(checkbox);
+      // The consent checkbox — find it by its label text fragment
+      const checkbox = screen.getByRole("checkbox");
+      await userEvent.click(checkbox);
 
-    expect(installBtn).not.toBeDisabled();
-  });
+      expect(installBtn).not.toBeDisabled();
+    });
 
-  it("Install button is NOT disabled when item has no capabilities", () => {
-    const noCapItem = { ...SLACK_PLUGIN, capabilities: [] };
-    wrap(<PluginInstallModal item={noCapItem} open onOpenChange={() => {}} />);
-    const installBtn = screen.getByRole("button", { name: "Install" });
-    expect(installBtn).not.toBeDisabled();
+    it("Install button is NOT disabled when item has no capabilities", () => {
+      const noCapItem = { ...SLACK_PLUGIN, capabilities: [] };
+      wrap(<PluginInstallModal item={noCapItem} open onOpenChange={() => {}} />);
+      const installBtn = screen.getByRole("button", { name: "Install" });
+      expect(installBtn).not.toBeDisabled();
+    });
   });
 
   it("resolves toast to success when component stays mounted after modal closes", async () => {
