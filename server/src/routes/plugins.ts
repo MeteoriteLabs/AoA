@@ -1897,6 +1897,12 @@ export function pluginRoutes(
 
     try {
       const result = await jobDeps.scheduler.triggerJob(jobId, "manual");
+      await logPluginMutationActivity(req, "plugin.job.triggered", plugin.id, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        jobId,
+        trigger: "manual",
+      });
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

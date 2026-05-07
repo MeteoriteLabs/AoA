@@ -8,7 +8,7 @@
 
 import { Router } from "express";
 import type { MarketplaceCatalogService } from "../services/aoa-marketplace.js";
-import { assertBoard } from "./authz.js";
+import { assertBoard, assertCanManageInstanceSettings } from "./authz.js";
 
 export interface MarketplaceRoutesDeps {
   service: MarketplaceCatalogService;
@@ -30,6 +30,7 @@ export function createMarketplaceRouter(deps: MarketplaceRoutesDeps): Router {
 
   router.post("/catalog/sync", async (req, res) => {
     assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const catalog = await service.sync();
     if (!catalog) {
       res.status(502).json({ error: "Sync failed", status: await service.getStatus() });

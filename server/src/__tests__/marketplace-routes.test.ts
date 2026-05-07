@@ -10,6 +10,11 @@ vi.mock("../routes/authz.js", () => ({
       throw new HttpError(403, "Board access required");
     }
   },
+  assertCanManageInstanceSettings: (req: any) => {
+    if (req?.actor?.type !== "board") {
+      throw new HttpError(403, "Board access required");
+    }
+  },
 }));
 
 const VALID_CATALOG = {
