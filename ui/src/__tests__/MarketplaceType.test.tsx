@@ -7,16 +7,22 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import MarketplaceType from "@/pages/MarketplaceType";
 import { marketplaceApi } from "@/api/marketplace";
 import { FULL_CATALOG } from "@/__tests__/__fixtures__/marketplace-catalog";
-import { mockCompanyContext } from "@/__tests__/test-utils";
+import { mockCompanyContext, mockDialogContext } from "@/__tests__/test-utils";
 
 vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>("@/api/marketplace");
   return { ...actual, marketplaceApi: { getCatalog: vi.fn() } };
 });
 
-// MarketplaceLayout uses the custom useNavigate which requires CompanyContext.
-vi.mock("@/context/CompanyContext", () => ({
-  useCompany: () => mockCompanyContext,
+vi.mock("@/context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
+vi.mock("@/context/DialogContext", () => ({ useDialog: () => mockDialogContext }));
+
+vi.mock("@/components/LobbySidebar", () => ({
+  LobbySidebar: () => <aside data-testid="lobby-sidebar" />,
+}));
+vi.mock("@/components/ui/sheet", () => ({
+  Sheet: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SheetContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
 function wrap(initialPath: string) {
