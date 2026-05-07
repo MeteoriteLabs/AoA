@@ -10,8 +10,9 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import type { CatalogItem } from "@armyofagents/shared";
+import type { CatalogItem, PluginCapability } from "@armyofagents/shared";
 import { TrustBadge } from "../TrustBadge";
+import { CapabilityConsentStep } from "./CapabilityConsentStep.js";
 import { useCompany } from "@/context/CompanyContext";
 import { useInstallOperation } from "@/hooks/useInstallOperation";
 import { useOperationStatus } from "@/hooks/useOperationStatus";
@@ -50,6 +51,10 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
   const { show, update } = useInstallToast();
   const [pendingOpId, setPendingOpId] = useState<string | null>(null);
   const [pendingToastId, setPendingToastId] = useState<number | null>(null);
+
+  // Derive PluginCapability[] from the catalog item's capability objects
+  const capabilities = ((item.capabilities ?? []).map((c) => c.id) as PluginCapability[]);
+  const [capabilitiesAgreed, setCapabilitiesAgreed] = useState(capabilities.length === 0);
 
   // Capture the timestamp when this modal instance opened.
   const openedAt = useRef<Date>(new Date());
@@ -124,21 +129,12 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
             </Badge>
           </div>
 
-          {item.capabilities && item.capabilities.length > 0 && (
-            <div>
-              <h4 className="text-sm font-medium mb-2">This plugin will have access to:</h4>
-              <ul className="space-y-1 text-sm max-h-60 overflow-y-auto">
-                {item.capabilities.map((cap) => (
-                  <li key={cap.id} className="flex items-start gap-2">
-                    <code className="text-xs bg-muted px-1.5 py-0.5 rounded shrink-0">
-                      {cap.id}
-                    </code>
-                    <span className="text-muted-foreground">{cap.description}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          <CapabilityConsentStep
+            pluginName={item.name}
+            capabilities={capabilities}
+            agreed={capabilitiesAgreed}
+            onAgreedChange={setCapabilitiesAgreed}
+          />
 
           <p className="text-xs text-muted-foreground">
             Plugins are installed instance-wide and available to all companies.
@@ -151,7 +147,7 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
           </Button>
           <Button
             onClick={handleInstall}
-            disabled={installMutation.isPending || !installCompanyId}
+            disabled={installMutation.isPending || !installCompanyId || !capabilitiesAgreed}
           >
             {installMutation.isPending ? "Starting install…" : "Install"}
           </Button>

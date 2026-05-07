@@ -62,6 +62,9 @@ describe("PluginInstallModal", () => {
     const onOpenChange = vi.fn();
     wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={onOpenChange} />);
 
+    // Check consent checkbox first — required before Install is enabled
+    await userEvent.click(screen.getByRole("checkbox"));
+
     // The Cancel button is variant=outline; the Install button is the primary one
     const installBtn = screen.getByRole("button", { name: "Install" });
     await userEvent.click(installBtn);
@@ -81,12 +84,39 @@ describe("PluginInstallModal", () => {
     );
     wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
 
+    // Check consent checkbox first — required before Install is enabled
+    await userEvent.click(screen.getByRole("checkbox"));
     await userEvent.click(screen.getByRole("button", { name: "Install" }));
 
     await waitFor(() =>
       expect(screen.getByText(/Failed to start install/)).toBeInTheDocument(),
     );
     expect(screen.getByText("503 Service Unavailable")).toBeInTheDocument();
+  });
+
+  it("Install button is disabled until consent checkbox is checked (SLACK_PLUGIN has capabilities)", async () => {
+    wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
+    const installBtn = screen.getByRole("button", { name: "Install" });
+    expect(installBtn).toBeDisabled();
+  });
+
+  it("Install button is enabled after checking the consent checkbox", async () => {
+    wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
+    const installBtn = screen.getByRole("button", { name: "Install" });
+    expect(installBtn).toBeDisabled();
+
+    // The consent checkbox — find it by its label text fragment
+    const checkbox = screen.getByRole("checkbox");
+    await userEvent.click(checkbox);
+
+    expect(installBtn).not.toBeDisabled();
+  });
+
+  it("Install button is NOT disabled when item has no capabilities", () => {
+    const noCapItem = { ...SLACK_PLUGIN, capabilities: [] };
+    wrap(<PluginInstallModal item={noCapItem} open onOpenChange={() => {}} />);
+    const installBtn = screen.getByRole("button", { name: "Install" });
+    expect(installBtn).not.toBeDisabled();
   });
 
   it("resolves toast to success when component stays mounted after modal closes", async () => {
@@ -123,6 +153,8 @@ describe("PluginInstallModal", () => {
       </QueryClientProvider>,
     );
 
+    // Check consent checkbox first — required before Install is enabled
+    await userEvent.click(screen.getByRole("checkbox"));
     await userEvent.click(screen.getByRole("button", { name: "Install" }));
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
 
