@@ -116,8 +116,9 @@ describe("LobbyCompanyCard", () => {
         onClick={vi.fn()}
       />,
     );
-    // Skeletons render as elements with the animate-pulse class.
-    expect(container.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
+    // Skeletons render with the animate-shimmer gradient-sweep class
+    // (replaced animate-pulse in the UI overhaul, §9.9 Loading-B).
+    expect(container.querySelectorAll(".animate-shimmer").length).toBeGreaterThan(0);
   });
 
   it("uses the bg-card/85 surface (PR-C gradient prep)", () => {
