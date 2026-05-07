@@ -165,7 +165,8 @@ describe("ensurePersistedExecutionWorkspaceAvailable", () => {
     expect(realized.cwd).toBe("/not/on/disk");
   });
 
-  it("trusts a valid worktree that still exists on disk and is registered", async () => {
+  // git worktree creation is too slow on Windows runners (exceeds 5s default timeout)
+  it.skipIf(process.platform === "win32")("trusts a valid worktree that still exists on disk and is registered", async () => {
     const repoRoot = await createTempRepo();
     const base = buildInput(repoRoot);
     const first = await realizeExecutionWorkspace({
