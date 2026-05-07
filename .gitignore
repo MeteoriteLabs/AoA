@@ -44,6 +44,7 @@ tmp/
 .worktrees/
 docs/superpowers/
 plans/
+!docs/aoa/plans/
 .superpowers/
 
 # Playwright e2e outputs
