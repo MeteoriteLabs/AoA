@@ -12,3 +12,13 @@ describe("PLUGIN_TRUST_TIERS", () => {
     expect(PLUGIN_TRUST_TIERS).toHaveLength(3);
   });
 });
+
+describe("trustTier DB default", () => {
+  it("'untrusted' is the first element and acts as the default", () => {
+    expect(PLUGIN_TRUST_TIERS[0]).toBe("untrusted");
+  });
+
+  it("trustTier values are the canonical 3-tier model", () => {
+    expect(PLUGIN_TRUST_TIERS).toEqual(["untrusted", "verified", "core"]);
+  });
+});
