@@ -196,4 +196,37 @@ describe("Lobby", () => {
 
     expect(screen.getByText("Loading...")).toBeInTheDocument();
   });
+
+  // PR-C polish: page background should use the diagonal purple-wash gradient
+  // (bg-background flat fill is replaced with a Tailwind arbitrary-value
+  // linear-gradient utility).
+  it("applies the diagonal purple-wash gradient on the lobby root", () => {
+    mockCompanyContext.companies = [makeCompany()];
+    const { container } = renderWithProviders(<Lobby />);
+    const root = container.firstChild as HTMLElement | null;
+    expect(root).toBeTruthy();
+    expect(root!.className).toMatch(/linear-gradient/);
+    expect(root!.className).toContain("hsl(260");
+  });
+
+  // PR-C polish: mount choreography classes are applied to heading + each card
+  // wrapper. Sidebar's own .lobby-sidebar-enter class is asserted in
+  // LobbySidebar.test.tsx (the sidebar is mocked in this file's renderer).
+  // CSS-keyframe-driven animations respect prefers-reduced-motion via a media
+  // query in index.css.
+  it("applies mount-choreography animation classes to heading + card wrappers", () => {
+    mockCompanyContext.companies = [
+      makeCompany({ id: "c1", name: "Acme" }),
+      makeCompany({ id: "c2", name: "Beta" }),
+    ];
+    const { container } = renderWithProviders(<Lobby />);
+
+    expect(container.querySelector(".lobby-heading-enter")).toBeTruthy();
+
+    const cardWrappers = container.querySelectorAll(".lobby-card-enter");
+    expect(cardWrappers).toHaveLength(2);
+    // Stagger index is set via inline CSS variable on each wrapper.
+    expect((cardWrappers[0] as HTMLElement).style.getPropertyValue("--lobby-card-index")).toBe("0");
+    expect((cardWrappers[1] as HTMLElement).style.getPropertyValue("--lobby-card-index")).toBe("1");
+  });
 });

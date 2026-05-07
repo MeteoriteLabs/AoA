@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, Plus, Upload } from "lucide-react";
@@ -44,13 +45,13 @@ export function Lobby() {
   const isEmpty = visibleCompanies.length === 0;
 
   return (
-    <div className="flex h-dvh bg-background text-foreground">
+    <div className="flex h-dvh text-foreground bg-[linear-gradient(135deg,hsl(260_40%_8%),hsl(240_25%_5%)_60%,hsl(220_30%_4%))]">
       <LobbySidebar />
 
       {/* Main column */}
       <div className="flex flex-1 flex-col min-w-0">
         {/* Header */}
-        <header className="flex items-center justify-between px-6 h-14 shrink-0 border-b border-border">
+        <header className="flex items-center justify-between px-6 h-14 shrink-0 border-b border-border lobby-heading-enter">
           <h1 className="text-sm font-semibold text-foreground">Companies</h1>
           {!isEmpty && (
             <DropdownMenu>
@@ -95,14 +96,19 @@ export function Lobby() {
                 Select a company to get started.
               </p>
               <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {visibleCompanies.map((company) => (
-                  <LobbyCompanyCard
+                {visibleCompanies.map((company, i) => (
+                  <div
                     key={company.id}
-                    company={company}
-                    stats={stats?.[company.id]}
-                    statsLoading={statsLoading}
-                    onClick={() => navigate(`/${company.issuePrefix}/home`)}
-                  />
+                    className="lobby-card-enter"
+                    style={{ "--lobby-card-index": i } as CSSProperties}
+                  >
+                    <LobbyCompanyCard
+                      company={company}
+                      stats={stats?.[company.id]}
+                      statsLoading={statsLoading}
+                      onClick={() => navigate(`/${company.issuePrefix}/home`)}
+                    />
+                  </div>
                 ))}
               </div>
             </div>

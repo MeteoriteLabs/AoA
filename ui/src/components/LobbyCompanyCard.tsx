@@ -22,8 +22,9 @@ export function LobbyCompanyCard({ company, stats, statsLoading, onClick }: Lobb
       onClick={onClick}
       className={cn(
         "group relative flex flex-col items-start gap-4 rounded-lg border border-border bg-card/85 p-5",
-        "text-left transition-all duration-150",
-        "hover:border-foreground/20 hover:shadow-md hover:shadow-black/5",
+        "text-left transition-all duration-150 will-change-transform",
+        "hover:border-foreground/20 hover:shadow-md hover:shadow-black/5 hover:scale-[1.02]",
+        "motion-reduce:hover:scale-100",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
       )}
     >

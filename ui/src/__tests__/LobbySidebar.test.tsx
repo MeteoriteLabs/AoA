@@ -70,4 +70,13 @@ describe("LobbySidebar", () => {
     const aside = container.querySelector("aside");
     expect(aside).toBeTruthy();
   });
+
+  // PR-C polish: sidebar slides in from the left on mount via CSS keyframes.
+  // The animation respects prefers-reduced-motion via a media query in index.css.
+  it("applies the lobby-sidebar-enter mount-animation class", () => {
+    const { container } = renderWithProviders(<LobbySidebar />);
+    const aside = container.querySelector("aside");
+    expect(aside).toBeTruthy();
+    expect(aside!.className).toContain("lobby-sidebar-enter");
+  });
 });

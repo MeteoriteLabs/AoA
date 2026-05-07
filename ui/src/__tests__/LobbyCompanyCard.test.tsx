@@ -127,4 +127,16 @@ describe("LobbyCompanyCard", () => {
     const button = container.querySelector("button");
     expect(button?.className).toMatch(/bg-card\/85/);
   });
+
+  // PR-C polish: card hover gets a 1.02 scale via Tailwind, with a
+  // motion-reduce:hover:scale-100 branch so users with prefers-reduced-motion
+  // don't see the transform.
+  it("applies hover scale and motion-reduce override classes", () => {
+    const { container } = renderWithProviders(
+      <LobbyCompanyCard company={makeCompany()} onClick={vi.fn()} />,
+    );
+    const button = container.querySelector("button");
+    expect(button?.className).toContain("hover:scale-[1.02]");
+    expect(button?.className).toContain("motion-reduce:hover:scale-100");
+  });
 });
