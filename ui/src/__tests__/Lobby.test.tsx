@@ -196,4 +196,16 @@ describe("Lobby", () => {
 
     expect(screen.getByText("Loading...")).toBeInTheDocument();
   });
+
+  // PR-C polish: page background should use the diagonal purple-wash gradient
+  // (bg-background flat fill is replaced with a Tailwind arbitrary-value
+  // linear-gradient utility).
+  it("applies the diagonal purple-wash gradient on the lobby root", () => {
+    mockCompanyContext.companies = [makeCompany()];
+    const { container } = renderWithProviders(<Lobby />);
+    const root = container.firstChild as HTMLElement | null;
+    expect(root).toBeTruthy();
+    expect(root!.className).toMatch(/linear-gradient/);
+    expect(root!.className).toContain("hsl(260");
+  });
 });

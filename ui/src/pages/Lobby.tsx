@@ -44,7 +44,7 @@ export function Lobby() {
   const isEmpty = visibleCompanies.length === 0;
 
   return (
-    <div className="flex h-dvh bg-background text-foreground">
+    <div className="flex h-dvh text-foreground bg-[linear-gradient(135deg,hsl(260_40%_8%),hsl(240_25%_5%)_60%,hsl(220_30%_4%))]">
       <LobbySidebar />
 
       {/* Main column */}
