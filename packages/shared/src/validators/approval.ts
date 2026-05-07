@@ -10,17 +10,19 @@ export const createApprovalSchema = z.object({
 
 export type CreateApproval = z.infer<typeof createApprovalSchema>;
 
-export const resolveApprovalSchema = z.object({
-  decisionNote: z.string().optional().nullable(),
-  decidedByUserId: z.string().optional().default("board"),
-});
+export const resolveApprovalSchema = z
+  .object({
+    decisionNote: z.string().optional().nullable(),
+  })
+  .strict();
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;
 
-export const requestApprovalRevisionSchema = z.object({
-  decisionNote: z.string().optional().nullable(),
-  decidedByUserId: z.string().optional().default("board"),
-});
+export const requestApprovalRevisionSchema = z
+  .object({
+    decisionNote: z.string().optional().nullable(),
+  })
+  .strict();
 
 export type RequestApprovalRevision = z.infer<typeof requestApprovalRevisionSchema>;
 

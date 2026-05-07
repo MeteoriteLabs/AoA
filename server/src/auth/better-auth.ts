@@ -11,6 +11,9 @@ import {
   authVerifications,
 } from "@armyofagents/db";
 import type { Config } from "../config.js";
+import { logger } from "../middleware/logger.js";
+
+const DEV_FALLBACK_SECRET = "paperclip-dev-secret";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -42,6 +45,49 @@ function headersFromExpressRequest(req: Request): Headers {
   return headersFromNodeHeaders(req.headers);
 }
 
+/**
+ * Resolves the better-auth HMAC signing secret with a deployment-mode-aware
+ * fail-closed gate.
+ *
+ * - `local_trusted` mode: if neither env var is set, returns a constant dev
+ *   fallback and logs a prominent WARN telling the operator to set
+ *   `BETTER_AUTH_SECRET`. Loopback-only deployments are the only place this
+ *   constant is acceptable.
+ * - Any other deployment mode (e.g. `authenticated`, future `cloud_auth`):
+ *   throws a clear startup error if neither `BETTER_AUTH_SECRET` nor
+ *   `AOA_AGENT_JWT_SECRET` is set. Refusing to boot with a publicly-knowable
+ *   signing secret is intentional — anyone with the source could otherwise
+ *   forge session cookies.
+ *
+ * Whitespace-only values are treated as unset.
+ */
+export function resolveBetterAuthSigningSecret(config: Config): string {
+  const fromPrimary = process.env.BETTER_AUTH_SECRET?.trim();
+  const fromFallback = process.env.AOA_AGENT_JWT_SECRET?.trim();
+  const configured = (fromPrimary && fromPrimary.length > 0)
+    ? fromPrimary
+    : (fromFallback && fromFallback.length > 0)
+      ? fromFallback
+      : null;
+
+  if (configured) return configured;
+
+  // Default-deny: only `local_trusted` is allowed to use the dev fallback.
+  if (config.deploymentMode === "local_trusted") {
+    logger.warn(
+      "BETTER_AUTH_SECRET is unset; using insecure dev fallback. " +
+        "Set BETTER_AUTH_SECRET in your environment for any non-loopback deployment.",
+    );
+    return DEV_FALLBACK_SECRET;
+  }
+
+  throw new Error(
+    `BETTER_AUTH_SECRET must be set when AOA_DEPLOYMENT_MODE="${String(
+      config.deploymentMode,
+    )}". Set BETTER_AUTH_SECRET (preferred) or AOA_AGENT_JWT_SECRET to a strong random value before starting the server.`,
+  );
+}
+
 export function deriveAuthTrustedOrigins(config: Config): string[] {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const trustedOrigins = new Set<string>();
@@ -53,11 +99,11 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
       // Better Auth will surface invalid base URL separately.
     }
   }
-  if (config.deploymentMode === "authenticated") {
-    for (const hostname of config.allowedHostnames) {
-      const trimmed = hostname.trim().toLowerCase();
-      if (!trimmed) continue;
-      trustedOrigins.add(`https://${trimmed}`);
+  for (const hostname of config.allowedHostnames ?? []) {
+    const trimmed = hostname.trim().toLowerCase();
+    if (!trimmed) continue;
+    trustedOrigins.add(`https://${trimmed}`);
+    if (config.deploymentMode === "local_trusted") {
       trustedOrigins.add(`http://${trimmed}`);
     }
   }
@@ -67,7 +113,7 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
 
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
-  const secret = process.env.BETTER_AUTH_SECRET ?? process.env.AOA_AGENT_JWT_SECRET ?? "paperclip-dev-secret";
+  const secret = resolveBetterAuthSigningSecret(config);
   const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
 
   const authConfig = {

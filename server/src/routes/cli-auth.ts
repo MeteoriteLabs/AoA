@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { createCliAuthChallengeSchema, resolveCliAuthChallengeSchema } from "@armyofagents/shared";
 import { badRequest, notFound, unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
+import { cliAuthChallengeLimiter } from "../middleware/rate-limit.js";
 import { boardAuthService, logActivity } from "../services/index.js";
 
 function requestBaseUrl(req: Request) {
@@ -26,11 +27,12 @@ export function cliAuthRoutes(db: Db) {
   const router = Router();
   const boardAuth = boardAuthService(db);
 
-  // TODO: consider per-IP rate limiting on this endpoint. It is unauthenticated (the CLI has no
-  // token yet) so any script can POST here and create pending challenge rows that live for 10 min.
-  // Low risk for local deployments; relevant for public-facing instances.
+  // Sprint 4 S4-F: this endpoint is unauthenticated (the CLI has no token
+  // yet) and creates 10-minute-TTL rows in cli_auth_challenges. Without a
+  // per-IP cap, any script can flood the table. Limiter is 5/min/IP.
   router.post(
     "/cli-auth/challenges",
+    cliAuthChallengeLimiter,
     validate(createCliAuthChallengeSchema),
     async (req, res) => {
       const created = await boardAuth.createCliAuthChallenge(req.body);

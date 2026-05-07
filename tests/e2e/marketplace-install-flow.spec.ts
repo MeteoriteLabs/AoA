@@ -58,8 +58,11 @@ test.describe("Marketplace install flow", () => {
     const modal = page.getByRole("dialog");
     await expect(modal).toBeVisible({ timeout: 5_000 });
 
-    // DialogTitle renders "Install {plugin name}" — must include "Install"
-    const modalTitle = modal.getByRole("heading");
+    // DialogTitle renders "Install {plugin name}". Target the shadcn dialog-title
+    // slot directly: when the plugin has capabilities the modal also renders
+    // <h4>This plugin will have access to:</h4>, so a bare getByRole("heading")
+    // matches two elements and triggers a strict-mode locator violation.
+    const modalTitle = modal.locator('[data-slot="dialog-title"]');
     await expect(modalTitle).toBeVisible();
     await expect(modalTitle).toContainText(/install/i);
 

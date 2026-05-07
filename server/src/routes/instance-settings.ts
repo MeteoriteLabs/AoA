@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router } from "express";
 import type { Db } from "@armyofagents/db";
 import { patchInstanceExperimentalSettingsSchema, patchInstanceGeneralSettingsSchema } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";

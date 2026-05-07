@@ -20,6 +20,7 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `AOA_DEPLOYMENT_EXPOSURE` | `private` | `private` or `public`. Only meaningful when `AOA_DEPLOYMENT_MODE=authenticated` |
 | `AOA_PUBLIC_URL` | (derived) | Public-facing URL for deployment. Used in invite links and webhook URLs |
 | `AOA_ALLOWED_HOSTNAMES` | (empty) | Comma-separated allowlist of hostnames the server will accept (Tailscale, Docker host alias, etc.) |
+| `AOA_TRUST_PROXY` | `false` | Express trust-proxy setting. Set to `true` (trust any proxy), a hop count like `1` (recommended for cloud), or a comma-separated CIDR list. Required when running behind Cloudflare/ALB/nginx — without it, `req.ip` reads the proxy IP and rate limits collapse. **Never set to `true` on a directly-exposed deployment** (allows X-Forwarded-For spoofing). |
 | `AOA_OPEN_ON_LISTEN` | `true` (CLI), `false` (server-only) | Auto-open default browser on first listen |
 | `AOA_CONFIG` | (default path) | Override path to instance `config.json` |
 | `AOA_LOG_DIR` | `<AOA_HOME>/instances/<id>/logs` | Override log directory |
@@ -32,7 +33,7 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `AOA_AUTH_PUBLIC_BASE_URL` | — | Required when `AOA_AUTH_BASE_URL_MODE=explicit`. Public URL where Better Auth callbacks resolve |
 | `AOA_AUTH_STORE` | `default` | Auth-store backend selection |
 | `BETTER_AUTH_BASE_URL` | (derived) | Override for Better Auth base URL — usually leave unset and let `AOA_AUTH_*` drive it |
-| `BETTER_AUTH_SECRET` | (auto-generated) | Better Auth signing secret. Auto-generated on first onboard; set explicitly for multi-instance setups |
+| `BETTER_AUTH_SECRET` | (required when `AOA_DEPLOYMENT_MODE!="local_trusted"`) | HMAC secret for Better Auth session cookies. **Required** for `authenticated` (and any future non-local-trusted) deployment — the server refuses to start if unset. In `local_trusted` (loopback-only) mode the server boots with a constant dev fallback and logs a one-line WARN. `AOA_AGENT_JWT_SECRET` acts as a fallback if `BETTER_AUTH_SECRET` is not set. Auto-generated on first `pnpm aoa onboard`; set explicitly for multi-instance setups |
 | `BETTER_AUTH_TRUSTED_ORIGINS` | (derived) | CORS allowlist for Better Auth |
 | `BETTER_AUTH_URL` | (derived) | Better Auth canonical URL |
 
@@ -129,6 +130,7 @@ The server sets these automatically when invoking adapters. They appear in the s
 | `AOA_SESSION_COMPANY_ID` | Override active company ID in the CLI / MCP session |
 | `AOA_SESSION_USER_ID` | Override active user ID |
 | `AOA_SESSION_USER_ROLE` | Override role (`founder`, `team_lead`, `team_member`) |
+| `AOA_SESSION_ENABLED_CAPABILITIES` | Comma-separated list of `internal_agent_config.enabledCapabilities` consumed by the Commander MCP bridge to gate capability-bound tools (`discussion_processing`, `system_actions`, `memory_management`). Set automatically by the host process when spawning the bridge; set manually only when running the bridge subprocess directly. |
 
 ## LLM Provider Keys (for adapters)
 

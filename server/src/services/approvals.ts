@@ -40,7 +40,12 @@ export function approvalService(db: Db) {
         .returning()
         .then((rows) => rows[0]),
 
-    approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
+    approve: async (
+      id: string,
+      companyId: string,
+      decidedByUserId: string,
+      decisionNote?: string | null,
+    ) => {
       const existing = await getExistingApproval(id);
       if (!canResolveStatuses.has(existing.status)) {
         throw unprocessable("Only pending or revision requested approvals can be approved");
@@ -56,9 +61,17 @@ export function approvalService(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId)))
         .returning()
         .then((rows) => rows[0]);
+
+      // Defense-in-depth: if the WHERE didn't match (companyId mismatch), no
+      // row was updated. Return null so the caller can't act on stale data.
+      // The route layer already runs load+assertCompanyAccess, so this only
+      // fires if a future caller forgets that gate.
+      if (!updated) {
+        return null;
+      }
 
       let hireApprovedAgentId: string | null = null;
       if (updated.type === "hire_agent") {
@@ -115,7 +128,12 @@ export function approvalService(db: Db) {
       return updated;
     },
 
-    reject: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
+    reject: async (
+      id: string,
+      companyId: string,
+      decidedByUserId: string,
+      decisionNote?: string | null,
+    ) => {
       const existing = await getExistingApproval(id);
       if (!canResolveStatuses.has(existing.status)) {
         throw unprocessable("Only pending or revision requested approvals can be rejected");
@@ -131,9 +149,14 @@ export function approvalService(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId)))
         .returning()
         .then((rows) => rows[0]);
+
+      // Defense-in-depth: companyId mismatch → no row updated → return null.
+      if (!updated) {
+        return null;
+      }
 
       if (updated.type === "hire_agent") {
         const payload = updated.payload as Record<string, unknown>;
@@ -146,14 +169,19 @@ export function approvalService(db: Db) {
       return updated;
     },
 
-    requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
+    requestRevision: async (
+      id: string,
+      companyId: string,
+      decidedByUserId: string,
+      decisionNote?: string | null,
+    ) => {
       const existing = await getExistingApproval(id);
       if (existing.status !== "pending") {
         throw unprocessable("Only pending approvals can request revision");
       }
 
       const now = new Date();
-      return db
+      const updated = await db
         .update(approvals)
         .set({
           status: "revision_requested",
@@ -162,9 +190,12 @@ export function approvalService(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId)))
         .returning()
         .then((rows) => rows[0]);
+
+      // Defense-in-depth: companyId mismatch → no row updated → return null.
+      return updated ?? null;
     },
 
     resubmit: async (id: string, payload?: Record<string, unknown>) => {

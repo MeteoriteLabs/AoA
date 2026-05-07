@@ -1,4 +1,4 @@
-import { Bot, CircleDot } from "lucide-react";
+import { Bell, Bot, CircleDot, ShieldAlert } from "lucide-react";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -13,14 +13,18 @@ interface LobbyCompanyCardProps {
 }
 
 export function LobbyCompanyCard({ company, stats, statsLoading, onClick }: LobbyCompanyCardProps) {
+  const showApprovals = (stats?.pendingApprovalCount ?? 0) > 0;
+  const showNotifications = (stats?.unreadNotificationCount ?? 0) > 0;
+
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        "group relative flex flex-col items-start gap-4 rounded-lg border border-border bg-card p-5",
-        "text-left transition-all duration-150",
-        "hover:border-foreground/20 hover:shadow-md hover:shadow-black/5",
+        "group relative flex flex-col items-start gap-4 rounded-lg border border-border bg-card/85 p-5",
+        "text-left transition-all duration-150 will-change-transform",
+        "hover:border-foreground/20 hover:shadow-md hover:shadow-black/5 hover:scale-[1.02]",
+        "motion-reduce:hover:scale-100",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
       )}
     >
@@ -57,7 +61,7 @@ export function LobbyCompanyCard({ company, stats, statsLoading, onClick }: Lobb
       </div>
 
       {/* Stats row */}
-      <div className="flex items-center gap-4 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
         {statsLoading ? (
           <>
             <Skeleton className="h-3.5 w-16 animate-pulse" />
@@ -73,6 +77,24 @@ export function LobbyCompanyCard({ company, stats, statsLoading, onClick }: Lobb
               <CircleDot className="h-3.5 w-3.5" />
               {stats.issueCount} {stats.issueCount === 1 ? "task" : "tasks"}
             </span>
+            {showApprovals && (
+              <span
+                className="flex items-center gap-1.5"
+                aria-label={`${stats.pendingApprovalCount} pending approvals`}
+              >
+                <ShieldAlert className="h-3.5 w-3.5" />
+                {stats.pendingApprovalCount}
+              </span>
+            )}
+            {showNotifications && (
+              <span
+                className="flex items-center gap-1.5"
+                aria-label={`${stats.unreadNotificationCount} unread notifications`}
+              >
+                <Bell className="h-3.5 w-3.5" />
+                {stats.unreadNotificationCount}
+              </span>
+            )}
           </>
         ) : null}
       </div>

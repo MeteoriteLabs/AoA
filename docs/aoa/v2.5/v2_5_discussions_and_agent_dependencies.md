@@ -136,7 +136,7 @@ No schema syntax changes needed. All v2.5 tables use standard Drizzle patterns a
 | Dependency | Requirement | Status |
 |------------|-------------|--------|
 | PostgreSQL | ≥ 14 (for generated columns, better jsonb) | Already required |
-| pgvector extension | ≥ 0.5.0 (for IVFFlat indexes) | Already installed |
+| pgvector extension | ≥ 0.5.0 (HNSW index added in migration 0083; sequential-scan fallback if extension missing) | Already installed |
 | Node.js | ≥ 20 (for native fetch, ReadableStream) | Already required |
 | pnpm | Workspace package manager | Already used |
 

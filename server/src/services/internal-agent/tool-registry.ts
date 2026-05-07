@@ -1,4 +1,5 @@
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
+import { authorizeToolInvocation } from "./authorize-tool.js";
 import { createQueryTools } from "./tools/query-tools.js";
 import { createActionTools } from "./tools/action-tools.js";
 import { createMemoryTools } from "./tools/memory-tools.js";
@@ -97,6 +98,21 @@ export async function executeTool(
   params: unknown,
   ctx: ToolContext,
 ): Promise<ToolResult> {
+  // Role + capability gate (closes C13)
+  const decision = authorizeToolInvocation(
+    tool,
+    ctx.userRole,
+    ctx.enabledCapabilities,
+  );
+  if (!decision.allowed) {
+    return {
+      success: false,
+      data: null,
+      summary: decision.summary,
+      error: decision.error,
+    };
+  }
+
   try {
     return await tool.execute(params, ctx);
   } catch (error: any) {

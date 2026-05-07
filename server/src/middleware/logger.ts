@@ -5,6 +5,7 @@ import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
+import { redactSensitiveBodyFields } from "./redact-sensitive.js";
 
 function resolveServerLogDir(): string {
   const envOverride = process.env.AOA_LOG_DIR?.trim();
@@ -65,6 +66,7 @@ export const httpLogger = pinoHttp({
     if (res.statusCode >= 400) {
       const ctx = (res as any).__errorContext;
       if (ctx) {
+        // ctx.{reqBody,reqParams,reqQuery} are already redacted by error-handler.
         return {
           err: ctx.error,
           reqBody: ctx.reqBody,
@@ -75,13 +77,13 @@ export const httpLogger = pinoHttp({
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = body;
+        props.reqBody = redactSensitiveBodyFields(body);
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
-        props.reqParams = params;
+        props.reqParams = redactSensitiveBodyFields(params);
       }
       if (query && typeof query === "object" && Object.keys(query).length > 0) {
-        props.reqQuery = query;
+        props.reqQuery = redactSensitiveBodyFields(query);
       }
       if ((req as any).route?.path) {
         props.routePath = (req as any).route.path;

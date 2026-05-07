@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
+import { redactSensitiveBodyFields } from "./redact-sensitive.js";
 
 export interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
@@ -23,9 +24,9 @@ export function errorHandler(
         error: { message: err.message, stack: err.stack, name: err.name, details: err.details },
         method: req.method,
         url: req.originalUrl,
-        reqBody: req.body,
-        reqParams: req.params,
-        reqQuery: req.query,
+        reqBody: redactSensitiveBodyFields(req.body),
+        reqParams: redactSensitiveBodyFields(req.params),
+        reqQuery: redactSensitiveBodyFields(req.query),
       } satisfies ErrorContext;
     }
     res.status(err.status).json({
@@ -40,15 +41,38 @@ export function errorHandler(
     return;
   }
 
+  // body-parser / Express middleware throws plain errors with .status (and/or
+  // .statusCode) plus .expose=true for client-safe messages — most notably
+  // PayloadTooLargeError (413) from `express.json({ limit })`. Honor those
+  // before falling through to 500.
+  if (
+    err
+    && typeof err === "object"
+    && ("status" in err || "statusCode" in err)
+  ) {
+    const status = Number(
+      (err as { status?: unknown }).status
+        ?? (err as { statusCode?: unknown }).statusCode,
+    );
+    if (Number.isInteger(status) && status >= 400 && status < 600) {
+      const message = (err as { message?: unknown }).message;
+      const expose = (err as { expose?: unknown }).expose === true;
+      res.status(status).json({
+        error: expose && typeof message === "string" ? message : "Request error",
+      });
+      return;
+    }
+  }
+
   (res as any).__errorContext = {
     error: err instanceof Error
       ? { message: err.message, stack: err.stack, name: err.name }
       : { message: String(err), raw: err },
     method: req.method,
     url: req.originalUrl,
-    reqBody: req.body,
-    reqParams: req.params,
-    reqQuery: req.query,
+    reqBody: redactSensitiveBodyFields(req.body),
+    reqParams: redactSensitiveBodyFields(req.params),
+    reqQuery: redactSensitiveBodyFields(req.query),
   } satisfies ErrorContext;
 
   res.status(500).json({ error: "Internal server error" });

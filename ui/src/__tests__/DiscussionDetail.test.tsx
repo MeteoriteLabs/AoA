@@ -122,6 +122,10 @@ vi.mock("../api/discussions", () => ({
   ),
 }));
 
+// transcribe is deprecated server-side (Decision #91 — returns 501 in real
+// deployments pending the Commander sub-agent migration). DiscussionDetail
+// does not exercise the voice-input path, so the mocked 200 shape is fine
+// here; the 501 contract is asserted in DiscussionCaptureModal.test.tsx.
 vi.mock("../api/transcription", () => ({
   transcriptionApi: {
     transcribe: vi.fn().mockResolvedValue({ text: "Transcribed text here." }),

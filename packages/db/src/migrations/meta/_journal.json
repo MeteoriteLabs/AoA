@@ -586,29 +586,36 @@
     {
       "idx": 83,
       "version": "7",
-      "when": 1778058309931,
-      "tag": "0083_cuddly_mandrill",
+      "when": 1746230400000,
+      "tag": "0083_memory_embedding_hnsw_index",
       "breakpoints": true
     },
     {
       "idx": 84,
       "version": "7",
-      "when": 1778058707928,
-      "tag": "0084_stiff_maelstrom",
+      "when": 1778058309931,
+      "tag": "0084_cuddly_mandrill",
       "breakpoints": true
     },
     {
       "idx": 85,
       "version": "7",
-      "when": 1778059311375,
-      "tag": "0085_gifted_matthew_murdock",
+      "when": 1778058707928,
+      "tag": "0085_stiff_maelstrom",
       "breakpoints": true
     },
     {
       "idx": 86,
       "version": "7",
+      "when": 1778059311375,
+      "tag": "0086_gifted_matthew_murdock",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
       "when": 1778132703634,
-      "tag": "0086_exotic_ogun",
+      "tag": "0087_exotic_ogun",
       "breakpoints": true
     }
   ]

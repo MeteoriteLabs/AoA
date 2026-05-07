@@ -83,3 +83,39 @@ Runtime override via environment variable:
 ```sh
 AOA_DEPLOYMENT_MODE=authenticated pnpm aoa run
 ```
+
+## Security Headers (helmet + CSP)
+
+AoA mounts [helmet](https://helmetjs.github.io/) on every response. The exact header set depends on deployment mode:
+
+| Header | `local_trusted` (dev) | `local_trusted` (prod / npm install) | `authenticated` |
+|--------|------------------------|----------------------------------------|------------------|
+| `Content-Security-Policy` | not set | strict | strict |
+| `Cross-Origin-Opener-Policy` | `same-origin-allow-popups` | `same-origin-allow-popups` | `same-origin-allow-popups` |
+| `Cross-Origin-Resource-Policy` | `same-site` | `same-site` | `same-site` |
+| `Cross-Origin-Embedder-Policy` | not set | not set | not set |
+| `X-Content-Type-Options` | `nosniff` | `nosniff` | `nosniff` |
+| `X-Frame-Options` | `SAMEORIGIN` | `SAMEORIGIN` | `SAMEORIGIN` |
+| `Referrer-Policy` | `no-referrer` | `no-referrer` | `no-referrer` |
+
+**CSP is skipped only when** `AOA_DEPLOYMENT_MODE=local_trusted` AND `NODE_ENV !== "production"`. This is the Vite-HMR dev case — HMR's runtime injects inline scripts and uses `eval`, both of which strict CSP would block. Loopback is the trust boundary in dev.
+
+Strict-CSP directives:
+
+```
+default-src 'self';
+script-src 'self' 'sha256-<hash>';            // hash of the FOUC bootloader in index.html, computed at server startup
+style-src 'self' 'unsafe-inline';             // Vite injects styles via dynamic <style>
+img-src 'self' data: blob: https:;            // avatar generators + asset previews
+font-src 'self' data:;
+connect-src 'self';                           // UI never calls LLM APIs directly — all LLM traffic is server-mediated
+object-src 'none';
+base-uri 'self';
+form-action 'self';
+frame-ancestors 'none';
+upgrade-insecure-requests
+```
+
+`connect-src 'self'` is intentionally tight. If you wire a custom backend that fetches LLM endpoints from the **browser** (uncommon — most operators keep LLM calls server-side), you'll need to extend the directive list in `server/src/services/helmet-options.ts`. Cross-Origin-Embedder-Policy (`require-corp`) stays disabled because it would block any external avatar/image without a CORP header.
+
+When `index.html` changes, the inline-script hash auto-updates on next server start (no rebuild of the helmet config required). The hash extractor lives in `server/src/services/csp-script-hashes.ts`.

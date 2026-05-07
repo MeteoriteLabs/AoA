@@ -623,6 +623,20 @@ export function agentService(db: Db) {
       return rows[0] ?? null;
     },
 
+    getKeyById: async (keyId: string) => {
+      const rows = await db
+        .select({
+          id: agentApiKeys.id,
+          agentId: agentApiKeys.agentId,
+          name: agentApiKeys.name,
+          createdAt: agentApiKeys.createdAt,
+        })
+        .from(agentApiKeys)
+        .where(eq(agentApiKeys.id, keyId))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
     orgForCompany: async (companyId: string): Promise<UnifiedOrgNode[]> => {
       // Two parallel queries: agents + users
       const [agentRows, userRows] = await Promise.all([

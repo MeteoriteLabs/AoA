@@ -73,12 +73,27 @@ export async function startBridge(): Promise<void> {
 
   const companyId = process.env.AOA_SESSION_COMPANY_ID;
   const userId = process.env.AOA_SESSION_USER_ID;
-  const userRole = process.env.AOA_SESSION_USER_ROLE ?? "founder";
+  // C13: fail closed if the bridge is spawned without an explicit role
+  // env var. Defaulting to "founder" here previously meant any direct
+  // CLI invocation that forgot to set the env got founder-level access.
+  const userRole = process.env.AOA_SESSION_USER_ROLE;
+  if (!userRole) {
+    process.stderr.write("MCP Bridge: Missing AOA_SESSION_USER_ROLE env var\n");
+    process.exit(1);
+  }
 
   if (!companyId || !userId) {
     process.stderr.write("MCP Bridge: Missing AOA_SESSION_COMPANY_ID or AOA_SESSION_USER_ID\n");
     process.exit(1);
   }
+
+  // C13: capability set is comma-separated. Empty string → empty array
+  // (which means every capability-gated tool will reject).
+  const enabledCapabilitiesRaw = process.env.AOA_SESSION_ENABLED_CAPABILITIES ?? "";
+  const enabledCapabilities = enabledCapabilitiesRaw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   const { createDb } = await import("@armyofagents/db");
   const { createServiceContainer } = await import("./service-container.js");
@@ -93,7 +108,14 @@ export async function startBridge(): Promise<void> {
   const services = createServiceContainer(db);
   const tools = createToolRegistry();
 
-  const toolContext: ToolContext = { companyId, userId, userRole, db, services };
+  const toolContext: ToolContext = {
+    companyId,
+    userId,
+    userRole,
+    enabledCapabilities,
+    db,
+    services,
+  };
   const handleToolCall = createToolCallHandler({ tools, executeTool, toolContext });
 
   const rl = readline.createInterface({ input: process.stdin });

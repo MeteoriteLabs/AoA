@@ -53,6 +53,7 @@ interface McpConfigParams {
   companyId: string;
   userId: string;
   userRole: string;
+  enabledCapabilities: readonly string[];
   bridgeEntrypoint: string;
 }
 
@@ -76,6 +77,9 @@ export function buildMcpConfig(params: McpConfigParams): McpConfig {
           AOA_SESSION_COMPANY_ID: params.companyId,
           AOA_SESSION_USER_ID: params.userId,
           AOA_SESSION_USER_ROLE: params.userRole,
+          // C13: thread capability set into the bridge so executeTool can
+          // gate on it. Comma-separated; bridge parses on the other side.
+          AOA_SESSION_ENABLED_CAPABILITIES: params.enabledCapabilities.join(","),
           ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
         },
       },
@@ -165,6 +169,7 @@ export function cliModeService(db: Db) {
             companyId: params.companyId,
             userId: params.userId,
             userRole: params.userRole,
+            enabledCapabilities: params.enabledCapabilities,
             bridgeEntrypoint: bridgePath,
           });
 

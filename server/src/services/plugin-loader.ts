@@ -41,6 +41,11 @@ import type {
 import { logger } from "../middleware/logger.js";
 import { pluginManifestValidator } from "./plugin-manifest-validator.js";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
+import {
+  readInstalledIntegrity,
+  verifyIntegrity,
+  IntegrityMismatchError,
+} from "./plugin-integrity.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager, WorkerStartOptions, WorkerToHostHandlers } from "./plugin-worker-manager.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
@@ -220,6 +225,19 @@ export interface PluginInstallOptions {
    * Set when the install originates from the marketplace flow.
    */
   catalogItemId?: string;
+
+  /**
+   * Optional Subresource Integrity (SRI) hash from the marketplace catalog
+   * (`npm.integrity`). When set, the loader compares the installed package's
+   * recorded integrity in `package-lock.json` against this value and
+   * fail-closes via `IntegrityMismatchError` on mismatch. When unset, the
+   * install proceeds with a one-line WARN that integrity is unverified —
+   * preserving backward compatibility for catalogs that have not yet
+   * populated the field.
+   *
+   * Format: `<algorithm>-<base64>`, e.g. `sha512-XI5MPzVNApjAyhQzphX8...==`.
+   */
+  catalogIntegrity?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -903,9 +921,10 @@ export function pluginLoader(
    * @returns A `DiscoveredPlugin` object containing the validated manifest.
    */
   async function fetchAndValidate(
-    installOptions: Pick<PluginInstallOptions, "packageName" | "localPath" | "version" | "installDir">,
+    installOptions: Pick<PluginInstallOptions, "packageName" | "localPath" | "version" | "installDir" | "catalogIntegrity">,
   ): Promise<DiscoveredPlugin> {
-    const { packageName, localPath, version, installDir } = installOptions;
+    const { packageName, localPath, version, installDir, catalogIntegrity } =
+      installOptions;
 
     if (!packageName && !localPath) {
       throw new Error("Either packageName or localPath must be provided");
@@ -986,6 +1005,67 @@ export function pluginLoader(
       if (!existsSync(resolvedPackagePath)) {
         throw new Error(
           `Package directory not found after installation: ${resolvedPackagePath}`,
+        );
+      }
+
+      // Optional integrity verification — opt-in via catalog field
+      // (`npm.integrity`). When set, compare against what npm recorded in
+      // package-lock.json and fail-closed on mismatch. When unset, log a
+      // one-line WARN but allow the install (backward compat).
+      // On mismatch we attempt to remove the orphaned package directory so
+      // a stale tampered tree is not left on disk; full uninstall is
+      // skipped because no `plugins` row was written yet.
+      if (catalogIntegrity) {
+        const actualIntegrity = await readInstalledIntegrity(
+          resolvedPackagePath,
+          targetInstallDir,
+          resolvedPackageName,
+        );
+        if (actualIntegrity === null) {
+          throw new Error(
+            `Could not read integrity for ${resolvedPackageName} after install. ` +
+              `Catalog declared integrity but package-lock.json had no entry — refusing to proceed.`,
+          );
+        }
+        try {
+          verifyIntegrity(catalogIntegrity, actualIntegrity, resolvedPackageName);
+        } catch (err) {
+          if (err instanceof IntegrityMismatchError) {
+            // Best-effort cleanup of the on-disk package so the next install
+            // attempt does not pick up the tampered tree. We do NOT call
+            // `npm uninstall` here because no `plugins` row was registered;
+            // direct `rm -rf` of the resolved path is sufficient.
+            try {
+              await rm(resolvedPackagePath, { recursive: true, force: true });
+            } catch (cleanupErr) {
+              log.warn(
+                {
+                  packageName: resolvedPackageName,
+                  resolvedPackagePath,
+                  err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+                },
+                "plugin-loader: failed to remove tampered package directory after integrity mismatch",
+              );
+            }
+            log.error(
+              {
+                packageName: resolvedPackageName,
+                expected: err.expected,
+                actual: err.actual,
+              },
+              "plugin-loader: integrity mismatch — install fail-closed",
+            );
+          }
+          throw err;
+        }
+        log.info(
+          { packageName: resolvedPackageName, integrity: catalogIntegrity },
+          "plugin-loader: integrity verified against catalog",
+        );
+      } else {
+        log.warn(
+          { packageName: resolvedPackageName },
+          "plugin-loader: no catalog integrity declared — install proceeds unverified",
         );
       }
     }

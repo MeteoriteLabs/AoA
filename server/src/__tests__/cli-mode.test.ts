@@ -280,6 +280,7 @@ describe("buildMcpConfig", () => {
       companyId: "comp1",
       userId: "user1",
       userRole: "founder",
+      enabledCapabilities: ["discussion_processing", "system_actions"],
       bridgeEntrypoint: "/app/dist/mcp-bridge.js",
     });
 
@@ -290,6 +291,9 @@ describe("buildMcpConfig", () => {
     expect(config.mcpServers.aoa.env.AOA_SESSION_COMPANY_ID).toBe("comp1");
     expect(config.mcpServers.aoa.env.AOA_SESSION_USER_ID).toBe("user1");
     expect(config.mcpServers.aoa.env.AOA_SESSION_USER_ROLE).toBe("founder");
+    expect(config.mcpServers.aoa.env.AOA_SESSION_ENABLED_CAPABILITIES).toBe(
+      "discussion_processing,system_actions",
+    );
   });
 
   it("inherits DATABASE_URL from process.env", () => {
@@ -299,6 +303,7 @@ describe("buildMcpConfig", () => {
       companyId: "c",
       userId: "u",
       userRole: "founder",
+      enabledCapabilities: [],
       bridgeEntrypoint: "/app/bridge.js",
     });
     expect(config.mcpServers.aoa.env.DATABASE_URL).toBe("postgres://test:5432/db");
@@ -418,6 +423,7 @@ describe("MCP bridge tool handler", () => {
         companyId: "comp1",
         userId: "user1",
         userRole: "founder",
+        enabledCapabilities: [],
         db: {} as any,
         services: {} as any,
       },
@@ -445,6 +451,7 @@ describe("MCP bridge tool handler", () => {
         companyId: "comp1",
         userId: "user1",
         userRole: "founder",
+        enabledCapabilities: [],
         db: {} as any,
         services: {} as any,
       },
@@ -479,6 +486,7 @@ describe("MCP bridge tool handler", () => {
         companyId: "comp1",
         userId: "user1",
         userRole: "founder",
+        enabledCapabilities: [],
         db: {} as any,
         services: {} as any,
       },

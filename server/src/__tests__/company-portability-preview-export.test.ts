@@ -435,3 +435,131 @@ describe("company-portability previewExport (route)", () => {
     expect(res.status).toBe(400);
   });
 });
+
+// Mirror the per-route body-size + global JSON ordering from server/src/app.ts
+// so tests can assert the 20MB cap on import paths fires before the global
+// default. The verify callback shape MUST match the global mount in app.ts
+// (rawBody capture for plugin webhook HMAC).
+function buildAppWithImportBodyCap(actorOverrides: Partial<any> = {}) {
+  const app = express();
+  const captureRawBody = (
+    req: express.Request,
+    _res: express.Response,
+    buf: Buffer,
+  ) => {
+    if (buf && buf.length > 0) {
+      (req as unknown as { rawBody?: Buffer }).rawBody = buf;
+    }
+  };
+  app.use(
+    ["/api/companies/import", "/api/companies/import/preview"],
+    express.json({ limit: "20mb", verify: captureRawBody }),
+  );
+  app.use(express.json({ verify: captureRawBody }));
+  app.use((req, _res, next) => {
+    (req as any).actor = {
+      type: "board",
+      userId: "user-1",
+      companyIds: [SRC_CO_ID],
+      source: "session",
+      isInstanceAdmin: false,
+      ...actorOverrides,
+    };
+    next();
+  });
+  app.use(
+    "/api/companies",
+    companyRoutes({
+      select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+    } as any),
+  );
+  app.use(errorHandler);
+  return app;
+}
+
+describe("import body-size cap", () => {
+  it("returns 413 for bodies over 20MB on /api/companies/import/preview", async () => {
+    const big = JSON.stringify({ __pad: "x".repeat(30 * 1024 * 1024) });
+    const app = buildAppWithImportBodyCap();
+    const res = await request(app)
+      .post("/api/companies/import/preview")
+      .set("Content-Type", "application/json")
+      .send(big);
+    expect(res.status).toBe(413);
+  });
+
+  it("returns 413 for bodies over 20MB on /api/companies/import", async () => {
+    const big = JSON.stringify({ __pad: "x".repeat(30 * 1024 * 1024) });
+    const app = buildAppWithImportBodyCap();
+    const res = await request(app)
+      .post("/api/companies/import")
+      .set("Content-Type", "application/json")
+      .send(big);
+    expect(res.status).toBe(413);
+  });
+
+  it("accepts a 1MB body shape on /api/companies/import/preview without a 413", async () => {
+    resetState();
+    sourceAgents = [makeAgent({ id: "a1", name: "Ada" })];
+    const app = buildAppWithImportBodyCap();
+    // Build a payload that's ~1MB but invalid by schema (shape doesn't matter
+    // here — we only assert the body-cap gate doesn't 413 a small payload).
+    const payload = {
+      source: {
+        type: "inline",
+        manifest: { __pad: "y".repeat(1024 * 1024) },
+        files: {},
+      },
+      target: { mode: "new_company" },
+    };
+    const res = await request(app)
+      .post("/api/companies/import/preview")
+      .set("Content-Type", "application/json")
+      .send(JSON.stringify(payload));
+    expect(res.status).not.toBe(413);
+  });
+
+  it("does NOT apply the 20MB cap to non-import routes (global default still 413's)", async () => {
+    // Global mount's default is 100KB; a 1MB non-import body should 413 there.
+    const big = JSON.stringify({ __pad: "x".repeat(1 * 1024 * 1024) });
+    const app = buildAppWithImportBodyCap();
+    const res = await request(app)
+      .post(`/api/companies/${SRC_CO_ID}/export/preview`)
+      .set("Content-Type", "application/json")
+      .send(big);
+    expect(res.status).toBe(413);
+  });
+});
+
+describe("import schema array caps", () => {
+  it("rejects bundles whose manifest.issues array exceeds the 10000 cap", async () => {
+    const app = buildAppWithImportBodyCap();
+    const issues = Array.from({ length: 10_001 }, (_, i) => ({
+      slug: `i-${i}`,
+      title: `Task ${i}`,
+    }));
+    const payload = {
+      source: {
+        type: "inline",
+        manifest: {
+          schemaVersion: 2,
+          generatedAt: "2026-04-21T00:00:00.000Z",
+          source: null,
+          includes: { company: false, agents: false, issues: true },
+          company: null,
+          agents: [],
+          issues,
+          requiredSecrets: [],
+        },
+        files: {},
+      },
+      target: { mode: "new_company" },
+    };
+    const res = await request(app)
+      .post("/api/companies/import/preview")
+      .set("Content-Type", "application/json")
+      .send(JSON.stringify(payload));
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+  });
+});

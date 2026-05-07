@@ -48,6 +48,19 @@ vi.mock("@/components/LobbyCompanyCard", () => ({
   ),
 }));
 
+vi.mock("@/components/LobbySidebar", () => ({
+  LobbySidebar: () => <aside data-testid="lobby-sidebar" />,
+}));
+
+vi.mock("@/components/LobbyEmptyState", () => ({
+  LobbyEmptyState: ({ onCreate, onImport }: { onCreate: () => void; onImport: () => void }) => (
+    <div data-testid="lobby-empty-state">
+      <button data-testid="empty-create" onClick={onCreate}>create</button>
+      <button data-testid="empty-import" onClick={onImport}>import</button>
+    </div>
+  ),
+}));
+
 vi.mock("@/components/UserMenu", () => ({
   UserMenu: () => <div data-testid="user-menu" />,
 }));
@@ -59,6 +72,12 @@ describe("Lobby", () => {
     vi.clearAllMocks();
     mockCompanyContext.loading = false;
     mockCompanyContext.companies = [];
+  });
+
+  it("renders the LobbySidebar", () => {
+    mockCompanyContext.companies = [makeCompany()];
+    renderWithProviders(<Lobby />);
+    expect(screen.getByTestId("lobby-sidebar")).toBeInTheDocument();
   });
 
   it("renders company cards when companies exist", () => {
@@ -74,15 +93,45 @@ describe("Lobby", () => {
     expect(screen.getByText("Beta Corp")).toBeInTheDocument();
   });
 
-  it("shows 'Create Company' card", () => {
+  it("renders a +New header dropdown trigger when companies exist", () => {
+    mockCompanyContext.companies = [makeCompany()];
+    renderWithProviders(<Lobby />);
+    expect(screen.getByRole("button", { name: /\+ new/i })).toBeInTheDocument();
+  });
+
+  it("does NOT render the legacy dashed Create/Import grid cards", () => {
+    mockCompanyContext.companies = [makeCompany()];
+    renderWithProviders(<Lobby />);
+    // Legacy cards rendered "Create Company" and "Import Company" inside the
+    // grid. The +New dropdown surfaces them on demand instead, so they should
+    // not be visible at idle.
+    expect(screen.queryByText("Create Company")).not.toBeInTheDocument();
+    expect(screen.queryByText("Import Company")).not.toBeInTheDocument();
+  });
+
+  it("opens the onboarding dialog when +New > Create company is selected", async () => {
+    const user = userEvent.setup();
     mockCompanyContext.companies = [makeCompany()];
 
     renderWithProviders(<Lobby />);
 
-    expect(screen.getByText("Create Company")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /\+ new/i }));
+    await user.click(await screen.findByRole("menuitem", { name: /create company/i }));
+    expect(mockDialogContext.openOnboarding).toHaveBeenCalled();
   });
 
-  it("click company card calls navigation", async () => {
+  it("navigates to /import when +New > Import company is selected", async () => {
+    const user = userEvent.setup();
+    mockCompanyContext.companies = [makeCompany()];
+
+    renderWithProviders(<Lobby />);
+
+    await user.click(screen.getByRole("button", { name: /\+ new/i }));
+    await user.click(await screen.findByRole("menuitem", { name: /import company/i }));
+    expect(mockNavigate).toHaveBeenCalledWith("/import", undefined);
+  });
+
+  it("clicking a company card navigates to that company's home", async () => {
     const user = userEvent.setup();
     const company = makeCompany({ id: "c1", name: "Acme Inc", issuePrefix: "ACME" });
     mockCompanyContext.companies = [company];
@@ -93,13 +142,51 @@ describe("Lobby", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/ACME/home", undefined);
   });
 
-  it("handles 0 companies by triggering onboarding", () => {
+  it("renders LobbyEmptyState when there are 0 companies", () => {
     mockCompanyContext.companies = [];
     mockCompanyContext.loading = false;
 
     renderWithProviders(<Lobby />);
 
-    expect(mockDialogContext.openOnboarding).toHaveBeenCalled();
+    expect(screen.getByTestId("lobby-empty-state")).toBeInTheDocument();
+  });
+
+  // Load-bearing regression test: the previous implementation auto-fired
+  // openOnboarding from a useEffect when the lobby loaded with zero
+  // companies. The new design replaces that with the LobbyEmptyState hero,
+  // which is opt-in.
+  it("does NOT auto-trigger openOnboarding with 0 companies (regression)", () => {
+    mockCompanyContext.companies = [];
+    mockCompanyContext.loading = false;
+
+    renderWithProviders(<Lobby />);
+
+    expect(mockDialogContext.openOnboarding).not.toHaveBeenCalled();
+  });
+
+  it("does NOT auto-trigger openOnboarding while companies are still loading", () => {
+    mockCompanyContext.companies = [];
+    mockCompanyContext.loading = true;
+
+    renderWithProviders(<Lobby />);
+
+    expect(mockDialogContext.openOnboarding).not.toHaveBeenCalled();
+  });
+
+  it("invokes openOnboarding when LobbyEmptyState's create button is clicked", async () => {
+    const user = userEvent.setup();
+    mockCompanyContext.companies = [];
+    renderWithProviders(<Lobby />);
+    await user.click(screen.getByTestId("empty-create"));
+    expect(mockDialogContext.openOnboarding).toHaveBeenCalledTimes(1);
+  });
+
+  it("navigates to /import when LobbyEmptyState's import button is clicked", async () => {
+    const user = userEvent.setup();
+    mockCompanyContext.companies = [];
+    renderWithProviders(<Lobby />);
+    await user.click(screen.getByTestId("empty-import"));
+    expect(mockNavigate).toHaveBeenCalledWith("/import", undefined);
   });
 
   it("shows loading state while companies are loading", () => {
@@ -108,5 +195,38 @@ describe("Lobby", () => {
     renderWithProviders(<Lobby />);
 
     expect(screen.getByText("Loading...")).toBeInTheDocument();
+  });
+
+  // PR-C polish: page background should use the diagonal purple-wash gradient
+  // (bg-background flat fill is replaced with a Tailwind arbitrary-value
+  // linear-gradient utility).
+  it("applies the diagonal purple-wash gradient on the lobby root", () => {
+    mockCompanyContext.companies = [makeCompany()];
+    const { container } = renderWithProviders(<Lobby />);
+    const root = container.firstChild as HTMLElement | null;
+    expect(root).toBeTruthy();
+    expect(root!.className).toMatch(/linear-gradient/);
+    expect(root!.className).toContain("hsl(260");
+  });
+
+  // PR-C polish: mount choreography classes are applied to heading + each card
+  // wrapper. Sidebar's own .lobby-sidebar-enter class is asserted in
+  // LobbySidebar.test.tsx (the sidebar is mocked in this file's renderer).
+  // CSS-keyframe-driven animations respect prefers-reduced-motion via a media
+  // query in index.css.
+  it("applies mount-choreography animation classes to heading + card wrappers", () => {
+    mockCompanyContext.companies = [
+      makeCompany({ id: "c1", name: "Acme" }),
+      makeCompany({ id: "c2", name: "Beta" }),
+    ];
+    const { container } = renderWithProviders(<Lobby />);
+
+    expect(container.querySelector(".lobby-heading-enter")).toBeTruthy();
+
+    const cardWrappers = container.querySelectorAll(".lobby-card-enter");
+    expect(cardWrappers).toHaveLength(2);
+    // Stagger index is set via inline CSS variable on each wrapper.
+    expect((cardWrappers[0] as HTMLElement).style.getPropertyValue("--lobby-card-index")).toBe("0");
+    expect((cardWrappers[1] as HTMLElement).style.getPropertyValue("--lobby-card-index")).toBe("1");
   });
 });

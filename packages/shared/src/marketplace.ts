@@ -65,6 +65,19 @@ export const MarketplaceCatalogItemSchema = z.object({
       packageName: z.string(),
       version: z.string(),
       tarballUrl: z.string().url().optional(),
+      // Subresource Integrity (SRI) hash matching npm registry metadata format.
+      // When present, plugin install verifies the resolved package's integrity
+      // (read from package-lock.json after `npm install`) against this value
+      // and fail-closes on mismatch. Catalog items omitting this field install
+      // unverified for backward compatibility.
+      // Format: `<algorithm>-<base64>`, e.g. `sha512-...==` or `sha256-...`.
+      integrity: z
+        .string()
+        .regex(
+          /^sha(?:256|384|512)-[A-Za-z0-9+/]+=*$/,
+          "integrity must be `sha(256|384|512)-<base64>` (npm SRI format)",
+        )
+        .optional(),
     })
     .optional(),
   // Only present on snapshot items (skill/agent/team), commit-pinned URL to fetchable file
@@ -152,7 +165,7 @@ export interface MarketplaceSettings {
 }
 
 export const MARKETPLACE_SETTINGS_DEFAULTS: MarketplaceSettings = {
-  pluginUpdatePolicy: "auto_minor",
+  pluginUpdatePolicy: "notify_all",
   skillUpdatePolicy: "notify",
   agentUpdatePolicy: "notify",
   teamUpdatePolicy: "notify",

@@ -6,4 +6,4 @@ CREATE TABLE IF NOT EXISTS "plugin_version_snapshots" (
   "manifest_json" jsonb,
   "created_at" timestamptz DEFAULT now() NOT NULL
 );
-CREATE INDEX "pvs_plugin_created_idx" ON "plugin_version_snapshots"("plugin_id","created_at");
+CREATE INDEX IF NOT EXISTS "pvs_plugin_created_idx" ON "plugin_version_snapshots"("plugin_id","created_at");
