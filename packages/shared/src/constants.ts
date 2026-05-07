@@ -786,6 +786,60 @@ export const PLUGIN_CAPABILITIES = [
 ] as const;
 export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
 
+export const CAPABILITY_DESCRIPTIONS: Record<PluginCapability, string> = {
+  // Data read
+  "companies.read":             "Read your organization's company profile",
+  "projects.read":              "Read departments and projects",
+  "project.workspaces.read":    "Read workspace data for software projects",
+  "issues.read":                "Read tasks and issues",
+  "issue.comments.read":        "Read comments on tasks",
+  "issue.documents.read":       "Read documents and attachments on tasks",
+  "agents.read":                "Read agent profiles and configuration",
+  "goals.read":                 "Read goals and their status",
+  "activity.read":              "Read the activity history log",
+  "costs.read":                 "Read budget and cost records",
+  // Data write
+  "issues.create":              "Create new tasks on your behalf",
+  "issues.update":              "Update existing tasks on your behalf",
+  "issue.comments.create":      "Post comments on tasks",
+  "issue.documents.write":      "Write documents and attachments to tasks",
+  "activity.log.write":         "Write entries to the activity log",
+  "metrics.write":              "Record custom performance metrics",
+  "telemetry.track":            "Send anonymous usage events to the plugin developer",
+  // Plugin state
+  "plugin.state.read":          "Read this plugin's private persistent data",
+  "plugin.state.write":         "Write to this plugin's private persistent data",
+  // Integration
+  "events.subscribe":           "Listen to system events (task updates, agent completions, etc.)",
+  "events.emit":                "Broadcast custom events to other installed plugins",
+  "jobs.schedule":              "Schedule recurring background jobs",
+  "webhooks.receive":           "Receive inbound webhooks from external services",
+  "http.outbound":              "Make outbound HTTP requests to external URLs",
+  "secrets.read-ref":           "Read references to secrets stored in the vault (values never exposed)",
+  // Agent tools
+  "agent.tools.register":       "Register custom tools that your agents can call",
+  // Agent control
+  "agents.pause":               "Pause running agents",
+  "agents.resume":              "Resume paused agents",
+  "agents.invoke":              "Invoke agents programmatically",
+  "agent.sessions.create":      "Create new agent chat sessions",
+  "agent.sessions.list":        "List existing agent sessions",
+  "agent.sessions.send":        "Send messages into agent sessions",
+  "agent.sessions.close":       "Close agent sessions",
+  // Goals
+  "goals.create":               "Create new goals",
+  "goals.update":               "Update existing goals",
+  // UI
+  "ui.sidebar.register":        "Add navigation items to the sidebar",
+  "ui.page.register":           "Register custom full-page views in the app",
+  "ui.detailTab.register":      "Add tabs to task or entity detail panels",
+  "ui.dashboardWidget.register":"Add widgets to the Home dashboard",
+  "ui.commentAnnotation.register":"Add inline annotations inside comments",
+  "ui.action.register":         "Register contextual action buttons",
+  // Instance
+  "instance.settings.register": "Add configuration panels to Instance Settings",
+};
+
 export const PLUGIN_UI_SLOT_TYPES = [
   "sidebar",
   "sidebarPanel",
