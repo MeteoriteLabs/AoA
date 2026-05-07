@@ -1,3 +1,4 @@
+import type { ComponentType } from "react";
 import { Bot, Puzzle, Sparkles } from "lucide-react";
 import type { MarketplaceItemType } from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
@@ -14,13 +15,13 @@ export interface MarketplaceFilterChipsProps {
 const CHIPS: Array<{
   key: MarketplaceItemType | "all";
   label: string;
-  icon?: React.ComponentType<{ className?: string }>;
+  icon?: ComponentType<{ className?: string }>;
 }> = [
   { key: "all", label: "All" },
   { key: "skill", label: "Skills", icon: Sparkles },
   { key: "plugin", label: "Plugins", icon: Puzzle },
   { key: "agent", label: "Agents", icon: Bot },
-  { key: "team", label: "Teams", icon: Bot },
+  { key: "team", label: "Teams", icon: Bot }, // StackedIcon is card-only; flat Bot is correct for filter chips
 ];
 
 /**
@@ -39,7 +40,7 @@ export function MarketplaceFilterChips({ value, onChange, counts }: MarketplaceF
             key={chip.key}
             type="button"
             data-active={isActive ? "true" : undefined}
-            onClick={() => onChange(chip.key === "all" ? null : (chip.key as MarketplaceItemType))}
+            onClick={() => onChange(chip.key === "all" ? null : chip.key)}
             className={cn(
               "inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[12.5px] font-medium transition-colors border",
               isActive
