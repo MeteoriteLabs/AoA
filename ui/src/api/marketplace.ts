@@ -12,6 +12,7 @@ import type {
   CatalogSyncStatus,
   MarketplaceCatalogFile,
   MarketplaceItemType,
+  MarketplacePackage,
   MarketplaceSettings,
   PendingUpdate,
 } from "@armyofagents/shared";
@@ -71,6 +72,10 @@ export const marketplaceApi = {
 
   async getStatus(): Promise<CatalogSyncStatus> {
     return api.get<CatalogSyncStatus>("/marketplace/catalog/status");
+  },
+
+  async getPackages(): Promise<MarketplacePackage[]> {
+    return api.get<MarketplacePackage[]>("/marketplace/packages");
   },
 
   async sync(): Promise<{ itemCount: number; status: CatalogSyncStatus }> {
