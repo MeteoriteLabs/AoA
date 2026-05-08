@@ -14,9 +14,11 @@ import { marketplaceCatalogCache } from "@armyofagents/db";
 import {
   MarketplaceCatalogFileSchema,
   isSchemaVersionSupported,
-  type MarketplaceCatalogFile,
   type CatalogSyncStatus,
+  type MarketplaceCatalogFile,
+  type MarketplacePackage,
 } from "@armyofagents/shared";
+import { derivePackages } from "./derivePackages.js";
 import { runUpdateCheck } from "./marketplace-update-checker.js";
 import { logger } from "../middleware/logger.js";
 
@@ -126,6 +128,19 @@ export class MarketplaceCatalogService {
       return null;
     }
     return parsed.data;
+  }
+
+  /**
+   * Read the cached catalog and derive the marketplace package list.
+   * Returns `null` if no catalog has been cached yet (caller should respond
+   * 503 to mirror `readCache()` semantics).
+   *
+   * Derivation is in-memory and cheap (~hundreds of items max). No DB write.
+   */
+  async getPackages(): Promise<MarketplacePackage[] | null> {
+    const catalog = await this.readCache();
+    if (!catalog) return null;
+    return derivePackages(catalog.items);
   }
 
   async getStatus(): Promise<CatalogSyncStatus | null> {
