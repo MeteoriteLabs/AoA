@@ -114,6 +114,7 @@ export const MarketplaceCatalogItemSchema = z.object({
       url: z.string().optional(),
     })
     .optional(),
+  packageId: z.string().optional(),
   category: MarketplaceCategorySchema,
   tags: z.array(MarketplaceTagSchema),
   featured: z.boolean().optional(),
@@ -131,6 +132,33 @@ export const MarketplaceCatalogFileSchema = z.object({
   items: z.array(MarketplaceCatalogItemSchema),
 });
 export type MarketplaceCatalogFile = z.infer<typeof MarketplaceCatalogFileSchema>;
+
+/**
+ * A "package" is a synthetic grouping of catalog items that share a GitHub
+ * source repo (or an explicit `packageId`). Synthesis rule: items grouped by
+ * `owner/repo` extracted from `source.url`, with threshold ≥ 2 items.
+ *
+ * Synthesized packages don't have a description; UI shows "N skills" instead.
+ * If the upstream catalog repo later wants curated names/descriptions, items
+ * can carry an explicit `packageId` whose metadata can be looked up elsewhere.
+ */
+export const MarketplacePackageSchema = z.object({
+  /** Stable identifier — `owner/repo` for synthesized, the literal `packageId` for explicit. */
+  id: z.string(),
+  /** Display name — repo name for synthesized (`gstack`), literal `packageId` for explicit. */
+  name: z.string(),
+  /** Canonical GitHub URL (e.g. `https://github.com/garrytan/gstack`). */
+  sourceUrl: z.string(),
+  /** Catalog item IDs that belong to this package, sorted ascending. */
+  memberItemIds: z.array(z.string()),
+  /** Number of member items. Always equal to `memberItemIds.length`. */
+  count: z.number().int().nonnegative(),
+  /** True iff every member item has `trust.tier === "verified"`. */
+  verified: z.boolean(),
+  /** Whether this package was created via an explicit `packageId` override. False = synthesized. */
+  explicit: z.boolean(),
+});
+export type MarketplacePackage = z.infer<typeof MarketplacePackageSchema>;
 
 export interface CatalogSyncStatus {
   lastSyncedAt: string;
