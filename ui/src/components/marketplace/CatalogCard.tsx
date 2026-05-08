@@ -80,6 +80,8 @@ export function CatalogCard({ item, installedByPackageName }: CatalogCardProps) 
             <div className="min-w-0 flex-1 mt-0.5">
               <div className="flex items-center gap-1.5">
                 <h3 className="text-[1.05rem] font-semibold tracking-tight truncate">{item.name}</h3>
+                {/* Verified-only marker by design (v3 mockup). Community + unverified items
+                    show no badge here — the full 3-state TrustBadge lives on the detail page. */}
                 {isVerified && (
                   <BadgeCheck
                     data-testid="verified-check"
