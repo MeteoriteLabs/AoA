@@ -21,6 +21,11 @@ function repoRootFromUrl(url: string): string | null {
  * least {@link SYNTHESIS_THRESHOLD} members. Items with non-github source URLs
  * and no explicit packageId are skipped (no package).
  *
+ * On id collision (an explicit `packageId` matches a synthesizable
+ * `owner/repo`), the explicit package wins and the synthesized one is
+ * suppressed. The items that would have synthesized are simply not part
+ * of any package (they remain in the catalog).
+ *
  * The result is deterministic: packages sorted by `id` ascending, member item
  * IDs sorted ascending. `verified` is true iff every member has
  * `trust.tier === "verified"`.
@@ -41,6 +46,13 @@ export function derivePackages(items: ReadonlyArray<MarketplaceCatalogItem>): Ma
     const list = synthesizedGroups.get(root);
     if (list) list.push(item);
     else synthesizedGroups.set(root, [item]);
+  }
+
+  // Resolve id collisions: explicit packageId wins. If a synthesized
+  // owner/repo matches an explicit id, suppress the synthesized package
+  // entirely (the explicit one supersedes it).
+  for (const id of explicitGroups.keys()) {
+    synthesizedGroups.delete(id);
   }
 
   const packages: MarketplacePackage[] = [];

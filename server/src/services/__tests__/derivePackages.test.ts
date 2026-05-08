@@ -4,7 +4,6 @@ import { derivePackages } from "../derivePackages.js";
 
 function makeItem(overrides: Partial<MarketplaceCatalogItem> & { id: string }): MarketplaceCatalogItem {
   return {
-    id: overrides.id,
     type: "skill",
     name: overrides.id,
     description: "test item",
@@ -111,6 +110,22 @@ describe("derivePackages", () => {
     expect(ex.memberItemIds).toEqual(["ex"]);
     expect(syn.explicit).toBe(false);
     expect(syn.memberItemIds.sort()).toEqual(["syn1", "syn2"]);
+  });
+
+  it("explicit packageId wins over a colliding synthesized owner/repo id", () => {
+    const items = [
+      makeItem({ id: "ex", packageId: "owner/repo", source: { adapter: "g", url: "https://example.com/anywhere", locator: "ex" } }),
+      makeItem({ id: "syn1", source: { adapter: "g", url: "https://github.com/owner/repo/tree/main/a", locator: "a" } }),
+      makeItem({ id: "syn2", source: { adapter: "g", url: "https://github.com/owner/repo/tree/main/b", locator: "b" } }),
+    ];
+    const packages = derivePackages(items);
+    // Only the explicit package emerges; synthesized "owner/repo" is suppressed.
+    expect(packages).toHaveLength(1);
+    expect(packages[0]).toMatchObject({
+      id: "owner/repo",
+      explicit: true,
+      memberItemIds: ["ex"],
+    });
   });
 
   it("verified=true only when every member is verified", () => {
