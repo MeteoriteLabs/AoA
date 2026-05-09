@@ -40,7 +40,9 @@ export function FolderTreeNode({
   tooltip,
 }: FolderTreeNodeProps) {
   const indent = depth * 12 + 8;
-  const Icon = typeof icon === "function" ? (icon as LucideIcon) : null;
+  // Lucide icons are forwardRef *objects*, not plain functions. Treat any
+  // non-string truthy value as a component to render.
+  const Icon = icon && typeof icon !== "string" ? (icon as LucideIcon) : null;
 
   return (
     <div
