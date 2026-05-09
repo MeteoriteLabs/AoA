@@ -10,11 +10,13 @@ describe("MemoryViewToggle", () => {
     expect(getByTitle("Cards view")).toBeInTheDocument();
   });
 
-  it("highlights the active mode via aria-pressed", () => {
-    const { getByTitle } = render(<MemoryViewToggle mode="table" onChange={() => {}} />);
-    expect(getByTitle("Table view")).toHaveAttribute("aria-pressed", "true");
-    expect(getByTitle("List view")).toHaveAttribute("aria-pressed", "false");
-    expect(getByTitle("Cards view")).toHaveAttribute("aria-pressed", "false");
+  it("uses the radiogroup ARIA pattern with aria-checked", () => {
+    const { container, getByTitle } = render(<MemoryViewToggle mode="table" onChange={() => {}} />);
+    expect(container.querySelector('[role="radiogroup"]')).toBeInTheDocument();
+    expect(getByTitle("Table view")).toHaveAttribute("role", "radio");
+    expect(getByTitle("Table view")).toHaveAttribute("aria-checked", "true");
+    expect(getByTitle("List view")).toHaveAttribute("aria-checked", "false");
+    expect(getByTitle("Cards view")).toHaveAttribute("aria-checked", "false");
   });
 
   it("fires onChange with the new mode on click", () => {
