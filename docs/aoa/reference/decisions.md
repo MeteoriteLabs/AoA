@@ -613,7 +613,7 @@ Output is deterministic: packages sorted by `id` ascending, `memberItemIds` sort
 - Future curated metadata (description, cover image, author profile) would arrive via the catalog repo emitting `packageId` plus a sibling metadata block — extension point only, not implemented.
 - The Marketplace hub's sectioned view (design-system §9.18) embeds the Packages strip inside the Skills section, which only makes sense because of the skill-only constraint.
 
-**Reference:** `server/src/services/derivePackages.ts`, `packages/shared/src/marketplace.ts` (`MarketplacePackageSchema`), 14 unit tests in `server/src/services/__tests__/derivePackages.test.ts`.
+**Reference:** `server/src/services/derivePackages.ts`, `packages/shared/src/marketplace.ts` (`MarketplacePackageSchema`), 21 unit tests in `server/src/services/__tests__/derivePackages.test.ts` (synthesis threshold, explicit override, collision resolution, deterministic ordering, verified math, skill-only constraint, mixed-type via explicit override, whitespace trimming, empty-string fallthrough).
 
 ---
 

@@ -1,12 +1,19 @@
-import { Bot, Puzzle, Sparkles, Users, type LucideIcon } from "lucide-react";
+import { Bot, Puzzle, Sparkles, type LucideIcon } from "lucide-react";
 import type { MarketplaceItemType } from "@armyofagents/shared";
 
-/** Type-default icons. */
+/**
+ * Type-default icons. `team` uses `Bot` (not `Users`) per design-system §10.1
+ * — visually a team is an "agent group," and a stacked `Bot` ×3 is the
+ * canonical hero treatment for team cards (see `StackedIcon` in §9.14).
+ * The flat `Bot` here is the fallback used in compact rows (e.g., the
+ * marketplace package detail's included-items grid) where the StackedIcon
+ * variant is too heavy.
+ */
 export const TYPE_ICONS: Record<MarketplaceItemType, LucideIcon> = {
   skill: Sparkles,
   agent: Bot,
   plugin: Puzzle,
-  team: Users,
+  team: Bot,
 };
 
 /** Human-readable singular labels. */
