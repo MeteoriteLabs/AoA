@@ -11,6 +11,8 @@ import {
   Home,
   Pin,
   Clock,
+  Inbox,
+  Archive,
   type LucideIcon,
 } from "lucide-react";
 import type {
@@ -48,6 +50,8 @@ interface TreeNode {
   icon?: string;           // Emoji/string icon (folder nodes — user data, not migrated here)
   iconTone?: string;       // Inline color for the icon span (e.g. "var(--data-indigo)")
   count?: number;
+  /** Count badge tone. "brand" wraps the count in a brand-red pill (used for Pending Review). */
+  countTone?: "default" | "brand";
   depth: number;
   hasChildren: boolean;
   /** When set, click navigates here. When null, clicking only toggles expand. */
@@ -363,6 +367,7 @@ export function MemoryTree({
           icon={node.Icon ?? node.icon}
           iconTone={node.iconTone}
           count={node.count}
+          countTone={node.countTone}
           depth={node.depth}
           expanded={isExpanded}
           selected={isSelected(node.target)}
@@ -505,8 +510,10 @@ function buildTree({
   top.push({
     key: "__pending",
     label: "Pending Review",
-    icon: "📋",
+    Icon: Inbox,
+    iconTone: "var(--data-amber)",
     count: counts.pending > 0 ? counts.pending : undefined,
+    countTone: "brand",
     depth: 0,
     hasChildren: false,
     target: { folder: "__pending", dept: null },
@@ -523,7 +530,7 @@ function buildTree({
   top.push({
     key: "__archived",
     label: "Archived",
-    icon: "📦",
+    Icon: Archive,
     count: counts.archived > 0 ? counts.archived : undefined,
     depth: 0,
     hasChildren: false,

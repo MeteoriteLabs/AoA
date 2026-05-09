@@ -8,6 +8,8 @@ interface FolderTreeNodeProps {
   /** Optional inline color applied to the icon span (e.g. "var(--data-indigo)"). */
   iconTone?: string;
   count?: number;
+  /** Count badge tone. "brand" wraps the count in a brand-red pill (used for Pending Review). */
+  countTone?: "default" | "brand";
   depth: number;
   expanded: boolean;
   selected: boolean;
@@ -26,6 +28,7 @@ export function FolderTreeNode({
   icon,
   iconTone,
   count,
+  countTone = "default",
   depth,
   expanded,
   selected,
@@ -81,7 +84,14 @@ export function FolderTreeNode({
       </span>
       <span className="truncate flex-1">{label}</span>
       {count !== undefined && (
-        <span className="text-[10px] text-muted-foreground tabular-nums">
+        <span
+          className={cn(
+            "text-[10px] tabular-nums",
+            countTone === "brand"
+              ? "rounded px-1.5 py-0.5 bg-brand/[0.08] text-[hsl(15_60%_75%)]"
+              : "text-muted-foreground",
+          )}
+        >
           {count}
         </span>
       )}

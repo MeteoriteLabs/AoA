@@ -52,6 +52,30 @@ describe("FolderTreeNode active state", () => {
   });
 });
 
+describe("FolderTreeNode count tone", () => {
+  it("renders count with default muted styling when countTone omitted", () => {
+    const { container } = render(
+      <FolderTreeNode label="Pinned" count={7} depth={0} expanded={false}
+        selected={false} hasChildren={false} onToggleExpand={() => {}} onSelect={() => {}} />,
+    );
+    const countSpan = container.querySelector("span.text-\\[10px\\].tabular-nums");
+    expect(countSpan).toBeTruthy();
+    expect(countSpan?.className).toContain("text-muted-foreground");
+    expect(countSpan?.className).not.toContain("bg-brand");
+  });
+
+  it("renders count with brand-red pill when countTone='brand'", () => {
+    const { container } = render(
+      <FolderTreeNode label="Pending Review" count={3} countTone="brand" depth={0} expanded={false}
+        selected={false} hasChildren={false} onToggleExpand={() => {}} onSelect={() => {}} />,
+    );
+    const countSpan = container.querySelector("span.text-\\[10px\\].tabular-nums");
+    expect(countSpan).toBeTruthy();
+    expect(countSpan?.className).toContain("bg-brand/[0.08]");
+    expect(countSpan?.className).toContain("text-[hsl(15_60%_75%)]");
+  });
+});
+
 describe("FolderTreeNode iconTone", () => {
   it("applies iconTone via inline style on the icon span", () => {
     const { container } = render(
