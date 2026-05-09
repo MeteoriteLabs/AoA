@@ -79,7 +79,13 @@ export function pickSnippet(row: IconKindRow): string {
     row.kind === "memory_item"
       ? row.content ?? ""
       : (row as { kind: "asset"; mimeType?: string | null; extractedText?: string | null }).extractedText ?? "";
-  const flat = raw.replace(/[#*_`>~]+/g, "").replace(/\s+/g, " ").trim();
+  // Order matters: strip link syntax before the emphasis/heading regex,
+  // otherwise the URL parens leak through as "text(url)" in the snippet.
+  const flat = raw
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // [text](url) → text
+    .replace(/[#*_`>~]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
   return flat.length > 200 ? flat.slice(0, 197).trimEnd() + "…" : flat;
 }
 

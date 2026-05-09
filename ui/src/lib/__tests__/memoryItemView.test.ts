@@ -60,6 +60,9 @@ describe("pickSnippet", () => {
   it("strips markdown emphasis and headings", () => {
     expect(pickSnippet({ kind: "memory_item", content: "## Heading\n\n*emphasis* and `code`" })).toBe("Heading emphasis and code");
   });
+  it("collapses [text](url) link syntax to just the text", () => {
+    expect(pickSnippet({ kind: "memory_item", content: "See [the docs](https://example.com) for more" })).toBe("See the docs for more");
+  });
   it("truncates strings longer than 200 chars with an ellipsis", () => {
     const long = "a".repeat(500);
     const out = pickSnippet({ kind: "memory_item", content: long });
