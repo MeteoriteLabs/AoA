@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Pin, Eye, Pencil, ExternalLink } from "lucide-react";
-import type { MemoryItem, MemoryItemLayer, MemoryItemStatus } from "@armyofagents/shared";
+import type { MemoryItem } from "@armyofagents/shared";
 import { memoryApi } from "../../../api/memory";
 import { queryKeys } from "../../../lib/queryKeys";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -13,19 +13,17 @@ import { MemoryApprovalActions } from "../MemoryApprovalActions";
 import { MemoryItemActions } from "../MemoryItemActions";
 import { SourceTextDrawer } from "../SourceTextDrawer";
 import { MemoryChip } from "../MemoryChip";
-import { STATUS_TONE, LAYER_TONE } from "../../../lib/memoryItemView";
+import {
+  STATUS_TONE,
+  LAYER_TONE,
+  CATEGORY_TONE,
+  LAYER_LABELS,
+} from "../../../lib/memoryItemView";
 
 interface MarkdownItemViewerProps {
   companyId: string;
   itemId: string;
 }
-
-const LAYER_LABELS: Record<MemoryItemLayer, string> = {
-  identity: "Identity",
-  domain: "Domain",
-  active_context: "Active context",
-  working: "Working",
-};
 
 const EDIT_DEFAULT_STATUSES = new Set(["pending", "draft", "rejected"]);
 
@@ -76,8 +74,10 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
     );
   }
 
+  // Narrow the API row to the fields we touch here. We deliberately don't widen
+  // `layer` to `string` — the shared MemoryItem.layer is already MemoryItemLayer | null,
+  // and keeping the union lets the chip render without `as` casts below.
   const i = item as MemoryItem & {
-    layer?: string | null;
     pinnedToSkill?: boolean;
     folderPath?: string;
     departmentId?: string | null;
@@ -95,19 +95,16 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
             {/* chips row */}
             <div className="flex items-center gap-2 text-[10px] mb-2">
               {i.status && (
-                <MemoryChip
-                  label={i.status}
-                  tone={STATUS_TONE[i.status as MemoryItemStatus]}
-                />
+                <MemoryChip label={i.status} tone={STATUS_TONE[i.status]} />
               )}
               {i.layer && (
                 <MemoryChip
-                  label={(LAYER_LABELS[i.layer as MemoryItemLayer] ?? i.layer).toString()}
-                  tone={LAYER_TONE[i.layer as MemoryItemLayer]}
+                  label={LAYER_LABELS[i.layer]}
+                  tone={LAYER_TONE[i.layer]}
                 />
               )}
               {i.category && (
-                <MemoryChip label={i.category} />
+                <MemoryChip label={i.category} tone={CATEGORY_TONE[i.category]} />
               )}
               {i.pinnedToSkill && (
                 <span

@@ -31,3 +31,16 @@ export const CATEGORY_TONE: Record<MemoryItemCategory, Tone> = {
   procedure: "green",
   policy: "amber",
 };
+
+/**
+ * Canonical short label for each layer. Consumers may append qualifiers
+ * (e.g. "Identity (always in agent context)" inside the create-item dialog),
+ * but the base label here is the source of truth — keeps capitalization
+ * consistent across the viewer, list, tree, and dialogs.
+ */
+export const LAYER_LABELS: Record<MemoryItemLayer, string> = {
+  identity: "Identity",
+  domain: "Domain",
+  active_context: "Active context",
+  working: "Working",
+};
