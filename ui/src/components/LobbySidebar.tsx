@@ -120,6 +120,11 @@ export function LobbySidebar({
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (drawer) return false;
+    // Pages with a secondary sidebar (Settings, Marketplace) explicitly request
+    // primary collapse. Honor that on every mount, regardless of the user's
+    // stored preference — the secondary sidebar is the prominent nav on these
+    // pages, so the primary should collapse out of the way every time.
+    if (defaultCollapsed === true) return true;
     try {
       const stored = localStorage.getItem(COLLAPSE_KEY);
       if (stored === "true") return true;

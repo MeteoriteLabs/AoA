@@ -216,6 +216,9 @@ describe("InstanceSettingsPage Sign out section", () => {
     renderWithProviders(<InstanceSettingsPage />, { initialEntries: ["/instance/settings"] });
     await user.click(screen.getByTestId("sidebar-item-privacy"));
     // The page should now have ?tab=privacy in its URL or active state.
-    expect(window.location.search.includes("tab=privacy") || screen.queryByText(/privacy/i)).toBeTruthy();
+    // Use queryAllByText to avoid a "Found multiple elements" error — the mobile
+    // pill row (md:hidden) also renders a "Privacy" span alongside the desktop
+    // SecondarySidebar mock, so there are two matching text nodes in JSDOM.
+    expect(window.location.search.includes("tab=privacy") || screen.queryAllByText(/privacy/i).length >= 1).toBeTruthy();
   });
 });

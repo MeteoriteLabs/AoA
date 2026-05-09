@@ -166,6 +166,36 @@ export function InstanceSettingsPage() {
           </h1>
         </div>
 
+        {/* Mobile-only horizontal section nav (desktop uses the LobbyShell secondarySidebar slot) */}
+        <div className="md:hidden mb-5 relative">
+          <div className="overflow-x-auto -mx-4 px-4 pb-1">
+            <div className="flex gap-1.5 w-max">
+              {settingsSections[0]?.items.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  data-active={item.active ? "true" : undefined}
+                  onClick={item.onClick}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-[12.5px] font-medium transition-colors border whitespace-nowrap shrink-0",
+                    item.active
+                      ? "bg-brand/[0.08] text-[hsl(15_60%_75%)] border-brand/[0.25]"
+                      : "bg-card border-border text-foreground/[0.78] hover:bg-card-2 hover:text-foreground",
+                  )}
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* Right-edge fade hint */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute right-0 top-0 bottom-1 w-8 bg-gradient-to-l from-bg to-transparent"
+          />
+        </div>
+
         {actionError && (
           <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             {actionError}

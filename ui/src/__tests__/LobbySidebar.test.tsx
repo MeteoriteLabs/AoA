@@ -130,4 +130,13 @@ describe("LobbySidebar", () => {
     await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
     expect(aside?.getAttribute("data-collapsed")).toBe("true");
   });
+
+  it("forces collapse when defaultCollapsed=true even if localStorage says expanded", () => {
+    localStorage.setItem("aoa.lobby.sidebar-collapsed", "false");
+    const { container } = renderWithProviders(
+      <LobbySidebar onCreateCompany={onCreateCompany} defaultCollapsed activeItem="settings" />,
+    );
+    const aside = container.querySelector("aside");
+    expect(aside?.getAttribute("data-collapsed")).toBe("true");
+  });
 });
