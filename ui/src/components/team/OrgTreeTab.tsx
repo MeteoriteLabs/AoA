@@ -6,6 +6,7 @@ import { adapterLabels, roleLabels } from "../agent-config-primitives";
 import { teamsApi } from "../../api/teams";
 import { useCompany } from "../../context/CompanyContext";
 import { queryKeys } from "../../lib/queryKeys";
+import { agentStatusDotHex, agentStatusDotHexDefault } from "../../lib/status-colors";
 import { TeamOrgOverlay } from "./TeamOrgOverlay";
 import { computeTeamBoxes, type LaidOutCard } from "./teamBoundingBox";
 import { Network, MoreVertical } from "lucide-react";
@@ -153,16 +154,8 @@ function collectEdges(nodes: LayoutNode[]): Array<{ parent: LayoutNode; child: L
 }
 
 // ── Status dot colors ────────────────────────────────────────────────────
-
-const statusDotColor: Record<string, string> = {
-  running: "#22d3ee",
-  active: "#4ade80",
-  paused: "#facc15",
-  idle: "#facc15",
-  error: "#f87171",
-  terminated: "#a3a3a3",
-};
-const defaultDotColor = "#a3a3a3";
+// Sourced from the shared status-colors module so the canvas (inline-style)
+// and the agents grid (Tailwind class) stay in sync.
 
 // ── Team overlay colors ──────────────────────────────────────────────────
 //
@@ -548,7 +541,7 @@ function AgentNodeCard({
   onClick: (id: string, nodeType: "agent" | "user") => void;
   onNodeAction?: (action: OrgNodeAction) => void;
 }) {
-  const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+  const dotColor = agentStatusDotHex[node.status] ?? agentStatusDotHexDefault;
   // Apex CXO = "Chief of Staff": a CXO-tier agent reporting either to a
   // human or to no one. Computed live from the role + parentType pair —
   // not stored on the agent. See plan

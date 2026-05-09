@@ -95,6 +95,27 @@ export const agentStatusDot: Record<string, string> = {
 export const agentStatusDotDefault = "bg-neutral-400";
 
 // ---------------------------------------------------------------------------
+// Agent status dot — hex variants for inline-style consumers
+// ---------------------------------------------------------------------------
+//
+// The `agentStatusDot` map above returns Tailwind utility classes — fine for
+// `className` consumers, but org-tree cards are absolute-positioned and draw
+// dots via `style={{ backgroundColor }}`. This map exposes the same colors as
+// raw hex so SVG/inline-style consumers can avoid duplicating the palette.
+// Keep in sync with `agentStatusDot` (e.g., `bg-cyan-400` ↔ `#22d3ee`).
+
+export const agentStatusDotHex: Record<string, string> = {
+  running: "#22d3ee",
+  active: "#4ade80",
+  paused: "#facc15",
+  idle: "#facc15",
+  error: "#f87171",
+  terminated: "#a3a3a3",
+};
+
+export const agentStatusDotHexDefault = "#a3a3a3";
+
+// ---------------------------------------------------------------------------
 // Priority colors
 // ---------------------------------------------------------------------------
 
