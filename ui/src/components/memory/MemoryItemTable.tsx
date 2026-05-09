@@ -48,6 +48,8 @@ const ICON_FOR_KIND: Record<IconKind, LucideIcon> = {
 };
 
 function formatSize(bytes: number): string {
+  // kB: round to whole number — typical file sizes are >10 kB, decimal adds no info.
+  // MB: keep one decimal — values are often fractional and the precision matters.
   if (bytes < 1024) return `${bytes} B`;
   const kb = bytes / 1024;
   if (kb < 1024) return `${Math.round(kb)} kB`;
@@ -116,9 +118,17 @@ export function MemoryItemTable({ rows, activeId, onSelect, sortBy, sortDir, onS
             <tr
               key={`${r.kind}-${r.id}`}
               data-active={active}
+              tabIndex={0}
               onClick={() => onSelect(r.id, r.kind)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onSelect(r.id, r.kind);
+                }
+              }}
               className={cn(
                 "cursor-pointer border-b border-border-soft",
+                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-focus-ring",
                 active
                   ? "bg-brand/[0.08] text-[hsl(15_60%_75%)]"
                   : "hover:bg-white/[0.04]",
