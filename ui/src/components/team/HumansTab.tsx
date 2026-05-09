@@ -18,12 +18,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ClickableDiv } from "@/components/ui/clickable-div";
 import { cn } from "@/lib/utils";
 import { getInitials } from "@/lib/initials";
-
-const ROLE_STYLES: Record<UserRole, string> = {
-  founder: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
-  team_lead: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-  team_member: "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
-};
+import { RoleBadge } from "./RoleBadge";
 
 const ROLE_LABELS: Record<UserRole, string> = {
   founder: "Founder",
@@ -113,9 +108,7 @@ function MemberCard({
       {/* Body */}
       <div className="mt-3 space-y-1.5">
         <div className="flex items-center gap-1.5 flex-wrap">
-          <Badge variant="secondary" className={cn("border-0 text-[10px]", ROLE_STYLES[member.role])}>
-            {ROLE_LABELS[member.role]}
-          </Badge>
+          <RoleBadge role={member.role} />
           {member.isSystemAdmin && (
             <Badge variant="secondary" className="border-0 text-[10px] bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
               <Shield className="mr-0.5 h-2.5 w-2.5" />
