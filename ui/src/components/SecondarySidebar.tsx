@@ -32,7 +32,7 @@ export function SecondarySidebar({
   return (
     <div
       className={cn(
-        "border-r border-border bg-[oklch(0.155_0.005_30)] flex flex-col py-3.5",
+        "border-r border-border bg-[oklch(0.155_0.005_30)] flex flex-col pt-16 pb-3.5",
         "transition-[width] duration-180",
         collapsed ? "w-12 px-1" : "w-50 px-2",
         className
@@ -59,10 +59,11 @@ export function SecondarySidebar({
               title={collapsed ? item.label : undefined}
               data-active={item.active ? "true" : undefined}
               className={cn(
-                "w-full grid items-center gap-2 px-2.5 py-2 rounded-md text-sm transition-colors",
-                "text-text/[0.78] hover:bg-white/[0.04] hover:text-text",
+                "relative w-full grid items-center gap-2 px-2.5 py-2 rounded-md text-sm transition-colors",
                 collapsed ? "grid-cols-[20px] justify-center" : "grid-cols-[1fr_auto]",
-                item.active && "bg-white/[0.06] text-text font-medium shadow-[inset_2px_0_0_var(--brand)]"
+                item.active
+                  ? "bg-brand/[0.08] text-[hsl(15_60%_75%)]"
+                  : "text-foreground/[0.78] hover:bg-white/[0.04] hover:text-foreground",
               )}
             >
               {collapsed ? (
@@ -79,13 +80,22 @@ export function SecondarySidebar({
                     <span
                       className={cn(
                         "font-mono text-[0.68rem] text-very-dim",
-                        item.active && "text-text/[0.8]"
+                        item.active && "text-[hsl(15_60%_75%)]/[0.8]"
                       )}
                     >
                       {item.count}
                     </span>
                   )}
                 </>
+              )}
+              {item.active && (
+                <span
+                  aria-hidden
+                  className={cn(
+                    "absolute size-[5px] rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]",
+                    collapsed ? "right-1.5 top-1.5" : "right-2.5 top-1/2 -translate-y-1/2",
+                  )}
+                />
               )}
             </button>
           ))}
