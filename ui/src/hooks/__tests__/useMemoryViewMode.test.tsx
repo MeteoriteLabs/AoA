@@ -46,4 +46,52 @@ describe("useMemoryViewMode", () => {
       localStorage.setItem = setItem;
     }
   });
+
+  it("syncs to a valid value when another tab fires a storage event", () => {
+    const { result } = renderHook(() => useMemoryViewMode());
+    expect(result.current.mode).toBe("list");
+    // Simulate another tab writing the new value, then dispatching the event
+    // (jsdom does not auto-dispatch storage events for same-origin writes).
+    localStorage.setItem("aoa:memory:view-mode", "cards");
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "aoa:memory:view-mode",
+          newValue: "cards",
+        }),
+      );
+    });
+    expect(result.current.mode).toBe("cards");
+  });
+
+  it("falls back to 'list' when a storage event carries an invalid value", () => {
+    const { result } = renderHook(() => useMemoryViewMode());
+    act(() => result.current.setMode("table"));
+    expect(result.current.mode).toBe("table");
+    // Another tab corrupts the value somehow.
+    localStorage.setItem("aoa:memory:view-mode", "treeview");
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "aoa:memory:view-mode",
+          newValue: "treeview",
+        }),
+      );
+    });
+    expect(result.current.mode).toBe("list");
+  });
+
+  it("ignores storage events for unrelated keys", () => {
+    const { result } = renderHook(() => useMemoryViewMode());
+    act(() => result.current.setMode("table"));
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "some-other-app-key",
+          newValue: "cards",
+        }),
+      );
+    });
+    expect(result.current.mode).toBe("table");
+  });
 });
