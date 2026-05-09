@@ -7,6 +7,7 @@ import { teamsApi } from "../../api/teams";
 import { useCompany } from "../../context/CompanyContext";
 import { queryKeys } from "../../lib/queryKeys";
 import { agentStatusDotHex, agentStatusDotHexDefault } from "../../lib/status-colors";
+import { getInitials } from "../../lib/initials";
 import { TeamOrgOverlay } from "./TeamOrgOverlay";
 import { computeTeamBoxes, type LaidOutCard } from "./teamBoundingBox";
 import { Network, MoreVertical, Plus, Minus, Maximize2, Star } from "lucide-react";
@@ -634,14 +635,6 @@ function AgentNodeCard({
 }
 
 // ── Human node card ──────────────────────────────────────────────────────
-
-function getInitials(name: string): string {
-  return name
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase() ?? "")
-    .join("");
-}
 
 function HumanNodeCard({
   node,

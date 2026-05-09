@@ -17,6 +17,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ClickableDiv } from "@/components/ui/clickable-div";
 import { cn } from "@/lib/utils";
+import { getInitials } from "@/lib/initials";
 
 const ROLE_STYLES: Record<UserRole, string> = {
   founder: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
@@ -58,12 +59,6 @@ function PermissionDisabledButton({
   );
 }
 
-function deriveInitials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  return name.slice(0, 2).toUpperCase();
-}
-
 function MemberCard({
   member,
   members,
@@ -76,7 +71,7 @@ function MemberCard({
   const navigate = useNavigate();
   const cardRef = useRef<HTMLDivElement>(null);
   const displayName = member.displayName ?? member.email ?? member.userId.slice(0, 8);
-  const initials = deriveInitials(displayName);
+  const initials = getInitials(displayName);
   const parent = member.parentId
     ? members.find((m) => m.userId === member.parentId)
     : null;
