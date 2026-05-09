@@ -173,7 +173,11 @@ function PdfVariant({ row, active }: { row: MemoryItemCardData; active: boolean 
       >
         <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
           <FileText className="size-2.5" aria-hidden />
-          <span>page 1 of {row.pageCount ?? "?"}</span>
+          <span>
+            {row.pageCount != null
+              ? `page 1 of ${row.pageCount}`
+              : "page 1"}
+          </span>
         </div>
         <div className="line-clamp-3 text-[10px] leading-relaxed text-very-dim">
           {snippet || "Document preview unavailable."}
