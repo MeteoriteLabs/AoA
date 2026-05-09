@@ -37,11 +37,17 @@ export function derivePackages(items: ReadonlyArray<MarketplaceCatalogItem>): Ma
   for (const item of items) {
     const explicitId = item.packageId?.trim();
     if (explicitId) {
+      // Explicit packageId is loose-typed: catalog authors can opt in to
+      // mixed-type or non-skill packages by setting this field.
       const list = explicitGroups.get(explicitId);
       if (list) list.push(item);
       else explicitGroups.set(explicitId, [item]);
       continue;
     }
+    // Synthesis is skill-only. A plugin/agent/team is its own atomic catalog
+    // entry — bundling them by repo would mis-render them with the
+    // skill-themed PackageCard.
+    if (item.type !== "skill") continue;
     const root = repoRootFromUrl(item.source.url);
     if (!root) continue;
     const list = synthesizedGroups.get(root);
