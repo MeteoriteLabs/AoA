@@ -58,6 +58,7 @@ Goals, Agents, Company, Settings, Activity, Inbox — unchanged.
 
 V2 adds four pillars: **Intelligence**, **Team**, **Artifacts**, **Integration**. All features below are implemented and tested.
 
+- **Memory tab UI (May 2026):** 3-pane explorer with tabbed right pane (URL-backed via `?tabs=…&active=…`), three center-pane view modes (List default / Table / Cards, persisted via `localStorage["aoa:memory:view-mode"]`), Lucide-only iconography, brand-red active state matching SidebarNavItem. Collapsed left pane shows `MemoryFolderRail` (5 shortcuts + 4 layer icons + expand). Phase 2 (semantic + link graph + embedding surfaces) deferred.
 - **Layered Memory (4 layers):** [IMPLEMENTED — S8-S10, S23-S24]
   - `identity` — permanent, always included (vision, mission, company values). Sources: companies table fields + memory items with layer='identity'.
   - `domain` — department-scoped, semi-permanent (how we do X).
