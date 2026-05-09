@@ -155,10 +155,17 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     );
   });
 
-  it("right pane shows the home view when nothing is selected", async () => {
+  it("right pane is empty (no graph placeholder) when on Home", async () => {
+    // Phase 1 UI audit removed the "📊 Memory graph view — Coming soon"
+    // placeholder. The right pane on Home is now intentionally empty until
+    // Phase 2/3 lands the tabbed viewer + graph. Ensure the placeholder copy
+    // is gone.
     renderPage();
+    // Center pane should still render the home dashboard.
     await waitFor(() =>
-      expect(screen.getByText(/Coming soon/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Identity/i)).toBeInTheDocument(),
     );
+    expect(screen.queryByText(/Coming soon/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Memory graph view/i)).not.toBeInTheDocument();
   });
 });
