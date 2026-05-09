@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { ClickableDiv } from "../ui/clickable-div";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -434,11 +435,12 @@ export function OrgTreeTab({ orgTree, pendingInvites, onNodeClick, onNodeAction 
   // Empty state
   if (orgTree.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-20 text-center" data-testid="org-tree-empty">
-        <Network className="h-10 w-10 text-muted-foreground/40 mb-3" />
-        <p className="text-sm text-muted-foreground">
-          Add agents and invite teammates to build your org chart
-        </p>
+      <div data-testid="org-tree-empty" className="py-20">
+        <EmptyState
+          icon={<Network />}
+          title="Build your org"
+          description="Add agents and invite teammates to build your org chart"
+        />
       </div>
     );
   }
