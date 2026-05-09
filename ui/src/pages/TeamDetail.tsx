@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Star, MoreHorizontal, Trash2, Users } from "lucide-react";
@@ -23,6 +23,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { EmptyState } from "../components/EmptyState";
 import { PageTabBar } from "../components/PageTabBar";
+import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { CoordinationEditor } from "../components/team/CoordinationEditor";
 import { ManifestEditor } from "../components/team/ManifestEditor";
 
@@ -50,6 +51,7 @@ export function TeamDetail() {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawTab = searchParams.get("tab");
   const activeTab: TeamDetailTab = isValidTab(rawTab) ? rawTab : "overview";
+  const [dismantleConfirmOpen, setDismantleConfirmOpen] = useState(false);
 
   // Fetch teams list and find by slug.
   // Backend doesn't expose getBySlug; we filter client-side. Acceptable v1.
@@ -173,10 +175,7 @@ export function TeamDetail() {
   }
 
   function handleDismantle() {
-    const confirmed = window.confirm(
-      `Dismantle "${team.name}"? This deletes the team and its coordination but keeps the ${members.length} agent(s) in their department. This cannot be undone.`,
-    );
-    if (confirmed) dismantleMut.mutate();
+    setDismantleConfirmOpen(true);
   }
 
   const leadName = lead ? (agentMap.get(lead.agentId)?.name ?? "Unknown agent") : "No lead";
@@ -246,6 +245,17 @@ export function TeamDetail() {
           </div>
         </Tabs>
       </div>
+
+      <ConfirmDialog
+        open={dismantleConfirmOpen}
+        onOpenChange={setDismantleConfirmOpen}
+        title={`Dismantle "${team.name}"?`}
+        description={`This deletes the team and its coordination but keeps the ${members.length} agent${members.length === 1 ? "" : "s"} in their department. This cannot be undone.`}
+        confirmLabel="Dismantle"
+        destructive
+        onConfirm={() => dismantleMut.mutate()}
+        disabled={dismantleMut.isPending}
+      />
     </>
   );
 }

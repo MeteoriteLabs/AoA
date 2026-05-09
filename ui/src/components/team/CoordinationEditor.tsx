@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RotateCw, Eye, Save, Settings as SettingsIcon, Pencil, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import {
   type CoordinationSection,
 } from "./coordination-parser";
 import { PreviewAsLlmDialog } from "./PreviewAsLlmDialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 interface Props {
   teamId: string;
@@ -26,8 +27,8 @@ export function CoordinationEditor({ teamId, teamName }: Props) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editedSections, setEditedSections] = useState<CoordinationSection[] | null>(null);
-  // Snapshot at the time "Edit" was clicked, used by Cancel to revert.
   const [savedSnapshot, setSavedSnapshot] = useState<CoordinationSection[] | null>(null);
+  const [regenConfirmOpen, setRegenConfirmOpen] = useState(false);
 
   const coordQuery = useQuery({
     queryKey: queryKeys.teams.coordination(selectedCompanyId!, teamId),
@@ -87,17 +88,21 @@ export function CoordinationEditor({ teamId, teamName }: Props) {
     setIsEditing(false);
   }
 
+  const hasUnsavedEdits = useCallback(() => {
+    return (
+      isEditing &&
+      editedSections !== null &&
+      coordQuery.data != null &&
+      serializeSections(editedSections) !== coordQuery.data.markdown
+    );
+  }, [isEditing, editedSections, coordQuery.data]);
+
   function handleRegen() {
-    if (isEditing && editedSections && coordQuery.data) {
-      const hasUnsaved = serializeSections(editedSections) !== coordQuery.data.markdown;
-      if (hasUnsaved) {
-        const ok = window.confirm(
-          "You have unsaved edits. Regenerate will overwrite them. Continue?",
-        );
-        if (!ok) return;
-      }
+    if (hasUnsavedEdits()) {
+      setRegenConfirmOpen(true);
+    } else {
+      regenMut.mutate();
     }
-    regenMut.mutate();
   }
 
   if (coordQuery.isLoading) {
@@ -194,6 +199,17 @@ export function CoordinationEditor({ teamId, teamName }: Props) {
         open={previewOpen}
         onOpenChange={setPreviewOpen}
         markdown={serializeSections(editedSections)}
+      />
+
+      <ConfirmDialog
+        open={regenConfirmOpen}
+        onOpenChange={setRegenConfirmOpen}
+        title="Regenerate auto sections?"
+        description="You have unsaved edits. Regenerating will overwrite them with the latest team data."
+        confirmLabel="Regenerate"
+        destructive={false}
+        onConfirm={() => regenMut.mutate()}
+        disabled={regenMut.isPending}
       />
     </div>
   );
