@@ -5,10 +5,21 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { SidebarProvider } from "@/context/SidebarContext";
 import { DialogProvider } from "@/context/DialogContext";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
-    selectedCompany: { id: "c1", name: "Phase4 Test Co", issuePrefix: "P4" },
+    selectedCompany: {
+      id: "c1",
+      name: "Phase4 Test Co",
+      issuePrefix: "P4",
+      description: null,
+      brandColor: null,
+      logoAssetId: null,
+      requireBoardApprovalForNewAgents: false,
+      rootFolder: null,
+      status: "active",
+    },
     selectedCompanyId: "c1",
     companies: [],
     setSelectedCompanyId: vi.fn(),
@@ -19,16 +30,39 @@ vi.mock("@/context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
+vi.mock("@/api/companies", () => ({
+  companiesApi: {
+    update: vi.fn().mockResolvedValue({}),
+    archive: vi.fn().mockResolvedValue({}),
+    uploadLogo: vi.fn().mockResolvedValue({}),
+    removeLogo: vi.fn().mockResolvedValue({}),
+  },
+}));
+
+vi.mock("@/api/access", () => ({
+  accessApi: {
+    createCompanyInvite: vi.fn().mockResolvedValue({
+      token: "tok",
+      onboardingTextUrl: "/api/invites/tok/onboarding.txt",
+    }),
+    getInviteOnboarding: vi.fn().mockResolvedValue({
+      onboarding: { connectivity: null },
+    }),
+  },
+}));
+
 function renderSettings(initialPath = "/P4/settings?tab=general") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[initialPath]}>
-        <DialogProvider>
-          <SidebarProvider>
-            <SettingsPage />
-          </SidebarProvider>
-        </DialogProvider>
+        <TooltipProvider>
+          <DialogProvider>
+            <SidebarProvider>
+              <SettingsPage />
+            </SidebarProvider>
+          </DialogProvider>
+        </TooltipProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -70,5 +104,28 @@ describe("SettingsPage redesign — Phase F shell", () => {
   it("does not render the legacy 'Commander' card link at the top", () => {
     renderSettings();
     expect(screen.queryByText(/Configure the Commander/i)).toBeNull();
+  });
+
+  it("General section: renders company name, description, brand color, logo upload, agent invites, rootFolder fields", async () => {
+    renderSettings("/P4/settings?tab=general");
+    expect(await screen.findByLabelText(/Company name/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Description/i)).toBeInTheDocument();
+    expect(screen.getByText(/Brand color/i)).toBeInTheDocument();
+    expect(screen.getByText(/Upload logo/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Generate agent snippet/i })).toBeInTheDocument();
+    // Ghost setting added in this task — rootFolder
+    expect(screen.getByLabelText(/Root folder/i)).toBeInTheDocument();
+    // Archive button is NOT in the General body — only in the sidebar nav.
+    // The sidebar has 2 instances (desktop + mobile sub-nav). The section adds none.
+    const archiveButtons = screen.queryAllByRole("button", { name: /Archive company/i });
+    expect(archiveButtons.length).toBeLessThanOrEqual(2);
+  });
+
+  it("Archive section: renders the archive button", async () => {
+    renderSettings("/P4/settings?tab=archive");
+    // The sidebar nav also has an "Archive company" button (desktop + mobile copies),
+    // so the section's button is the additional one — expect more than the 2 nav buttons.
+    const buttons = await screen.findAllByRole("button", { name: /Archive company/i });
+    expect(buttons.length).toBeGreaterThan(2);
   });
 });
