@@ -543,21 +543,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         {cards && !isCreate
           ? <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setAdapterOpen(!adapterOpen)}><Plug className="h-3 w-3" /> Adapter<span className="ml-auto">{adapterOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span></button>
           : (
-          <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
+          <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2")}>
             {cards
               ? <h3 className="text-sm font-medium">Adapter</h3>
               : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
             }
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 px-2.5 text-xs"
-              onClick={() => testEnvironment.mutate()}
-              disabled={testEnvironment.isPending || !selectedCompanyId}
-            >
-              {testEnvironment.isPending ? "Testing..." : "Test environment"}
-            </Button>
           </div>
         )}
         <div className={cn(cards && !isCreate ? "px-4 pt-4 pb-4 space-y-3 border-t border-border" : cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3", cards && !isCreate && !adapterOpen && "hidden")}>
