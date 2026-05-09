@@ -78,24 +78,6 @@ vi.mock("@/context/DialogContext", () => ({
   useDialog: () => ({ openOnboarding: vi.fn() }),
 }));
 
-// PageTabBar — keep mock in case any residual imports remain
-vi.mock("../components/PageTabBar", () => ({
-  PageTabBar: ({ items, value, onValueChange }: any) => (
-    <div data-testid="page-tab-bar">
-      {items.map((item: any) => (
-        <button
-          key={item.value}
-          data-testid={`tab-${item.value}`}
-          aria-selected={value === item.value}
-          onClick={() => onValueChange(item.value)}
-        >
-          {item.label}
-        </button>
-      ))}
-    </div>
-  ),
-}));
-
 vi.mock("@/components/SecondarySidebar", () => ({
   SecondarySidebar: ({ sections }: { sections: Array<{ items: Array<{ id: string; label: string; onClick?: () => void }> }> }) => (
     <aside data-testid="secondary-sidebar">
