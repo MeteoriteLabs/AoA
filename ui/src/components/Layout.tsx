@@ -26,7 +26,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { AgentPanelProvider } from "../context/AgentPanelContext";
 
 export function Layout() {
-  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, collapsed, setCollapsed, toggleCollapse } = useSidebar();
+  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, setCollapsed, toggleCollapse } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { companies, loading: companiesLoading, selectedCompanyId, selectionSource, setSelectedCompanyId } = useCompany();
 
