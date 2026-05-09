@@ -71,6 +71,7 @@ export function MemoryExplorer() {
         onSearchChange={setSearchQuery}
         onNewItem={() => { /* stub: Task 7 wires the dialog */ }}
         uploadContext={canUpload ? { departmentId, folderPath } : undefined}
+        searchEnabled={!isHomeSelected}
       />
       <Group
         orientation="horizontal"

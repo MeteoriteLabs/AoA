@@ -19,6 +19,11 @@ interface Props {
   onNewItem: () => void;
   /** Provided when the current scope allows asset upload; otherwise the Upload button hides. */
   uploadContext?: UploadContext;
+  /**
+   * When true, the search input is hidden — the Home dashboard center pane
+   * doesn't render a list to filter. The toolbar's count + +New still apply.
+   */
+  searchEnabled?: boolean;
 }
 
 export function MemoryToolbar({
@@ -27,6 +32,7 @@ export function MemoryToolbar({
   onSearchChange,
   onNewItem,
   uploadContext,
+  searchEnabled = true,
 }: Props) {
   const { data: items } = useQuery({
     queryKey: queryKeys.memory.list(companyId),
@@ -45,20 +51,22 @@ export function MemoryToolbar({
 
       <PendingReviewPill companyId={companyId} />
 
-      <div className="relative w-56">
-        <Search
-          aria-hidden
-          className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-very-dim"
-        />
-        <Input
-          type="search"
-          value={searchValue}
-          onChange={(e) => onSearchChange(e.target.value)}
-          placeholder="Quick-jump…  ⌘K"
-          aria-label="Search this folder"
-          className="h-7 pl-8 pr-2 text-xs"
-        />
-      </div>
+      {searchEnabled && (
+        <div className="relative w-56">
+          <Search
+            aria-hidden
+            className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-very-dim"
+          />
+          <Input
+            type="search"
+            value={searchValue}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Quick-jump…  ⌘K"
+            aria-label="Search this folder"
+            className="h-7 pl-8 pr-2 text-xs"
+          />
+        </div>
+      )}
 
       {uploadContext && (
         <MemoryUploadButton
