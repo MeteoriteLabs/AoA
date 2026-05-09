@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NewMemoryItemDialog } from "../components/memory/NewMemoryItemDialog";
-import { useSearchParams } from "@/lib/router";
+import { useSearchParams, useNavigate } from "@/lib/router";
 import { Brain } from "lucide-react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import type { PanelImperativeHandle } from "react-resizable-panels";
@@ -8,17 +8,21 @@ import { MemoryTree } from "../components/memory/MemoryTree";
 import { MemoryFileList } from "../components/memory/MemoryFileList";
 import { MemoryViewer } from "../components/memory/MemoryViewer";
 import { MemoryCollapsedTabStrip } from "../components/memory/MemoryCollapsedTabStrip";
+import { MemoryFolderRail } from "../components/memory/MemoryFolderRail";
 import { MemoryHomeDashboard } from "../components/memory/MemoryHomeDashboard";
 import { MemoryToolbar } from "../components/memory/MemoryToolbar";
-import { CollapsedRail } from "../components/memory/CollapsedRail";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
 import { canUploadInScope } from "../lib/memoryUploadScope";
 import { useMemoryTabs } from "../hooks/useMemoryTabs";
+import { useQuery } from "@tanstack/react-query";
+import { memoryApi } from "../api/memory";
+import { queryKeys } from "../lib/queryKeys";
+import { deriveMemoryCounts, activeRailKindFromUrl, railKindToParams } from "../lib/memoryRail";
 
 export function MemoryExplorer() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs, setEntityColor, setSubtitle } = useBreadcrumbs();
   const [searchParams] = useSearchParams();
 
@@ -36,6 +40,18 @@ export function MemoryExplorer() {
 
   // Tab state — owned here, passed down to viewer + list.
   const { tabs, activeKey, openOrActivate, close, setActive } = useMemoryTabs();
+
+  // Rail counts — derived from the flat items list (same query key as MemoryTree; cache hit).
+  const { data: allItems } = useQuery({
+    queryKey: queryKeys.memory.list(selectedCompanyId ?? ""),
+    queryFn: () => memoryApi.list(selectedCompanyId!, {}),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const railCounts = useMemo(() => deriveMemoryCounts(allItems ?? []), [allItems]);
+  const activeRailKind = activeRailKindFromUrl({ folderPath, departmentId, layer: layer ?? null });
+
+  const navigate = useNavigate();
+  const companyPrefix = selectedCompany?.issuePrefix ?? "";
 
   // One-shot legacy migration: if URL has ?item=X&type=Y but no tabs yet, open it.
   useEffect(() => {
@@ -119,9 +135,15 @@ export function MemoryExplorer() {
           className="border-r border-border"
         >
           {treeCollapsed ? (
-            <CollapsedRail
+            <MemoryFolderRail
+              counts={railCounts}
+              activeKind={activeRailKind}
+              onSelect={(kind) => {
+                const params = railKindToParams(kind);
+                navigate(`/${companyPrefix}/memory/explore${params}`);
+                treePanelRef.current?.expand();
+              }}
               onExpand={() => treePanelRef.current?.expand()}
-              direction="right"
             />
           ) : (
             <MemoryTree
