@@ -44,3 +44,56 @@ export const LAYER_LABELS: Record<MemoryItemLayer, string> = {
   active_context: "Active context",
   working: "Working",
 };
+
+// ---------------------------------------------------------------------------
+// Pure display helpers — no I/O, no side effects
+// ---------------------------------------------------------------------------
+
+export type IconKind = "markdown" | "image" | "pdf" | "video" | "docx" | "generic";
+
+type IconKindRow =
+  | { kind: "memory_item"; content?: string | null }
+  | { kind: "asset"; mimeType?: string | null; extractedText?: string | null };
+
+/**
+ * Derive an icon kind from a memory item or asset row.
+ * Memory items always render as markdown; assets are classified by MIME type.
+ */
+export function pickIconKind(row: IconKindRow): IconKind {
+  if (row.kind === "memory_item") return "markdown";
+  const mt = row.mimeType ?? "";
+  if (mt.startsWith("image/")) return "image";
+  if (mt.startsWith("video/")) return "video";
+  if (mt === "application/pdf") return "pdf";
+  if (mt.includes("wordprocessingml")) return "docx";
+  return "generic";
+}
+
+/**
+ * Extract a plain-text body preview (≤200 chars) from a memory item or asset.
+ * Strips a small set of markdown noise and collapses whitespace — not a full
+ * markdown parser.
+ */
+export function pickSnippet(row: IconKindRow): string {
+  const raw =
+    row.kind === "memory_item"
+      ? row.content ?? ""
+      : (row as { kind: "asset"; mimeType?: string | null; extractedText?: string | null }).extractedText ?? "";
+  const flat = raw.replace(/[#*_`>~]+/g, "").replace(/\s+/g, " ").trim();
+  return flat.length > 200 ? flat.slice(0, 197).trimEnd() + "…" : flat;
+}
+
+/**
+ * Format an ISO date string as a short relative label.
+ * Returns one of: "today", "Nd", "Nw", "Nmo", "Ny", or "recently" (invalid input).
+ */
+export function formatRelative(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return "recently";
+  const d = Math.floor(ms / 86_400_000);
+  if (d < 1) return "today";
+  if (d < 7) return `${d}d`;
+  if (d < 30) return `${Math.floor(d / 7)}w`;
+  if (d < 365) return `${Math.floor(d / 30)}mo`;
+  return `${Math.floor(d / 365)}y`;
+}
