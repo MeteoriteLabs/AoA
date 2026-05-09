@@ -67,6 +67,14 @@ export function MemoryExplorer() {
 
   return (
     <div className="h-full flex flex-col">
+      <div className="px-4 pt-4 pb-2">
+        <h1 className="text-[1.6rem] font-bold tracking-tight">
+          Memory Explorer<span className="text-brand">.</span>
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Browse memory by department and folder structure.
+        </p>
+      </div>
       <MemoryToolbar
         companyId={selectedCompanyId}
         searchValue={searchQuery}
@@ -151,7 +159,11 @@ export function MemoryExplorer() {
               direction="left"
             />
           ) : isHomeSelected ? (
-            <div className="relative h-full flex items-center justify-center bg-muted/10 text-xs text-muted-foreground p-6 text-center">
+            // Home state: empty right pane until Phase 2 lands (graph + tabs).
+            // The legacy "📊 graph view coming soon" placeholder was removed —
+            // it shipped a loud empty-state on every Memory landing without
+            // earning the screen real estate. Founders can collapse the pane.
+            <div className="relative h-full">
               <button
                 type="button"
                 onClick={() => viewerPanelRef.current?.collapse()}
@@ -160,11 +172,6 @@ export function MemoryExplorer() {
               >
                 <PanelRightClose className="h-3.5 w-3.5 text-muted-foreground" />
               </button>
-              <div>
-                <div className="text-2xl mb-2">📊</div>
-                <div className="font-medium mb-1">Memory graph view</div>
-                <div className="opacity-70">Coming soon</div>
-              </div>
             </div>
           ) : (
             <MemoryViewer

@@ -159,7 +159,10 @@ export function NewMemoryItemDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4 py-1">
+        <form onSubmit={handleSubmit}>
+          {/* Body padding matches DialogHeader's px-7 inset; DialogFooter
+              re-applies its own px-7 + border-t below this block. */}
+          <div className="space-y-4 px-7 pb-5">
           {/* Title */}
           <div className="space-y-1.5">
             <Label htmlFor="new-mem-title">Title</Label>
@@ -246,6 +249,7 @@ export function NewMemoryItemDialog({
                 : "Failed to create memory item. Please try again."}
             </p>
           )}
+          </div>
 
           <DialogFooter>
             <Button

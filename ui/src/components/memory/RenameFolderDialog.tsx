@@ -64,7 +64,8 @@ export function RenameFolderDialog({
         <DialogHeader>
           <DialogTitle>Rename folder</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4 py-2">
+        {/* px-7 matches DialogHeader / DialogFooter inset. */}
+        <div className="space-y-4 px-7 pb-5">
           <div className="space-y-1.5">
             <Label htmlFor="rename-name">Name</Label>
             <Input
