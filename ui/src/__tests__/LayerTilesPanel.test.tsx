@@ -51,7 +51,7 @@ describe("LayerTilesPanel", () => {
     renderPanel();
     await waitFor(() => expect(screen.getByText("Identity")).toBeInTheDocument());
     expect(screen.getByText("Domain")).toBeInTheDocument();
-    expect(screen.getByText("Active Context")).toBeInTheDocument();
+    expect(screen.getByText("Active context")).toBeInTheDocument();
     expect(screen.getByText("Working")).toBeInTheDocument();
   });
 
