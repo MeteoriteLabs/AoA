@@ -6,7 +6,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialog } from "@/context/DialogContext";
 import { useCatalog } from "@/hooks/useCatalog";
+import { usePackages } from "@/hooks/usePackages";
 import { CatalogCard } from "@/components/marketplace/CatalogCard";
+import { PackageCard } from "@/components/marketplace/PackageCard";
 import { MarketplaceFilterChips } from "@/components/marketplace/MarketplaceFilterChips";
 import { MarketplaceSubfilterChips } from "@/components/marketplace/MarketplaceSubfilterChips";
 import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
@@ -50,6 +52,7 @@ function applySort(items: MarketplaceCatalogItem[], mode: SortMode): Marketplace
 
 export default function Marketplace() {
   const { data: catalog, isLoading, error } = useCatalog();
+  const { data: packages } = usePackages();
   const { openOnboarding } = useDialog();
   useCompany();
 
@@ -148,6 +151,22 @@ export default function Marketplace() {
             options={SORT_OPTIONS}
           />
         </div>
+
+        {/* Packages — only shown when no specific type filter is active */}
+        {selectedType === null && packages && packages.length > 0 && (
+          <div className="mb-7">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-[0.7rem] font-semibold uppercase tracking-[0.1em] text-dim">
+                Packages <span className="text-very-dim font-normal">· {packages.length}</span>
+              </h2>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              {packages.map((pkg) => (
+                <PackageCard key={pkg.id} pkg={pkg} />
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Grid */}
         {isLoading ? (

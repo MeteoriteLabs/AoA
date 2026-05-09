@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { renderWithProviders, mockCompanyContext, mockDialogContext } from "./test-utils";
 import Marketplace from "../pages/Marketplace";
 import type { CatalogItem, MarketplaceCatalogFile } from "@armyofagents/shared";
+import { usePackages } from "@/hooks/usePackages";
 
 const mockCatalog: MarketplaceCatalogFile = {
   schemaVersion: "1.0.0",
@@ -46,6 +47,10 @@ vi.mock("@/hooks/useCatalog", () => ({
   useCatalog: () => ({ data: mockCatalog, isLoading: false, error: null }),
 }));
 
+vi.mock("@/hooks/usePackages", () => ({
+  usePackages: vi.fn(),
+}));
+
 vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
   return {
@@ -77,7 +82,24 @@ vi.mock("@/components/marketplace/install/PluginInstallModal", () => ({
 }));
 
 describe("Marketplace (hub)", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(usePackages).mockReturnValue({
+      data: [
+        {
+          id: "garrytan/gstack",
+          name: "gstack",
+          sourceUrl: "https://github.com/garrytan/gstack",
+          memberItemIds: ["skill:office-hours", "skill:qa"],
+          count: 2,
+          verified: true,
+          explicit: false,
+        },
+      ],
+      isLoading: false,
+      error: null,
+    } as any);
+  });
 
   it("renders inside LobbyShell with marketplace active", () => {
     renderWithProviders(<Marketplace />);
@@ -121,5 +143,24 @@ describe("Marketplace (hub)", () => {
   it("renders a mobile hamburger button (md:hidden)", () => {
     renderWithProviders(<Marketplace />);
     expect(screen.getByRole("button", { name: /open menu/i })).toBeInTheDocument();
+  });
+
+  it("renders the Packages section heading when type filter is null", () => {
+    renderWithProviders(<Marketplace />);
+    expect(screen.getByText(/^packages$/i)).toBeInTheDocument();
+  });
+
+  it("renders package cards when packages are available", () => {
+    renderWithProviders(<Marketplace />);
+    // gstack is the only package fixture
+    expect(screen.getByText("gstack")).toBeInTheDocument();
+  });
+
+  it("hides the Packages section when a specific type filter is active", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Marketplace />);
+    await user.click(screen.getByRole("button", { name: /skills/i }));
+    expect(screen.queryByText(/^packages$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("gstack")).not.toBeInTheDocument();
   });
 });
