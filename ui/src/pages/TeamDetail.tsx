@@ -26,6 +26,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { CoordinationEditor } from "../components/team/CoordinationEditor";
 import { ManifestEditor } from "../components/team/ManifestEditor";
+import { TeamAgentSlideOver } from "../components/team/TeamAgentSlideOver";
 
 const VALID_TABS = ["overview", "coordination", "manifest", "activity"] as const;
 type TeamDetailTab = (typeof VALID_TABS)[number];
@@ -266,7 +267,11 @@ interface OverviewProps {
   agentMap: Map<string, Agent>;
 }
 
-function OverviewTab({ members, agentMap }: OverviewProps) {
+function OverviewTab({ team, members, agentMap }: OverviewProps) {
+  const [slideOverAgentId, setSlideOverAgentId] = useState<string | null>(null);
+  const selectedAgent = slideOverAgentId ? (agentMap.get(slideOverAgentId) ?? null) : null;
+  const selectedMember = slideOverAgentId ? (members.find((m) => m.agentId === slideOverAgentId) ?? null) : null;
+
   return (
     <div className="grid grid-cols-3 gap-4">
       <section className="col-span-2 rounded-lg border bg-card p-4">
@@ -279,13 +284,15 @@ function OverviewTab({ members, agentMap }: OverviewProps) {
             const displayName = agent?.name ?? "Unknown agent";
             const avatarLetter = agent?.name?.charAt(0).toUpperCase() ?? "?";
             return (
-              <div
+              <button
                 key={m.id}
-                className={`mb-2 flex items-center gap-3 rounded-md p-2.5 ${
+                type="button"
+                className={`mb-2 flex w-full items-center gap-3 rounded-md p-2.5 text-left transition-colors hover:bg-accent/60 ${
                   m.role === "lead"
                     ? "border-l-[3px] border-l-indigo-500 bg-indigo-50/30 dark:bg-indigo-950/10"
                     : "bg-muted/30"
                 }`}
+                onClick={() => setSlideOverAgentId(m.agentId)}
               >
                 <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-sm">
                   <span aria-hidden="true">{avatarLetter}</span>
@@ -299,7 +306,7 @@ function OverviewTab({ members, agentMap }: OverviewProps) {
                     </span>
                   )}
                 </div>
-              </div>
+              </button>
             );
           })
         )}
@@ -322,6 +329,14 @@ function OverviewTab({ members, agentMap }: OverviewProps) {
           </div>
         </div>
       </aside>
+
+      <TeamAgentSlideOver
+        open={Boolean(slideOverAgentId)}
+        onOpenChange={(open) => { if (!open) setSlideOverAgentId(null); }}
+        agent={selectedAgent}
+        teamId={team.id}
+        teamMember={selectedMember}
+      />
     </div>
   );
 }

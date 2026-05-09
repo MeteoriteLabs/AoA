@@ -282,6 +282,15 @@ export function teamsService(db: Db) {
         .where(eq(teamMembers.teamId, teamId));
     },
 
+    getMember: async (teamId: string, agentId: string) => {
+      const rows = await db
+        .select()
+        .from(teamMembers)
+        .where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.agentId, agentId)));
+      if (rows.length === 0) throw notFound(`agent ${agentId} not a member of team ${teamId}`);
+      return rows[0];
+    },
+
     addMember: async (teamId: string, agentId: string, role: TeamRole) => {
       const teamRows = await db
         .select()

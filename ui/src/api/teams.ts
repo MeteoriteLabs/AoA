@@ -87,6 +87,9 @@ export const teamsApi = {
   listMembers: (teamId: string) =>
     api.get<{ items: TeamMember[] }>(`/teams/${teamId}/members`),
 
+  getMember: (teamId: string, agentId: string) =>
+    api.get<TeamMember>(`/teams/${teamId}/members/${agentId}`),
+
   addMember: (teamId: string, input: AddTeamMemberInput) =>
     api.post<TeamMember>(`/teams/${teamId}/members`, input),
 

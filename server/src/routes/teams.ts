@@ -254,6 +254,16 @@ export function teamsRoutes(db: Db) {
     res.json({ items: result });
   });
 
+  // GET /teams/:id/members/:agentId
+  router.get("/teams/:id/members/:agentId", async (req, res) => {
+    const id = req.params.id as string;
+    const agentId = req.params.agentId as string;
+    const team = await svc.getById(id);
+    assertCompanyAccess(req, team.companyId);
+    const member = await svc.getMember(id, agentId);
+    res.json(member);
+  });
+
   // POST /teams/:id/members
   router.post(
     "/teams/:id/members",
