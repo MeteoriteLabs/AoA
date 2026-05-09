@@ -10,6 +10,7 @@ import { LLMProvidersSectionWrapper } from "@/components/settings/sections/LLMPr
 import { PluginsSectionWrapper } from "@/components/settings/sections/PluginsSectionWrapper";
 import { MarketplacePrefsSection } from "@/components/settings/sections/MarketplacePrefsSection";
 import { CommanderSection } from "@/components/settings/sections/CommanderSection";
+import { GitHubSection } from "@/components/settings/sections/GitHubSection";
 
 const VALID_SECTIONS: readonly SettingsSectionId[] = [
   "general", "commander", "llm", "budget", "mcp", "github", "plugins", "marketplace", "archive",
@@ -32,8 +33,7 @@ function renderActiveSection(id: SettingsSectionId) {
     case "mcp":
       return <MCPApiKeysSection />;
     case "github":
-      // Placeholder — Task 2 wires the GitHubIntegrationCard wrapper section here.
-      return null;
+      return <GitHubSection />;
     case "plugins":
       return <PluginsSectionWrapper />;
     case "marketplace":

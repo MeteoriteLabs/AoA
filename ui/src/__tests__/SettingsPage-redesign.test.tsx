@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Navigate, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SettingsPage } from "@/pages/SettingsPage";
+import { SETTINGS_SECTIONS } from "@/components/settings/SettingsLayout";
 import { SidebarProvider } from "@/context/SidebarContext";
 import { DialogProvider } from "@/context/DialogContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -153,6 +154,15 @@ vi.mock("@/api/plugins", () => ({
   listCompanyPlugins: vi.fn().mockResolvedValue([]),
 }));
 
+vi.mock("@/api/github-integration", () => ({
+  githubIntegrationApi: {
+    status: vi.fn().mockResolvedValue({ configured: false }),
+    setPat: vi.fn().mockResolvedValue({ configured: true, githubUser: "test-user" }),
+    removePat: vi.fn().mockResolvedValue({ configured: false, removed: true }),
+    createPR: vi.fn().mockResolvedValue({}),
+  },
+}));
+
 vi.mock("@/api/marketplace", () => ({
   marketplaceApi: {
     getSettings: vi.fn().mockResolvedValue({
@@ -195,6 +205,37 @@ function renderSettings(initialPath = "/P4/settings?tab=general") {
   );
 }
 
+// Mounts the same redirect routes that App.tsx defines, to exercise the
+// /settings/commander → /settings?tab=commander redirect chain end-to-end.
+function renderViaAppRoutes(initialPath: string) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <TooltipProvider>
+          <DialogProvider>
+            <SidebarProvider>
+              <Routes>
+                <Route path=":companyPrefix">
+                  <Route
+                    path="settings/commander"
+                    element={<Navigate to="../settings?tab=commander" replace />}
+                  />
+                  <Route
+                    path="settings/internal-agent"
+                    element={<Navigate to="../settings?tab=commander" replace />}
+                  />
+                  <Route path="settings" element={<SettingsPage />} />
+                </Route>
+              </Routes>
+            </SidebarProvider>
+          </DialogProvider>
+        </TooltipProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
 describe("SettingsPage redesign — Phase F shell", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: 1280 });
@@ -203,8 +244,11 @@ describe("SettingsPage redesign — Phase F shell", () => {
     try { localStorage.removeItem("aoa.settings-secondary-collapsed"); } catch { /* noop */ }
   });
 
-  it("renders the SecondarySidebar with all 8 section items", () => {
+  it("renders the SecondarySidebar with all 9 section items", () => {
     renderSettings();
+    // Defensive: catch silent drift in section count.
+    const totalItems = SETTINGS_SECTIONS.flatMap((g) => g.items).length;
+    expect(totalItems).toBe(9);
     // Each label appears in both the desktop sidebar and the mobile sub-nav pill row
     // (CSS media queries that hide one or the other are not evaluated in JSDOM).
     expect(screen.getAllByText("General").length).toBeGreaterThan(0);
@@ -212,6 +256,7 @@ describe("SettingsPage redesign — Phase F shell", () => {
     expect(screen.getAllByText("LLM providers").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Budget & caps").length).toBeGreaterThan(0);
     expect(screen.getAllByText("MCP API keys").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("GitHub").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Plugins").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Marketplace prefs").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Archive company").length).toBeGreaterThan(0);
@@ -352,5 +397,39 @@ describe("SettingsPage redesign — Phase F shell", () => {
     expect(aside.className).toContain("w-[48px]");
 
     expect(screen.getByLabelText(/expand settings nav/i)).toBeInTheDocument();
+  });
+
+  it("GitHub section: renders the GitHubIntegrationCard with section header + transitional pill", async () => {
+    renderSettings("/P4/settings?tab=github");
+
+    // Section header h2 — "GitHub" with the brand-colored period.
+    const headings = await screen.findAllByRole("heading", { name: /^GitHub/i });
+    expect(headings.length).toBeGreaterThan(0);
+
+    // Transitional pill in the section header.
+    expect(screen.getByText(/migrating to plugins/i)).toBeInTheDocument();
+
+    // The GitHubIntegrationCard's actual rendered content. With a mocked
+    // status of `{ configured: false }`, the unconnected branch shows a PAT
+    // input + "Connect" button + descriptive copy.
+    expect(
+      await screen.findByLabelText(/GitHub Personal Access Token/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Connect/i })).toBeInTheDocument();
+  });
+
+  it("/settings/commander route redirects to /settings?tab=commander", async () => {
+    renderViaAppRoutes("/P4/settings/commander");
+    // After the redirect, the Commander section should render with its 4 sub-tabs.
+    expect(
+      await screen.findByRole("tab", { name: /Execution & Model/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("/settings/internal-agent route redirects to /settings?tab=commander", async () => {
+    renderViaAppRoutes("/P4/settings/internal-agent");
+    expect(
+      await screen.findByRole("tab", { name: /Execution & Model/i }),
+    ).toBeInTheDocument();
   });
 });

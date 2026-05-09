@@ -163,12 +163,13 @@ export function SettingsLayout({ activeSection, onSectionChange, children }: Set
         />
       )}
 
-      {/* Mobile sub-nav — horizontal scrollable pill row (unchanged from prior) */}
+      {/* Mobile sub-nav — horizontal scrollable pill row */}
       <div className="md:hidden border-b border-border-soft py-2 px-3 flex gap-2 overflow-x-auto [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
         {SETTINGS_SECTIONS.flatMap((g) => g.items).map((item) => {
           const Icon = item.icon;
           const active = activeSection === item.id;
           const isDanger = item.tone === "danger";
+          const isTransitional = item.tone === "transitional";
           return (
             <button
               key={item.id}
@@ -179,11 +180,20 @@ export function SettingsLayout({ activeSection, onSectionChange, children }: Set
                 active
                   ? "bg-brand/[0.12] border-brand/40 text-[hsl(15_60%_75%)]"
                   : "bg-card border-border text-muted-foreground",
-                isDanger && !active && "text-red-400/80"
+                isDanger && !active && "text-red-400/80",
+                isTransitional && !active && "border-amber-500/30 text-amber-400/80",
               )}
             >
               <Icon className="size-3.5" />
               {item.label}
+              {isTransitional && (
+                <span
+                  aria-hidden
+                  className="ml-0.5 text-[8px] font-bold uppercase tracking-wider opacity-80"
+                >
+                  →
+                </span>
+              )}
             </button>
           );
         })}
