@@ -284,6 +284,18 @@ All neutrals carry a 30° hue undertone (warm) so they belong to the same family
 - **Secondary sidebar** (page-scoped, optional): used when a page has 4+ sub-sections or sub-views. ~200px expanded, ~48px collapsed. Section title in small-caps + items + counts.
 - **Page area**: flex-1, contains page header + content.
 
+**Lobby-tier shell:** the pre-company-selection pages (Lobby, Marketplace browse/detail/search/updates/package-detail, Settings) all share one wrapper component, `LobbyShell`. It owns the primary sidebar (desktop) + mobile drawer + an optional `secondarySidebar` slot rendered flush between the primary and the main content. Pages declare their `activeItem` (which primary nav row to highlight) and optionally pass a `secondarySidebar` ReactNode. Settings is currently the only consumer of the slot — see §8.1.1.
+
+### 8.1.1 Primary auto-collapse rule
+
+A page **force-collapses the primary sidebar on every mount** if and only if it provides a secondary sidebar. Pages without a secondary sidebar respect the user's manual primary-collapse preference (`localStorage["aoa.lobby.sidebar-collapsed"]`).
+
+Mental model: *primary collapses BECAUSE secondary takes over.* Don't auto-collapse just to give a page more horizontal room — that's confusing because the user can't tell why their preference was overridden.
+
+Implementation: pages opt in by passing `defaultCollapsed={true}` to `LobbyShell`. The `LobbySidebar` state initializer treats that prop as a force-override that supersedes localStorage on every mount. The user can still manually expand within the page; navigating away and back re-applies the force-collapse.
+
+Current consumers (2026-05-09): `InstanceSettingsPage` only. Marketplace pages briefly used this in Phase A but were removed in Phase D when this rule was formalized. Locked as Decision #98.
+
 ### 8.2 Sidebar collapse
 
 - Both primary and secondary collapse to icon-only (~48–56px wide).
@@ -353,6 +365,19 @@ The active nav item uses `bg-brand/[0.08] text-[hsl(15_60%_75%)]` for the bg+tex
 | lg | 1024px | Laptop, primary sidebar expanded |
 | xl | 1280px | Desktop, both sidebars expanded |
 | 2xl | 1536px | Wide desktop |
+
+### 8.6 Mobile sub-nav for pages with a secondary sidebar
+
+The desktop `SecondarySidebar` is hidden below the `md` breakpoint (`hidden md:flex` wrapper inside `LobbyShell`). On mobile, pages with a secondary sidebar render a **horizontal scrollable pill row** at the top of their content area as a sub-nav.
+
+**Pattern:**
+
+- Pill: rounded-full button with icon + label, `border` + `bg-card`. Active state matches the brand-tinted treatment from §8.2.1: `bg-brand/[0.08] text-[hsl(15_60%_75%)] border-brand/[0.25]`.
+- Container: `<div className="md:hidden mb-5 relative">` wrapping `<div className="overflow-x-auto -mx-4 px-4 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">` for hidden-but-scrollable behavior.
+- Right-edge gradient fade: `pointer-events-none absolute right-0 top-0 bottom-1 w-8 bg-gradient-to-l from-bg to-transparent` — hints at horizontal overflow when not all pills fit.
+- **Auto-scroll-active-into-view**: on mount and on every active-pill change, call `activePillRef.current?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" })` so the user lands with the active section centered.
+
+**When to use:** every page that consumes the `LobbyShell` `secondarySidebar` slot must also provide this mobile sub-nav (rendered inside the page's content, not inside the slot). The pills consume the same `sections` data as the desktop sidebar — one source of truth, two render paths.
 
 ---
 
@@ -664,6 +689,112 @@ Help text in 0.7rem, 55% opacity (or red error message)
 </Tabs>
 ```
 
+### 9.13 Card chrome (Marketplace)
+
+**When to use:** every card on the marketplace surface — `CatalogCard` (individual items) and `PackageCard` (skill packages, see §9.15).
+
+**Shared anatomy:**
+
+```
+┌───────────────────────────────────────────────────────┐
+│ {hero icon}  Name [✓ verified?]   │   {TYPE chip}     │
+│              by {owner}            │                  │
+│                                                       │
+│  {1–2 line description, line-clamp-2}                 │
+│                                                       │
+│  [github] {owner/repo}              [Install button]  │
+└───────────────────────────────────────────────────────┘
+```
+
+- **Top-right `TypeChip`**: uppercase 10px, `text-very-dim`, monochrome (no color). Values: `SKILL`, `PLUGIN`, `AGENT`, `TEAM`, `PACKAGE`. Absolute-positioned at `right-3 top-3`.
+- **Verified-blue checkmark**: `<BadgeCheck>` from lucide, `text-[hsl(208_80%_60%)]` (see §10.2), rendered only when `trust.tier === "verified"`. Place inline next to the title with `gap-1.5`. Community/unverified items show no badge — no second pill, no clutter.
+- **Hero icon tones** (single icon for skill/plugin/agent items):
+  - skill: `bg-amber-500/15 border-amber-500/30 text-amber-500`
+  - plugin: `bg-blue-500/15 border-blue-500/30 text-blue-500`
+  - agent: `bg-purple-500/15 border-purple-500/30 text-purple-500`
+  - team: not single — uses `<StackedIcon icon={Bot} tone="teal" />` (see §9.14)
+- **Hover state**: `card-hover` class (defined in `index.css`) — `transition: border-color .2s, box-shadow .25s, transform .15s`; on hover applies brand-red glow (`box-shadow: 0 0 0 1px hsl(8 75% 50% / 0.25), 0 8px 28px hsl(8 75% 30% / 0.18)`) + `border-color: var(--border-strong)`.
+- **Footer row** (aligned across all card types): `[github icon] {owner/repo}` on left, install action on right, both anchored to the same horizontal line.
+
+### 9.14 StackedIcon
+
+Used for cards that represent a **collection** — currently teams (multi-agent groups) and skill packages (skill bundles).
+
+**Pattern:** 3 layers of the same lucide icon in absolute-positioned rounded squares. Back/mid layers translate up-and-right and reduce opacity (0.30 / 0.55) so they read as receding. Front layer renders at full opacity.
+
+**Tones:**
+
+| Tone | Used for | Layer classes (back / mid / front) |
+|------|----------|------------------------------------|
+| `teal` | Teams (Bot ×3) | `bg-teal-500/{10,15,20}` + `border-teal-500/{15,25,40}` + `text-teal-500/{70,85,100}` |
+| `amber` | Skill packages (Sparkles ×3) | `bg-amber-500/{10,15,20}` + `border-amber-500/{15,25,40}` + `text-amber-500/{70,85,100}` |
+
+**Sizes:** default `size-12` for cards; `size-20` for hero blocks (package detail page).
+
+### 9.15 PackageCard specifics (extends §9.13)
+
+In addition to the shared marketplace card chrome:
+
+- **3px brand-amber left-edge accent rule**: `<span className="absolute left-0 top-3 bottom-3 w-[3px] rounded-r bg-amber-500" aria-hidden />`. Visually distinguishes packages from individual items in mixed feeds.
+- **`PACKAGE` type chip with `Layers` icon** prefix (other type chips are text-only).
+- **"N items" pill** rendered inline next to the title: `bg-amber-500/10 border-amber-500/25 text-amber-400`, `text-[10px] font-semibold`. Replaces the version pill that single-item cards would carry.
+- **Footer install button** reads "Install all" instead of "Install" — single-click installs every member item.
+
+### 9.16 Filter chips and sub-filter chips
+
+**When to use:** marketplace browse, search, and any other type/sort discovery surface. Distinct from §9.12 Tabs — chips filter the *same view*; tabs switch *between views*.
+
+**Filter chip** (pill button, single-select):
+
+```css
+inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[12.5px] font-medium border;
+/* idle */    bg-card border-border text-foreground/[0.78];
+/* hover */   bg-card-2 hover:text-foreground hover:border-border-strong;
+/* active */  bg-foreground text-bg border-foreground;
+```
+
+Each chip optionally shows a count: `<span className="text-[11px] text-very-dim ml-0.5">{count}</span>`.
+
+**Sub-filter chip** (smaller "ghost" pill, single-select):
+
+```css
+inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11.5px] font-medium;
+/* idle */    text-dim hover:text-foreground hover:bg-card;
+/* active */  text-foreground bg-card-2;
+```
+
+Used for sort/discover modes (e.g., All / Featured / Recently added / A–Z) under a primary filter chip row.
+
+### 9.17 "Part of {pkg}" pill
+
+Rendered above the `<h1>` on individual item detail pages **when the item belongs to a package**.
+
+```tsx
+<Link to={packageDetailUrl(parentPackage)}
+  className="inline-flex items-center gap-1.5 mb-2 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/25 text-[11px] font-medium text-amber-400 hover:bg-amber-500/20 transition-colors w-fit">
+  <Layers className="size-3" />
+  Part of {parentPackage.name}
+  <ChevronRight className="size-3" />
+</Link>
+```
+
+Same amber tone as the package's accent rule (§9.15) so the visual rhyme makes the relationship obvious. Click navigates back to the package detail page — bidirectional nav between item and package.
+
+### 9.18 Sectioned hub view
+
+**When to use:** hub pages with a default-mixed feed and a type filter (e.g., marketplace `All` mode).
+
+**Pattern:**
+
+- "All" mode renders **type-grouped sections** instead of a flat grid. Each section has:
+  - Header row with type icon + title + count (e.g., `🪄 Skills · 64`)
+  - Optional "See all →" link that activates the corresponding type chip (which switches to single-section mode)
+  - 6-item cap on the section's grid (cap removed in single-section mode)
+- Empty sections (zero items after the active sort/search filter) are **omitted entirely** so the page only shows what's actually there.
+- Single-type chip active → only that section is visible, no cap, full feed.
+
+**Special case (Marketplace):** the Packages strip lives inside the Skills section. Clicking the Skills chip keeps it visible; clicking any non-Skills chip hides it along with the rest of the Skills section. (Tied to Decision #97 — packages are skill-only.)
+
 ---
 
 ## 10. Iconography
@@ -688,6 +819,22 @@ Help text in 0.7rem, 55% opacity (or red error message)
 - Always with a label, OR with a tooltip if space-constrained (icon-only buttons in toolbars).
 - Never as the only content of a primary CTA.
 - Decorative icons (no semantic meaning) get `aria-hidden`.
+
+### 10.1 Marketplace type icons
+
+| Type | Lucide icon | Treatment |
+|------|-------------|-----------|
+| skill | `Sparkles` | Single icon, amber tone (§9.13) |
+| plugin | `Puzzle` | Single icon, blue tone (§9.13) |
+| agent | `Bot` | Single icon, purple tone (§9.13) |
+| team | `Bot` | StackedIcon ×3, teal tone (§9.14) |
+| package | `Sparkles` | StackedIcon ×3, amber tone (§9.14) |
+
+Mapping lives in `ui/src/lib/marketplace-constants.ts` (`TYPE_ICONS` for single icons, `SINGLE_ICON_TONES` + `TEAM_ICON_TONE` for tile colors).
+
+### 10.2 Verified-blue color
+
+The verified checkmark color is `hsl(208 80% 60%)` — used as `text-[hsl(208_80%_60%)]` in Tailwind arbitrary syntax. Lucide icon: `BadgeCheck`. Always paired with `aria-label="Verified"`. Two consumers: marketplace card chrome (§9.13) and the matching hero block on detail pages.
 
 ---
 
@@ -759,6 +906,29 @@ For multi-line code, JSON, CLI output, log snippets.
 - Max 3 levels visible — truncate middle: `Company · … · Domain`
 
 **Format:** placed at top of page header, above title.
+
+### 13.1 Chevron-back link variant
+
+Detail pages (`MarketplaceDetail`, `MarketplacePackageDetail`) and the Settings page use a **chevron-back** link in place of the breadcrumb described in §13.
+
+**Pattern:**
+
+```tsx
+<Link to="/marketplace"
+  className="mb-4 inline-flex items-center gap-1 text-[12px] text-very-dim hover:text-foreground">
+  <ChevronLeft className="size-3.5" /> Marketplace · Skills
+</Link>
+```
+
+- Single-segment back navigation (one parent context, not a chain).
+- Uses lucide `ChevronLeft` (size-3.5) at the start instead of the `·` separator.
+- Color: `text-very-dim` idle, `text-foreground` hover.
+- Place above the page heading or hero block.
+
+**When to use breadcrumb (§13)** vs **chevron-back (§13.1):**
+
+- **Breadcrumb (§13)**: 2+ levels of hierarchy where the user might navigate to multiple ancestors (`Company · Memory · Domain · Item`).
+- **Chevron-back (§13.1)**: detail pages where there's effectively one parent (`Marketplace · Skills` → marketplace).
 
 ---
 
@@ -859,6 +1029,10 @@ AoA's existing primitives in [`ui/src/components/ui/`](../../../ui/src/component
 | Date | Change | By |
 |------|--------|-----|
 | 2026-05-07 | Initial system locked from brainstorm Q1–Q17 | Founder + AI brainstorm |
+| 2026-05-08 | Phase A — lobby + marketplace UI overhaul: extracted `LobbyShell`, redesigned `CatalogCard` (§9.13: corner type chip, verified-blue check, aligned footer), added filter-chip nav (§9.16), deleted `MarketplaceLayout`/`TypeTile`/`CategoryTile`. Sidebar active-item dot pattern (§8.2.1) ported to all marketplace pages. | Founder + Sonnet |
+| 2026-05-08 | Phase C — marketplace packages UI: added `PackageCard` (§9.15), `MarketplacePackageDetail` page (2-col items grid), `StackedIcon` (§9.14), "Part of {pkg}" pill (§9.17). | Founder + Sonnet |
+| 2026-05-09 | Phase D — Settings → `LobbyShell` + `SecondarySidebar` slot: secondary sidebar flush with primary, brand-red glow dot active state matched across both sidebars (§8.2.1), mobile section pills with auto-scroll-into-view (§8.6), primary auto-collapse rule formalized (§8.1.1; Decision #98). | Founder + Sonnet |
+| 2026-05-09 | Sectioned hub view (§9.18): Marketplace "All" mode renders type-grouped sections with 6-item cap + "See all →"; Packages strip nests inside the Skills section. derivePackages restricted to skill items only (Decision #97). | Founder + Opus |
 
 ---
 
