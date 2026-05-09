@@ -64,7 +64,7 @@ export function Commander() {
 
         {/* Quick links */}
         <Link
-          to="/settings/commander"
+          to="/settings?tab=commander"
           className="flex items-center gap-2 rounded-lg border border-border p-3 text-xs text-muted-foreground hover:text-foreground hover:border-foreground/20 transition-colors"
         >
           <Settings className="h-3 w-3" />
