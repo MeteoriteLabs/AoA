@@ -4,6 +4,7 @@ import type { RoutineVariable } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -133,7 +134,8 @@ export function RoutineRunDialog({
           <DialogDescription>{routineTitle}</DialogDescription>
         </DialogHeader>
 
-        {variables.length === 0 ? (
+        <DialogBody>
+          {variables.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
             No variables to set. This routine will run immediately.
           </div>
@@ -220,6 +222,7 @@ export function RoutineRunDialog({
             })}
           </div>
         )}
+        </DialogBody>
 
         <DialogFooter showCloseButton={false}>
           {missingRequired.length > 0 ? (
