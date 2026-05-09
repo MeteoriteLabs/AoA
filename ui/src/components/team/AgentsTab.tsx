@@ -22,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   Bot,
   Plus,
@@ -101,18 +102,19 @@ export function AgentsTab({ agents, highlightId, permissions, trustScores, onMut
 
   if (agents.length === 0) {
     return (
-      <div className="flex items-center justify-center py-12 text-center">
-        <div className="space-y-3">
-          <Bot className="h-10 w-10 mx-auto text-muted-foreground/50" />
-          <p className="text-sm text-muted-foreground">No agents yet</p>
-          {permissions.isFounder && (
+      <EmptyState
+        icon={<Bot />}
+        title="No agents yet"
+        description="Hire your first agent. Pick a Claude / Codex / OpenClaw adapter and assign a role."
+        action={
+          permissions.isFounder ? (
             <Button size="sm" onClick={openNewAgent}>
               <Plus className="h-3.5 w-3.5 mr-1.5" />
               New Agent
             </Button>
-          )}
-        </div>
-      </div>
+          ) : undefined
+        }
+      />
     );
   }
 
