@@ -188,4 +188,75 @@ describe("derivePackages", () => {
     expect(pkg!.count).toBe(pkg!.memberItemIds.length);
     expect(pkg!.count).toBe(3);
   });
+
+  it("does NOT synthesize a package from two plugins in the same github repo", () => {
+    const items = [
+      makeItem({ id: "plugin:a", type: "plugin", source: { adapter: "g", url: "https://github.com/o/r/tree/main/a", locator: "a" } }),
+      makeItem({ id: "plugin:b", type: "plugin", source: { adapter: "g", url: "https://github.com/o/r/tree/main/b", locator: "b" } }),
+    ];
+    expect(derivePackages(items)).toEqual([]);
+  });
+
+  it("does NOT synthesize a package from two agents in the same github repo", () => {
+    const items = [
+      makeItem({ id: "agent:a", type: "agent", source: { adapter: "g", url: "https://github.com/o/r/tree/main/a", locator: "a" } }),
+      makeItem({ id: "agent:b", type: "agent", source: { adapter: "g", url: "https://github.com/o/r/tree/main/b", locator: "b" } }),
+    ];
+    expect(derivePackages(items)).toEqual([]);
+  });
+
+  it("does NOT synthesize a package from two teams in the same github repo", () => {
+    const items = [
+      makeItem({ id: "team:a", type: "team", source: { adapter: "g", url: "https://github.com/o/r/tree/main/a", locator: "a" } }),
+      makeItem({ id: "team:b", type: "team", source: { adapter: "g", url: "https://github.com/o/r/tree/main/b", locator: "b" } }),
+    ];
+    expect(derivePackages(items)).toEqual([]);
+  });
+
+  it("excludes non-skill items from synthesis even when mixed with skills below threshold", () => {
+    const items = [
+      makeItem({ id: "skill:a", type: "skill", source: { adapter: "g", url: "https://github.com/o/r/tree/main/a", locator: "a" } }),
+      makeItem({ id: "plugin:b", type: "plugin", source: { adapter: "g", url: "https://github.com/o/r/tree/main/b", locator: "b" } }),
+    ];
+    // Only the skill survives the type guard, but the threshold is 2 skills → no package emitted.
+    expect(derivePackages(items)).toEqual([]);
+  });
+
+  it("synthesizes a skill-only package even when mixed with non-skill items in the same repo", () => {
+    const items = [
+      makeItem({ id: "skill:a", type: "skill", source: { adapter: "g", url: "https://github.com/o/r/tree/main/a", locator: "a" } }),
+      makeItem({ id: "skill:b", type: "skill", source: { adapter: "g", url: "https://github.com/o/r/tree/main/b", locator: "b" } }),
+      makeItem({ id: "plugin:c", type: "plugin", source: { adapter: "g", url: "https://github.com/o/r/tree/main/c", locator: "c" } }),
+    ];
+    const packages = derivePackages(items);
+    expect(packages).toHaveLength(1);
+    expect(packages[0]!.id).toBe("o/r");
+    expect(packages[0]!.memberItemIds).toEqual(["skill:a", "skill:b"]);
+  });
+
+  it("loose policy: explicit packageId on a single plugin still emits a package", () => {
+    const items = [
+      makeItem({ id: "plugin:lone", type: "plugin", packageId: "curated-plugin-bundle", source: { adapter: "g", url: "https://github.com/anywhere/x", locator: "x" } }),
+    ];
+    const packages = derivePackages(items);
+    expect(packages).toHaveLength(1);
+    expect(packages[0]).toMatchObject({
+      id: "curated-plugin-bundle",
+      explicit: true,
+      count: 1,
+      memberItemIds: ["plugin:lone"],
+    });
+  });
+
+  it("loose policy: explicit packageId pulls a plugin and an agent into one mixed-type package", () => {
+    const items = [
+      makeItem({ id: "plugin:p", type: "plugin", packageId: "joint", source: { adapter: "g", url: "https://github.com/o/r/tree/main/p", locator: "p" } }),
+      makeItem({ id: "agent:a", type: "agent", packageId: "joint", source: { adapter: "g", url: "https://github.com/o/r/tree/main/a", locator: "a" } }),
+    ];
+    const packages = derivePackages(items);
+    expect(packages).toHaveLength(1);
+    expect(packages[0]!.id).toBe("joint");
+    expect(packages[0]!.memberItemIds.sort()).toEqual(["agent:a", "plugin:p"]);
+    expect(packages[0]!.explicit).toBe(true);
+  });
 });
