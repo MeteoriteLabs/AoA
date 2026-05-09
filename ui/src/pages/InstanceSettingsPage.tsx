@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { useNavigate } from "@/lib/router";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, LogOut, Settings } from "lucide-react";
+import { LogOut } from "lucide-react";
 import type { PatchInstanceGeneralSettings } from "@armyofagents/shared";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
@@ -17,6 +17,8 @@ import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { healthApi } from "@/api/health";
+import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
+import { useDialog } from "@/context/DialogContext";
 
 const TABS = [
   { value: "general", label: "General" },
@@ -109,6 +111,8 @@ export function InstanceSettingsPage() {
     },
   });
 
+  const { openOnboarding } = useDialog();
+
   const censorUsernameInLogs = generalQuery.data?.censorUsernameInLogs === true;
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
@@ -116,34 +120,28 @@ export function InstanceSettingsPage() {
   const enableWorkspaceTtlSweeper = experimentalQuery.data?.enableWorkspaceTtlSweeper === true;
 
   return (
-    <div className="flex h-dvh flex-col bg-background text-foreground">
-      {/* Minimal header matching Lobby style */}
-      <header className="flex items-center gap-3 px-6 h-14 shrink-0 border-b border-border">
-        <button
-          type="button"
-          onClick={() => navigate("/")}
-          className="flex items-center justify-center h-8 w-8 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-          aria-label="Back to Lobby"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </button>
-        <div className="flex items-center gap-2">
-          <Settings className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-bold tracking-tight text-foreground">Instance Settings</span>
-        </div>
-      </header>
+    <LobbyShell activeItem="settings" defaultCollapsed onCreateCompany={() => openOnboarding()}>
+      <div className="mx-auto w-full max-w-[1080px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
+        <LobbyShellMobileMenuButton className="mb-4" />
 
-      {/* Main content */}
-      <main className="flex-1 overflow-auto">
-        <div className="mx-auto max-w-3xl px-6 py-8 space-y-6">
+        {/* Page heading — no back button (sidebar handles navigation) */}
+        <div className="mb-5">
+          <h1 className="text-[1.55rem] font-bold tracking-tight">
+            Instance settings<span className="text-brand">.</span>
+          </h1>
+        </div>
+
           {actionError && (
             <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
               {actionError}
             </div>
           )}
 
-          <Tabs value={activeTab} onValueChange={handleTabChange}>
-            <PageTabBar items={TABS} value={activeTab} onValueChange={handleTabChange} />
+          {/* Tab nav (Task 2 replaces PageTabBar with SecondarySidebar) */}
+          <PageTabBar items={TABS} value={activeTab} onValueChange={handleTabChange} />
+
+          {/* Tab content */}
+          <Tabs value={activeTab} onValueChange={handleTabChange} className="mt-5">
 
             {/* ── General tab ──────────────────────────────────────────── */}
             <TabsContent value="general" className="mt-6 space-y-4">
@@ -283,9 +281,8 @@ export function InstanceSettingsPage() {
               </div>
             </TabsContent>
           </Tabs>
-        </div>
-      </main>
-    </div>
+      </div>
+    </LobbyShell>
   );
 }
 

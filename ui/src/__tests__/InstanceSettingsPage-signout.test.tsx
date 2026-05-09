@@ -63,6 +63,21 @@ vi.mock("../pages/PluginManager", () => ({
   PluginManager: () => <div data-testid="plugin-manager-stub" />,
 }));
 
+vi.mock("@/components/LobbySidebar", () => ({
+  LobbySidebar: () => <aside data-testid="lobby-sidebar" />,
+}));
+
+vi.mock("@/components/ui/sheet", () => ({
+  Sheet: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SheetContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+vi.mock("@/components/UserMenu", () => ({ UserMenu: () => <div /> }));
+
+vi.mock("@/context/DialogContext", () => ({
+  useDialog: () => ({ openOnboarding: vi.fn() }),
+}));
+
 // PageTabBar — keep it functional so tab switching works if needed
 vi.mock("../components/PageTabBar", () => ({
   PageTabBar: ({ items, value, onValueChange }: any) => (
@@ -148,6 +163,11 @@ describe("InstanceSettingsPage Sign out section", () => {
         screen.getByRole("button", { name: /signing out/i }),
       ).toBeDisabled(),
     );
+  });
+
+  it("renders inside LobbyShell with settings active", () => {
+    renderWithProviders(<InstanceSettingsPage />);
+    expect(screen.getAllByTestId("lobby-sidebar").length).toBeGreaterThanOrEqual(1);
   });
 
   describe("Sign out section visibility by deployment mode", () => {
