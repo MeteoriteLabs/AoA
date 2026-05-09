@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RotateCw, Eye, Save, Settings as SettingsIcon } from "lucide-react";
+import { RotateCw, Eye, Save, Settings as SettingsIcon, Pencil, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { teamsApi } from "../../api/teams";
@@ -24,7 +24,10 @@ export function CoordinationEditor({ teamId, teamName }: Props) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const [editedSections, setEditedSections] = useState<CoordinationSection[] | null>(null);
+  // Snapshot at the time "Edit" was clicked, used by Cancel to revert.
+  const [savedSnapshot, setSavedSnapshot] = useState<CoordinationSection[] | null>(null);
 
   const coordQuery = useQuery({
     queryKey: queryKeys.teams.coordination(selectedCompanyId!, teamId),
@@ -32,14 +35,11 @@ export function CoordinationEditor({ teamId, teamName }: Props) {
     enabled: Boolean(selectedCompanyId && teamId),
   });
 
-  // Parse server markdown into sections when data loads
   useEffect(() => {
     if (coordQuery.data && editedSections === null) {
       try {
         setEditedSections(parseCoordinationSections(coordQuery.data.markdown));
-      } catch (err) {
-        console.warn("Failed to parse coordination markdown:", err);
-        // Fallback: treat the whole thing as one user section
+      } catch {
         setEditedSections([{ kind: "user", content: coordQuery.data.markdown }]);
       }
     }
@@ -49,24 +49,18 @@ export function CoordinationEditor({ teamId, teamName }: Props) {
     mutationFn: () => {
       if (!editedSections) throw new Error("nothing to save");
       const markdown = serializeSections(editedSections);
-      return teamsApi.upsertCoordination(
-        teamId,
-        `${teamName} Coordination`,
-        markdown,
-      );
+      return teamsApi.upsertCoordination(teamId, `${teamName} Coordination`, markdown);
     },
     onSuccess: () => {
       pushToast({ title: "Coordination saved", tone: "success" });
       queryClient.invalidateQueries({
         queryKey: queryKeys.teams.coordination(selectedCompanyId!, teamId),
       });
+      setIsEditing(false);
+      setSavedSnapshot(null);
     },
     onError: (e) =>
-      pushToast({
-        title: "Save failed",
-        body: (e as Error).message,
-        tone: "error",
-      }),
+      pushToast({ title: "Save failed", body: (e as Error).message, tone: "error" }),
   });
 
   const regenMut = useMutation({
@@ -76,49 +70,47 @@ export function CoordinationEditor({ teamId, teamName }: Props) {
       queryClient.invalidateQueries({
         queryKey: queryKeys.teams.coordination(selectedCompanyId!, teamId),
       });
-      setEditedSections(null); // Force re-parse from fresh server data
+      setEditedSections(null);
     },
     onError: (e) =>
-      pushToast({
-        title: "Regenerate failed",
-        body: (e as Error).message,
-        tone: "error",
-      }),
+      pushToast({ title: "Regenerate failed", body: (e as Error).message, tone: "error" }),
   });
+
+  function handleEdit() {
+    setSavedSnapshot(editedSections ? [...editedSections] : null);
+    setIsEditing(true);
+  }
+
+  function handleCancel() {
+    if (savedSnapshot) setEditedSections(savedSnapshot);
+    setSavedSnapshot(null);
+    setIsEditing(false);
+  }
+
+  function handleRegen() {
+    if (isEditing && editedSections && coordQuery.data) {
+      const hasUnsaved = serializeSections(editedSections) !== coordQuery.data.markdown;
+      if (hasUnsaved) {
+        const ok = window.confirm(
+          "You have unsaved edits. Regenerate will overwrite them. Continue?",
+        );
+        if (!ok) return;
+      }
+    }
+    regenMut.mutate();
+  }
 
   if (coordQuery.isLoading) {
     return <p className="text-sm text-muted-foreground">Loading coordination...</p>;
   }
 
-  if (coordQuery.isError) {
+  if (coordQuery.isError || !coordQuery.data) {
     return (
       <div className="space-y-3">
         <p className="text-sm text-muted-foreground">
           No coordination found for this team yet.
         </p>
-        <Button
-          size="sm"
-          onClick={() => regenMut.mutate()}
-          disabled={regenMut.isPending}
-        >
-          <RotateCw className="h-3.5 w-3.5 mr-1" />
-          Generate coordination
-        </Button>
-      </div>
-    );
-  }
-
-  if (!coordQuery.data) {
-    return (
-      <div className="space-y-3">
-        <p className="text-sm text-muted-foreground">
-          This team doesn't have a coordination doc yet.
-        </p>
-        <Button
-          size="sm"
-          onClick={() => regenMut.mutate()}
-          disabled={regenMut.isPending}
-        >
+        <Button size="sm" onClick={() => regenMut.mutate()} disabled={regenMut.isPending}>
           <RotateCw className="h-3.5 w-3.5 mr-1" />
           Generate coordination
         </Button>
@@ -140,40 +132,38 @@ export function CoordinationEditor({ teamId, teamName }: Props) {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              // Guard against silent loss of unsaved user edits
-              if (editedSections && coordQuery.data) {
-                const currentMarkdown = serializeSections(editedSections);
-                const hasUnsavedEdits = currentMarkdown !== coordQuery.data.markdown;
-                if (hasUnsavedEdits) {
-                  const confirmed = window.confirm(
-                    "You have unsaved edits. Save them first, or regenerate will refresh from the last saved version. Continue with regenerate?"
-                  );
-                  if (!confirmed) return;
-                }
-              }
-              regenMut.mutate();
-            }}
-            disabled={regenMut.isPending}
-          >
-            <RotateCw className="h-3.5 w-3.5 mr-1" />
-            Regenerate auto sections
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => setPreviewOpen(true)}>
-            <Eye className="h-3.5 w-3.5 mr-1" />
-            Preview as LLM
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => saveMut.mutate()}
-            disabled={saveMut.isPending}
-          >
-            <Save className="h-3.5 w-3.5 mr-1" />
-            Save
-          </Button>
+          {isEditing ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleRegen}
+                disabled={regenMut.isPending}
+              >
+                <RotateCw className="h-3.5 w-3.5 mr-1" />
+                Regenerate auto sections
+              </Button>
+              <Button size="sm" variant="outline" onClick={handleCancel}>
+                <X className="h-3.5 w-3.5 mr-1" />
+                Cancel
+              </Button>
+              <Button size="sm" onClick={() => saveMut.mutate()} disabled={saveMut.isPending}>
+                <Save className="h-3.5 w-3.5 mr-1" />
+                {saveMut.isPending ? "Saving..." : "Save"}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button size="sm" variant="outline" onClick={() => setPreviewOpen(true)}>
+                <Eye className="h-3.5 w-3.5 mr-1" />
+                Preview as LLM
+              </Button>
+              <Button size="sm" variant="outline" onClick={handleEdit}>
+                <Pencil className="h-3.5 w-3.5 mr-1" />
+                Edit
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -182,6 +172,7 @@ export function CoordinationEditor({ teamId, teamName }: Props) {
           <CoordinationSectionView
             key={idx}
             section={section}
+            isEditing={isEditing}
             onChange={(next) => {
               const copy = [...editedSections];
               copy[idx] = next;
@@ -191,11 +182,13 @@ export function CoordinationEditor({ teamId, teamName }: Props) {
         ))}
       </div>
 
-      <p className="text-[11px] text-muted-foreground">
-        💡 <b>Auto sections</b> (purple-tinted) regenerate from team data — don't
-        hand-edit; changes will be overwritten. <b>Your-edits sections</b>{" "}
-        (white) are preserved across regen.
-      </p>
+      {isEditing && (
+        <p className="text-[11px] text-muted-foreground">
+          💡 <b>Auto sections</b> (purple-tinted) regenerate from team data — don't
+          hand-edit; changes will be overwritten. <b>Your-edits sections</b>{" "}
+          (white) are preserved across regen.
+        </p>
+      )}
 
       <PreviewAsLlmDialog
         open={previewOpen}
@@ -208,25 +201,35 @@ export function CoordinationEditor({ teamId, teamName }: Props) {
 
 function CoordinationSectionView({
   section,
+  isEditing,
   onChange,
 }: {
   section: CoordinationSection;
+  isEditing: boolean;
   onChange: (next: CoordinationSection) => void;
 }) {
   if (section.kind === "user") {
     return (
       <div className="border-b last:border-b-0 p-3">
-        <div className="mb-2 flex items-center justify-between">
-          <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
-            Your edits
-          </span>
-        </div>
-        <Textarea
-          value={section.content}
-          onChange={(e) => onChange({ kind: "user", content: e.target.value })}
-          rows={Math.max(3, section.content.split("\n").length + 1)}
-          className="resize-y font-mono text-xs"
-        />
+        {isEditing ? (
+          <>
+            <div className="mb-2">
+              <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                Your edits
+              </span>
+            </div>
+            <Textarea
+              value={section.content}
+              onChange={(e) => onChange({ kind: "user", content: e.target.value })}
+              rows={Math.max(3, section.content.split("\n").length + 1)}
+              className="resize-y font-mono text-xs"
+            />
+          </>
+        ) : (
+          <pre className="whitespace-pre-wrap text-xs text-foreground">
+            {section.content || <span className="text-muted-foreground italic">No custom instructions yet.</span>}
+          </pre>
+        )}
       </div>
     );
   }
@@ -242,10 +245,12 @@ function CoordinationSectionView({
       <pre className="whitespace-pre-wrap rounded bg-background/60 p-2 text-xs">
         {section.content}
       </pre>
-      <p className="mt-2 text-[10px] italic text-muted-foreground">
-        ⚙ This section regenerates whenever team data changes. Don't edit by
-        hand — changes will be overwritten.
-      </p>
+      {isEditing && (
+        <p className="mt-2 text-[10px] italic text-muted-foreground">
+          ⚙ This section regenerates whenever team data changes. Don't edit by
+          hand — changes will be overwritten.
+        </p>
+      )}
     </div>
   );
 }
