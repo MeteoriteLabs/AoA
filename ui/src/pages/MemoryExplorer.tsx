@@ -67,14 +67,6 @@ export function MemoryExplorer() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="px-4 pt-4 pb-2">
-        <h1 className="text-[1.6rem] font-bold tracking-tight">
-          Memory Explorer<span className="text-brand">.</span>
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Browse memory by department and folder structure.
-        </p>
-      </div>
       <MemoryToolbar
         companyId={selectedCompanyId}
         searchValue={searchQuery}
