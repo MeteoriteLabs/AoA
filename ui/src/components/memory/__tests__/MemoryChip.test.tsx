@@ -10,7 +10,9 @@ describe("MemoryChip", () => {
 
   it("renders a tinted dot when tone is provided", () => {
     const { container } = render(<MemoryChip label="Decision" tone="indigo" />);
-    expect(container.querySelector('[data-slot="dot"]')).toBeInTheDocument();
+    const dot = container.querySelector('[data-slot="dot"]') as HTMLElement | null;
+    expect(dot).toBeInTheDocument();
+    expect(dot?.style.background).toBe("var(--data-indigo)");
   });
 
   it("omits the dot when tone is undefined", () => {

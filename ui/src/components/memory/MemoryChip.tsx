@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 
-type Tone = "indigo" | "teal" | "amber" | "magenta" | "green" | "slate";
+export type Tone = "indigo" | "teal" | "amber" | "magenta" | "green" | "slate";
 
 const TONE_VAR: Record<Tone, string> = {
   indigo: "var(--data-indigo)",
@@ -29,6 +29,7 @@ export function MemoryChip({ label, tone, className }: MemoryChipProps) {
     >
       {tone && (
         <span
+          aria-hidden="true"
           data-slot="dot"
           className="size-1.5 rounded-full"
           style={{ background: TONE_VAR[tone] }}
