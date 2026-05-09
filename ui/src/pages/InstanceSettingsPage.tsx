@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@/lib/router";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -36,6 +36,17 @@ export function InstanceSettingsPage() {
   const activeTab = searchParams.get("tab") ?? "general";
   const [actionError, setActionError] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  const activePillRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    // scrollIntoView is not available in JSDOM (test env) — optional-chain guards against that.
+    activePillRef.current?.scrollIntoView?.({
+      behavior: "smooth",
+      inline: "center",
+      block: "nearest",
+    });
+  }, [activeTab]);
 
   const handleTabChange = useCallback(
     (value: string) => {
@@ -168,11 +179,12 @@ export function InstanceSettingsPage() {
 
         {/* Mobile-only horizontal section nav (desktop uses the LobbyShell secondarySidebar slot) */}
         <div className="md:hidden mb-5 relative">
-          <div className="overflow-x-auto -mx-4 px-4 pb-1">
+          <div className="overflow-x-auto -mx-4 px-4 pb-1 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
             <div className="flex gap-1.5 w-max">
               {settingsSections[0]?.items.map((item) => (
                 <button
                   key={item.id}
+                  ref={item.active ? activePillRef : undefined}
                   type="button"
                   data-active={item.active ? "true" : undefined}
                   onClick={item.onClick}
