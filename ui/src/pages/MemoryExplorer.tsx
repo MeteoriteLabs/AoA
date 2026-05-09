@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { NewMemoryItemDialog } from "../components/memory/NewMemoryItemDialog";
 import { useSearchParams } from "@/lib/router";
 import { Brain, PanelRightClose } from "lucide-react";
 import { Group, Panel, Separator } from "react-resizable-panels";
@@ -44,6 +45,7 @@ export function MemoryExplorer() {
   });
 
   const [searchQuery, setSearchQuery] = useState("");
+  const [newItemOpen, setNewItemOpen] = useState(false);
 
   const treePanelRef = useRef<PanelImperativeHandle>(null);
   const viewerPanelRef = useRef<PanelImperativeHandle>(null);
@@ -69,7 +71,7 @@ export function MemoryExplorer() {
         companyId={selectedCompanyId}
         searchValue={searchQuery}
         onSearchChange={setSearchQuery}
-        onNewItem={() => { /* stub: Task 7 wires the dialog */ }}
+        onNewItem={() => setNewItemOpen(true)}
         uploadContext={canUpload ? { departmentId, folderPath } : undefined}
         searchEnabled={!isHomeSelected}
       />
@@ -175,6 +177,14 @@ export function MemoryExplorer() {
           )}
         </Panel>
       </Group>
+
+      <NewMemoryItemDialog
+        open={newItemOpen}
+        onOpenChange={setNewItemOpen}
+        companyId={selectedCompanyId}
+        defaultDepartmentId={departmentId}
+        defaultFolderPath={folderPath || undefined}
+      />
     </div>
   );
 }
