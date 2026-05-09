@@ -26,6 +26,7 @@ import { memoryApi } from "../../api/memory";
 import { projectsApi } from "../../api/projects";
 import { goalsApi } from "../../api/goals";
 import { queryKeys } from "../../lib/queryKeys";
+import { LAYER_LABELS } from "../../lib/memoryItemView";
 import { useCompany } from "../../context/CompanyContext";
 import { FolderTreeNode } from "./FolderTreeNode";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -63,11 +64,14 @@ interface TreeNode {
 
 type LayerKey = "identity" | "domain" | "active_context" | "working";
 
-const LAYER_META: Record<LayerKey, { label: string; Icon: LucideIcon; tone: string }> = {
-  identity: { label: "Identity", Icon: IdCard, tone: "var(--data-indigo)" },
-  domain: { label: "Domain", Icon: Building2, tone: "var(--data-teal)" },
-  active_context: { label: "Active Context", Icon: Target, tone: "var(--data-amber)" },
-  working: { label: "Working", Icon: Zap, tone: "var(--data-magenta)" },
+// Icon + tone metadata for layer headers. Labels come from the canonical
+// LAYER_LABELS map in `lib/memoryItemView.ts` so the tree, dashboard tiles,
+// dialogs, and viewer all read the same string.
+const LAYER_META: Record<LayerKey, { Icon: LucideIcon; tone: string }> = {
+  identity: { Icon: IdCard, tone: "var(--data-indigo)" },
+  domain: { Icon: Building2, tone: "var(--data-teal)" },
+  active_context: { Icon: Target, tone: "var(--data-amber)" },
+  working: { Icon: Zap, tone: "var(--data-magenta)" },
 };
 
 const DEFAULT_EXPANDED = new Set<string>([
@@ -560,7 +564,7 @@ function buildTree({
   }
   top.push({
     key: "__layer-identity",
-    label: LAYER_META.identity.label,
+    label: LAYER_LABELS.identity,
     Icon: LAYER_META.identity.Icon,
     iconTone: LAYER_META.identity.tone,
     count: counts.byLayer.identity, // always show, even 0 — spec §3 "predictable structure"
@@ -604,7 +608,7 @@ function buildTree({
   }
   top.push({
     key: "__layer-domain",
-    label: LAYER_META.domain.label,
+    label: LAYER_LABELS.domain,
     Icon: LAYER_META.domain.Icon,
     iconTone: LAYER_META.domain.tone,
     count: counts.byLayer.domain, // always show, even 0
@@ -626,7 +630,7 @@ function buildTree({
   }));
   top.push({
     key: "__layer-active_context",
-    label: LAYER_META.active_context.label,
+    label: LAYER_LABELS.active_context,
     Icon: LAYER_META.active_context.Icon,
     iconTone: LAYER_META.active_context.tone,
     count: counts.byLayer.active_context, // always show, even 0
@@ -639,7 +643,7 @@ function buildTree({
   // Working layer (flat — no children even when expanded).
   top.push({
     key: "__layer-working",
-    label: LAYER_META.working.label,
+    label: LAYER_LABELS.working,
     Icon: LAYER_META.working.Icon,
     iconTone: LAYER_META.working.tone,
     count: counts.byLayer.working, // always show, even 0

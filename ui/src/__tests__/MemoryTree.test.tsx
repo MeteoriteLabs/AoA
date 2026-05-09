@@ -139,7 +139,7 @@ describe("MemoryTree (Phase 6.2a)", () => {
     renderTree();
     await waitFor(() => expect(screen.getByText("Identity")).toBeInTheDocument());
     expect(screen.getByText("Domain")).toBeInTheDocument();
-    expect(screen.getByText("Active Context")).toBeInTheDocument();
+    expect(screen.getByText("Active context")).toBeInTheDocument();
     expect(screen.getByText("Working")).toBeInTheDocument();
   });
 
@@ -157,11 +157,11 @@ describe("MemoryTree (Phase 6.2a)", () => {
     expect(screen.queryByText("Decisions")).not.toBeInTheDocument();
   });
 
-  it("Active Context expansion shows only goals with status='active'", async () => {
+  it("Active context expansion shows only goals with status='active'", async () => {
     const user = userEvent.setup();
     renderTree();
-    await waitFor(() => screen.getByText("Active Context"));
-    const activeHeader = screen.getByText("Active Context").closest("div");
+    await waitFor(() => screen.getByText("Active context"));
+    const activeHeader = screen.getByText("Active context").closest("div");
     expect(activeHeader).not.toBeNull();
     await user.click(activeHeader!);
     await waitFor(() => expect(screen.getByText("Ship in EU")).toBeInTheDocument());
