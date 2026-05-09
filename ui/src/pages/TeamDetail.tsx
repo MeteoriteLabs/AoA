@@ -5,6 +5,7 @@ import { Download, Star, MoreHorizontal, Trash2, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs } from "@/components/ui/tabs";
+import { PageHeader } from "../components/PageHeader";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -178,40 +179,25 @@ export function TeamDetail() {
     if (confirmed) dismantleMut.mutate();
   }
 
+  const leadName = lead ? (agentMap.get(lead.agentId)?.name ?? "Unknown agent") : "No lead";
+
   return (
-    <div className="p-5">
-      <header className="mb-5 flex items-start justify-between">
-        <div className="flex items-start gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-accent text-xl font-bold">
-            {team.name.charAt(0).toUpperCase()}
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-bold">{team.name}</h1>
-              <Badge variant="outline" className="text-[10px] uppercase tracking-wide">
-                {parentProjectName ?? "DEPT"}
-              </Badge>
-              <Badge variant="outline" className="text-[10px] capitalize">
-                {team.status}
-              </Badge>
-            </div>
-            <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+    <>
+      <PageHeader
+        breadcrumb={parentProjectName ?? "Team"}
+        title={team.name}
+        subtitle={
+          <span className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1">
               <Star className="h-3 w-3 text-amber-500" aria-hidden="true" />
-              <span className="sr-only">Lead: </span>
-              {lead
-                ? (agentMap.get(lead.agentId)?.name ?? "Unknown agent")
-                : "No lead"}
-              <span className="opacity-50">·</span>
-              <span>
-                {members.length} member{members.length === 1 ? "" : "s"}
-              </span>
-            </p>
-          </div>
-        </div>
-        <div className="flex gap-1.5">
-          <Button size="sm" variant="outline">
-            Edit
-          </Button>
+              {leadName}
+            </span>
+            <span className="opacity-40">·</span>
+            <span>{members.length} member{members.length === 1 ? "" : "s"}</span>
+            <Badge variant="outline" className="text-[10px] capitalize">{team.status}</Badge>
+          </span>
+        }
+        primaryAction={
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button size="icon-sm" variant="outline" aria-label="More options">
@@ -233,32 +219,34 @@ export function TeamDetail() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-        </div>
-      </header>
+        }
+      />
 
-      <Tabs value={activeTab} onValueChange={handleTabChange}>
-        <PageTabBar
-          items={TAB_ITEMS}
-          value={activeTab}
-          onValueChange={handleTabChange}
-        />
+      <div className="p-5">
+        <Tabs value={activeTab} onValueChange={handleTabChange}>
+          <PageTabBar
+            items={TAB_ITEMS}
+            value={activeTab}
+            onValueChange={handleTabChange}
+          />
 
-        <div className="mt-4">
-          {activeTab === "overview" && (
-            <OverviewTab team={team} members={members} agentMap={agentMap} />
-          )}
-          {activeTab === "coordination" && (
-            <CoordinationEditor teamId={team.id} teamName={team.name} />
-          )}
-          {activeTab === "manifest" && (
-            <ManifestEditor teamId={team.id} initialManifest={team.manifest} />
-          )}
-          {activeTab === "activity" && (
-            <p className="text-sm text-muted-foreground">Activity tab — future slice.</p>
-          )}
-        </div>
-      </Tabs>
-    </div>
+          <div className="mt-4">
+            {activeTab === "overview" && (
+              <OverviewTab team={team} members={members} agentMap={agentMap} />
+            )}
+            {activeTab === "coordination" && (
+              <CoordinationEditor teamId={team.id} teamName={team.name} />
+            )}
+            {activeTab === "manifest" && (
+              <ManifestEditor teamId={team.id} initialManifest={team.manifest} />
+            )}
+            {activeTab === "activity" && (
+              <p className="text-sm text-muted-foreground">Activity tab — future slice.</p>
+            )}
+          </div>
+        </Tabs>
+      </div>
+    </>
   );
 }
 
