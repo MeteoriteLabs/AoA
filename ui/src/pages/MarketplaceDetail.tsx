@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ChevronDown, ChevronUp, ExternalLink, BadgeCheck, ChevronLeft } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronRight, ExternalLink, BadgeCheck, ChevronLeft, Layers } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -8,6 +8,8 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useCatalog } from "@/hooks/useCatalog";
+import { usePackages } from "@/hooks/usePackages";
+import { packageDetailUrl } from "@/components/marketplace/PackageCard";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
@@ -43,6 +45,7 @@ export default function MarketplaceDetail() {
 
   const { openOnboarding } = useDialog();
   const { data: catalog, isLoading, error } = useCatalog();
+  const { data: packages } = usePackages();
   const [readmeText, setReadmeText] = useState<string | null>(null);
   const [readmeError, setReadmeError] = useState<string | null>(null);
   const [installModalOpen, setInstallModalOpen] = useState(false);
@@ -57,6 +60,11 @@ export default function MarketplaceDetail() {
     if (!catalog || !catalogItemId) return null;
     return catalog.items.find((i) => i.id === catalogItemId) ?? null;
   }, [catalog, catalogItemId]);
+
+  const parentPackage = useMemo(() => {
+    if (!item || !packages) return null;
+    return packages.find((p) => p.memberItemIds.includes(item.id)) ?? null;
+  }, [item, packages]);
 
   const installedByPackageName = useMemo(
     () => new Map(installedPlugins.map((p) => [p.packageName, p])),
@@ -175,6 +183,16 @@ export default function MarketplaceDetail() {
                   <span>·</span>
                   <Badge variant="outline" className="text-xs">v{item.version}</Badge>
                 </div>
+                {parentPackage && (
+                  <Link
+                    to={packageDetailUrl(parentPackage)}
+                    className="inline-flex items-center gap-1.5 mb-2 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/25 text-[11px] font-medium text-amber-400 hover:bg-amber-500/20 transition-colors w-fit"
+                  >
+                    <Layers className="size-3" />
+                    Part of {parentPackage.name}
+                    <ChevronRight className="size-3" />
+                  </Link>
+                )}
                 <div className="flex items-center gap-2">
                   <h1 className="text-2xl font-bold leading-tight">{item.name}</h1>
                   {item.trust.tier === "verified" && (
