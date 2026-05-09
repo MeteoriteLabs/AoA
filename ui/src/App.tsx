@@ -57,6 +57,7 @@ import { Navigate as RawNavigate, useParams as useRawParams } from "react-router
 import MarketplaceDetail from "./pages/MarketplaceDetail";
 import MarketplaceSearch from "./pages/MarketplaceSearch";
 import MarketplaceUpdates from "./pages/MarketplaceUpdates";
+import MarketplacePackageDetail from "./pages/MarketplacePackageDetail";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -291,6 +292,7 @@ export function App() {
           <Route path="instance/access" element={<InstanceAccessPage />} />
           <Route path="marketplace" element={<Marketplace />} />
           <Route path="marketplace/search" element={<MarketplaceSearch />} />
+          <Route path="marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
           <Route path="marketplace/:type" element={<MarketplaceTypeRedirect />} />
           <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
