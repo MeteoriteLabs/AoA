@@ -1,43 +1,32 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import { FileText, File as FileIcon, Image as ImageIcon, FileType } from "lucide-react";
 import { memoryApi } from "../../api/memory";
 import { memoryAssetsApi } from "../../api/memoryAssets";
 import { queryKeys } from "../../lib/queryKeys";
 import { useCompany } from "../../context/CompanyContext";
 import type { MemoryItem, MemoryAssetRecord } from "@armyofagents/shared";
+import { MemoryItemRow, type MemoryItemRowData } from "./MemoryItemRow";
 
 interface MemoryRecentsStripProps {
   companyId: string;
-}
-
-interface RecentRow {
-  kind: "memory_item" | "asset";
-  id: string;
-  name: string;
-  modifiedAt: string;
-  mimeType?: string;
-  folderPath?: string;
-  departmentId?: string | null;
 }
 
 /** Returns a fallback ISO string if `value` can't be parsed to a finite timestamp. */
 function toSafeIso(value: string | Date | null | undefined): string {
   if (value == null) return new Date(0).toISOString();
   const t = typeof value === "string" ? new Date(value).getTime() : (value as Date).getTime();
-  return Number.isFinite(t) ? (typeof value === "string" ? value : (value as Date).toISOString()) : new Date(0).toISOString();
+  return Number.isFinite(t)
+    ? (typeof value === "string" ? value : (value as Date).toISOString())
+    : new Date(0).toISOString();
 }
 
-function formatRelative(iso: string): string {
-  const parsed = new Date(iso).getTime();
-  if (!Number.isFinite(parsed)) return "recently";
-  const ms = Date.now() - parsed;
-  const days = Math.floor(ms / (1000 * 60 * 60 * 24));
-  if (days < 1) return "today";
-  if (days < 7) return `${days}d`;
-  if (days < 30) return `${Math.floor(days / 7)}w`;
-  return `${Math.floor(days / 30)}mo`;
+interface RecentSource {
+  kind: "memory_item" | "asset";
+  id: string;
+  rowData: MemoryItemRowData;
+  folderPath?: string;
+  departmentId?: string | null;
 }
 
 export function MemoryRecentsStrip({ companyId }: MemoryRecentsStripProps) {
@@ -54,42 +43,53 @@ export function MemoryRecentsStrip({ companyId }: MemoryRecentsStripProps) {
     queryFn: () => memoryAssetsApi.list(companyId),
   });
 
-  const rows: RecentRow[] = useMemo(() => [
-    ...((itemsQuery.data ?? []) as MemoryItem[]).map<RecentRow>((it) => ({
-      kind: "memory_item",
-      id: it.id,
-      name: it.title,
-      modifiedAt: toSafeIso(it.updatedAt as string | Date | null | undefined),
-      folderPath: (it as MemoryItem & { folderPath?: string }).folderPath,
-      departmentId: (it as MemoryItem & { departmentId?: string | null }).departmentId,
-    })),
-    ...((assetsQuery.data ?? []) as MemoryAssetRecord[]).map<RecentRow>((a) => ({
+  const rows: RecentSource[] = useMemo(() => {
+    const items = ((itemsQuery.data ?? []) as Array<MemoryItem & { folderPath?: string; departmentId?: string | null; content?: string }>)
+      .map<RecentSource>((it) => ({
+        kind: "memory_item",
+        id: it.id,
+        rowData: {
+          kind: "memory_item",
+          id: it.id,
+          title: it.title,
+          category: (it as MemoryItem & { category?: string | null }).category ?? null,
+          status: (it as MemoryItem & { status?: string | null }).status ?? null,
+          modifiedAt: toSafeIso(it.updatedAt as string | Date | null | undefined),
+          content: it.content ?? null,
+        },
+        folderPath: it.folderPath,
+        departmentId: it.departmentId,
+      }));
+
+    const assets = ((assetsQuery.data ?? []) as MemoryAssetRecord[]).map<RecentSource>((a) => ({
       kind: "asset",
       id: a.id,
-      name: a.fileName,
-      modifiedAt: toSafeIso(a.updatedAt),
-      mimeType: a.mimeType,
+      rowData: {
+        kind: "asset",
+        id: a.id,
+        title: a.fileName,
+        mimeType: a.mimeType,
+        modifiedAt: toSafeIso(a.updatedAt),
+      },
       folderPath: a.folderPath,
       departmentId: a.departmentId,
-    })),
-  ]
-    .sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime())
-    .slice(0, 10), [itemsQuery.data, assetsQuery.data]);
+    }));
 
-  function iconFor(row: RecentRow) {
-    if (row.kind === "memory_item") return FileText;
-    if (!row.mimeType) return FileIcon;
-    if (row.mimeType.startsWith("image/")) return ImageIcon;
-    if (row.mimeType === "application/pdf") return FileType;
-    return FileIcon;
-  }
+    return [...items, ...assets]
+      .sort(
+        (a, b) =>
+          new Date(b.rowData.modifiedAt).getTime() -
+          new Date(a.rowData.modifiedAt).getTime(),
+      )
+      .slice(0, 10);
+  }, [itemsQuery.data, assetsQuery.data]);
 
-  function openRow(row: RecentRow) {
+  function openRow(source: RecentSource) {
     const params = new URLSearchParams();
-    if (row.folderPath) params.set("folder", row.folderPath);
-    if (row.departmentId) params.set("dept", row.departmentId);
-    params.set("item", row.id);
-    params.set("type", row.kind);
+    if (source.folderPath) params.set("folder", source.folderPath);
+    if (source.departmentId) params.set("dept", source.departmentId);
+    params.set("item", source.id);
+    params.set("type", source.kind);
     navigate(`/${companyPrefix}/memory/explore?${params.toString()}`);
   }
 
@@ -101,21 +101,19 @@ export function MemoryRecentsStrip({ companyId }: MemoryRecentsStripProps) {
   }
 
   return (
-    <div className="space-y-1">
-      {rows.map((row) => {
-        const Icon = iconFor(row);
-        return (
-          <button
-            key={`${row.kind}-${row.id}`}
-            onClick={() => openRow(row)}
-            className="w-full text-left flex items-center gap-2 px-3 py-2 rounded hover:bg-muted/40 text-xs transition-colors duration-100"
-          >
-            <Icon className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-            <span className="flex-1 truncate font-medium">{row.name}</span>
-            <span className="text-muted-foreground tabular-nums">{formatRelative(row.modifiedAt)}</span>
-          </button>
-        );
-      })}
+    <div className="overflow-hidden rounded-md border border-border">
+      {rows.map((source, i) => (
+        <div
+          key={`${source.kind}-${source.id}`}
+          className={i > 0 ? "border-t border-border-soft" : undefined}
+        >
+          <MemoryItemRow
+            row={source.rowData}
+            active={false}
+            onSelect={() => openRow(source)}
+          />
+        </div>
+      ))}
     </div>
   );
 }
