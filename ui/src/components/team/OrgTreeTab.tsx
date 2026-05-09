@@ -9,9 +9,10 @@ import { queryKeys } from "../../lib/queryKeys";
 import { agentStatusDotHex, agentStatusDotHexDefault } from "../../lib/status-colors";
 import { TeamOrgOverlay } from "./TeamOrgOverlay";
 import { computeTeamBoxes, type LaidOutCard } from "./teamBoundingBox";
-import { Network, MoreVertical } from "lucide-react";
+import { Network, MoreVertical, Plus, Minus, Maximize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ClickableDiv } from "../ui/clickable-div";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -454,28 +455,21 @@ export function OrgTreeTab({ orgTree, pendingInvites, onNodeClick, onNodeAction 
     >
       {/* Zoom controls */}
       <div className="absolute top-3 right-3 z-10 flex flex-col gap-1">
-        <button
-          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-sm hover:bg-accent transition-colors"
-          onClick={() => zoomTo(1.2)}
-          aria-label="Zoom in"
-        >
-          +
-        </button>
-        <button
-          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-sm hover:bg-accent transition-colors"
-          onClick={() => zoomTo(0.8)}
-          aria-label="Zoom out"
-        >
-          &minus;
-        </button>
-        <button
-          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-[10px] hover:bg-accent transition-colors"
+        <Button variant="outline" size="icon-xs" onClick={() => zoomTo(1.2)} aria-label="Zoom in">
+          <Plus />
+        </Button>
+        <Button variant="outline" size="icon-xs" onClick={() => zoomTo(0.8)} aria-label="Zoom out">
+          <Minus />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon-xs"
           onClick={fitToScreen}
           title="Fit to screen"
           aria-label="Fit chart to screen"
         >
-          Fit
-        </button>
+          <Maximize2 />
+        </Button>
       </div>
 
       {/* SVG layer for edges */}
