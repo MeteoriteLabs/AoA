@@ -83,7 +83,7 @@ export function FolderTreeNode({
       {selected && (
         <span
           aria-hidden
-          className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 size-[5px] rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
+          className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 size-[5px] rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
         />
       )}
     </div>
