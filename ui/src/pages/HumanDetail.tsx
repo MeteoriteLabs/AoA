@@ -178,7 +178,7 @@ export function HumanDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Team", href: "/org" },
+      { label: "Team", href: "/team" },
       { label: member?.displayName ?? member?.email ?? "Member" },
     ]);
   }, [setBreadcrumbs, member]);
@@ -201,7 +201,7 @@ export function HumanDetail() {
       {/* Header */}
       <div className="rounded-2xl border border-border bg-card p-5">
         <div className="mb-3">
-          <Link to="/org?tab=humans">
+          <Link to="/team?tab=humans">
             <Button variant="ghost" size="sm" className="gap-1 text-muted-foreground -ml-2">
               <ArrowLeft className="h-4 w-4" />
               Back to Team
@@ -439,7 +439,7 @@ export function HumanDetail() {
                   allMembers={teamSummary?.members ?? []}
                   open={removeDialogOpen}
                   onOpenChange={setRemoveDialogOpen}
-                  onSuccess={() => navigate("/org?tab=humans")}
+                  onSuccess={() => navigate("/team?tab=humans")}
                 />
               </div>
             )}

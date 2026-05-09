@@ -154,7 +154,7 @@ export function Sidebar() {
           <SidebarSection label="Company" collapsed={collapsed}>
             <SidebarNavItem to="/objectives" label="Objectives" icon={Compass} collapsed={collapsed} />
             <SidebarNavItem to="/memory" label="Memory" icon={Brain} collapsed={collapsed} />
-            <SidebarNavItem to="/org" label="Team" icon={Users} collapsed={collapsed} />
+            <SidebarNavItem to="/team" label="Team" icon={Users} collapsed={collapsed} />
             <SidebarNavItem to="/skills" label="Skills" icon={Boxes} collapsed={collapsed} />
             <SidebarNavItem to="/budget" label="Budget" icon={DollarSign} collapsed={collapsed} />
             <BudgetSidebarMarker collapsed={collapsed} />

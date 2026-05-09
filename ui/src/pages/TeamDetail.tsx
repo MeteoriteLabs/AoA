@@ -113,7 +113,7 @@ export function TeamDetail() {
   useEffect(() => {
     if (teamQuery.data) {
       setBreadcrumbs([
-        { label: "Team", href: "/org" },
+        { label: "Team", href: "/team" },
         { label: teamQuery.data.name },
       ]);
     }
@@ -142,7 +142,7 @@ export function TeamDetail() {
           queryKey: queryKeys.teams.list(selectedCompanyId),
         });
       }
-      navigate("/org");
+      navigate("/team");
     },
     onError: (err) => {
       pushToast({

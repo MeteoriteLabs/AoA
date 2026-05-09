@@ -132,7 +132,8 @@ function boardRoutes() {
       <Route path="settings/commander" element={<Navigate to="../settings?tab=commander" replace />} />
       <Route path="settings/internal-agent" element={<Navigate to="../settings?tab=commander" replace />} />
       <Route path="company/settings" element={<Navigate to="../settings" replace />} />
-      <Route path="org" element={<TeamPage />} />
+      <Route path="team" element={<TeamPage />} />
+      <Route path="org" element={<Navigate to="../team" replace />} />
       <Route path="team/teams/:slug" element={<TeamDetail />} />
       <Route path="team/:userId" element={<HumanDetail />} />
       <Route path="team/:userId/:tab" element={<HumanDetail />} />
