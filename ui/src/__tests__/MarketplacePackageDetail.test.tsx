@@ -1,12 +1,29 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen } from "@testing-library/react";
-import { renderWithProviders, mockCompanyContext, mockDialogContext } from "./test-utils";
+import { render, screen } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { mockCompanyContext, mockDialogContext } from "./test-utils";
 import MarketplacePackageDetail from "../pages/MarketplacePackageDetail";
 import type {
   CatalogItem,
   MarketplaceCatalogFile,
   MarketplacePackage,
 } from "@armyofagents/shared";
+
+function wrap(initialPath: string) {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <Routes>
+          <Route path="/marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
 
 function makeItem(overrides: Partial<CatalogItem> & { id: string }): CatalogItem {
   return {
@@ -91,36 +108,31 @@ describe("MarketplacePackageDetail", () => {
 
   it("renders inside LobbyShell with marketplace active", () => {
     setupHooks({ catalog: SAMPLE_CATALOG, packages: [SAMPLE_PACKAGE] });
-    renderWithProviders(<MarketplacePackageDetail />, {
-      initialEntries: ["/marketplace/package/garrytan/gstack"],
-    });
+    wrap("/marketplace/package/garrytan/gstack");
     expect(screen.getAllByTestId("lobby-sidebar").length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders the package name + verified check + N items pill", () => {
     setupHooks({ catalog: SAMPLE_CATALOG, packages: [SAMPLE_PACKAGE] });
-    const { container } = renderWithProviders(<MarketplacePackageDetail />, {
-      initialEntries: ["/marketplace/package/garrytan/gstack"],
-    });
+    const { container } = wrap("/marketplace/package/garrytan/gstack");
     expect(screen.getByRole("heading", { level: 1, name: /gstack/i })).toBeInTheDocument();
     expect(container.querySelector('[data-testid="package-hero-verified"]')).toBeTruthy();
-    expect(screen.getByText(/2 items/i)).toBeInTheDocument();
+    // Both the pill and the install button contain "2 items" — assert at least one occurrence
+    expect(screen.getAllByText(/2 items/i).length).toBeGreaterThanOrEqual(1);
+    // Install button renders with spec text
+    expect(screen.getByRole("button", { name: /install all 2 items/i })).toBeInTheDocument();
   });
 
   it("renders the chevron-back link to /marketplace", () => {
     setupHooks({ catalog: SAMPLE_CATALOG, packages: [SAMPLE_PACKAGE] });
-    renderWithProviders(<MarketplacePackageDetail />, {
-      initialEntries: ["/marketplace/package/garrytan/gstack"],
-    });
+    wrap("/marketplace/package/garrytan/gstack");
     const back = screen.getByRole("link", { name: /marketplace/i });
     expect(back.getAttribute("href")).toBe("/marketplace");
   });
 
   it("renders each member item as a row in the grid with a link to its detail page", () => {
     setupHooks({ catalog: SAMPLE_CATALOG, packages: [SAMPLE_PACKAGE] });
-    renderWithProviders(<MarketplacePackageDetail />, {
-      initialEntries: ["/marketplace/package/garrytan/gstack"],
-    });
+    wrap("/marketplace/package/garrytan/gstack");
     expect(screen.getByText("office-hours")).toBeInTheDocument();
     expect(screen.getByText("qa")).toBeInTheDocument();
     // The link should be /marketplace/skill/gstack/office-hours (catalog id "skill:gstack/office-hours" → /marketplace/skill/gstack/office-hours)
@@ -132,17 +144,13 @@ describe("MarketplacePackageDetail", () => {
 
   it("shows a not-found state when the package id does not exist", () => {
     setupHooks({ catalog: SAMPLE_CATALOG, packages: [] });
-    renderWithProviders(<MarketplacePackageDetail />, {
-      initialEntries: ["/marketplace/package/does-not-exist"],
-    });
+    wrap("/marketplace/package/does-not-exist");
     expect(screen.getByText(/package not found/i)).toBeInTheDocument();
   });
 
   it("shows a loading state while packages are loading", () => {
     setupHooks({ catalog: SAMPLE_CATALOG, packages: undefined, packagesLoading: true });
-    renderWithProviders(<MarketplacePackageDetail />, {
-      initialEntries: ["/marketplace/package/garrytan/gstack"],
-    });
+    wrap("/marketplace/package/garrytan/gstack");
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
   });
 });

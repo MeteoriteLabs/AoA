@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import {
   BadgeCheck,
   ChevronLeft,
@@ -36,24 +36,10 @@ function authorFromSource(url: string): string {
   return m?.[1] ?? "community";
 }
 
-const PACKAGE_PREFIX = "/marketplace/package/";
-
 export default function MarketplacePackageDetail() {
   const params = useParams<{ id: string; "*": string }>();
-  const { pathname } = useLocation();
-
-  // Primary: use params from a registered Route (e.g. /marketplace/package/:id/*)
-  // Fallback: parse directly from pathname — needed when the component is mounted
-  // inside a plain MemoryRouter (tests) without a Route pattern.
-  let fullPackageId: string;
-  if (params.id) {
-    const restPath = params["*"] ?? "";
-    fullPackageId = restPath ? `${params.id}/${restPath}` : params.id;
-  } else {
-    const prefixIdx = pathname.indexOf(PACKAGE_PREFIX);
-    fullPackageId =
-      prefixIdx >= 0 ? pathname.slice(prefixIdx + PACKAGE_PREFIX.length) : "";
-  }
+  const restPath = params["*"] ?? "";
+  const fullPackageId = restPath ? `${params.id}/${restPath}` : (params.id ?? "");
 
   const { openOnboarding } = useDialog();
   const { data: catalog, isLoading: catalogLoading } = useCatalog();
@@ -143,7 +129,7 @@ export default function MarketplacePackageDetail() {
                       // Phase C MVP: Install all is a placeholder.
                     }}
                   >
-                    <Plus className="size-4" /> Install all ({pkg.count})
+                    <Plus className="size-4" /> Install all {pkg.count} items
                   </Button>
                 </div>
               </div>
