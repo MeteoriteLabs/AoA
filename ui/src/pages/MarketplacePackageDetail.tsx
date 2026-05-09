@@ -11,7 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
 import { StackedIcon } from "@/components/marketplace/StackedIcon";
-import { TYPE_ICONS } from "@/lib/marketplace-constants";
+import { TYPE_ICONS, SINGLE_ICON_TONES, TEAM_ICON_TONE, shortSource, authorFromSource } from "@/lib/marketplace-constants";
 import { useCatalog } from "@/hooks/useCatalog";
 import { usePackages } from "@/hooks/usePackages";
 import { useDialog } from "@/context/DialogContext";
@@ -19,22 +19,6 @@ import { detailUrl } from "@/components/marketplace/CatalogCard";
 import { cn } from "@/lib/utils";
 import type { MarketplaceCatalogItem, MarketplaceItemType } from "@armyofagents/shared";
 
-const SINGLE_ICON_TONES: Record<Exclude<MarketplaceItemType, "team">, string> = {
-  skill: "bg-amber-500/15 border-amber-500/30 text-amber-500",
-  plugin: "bg-blue-500/15 border-blue-500/30 text-blue-500",
-  agent: "bg-purple-500/15 border-purple-500/30 text-purple-500",
-};
-
-function shortSource(url: string, fallback: string): string {
-  const m = url.match(/github\.com\/([^/]+)\/([^/]+)/i);
-  if (m) return `${m[1]}/${m[2]!.replace(/\.git$/, "")}`;
-  return fallback;
-}
-
-function authorFromSource(url: string): string {
-  const m = url.match(/github\.com\/([^/]+)/i);
-  return m?.[1] ?? "community";
-}
 
 export default function MarketplacePackageDetail() {
   const params = useParams<{ id: string; "*": string }>();
@@ -147,7 +131,7 @@ export default function MarketplacePackageDetail() {
                   const Icon = TYPE_ICONS[item.type];
                   const tone =
                     item.type === "team"
-                      ? "bg-teal-500/10 border-teal-500/20 text-teal-500"
+                      ? TEAM_ICON_TONE
                       : SINGLE_ICON_TONES[item.type as Exclude<MarketplaceItemType, "team">];
                   return (
                     <Link

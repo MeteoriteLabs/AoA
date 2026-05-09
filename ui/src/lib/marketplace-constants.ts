@@ -90,3 +90,47 @@ export function pathToItemType(slug: string): MarketplaceItemType | null {
   }
   return null;
 }
+
+/**
+ * Tailwind classes for the small "single-item" tile used inside CatalogCard
+ * (hero icon for skill/plugin/agent items) and MarketplacePackageDetail
+ * (compact row icons in the included-items grid). Excludes "team" because
+ * team items use the StackedIcon component instead — render the team branch
+ * with TEAM_ICON_TONE.
+ */
+export const SINGLE_ICON_TONES: Record<Exclude<MarketplaceItemType, "team">, string> = {
+  skill: "bg-amber-500/15 border-amber-500/30 text-amber-500",
+  plugin: "bg-blue-500/15 border-blue-500/30 text-blue-500",
+  agent: "bg-purple-500/15 border-purple-500/30 text-purple-500",
+};
+
+/**
+ * Tailwind classes for the small "team" tile (parallel to SINGLE_ICON_TONES,
+ * harmonized to the same opacity convention).
+ */
+export const TEAM_ICON_TONE = "bg-teal-500/15 border-teal-500/30 text-teal-500";
+
+/**
+ * Short repo label like "owner/repo" extracted from a github URL. Falls back
+ * to the host + path of any other URL, then to the supplied fallback string
+ * if the URL is unparseable.
+ */
+export function shortSource(url: string, fallback: string): string {
+  const m = url.match(/github\.com\/([^/]+)\/([^/]+)/i);
+  if (m) return `${m[1]}/${m[2]!.replace(/\.git$/, "")}`;
+  try {
+    const u = new URL(url);
+    return `${u.hostname}${u.pathname}`.replace(/^\/+|\/+$/g, "");
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Owner portion of a github URL (the "by-line" name on cards). Falls back to
+ * "community" if the URL is not a github URL.
+ */
+export function authorFromSource(url: string): string {
+  const m = url.match(/github\.com\/([^/]+)/i);
+  return m?.[1] ?? "community";
+}

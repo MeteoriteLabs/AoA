@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { BadgeCheck, Bot, Github } from "lucide-react";
-import type { CatalogItem, PluginRecord, MarketplaceItemType } from "@armyofagents/shared";
+import type { CatalogItem, PluginRecord } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { TYPE_ICONS } from "@/lib/marketplace-constants";
+import { TYPE_ICONS, SINGLE_ICON_TONES, shortSource, authorFromSource } from "@/lib/marketplace-constants";
 import { PluginInstallModal } from "@/components/marketplace/install/PluginInstallModal";
 import { SnapshotInstallModal } from "@/components/marketplace/install/SnapshotInstallModal";
 import { TypeChip } from "./TypeChip";
@@ -21,31 +21,6 @@ export function detailUrl(item: CatalogItem): string {
   const slug = item.id.slice(colonIdx + 1);
   return `/marketplace/${item.type}/${slug}`;
 }
-
-/** Extract "owner/repo" from a github URL. Falls back to the locator if non-github. */
-function shortSource(url: string, locator: string): string {
-  const m = url.match(/github\.com\/([^/]+)\/([^/]+)/i);
-  if (m) return `${m[1]}/${m[2]!.replace(/\.git$/, "")}`;
-  try {
-    const u = new URL(url);
-    return `${u.hostname}${u.pathname}`.replace(/^\/+|\/+$/g, "");
-  } catch {
-    return locator;
-  }
-}
-
-/** Extract "owner" portion of "owner/repo". Used as the by-line. */
-function authorFromSource(url: string): string {
-  const m = url.match(/github\.com\/([^/]+)/i);
-  if (m) return m[1] ?? "community";
-  return "community";
-}
-
-const SINGLE_ICON_TONES: Record<Exclude<MarketplaceItemType, "team">, string> = {
-  skill: "bg-amber-500/15 border-amber-500/30 text-amber-500",
-  plugin: "bg-blue-500/15 border-blue-500/30 text-blue-500",
-  agent: "bg-purple-500/15 border-purple-500/30 text-purple-500",
-};
 
 export function CatalogCard({ item, installedByPackageName }: CatalogCardProps) {
   const [installOpen, setInstallOpen] = useState(false);

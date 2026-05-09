@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { BadgeCheck, Github, Layers, Sparkles } from "lucide-react";
 import type { MarketplacePackage } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
+import { shortSource, authorFromSource } from "@/lib/marketplace-constants";
 import { StackedIcon } from "./StackedIcon";
 import { cn } from "@/lib/utils";
 
@@ -16,19 +17,6 @@ export interface PackageCardProps {
  */
 export function packageDetailUrl(pkg: MarketplacePackage): string {
   return `/marketplace/package/${pkg.id}`;
-}
-
-/** Extract "owner/repo" short label from a github URL. Falls back to id. */
-function shortSource(url: string, fallback: string): string {
-  const m = url.match(/github\.com\/([^/]+)\/([^/]+)/i);
-  if (m) return `${m[1]}/${m[2]!.replace(/\.git$/, "")}`;
-  return fallback;
-}
-
-/** Extract owner portion of a github URL for the by-line. */
-function authorFromSource(url: string): string {
-  const m = url.match(/github\.com\/([^/]+)/i);
-  return m?.[1] ?? "community";
 }
 
 export function PackageCard({ pkg }: PackageCardProps) {
