@@ -9,6 +9,7 @@ import { MCPApiKeysSection } from "@/components/settings/sections/MCPApiKeysSect
 import { LLMProvidersSectionWrapper } from "@/components/settings/sections/LLMProvidersSectionWrapper";
 import { PluginsSectionWrapper } from "@/components/settings/sections/PluginsSectionWrapper";
 import { MarketplacePrefsSection } from "@/components/settings/sections/MarketplacePrefsSection";
+import { CommanderSection } from "@/components/settings/sections/CommanderSection";
 
 const VALID_SECTIONS: readonly SettingsSectionId[] = [
   "general", "commander", "llm", "budget", "mcp", "plugins", "marketplace", "archive",
@@ -22,6 +23,8 @@ function renderActiveSection(id: SettingsSectionId) {
   switch (id) {
     case "general":
       return <GeneralSection />;
+    case "commander":
+      return <CommanderSection />;
     case "llm":
       return <LLMProvidersSectionWrapper />;
     case "budget":
@@ -34,18 +37,19 @@ function renderActiveSection(id: SettingsSectionId) {
       return <MarketplacePrefsSection />;
     case "archive":
       return <ArchiveCompanySection />;
-    case "commander":
-    default:
+    default: {
+      const exhaustive: never = id;
       return (
         <div className="p-8">
           <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground/60 font-semibold">
-            Settings · {id}
+            Settings · {exhaustive}
           </div>
           <div className="mt-2 text-sm text-muted-foreground italic">
-            Section content will be wired in subsequent tasks (T4).
+            Unknown section.
           </div>
         </div>
       );
+    }
   }
 }
 

@@ -79,9 +79,47 @@ vi.mock("@/api/budgets", () => ({
 vi.mock("@/api/internal-agent", () => ({
   internalAgentApi: {
     getConfig: vi.fn().mockResolvedValue({
+      id: "ia-cfg-1",
+      executionMode: "cli",
+      provider: null,
+      model: null,
+      cliTool: "claude_cli",
+      autonomyLevel: 0,
+      enabledCapabilities: [
+        "discussion_processing",
+        "proactive_suggestions",
+        "organizational_queries",
+        "system_actions",
+        "context_briefing",
+        "memory_management",
+        "conflict_detection",
+        "budget_awareness",
+        "workflow_coaching",
+        "workflow_discovery",
+        "cross_department_coordination",
+        "department_personas",
+      ],
+      notificationPreference: "realtime",
+      contextTokenBudget: 8000,
       budgetMonthlyCents: null,
       spentMonthlyCents: 0,
+      proactiveIntervalMinutes: 240,
+      lastProactiveRunAt: null,
     }),
+    getRuns: vi.fn().mockResolvedValue({
+      runs: [],
+      total: 0,
+      limit: 20,
+      offset: 0,
+      aggregates: {
+        totalCostCents: 0,
+        totalRuns: 0,
+        avgDurationMs: 0,
+        failureRate: 0,
+      },
+    }),
+    testConnection: vi.fn().mockResolvedValue({ success: true }),
+    updateConfig: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -259,5 +297,18 @@ describe("SettingsPage redesign — Phase F shell", () => {
     renderSettings("/P4/settings?tab=plugins");
     // The PluginsSection renders an h2 with "Plugins" text + count
     expect(await screen.findByRole("heading", { name: /Plugins/i })).toBeInTheDocument();
+  });
+
+  it("Commander section: renders 4 sub-tabs", async () => {
+    renderSettings("/P4/settings?tab=commander");
+    expect(await screen.findByRole("tab", { name: /Execution & Model/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Capabilities/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Budget & Spend/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Run History/i })).toBeInTheDocument();
+  });
+
+  it("Commander Capabilities sub-tab: renders proactiveIntervalMinutes input (ghost setting → UI)", async () => {
+    renderSettings("/P4/settings?tab=commander&sub=capabilities");
+    expect(await screen.findByLabelText(/Proactive scan interval/i)).toBeInTheDocument();
   });
 });

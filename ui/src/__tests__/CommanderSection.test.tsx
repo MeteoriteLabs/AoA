@@ -4,10 +4,9 @@ import userEvent from "@testing-library/user-event";
 import {
   renderWithProviders,
   mockCompanyContext,
-  mockBreadcrumbContext,
   makeCompany,
 } from "./test-utils";
-import { InternalAgentSettingsPage } from "../pages/InternalAgentSettingsPage";
+import { CommanderSection } from "@/components/settings/sections/CommanderSection";
 import type { AgentConfig, AgentRunsResponse } from "../api/internal-agent";
 
 // --- Factory ---
@@ -69,40 +68,66 @@ const apiMock = {
   testConnection: vi.fn().mockResolvedValue({ success: true }),
 };
 
-vi.mock("../api/internal-agent", () => ({
+vi.mock("@/api/internal-agent", () => ({
   internalAgentApi: new Proxy(
     {},
     { get: (_t, prop) => (apiMock as any)[prop] },
   ),
 }));
 
-vi.mock("../context/CompanyContext", () => ({
+vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => mockCompanyContext,
 }));
 
-vi.mock("../context/BreadcrumbContext", () => ({
-  useBreadcrumbs: () => mockBreadcrumbContext,
-}));
+// CommanderSubTabs is mocked to expose the legacy `data-testid="tab-<id>"`
+// hooks so the existing test bodies can drive the component. Sub-tab state
+// is owned here in the mock so user clicks switch the active tab.
+vi.mock("@/components/settings/sections/CommanderSubTabs", async () => {
+  const React = await import("react");
+  const SUB_TABS = [
+    { id: "execution", label: "Execution & Model" },
+    { id: "capabilities", label: "Capabilities" },
+    { id: "budget", label: "Budget & Spend" },
+    { id: "history", label: "Run History" },
+  ];
 
-vi.mock("../components/PageTabBar", () => ({
-  PageTabBar: ({ items, value, onValueChange }: any) => (
-    <div data-testid="page-tab-bar">
-      {items.map((item: any) => (
-        <button
-          key={item.value}
-          data-testid={`tab-${item.value}`}
-          aria-selected={value === item.value}
-          onClick={() => onValueChange(item.value)}
-        >
-          {item.label}
-        </button>
-      ))}
-    </div>
-  ),
-}));
+  function useCommanderSubTab() {
+    const [active, setActive] = React.useState("execution");
+    return { active, setActive };
+  }
+
+  function MockSubTabs({
+    active,
+    onSelect,
+  }: {
+    active: string;
+    onSelect: (id: string) => void;
+  }) {
+    return (
+      <div data-testid="page-tab-bar">
+        {SUB_TABS.map((t) => (
+          <button
+            key={t.id}
+            data-testid={`tab-${t.id}`}
+            aria-selected={active === t.id}
+            onClick={() => onSelect(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  return {
+    CommanderSubTabs: MockSubTabs,
+    CommanderSubTabsMobile: () => null,
+    useCommanderSubTab,
+  };
+});
 
 // --- Tests ---
-describe("InternalAgentSettingsPage", () => {
+describe("CommanderSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCompanyContext.selectedCompanyId = "comp-1";
@@ -113,7 +138,7 @@ describe("InternalAgentSettingsPage", () => {
   });
 
   it("renders tab bar with all tabs", async () => {
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("page-tab-bar")).toBeInTheDocument();
     });
@@ -127,14 +152,14 @@ describe("InternalAgentSettingsPage", () => {
   // shows a mode toggle, provider picker, or model picker; just the CLI tool
   // picker.
   it("shows CLI tool dropdown (the only execution option)", async () => {
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByText("CLI Tool")).toBeInTheDocument();
     });
   });
 
   it("does not show API-mode provider or model pickers", async () => {
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByText("CLI Tool")).toBeInTheDocument();
     });
@@ -144,7 +169,7 @@ describe("InternalAgentSettingsPage", () => {
   });
 
   it("autonomy level is disabled", async () => {
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByText("Autonomy Level")).toBeInTheDocument();
     });
@@ -154,7 +179,7 @@ describe("InternalAgentSettingsPage", () => {
 
   it("renders all 12 capability checkboxes on capabilities tab", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
     });
@@ -172,7 +197,7 @@ describe("InternalAgentSettingsPage", () => {
       makeAgentConfig({ enabledCapabilities: [] }),
     );
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
     });
@@ -192,7 +217,7 @@ describe("InternalAgentSettingsPage", () => {
 
   it("renders notification preference options on capabilities tab", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
     });
@@ -209,7 +234,7 @@ describe("InternalAgentSettingsPage", () => {
       makeAgentConfig({ spentMonthlyCents: 1000, budgetMonthlyCents: 5000 }),
     );
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
     });
@@ -226,7 +251,7 @@ describe("InternalAgentSettingsPage", () => {
       makeAgentConfig({ spentMonthlyCents: 4000, budgetMonthlyCents: 5000 }),
     );
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
     });
@@ -243,7 +268,7 @@ describe("InternalAgentSettingsPage", () => {
       makeAgentConfig({ spentMonthlyCents: 4800, budgetMonthlyCents: 5000 }),
     );
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
     });
@@ -260,7 +285,7 @@ describe("InternalAgentSettingsPage", () => {
       makeAgentConfig({ spentMonthlyCents: 5000, budgetMonthlyCents: 5000 }),
     );
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
     });
@@ -272,7 +297,7 @@ describe("InternalAgentSettingsPage", () => {
 
   it("execution tab save calls updateConfig with CLI-only fields (Sprint 2A)", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByText("Save")).toBeInTheDocument();
     });
@@ -288,7 +313,7 @@ describe("InternalAgentSettingsPage", () => {
   it("test connection shows green badge on success", async () => {
     apiMock.testConnection.mockResolvedValue({ success: true });
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByText("Test Connection")).toBeInTheDocument();
     });
@@ -304,7 +329,7 @@ describe("InternalAgentSettingsPage", () => {
       error: "Invalid API key",
     });
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByText("Test Connection")).toBeInTheDocument();
     });
@@ -316,7 +341,7 @@ describe("InternalAgentSettingsPage", () => {
 
   it("run history tab renders empty state when no runs", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-history")).toBeInTheDocument();
     });
@@ -328,7 +353,7 @@ describe("InternalAgentSettingsPage", () => {
 
   it("toggling individual checkbox updates state", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
     });
@@ -346,7 +371,7 @@ describe("InternalAgentSettingsPage", () => {
 
   it("notification preference radio selection changes value", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
     });
@@ -361,7 +386,7 @@ describe("InternalAgentSettingsPage", () => {
 
   it("context token budget dropdown renders current value", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
     });
@@ -374,7 +399,7 @@ describe("InternalAgentSettingsPage", () => {
 
   it("deselect all toggles all capabilities off", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
     });
@@ -416,7 +441,7 @@ describe("InternalAgentSettingsPage", () => {
       }),
     );
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-history")).toBeInTheDocument();
     });
@@ -451,7 +476,7 @@ describe("InternalAgentSettingsPage", () => {
       }),
     );
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-history")).toBeInTheDocument();
     });
@@ -485,7 +510,7 @@ describe("InternalAgentSettingsPage", () => {
       }),
     );
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-history")).toBeInTheDocument();
     });
@@ -498,7 +523,7 @@ describe("InternalAgentSettingsPage", () => {
 
   it("capabilities tab save calls updateConfig with capabilities fields", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-capabilities")).toBeInTheDocument();
     });
@@ -512,13 +537,14 @@ describe("InternalAgentSettingsPage", () => {
         enabledCapabilities: expect.any(Array),
         notificationPreference: "realtime",
         contextTokenBudget: 8000,
+        proactiveIntervalMinutes: 240,
       });
     });
   });
 
   it("budget tab save calls updateConfig with budget fields", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InternalAgentSettingsPage />);
+    renderWithProviders(<CommanderSection />);
     await waitFor(() => {
       expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
     });
