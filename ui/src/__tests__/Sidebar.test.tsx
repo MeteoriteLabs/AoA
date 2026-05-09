@@ -89,4 +89,12 @@ describe("Sidebar — Phase E chrome", () => {
     const link = screen.getByTitle(/back to all companies/i);
     expect(link).toHaveAttribute("href", "/");
   });
+
+  it("active row uses brand-red glow dot pattern (no bg-accent)", async () => {
+    renderSidebar();
+    // /P4/home → Home is the active route
+    const homeLink = await screen.findByRole("link", { name: /^Home/ });
+    expect(homeLink.className).toContain("bg-brand/[0.08]");
+    expect(homeLink.className).not.toContain("bg-accent");
+  });
 });

@@ -15,10 +15,8 @@ interface SidebarNavItemProps {
   badgeTone?: "default" | "danger";
   alert?: boolean;
   liveCount?: number;
-  /** CSS color variable for entity accent (e.g. "var(--entity-task)") */
-  entityColor?: string;
   collapsed?: boolean;
-  /** Skip company-prefix injection — use `to` as the absolute path (for global routes like /marketplace). */
+  /** Skip company-prefix injection — use `to` as the absolute path. */
   noPrefix?: boolean;
 }
 
@@ -32,7 +30,6 @@ export function SidebarNavItem({
   badgeTone = "default",
   alert = false,
   liveCount,
-  entityColor,
   collapsed,
   noPrefix = false,
 }: SidebarNavItemProps) {
@@ -41,9 +38,6 @@ export function SidebarNavItem({
   const prefix = selectedCompany?.issuePrefix ?? "";
   const fullPath = noPrefix ? to : `/${prefix}${to}`;
   const location = useLocation();
-  // Manual isActive detection needed in collapsed mode because NavLink's
-  // render-prop className/children conflict with Radix TooltipTrigger asChild.
-  // Expanded mode uses NavLink's built-in render props instead.
   const isActive = end
     ? location.pathname === fullPath
     : location.pathname.startsWith(fullPath);
@@ -56,35 +50,36 @@ export function SidebarNavItem({
             to={fullPath}
             onClick={() => { if (isMobile) setSidebarOpen(false); }}
             className={cn(
-              "flex items-center justify-center w-10 h-8 rounded-md transition-colors mx-auto",
+              "relative flex items-center justify-center size-9 rounded-md transition-colors mx-auto",
               isActive
-                ? "bg-accent text-foreground"
-                : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+                ? "bg-brand/[0.08] text-[hsl(15_60%_75%)]"
+                : "text-foreground/[0.78] hover:bg-white/[0.04] hover:text-foreground",
               className,
             )}
           >
             <span className="relative shrink-0">
-              <Icon
-                className="h-4 w-4 transition-colors duration-150"
-                style={entityColor && isActive ? { color: entityColor } : undefined}
-              />
+              <Icon className="size-4 transition-colors duration-150" />
               {alert && (
-                <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
+                <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-red-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
               )}
-              {/* Dot indicator for badge in collapsed mode */}
               {!alert && badge != null && badge > 0 && (
                 <span
                   className={cn(
-                    "absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full shadow-[0_0_0_2px_hsl(var(--background))]",
+                    "absolute -right-0.5 -top-0.5 size-2 rounded-full shadow-[0_0_0_2px_hsl(var(--background))]",
                     badgeTone === "danger" ? "bg-red-500" : "bg-primary",
                   )}
                 />
               )}
-              {/* Dot indicator for live count in collapsed mode */}
               {!alert && (badge == null || badge <= 0) && liveCount != null && liveCount > 0 && (
-                <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
+                <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-blue-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
               )}
             </span>
+            {isActive && (
+              <span
+                aria-hidden
+                className="pointer-events-none absolute right-1.5 top-1.5 size-[5px] rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
+              />
+            )}
           </Link>
         </TooltipTrigger>
         <TooltipContent side="right" sideOffset={8}>
@@ -103,10 +98,10 @@ export function SidebarNavItem({
       onClick={() => { if (isMobile) setSidebarOpen(false); }}
       className={({ isActive }) =>
         cn(
-          "flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors",
+          "relative flex items-center gap-2.5 px-3 py-2 rounded-md text-[13px] font-medium transition-colors",
           isActive
-            ? "bg-accent text-foreground"
-            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+            ? "bg-brand/[0.08] text-[hsl(15_60%_75%)]"
+            : "text-foreground/[0.78] hover:bg-white/[0.04] hover:text-foreground",
           className,
         )
       }
@@ -114,20 +109,17 @@ export function SidebarNavItem({
       {({ isActive }: { isActive: boolean }) => (
         <>
           <span className="relative shrink-0">
-            <Icon
-              className="h-4 w-4 transition-colors duration-150"
-              style={entityColor && isActive ? { color: entityColor } : undefined}
-            />
+            <Icon className="size-4 transition-colors duration-150" />
             {alert && (
-              <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
+              <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-red-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
             )}
           </span>
           <span className="flex-1 truncate">{label}</span>
           {liveCount != null && liveCount > 0 && (
             <span className="ml-auto flex items-center gap-1.5">
-              <span className="relative flex h-2 w-2">
+              <span className="relative flex size-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                <span className="relative inline-flex rounded-full size-2 bg-blue-500" />
               </span>
               <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
             </span>
@@ -143,6 +135,12 @@ export function SidebarNavItem({
             >
               {badge}
             </span>
+          )}
+          {isActive && (
+            <span
+              aria-hidden
+              className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 size-[5px] rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
+            />
           )}
         </>
       )}
