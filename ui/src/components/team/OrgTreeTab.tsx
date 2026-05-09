@@ -9,9 +9,10 @@ import { queryKeys } from "../../lib/queryKeys";
 import { agentStatusDotHex, agentStatusDotHexDefault } from "../../lib/status-colors";
 import { TeamOrgOverlay } from "./TeamOrgOverlay";
 import { computeTeamBoxes, type LaidOutCard } from "./teamBoundingBox";
-import { Network, MoreVertical, Plus, Minus, Maximize2 } from "lucide-react";
+import { Network, MoreVertical, Plus, Minus, Maximize2, Star } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ClickableDiv } from "../ui/clickable-div";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -565,12 +566,14 @@ function AgentNodeCard({
       aria-label={`View agent ${node.name}`}
     >
       {isChiefOfStaff && (
-        <span
-          className="absolute -top-2.5 left-3 rounded bg-amber-500 text-white px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide shadow-sm"
+        <Badge
+          variant="secondary"
+          className="absolute -top-2.5 left-3 bg-amber-500 text-white border-0 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide shadow-sm gap-1"
           aria-label="Chief of Staff (apex executive)"
         >
-          ⭐ Chief of Staff
-        </span>
+          <Star className="h-2.5 w-2.5 fill-current" />
+          Chief of Staff
+        </Badge>
       )}
       <div className="flex items-center px-4 py-3 gap-3">
         <div className="relative shrink-0">
