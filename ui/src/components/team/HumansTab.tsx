@@ -167,13 +167,21 @@ function PendingInvitesSection({
   });
 
   return (
-    <div className="rounded-2xl border border-border bg-card p-5">
-      <h2 className="text-sm font-semibold">Pending invites</h2>
-      <div className="mt-3 space-y-2">
-        {pendingInvites.map((invite) => (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Pending invites
+          <span className="ml-2 font-mono text-[10px] tabular-nums">{pendingInvites.length}</span>
+        </h3>
+      </div>
+      <div className="rounded-md border border-border overflow-hidden">
+        {pendingInvites.map((invite, idx) => (
           <div
             key={invite.id}
-            className="flex flex-col gap-1 rounded-lg border border-border/80 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
+            className={cn(
+              "flex flex-col gap-1 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between",
+              idx < pendingInvites.length - 1 && "border-b border-border-soft",
+            )}
           >
             <div>
               <div className="font-medium">{invite.email ?? "Pending invite"}</div>
@@ -260,16 +268,19 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
   return (
     <TooltipProvider>
       <div className="space-y-6">
-        <div className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="space-y-1">
-            <h2 className="text-lg font-semibold">Team Members</h2>
-            <p className="text-sm text-muted-foreground">
-              Manage roles, reporting structure, and invites for human collaborators.
+        <header className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-bold">
+              Humans
+              <span className="ml-1 text-xs font-medium text-muted-foreground">{members.length}</span>
+            </h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Roles, reporting structure, and invites for human collaborators.
             </p>
           </div>
           <div className="flex gap-2">
             {isSystemAdmin && (
-              <Button variant="outline" onClick={() => setTransferAdminOpen(true)}>
+              <Button variant="outline" size="sm" onClick={() => setTransferAdminOpen(true)}>
                 <ArrowRightLeft className="mr-1.5 h-4 w-4" />
                 Transfer Admin
               </Button>
@@ -279,6 +290,7 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
               tooltip="You don't have permission to add members"
             >
               <Button
+                size="sm"
                 onClick={() => setAddMemberOpen(true)}
                 disabled={!permissions.canInviteUsers}
               >
@@ -287,7 +299,7 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
               </Button>
             </PermissionDisabledButton>
           </div>
-        </div>
+        </header>
 
         {members.length === 0 && pendingInvites.length === 0 ? (
           <EmptyState
