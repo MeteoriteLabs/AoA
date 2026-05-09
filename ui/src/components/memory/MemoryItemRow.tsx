@@ -77,7 +77,7 @@ export function MemoryItemRow({ row, active, onSelect }: Props) {
           {row.category && (
             <MemoryChip
               label={row.category}
-              tone={CATEGORY_TONE[row.category as MemoryItemCategory]}
+              tone={CATEGORY_TONE[row.category as MemoryItemCategory] ?? "slate"}
             />
           )}
 
