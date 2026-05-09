@@ -166,24 +166,7 @@ export interface CreateTeamInput {
   parentProjectId: string;
   description?: string;
   manifest?: Partial<TeamManifest>;
-  // P1: optional inline members. When provided, the team-create + member
-  // inserts run in a single transaction so a partial-failure cannot leave an
-  // orphan team with missing members. When omitted, behavior matches the
-  // pre-P1 single-row insert.
   members?: Array<{ agentId: string; role: TeamRole }>;
-  // P1-G: optional inline new-agent specs. When provided, the service
-  // creates the agents + agent_projects rows + team + team_members
-  // atomically in a single transaction. Avoids the BuildFromScratchForm
-  // pattern of looping per-agent INSERTs before the team-create call,
-  // which orphaned partial agent rows on team-insert failure.
-  newAgents?: Array<{
-    name: string;
-    adapterType: (typeof AGENT_ADAPTER_TYPES)[number];
-    role: TeamRole;
-    title?: string | null;
-    icon?: (typeof AGENT_ICON_NAMES)[number] | null;
-    skillKeys?: string[];
-  }>;
 }
 
 export interface UpdateTeamInput {
@@ -225,33 +208,6 @@ export const createTeamSchema = z.object({
       z.object({
         agentId: z.string().uuid(),
         role: TeamRoleSchema,
-      }),
-    )
-    .optional(),
-  /**
-   * P1-G: optional inline new-agent specs. The service inserts agents +
-   * agent_projects + team + team_members atomically — any failure rolls
-   * back every preceding insert. The total lead count across `members`
-   * and `newAgents` is bounded by the at-most-one-lead invariant.
-   *
-   * NOTE: this path bypasses the regular agent-hire normalizations that
-   * `POST /companies/:cid/agents` performs (adapter-config defaults, secret
-   * resolution, shortname collision check, permission normalization,
-   * default AGENTS.md bundle, board-approval gate). This matches the
-   * precedent set by `teamImportService.install` for inline new agents.
-   * Founders using this path are committing to a "fast" team-build flow;
-   * advanced agent configuration should still go through the dedicated
-   * agent-hire route.
-   */
-  newAgents: z
-    .array(
-      z.object({
-        name: z.string().min(1).max(128),
-        adapterType: z.enum(AGENT_ADAPTER_TYPES).default("claude_local"),
-        role: TeamRoleSchema,
-        title: z.string().nullable().optional(),
-        icon: z.enum(AGENT_ICON_NAMES).nullable().optional(),
-        skillKeys: z.array(z.string()).optional(),
       }),
     )
     .optional(),

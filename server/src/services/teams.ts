@@ -1,6 +1,6 @@
 import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { teams, teamMembers, agentProjects, projects, agents, teamCoordinations } from "@armyofagents/db";
+import { teams, teamMembers, agentProjects, projects, teamCoordinations } from "@armyofagents/db";
 import type {
   CreateTeamInput,
   UpdateTeamInput,
@@ -144,12 +144,7 @@ export function teamsService(db: Db) {
       }
 
       const memberInputs = input.members ?? [];
-      const newAgentInputs = input.newAgents ?? [];
 
-      // P1: when caller supplies inline existing-agent members, validate them
-      // BEFORE the transaction. Failing fast lets us surface a clean error
-      // rather than entering the slug-retry loop and rolling back. We enforce
-      // every agent is in the parent dept (Convention C-6).
       if (memberInputs.length > 0) {
         const agentIds = memberInputs.map((m) => m.agentId);
         const deptMemberships = await db
@@ -172,71 +167,12 @@ export function teamsService(db: Db) {
         }
       }
 
-      // At-most-one-lead is enforced across the COMBINED set of existing
-      // members + new agents — newAgents can ship a lead, and the partial
-      // unique index `team_members_one_lead_uq` would otherwise reject the
-      // second lead row at the team_members insert and force a tx rollback.
-      const leadCount =
-        memberInputs.filter((m) => m.role === "lead").length +
-        newAgentInputs.filter((a) => a.role === "lead").length;
+      const leadCount = memberInputs.filter((m) => m.role === "lead").length;
       if (leadCount > 1) {
         throw badRequest(`at most one lead per team, got ${leadCount}`);
       }
 
-      // Slug uniqueness is enforced by the (companyId, slug) unique index
-      // (teams_company_slug_uq). The team insert + (optional) member
-      // inserts run inside one transaction so partial success is
-      // impossible — the helper handles 23505 retries internally.
       return db.transaction(async (tx) => {
-        // P1-G: Atomically: create new agents → link to dept → create team
-        // → link members. Prior implementation looped INSERTs across
-        // multiple round-trips outside any transaction. A failure on the
-        // team insert orphaned every already-committed agent +
-        // agent_projects row. This whole block now rolls back together.
-        //
-        // Index-based mapping (not name-keyed): the agents table has no
-        // unique constraint on name, so two newAgents may share the same
-        // name. The insert preserves input order (single VALUES clause),
-        // so mapping by position is the safe identity.
-        let insertedAgents: Array<{ id: string; name: string }> = [];
-
-        if (newAgentInputs.length > 0) {
-          // P1-G atomicity: insert new agents inline. We deliberately skip the
-          // per-agent normalizations from POST /agents (adapter-config defaults,
-          // shortname collision check, AGENTS.md bundle, approval gate) for the
-          // fast team-build flow. Same precedent as team-import.install.
-          insertedAgents = await tx
-            .insert(agents)
-            .values(
-              newAgentInputs.map((a) => ({
-                companyId,
-                name: a.name,
-                adapterType: a.adapterType,
-                role: "general" as const,
-                title: a.title ?? null,
-                icon: a.icon ?? null,
-                skillKeys: a.skillKeys ?? [],
-                status: "idle" as const,
-                permissions: { canCreateAgents: false },
-                runtimeConfig: {},
-                adapterConfig: {},
-                spentMonthlyCents: 0,
-                budgetMonthlyCents: 0,
-                lastHeartbeatAt: null,
-              })),
-            )
-            .returning({ id: agents.id, name: agents.name });
-
-          // Link each to the parent dept.
-          await tx.insert(agentProjects).values(
-            insertedAgents.map((a) => ({
-              agentId: a.id,
-              projectId: input.parentProjectId,
-              companyId,
-            })),
-          );
-        }
-
         const team = await insertTeamWithUniqueSlug(tx, {
           companyId,
           parentProjectId: input.parentProjectId,
@@ -245,28 +181,14 @@ export function teamsService(db: Db) {
           manifest: input.manifest ?? {},
         });
 
-        // Combine member rows: existing members + newly-created agents
-        // (mapped to ids by position — see comment above).
-        const allMemberRows = [
-          ...memberInputs.map((m) => ({
-            teamId: team.id,
-            agentId: m.agentId,
-            role: m.role,
-          })),
-          ...newAgentInputs.map((a, idx) => {
-            const inserted = insertedAgents[idx];
-            if (!inserted) {
-              // Should be unreachable — RETURNING preserves input order.
-              throw new Error(
-                `newAgent at index ${idx} (${a.name}) did not produce an agent id`,
-              );
-            }
-            return { teamId: team.id, agentId: inserted.id, role: a.role };
-          }),
-        ];
-
-        if (allMemberRows.length > 0) {
-          await tx.insert(teamMembers).values(allMemberRows);
+        if (memberInputs.length > 0) {
+          await tx.insert(teamMembers).values(
+            memberInputs.map((m) => ({
+              teamId: team.id,
+              agentId: m.agentId,
+              role: m.role,
+            })),
+          );
         }
 
         return team;
