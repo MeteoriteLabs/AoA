@@ -42,14 +42,34 @@ describe("useMemoryTabs", () => {
     expect(result.current.activeKey).toEqual({ id: "i1", kind: "memory_item" });
   });
 
-  it("close removes the tab and shifts active to the previous one", () => {
+  it("close on the active tab shifts activeKey to the previous tab", () => {
     const { result } = renderHook(() => useMemoryTabs(), { wrapper: wrapper("/x") });
     act(() => result.current.openOrActivate({ id: "i1", kind: "memory_item", title: "A" }));
     act(() => result.current.openOrActivate({ id: "i2", kind: "memory_item", title: "B" }));
     act(() => result.current.openOrActivate({ id: "i3", kind: "memory_item", title: "C" }));
+    // i3 is active (last opened). Closing it shifts active to the prior tab.
+    act(() => result.current.close("i3", "memory_item"));
+    expect(result.current.tabs.map((t) => t.id)).toEqual(["i1", "i2"]);
+    expect(result.current.activeKey).toEqual({ id: "i2", kind: "memory_item" });
+  });
+
+  it("close on an INACTIVE tab leaves activeKey unchanged (focus stays on what you were reading)", () => {
+    const { result } = renderHook(() => useMemoryTabs(), { wrapper: wrapper("/x") });
+    act(() => result.current.openOrActivate({ id: "i1", kind: "memory_item", title: "A" }));
+    act(() => result.current.openOrActivate({ id: "i2", kind: "memory_item", title: "B" }));
+    act(() => result.current.openOrActivate({ id: "i3", kind: "memory_item", title: "C" }));
+    // i3 is active. Closing the inactive i2 must not shift focus.
     act(() => result.current.close("i2", "memory_item"));
     expect(result.current.tabs.map((t) => t.id)).toEqual(["i1", "i3"]);
-    expect(result.current.activeKey).toEqual({ id: "i1", kind: "memory_item" });
+    expect(result.current.activeKey).toEqual({ id: "i3", kind: "memory_item" });
+  });
+
+  it("close on the only tab clears activeKey", () => {
+    const { result } = renderHook(() => useMemoryTabs(), { wrapper: wrapper("/x") });
+    act(() => result.current.openOrActivate({ id: "i1", kind: "memory_item", title: "A" }));
+    act(() => result.current.close("i1", "memory_item"));
+    expect(result.current.tabs).toEqual([]);
+    expect(result.current.activeKey).toBeNull();
   });
 
   it("setActive moves activeKey without modifying the tabs list", () => {

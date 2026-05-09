@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { useSearchParams, useLocation } from "@/lib/router";
 import {
   openOrActivate as openOrActivateReducer,
+  closeTab as closeTabReducer,
   type MemoryTab,
   type MemoryTabKind,
   type TabKey,
@@ -189,23 +190,6 @@ function writeState(params: URLSearchParams, state: TabsState): URLSearchParams 
   return params;
 }
 
-/**
- * Close a tab. Always shifts active to the tab immediately before the closed
- * one in the list (or the new first tab when the closed tab was first). When
- * the last tab is closed, activeKey becomes null. No-op when id+kind doesn't
- * match any open tab.
- */
-function closeTabWithPrevFocus(state: TabsState, id: string, kind: MemoryTabKind): TabsState {
-  const idx = state.tabs.findIndex((t) => t.id === id && t.kind === kind);
-  if (idx < 0) return state;
-
-  const tabs = state.tabs.filter((_, i) => i !== idx);
-  if (tabs.length === 0) return { tabs, activeKey: null };
-
-  const newActiveIndex = idx > 0 ? idx - 1 : 0;
-  return { tabs, activeKey: { id: tabs[newActiveIndex].id, kind: tabs[newActiveIndex].kind } };
-}
-
 export interface UseMemoryTabsResult {
   tabs: MemoryTab[];
   activeKey: TabKey | null;
@@ -244,7 +228,7 @@ export function useMemoryTabs(): UseMemoryTabsResult {
       setParams((prev) => {
         const next = new URLSearchParams(prev);
         const cur = readStateFromParams(next);
-        const updated = closeTabWithPrevFocus(cur, id, kind);
+        const updated = closeTabReducer(cur, id, kind);
         return writeState(next, updated);
       });
     },
