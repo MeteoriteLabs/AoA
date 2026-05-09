@@ -311,4 +311,11 @@ describe("SettingsPage redesign — Phase F shell", () => {
     renderSettings("/P4/settings?tab=commander&sub=capabilities");
     expect(await screen.findByLabelText(/Proactive scan interval/i)).toBeInTheDocument();
   });
+
+  it("does not render an Activity section in Settings", () => {
+    renderSettings("/P4/settings?tab=activity");
+    // The shell should fall back to General (default) for unknown tab values
+    // The "general" section heading ("General." h2) should appear, not an Activity heading
+    expect(screen.queryByText(/Activity event log/i)).toBeNull();
+  });
 });

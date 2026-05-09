@@ -115,4 +115,9 @@ describe("Sidebar — Phase E chrome", () => {
     const square = deptLink.querySelector("span[style*='background']");
     expect(square).not.toBeNull();
   });
+
+  it("renders Activity nav item under WORK section", () => {
+    renderSidebar();
+    expect(screen.getByText("Activity")).toBeInTheDocument();
+  });
 });
