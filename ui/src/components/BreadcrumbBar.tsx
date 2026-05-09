@@ -1,24 +1,12 @@
-import { Link, useNavigate } from "@/lib/router";
-import { Bot, Menu, Moon, Search, Sun } from "lucide-react";
+import { Link } from "@/lib/router";
+import { Menu, Search } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
-import { useTheme } from "../context/ThemeContext";
 import { Button } from "@/components/ui/button";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
-import { Fragment } from "react";
 
 export function BreadcrumbBar() {
-  const { breadcrumbs, subtitle, entityColor } = useBreadcrumbs();
-  const { toggleSidebar, toggleCollapse, isMobile } = useSidebar();
-  const navigate = useNavigate();
-  const { theme, toggleTheme } = useTheme();
+  const { breadcrumbs } = useBreadcrumbs();
+  const { toggleSidebar } = useSidebar();
 
   if (breadcrumbs.length === 0) return null;
 
@@ -26,105 +14,61 @@ export function BreadcrumbBar() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
   }
 
-  const menuButton = (
-    <Button
-      variant="ghost"
-      size="icon-sm"
-      className="mr-2 shrink-0"
-      onClick={isMobile ? toggleSidebar : toggleCollapse}
-      aria-label={isMobile ? "Open sidebar" : "Toggle sidebar"}
-    >
-      <Menu className="h-5 w-5" />
-    </Button>
-  );
+  // Show last 2 entries: parent (clickable, dim) · current (bold, foreground).
+  // Top-level pages have just 1 entry → render single title.
+  const lastTwo = breadcrumbs.slice(-2);
+  const hasParent = lastTwo.length === 2;
+  const parent = hasParent ? lastTwo[0] : null;
+  const current = lastTwo[hasParent ? 1 : 0]!;
 
-  const rightButtons = (
-    <div className="ml-auto flex items-center gap-0.5 shrink-0">
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        className="text-muted-foreground hover:text-foreground"
-        onClick={openSearch}
-        aria-label="Search (Cmd+K)"
-        title="Search (Cmd+K)"
-      >
-        <Search className="h-4 w-4" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        className="text-muted-foreground hover:text-foreground"
-        onClick={toggleTheme}
-        aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-        title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-      >
-        {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        className="text-muted-foreground hover:text-foreground"
-        onClick={() => navigate("/commander")}
-        aria-label="Commander"
-        title="Commander"
-      >
-        <Bot className="h-4 w-4" />
-      </Button>
-    </div>
-  );
-
-  // Single breadcrumb = page title (Title Case, with optional subtitle)
-  if (breadcrumbs.length === 1) {
-    return (
-      <div
-        className="border-b border-border px-4 md:px-6 shrink-0 flex items-center min-w-0 overflow-hidden"
-        style={entityColor ? { borderTopWidth: "2px", borderTopColor: entityColor, minHeight: subtitle ? "3.5rem" : "3rem" } : { minHeight: subtitle ? "3.5rem" : "3rem" }}
-      >
-        {menuButton}
-        <div className="min-w-0 flex-1">
-          <h1 className="text-sm font-semibold tracking-wide truncate">
-            {breadcrumbs[0].label}
-          </h1>
-          {subtitle && (
-            <p className="text-[11px] text-muted-foreground truncate -mt-0.5">
-              {subtitle}
-            </p>
-          )}
-        </div>
-        {rightButtons}
-      </div>
-    );
-  }
-
-  // Multiple breadcrumbs = breadcrumb trail
   return (
-    <div
-      className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center min-w-0 overflow-hidden"
-      style={entityColor ? { borderTopWidth: "2px", borderTopColor: entityColor } : undefined}
-    >
-      {menuButton}
-      <Breadcrumb className="min-w-0 overflow-hidden flex-1">
-        <BreadcrumbList className="flex-nowrap">
-          {breadcrumbs.map((crumb, i) => {
-            const isLast = i === breadcrumbs.length - 1;
-            return (
-              <Fragment key={i}>
-                {i > 0 && <BreadcrumbSeparator />}
-                <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
-                  {isLast || !crumb.href ? (
-                    <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
-                  ) : (
-                    <BreadcrumbLink asChild>
-                      <Link to={crumb.href}>{crumb.label}</Link>
-                    </BreadcrumbLink>
-                  )}
-                </BreadcrumbItem>
-              </Fragment>
-            );
-          })}
-        </BreadcrumbList>
-      </Breadcrumb>
-      {rightButtons}
+    <div className="border-b border-border px-4 md:px-6 h-11 shrink-0 flex items-center min-w-0 overflow-hidden">
+      {/* Mobile-only hamburger */}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="md:hidden mr-2 shrink-0"
+        onClick={toggleSidebar}
+        aria-label="Open sidebar"
+      >
+        <Menu className="h-5 w-5" />
+      </Button>
+
+      {/* Breadcrumb / page title */}
+      <div className="flex items-center gap-1.5 min-w-0 flex-1">
+        {parent && (
+          <>
+            {parent.href ? (
+              <Link
+                to={parent.href}
+                className="text-[13px] text-muted-foreground hover:text-foreground truncate"
+              >
+                {parent.label}
+              </Link>
+            ) : (
+              <span className="text-[13px] text-muted-foreground truncate">{parent.label}</span>
+            )}
+            <span className="text-muted-foreground/60 shrink-0" aria-hidden>·</span>
+          </>
+        )}
+        <h1 className="text-[14px] font-semibold tracking-wide truncate">
+          {current.label}
+        </h1>
+      </div>
+
+      {/* Right side — just search */}
+      <div className="ml-auto flex items-center gap-0.5 shrink-0">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="text-muted-foreground hover:text-foreground"
+          onClick={openSearch}
+          aria-label="Search (Cmd+K)"
+          title="Search (Cmd+K)"
+        >
+          <Search className="h-4 w-4" />
+        </Button>
+      </div>
     </div>
   );
 }
