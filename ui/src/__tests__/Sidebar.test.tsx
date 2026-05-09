@@ -97,4 +97,22 @@ describe("Sidebar — Phase E chrome", () => {
     expect(homeLink.className).toContain("bg-brand/[0.08]");
     expect(homeLink.className).not.toContain("bg-accent");
   });
+
+  it("renders project rows with a Rocket icon tinted in project.color", async () => {
+    renderSidebar();
+    const projectLink = await screen.findByRole("link", { name: /Q4 launch/ });
+    // The project icon is an SVG; lucide-react renders <svg class="lucide lucide-rocket">.
+    const rocketSvg = projectLink.querySelector("svg.lucide-rocket");
+    expect(rocketSvg).not.toBeNull();
+    expect(rocketSvg).toHaveAttribute("style", expect.stringContaining("color"));
+  });
+
+  it("renders department rows with a colored square (no Rocket)", async () => {
+    renderSidebar();
+    const deptLink = await screen.findByRole("link", { name: /Engineering/ });
+    expect(deptLink.querySelector("svg.lucide-rocket")).toBeNull();
+    // The colored square is a 14×14 span with inline backgroundColor
+    const square = deptLink.querySelector("span[style*='background']");
+    expect(square).not.toBeNull();
+  });
 });
