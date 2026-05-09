@@ -495,6 +495,31 @@ Help text in 0.7rem, 55% opacity (or red error message)
 </Dialog>
 ```
 
+#### Dialog body padding (post-Phase H)
+
+Background: the May-7 Dialog restyle (commit `6d133e2`) changed `DialogContent` from `p-6` (built-in body padding) to `p-0` (no padding). `DialogHeader` and `DialogFooter` pad themselves; the body content between them is the consumer's responsibility.
+
+**Rule: always wrap body content in `<DialogBody>`.**
+
+```tsx
+<Dialog>
+  <DialogContent>
+    <DialogHeader>...</DialogHeader>
+    <DialogBody>
+      {/* form fields, grids, anything between header and footer */}
+    </DialogBody>
+    <DialogFooter>...</DialogFooter>
+  </DialogContent>
+</Dialog>
+```
+
+`DialogBody` defaults to `px-7 py-4`. The horizontal `px-7` matches `DialogHeader`'s inset (canonical). Override the className for tighter or looser layouts (e.g., `<DialogBody className="px-0 py-4">` for a full-bleed scroller).
+
+**Exceptions** (do NOT use DialogBody):
+- **Bespoke `p-0 gap-0` modals** (e.g., `NewAgentDialog`, `NewIssueDialog`, `NewGoalDialog`, `NewProjectDialog`) — explicitly opt out and roll their own layout.
+- **SR-only title patterns** (e.g., `CommandDialog`, `ImageGalleryModal`, `MemoryQuickSwitcher`) — visible content IS the body; padding handled per-pattern.
+- **Confirmation modals** with only header + footer (no form body) — description sits inside the padded header.
+
 ### 9.4 Sheets (slideovers)
 
 **When to use:** detail views where users want context behind to stay visible — task detail, agent detail, memory item editor. Existing `TaskSlideOver` is the canonical example.
