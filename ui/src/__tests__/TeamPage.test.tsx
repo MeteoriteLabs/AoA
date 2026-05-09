@@ -13,7 +13,7 @@ vi.mock("../context/BreadcrumbContext", () => ({
 }));
 
 vi.mock("../context/SidebarContext", () => ({
-  useSidebar: () => ({ isMobile: false }),
+  useSidebar: () => ({ isMobile: false, setCollapsed: vi.fn() }),
 }));
 
 vi.mock("../context/ToastContext", () => ({
@@ -63,21 +63,21 @@ describe("TeamPage", () => {
     mockCompanyContext.selectedCompanyId = "comp-1";
   });
 
-  it("renders three tabs", () => {
+  it("renders the team sections", () => {
     renderWithProviders(<TeamPage />);
 
     expect(screen.getByText("Org Tree")).toBeInTheDocument();
     expect(screen.getByText("Agents")).toBeInTheDocument();
     expect(screen.getByText("Humans")).toBeInTheDocument();
+    expect(screen.getByText("Teams")).toBeInTheDocument();
   });
 
   it("defaults to Org Tree tab", () => {
     renderWithProviders(<TeamPage />);
 
-    const orgTab = screen.getByText("Org Tree");
-    // The active tab trigger has data-state="active"
-    expect(orgTab.closest("[data-state]")?.getAttribute("data-state")).toBe(
-      "active",
+    expect(screen.getByRole("button", { name: /org tree/i })).toHaveAttribute(
+      "data-active",
+      "true",
     );
   });
 
@@ -87,31 +87,31 @@ describe("TeamPage", () => {
 
     await user.click(screen.getByText("Agents"));
 
-    const agentsTab = screen.getByText("Agents");
-    expect(
-      agentsTab.closest("[data-state]")?.getAttribute("data-state"),
-    ).toBe("active");
+    expect(screen.getByRole("button", { name: /agents/i })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
   });
 
   it("opens correct tab from direct URL", () => {
     renderWithProviders(<TeamPage />, {
-      initialEntries: ["/org?tab=humans"],
+      initialEntries: ["/team?tab=humans"],
     });
 
-    const humansTab = screen.getByText("Humans");
-    expect(
-      humansTab.closest("[data-state]")?.getAttribute("data-state"),
-    ).toBe("active");
+    expect(screen.getByRole("button", { name: /humans/i })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
   });
 
   it("falls back to Org Tree for invalid tab param", () => {
     renderWithProviders(<TeamPage />, {
-      initialEntries: ["/org?tab=invalid"],
+      initialEntries: ["/team?tab=invalid"],
     });
 
-    const orgTab = screen.getByText("Org Tree");
-    expect(orgTab.closest("[data-state]")?.getAttribute("data-state")).toBe(
-      "active",
+    expect(screen.getByRole("button", { name: /org tree/i })).toHaveAttribute(
+      "data-active",
+      "true",
     );
   });
 

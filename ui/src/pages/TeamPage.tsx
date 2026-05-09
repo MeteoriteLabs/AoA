@@ -13,24 +13,31 @@ import { queryKeys } from "../lib/queryKeys";
 import { OrgTreeTab, type OrgNodeAction } from "../components/team/OrgTreeTab";
 import { AgentsTab } from "../components/team/AgentsTab";
 import { HumansTab } from "../components/team/HumansTab";
+import { TeamLayout, type TeamSectionId } from "../components/team/TeamLayout";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { PageTabBar } from "../components/PageTabBar";
-import { Tabs } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-const VALID_TABS = ["org", "agents", "humans"] as const;
+const VALID_TABS = ["org", "agents", "humans", "teams"] as const;
 type TeamTab = (typeof VALID_TABS)[number];
 
 function isValidTab(value: string | null): value is TeamTab {
   return VALID_TABS.includes(value as TeamTab);
 }
 
-const TAB_ITEMS = [
-  { value: "org", label: "Org Tree" },
-  { value: "agents", label: "Agents" },
-  { value: "humans", label: "Humans" },
-];
+const TAB_TO_SECTION: Record<TeamTab, TeamSectionId> = {
+  org: "org-tree",
+  agents: "agents",
+  humans: "humans",
+  teams: "teams",
+};
+
+const SECTION_TO_TAB: Record<TeamSectionId, TeamTab> = {
+  "org-tree": "org",
+  agents: "agents",
+  humans: "humans",
+  teams: "teams",
+};
 
 export function TeamPage() {
   const { selectedCompanyId } = useCompany();
@@ -158,57 +165,47 @@ export function TeamPage() {
 
   return (
     <TooltipProvider>
-      <div className="space-y-6">
-        {/* Page header */}
-        <div className="rounded-2xl border border-border bg-card p-5">
-          <div className="space-y-1">
-            <h1 className="text-lg font-semibold">Team</h1>
-            <p className="text-sm text-muted-foreground">
-              Manage your organization, agents, and team members.
-            </p>
-          </div>
-        </div>
+      <TeamLayout
+        activeSection={TAB_TO_SECTION[activeTab]}
+        onSectionChange={(id) => handleTabChange(SECTION_TO_TAB[id])}
+        counts={{
+          agents: agentsQuery.data?.length,
+          humans: teamSummary?.members.length,
+          teams: undefined,
+        }}
+      >
+        {isLoading && <PageSkeleton variant={activeTab === "org" ? "org-chart" : "list"} />}
 
-        {/* Tabbed content */}
-        <Tabs value={activeTab} onValueChange={handleTabChange}>
-          <PageTabBar
-            items={TAB_ITEMS}
-            value={activeTab}
-            onValueChange={handleTabChange}
+        {!isLoading && activeTab === "org" && (
+          <OrgTreeTab
+            orgTree={orgTreeQuery.data ?? []}
+            pendingInvites={teamSummary?.pendingInvites}
+            onNodeClick={handleNodeClick}
+            onNodeAction={handleNodeAction}
           />
+        )}
 
-          {isLoading && <PageSkeleton variant={activeTab === "org" ? "org-chart" : "list"} />}
+        {!isLoading && activeTab === "agents" && (
+          <AgentsTab
+            agents={agentsQuery.data ?? []}
+            orgTree={orgTreeQuery.data ?? []}
+            highlightId={highlightId}
+            permissions={{ isFounder: role === "founder" }}
+            onMutationSuccess={invalidateAll}
+          />
+        )}
 
-          {!isLoading && activeTab === "org" && (
-            <OrgTreeTab
-              orgTree={orgTreeQuery.data ?? []}
-              pendingInvites={teamSummary?.pendingInvites}
-              onNodeClick={handleNodeClick}
-              onNodeAction={handleNodeAction}
-            />
-          )}
-
-          {!isLoading && activeTab === "agents" && (
-            <AgentsTab
-              agents={agentsQuery.data ?? []}
-              orgTree={orgTreeQuery.data ?? []}
-              highlightId={highlightId}
-              permissions={{ isFounder: role === "founder" }}
-              onMutationSuccess={invalidateAll}
-            />
-          )}
-
-          {!isLoading && activeTab === "humans" && teamSummary && (
-            <HumansTab
-              teamSummary={teamSummary}
-              highlightId={highlightId}
-              permissions={permissions}
-              isSystemAdmin={teamSummary.currentUser?.isSystemAdmin ?? false}
-              onMutationSuccess={invalidateAll}
-            />
-          )}
-        </Tabs>
-      </div>
+        {!isLoading && activeTab === "humans" && teamSummary && (
+          <HumansTab
+            teamSummary={teamSummary}
+            highlightId={highlightId}
+            permissions={permissions}
+            isSystemAdmin={teamSummary.currentUser?.isSystemAdmin ?? false}
+            onMutationSuccess={invalidateAll}
+          />
+        )}
+        {/* "teams" section wired in Task E1 */}
+      </TeamLayout>
     </TooltipProvider>
   );
 }
