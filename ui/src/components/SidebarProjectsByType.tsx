@@ -199,7 +199,7 @@ export function SidebarProjectsByType({ type, label, collapsed }: SidebarProject
           <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
             <ChevronRight
               className={cn(
-                "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
+                "size-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
                 open && "rotate-90"
               )}
             />
@@ -212,10 +212,10 @@ export function SidebarProjectsByType({ type, label, collapsed }: SidebarProject
               e.stopPropagation();
               openNewProject({ type });
             }}
-            className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
+            className="flex items-center justify-center size-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
             aria-label={newLabel}
           >
-            <Plus className="h-3 w-3" />
+            <Plus className="size-3" />
           </button>
         </div>
       </div>
