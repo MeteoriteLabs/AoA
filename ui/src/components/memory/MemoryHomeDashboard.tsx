@@ -1,5 +1,4 @@
 import { Search } from "lucide-react";
-import { PendingReviewBanner } from "./PendingReviewBanner";
 import { LayerTilesPanel } from "./LayerTilesPanel";
 import { MemoryRecentsStrip } from "./MemoryRecentsStrip";
 
@@ -22,8 +21,6 @@ export function MemoryHomeDashboard({ companyId }: MemoryHomeDashboardProps) {
   return (
     <div className="h-full overflow-auto">
       <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-5 sm:space-y-6">
-        <PendingReviewBanner companyId={companyId} />
-
         <button
           type="button"
           onClick={() =>

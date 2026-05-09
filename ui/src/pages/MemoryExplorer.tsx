@@ -6,9 +6,8 @@ import type { PanelImperativeHandle } from "react-resizable-panels";
 import { MemoryTree } from "../components/memory/MemoryTree";
 import { MemoryFileList } from "../components/memory/MemoryFileList";
 import { MemoryViewer } from "../components/memory/MemoryViewer";
-import { MemoryUploadButton } from "../components/memory/MemoryUploadButton";
-import { MemoryScopedSearch } from "../components/memory/MemoryScopedSearch";
 import { MemoryHomeDashboard } from "../components/memory/MemoryHomeDashboard";
+import { MemoryToolbar } from "../components/memory/MemoryToolbar";
 import { CollapsedRail } from "../components/memory/CollapsedRail";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -66,19 +65,13 @@ export function MemoryExplorer() {
 
   return (
     <div className="h-full flex flex-col">
-      {!isHomeSelected && (
-        <div className="flex items-center justify-end gap-2 px-3 py-2 border-b border-border bg-card/30">
-          <MemoryScopedSearch value={searchQuery} onChange={setSearchQuery} />
-          <span className="flex-1" />
-          {canUpload && (
-            <MemoryUploadButton
-              companyId={selectedCompanyId}
-              departmentId={departmentId}
-              folderPath={folderPath}
-            />
-          )}
-        </div>
-      )}
+      <MemoryToolbar
+        companyId={selectedCompanyId}
+        searchValue={searchQuery}
+        onSearchChange={setSearchQuery}
+        onNewItem={() => { /* stub: Task 7 wires the dialog */ }}
+        uploadContext={canUpload ? { departmentId, folderPath } : undefined}
+      />
       <Group
         orientation="horizontal"
         id="memory-explorer-panes"
