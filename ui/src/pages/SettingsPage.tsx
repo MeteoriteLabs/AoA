@@ -4,6 +4,11 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { SettingsLayout, type SettingsSectionId } from "@/components/settings/SettingsLayout";
 import { GeneralSection } from "@/components/settings/sections/GeneralSection";
 import { ArchiveCompanySection } from "@/components/settings/sections/ArchiveCompanySection";
+import { BudgetCapsSection } from "@/components/settings/sections/BudgetCapsSection";
+import { MCPApiKeysSection } from "@/components/settings/sections/MCPApiKeysSection";
+import { LLMProvidersSectionWrapper } from "@/components/settings/sections/LLMProvidersSectionWrapper";
+import { PluginsSectionWrapper } from "@/components/settings/sections/PluginsSectionWrapper";
+import { MarketplacePrefsSection } from "@/components/settings/sections/MarketplacePrefsSection";
 
 const VALID_SECTIONS: readonly SettingsSectionId[] = [
   "general", "commander", "llm", "budget", "mcp", "plugins", "marketplace", "archive",
@@ -17,8 +22,19 @@ function renderActiveSection(id: SettingsSectionId) {
   switch (id) {
     case "general":
       return <GeneralSection />;
+    case "llm":
+      return <LLMProvidersSectionWrapper />;
+    case "budget":
+      return <BudgetCapsSection />;
+    case "mcp":
+      return <MCPApiKeysSection />;
+    case "plugins":
+      return <PluginsSectionWrapper />;
+    case "marketplace":
+      return <MarketplacePrefsSection />;
     case "archive":
       return <ArchiveCompanySection />;
+    case "commander":
     default:
       return (
         <div className="p-8">
@@ -26,7 +42,7 @@ function renderActiveSection(id: SettingsSectionId) {
             Settings · {id}
           </div>
           <div className="mt-2 text-sm text-muted-foreground italic">
-            Section content will be wired in subsequent tasks (T3-T6).
+            Section content will be wired in subsequent tasks (T4).
           </div>
         </div>
       );

@@ -51,6 +51,94 @@ vi.mock("@/api/access", () => ({
   },
 }));
 
+// ─── Task 3 mocks ─────────────────────────────────────────────────────
+vi.mock("@/api/costs", () => ({
+  costsApi: {
+    summary: vi.fn().mockResolvedValue({
+      spendCents: 0,
+      budgetCents: 0,
+      utilizationPercent: 0,
+    }),
+    byAgent: vi.fn().mockResolvedValue([]),
+    byProject: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+vi.mock("@/api/budgets", () => ({
+  budgetsApi: {
+    overview: vi.fn().mockResolvedValue({
+      policies: [],
+      openIncidents: [],
+    }),
+    upsertPolicy: vi.fn().mockResolvedValue({ id: "p1" }),
+    deletePolicy: vi.fn().mockResolvedValue({ ok: true }),
+    resolveIncident: vi.fn().mockResolvedValue({ ok: true }),
+  },
+}));
+
+vi.mock("@/api/internal-agent", () => ({
+  internalAgentApi: {
+    getConfig: vi.fn().mockResolvedValue({
+      budgetMonthlyCents: null,
+      spentMonthlyCents: 0,
+    }),
+  },
+}));
+
+vi.mock("@/api/mcp", () => ({
+  mcpApi: {
+    status: vi.fn().mockResolvedValue({
+      enabled: false,
+      keyCount: 0,
+      connectedClients: 0,
+      endpointPath: "/api/companies/c1/mcp",
+    }),
+    listKeys: vi.fn().mockResolvedValue([]),
+    listClients: vi.fn().mockResolvedValue([]),
+    updateSettings: vi.fn().mockResolvedValue({}),
+    createKey: vi.fn().mockResolvedValue({ token: "abc" }),
+    revokeKey: vi.fn().mockResolvedValue({ ok: true }),
+  },
+}));
+
+vi.mock("@/api/secrets", () => ({
+  secretsApi: {
+    list: vi.fn().mockResolvedValue([]),
+    create: vi.fn().mockResolvedValue({}),
+    rotate: vi.fn().mockResolvedValue({}),
+    remove: vi.fn().mockResolvedValue({ ok: true }),
+  },
+}));
+
+vi.mock("@/api/plugins", () => ({
+  listCompanyPlugins: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("@/api/marketplace", () => ({
+  marketplaceApi: {
+    getSettings: vi.fn().mockResolvedValue({
+      pluginUpdatePolicy: "notify_all",
+      skillUpdatePolicy: "notify",
+      agentUpdatePolicy: "notify",
+      teamUpdatePolicy: "notify",
+      showTrustBadges: true,
+      showSourceInfo: true,
+      allowTeamLeadPlugins: false,
+      teamMemberCanRequestInstall: false,
+      requireFounderApproval: false,
+      catalogRefreshHours: 6,
+      updateCheckHours: 24,
+      updateWindow: "anytime",
+    }),
+    patchSettings: vi.fn().mockResolvedValue({}),
+    getUpdates: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+vi.mock("@/context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn(), dismissToast: vi.fn(), clearToasts: vi.fn(), toasts: [] }),
+}));
+
 function renderSettings(initialPath = "/P4/settings?tab=general") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -127,5 +215,49 @@ describe("SettingsPage redesign — Phase F shell", () => {
     // so the section's button is the additional one — expect more than the 2 nav buttons.
     const buttons = await screen.findAllByRole("button", { name: /Archive company/i });
     expect(buttons.length).toBeGreaterThan(2);
+  });
+
+  it("Budget section: renders date presets, summary, by-agent, by-project, open-incidents", async () => {
+    renderSettings("/P4/settings?tab=budget");
+    expect(await screen.findByRole("button", { name: /MTD/i })).toBeInTheDocument();
+    expect(screen.getByText(/By Agent/i)).toBeInTheDocument();
+    expect(screen.getByText(/By Project/i)).toBeInTheDocument();
+    expect(screen.getByText(/Open Incidents/i)).toBeInTheDocument();
+    expect(screen.getByText(/Open full Budget page/i)).toBeInTheDocument();
+  });
+
+  it("MCP API keys section: renders MCP server controls — NO GitHub card", async () => {
+    renderSettings("/P4/settings?tab=mcp");
+    // "MCP Server" appears in both the sub-section header and the toggle label.
+    const mcpServerMatches = await screen.findAllByText(/MCP Server/i);
+    expect(mcpServerMatches.length).toBeGreaterThan(0);
+    expect(screen.getByText(/API Key Management/i)).toBeInTheDocument();
+    // The GitHub card is GONE — no Connect, no PAT
+    expect(screen.queryByText(/Personal Access Token/i)).toBeNull();
+    expect(screen.queryByText(/Connect GitHub/i)).toBeNull();
+  });
+
+  it("Marketplace prefs section: renders Updates / Access / Catalog Refresh + updateWindow Select", async () => {
+    renderSettings("/P4/settings?tab=marketplace");
+    expect(await screen.findByText(/^Updates$/)).toBeInTheDocument();
+    expect(screen.getByText(/^Access$/)).toBeInTheDocument();
+    // "Catalog Refresh" appears in both the sub-section header and the field label.
+    const catalogMatches = screen.getAllByText(/Catalog Refresh/i);
+    expect(catalogMatches.length).toBeGreaterThan(0);
+    // Ghost setting — updateWindow
+    expect(screen.getByText(/Update window/i)).toBeInTheDocument();
+  });
+
+  it("LLM providers section: renders Anthropic, OpenAI, Google", async () => {
+    renderSettings("/P4/settings?tab=llm");
+    expect(await screen.findByText(/Anthropic/i)).toBeInTheDocument();
+    expect(screen.getByText(/OpenAI/i)).toBeInTheDocument();
+    expect(screen.getByText(/Google/i)).toBeInTheDocument();
+  });
+
+  it("Plugins section: renders the existing PluginsSection", async () => {
+    renderSettings("/P4/settings?tab=plugins");
+    // The PluginsSection renders an h2 with "Plugins" text + count
+    expect(await screen.findByRole("heading", { name: /Plugins/i })).toBeInTheDocument();
   });
 });
