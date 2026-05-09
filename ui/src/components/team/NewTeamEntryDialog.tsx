@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Sparkles, Upload, ShoppingBag } from "lucide-react";
+import { Sparkles, Upload } from "lucide-react";
 import {
   Dialog,
   DialogBody,
@@ -47,7 +47,7 @@ export function NewTeamEntryDialog({ open, initialMode, onOpenChange }: Props) {
         </DialogHeader>
 
         <DialogBody>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <OptionCard
               icon={<Sparkles className="h-5 w-5 text-indigo-500" />}
               title="Build from scratch"
@@ -63,14 +63,6 @@ export function NewTeamEntryDialog({ open, initialMode, onOpenChange }: Props) {
               cta="Upload →"
               onClick={() => setMode("import")}
             />
-            <OptionCard
-              icon={<ShoppingBag className="h-5 w-5 text-slate-400" />}
-              title="Browse marketplace"
-              description="Curated catalog of pre-built teams (Frontend, DevOps, Content, etc.)."
-              cta="Coming soon"
-              disabled
-              badge="SOON"
-            />
           </div>
         </DialogBody>
       </DialogContent>
@@ -85,40 +77,20 @@ interface OptionCardProps {
   cta: string;
   onClick?: () => void;
   highlighted?: boolean;
-  disabled?: boolean;
-  badge?: string;
 }
 
-function OptionCard({
-  icon,
-  title,
-  description,
-  cta,
-  onClick,
-  highlighted,
-  disabled,
-  badge,
-}: OptionCardProps) {
+function OptionCard({ icon, title, description, cta, onClick, highlighted }: OptionCardProps) {
   return (
     <button
       type="button"
       onClick={onClick}
-      disabled={disabled}
       className={cn(
-        "relative flex flex-col rounded-lg border p-4 text-left transition-all",
+        "flex flex-col rounded-lg border p-4 text-left transition-all hover:border-slate-400",
         highlighted
           ? "border-2 border-indigo-500 bg-indigo-50/40 dark:bg-indigo-950/20"
           : "border-border",
-        disabled
-          ? "cursor-not-allowed opacity-60"
-          : "hover:border-slate-400",
       )}
     >
-      {badge && (
-        <span className="absolute right-2.5 top-2.5 rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
-          {badge}
-        </span>
-      )}
       <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-md bg-accent">
         {icon}
       </div>
