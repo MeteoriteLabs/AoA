@@ -13,7 +13,6 @@ import { cn, formatCents, agentUrl } from "../../lib/utils";
 import { adapterLabels, roleLabels } from "../agent-config-primitives";
 import { AgentIcon } from "../AgentIconPicker";
 import { TrustScoreBadge } from "../TrustScoreBadge";
-import { TeamsSection } from "./TeamsSection";
 
 import { StatusBadge } from "../StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -160,66 +159,40 @@ export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScor
 
   if (agents.length === 0) {
     return (
-      <div className="space-y-4">
-        {/* Teams section renders above even when there are no individual agents */}
-        <TeamsSection />
-
-        <section>
-          <header className="mb-3">
-            <h2 className="text-sm font-bold">
-              Individual agents <span className="ml-1 text-xs font-medium text-muted-foreground">0</span>
-            </h2>
-            {/* Subtitle says "All agents" rather than "not on any team" to
-                match the unfiltered list shown below. Proper team-membership
-                filtering is deferred to v1.1 (would require fetching every
-                team's members). */}
-            <p className="mt-0.5 text-xs text-muted-foreground">All agents in this department</p>
-          </header>
-          <div className="flex items-center justify-center py-12 text-center">
-            <div className="space-y-3">
-              <Bot className="h-10 w-10 mx-auto text-muted-foreground/50" />
-              <p className="text-sm text-muted-foreground">No agents yet</p>
-              {permissions.isFounder && (
-                <Button size="sm" onClick={openNewAgent}>
-                  <Plus className="h-3.5 w-3.5 mr-1.5" />
-                  New Agent
-                </Button>
-              )}
-            </div>
-          </div>
-        </section>
+      <div className="flex items-center justify-center py-12 text-center">
+        <div className="space-y-3">
+          <Bot className="h-10 w-10 mx-auto text-muted-foreground/50" />
+          <p className="text-sm text-muted-foreground">No agents yet</p>
+          {permissions.isFounder && (
+            <Button size="sm" onClick={openNewAgent}>
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              New Agent
+            </Button>
+          )}
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      {/* NEW: Teams section at the top */}
-      <TeamsSection />
+      <header className="mb-3 flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-bold">
+            Agents <span className="ml-1 text-xs font-medium text-muted-foreground">{agents.length}</span>
+          </h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">All agents in this department</p>
+        </div>
+        {permissions.isFounder && (
+          <Button size="sm" variant="outline" onClick={openNewAgent}>
+            <Plus className="h-3.5 w-3.5 mr-1.5" />
+            New Agent
+          </Button>
+        )}
+      </header>
 
-      {/* Individual agents section (existing content, restructured) */}
-      <section>
-        <header className="mb-3 flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-bold">
-              Individual agents <span className="ml-1 text-xs font-medium text-muted-foreground">{agents.length}</span>
-            </h2>
-            {/* Subtitle says "All agents" rather than "not on any team" to
-                match the unfiltered list shown below. Proper team-membership
-                filtering is deferred to v1.1 (would require fetching every
-                team's members). */}
-            <p className="mt-0.5 text-xs text-muted-foreground">All agents in this department</p>
-          </div>
-          {permissions.isFounder && (
-            <Button size="sm" variant="outline" onClick={openNewAgent}>
-              <Plus className="h-3.5 w-3.5 mr-1.5" />
-              New Agent
-            </Button>
-          )}
-        </header>
-
-        {/* Agent cards grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {/* Agent cards grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {agents.map((agent) => {
           const isHighlighted = agent.id === highlightId;
           const statusColor = agentStatusDot[agent.status] ?? agentStatusDotDefault;
@@ -364,8 +337,7 @@ export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScor
             </div>
           );
         })}
-        </div>
-      </section>
+      </div>
 
       {/* Edit Agent Dialog */}
       {/* Confirmation Dialog */}
