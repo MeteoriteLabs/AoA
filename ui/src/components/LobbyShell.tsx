@@ -36,6 +36,12 @@ interface LobbyShellProps {
    * (where the secondary sidebar takes prominence) and similar pages.
    */
   defaultCollapsed?: boolean;
+  /**
+   * Optional secondary sidebar rendered flush between the primary sidebar and
+   * the main content. Hidden on mobile (the primary drawer covers the nav
+   * surface on small viewports). Used by Settings — see InstanceSettingsPage.
+   */
+  secondarySidebar?: ReactNode;
   /** Page content rendered in the main column. */
   children: ReactNode;
 }
@@ -53,6 +59,7 @@ export function LobbyShell({
   activeItem,
   onCreateCompany,
   defaultCollapsed,
+  secondarySidebar,
   children,
 }: LobbyShellProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -85,6 +92,11 @@ export function LobbyShell({
             />
           </SheetContent>
         </Sheet>
+
+        {/* Optional secondary sidebar — flush with the primary, desktop only */}
+        {secondarySidebar && (
+          <div className="hidden md:flex">{secondarySidebar}</div>
+        )}
 
         {/* Main column — pages own their padding/layout */}
         <main className="flex flex-1 flex-col overflow-auto min-w-0">{children}</main>

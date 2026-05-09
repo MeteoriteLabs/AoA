@@ -144,7 +144,18 @@ export function InstanceSettingsPage() {
   const enableWorkspaceTtlSweeper = experimentalQuery.data?.enableWorkspaceTtlSweeper === true;
 
   return (
-    <LobbyShell activeItem="settings" defaultCollapsed onCreateCompany={() => openOnboarding()}>
+    <LobbyShell
+      activeItem="settings"
+      defaultCollapsed
+      onCreateCompany={() => openOnboarding()}
+      secondarySidebar={
+        <SecondarySidebar
+          sections={settingsSections}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
+        />
+      }
+    >
       <div className="mx-auto w-full max-w-[1080px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
         <LobbyShellMobileMenuButton className="mb-4" />
 
@@ -161,157 +172,146 @@ export function InstanceSettingsPage() {
           </div>
         )}
 
-        {/* Tab nav: secondary sidebar + main content in a 2-column layout */}
-        <div className="flex gap-6 mt-5">
-          <SecondarySidebar
-            sections={settingsSections}
-            collapsed={sidebarCollapsed}
-            onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
-            className="shrink-0"
-          />
-          <div className="flex-1 min-w-0">
-            <Tabs value={activeTab}>
+        <Tabs value={activeTab} className="mt-5">
 
-              {/* ── General tab ──────────────────────────────────────────── */}
-              <TabsContent value="general" className="mt-6 space-y-4">
-                <div className="space-y-1">
-                  <h2 className="text-base font-semibold">General</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Instance-wide defaults that affect how operator-visible logs are displayed and how
-                    teammates interact with the app.
-                  </p>
-                </div>
+          {/* ── General tab ──────────────────────────────────────────── */}
+          <TabsContent value="general" className="mt-6 space-y-4">
+            <div className="space-y-1">
+              <h2 className="text-base font-semibold">General</h2>
+              <p className="text-sm text-muted-foreground">
+                Instance-wide defaults that affect how operator-visible logs are displayed and how
+                teammates interact with the app.
+              </p>
+            </div>
 
-                {generalQuery.isLoading ? (
-                  <div className="text-sm text-muted-foreground">Loading...</div>
-                ) : generalQuery.error ? (
-                  <div className="text-sm text-destructive">Failed to load general settings.</div>
-                ) : (
-                  <>
-                    <ToggleCard
-                      title="Censor username in logs"
-                      description="Hide the username segment in home-directory paths and similar operator-visible log output. Standalone username mentions outside of paths are not yet masked in the live transcript view."
-                      checked={censorUsernameInLogs}
-                      disabled={generalMutation.isPending}
-                      onToggle={() =>
-                        generalMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })
-                      }
-                    />
-                    <ToggleCard
-                      title="Keyboard shortcuts"
-                      description="Enable app-wide keyboard shortcuts, including inbox navigation and global shortcuts like creating a task or toggling panels. Off by default. Individual key bindings are read-only for now."
-                      checked={keyboardShortcuts}
-                      disabled={generalMutation.isPending}
-                      onToggle={() =>
-                        generalMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })
-                      }
-                    />
-                  </>
-                )}
-
-                {!isLocalTrusted && (
-                  <section className="rounded-xl border border-border bg-card p-5">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="space-y-1.5">
-                        <h2 className="text-sm font-semibold">Sign out</h2>
-                        <p className="max-w-2xl text-sm text-muted-foreground">
-                          Sign out of this AoA instance. You will be redirected to the login page.
-                        </p>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={signOutMutation.isPending}
-                        onClick={() => signOutMutation.mutate()}
-                      >
-                        <LogOut className="size-4" />
-                        {signOutMutation.isPending ? "Signing out..." : "Sign out"}
-                      </Button>
-                    </div>
-                  </section>
-                )}
-              </TabsContent>
-
-              {/* ── Privacy tab ──────────────────────────────────────────── */}
-              <TabsContent value="privacy" className="mt-6">
-                <PrivacyPanel
-                  generalQuery={generalQuery}
-                  onChange={(patch) => generalMutation.mutate(patch)}
-                  isSaving={generalMutation.isPending}
-                  isPrivacyActive={activeTab === "privacy"}
+            {generalQuery.isLoading ? (
+              <div className="text-sm text-muted-foreground">Loading...</div>
+            ) : generalQuery.error ? (
+              <div className="text-sm text-destructive">Failed to load general settings.</div>
+            ) : (
+              <>
+                <ToggleCard
+                  title="Censor username in logs"
+                  description="Hide the username segment in home-directory paths and similar operator-visible log output. Standalone username mentions outside of paths are not yet masked in the live transcript view."
+                  checked={censorUsernameInLogs}
+                  disabled={generalMutation.isPending}
+                  onToggle={() =>
+                    generalMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })
+                  }
                 />
-              </TabsContent>
-
-              {/* ── Backups tab ──────────────────────────────────────────── */}
-              <TabsContent value="backups" className="mt-6">
-                <BackupsTab
-                  settings={generalQuery.data}
-                  isLoading={generalQuery.isLoading}
-                  error={generalQuery.error}
-                  isSaving={generalMutation.isPending}
-                  onChange={(patch) => generalMutation.mutate(patch)}
+                <ToggleCard
+                  title="Keyboard shortcuts"
+                  description="Enable app-wide keyboard shortcuts, including inbox navigation and global shortcuts like creating a task or toggling panels. Off by default. Individual key bindings are read-only for now."
+                  checked={keyboardShortcuts}
+                  disabled={generalMutation.isPending}
+                  onToggle={() =>
+                    generalMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })
+                  }
                 />
-              </TabsContent>
+              </>
+            )}
 
-              {/* ── Heartbeats tab ───────────────────────────────────────── */}
-              <TabsContent value="heartbeats" className="mt-6">
-                <HeartbeatsTab />
-              </TabsContent>
-
-              {/* ── Experimental tab ─────────────────────────────────────── */}
-              <TabsContent value="experimental" className="mt-6 space-y-4">
-                <div className="space-y-1">
-                  <h2 className="text-base font-semibold">Experimental</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Opt into features that are still being evaluated before they become default behavior.
-                  </p>
-                </div>
-
-                {experimentalQuery.isLoading ? (
-                  <div className="text-sm text-muted-foreground">Loading...</div>
-                ) : experimentalQuery.error ? (
-                  <div className="text-sm text-destructive">Failed to load experimental settings.</div>
-                ) : (
-                  <>
-                    <ToggleCard
-                      title="Enable Isolated Workspaces"
-                      description="Show execution workspace controls in project configuration and allow isolated workspace behavior for new and existing issue runs."
-                      checked={enableIsolatedWorkspaces}
-                      disabled={experimentalMutation.isPending}
-                      onToggle={() => experimentalMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
-                    />
-                    <ToggleCard
-                      title="Auto-Restart Dev Server When Idle"
-                      description="In pnpm dev:once, wait for all queued and running local agent runs to finish, then restart the server automatically when backend changes or migrations make the current boot stale."
-                      checked={autoRestartDevServerWhenIdle}
-                      disabled={experimentalMutation.isPending}
-                      onToggle={() => experimentalMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
-                    />
-                    <ToggleCard
-                      title="Workspace TTL Sweeper"
-                      description="Periodically mark inactive execution workspaces as cleanup-eligible once their project's TTL (days) expires. Does not archive automatically — it only stamps cleanupEligibleAt; the founder still confirms via the Archive dialog."
-                      checked={enableWorkspaceTtlSweeper}
-                      disabled={experimentalMutation.isPending}
-                      onToggle={() => experimentalMutation.mutate({ enableWorkspaceTtlSweeper: !enableWorkspaceTtlSweeper })}
-                    />
-                  </>
-                )}
-              </TabsContent>
-
-              {/* ── Plugins tab ─────────────────────────────────────────── */}
-              {/* Plugins tab — diagnostics only (M.4: management moved to Company Settings) */}
-              <TabsContent value="plugins" className="mt-6">
-                <div className="space-y-4">
-                  <div className="bg-indigo-950/30 border border-indigo-900/40 rounded-lg px-4 py-3 text-xs text-indigo-300">
-                    Plugin installation and configuration is available in each company's{" "}
-                    <strong>Settings → Plugins</strong> tab.
+            {!isLocalTrusted && (
+              <section className="rounded-xl border border-border bg-card p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1.5">
+                    <h2 className="text-sm font-semibold">Sign out</h2>
+                    <p className="max-w-2xl text-sm text-muted-foreground">
+                      Sign out of this AoA instance. You will be redirected to the login page.
+                    </p>
                   </div>
-                  <PluginDiagnosticsPanel />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={signOutMutation.isPending}
+                    onClick={() => signOutMutation.mutate()}
+                  >
+                    <LogOut className="size-4" />
+                    {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                  </Button>
                 </div>
-              </TabsContent>
-            </Tabs>
-          </div>
-        </div>
+              </section>
+            )}
+          </TabsContent>
+
+          {/* ── Privacy tab ──────────────────────────────────────────── */}
+          <TabsContent value="privacy" className="mt-6">
+            <PrivacyPanel
+              generalQuery={generalQuery}
+              onChange={(patch) => generalMutation.mutate(patch)}
+              isSaving={generalMutation.isPending}
+              isPrivacyActive={activeTab === "privacy"}
+            />
+          </TabsContent>
+
+          {/* ── Backups tab ──────────────────────────────────────────── */}
+          <TabsContent value="backups" className="mt-6">
+            <BackupsTab
+              settings={generalQuery.data}
+              isLoading={generalQuery.isLoading}
+              error={generalQuery.error}
+              isSaving={generalMutation.isPending}
+              onChange={(patch) => generalMutation.mutate(patch)}
+            />
+          </TabsContent>
+
+          {/* ── Heartbeats tab ───────────────────────────────────────── */}
+          <TabsContent value="heartbeats" className="mt-6">
+            <HeartbeatsTab />
+          </TabsContent>
+
+          {/* ── Experimental tab ─────────────────────────────────────── */}
+          <TabsContent value="experimental" className="mt-6 space-y-4">
+            <div className="space-y-1">
+              <h2 className="text-base font-semibold">Experimental</h2>
+              <p className="text-sm text-muted-foreground">
+                Opt into features that are still being evaluated before they become default behavior.
+              </p>
+            </div>
+
+            {experimentalQuery.isLoading ? (
+              <div className="text-sm text-muted-foreground">Loading...</div>
+            ) : experimentalQuery.error ? (
+              <div className="text-sm text-destructive">Failed to load experimental settings.</div>
+            ) : (
+              <>
+                <ToggleCard
+                  title="Enable Isolated Workspaces"
+                  description="Show execution workspace controls in project configuration and allow isolated workspace behavior for new and existing issue runs."
+                  checked={enableIsolatedWorkspaces}
+                  disabled={experimentalMutation.isPending}
+                  onToggle={() => experimentalMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
+                />
+                <ToggleCard
+                  title="Auto-Restart Dev Server When Idle"
+                  description="In pnpm dev:once, wait for all queued and running local agent runs to finish, then restart the server automatically when backend changes or migrations make the current boot stale."
+                  checked={autoRestartDevServerWhenIdle}
+                  disabled={experimentalMutation.isPending}
+                  onToggle={() => experimentalMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
+                />
+                <ToggleCard
+                  title="Workspace TTL Sweeper"
+                  description="Periodically mark inactive execution workspaces as cleanup-eligible once their project's TTL (days) expires. Does not archive automatically — it only stamps cleanupEligibleAt; the founder still confirms via the Archive dialog."
+                  checked={enableWorkspaceTtlSweeper}
+                  disabled={experimentalMutation.isPending}
+                  onToggle={() => experimentalMutation.mutate({ enableWorkspaceTtlSweeper: !enableWorkspaceTtlSweeper })}
+                />
+              </>
+            )}
+          </TabsContent>
+
+          {/* ── Plugins tab ─────────────────────────────────────────── */}
+          {/* Plugins tab — diagnostics only (M.4: management moved to Company Settings) */}
+          <TabsContent value="plugins" className="mt-6">
+            <div className="space-y-4">
+              <div className="bg-indigo-950/30 border border-indigo-900/40 rounded-lg px-4 py-3 text-xs text-indigo-300">
+                Plugin installation and configuration is available in each company's{" "}
+                <strong>Settings → Plugins</strong> tab.
+              </div>
+              <PluginDiagnosticsPanel />
+            </div>
+          </TabsContent>
+        </Tabs>
       </div>
     </LobbyShell>
   );
