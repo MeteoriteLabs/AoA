@@ -1,5 +1,6 @@
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -23,12 +24,14 @@ export function PreviewAsLlmDialog({ open, onOpenChange, markdown }: Props) {
             agent's per-role instructions are appended below.
           </DialogDescription>
         </DialogHeader>
-        <div className="overflow-y-auto rounded border bg-muted/40 p-4 font-mono text-xs">
-          <div className="mb-2 text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
-            # Team coordination
+        <DialogBody>
+          <div className="overflow-y-auto rounded border bg-muted/40 p-4 font-mono text-xs">
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+              # Team coordination
+            </div>
+            <pre className="whitespace-pre-wrap">{markdown}</pre>
           </div>
-          <pre className="whitespace-pre-wrap">{markdown}</pre>
-        </div>
+        </DialogBody>
       </DialogContent>
     </Dialog>
   );

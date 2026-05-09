@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -144,7 +145,7 @@ export function ChangeLayerDialog({
         <DialogHeader>
           <DialogTitle>Change layer</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4 py-2">
+        <DialogBody className="space-y-4 py-2">
           <div className="space-y-1.5">
             <Label htmlFor="layer-select">Layer</Label>
             <Select
@@ -239,7 +240,7 @@ export function ChangeLayerDialog({
           {error && (
             <div className="text-xs text-red-600 dark:text-red-400">{error}</div>
           )}
-        </div>
+        </DialogBody>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel

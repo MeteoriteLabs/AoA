@@ -70,6 +70,7 @@ import {
 } from "@/components/ui/select";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -1112,6 +1113,7 @@ function MemoryDetailPanel({
           </div>
         </DialogHeader>
 
+        <DialogBody>
         {/* Metadata */}
         <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
           <span className="capitalize">Source: {item.source}</span>
@@ -1287,6 +1289,7 @@ function MemoryDetailPanel({
             )}
           </TabsContent>
         </Tabs>
+        </DialogBody>
       </DialogContent>
     </Dialog>
   );
@@ -1802,6 +1805,7 @@ function CreateMemoryDialog({
           <DialogTitle>Add to Memory</DialogTitle>
           <DialogDescription className="sr-only">Create a new memory item</DialogDescription>
         </DialogHeader>
+        <DialogBody>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="mem-title">Title</Label>
@@ -2003,6 +2007,7 @@ function CreateMemoryDialog({
             </Button>
           </DialogFooter>
         </form>
+        </DialogBody>
       </DialogContent>
     </Dialog>
   );
@@ -2152,7 +2157,8 @@ function StarterTemplatesDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="overflow-y-auto flex-1 min-h-0 -mx-1 px-1">
+        <DialogBody className="flex-1 min-h-0 overflow-hidden">
+          <div className="overflow-y-auto h-full -mx-1 px-1">
           {selectedTemplate ? (
             <TemplateDetailView
               template={selectedTemplate}
@@ -2203,7 +2209,8 @@ function StarterTemplatesDialog({
               ))}
             </div>
           )}
-        </div>
+          </div>
+        </DialogBody>
       </DialogContent>
     </Dialog>
   );

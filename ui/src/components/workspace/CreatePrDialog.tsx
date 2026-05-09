@@ -143,7 +143,7 @@ export function CreatePrDialog({
           </DialogHeader>
 
           {existingPr ? (
-            <div className="space-y-4">
+            <DialogBody className="space-y-4">
               <div
                 className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
                 data-testid="pr-already-exists"
@@ -175,7 +175,7 @@ export function CreatePrDialog({
                   Close
                 </Button>
               </DialogFooter>
-            </div>
+            </DialogBody>
           ) : (
           <DialogBody>
           <form onSubmit={handleSubmit} className="space-y-4">

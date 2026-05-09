@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Sparkles, Upload, ShoppingBag } from "lucide-react";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -45,31 +46,33 @@ export function NewTeamEntryDialog({ open, initialMode, onOpenChange }: Props) {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid grid-cols-3 gap-3 py-2">
-          <OptionCard
-            icon={<Sparkles className="h-5 w-5 text-indigo-500" />}
-            title="Build from scratch"
-            description="Pick existing agents from your company, or create new ones inline. Coordination is auto-scaffolded."
-            cta="Start →"
-            onClick={() => setMode("build")}
-            highlighted
-          />
-          <OptionCard
-            icon={<Upload className="h-5 w-5 text-slate-600" />}
-            title="Import from file"
-            description="Upload a .team.yaml package. Resolves dependencies on install."
-            cta="Upload →"
-            onClick={() => setMode("import")}
-          />
-          <OptionCard
-            icon={<ShoppingBag className="h-5 w-5 text-slate-400" />}
-            title="Browse marketplace"
-            description="Curated catalog of pre-built teams (Frontend, DevOps, Content, etc.)."
-            cta="Coming soon"
-            disabled
-            badge="SOON"
-          />
-        </div>
+        <DialogBody>
+          <div className="grid grid-cols-3 gap-3">
+            <OptionCard
+              icon={<Sparkles className="h-5 w-5 text-indigo-500" />}
+              title="Build from scratch"
+              description="Pick existing agents from your company, or create new ones inline. Coordination is auto-scaffolded."
+              cta="Start →"
+              onClick={() => setMode("build")}
+              highlighted
+            />
+            <OptionCard
+              icon={<Upload className="h-5 w-5 text-slate-600" />}
+              title="Import from file"
+              description="Upload a .team.yaml package. Resolves dependencies on install."
+              cta="Upload →"
+              onClick={() => setMode("import")}
+            />
+            <OptionCard
+              icon={<ShoppingBag className="h-5 w-5 text-slate-400" />}
+              title="Browse marketplace"
+              description="Curated catalog of pre-built teams (Frontend, DevOps, Content, etc.)."
+              cta="Coming soon"
+              disabled
+              badge="SOON"
+            />
+          </div>
+        </DialogBody>
       </DialogContent>
     </Dialog>
   );
