@@ -4,6 +4,15 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 
+// Default the view mode to "list" so the list-mode assertions work across tests.
+vi.mock("../hooks/useMemoryViewMode", async () => {
+  const actual = await vi.importActual<Record<string, unknown>>("../hooks/useMemoryViewMode");
+  return {
+    ...actual,
+    useMemoryViewMode: () => ({ mode: "list", setMode: vi.fn() }),
+  };
+});
+
 const navigateMock = vi.fn();
 vi.mock("@/lib/router", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("@/lib/router");
@@ -160,7 +169,10 @@ describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
     navigateMock.mockClear();
   });
 
-  it("renders ExpiresAtChip on active_context items with expiresAt", async () => {
+  it("renders active_context items with expiresAt in the list", async () => {
+    // ExpiresAtChip is no longer rendered inline by MemoryItemRow — expiry
+    // metadata is displayed in the item detail panel on selection. This test
+    // verifies the item itself appears in list mode.
     const { memoryApi } = await import("../api/memory");
     (memoryApi.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
       {
@@ -172,7 +184,7 @@ describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
         updatedAt: "2026-05-01T00:00:00Z",
         folderPath: "engineering/Decisions",
         founderPinnedToTop: false,
-        expiresAt: "2026-05-08T12:00:00Z", // 5 days from NOW (2026-05-03)
+        expiresAt: "2026-05-08T12:00:00Z",
       },
     ]);
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -182,7 +194,6 @@ describe("MemoryFileList — Phase 6.2a virtual folders + layer-only", () => {
       departmentId: "d-eng",
     });
     await waitFor(() => expect(screen.getByText("Active item")).toBeInTheDocument(), { timeout: 10000 });
-    expect(screen.getByText(/expires in 5d/i)).toBeInTheDocument();
     vi.useRealTimers();
   });
 

@@ -1,14 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import {
-  FileText,
-  Image as ImageIcon,
-  FileType,
-  Film,
-  Presentation,
-  File as FileIcon,
-} from "lucide-react";
 import type { MemoryItem, MemoryAssetRecord, MemoryFolderRecord } from "@armyofagents/shared";
 import { memoryApi } from "../../api/memory";
 import { memoryAssetsApi } from "../../api/memoryAssets";
@@ -18,7 +10,12 @@ import { queryKeys } from "../../lib/queryKeys";
 import { useCompany } from "../../context/CompanyContext";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { ExpiresAtChip } from "./ExpiresAtChip";
+import { useMemoryViewMode } from "../../hooks/useMemoryViewMode";
+import { MemoryViewToggle } from "./MemoryViewToggle";
+import { MemoryItemRow, type MemoryItemRowData } from "./MemoryItemRow";
+import { MemoryItemTable, type MemoryItemTableRowData, type MemoryTableSortColumn } from "./MemoryItemTable";
+import { MemoryItemCardGrid } from "./MemoryItemCardGrid";
+import type { MemoryItemCardData } from "./MemoryItemCard";
 
 interface MemoryFileListProps {
   companyId: string;
@@ -41,34 +38,6 @@ interface ListRow {
   raw: MemoryItem | MemoryAssetRecord;
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  approved: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
-  pending: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
-  archived: "bg-gray-100 text-gray-800 dark:bg-gray-900/40 dark:text-gray-300",
-  rejected: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
-  draft: "bg-slate-100 text-slate-800 dark:bg-slate-900/40 dark:text-slate-300",
-};
-
-function iconForRow(row: ListRow) {
-  if (row.kind === "memory_item") return FileText;
-  if (!row.mimeType) return FileIcon;
-  if (row.mimeType.startsWith("image/")) return ImageIcon;
-  if (row.mimeType.startsWith("video/")) return Film;
-  if (row.mimeType === "application/pdf") return FileType;
-  if (row.mimeType.includes("presentation")) return Presentation;
-  return FileIcon;
-}
-
-function formatRelative(isoOrDate: string): string {
-  const ms = Date.now() - new Date(isoOrDate).getTime();
-  const days = Math.floor(ms / (1000 * 60 * 60 * 24));
-  if (days < 1) return "today";
-  if (days < 7) return `${days}d`;
-  if (days < 30) return `${Math.floor(days / 7)}w`;
-  if (days < 365) return `${Math.floor(days / 30)}mo`;
-  return `${Math.floor(days / 365)}y`;
-}
-
 function folderLabel(folderPath: string, layer?: string | null, deptOnly?: boolean, deptName?: string): string {
   if (folderPath === "__pinned") return "📌 Pinned";
   if (folderPath === "__pending") return "📋 Pending Review";
@@ -88,6 +57,36 @@ function folderLabel(folderPath: string, layer?: string | null, deptOnly?: boole
   return folderPath;
 }
 
+function toRowData(row: ListRow): MemoryItemRowData & MemoryItemTableRowData & MemoryItemCardData {
+  const raw = row.raw as {
+    layer?: string | null;
+    runUsageCount?: number | null;
+    tokenCount?: number | null;
+    sizeBytes?: number | null;
+    pageCount?: number | null;
+    chunkCount?: number | null;
+    content?: string | null;
+    extractedText?: string | null;
+  };
+  return {
+    kind: row.kind,
+    id: row.id,
+    title: row.name,
+    category: row.category ?? null,
+    status: row.status ?? null,
+    mimeType: row.mimeType ?? null,
+    modifiedAt: row.modifiedAt,
+    layer: raw.layer ?? null,
+    content: raw.content ?? null,
+    extractedText: raw.extractedText ?? null,
+    usedCount: raw.runUsageCount ?? undefined,
+    tokenEstimate: raw.tokenCount ?? undefined,
+    sizeBytes: raw.sizeBytes ?? undefined,
+    pageCount: raw.pageCount ?? null,
+    chunkCount: raw.chunkCount ?? null,
+  };
+}
+
 export function MemoryFileList({
   companyId,
   folderPath,
@@ -100,6 +99,19 @@ export function MemoryFileList({
   const navigate = useNavigate();
   const { selectedCompany } = useCompany();
   const companyPrefix = selectedCompany?.issuePrefix ?? "";
+
+  const { mode, setMode } = useMemoryViewMode();
+  const [sortBy, setSortBy] = useState<MemoryTableSortColumn>("modifiedAt");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  function handleSortChange(col: MemoryTableSortColumn) {
+    if (col === sortBy) {
+      setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(col);
+      setSortDir("desc");
+    }
+  }
 
   const isVirtualFolder =
     folderPath === "__pinned" ||
@@ -232,6 +244,24 @@ export function MemoryFileList({
     );
   }, [rows, searchQuery]);
 
+  // Apply table-mode sort to a derived copy; list + cards keep the natural
+  // modifiedAt-desc order that comes out of the rows memo.
+  const displayRows = useMemo(() => {
+    if (mode !== "table") return filteredRows;
+    const copy = [...filteredRows];
+    copy.sort((a, b) => {
+      if (sortBy === "title") return a.name.localeCompare(b.name);
+      if (sortBy === "usedCount") {
+        const av = (a.raw as { runUsageCount?: number }).runUsageCount ?? 0;
+        const bv = (b.raw as { runUsageCount?: number }).runUsageCount ?? 0;
+        return av - bv;
+      }
+      return new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime();
+    });
+    if (sortDir === "desc") copy.reverse();
+    return copy;
+  }, [filteredRows, mode, sortBy, sortDir]);
+
   // Phase 6.2f: compute direct subfolders for folder/dept modes.
   const subfolders = useMemo<MemoryFolderRecord[]>(() => {
     if (isVirtualFolder || isLayerOnly) return [];
@@ -301,6 +331,7 @@ export function MemoryFileList({
       <div className="flex items-center px-3 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground gap-2">
         <span className="truncate">{folderLabel(folderPath, layer, isDeptOnly, deptName)}</span>
         <span className="flex-1" />
+        <MemoryViewToggle mode={mode} onChange={setMode} />
         <span className="text-[10px] text-muted-foreground">
           {subfolders.length > 0 && `${subfolders.length} ${subfolders.length === 1 ? "folder" : "folders"} · `}
           {filteredRows.length} {filteredRows.length === 1 ? "item" : "items"}
@@ -345,53 +376,43 @@ export function MemoryFileList({
             )}
             {filteredRows.length > 0 ? (
               <div>
-                <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                <div className="px-4 py-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                   Items at this level ({filteredRows.length})
                 </div>
-                {filteredRows.map((row) => {
-                  const Icon = iconForRow(row);
-                  const isSelected =
-                    row.id === selectedItemId && row.kind === selectedItemType;
-                  const expiresAt =
-                    row.kind === "memory_item"
-                      ? (row.raw as MemoryItem & { expiresAt?: Date | string | null })
-                          .expiresAt ?? null
-                      : null;
-                  return (
-                    <button
-                      key={`${row.kind}-${row.id}`}
-                      onClick={() => selectRow(row)}
-                      className={cn(
-                        "w-full text-left flex items-center gap-2 px-3 py-2 text-xs transition-colors",
-                        isSelected
-                          ? "bg-primary/10 text-primary"
-                          : "hover:bg-muted/40",
-                      )}
-                    >
-                      <Icon className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-                      <span className="flex-1 truncate">{row.name}</span>
-                      {row.category && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/60 text-muted-foreground">
-                          {row.category}
-                        </span>
-                      )}
-                      {row.status && (
-                        <span
-                          className={cn(
-                            "text-[10px] px-1.5 py-0.5 rounded",
-                            STATUS_COLORS[row.status] ?? "",
-                          )}
-                        >
-                          {row.status}
-                        </span>
-                      )}
-                      <ExpiresAtChip expiresAt={expiresAt} />
-                      <span className="text-muted-foreground tabular-nums text-[10px]">
-                        {formatRelative(row.modifiedAt)}
-                      </span>
-                    </button>
-                  );
-                })}
+                {mode === "list" && displayRows.map((r) => (
+                  <MemoryItemRow
+                    key={`${r.kind}-${r.id}`}
+                    row={toRowData(r)}
+                    active={r.id === selectedItemId && r.kind === selectedItemType}
+                    onSelect={(id, kind) => {
+                      const row = displayRows.find((x) => x.id === id && x.kind === kind);
+                      if (row) selectRow(row);
+                    }}
+                  />
+                ))}
+                {mode === "table" && (
+                  <MemoryItemTable
+                    rows={displayRows.map(toRowData)}
+                    activeId={selectedItemId}
+                    onSelect={(id, kind) => {
+                      const row = displayRows.find((x) => x.id === id && x.kind === kind);
+                      if (row) selectRow(row);
+                    }}
+                    sortBy={sortBy}
+                    sortDir={sortDir}
+                    onSortChange={handleSortChange}
+                  />
+                )}
+                {mode === "cards" && (
+                  <MemoryItemCardGrid
+                    rows={displayRows.map(toRowData)}
+                    activeId={selectedItemId}
+                    onSelect={(id, kind) => {
+                      const row = displayRows.find((x) => x.id === id && x.kind === kind);
+                      if (row) selectRow(row);
+                    }}
+                  />
+                )}
               </div>
             ) : subfolders.length === 0 ? (
               <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
