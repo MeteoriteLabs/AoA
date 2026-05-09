@@ -14,6 +14,7 @@ import { OrgTreeTab, type OrgNodeAction } from "../components/team/OrgTreeTab";
 import { AgentsTab } from "../components/team/AgentsTab";
 import { HumansTab } from "../components/team/HumansTab";
 import { TeamLayout, type TeamSectionId } from "../components/team/TeamLayout";
+import { TeamsListPage } from "./TeamsListPage";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -204,7 +205,8 @@ export function TeamPage() {
             onMutationSuccess={invalidateAll}
           />
         )}
-        {/* "teams" section wired in Task E1 */}
+
+        {!isLoading && activeTab === "teams" && <TeamsListPage />}
       </TeamLayout>
     </TooltipProvider>
   );

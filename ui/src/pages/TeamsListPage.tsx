@@ -1,10 +1,10 @@
 import { useState, useMemo } from "react";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { Plus, ChevronDown, Users } from "lucide-react";
-import { teamsApi } from "../../api/teams";
-import { projectsApi } from "../../api/projects";
-import { agentsApi } from "../../api/agents";
-import { useCompany } from "../../context/CompanyContext";
+import { teamsApi } from "../api/teams";
+import { projectsApi } from "../api/projects";
+import { agentsApi } from "../api/agents";
+import { useCompany } from "../context/CompanyContext";
 import { useNavigate } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,10 +13,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { TeamCard, type TeamCardData } from "./TeamCard";
-import { NewTeamEntryDialog } from "./NewTeamEntryDialog";
-import { EmptyState } from "../EmptyState";
-import { queryKeys } from "../../lib/queryKeys";
+import { TeamCard, type TeamCardData } from "../components/team/TeamCard";
+import { NewTeamEntryDialog } from "../components/team/NewTeamEntryDialog";
+import { EmptyState } from "../components/EmptyState";
+import { queryKeys } from "../lib/queryKeys";
 
 type EntryMode = "build" | "import" | null;
 
@@ -29,7 +29,12 @@ const TEAM_COLORS = [
   "border-l-cyan-500",
 ];
 
-export function TeamsSection() {
+/**
+ * Teams list page — promoted from the in-page `TeamsSection` to a peer of
+ * Agents and Humans inside the Team layout. The "+ New team" entry point
+ * lives only on this surface.
+ */
+export function TeamsListPage() {
   const { selectedCompanyId } = useCompany();
   const navigate = useNavigate();
   const [entryMode, setEntryMode] = useState<EntryMode>(null);
@@ -40,7 +45,6 @@ export function TeamsSection() {
     enabled: Boolean(selectedCompanyId),
   });
 
-  // Fetch parent projects to resolve dept names
   const projectsQuery = useQuery({
     queryKey: selectedCompanyId ? queryKeys.projects.list(selectedCompanyId) : ["projects", "none"],
     queryFn: () => projectsApi.list(selectedCompanyId!),
@@ -53,7 +57,6 @@ export function TeamsSection() {
     return map;
   }, [projectsQuery.data]);
 
-  // Fetch agents to resolve lead UUIDs to names (P3-B).
   const agentsQuery = useQuery({
     queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none"],
     queryFn: () => agentsApi.list(selectedCompanyId!),
@@ -67,7 +70,6 @@ export function TeamsSection() {
     return map;
   }, [agentsQuery.data]);
 
-  // For each team, fetch its members to compute lead name + count
   const teams = teamsQuery.data?.items ?? [];
   const memberQueries = useQueries({
     queries: teams.map((t) => ({
@@ -95,7 +97,7 @@ export function TeamsSection() {
   }, [teams, memberQueries, projectsById, agentNameById]);
 
   return (
-    <section className="mb-7">
+    <section>
       <header className="mb-3 flex items-center justify-between">
         <div>
           <h2 className="text-sm font-bold">
@@ -121,13 +123,6 @@ export function TeamsSection() {
             <DropdownMenuItem onClick={() => setEntryMode("import")}>
               <span className="mr-2">📥</span>
               Import from file
-            </DropdownMenuItem>
-            <DropdownMenuItem disabled className="opacity-50">
-              <span className="mr-2">🛒</span>
-              Browse marketplace
-              <span className="ml-auto rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
-                SOON
-              </span>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
