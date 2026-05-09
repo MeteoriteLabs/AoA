@@ -22,30 +22,35 @@ import { Button } from "@/components/ui/button";
 import { memoryApi } from "../../api/memory";
 import { projectsApi } from "../../api/projects";
 import { queryKeys } from "../../lib/queryKeys";
-import type { Project } from "@armyofagents/shared";
+import {
+  MEMORY_ITEM_CATEGORIES,
+  MEMORY_ITEM_LAYERS,
+  type MemoryItemCategory,
+  type MemoryItemLayer,
+  type Project,
+} from "@armyofagents/shared";
 
 // ---- constants -------------------------------------------------------
 
-const LAYER_OPTIONS = [
-  { value: "identity", label: "Identity (always in agent context)" },
-  { value: "domain", label: "Domain (department-scoped)" },
-  { value: "active_context", label: "Active context (goal-scoped)" },
-  { value: "working", label: "Working (task-ephemeral, 7d)" },
-] as const;
+// Source-of-truth enum values come from @armyofagents/shared. We keep
+// only the user-facing labels local — adding a category to shared then
+// surfaces a TS error here until the label map is updated.
+const LAYER_LABELS: Record<MemoryItemLayer, string> = {
+  identity: "Identity (always in agent context)",
+  domain: "Domain (department-scoped)",
+  active_context: "Active context (goal-scoped)",
+  working: "Working (task-ephemeral, 7d)",
+};
 
-type LayerValue = (typeof LAYER_OPTIONS)[number]["value"];
-
-const CATEGORY_OPTIONS = [
-  { value: "decision", label: "Decision" },
-  { value: "reference", label: "Reference" },
-  { value: "context", label: "Context" },
-  { value: "insight", label: "Insight" },
-  { value: "preference", label: "Preference" },
-  { value: "procedure", label: "Procedure" },
-  { value: "policy", label: "Policy" },
-] as const;
-
-type CategoryValue = (typeof CATEGORY_OPTIONS)[number]["value"];
+const CATEGORY_LABELS: Record<MemoryItemCategory, string> = {
+  decision: "Decision",
+  reference: "Reference",
+  context: "Context",
+  insight: "Insight",
+  preference: "Preference",
+  procedure: "Procedure",
+  policy: "Policy",
+};
 
 // ---- props -----------------------------------------------------------
 
@@ -70,9 +75,9 @@ export function NewMemoryItemDialog({
 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
-  const [layer, setLayer] = useState<LayerValue>("domain");
+  const [layer, setLayer] = useState<MemoryItemLayer>("domain");
   const [departmentId, setDepartmentId] = useState<string>("none");
-  const [category, setCategory] = useState<CategoryValue>("reference");
+  const [category, setCategory] = useState<MemoryItemCategory>("reference");
 
   // Fetch departments for the department select.
   const { data: projects } = useQuery({
@@ -97,7 +102,7 @@ export function NewMemoryItemDialog({
   }, [open, defaultDepartmentId]);
 
   // Clear departmentId when layer changes away from "domain".
-  function handleLayerChange(value: LayerValue) {
+  function handleLayerChange(value: MemoryItemLayer) {
     setLayer(value);
     if (value !== "domain") {
       setDepartmentId("none");
@@ -183,14 +188,14 @@ export function NewMemoryItemDialog({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="new-mem-layer">Layer</Label>
-              <Select value={layer} onValueChange={(v) => handleLayerChange(v as LayerValue)}>
+              <Select value={layer} onValueChange={(v) => handleLayerChange(v as MemoryItemLayer)}>
                 <SelectTrigger id="new-mem-layer" className="h-8 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {LAYER_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
+                  {MEMORY_ITEM_LAYERS.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {LAYER_LABELS[value]}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -199,14 +204,14 @@ export function NewMemoryItemDialog({
 
             <div className="space-y-1.5">
               <Label htmlFor="new-mem-category">Category</Label>
-              <Select value={category} onValueChange={(v) => setCategory(v as CategoryValue)}>
+              <Select value={category} onValueChange={(v) => setCategory(v as MemoryItemCategory)}>
                 <SelectTrigger id="new-mem-category" className="h-8 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {CATEGORY_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value} className="capitalize">
-                      {opt.label}
+                  {MEMORY_ITEM_CATEGORIES.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {CATEGORY_LABELS[value]}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -232,6 +237,14 @@ export function NewMemoryItemDialog({
                 </SelectContent>
               </Select>
             </div>
+          )}
+
+          {createMutation.isError && (
+            <p className="text-xs text-red-600 dark:text-red-400" role="alert">
+              {createMutation.error instanceof Error
+                ? createMutation.error.message
+                : "Failed to create memory item. Please try again."}
+            </p>
           )}
 
           <DialogFooter>
