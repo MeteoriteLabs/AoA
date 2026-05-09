@@ -15,6 +15,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -31,9 +32,15 @@ interface AgentCardProps {
   liveRun?: { runId: string; liveCount: number } | null;
   currentTaskTitle?: string | null;
   trustScore?: AgentTrustScore | null;
+  /**
+   * Extra dropdown menu items rendered after the built-in Configure / View Runs
+   * options (with a separator). Used by AgentsTab to inject Terminate/Delete
+   * for the founder. Stop-propagation is the caller's responsibility.
+   */
+  dropdownExtras?: React.ReactNode;
 }
 
-export const AgentCard = memo(function AgentCard({ agent, liveRun, currentTaskTitle, trustScore }: AgentCardProps) {
+export const AgentCard = memo(function AgentCard({ agent, liveRun, currentTaskTitle, trustScore, dropdownExtras }: AgentCardProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -121,6 +128,12 @@ export const AgentCard = memo(function AgentCard({ agent, liveRun, currentTaskTi
                 <History className="h-3.5 w-3.5 mr-2" />
                 View Runs
               </DropdownMenuItem>
+              {dropdownExtras && (
+                <>
+                  <DropdownMenuSeparator />
+                  {dropdownExtras}
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
