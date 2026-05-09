@@ -45,8 +45,9 @@ export function FolderTreeNode({
       title={tooltip}
       className={cn(
         "group flex items-center gap-1 py-1.5 pr-2 cursor-pointer text-xs leading-snug select-none",
+        "relative",
         "hover:bg-muted/60 transition-colors duration-100",
-        selected && "bg-primary/10 text-primary",
+        selected && "bg-brand/[0.08] text-[hsl(15_60%_75%)]",
         tintClass,
       )}
       style={{ paddingLeft: indent }}
@@ -79,6 +80,12 @@ export function FolderTreeNode({
         </span>
       )}
       {actions}
+      {selected && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 size-[5px] rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
+        />
+      )}
     </div>
   );
 }
