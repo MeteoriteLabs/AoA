@@ -52,7 +52,7 @@ describe("GET /api/marketplace/packages", () => {
     const res = await request(createApp()).get("/api/marketplace/packages");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toEqual([SAMPLE_PACKAGE]);
+    expect(res.body).toEqual({ packages: [SAMPLE_PACKAGE] });
     expect(mockService.getPackages).toHaveBeenCalledTimes(1);
   });
 
@@ -71,6 +71,6 @@ describe("GET /api/marketplace/packages", () => {
     const res = await request(createApp()).get("/api/marketplace/packages");
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([]);
+    expect(res.body).toEqual({ packages: [] });
   });
 });

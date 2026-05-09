@@ -35,10 +35,11 @@ export function derivePackages(items: ReadonlyArray<MarketplaceCatalogItem>): Ma
   const synthesizedGroups = new Map<string, MarketplaceCatalogItem[]>();
 
   for (const item of items) {
-    if (item.packageId) {
-      const list = explicitGroups.get(item.packageId);
+    const explicitId = item.packageId?.trim();
+    if (explicitId) {
+      const list = explicitGroups.get(explicitId);
       if (list) list.push(item);
-      else explicitGroups.set(item.packageId, [item]);
+      else explicitGroups.set(explicitId, [item]);
       continue;
     }
     const root = repoRootFromUrl(item.source.url);

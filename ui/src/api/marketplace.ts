@@ -75,7 +75,8 @@ export const marketplaceApi = {
   },
 
   async getPackages(): Promise<MarketplacePackage[]> {
-    return api.get<MarketplacePackage[]>("/marketplace/packages");
+    const res = await api.get<{ packages: MarketplacePackage[] }>("/marketplace/packages");
+    return res.packages;
   },
 
   async sync(): Promise<{ itemCount: number; status: CatalogSyncStatus }> {

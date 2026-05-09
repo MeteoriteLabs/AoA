@@ -128,6 +128,29 @@ describe("derivePackages", () => {
     });
   });
 
+  it("treats empty-string packageId as no override (falls through to synthesis)", () => {
+    const items = [
+      makeItem({ id: "a", packageId: "", source: { adapter: "g", url: "https://github.com/o/r/tree/main/a", locator: "a" } }),
+      makeItem({ id: "b", packageId: "", source: { adapter: "g", url: "https://github.com/o/r/tree/main/b", locator: "b" } }),
+    ];
+    const packages = derivePackages(items);
+    expect(packages).toHaveLength(1);
+    expect(packages[0]).toMatchObject({ id: "o/r", explicit: false, count: 2 });
+  });
+
+  it("trims whitespace from packageId and groups equivalent ids together", () => {
+    const items = [
+      makeItem({ id: "x", packageId: " pkg " }),
+      makeItem({ id: "y", packageId: "pkg" }),
+      makeItem({ id: "z", packageId: "  " }),  // whitespace-only → falls through
+    ];
+    const packages = derivePackages(items);
+    // x + y in one explicit package; z falls through but its source is github.com/example/repo → synthesis threshold (1) → no package
+    expect(packages).toHaveLength(1);
+    expect(packages[0]!.id).toBe("pkg");
+    expect(packages[0]!.memberItemIds.sort()).toEqual(["x", "y"]);
+  });
+
   it("verified=true only when every member is verified", () => {
     const items = [
       makeItem({ id: "v1", trust: { tier: "verified", source: "x" }, source: { adapter: "g", url: "https://github.com/x/y/tree/main/a", locator: "a" } }),

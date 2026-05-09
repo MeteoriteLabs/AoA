@@ -56,7 +56,7 @@ export function createMarketplaceRouter(deps: MarketplaceRoutesDeps): Router {
       res.status(503).json({ error: "Catalog not yet synced" });
       return;
     }
-    res.json(packages);
+    res.json({ packages });
   });
 
   return router;
