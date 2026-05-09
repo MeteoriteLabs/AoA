@@ -230,16 +230,9 @@ export function Layout() {
           </div>
         </div>
       ) : (
-        <div className="flex flex-col shrink-0 h-full">
+        <div className="relative flex flex-col shrink-0 h-full">
           <div className="flex flex-1 min-h-0">
-            <div
-              className={cn(
-                "overflow-hidden transition-[width] duration-100 ease-out",
-                collapsed ? "w-12" : "w-60"
-              )}
-            >
-              <Sidebar />
-            </div>
+            <Sidebar />
           </div>
         </div>
       )}
