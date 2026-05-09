@@ -1,17 +1,33 @@
+export type MemoryTabKind = "memory_item" | "asset";
+
 export interface MemoryTab {
   id: string;
-  kind: "memory_item" | "asset";
+  kind: MemoryTabKind;
   title: string;
+}
+
+/**
+ * Composite key identifying a tab. Two tabs with the same `id` but different
+ * `kind` (e.g. a memory item and an asset that share a UUID by coincidence)
+ * are distinct, so the active-tab reference must carry both fields.
+ */
+export interface TabKey {
+  id: string;
+  kind: MemoryTabKind;
 }
 
 export interface TabsState {
   tabs: MemoryTab[];
-  activeId: string | null;
+  activeKey: TabKey | null;
 }
 
 /** Two tabs are equal when both id AND kind match. */
-function sameTab(a: MemoryTab, b: { id: string; kind: MemoryTab["kind"] }): boolean {
+function sameKey(a: TabKey, b: TabKey): boolean {
   return a.id === b.id && a.kind === b.kind;
+}
+
+function toKey(tab: MemoryTab): TabKey {
+  return { id: tab.id, kind: tab.kind };
 }
 
 /**
@@ -19,37 +35,39 @@ function sameTab(a: MemoryTab, b: { id: string; kind: MemoryTab["kind"] }): bool
  * active. Otherwise append a new tab and mark IT active.
  */
 export function openOrActivate(state: TabsState, tab: MemoryTab): TabsState {
-  const existing = state.tabs.findIndex((t) => sameTab(t, tab));
+  const existing = state.tabs.findIndex((t) => sameKey(toKey(t), toKey(tab)));
   if (existing >= 0) {
-    return { ...state, activeId: state.tabs[existing].id };
+    return { ...state, activeKey: toKey(state.tabs[existing]) };
   }
-  return { tabs: [...state.tabs, tab], activeId: tab.id };
+  return { tabs: [...state.tabs, tab], activeKey: toKey(tab) };
 }
 
 /**
  * Close a tab. If the closed tab was active, activate the previous tab in the
  * list (or the new first tab if the closed one was the first). When the last
- * tab closes, activeId becomes null.
+ * tab closes, activeKey becomes null. Returns the same state reference when
+ * the (id, kind) doesn't match any open tab.
  */
 export function closeTab(
   state: TabsState,
   id: string,
-  kind: MemoryTab["kind"],
+  kind: MemoryTabKind,
 ): TabsState {
-  const idx = state.tabs.findIndex((t) => sameTab(t, { id, kind }));
+  const idx = state.tabs.findIndex((t) => sameKey(toKey(t), { id, kind }));
   if (idx < 0) return state;
 
   const tabs = state.tabs.filter((_, i) => i !== idx);
 
-  // If we didn't close the active tab, the active id is preserved.
-  const wasActive = state.activeId === id && state.tabs[idx].kind === kind;
+  const wasActive =
+    state.activeKey != null && sameKey(state.activeKey, { id, kind });
   if (!wasActive) {
-    return { tabs, activeId: state.activeId };
+    // Reuse the same activeKey reference when the close doesn't affect it.
+    return { tabs, activeKey: state.activeKey };
   }
 
-  if (tabs.length === 0) return { tabs, activeId: null };
+  if (tabs.length === 0) return { tabs, activeKey: null };
 
   // Activate the previous tab (or the new first tab if we removed index 0).
   const newActiveIndex = idx > 0 ? idx - 1 : 0;
-  return { tabs, activeId: tabs[newActiveIndex].id };
+  return { tabs, activeKey: toKey(tabs[newActiveIndex]) };
 }
