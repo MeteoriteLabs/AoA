@@ -43,7 +43,7 @@ export default function MarketplacePackageDetail() {
   const isLoading = catalogLoading || packagesLoading;
 
   return (
-    <LobbyShell activeItem="marketplace" defaultCollapsed onCreateCompany={() => openOnboarding()}>
+    <LobbyShell activeItem="marketplace" onCreateCompany={() => openOnboarding()}>
       <div className="mx-auto w-full max-w-[920px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
         <LobbyShellMobileMenuButton className="mb-4" />
         <Link

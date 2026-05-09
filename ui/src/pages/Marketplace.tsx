@@ -1,6 +1,6 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef, useEffect, type ComponentType } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Search } from "lucide-react";
+import { Bot, Puzzle, Search, Sparkles } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCompany } from "@/context/CompanyContext";
@@ -15,6 +15,7 @@ import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell"
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { filterByType } from "@/api/marketplace";
+import { cn } from "@/lib/utils";
 import type {
   MarketplaceItemType,
   MarketplaceCatalogItem,
@@ -48,6 +49,63 @@ function applySort(items: MarketplaceCatalogItem[], mode: SortMode): Marketplace
     if (tb !== ta) return tb - ta;
     return a.name.localeCompare(b.name);
   });
+}
+
+const SECTION_CAP = 6;
+
+const SECTION_ICONS: Record<MarketplaceItemType, ComponentType<{ className?: string }>> = {
+  skill: Sparkles,
+  plugin: Puzzle,
+  agent: Bot,
+  team: Bot, // matches MarketplaceFilterChips — StackedIcon is card-only
+};
+
+const SECTION_TONES: Record<MarketplaceItemType, string> = {
+  skill: "bg-amber-500/15 border-amber-500/30 text-amber-500",
+  plugin: "bg-blue-500/15 border-blue-500/30 text-blue-500",
+  agent: "bg-purple-500/15 border-purple-500/30 text-purple-500",
+  team: "bg-teal-500/15 border-teal-500/30 text-teal-500",
+};
+
+const SECTION_LABELS: Record<MarketplaceItemType, string> = {
+  skill: "Skills",
+  plugin: "Plugins",
+  agent: "Agents",
+  team: "Teams",
+};
+
+const SECTION_ORDER: ReadonlyArray<MarketplaceItemType> = ["skill", "plugin", "agent", "team"];
+
+interface SectionHeaderProps {
+  type: MarketplaceItemType;
+  total: number;
+  showSeeAll: boolean;
+  onSeeAll: () => void;
+}
+
+function SectionHeader({ type, total, showSeeAll, onSeeAll }: SectionHeaderProps) {
+  const Icon = SECTION_ICONS[type];
+  const tone = SECTION_TONES[type];
+  return (
+    <div className="mb-3 flex items-center justify-between">
+      <h2 className="flex items-center gap-2 text-[0.7rem] font-semibold uppercase tracking-[0.1em] text-dim">
+        <span className={cn("inline-flex size-5 items-center justify-center rounded-md border", tone)}>
+          <Icon className="size-3" />
+        </span>
+        {SECTION_LABELS[type]}
+        <span className="text-very-dim font-normal normal-case tracking-normal">· {total}</span>
+      </h2>
+      {showSeeAll && (
+        <button
+          type="button"
+          onClick={onSeeAll}
+          className="text-[12px] text-dim hover:text-foreground"
+        >
+          See all →
+        </button>
+      )}
+    </div>
+  );
 }
 
 export default function Marketplace() {
@@ -111,8 +169,55 @@ export default function Marketplace() {
     return applySort(list, sortMode);
   }, [items, selectedType, search, sortMode]);
 
+  // Group visible (post-search, post-sort) items by type.
+  const grouped = useMemo<Record<MarketplaceItemType, MarketplaceCatalogItem[]>>(() => {
+    const out: Record<MarketplaceItemType, MarketplaceCatalogItem[]> = {
+      skill: [], plugin: [], agent: [], team: [],
+    };
+    for (const it of visible) out[it.type].push(it);
+    return out;
+  }, [visible]);
+
+  // Render a single section block. `capped` is the visible-after-cap slice;
+  // `total` is the full count used in the header + cap decision.
+  function renderSection(type: MarketplaceItemType, capped: MarketplaceCatalogItem[], total: number) {
+    if (total === 0) return null;
+    const isPackagesHost = type === "skill" && (packages?.length ?? 0) > 0;
+    return (
+      <section key={type} className="mb-7">
+        <SectionHeader
+          type={type}
+          total={total}
+          showSeeAll={selectedType === null && total > SECTION_CAP}
+          onSeeAll={() => setSelectedType(type)}
+        />
+        {isPackagesHost && (
+          <div className="mb-4">
+            <h3 className="mb-3 text-[0.7rem] font-semibold uppercase tracking-[0.1em] text-dim">
+              Packages <span className="text-very-dim font-normal">· {packages!.length}</span>
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              {packages!.map((pkg) => (
+                <PackageCard key={pkg.id} pkg={pkg} />
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+          {capped.map((item) => (
+            <CatalogCard
+              key={item.id}
+              item={item}
+              installedByPackageName={installedByPackageName}
+            />
+          ))}
+        </div>
+      </section>
+    );
+  }
+
   return (
-    <LobbyShell activeItem="marketplace" defaultCollapsed onCreateCompany={() => openOnboarding()}>
+    <LobbyShell activeItem="marketplace" onCreateCompany={() => openOnboarding()}>
       <div className="mx-auto w-full max-w-[1080px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
         <LobbyShellMobileMenuButton className="mb-4" />
 
@@ -152,23 +257,7 @@ export default function Marketplace() {
           />
         </div>
 
-        {/* Packages — only shown when no specific type filter is active */}
-        {selectedType === null && packages && packages.length > 0 && (
-          <div className="mb-7">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-[0.7rem] font-semibold uppercase tracking-[0.1em] text-dim">
-                Packages <span className="text-very-dim font-normal">· {packages.length}</span>
-              </h2>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              {packages.map((pkg) => (
-                <PackageCard key={pkg.id} pkg={pkg} />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Grid */}
+        {/* Body */}
         {isLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             {Array.from({ length: 4 }).map((_, i) => (
@@ -183,16 +272,15 @@ export default function Marketplace() {
           <div className="rounded-xl border border-border bg-card p-6 text-sm text-dim text-center">
             No matches.
           </div>
+        ) : selectedType !== null ? (
+          // Single-section view: cap removed, "See all" hidden.
+          renderSection(selectedType, grouped[selectedType], grouped[selectedType].length)
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-            {visible.map((item) => (
-              <CatalogCard
-                key={item.id}
-                item={item}
-                installedByPackageName={installedByPackageName}
-              />
-            ))}
-          </div>
+          // All-view: four sections, capped, with "See all" when overflowing.
+          SECTION_ORDER.map((type) => {
+            const items = grouped[type];
+            return renderSection(type, items.slice(0, SECTION_CAP), items.length);
+          })
         )}
       </div>
     </LobbyShell>
