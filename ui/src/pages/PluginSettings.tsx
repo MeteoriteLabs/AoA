@@ -156,9 +156,9 @@ export function PluginSettings() {
         </Link>
         <div className="flex items-center gap-2">
           <Puzzle className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-bold tracking-tight text-foreground">
+          <h1 className="text-sm font-bold tracking-tight text-foreground">
             {plugin.manifestJson.displayName ?? plugin.packageName}
-          </span>
+          </h1>
           <Badge variant={statusVariant} className="ml-1">
             {displayStatus}
           </Badge>

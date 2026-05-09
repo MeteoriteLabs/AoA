@@ -187,6 +187,15 @@ export function Discussions() {
 
   return (
     <div className="space-y-4">
+      <div>
+        <h1 className="text-[1.6rem] font-bold tracking-tight">
+          Discussions<span className="text-brand">.</span>
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Threads where decisions, tasks, and insights get extracted from raw input.
+        </p>
+      </div>
+
       {/* Header bar */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-1 flex-wrap">

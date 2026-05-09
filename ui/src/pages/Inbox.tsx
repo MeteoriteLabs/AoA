@@ -695,6 +695,11 @@ export function Inbox() {
 
   return (
     <div className="space-y-6">
+      <div>
+        <h1 className="text-[1.6rem] font-bold tracking-tight">
+          Inbox<span className="text-brand">.</span>
+        </h1>
+      </div>
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value === "all" ? "all" : "new"}`)}>
           <PageTabBar

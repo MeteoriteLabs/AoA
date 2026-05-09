@@ -79,6 +79,7 @@ export function SettingsPage() {
 
   return (
     <SettingsLayout activeSection={activeSection} onSectionChange={handleSectionChange}>
+      <h1 className="sr-only">Settings</h1>
       {renderActiveSection(activeSection)}
     </SettingsLayout>
   );

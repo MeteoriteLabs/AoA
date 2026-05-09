@@ -130,6 +130,15 @@ export function Goals() {
 
   return (
     <div className="space-y-4">
+      <div>
+        <h1 className="text-[1.6rem] font-bold tracking-tight">
+          Goals<span className="text-brand">.</span>
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          High-level objectives that align your agents' work toward measurable outcomes.
+        </p>
+      </div>
+
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {goals && goals.length === 0 && (

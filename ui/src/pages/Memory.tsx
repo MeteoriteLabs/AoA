@@ -347,6 +347,15 @@ export function Memory() {
 
   return (
     <div className="space-y-4">
+      <div>
+        <h1 className="text-[1.6rem] font-bold tracking-tight">
+          Memory<span className="text-brand">.</span>
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Company knowledge — decisions, preferences, context, and reference material your agents remember.
+        </p>
+      </div>
+
       {/* Search bar + view mode toggle */}
       <div className="flex items-center gap-2">
         <div className="relative flex-1 max-w-sm">

@@ -101,7 +101,7 @@ describe("Costs page", () => {
 
   it("renders the Budget heading", async () => {
     renderWithProviders(<Costs />);
-    expect(await screen.findByRole("heading", { name: "Budget" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /^Budget\.?$/ })).toBeInTheDocument();
   });
 
   it("calls costsApi.summary on mount", async () => {

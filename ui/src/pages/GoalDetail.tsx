@@ -145,7 +145,7 @@ export function GoalDetail() {
         <InlineEditor
           value={goal.title}
           onSave={(title) => updateGoal.mutate({ title })}
-          as="h2"
+          as="h1"
           className="text-xl font-bold"
         />
 

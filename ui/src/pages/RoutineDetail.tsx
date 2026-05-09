@@ -678,6 +678,7 @@ export function RoutineDetail() {
 
   return (
     <div className="max-w-2xl space-y-4">
+      <h1 className="sr-only">{routine.title || "Routine"}</h1>
       {/* Routine definition card */}
       <div className="border border-border rounded-lg bg-card p-5 space-y-4">
         {/* Header: editable title + actions */}

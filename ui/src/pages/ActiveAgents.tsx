@@ -260,6 +260,15 @@ export function ActiveAgents() {
 
   return (
     <div className="space-y-4">
+      <div>
+        <h1 className="text-[1.6rem] font-bold tracking-tight">
+          Live Agents<span className="text-brand">.</span>
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Real-time view of agents currently running and their most recent runs.
+        </p>
+      </div>
+
       <p className="text-xs text-muted-foreground">
         {activeCount > 0
           ? `${activeCount} agent${activeCount !== 1 ? "s" : ""} running · ${runs.length} recent run${runs.length !== 1 ? "s" : ""}`

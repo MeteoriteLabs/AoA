@@ -723,7 +723,7 @@ export function IssueDetail() {
         <InlineEditor
           value={issue.title}
           onSave={(title) => updateIssue.mutate({ title })}
-          as="h2"
+          as="h1"
           className="text-xl font-bold"
         />
 

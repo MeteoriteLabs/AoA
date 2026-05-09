@@ -288,6 +288,15 @@ export function Objectives() {
 
   return (
     <div className="space-y-6">
+      <div>
+        <h1 className="text-[1.6rem] font-bold tracking-tight">
+          Objectives<span className="text-brand">.</span>
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Vision, mission, values, and the goals that align everyone's work.
+        </p>
+      </div>
+
       {/* Tab bar */}
       <div className="flex items-center gap-1 border-b border-border -mt-2">
         {tabs.map((tab) => (
