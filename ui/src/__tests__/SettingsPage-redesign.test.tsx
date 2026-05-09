@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SettingsPage } from "@/pages/SettingsPage";
@@ -198,6 +199,8 @@ describe("SettingsPage redesign — Phase F shell", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: 1280 });
     window.dispatchEvent(new Event("resize"));
+    // Reset secondary-sidebar collapse state so tests start expanded
+    try { localStorage.removeItem("aoa.settings-secondary-collapsed"); } catch { /* noop */ }
   });
 
   it("renders the SecondarySidebar with all 8 section items", () => {
@@ -317,5 +320,37 @@ describe("SettingsPage redesign — Phase F shell", () => {
     // The shell should fall back to General (default) for unknown tab values
     // The "general" section heading ("General." h2) should appear, not an Activity heading
     expect(screen.queryByText(/Activity event log/i)).toBeNull();
+  });
+
+  it("does NOT render the redundant 'Settings' header inside the secondary aside", async () => {
+    renderSettings();
+    // After cleanup, the aside's first child should be the <nav>, not a header div with "Settings" text.
+    // Selector: SecondarySidebar aside (has shrink-0 + flex-col; uses md:flex for responsive display).
+    const aside = document.querySelector("aside.shrink-0.flex-col");
+    expect(aside).not.toBeNull();
+    const firstChild = aside!.firstElementChild;
+    expect(firstChild?.tagName.toLowerCase()).toBe("nav");
+  });
+
+  it("renders the SecondarySidebar collapse toggle button", async () => {
+    renderSettings();
+    // SidebarCollapseToggle's aria-label is overridden via its `ariaLabel` prop in SettingsLayout.
+    expect(await screen.findByLabelText(/collapse settings nav|expand settings nav/i)).toBeInTheDocument();
+  });
+
+  it("toggles the SecondarySidebar between expanded (200px) and collapsed (48px)", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    const toggle = await screen.findByLabelText(/collapse settings nav/i);
+
+    // Initially expanded — aside has w-[200px]
+    let aside = document.querySelector("aside.shrink-0.flex-col") as HTMLElement;
+    expect(aside.className).toContain("w-[200px]");
+
+    await user.click(toggle);
+    aside = document.querySelector("aside.shrink-0.flex-col") as HTMLElement;
+    expect(aside.className).toContain("w-[48px]");
+
+    expect(screen.getByLabelText(/expand settings nav/i)).toBeInTheDocument();
   });
 });

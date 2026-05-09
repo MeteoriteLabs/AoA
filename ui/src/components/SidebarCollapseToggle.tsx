@@ -17,6 +17,13 @@ interface SidebarCollapseToggleProps {
    */
   top?: number;
   className?: string;
+  /**
+   * Optional aria-label/title override. Defaults to "Expand sidebar" /
+   * "Collapse sidebar". Override when the toggle controls a non-primary
+   * sidebar (e.g. the SettingsLayout secondary nav) so screen readers and
+   * tests can disambiguate which toggle they're targeting.
+   */
+  ariaLabel?: string;
 }
 
 export function SidebarCollapseToggle({
@@ -25,14 +32,16 @@ export function SidebarCollapseToggle({
   sidebarWidth,
   top = 15,
   className,
+  ariaLabel,
 }: SidebarCollapseToggleProps) {
   const Icon = collapsed ? PanelLeftOpen : PanelLeftClose;
+  const label = ariaLabel ?? (collapsed ? "Expand sidebar" : "Collapse sidebar");
   return (
     <button
       type="button"
       onClick={onToggle}
-      title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-      aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+      title={label}
+      aria-label={label}
       className={cn(
         "absolute z-10 inline-flex size-[26px] items-center justify-center rounded-md",
         "border border-border-strong bg-card-2 text-very-dim",

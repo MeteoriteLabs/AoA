@@ -12,7 +12,7 @@ import { MarketplacePrefsSection } from "@/components/settings/sections/Marketpl
 import { CommanderSection } from "@/components/settings/sections/CommanderSection";
 
 const VALID_SECTIONS: readonly SettingsSectionId[] = [
-  "general", "commander", "llm", "budget", "mcp", "plugins", "marketplace", "archive",
+  "general", "commander", "llm", "budget", "mcp", "github", "plugins", "marketplace", "archive",
 ];
 
 function isValidSection(s: string | null): s is SettingsSectionId {
@@ -31,6 +31,9 @@ function renderActiveSection(id: SettingsSectionId) {
       return <BudgetCapsSection />;
     case "mcp":
       return <MCPApiKeysSection />;
+    case "github":
+      // Placeholder — Task 2 wires the GitHubIntegrationCard wrapper section here.
+      return null;
     case "plugins":
       return <PluginsSectionWrapper />;
     case "marketplace":
