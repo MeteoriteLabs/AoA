@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -126,7 +127,7 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
           <DialogDescription>{item.description}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <DialogBody className="space-y-4">
           <div className="flex items-center gap-2">
             <TrustBadge tier={item.trust.tier} />
             <Badge variant="outline" className="text-xs">v{item.version}</Badge>
@@ -151,7 +152,7 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
           {needsDept && <DepartmentPicker companyId={companyId} value={deptId} onChange={setDeptId} />}
 
           {isTeam && plan && plan.steps.length > 1 && <CascadeTreePreview plan={plan} />}
-        </div>
+        </DialogBody>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>

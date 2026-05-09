@@ -46,6 +46,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
+  DialogBody,
   DialogFooter,
 } from "@/components/ui/dialog";
 import {
@@ -1035,7 +1036,7 @@ export function DesignGuide() {
                 This is a sample dialog showing the standard layout with header, content, and footer.
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-3">
+            <DialogBody className="space-y-3">
               <div>
                 <Label>Name</Label>
                 <Input placeholder="Enter a name" className="mt-1.5" />
@@ -1044,7 +1045,7 @@ export function DesignGuide() {
                 <Label>Description</Label>
                 <Textarea placeholder="Describe..." className="mt-1.5" />
               </div>
-            </div>
+            </DialogBody>
             <DialogFooter>
               <Button variant="outline">Cancel</Button>
               <Button>Save</Button>

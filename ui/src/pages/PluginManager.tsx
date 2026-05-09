@@ -20,6 +20,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -181,7 +182,7 @@ export function PluginManager() {
                 Enter the npm package name of the plugin you wish to install.
               </DialogDescription>
             </DialogHeader>
-            <div className="grid gap-4 py-4">
+            <DialogBody className="grid gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="packageName">npm Package Name</Label>
                 <Input
@@ -191,7 +192,7 @@ export function PluginManager() {
                   onChange={(e) => setInstallPackage(e.target.value)}
                 />
               </div>
-            </div>
+            </DialogBody>
             <DialogFooter>
               <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>Cancel</Button>
               <Button
@@ -487,7 +488,7 @@ export function PluginManager() {
               {errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? "Plugin"} hit an error state.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
+          <DialogBody className="space-y-4">
             <div className="rounded-md border border-red-500/25 bg-red-500/[0.06] px-4 py-3">
               <div className="flex items-start gap-3">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
@@ -507,7 +508,7 @@ export function PluginManager() {
                 {errorDetailsPlugin?.lastError ?? "No stored error message."}
               </pre>
             </div>
-          </div>
+          </DialogBody>
           <DialogFooter>
             <Button variant="outline" onClick={() => setErrorDetailsPlugin(null)}>
               Close

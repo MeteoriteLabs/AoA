@@ -8,6 +8,7 @@ import { queryKeys } from "../../lib/queryKeys";
 import { useCompany } from "../../context/CompanyContext";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -120,7 +121,7 @@ export function CreateBudgetPolicyDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <DialogBody className="space-y-4">
           {/* Scope type */}
           <div className="space-y-2">
             <Label>Scope</Label>
@@ -245,7 +246,7 @@ export function CreateBudgetPolicyDialog({
               {error}
             </p>
           )}
-        </div>
+        </DialogBody>
 
         <DialogFooter>
           <Button

@@ -7,6 +7,7 @@ import { useToast } from "../../context/ToastContext";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -130,7 +131,7 @@ export function ReassignmentDialog({
         {isLoading && <div className="py-4 text-sm text-muted-foreground">Loading dependencies...</div>}
 
         {deps && (
-          <div className="space-y-4 max-h-[400px] overflow-y-auto">
+          <DialogBody className="space-y-4 max-h-[400px] overflow-y-auto">
             {deps.teamMembers.length > 0 && (
               <div className="space-y-2">
                 <Label className="text-sm font-semibold">Team members reporting to {displayName}</Label>
@@ -217,7 +218,7 @@ export function ReassignmentDialog({
                 These will remain but lose their assignee/creator link.
               </div>
             )}
-          </div>
+          </DialogBody>
         )}
 
         <DialogFooter>

@@ -14,6 +14,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -161,7 +162,7 @@ function EditIdentityModal({
           <DialogTitle>Edit {label}</DialogTitle>
           <DialogDescription>{hint}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-4 pt-2">
+        <DialogBody className="space-y-4 pt-2">
           {multiline ? (
             <textarea
               className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none resize-none focus:ring-2 focus:ring-ring"
@@ -191,7 +192,7 @@ function EditIdentityModal({
               {saving ? "Saving..." : "Save"}
             </Button>
           </div>
-        </div>
+        </DialogBody>
       </DialogContent>
     </Dialog>
   );

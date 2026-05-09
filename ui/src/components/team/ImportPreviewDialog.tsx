@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogFooter,
   DialogHeader,
@@ -148,6 +149,7 @@ export function ImportPreviewDialog({
           </p>
         </DialogHeader>
 
+        <DialogBody>
         {/* Members */}
         <section className="mt-3">
           <h3 className="mb-2 text-xs font-bold">
@@ -226,6 +228,7 @@ export function ImportPreviewDialog({
             </p>
           </section>
         )}
+        </DialogBody>
 
         <DialogFooter className="border-t pt-3">
           <span className="mr-auto text-[11px] text-muted-foreground">

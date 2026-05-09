@@ -7,6 +7,7 @@ import { useToast } from "../../context/ToastContext";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -88,7 +89,7 @@ export function TransferAdminDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <DialogBody className="space-y-4">
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/30">
             <strong>Warning:</strong> You will lose system admin privileges. The new admin will be the only person who can add/remove founders and transfer admin.
           </div>
@@ -121,7 +122,7 @@ export function TransferAdminDialog({
               placeholder="TRANSFER"
             />
           </div>
-        </div>
+        </DialogBody>
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => { onOpenChange(false); reset(); }}>

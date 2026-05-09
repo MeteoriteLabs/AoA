@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, ExternalLink, Github, Loader2 } from "lucide-react";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -176,6 +177,7 @@ export function CreatePrDialog({
               </DialogFooter>
             </div>
           ) : (
+          <DialogBody>
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Title */}
             <div className="space-y-1.5">
@@ -337,6 +339,7 @@ export function CreatePrDialog({
               </Button>
             </DialogFooter>
           </form>
+          </DialogBody>
           )}
         </DialogContent>
       )}

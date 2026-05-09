@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search } from "lucide-react";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -214,7 +215,7 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto space-y-4 py-2">
+        <DialogBody className="flex-1 overflow-y-auto space-y-4 py-2">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label htmlFor="team-name">Team name *</Label>
@@ -353,7 +354,7 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
               Exactly one member must be the Lead. Currently: {leadCount}.
             </p>
           )}
-        </div>
+        </DialogBody>
 
         <DialogFooter className="border-t pt-3 flex items-center justify-between">
           <span className="text-xs text-muted-foreground">{summary}</span>

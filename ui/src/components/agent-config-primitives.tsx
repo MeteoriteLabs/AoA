@@ -6,6 +6,7 @@ import {
 } from "@/components/ui/tooltip";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -437,7 +438,7 @@ export function ChoosePathButton() {
               Copy the absolute path and paste it into the input.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 text-sm">
+          <DialogBody className="space-y-4 text-sm">
             <section className="space-y-1.5">
               <p className="font-medium">macOS (Finder)</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
@@ -470,7 +471,7 @@ export function ChoosePathButton() {
                 <li>Copy the output and paste it into the path input.</li>
               </ol>
             </section>
-          </div>
+          </DialogBody>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
               OK

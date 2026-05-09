@@ -22,6 +22,7 @@ import { MarkdownEditor } from "../components/MarkdownEditor";
 import { PageSkeleton } from "../components/PageSkeleton";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -272,13 +273,13 @@ function AddSkillModal({
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) resetForm(); onOpenChange(v); }}>
-      <DialogContent className="sm:max-w-[520px] gap-0 flex flex-col">
-        <DialogHeader className="px-6 pt-6 pb-4">
+      <DialogContent className="sm:max-w-[520px] flex flex-col">
+        <DialogHeader>
           <DialogTitle>Add Skill</DialogTitle>
           <DialogDescription>Import from a source or create a custom skill.</DialogDescription>
         </DialogHeader>
 
-        <div className="px-6 pb-6 flex flex-col gap-4">
+        <DialogBody className="flex flex-col gap-4">
           <Tabs value={tab} onValueChange={(v) => setTab(v as "import" | "create")}>
             <TabsList>
               <TabsTrigger value="import">Import</TabsTrigger>
@@ -357,7 +358,7 @@ function AddSkillModal({
               </div>
             </TabsContent>
           </Tabs>
-        </div>
+        </DialogBody>
       </DialogContent>
     </Dialog>
   );
