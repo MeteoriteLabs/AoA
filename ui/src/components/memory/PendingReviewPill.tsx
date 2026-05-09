@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import type { MemoryItem } from "@armyofagents/shared";
 import { memoryApi } from "../../api/memory";
 import { queryKeys } from "../../lib/queryKeys";
 import { useCompany } from "../../context/CompanyContext";
@@ -16,20 +15,19 @@ export function PendingReviewPill({ companyId, className }: Props) {
   const { selectedCompany } = useCompany();
   const prefix = selectedCompany?.issuePrefix ?? "";
 
-  const { data: items } = useQuery({
-    queryKey: queryKeys.memory.list(companyId),
-    queryFn: () => memoryApi.list(companyId, {}),
+  const { data: queue } = useQuery({
+    queryKey: queryKeys.memory.pending(companyId),
+    queryFn: () => memoryApi.listPending(companyId),
     enabled: Boolean(companyId),
   });
 
-  const pendingCount = (items ?? []).filter(
-    (it: MemoryItem) => it.status === "pending",
-  ).length;
+  const pendingCount = queue?.totalCount ?? 0;
   if (pendingCount === 0) return null;
 
   return (
     <button
       type="button"
+      aria-label={`Review ${pendingCount} pending memory items`}
       onClick={() => navigate(`/${prefix}/memory/explore?folder=__pending`)}
       className={cn(
         "flex items-center gap-2 rounded-md border px-2.5 py-1 text-xs",
