@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Users } from "lucide-react";
 import { agentsApi } from "../api/agents";
 import { teamApi } from "../api/team";
+import { teamsApi } from "../api/teams";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
@@ -72,6 +73,17 @@ export function TeamPage() {
     enabled: Boolean(selectedCompanyId),
   });
 
+  // Teams list — used only for the secondary-sidebar count badge.
+  // The TeamsListPage owns its own copy of this query (cached via TanStack
+  // Query so the dual subscription is free).
+  const teamsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.teams.list(selectedCompanyId)
+      : ["teams", "none"],
+    queryFn: () => teamsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Team" }]);
   }, [setBreadcrumbs]);
@@ -100,12 +112,13 @@ export function TeamPage() {
     [setSearchParams],
   );
 
-  // Cache invalidation — all three data sets
+  // Cache invalidation — all four data sets
   const invalidateAll = useCallback(() => {
     if (!selectedCompanyId) return;
     queryClient.invalidateQueries({ queryKey: queryKeys.org.tree(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.team.summary(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.teams.list(selectedCompanyId) });
   }, [queryClient, selectedCompanyId]);
 
   const resendInviteMutation = useMutation({
@@ -172,7 +185,7 @@ export function TeamPage() {
         counts={{
           agents: agentsQuery.data?.length,
           humans: teamSummary?.members.length,
-          teams: undefined,
+          teams: teamsQuery.data?.items.length,
         }}
       >
         {isLoading && <PageSkeleton variant={activeTab === "org" ? "org-chart" : "list"} />}
