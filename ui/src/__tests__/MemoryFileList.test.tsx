@@ -106,6 +106,7 @@ function renderList(props: {
   folderPath: string;
   departmentId: string | null;
   layer?: string | null;
+  onSelectRow?: (id: string, kind: "memory_item" | "asset", title: string) => void;
 }) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -120,6 +121,7 @@ function renderList(props: {
           layer={props.layer}
           selectedItemId={null}
           selectedItemType={null}
+          onSelectRow={props.onSelectRow ?? vi.fn()}
         />
       </MemoryRouter>
     </QueryClientProvider>,

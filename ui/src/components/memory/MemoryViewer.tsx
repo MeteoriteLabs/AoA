@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, PanelRightClose } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { MarkdownItemViewer } from "./viewers/MarkdownItemViewer";
 import { MemoryFolderSummary } from "./MemoryFolderSummary";
 import { MemoryEmptyViewer } from "./MemoryEmptyViewer";
@@ -10,14 +10,18 @@ import { GenericFileViewer } from "./viewers/GenericFileViewer";
 import { DocxFileViewer } from "./viewers/DocxFileViewer";
 import { memoryAssetsApi } from "../../api/memoryAssets";
 import { queryKeys } from "../../lib/queryKeys";
-import { Button } from "@/components/ui/button";
+import { MemoryViewerTabs } from "./MemoryViewerTabs";
+import type { MemoryTab, MemoryTabKind, TabKey } from "../../lib/memoryTabs";
 
 interface MemoryViewerProps {
   companyId: string;
-  selectedItemId: string | null;
-  selectedItemType: "memory_item" | "asset" | null;
-  folderPath: string;
-  onCollapse?: () => void;
+  tabs: ReadonlyArray<MemoryTab>;
+  activeKey: TabKey | null;
+  onActivate: (id: string, kind: MemoryTabKind) => void;
+  onClose: (id: string, kind: MemoryTabKind) => void;
+  onCollapse: () => void;
+  /** Optional folder fallback for the empty-pane / folder-summary view. */
+  folderPath?: string;
 }
 
 function AssetViewerSlot({ companyId, assetId }: { companyId: string; assetId: string }) {
@@ -52,16 +56,23 @@ function AssetViewerSlot({ companyId, assetId }: { companyId: string; assetId: s
 
 export function MemoryViewer({
   companyId,
-  selectedItemId,
-  selectedItemType,
-  folderPath,
+  tabs,
+  activeKey,
+  onActivate,
+  onClose,
   onCollapse,
+  folderPath,
 }: MemoryViewerProps) {
+  // Resolve the active tab from the tabs array.
+  const activeTab = activeKey
+    ? tabs.find((t) => t.id === activeKey.id && t.kind === activeKey.kind) ?? null
+    : null;
+
   let inner: React.ReactNode;
-  if (selectedItemId && selectedItemType === "memory_item") {
-    inner = <MarkdownItemViewer companyId={companyId} itemId={selectedItemId} />;
-  } else if (selectedItemId && selectedItemType === "asset") {
-    inner = <AssetViewerSlot companyId={companyId} assetId={selectedItemId} />;
+  if (activeTab && activeTab.kind === "memory_item") {
+    inner = <MarkdownItemViewer companyId={companyId} itemId={activeTab.id} />;
+  } else if (activeTab && activeTab.kind === "asset") {
+    inner = <AssetViewerSlot companyId={companyId} assetId={activeTab.id} />;
   } else if (folderPath) {
     inner = (
       <MemoryFolderSummary
@@ -76,19 +87,13 @@ export function MemoryViewer({
 
   return (
     <div className="h-full flex flex-col">
-      {onCollapse && (
-        <div className="flex items-center justify-end px-2 py-1 border-b border-border">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onCollapse}
-            aria-label="Collapse viewer"
-            className="h-6 w-6"
-          >
-            <PanelRightClose className="h-3.5 w-3.5 text-muted-foreground" />
-          </Button>
-        </div>
-      )}
+      <MemoryViewerTabs
+        tabs={tabs}
+        activeKey={activeKey}
+        onActivate={onActivate}
+        onClose={onClose}
+        onCollapse={onCollapse}
+      />
       <div className="flex-1 min-h-0 overflow-auto">
         {inner}
       </div>

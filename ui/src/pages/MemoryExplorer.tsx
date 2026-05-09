@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { NewMemoryItemDialog } from "../components/memory/NewMemoryItemDialog";
 import { useSearchParams } from "@/lib/router";
-import { Brain, PanelRightClose } from "lucide-react";
+import { Brain } from "lucide-react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { MemoryTree } from "../components/memory/MemoryTree";
 import { MemoryFileList } from "../components/memory/MemoryFileList";
 import { MemoryViewer } from "../components/memory/MemoryViewer";
+import { MemoryCollapsedTabStrip } from "../components/memory/MemoryCollapsedTabStrip";
 import { MemoryHomeDashboard } from "../components/memory/MemoryHomeDashboard";
 import { MemoryToolbar } from "../components/memory/MemoryToolbar";
 import { CollapsedRail } from "../components/memory/CollapsedRail";
@@ -14,6 +15,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
 import { canUploadInScope } from "../lib/memoryUploadScope";
+import { useMemoryTabs } from "../hooks/useMemoryTabs";
 
 export function MemoryExplorer() {
   const { selectedCompanyId } = useCompany();
@@ -24,11 +26,28 @@ export function MemoryExplorer() {
   const departmentId = searchParams.get("dept") ?? null;
   const layer = searchParams.get("layer");
   const goalId = searchParams.get("goal");
+
+  // Legacy URL params: ?item=X&type=Y deep-link support.
   const selectedItemId = searchParams.get("item");
   const selectedItemType = searchParams.get("type") as
     | "memory_item"
     | "asset"
     | null;
+
+  // Tab state — owned here, passed down to viewer + list.
+  const { tabs, activeKey, openOrActivate, close, setActive } = useMemoryTabs();
+
+  // One-shot legacy migration: if URL has ?item=X&type=Y but no tabs yet, open it.
+  useEffect(() => {
+    if (selectedItemId && selectedItemType && tabs.length === 0) {
+      openOrActivate({
+        id: selectedItemId,
+        kind: selectedItemType,
+        title: selectedItemId, // fallback title; replaced once the viewer loads
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedItemId, selectedItemType]);
 
   // Phase 6.2a: synthetic Home selection — no folder, no dept, no layer, no item.
   const isHomeSelected =
@@ -134,9 +153,10 @@ export function MemoryExplorer() {
               folderPath={folderPath}
               departmentId={departmentId}
               layer={layer ?? null}
-              selectedItemId={selectedItemId}
-              selectedItemType={selectedItemType}
+              selectedItemId={activeKey?.id ?? null}
+              selectedItemType={activeKey?.kind ?? null}
               searchQuery={searchQuery}
+              onSelectRow={(id, kind, title) => openOrActivate({ id, kind, title })}
             />
           )}
         </Panel>
@@ -154,32 +174,30 @@ export function MemoryExplorer() {
           onResize={(size) => setViewerCollapsed(size.asPercentage <= 4)}
         >
           {viewerCollapsed ? (
-            <CollapsedRail
+            <MemoryCollapsedTabStrip
+              tabs={tabs}
+              activeKey={activeKey}
+              onActivate={(id, kind) => {
+                setActive(id, kind);
+                viewerPanelRef.current?.expand();
+              }}
               onExpand={() => viewerPanelRef.current?.expand()}
-              direction="left"
             />
           ) : isHomeSelected ? (
             // Home state: empty right pane until Phase 2 lands (graph + tabs).
             // The legacy "📊 graph view coming soon" placeholder was removed —
             // it shipped a loud empty-state on every Memory landing without
             // earning the screen real estate. Founders can collapse the pane.
-            <div className="relative h-full">
-              <button
-                type="button"
-                onClick={() => viewerPanelRef.current?.collapse()}
-                className="absolute top-2 right-2 p-1 rounded hover:bg-accent/50"
-                aria-label="Collapse viewer"
-              >
-                <PanelRightClose className="h-3.5 w-3.5 text-muted-foreground" />
-              </button>
-            </div>
+            <div className="relative h-full" />
           ) : (
             <MemoryViewer
               companyId={selectedCompanyId}
-              selectedItemId={selectedItemId}
-              selectedItemType={selectedItemType}
-              folderPath={folderPath}
+              tabs={tabs}
+              activeKey={activeKey}
+              onActivate={setActive}
+              onClose={close}
               onCollapse={() => viewerPanelRef.current?.collapse()}
+              folderPath={folderPath}
             />
           )}
         </Panel>

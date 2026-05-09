@@ -25,6 +25,7 @@ interface MemoryFileListProps {
   selectedItemId: string | null;
   selectedItemType: "memory_item" | "asset" | null;
   searchQuery?: string;
+  onSelectRow: (id: string, kind: "memory_item" | "asset", title: string) => void;
 }
 
 interface ListRow {
@@ -95,6 +96,7 @@ export function MemoryFileList({
   selectedItemId,
   selectedItemType,
   searchQuery,
+  onSelectRow,
 }: MemoryFileListProps) {
   const navigate = useNavigate();
   const { selectedCompany } = useCompany();
@@ -310,10 +312,7 @@ export function MemoryFileList({
   }
 
   function selectRow(row: ListRow) {
-    const params = new URLSearchParams(window.location.search);
-    params.set("item", row.id);
-    params.set("type", row.kind);
-    navigate(`/${companyPrefix}/memory/explore?${params.toString()}`);
+    onSelectRow(row.id, row.kind, row.name);
   }
 
   const isLoading = itemsQuery.isLoading || assetsQuery.isLoading;
