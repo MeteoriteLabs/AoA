@@ -7,6 +7,7 @@ import { SettingsPage } from "@/pages/SettingsPage";
 import { SETTINGS_SECTIONS } from "@/components/settings/SettingsLayout";
 import { SidebarProvider } from "@/context/SidebarContext";
 import { DialogProvider } from "@/context/DialogContext";
+import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -193,13 +194,15 @@ function renderSettings(initialPath = "/P4/settings?tab=general") {
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[initialPath]}>
-        <TooltipProvider>
-          <DialogProvider>
-            <SidebarProvider>
-              <SettingsPage />
-            </SidebarProvider>
-          </DialogProvider>
-        </TooltipProvider>
+        <ThemeProvider>
+          <TooltipProvider>
+            <DialogProvider>
+              <SidebarProvider>
+                <SettingsPage />
+              </SidebarProvider>
+            </DialogProvider>
+          </TooltipProvider>
+        </ThemeProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -212,25 +215,27 @@ function renderViaAppRoutes(initialPath: string) {
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[initialPath]}>
-        <TooltipProvider>
-          <DialogProvider>
-            <SidebarProvider>
-              <Routes>
-                <Route path=":companyPrefix">
-                  <Route
-                    path="settings/commander"
-                    element={<Navigate to="../settings?tab=commander" replace />}
-                  />
-                  <Route
-                    path="settings/internal-agent"
-                    element={<Navigate to="../settings?tab=commander" replace />}
-                  />
-                  <Route path="settings" element={<SettingsPage />} />
-                </Route>
-              </Routes>
-            </SidebarProvider>
-          </DialogProvider>
-        </TooltipProvider>
+        <ThemeProvider>
+          <TooltipProvider>
+            <DialogProvider>
+              <SidebarProvider>
+                <Routes>
+                  <Route path=":companyPrefix">
+                    <Route
+                      path="settings/commander"
+                      element={<Navigate to="../settings?tab=commander" replace />}
+                    />
+                    <Route
+                      path="settings/internal-agent"
+                      element={<Navigate to="../settings?tab=commander" replace />}
+                    />
+                    <Route path="settings" element={<SettingsPage />} />
+                  </Route>
+                </Routes>
+              </SidebarProvider>
+            </DialogProvider>
+          </TooltipProvider>
+        </ThemeProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -431,5 +436,12 @@ describe("SettingsPage redesign — Phase F shell", () => {
     expect(
       await screen.findByRole("tab", { name: /Execution & Model/i }),
     ).toBeInTheDocument();
+  });
+
+  it("Settings > General > Appearance has a Theme field with 3 options (Dark / Light / System)", async () => {
+    renderSettings("/P4/settings?tab=general");
+    expect(await screen.findByRole("button", { name: /^Dark$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Light$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^System$/i })).toBeInTheDocument();
   });
 });

@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
+import { useTheme } from "@/context/ThemeContext";
 import { companiesApi } from "@/api/companies";
 import { accessApi } from "@/api/access";
 import { queryKeys } from "@/lib/queryKeys";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Check, ChevronRight, Upload, X } from "lucide-react";
+import { Check, ChevronRight, Laptop, Moon, Sun, Upload, X } from "lucide-react";
 import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
 import { Field, ToggleField, HintIcon } from "@/components/agent-config-primitives";
 
@@ -126,6 +128,7 @@ Then after you've connected to AoA (exchanged keys etc.) you MUST review and fol
 
 export function GeneralSection() {
   const { selectedCompany, selectedCompanyId } = useCompany();
+  const { preference, setPreference } = useTheme();
   const queryClient = useQueryClient();
 
   const [companyName, setCompanyName] = useState("");
@@ -435,6 +438,42 @@ export function GeneralSection() {
                     )}
                   </div>
                 </Field>
+              </div>
+            </div>
+
+            {/* Theme — Phase G migration from header */}
+            <div className="border-t border-border pt-3">
+              <div className="text-sm font-medium">Theme</div>
+              <p className="text-[11.5px] text-muted-foreground mt-0.5">
+                UI color scheme. "System" follows your OS preference.
+              </p>
+              <div className="mt-2 flex items-center gap-2 flex-wrap">
+                {(
+                  [
+                    { value: "dark", label: "Dark", icon: Moon },
+                    { value: "light", label: "Light", icon: Sun },
+                    { value: "system", label: "System", icon: Laptop },
+                  ] as const
+                ).map(({ value, label, icon: Icon }) => {
+                  const active = preference === value;
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setPreference(value)}
+                      aria-pressed={active}
+                      className={cn(
+                        "px-3 py-1.5 text-sm rounded-md border inline-flex items-center gap-1.5 transition-colors",
+                        active
+                          ? "bg-card-3 border-border text-foreground"
+                          : "border-border-strong text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
+                      )}
+                    >
+                      <Icon className="size-3.5" />
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
