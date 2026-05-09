@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
+import { Building2 } from "lucide-react";
 import { FolderTreeNode } from "../FolderTreeNode";
 
 describe("FolderTreeNode active state", () => {
@@ -48,5 +49,44 @@ describe("FolderTreeNode active state", () => {
       />,
     );
     expect(container.querySelector(".bg-brand.rounded-full")).toBeNull();
+  });
+});
+
+describe("FolderTreeNode iconTone", () => {
+  it("applies iconTone via inline style on the icon span", () => {
+    const { container } = render(
+      <FolderTreeNode
+        label="Domain"
+        icon={Building2}
+        iconTone="var(--data-teal)"
+        depth={0}
+        expanded={false}
+        selected={false}
+        hasChildren={false}
+        onToggleExpand={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+    // The icon span carries a flex-shrink-0 class and Lucide svg child
+    const iconSpan = container.querySelector("span.flex-shrink-0.text-sm");
+    expect(iconSpan).toBeTruthy();
+    expect((iconSpan as HTMLElement).style.color).toBe("var(--data-teal)");
+  });
+
+  it("does not set inline color on the icon span when iconTone is absent", () => {
+    const { container } = render(
+      <FolderTreeNode
+        label="Folder"
+        depth={0}
+        expanded={false}
+        selected={false}
+        hasChildren={false}
+        onToggleExpand={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+    const iconSpan = container.querySelector("span.flex-shrink-0.text-sm");
+    expect(iconSpan).toBeTruthy();
+    expect((iconSpan as HTMLElement).style.color).toBe("");
   });
 });

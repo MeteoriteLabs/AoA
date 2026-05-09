@@ -2,7 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import { PanelLeftClose } from "lucide-react";
+import {
+  PanelLeftClose,
+  IdCard,
+  Building2,
+  Target,
+  Zap,
+  Home,
+  Pin,
+  Clock,
+  type LucideIcon,
+} from "lucide-react";
 import type {
   MemoryFolderRecord,
   MemoryItem,
@@ -34,7 +44,9 @@ interface MemoryTreeProps {
 interface TreeNode {
   key: string;
   label: string;
-  icon?: string;
+  Icon?: LucideIcon;       // Lucide component reference (layer headers + shortcuts)
+  icon?: string;           // Emoji/string icon (folder nodes — user data, not migrated here)
+  iconTone?: string;       // Inline color for the icon span (e.g. "var(--data-indigo)")
   count?: number;
   depth: number;
   hasChildren: boolean;
@@ -47,11 +59,11 @@ interface TreeNode {
 
 type LayerKey = "identity" | "domain" | "active_context" | "working";
 
-const LAYER_META: Record<LayerKey, { label: string; icon: string }> = {
-  identity: { label: "Identity", icon: "🪪" },
-  domain: { label: "Domain", icon: "🏢" },
-  active_context: { label: "Active Context", icon: "🎯" },
-  working: { label: "Working", icon: "⚡" },
+const LAYER_META: Record<LayerKey, { label: string; Icon: LucideIcon; tone: string }> = {
+  identity: { label: "Identity", Icon: IdCard, tone: "var(--data-indigo)" },
+  domain: { label: "Domain", Icon: Building2, tone: "var(--data-teal)" },
+  active_context: { label: "Active Context", Icon: Target, tone: "var(--data-amber)" },
+  working: { label: "Working", Icon: Zap, tone: "var(--data-magenta)" },
 };
 
 const DEFAULT_EXPANDED = new Set<string>([
@@ -348,7 +360,8 @@ export function MemoryTree({
       <div key={node.key}>
         <FolderTreeNode
           label={node.label}
-          icon={node.icon}
+          icon={node.Icon ?? node.icon}
+          iconTone={node.iconTone}
           count={node.count}
           depth={node.depth}
           expanded={isExpanded}
@@ -475,7 +488,7 @@ function buildTree({
   top.push({
     key: "__home",
     label: "Home",
-    icon: "🏠",
+    Icon: Home,
     depth: 0,
     hasChildren: false,
     target: { folder: "", dept: null }, // empty params = home
@@ -483,7 +496,7 @@ function buildTree({
   top.push({
     key: "__pinned",
     label: "Pinned",
-    icon: "📌",
+    Icon: Pin,
     count: counts.pinned > 0 ? counts.pinned : undefined,
     depth: 0,
     hasChildren: false,
@@ -501,7 +514,7 @@ function buildTree({
   top.push({
     key: "__recent",
     label: "Recent",
-    icon: "🕒",
+    Icon: Clock,
     count: counts.recent > 0 ? counts.recent : undefined,
     depth: 0,
     hasChildren: false,
@@ -541,7 +554,8 @@ function buildTree({
   top.push({
     key: "__layer-identity",
     label: LAYER_META.identity.label,
-    icon: LAYER_META.identity.icon,
+    Icon: LAYER_META.identity.Icon,
+    iconTone: LAYER_META.identity.tone,
     count: counts.byLayer.identity, // always show, even 0 — spec §3 "predictable structure"
     depth: 0,
     hasChildren: identityChildren.length > 0,
@@ -584,7 +598,8 @@ function buildTree({
   top.push({
     key: "__layer-domain",
     label: LAYER_META.domain.label,
-    icon: LAYER_META.domain.icon,
+    Icon: LAYER_META.domain.Icon,
+    iconTone: LAYER_META.domain.tone,
     count: counts.byLayer.domain, // always show, even 0
     depth: 0,
     hasChildren: domainChildren.length > 0,
@@ -605,7 +620,8 @@ function buildTree({
   top.push({
     key: "__layer-active_context",
     label: LAYER_META.active_context.label,
-    icon: LAYER_META.active_context.icon,
+    Icon: LAYER_META.active_context.Icon,
+    iconTone: LAYER_META.active_context.tone,
     count: counts.byLayer.active_context, // always show, even 0
     depth: 0,
     hasChildren: activeChildren.length > 0,
@@ -617,7 +633,8 @@ function buildTree({
   top.push({
     key: "__layer-working",
     label: LAYER_META.working.label,
-    icon: LAYER_META.working.icon,
+    Icon: LAYER_META.working.Icon,
+    iconTone: LAYER_META.working.tone,
     count: counts.byLayer.working, // always show, even 0
     depth: 0,
     hasChildren: false,

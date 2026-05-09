@@ -5,6 +5,8 @@ import { cn } from "@/lib/utils";
 interface FolderTreeNodeProps {
   label: string;
   icon?: string | LucideIcon;
+  /** Optional inline color applied to the icon span (e.g. "var(--data-indigo)"). */
+  iconTone?: string;
   count?: number;
   depth: number;
   expanded: boolean;
@@ -22,6 +24,7 @@ interface FolderTreeNodeProps {
 export function FolderTreeNode({
   label,
   icon,
+  iconTone,
   count,
   depth,
   expanded,
@@ -70,7 +73,10 @@ export function FolderTreeNode({
           )
         ) : null}
       </button>
-      <span className="flex-shrink-0 text-sm leading-none">
+      <span
+        className="flex-shrink-0 text-sm leading-none"
+        style={iconTone ? { color: iconTone } : undefined}
+      >
         {Icon ? <Icon className="h-3.5 w-3.5" /> : (typeof icon === "string" ? icon : "📁")}
       </span>
       <span className="truncate flex-1">{label}</span>
