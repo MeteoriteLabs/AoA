@@ -39,16 +39,16 @@ function renderHome() {
 describe("MemoryHomeDashboard (Phase 6.2a)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("renders pending banner when there are pending items", async () => {
-    renderHome();
-    await waitFor(() => expect(screen.getByText(/1 item waiting for your review/i)).toBeInTheDocument());
-  });
+  // Pending banner was removed in Phase 1 of the UI overhaul (the "PendingReviewPill"
+  // now lives in the page-level MemoryToolbar, which is rendered by MemoryExplorer
+  // — outside this component's surface). The pending UI is covered by
+  // PendingReviewPill.test.tsx and MemoryToolbar.test.tsx.
 
   it("renders 4 layer tiles", async () => {
     renderHome();
     await waitFor(() => expect(screen.getByText("Identity")).toBeInTheDocument());
     expect(screen.getByText("Domain")).toBeInTheDocument();
-    expect(screen.getByText("Active Context")).toBeInTheDocument();
+    expect(screen.getByText("Active context")).toBeInTheDocument();
     expect(screen.getByText("Working")).toBeInTheDocument();
   });
 
