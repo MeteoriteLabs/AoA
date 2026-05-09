@@ -84,7 +84,7 @@ export function CompanyActivityPage() {
 
   if (!selectedCompanyId) {
     return (
-      <div className="p-4 md:p-6 max-w-[1100px] mx-auto">
+      <div className="space-y-6 max-w-[1100px] mx-auto">
         <EmptyState
           icon={History}
           message="Select a company to view activity."
@@ -103,7 +103,7 @@ export function CompanyActivityPage() {
     : [];
 
   return (
-    <div className="p-4 md:p-6 max-w-[1100px] mx-auto">
+    <div className="space-y-6 max-w-[1100px] mx-auto">
       <div>
         <h1 className="text-[1.6rem] font-bold tracking-tight">
           Activity<span className="text-brand">.</span>
