@@ -13,7 +13,7 @@ import {
 import type { Config } from "../config.js";
 import { logger } from "../middleware/logger.js";
 
-const DEV_FALLBACK_SECRET = "paperclip-dev-secret";
+const DEV_FALLBACK_SECRET = "aoa-dev-secret";
 
 export type BetterAuthSessionUser = {
   id: string;

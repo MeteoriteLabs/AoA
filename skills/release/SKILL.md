@@ -387,7 +387,7 @@ Use:
 
 For issue-modifying calls, include:
 - `Authorization: Bearer $AOA_API_KEY`
-- `X-Paperclip-Run-Id: $AOA_RUN_ID`
+- `X-Aoa-Run-Id: $AOA_RUN_ID`
 
 ---
 

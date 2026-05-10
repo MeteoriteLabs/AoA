@@ -103,5 +103,5 @@ If a report is `blocked`:
 - You MUST NOT write production code yourself unless you justified it in a comment first.
 - You MUST set dependencies on subtasks. Parallel-firing tests-before-code is a process bug.
 - You MUST close the parent task when all children are done. Don't leave open parents.
-- You MUST include `X-Paperclip-Run-Id: $AOA_RUN_ID` header on all mutating API calls.
+- You MUST include `X-Aoa-Run-Id: $AOA_RUN_ID` header on all mutating API calls.
 - You MUST NOT cancel cross-team tasks -- reassign with a comment instead.

@@ -45,8 +45,8 @@ describe("agent local JWT", () => {
       company_id: "company-1",
       adapter_type: "claude_local",
       run_id: "run-1",
-      iss: "paperclip",
-      aud: "paperclip-api",
+      iss: "aoa",
+      aud: "aoa-api",
     });
   });
 
@@ -72,8 +72,8 @@ describe("agent local JWT", () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
     const token = createLocalAgentJwt("agent-1", "company-1", "codex_local", "run-1");
 
-    process.env[issuerEnv] = "paperclip";
-    process.env[audienceEnv] = "paperclip-api";
+    process.env[issuerEnv] = "wrong-issuer";
+    process.env[audienceEnv] = "wrong-audience";
     expect(verifyLocalAgentJwt(token!)).toBeNull();
   });
 });

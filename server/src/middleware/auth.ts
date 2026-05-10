@@ -24,7 +24,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         ? { type: "board", userId: "local-board", isInstanceAdmin: true, source: "local_implicit" }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeader = req.header("x-aoa-run-id") ?? req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
@@ -69,7 +69,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
       }
-      // In local_trusted mode, resolve the agent identity from x-paperclip-run-id
+      // In local_trusted mode, resolve the agent identity from x-aoa-run-id
       // when no Bearer token is present. This is a fallback for environments where
       // the JWT secret is not configured — without it, agent subprocesses silently
       // fall through to the local-board actor and all comments appear as "You".
