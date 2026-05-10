@@ -3,16 +3,23 @@ import { test, expect } from "@playwright/test";
 /**
  * E2E: Backups tab in Instance Settings (T23).
  *
- * T23 of the upstream resync re-enabled the Backups tab in
- * InstanceSettingsPage by adding it back to the TABS array and removing the
- * v1.0 unmount comment. BackupsTab.tsx was already complete with a
+ * T23 of the upstream resync re-enabled the Backups section in
+ * InstanceSettingsPage by adding it back to the settings nav and removing
+ * the v1.0 unmount comment. BackupsTab.tsx was already complete with a
  * RetentionPresetGroup UI for Daily / Weekly / Monthly retention selectors.
  *
  * Phase B test-gap audit found no e2e coverage for this. Component-level
  * tests (ui/src/__tests__/BackupsTab.test.tsx) cover the component in
- * isolation; this spec covers the user-visible flow: the tab appears in the
- * nav, is selectable, and all three RetentionPresetGroup panels render with
- * correct headings and preset button labels.
+ * isolation; this spec covers the user-visible flow: the nav item appears in
+ * the sidebar, is clickable, and all three RetentionPresetGroup panels render
+ * with correct headings and preset button labels.
+ *
+ * Architecture note — UI overhaul (May 2026):
+ *   InstanceSettingsPage was refactored to use SecondarySidebar navigation
+ *   instead of a <Tabs> component with <TabsTrigger> elements. The sidebar
+ *   items are <button type="button"> elements, not role="tab". Active section
+ *   is driven by the ?tab= URL search param. Tests that just need the Backups
+ *   content visible navigate directly to /instance/settings?tab=backups.
  *
  * Rendering notes from BackupsTab.tsx:
  *   - Each RetentionPresetGroup renders a <div role="radiogroup" aria-label="X retention">
@@ -38,19 +45,17 @@ test.describe("Backups tab in Instance Settings (T23)", () => {
   test("Backups tab is visible in Instance Settings nav and is selectable", async ({ page }) => {
     await page.goto("/instance/settings");
 
-    // The Backups tab must be present in the tab bar.
-    // TABS array entry: { value: "backups", label: "Backups" }
-    const backupsTab = page.getByRole("tab", { name: /^backups$/i });
-    await expect(backupsTab).toBeVisible({ timeout: 10_000 });
+    // The Backups nav item is a sidebar button (SecondarySidebar), not role="tab".
+    const backupsItem = page.getByRole("button", { name: /^backups$/i });
+    await expect(backupsItem).toBeVisible({ timeout: 10_000 });
 
-    // Clicking the tab should activate it (aria-selected="true").
-    await backupsTab.click();
-    await expect(backupsTab).toHaveAttribute("aria-selected", "true");
+    // Clicking should navigate to the Backups section (URL updates to ?tab=backups).
+    await backupsItem.click();
+    await expect(page).toHaveURL(/[?&]tab=backups/, { timeout: 5_000 });
   });
 
   test("BackupsTab renders the 'Backup retention' section heading after selecting the tab", async ({ page }) => {
-    await page.goto("/instance/settings");
-    await page.getByRole("tab", { name: /^backups$/i }).click();
+    await page.goto("/instance/settings?tab=backups");
 
     // The BackupsTab renders an <h2> "Backups" and an <h3> "Backup retention".
     // The h3 is inside a card section and is a reliable content anchor.
@@ -60,8 +65,7 @@ test.describe("Backups tab in Instance Settings (T23)", () => {
   });
 
   test("Daily, Weekly, Monthly radiogroup panels all render after selecting the tab", async ({ page }) => {
-    await page.goto("/instance/settings");
-    await page.getByRole("tab", { name: /^backups$/i }).click();
+    await page.goto("/instance/settings?tab=backups");
 
     // RetentionPresetGroup renders:
     //   <div role="radiogroup" aria-label="Daily retention"> ... </div>
@@ -81,8 +85,7 @@ test.describe("Backups tab in Instance Settings (T23)", () => {
   });
 
   test("Daily retention preset buttons show '3 days', '7 days', '14 days'", async ({ page }) => {
-    await page.goto("/instance/settings");
-    await page.getByRole("tab", { name: /^backups$/i }).click();
+    await page.goto("/instance/settings?tab=backups");
 
     const dailyGroup = page.getByRole("radiogroup", { name: /daily retention/i });
     await expect(dailyGroup).toBeVisible({ timeout: 5_000 });
@@ -95,8 +98,7 @@ test.describe("Backups tab in Instance Settings (T23)", () => {
   });
 
   test("Weekly retention preset buttons show '1 week', '2 weeks', '4 weeks'", async ({ page }) => {
-    await page.goto("/instance/settings");
-    await page.getByRole("tab", { name: /^backups$/i }).click();
+    await page.goto("/instance/settings?tab=backups");
 
     const weeklyGroup = page.getByRole("radiogroup", { name: /weekly retention/i });
     await expect(weeklyGroup).toBeVisible({ timeout: 5_000 });
@@ -109,8 +111,7 @@ test.describe("Backups tab in Instance Settings (T23)", () => {
   });
 
   test("Monthly retention preset buttons show '1 month', '3 months', '6 months'", async ({ page }) => {
-    await page.goto("/instance/settings");
-    await page.getByRole("tab", { name: /^backups$/i }).click();
+    await page.goto("/instance/settings?tab=backups");
 
     const monthlyGroup = page.getByRole("radiogroup", { name: /monthly retention/i });
     await expect(monthlyGroup).toBeVisible({ timeout: 5_000 });
@@ -123,8 +124,7 @@ test.describe("Backups tab in Instance Settings (T23)", () => {
   });
 
   test("Default selected preset (7 days) shows aria-checked='true' on the Daily group", async ({ page }) => {
-    await page.goto("/instance/settings");
-    await page.getByRole("tab", { name: /^backups$/i }).click();
+    await page.goto("/instance/settings?tab=backups");
 
     const dailyGroup = page.getByRole("radiogroup", { name: /daily retention/i });
     await expect(dailyGroup).toBeVisible({ timeout: 5_000 });

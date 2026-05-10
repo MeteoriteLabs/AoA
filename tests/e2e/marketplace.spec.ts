@@ -10,7 +10,7 @@ import { seedCompany, cleanupTestCompanies } from "./helpers/seed-company";
  *
  * Route map (from App.tsx):
  *   /marketplace                       — global catalog home (no company prefix)
- *   /marketplace/:type                 — type filter page  (e.g. /marketplace/skill)
+ *   /marketplace/:type                 — redirects to /marketplace?type=:type
  *   /:prefix/marketplace-updates       — company-scoped updates page
  *
  * Catalog in the test instance comes from the bundled aoa-marketplace-snapshot.json
@@ -179,9 +179,9 @@ test.describe("Marketplace UI", () => {
   }) => {
     await page.goto("/marketplace");
 
-    // Hero h1 ("Extend your workforce ...") — visible once data loads
+    // Hero h1 ("Marketplace.") — visible once data loads
     await expect(
-      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
     // Frozen fixture has 5 items (4 plugins + 1 skill). At least one CatalogCard
@@ -198,7 +198,7 @@ test.describe("Marketplace UI", () => {
 
     // Wait for hero so we know data has loaded
     await expect(
-      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
     // Type pills aren't h3 anymore — they're buttons with span labels.
@@ -221,14 +221,20 @@ test.describe("Marketplace UI", () => {
   test("/marketplace/plugin type-filter page renders 'Plugins' heading with item count", async ({
     page,
   }) => {
-    await page.goto("/marketplace/plugin");
+    // /marketplace/plugin redirects → /marketplace?type=plugin (MarketplaceTypeRedirect).
+    // The page uses a single h1 "Marketplace." and the Plugins filter chip goes active.
+    await page.goto("/marketplace?type=plugin");
 
-    // MarketplaceType renders <h1>Plugins</h1> with a count subtitle
-    const heading = page.getByRole("heading", { name: "Plugins", level: 1 });
-    await expect(heading).toBeVisible({ timeout: 15_000 });
+    // Wait for the page to settle
+    await expect(
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
+    ).toBeVisible({ timeout: 15_000 });
 
-    // Slack plugin card should be listed (1 plugin in bundled snapshot)
-    // CatalogCard renders name in <h3>
+    // The Plugins filter chip should be active when ?type=plugin is set
+    const pluginsPill = page.getByRole("button", { name: /Plugins\s+\d+\s+available/i });
+    await expect(pluginsPill).toHaveAttribute("data-active", "true");
+
+    // Slack plugin card should be listed (present in bundled snapshot)
     await expect(
       page.getByRole("heading", { name: "Slack", level: 3 }),
     ).toBeVisible();
@@ -237,10 +243,16 @@ test.describe("Marketplace UI", () => {
   test("/marketplace/skill type-filter page renders 'Skills' heading", async ({
     page,
   }) => {
-    await page.goto("/marketplace/skill");
+    // /marketplace/skill redirects → /marketplace?type=skill.
+    await page.goto("/marketplace?type=skill");
 
-    const heading = page.getByRole("heading", { name: "Skills", level: 1 });
-    await expect(heading).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
+    ).toBeVisible({ timeout: 15_000 });
+
+    // Skills filter chip is active
+    const skillsPill = page.getByRole("button", { name: /Skills\s+\d+\s+available/i });
+    await expect(skillsPill).toHaveAttribute("data-active", "true");
 
     // template-skill is the skill in the bundled snapshot
     await expect(page.getByText("template-skill")).toBeVisible();
@@ -256,7 +268,7 @@ test.describe("Marketplace UI", () => {
 
     await expect(page).toHaveURL(/\/marketplace(\?|$)/, { timeout: 10_000 });
     await expect(
-      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 10_000 });
   });
 
@@ -279,7 +291,7 @@ test.describe("Marketplace UI", () => {
 
     // Wait for hero so the page has loaded
     await expect(
-      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
     // Click the Plugins pill (button)

@@ -48,10 +48,10 @@ test.describe("Onboarding wizard", () => {
   test("opens on first run and advances past step 1", async ({ page }) => {
     await page.goto("/");
 
-    // Lobby empty state replaces the previous auto-open onboarding modal
-    // (removed in the lobby redesign — see docs/superpowers/specs/2026-05-07-lobby-redesign-design.md §3).
-    // Click "Create company" on the empty hero to open the wizard explicitly.
-    const createCompanyButton = page.getByRole("button", { name: /^create company$/i });
+    // Lobby empty state (LobbyEmptyState) replaces the previous auto-open onboarding
+    // modal (removed in the lobby redesign). The CTA button is "Create organization"
+    // (AoA uses "organization" in the lobby empty-state — see LobbyEmptyState.tsx).
+    const createCompanyButton = page.getByRole("button", { name: /^create organization$/i });
     await expect(createCompanyButton).toBeVisible({ timeout: 10_000 });
     await createCompanyButton.click();
 
