@@ -12,7 +12,6 @@ import {
   Repeat,
   Shield,
   Puzzle,
-  DollarSign,
   FolderGit2,
   Activity,
 } from "lucide-react";
@@ -156,9 +155,8 @@ export function Sidebar() {
             <SidebarNavItem to="/memory" label="Memory" icon={Brain} collapsed={collapsed} />
             <SidebarNavItem to="/team" label="Team" icon={Users} collapsed={collapsed} />
             <SidebarNavItem to="/skills" label="Skills" icon={Boxes} collapsed={collapsed} />
-            <SidebarNavItem to="/budget" label="Budget" icon={DollarSign} collapsed={collapsed} />
-            <BudgetSidebarMarker collapsed={collapsed} />
             <SidebarNavItem to="/settings" label="Settings" icon={Settings} collapsed={collapsed} />
+            <BudgetSidebarMarker collapsed={collapsed} />
           </SidebarSection>
 
           {/* PLUGINS — conditional, unchanged */}

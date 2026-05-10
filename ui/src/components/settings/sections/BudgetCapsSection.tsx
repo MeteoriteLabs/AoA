@@ -1,23 +1,35 @@
 import { useMemo, useState } from "react";
-import { Link } from "@/lib/router";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
-import { costsApi } from "@/api/costs";
+import { costsApi, type CostByBillerRow } from "@/api/costs";
 import { budgetsApi } from "@/api/budgets";
+import { quotasApi, type ProviderQuotaWindow } from "@/api/quotas";
+import { financeApi } from "@/api/finance";
 import { internalAgentApi } from "@/api/internal-agent";
-import type { ResolveBudgetIncidentInput } from "@armyofagents/shared";
 import { queryKeys } from "@/lib/queryKeys";
 import { formatCents, formatTokens, budgetProgressColor } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { ArrowRight, DollarSign, Plus } from "lucide-react";
+import { DollarSign, Plus } from "lucide-react";
 import { EmptyState } from "@/components/EmptyState";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
 import { StatusBadge } from "@/components/StatusBadge";
 import { CreateBudgetPolicyDialog } from "@/components/finance/CreateBudgetPolicyDialog";
+import { BudgetPolicyCard } from "@/components/finance/BudgetPolicyCard";
+import { BudgetIncidentCard } from "@/components/finance/BudgetIncidentCard";
+import { ProviderQuotaCard } from "@/components/finance/ProviderQuotaCard";
+import { AccountingModelCard } from "@/components/finance/AccountingModelCard";
+import {
+  ClaudeSubscriptionPanel,
+  type SubscriptionRollup,
+} from "@/components/finance/ClaudeSubscriptionPanel";
+import { CodexSubscriptionPanel } from "@/components/finance/CodexSubscriptionPanel";
+import { FinanceBillerCard } from "@/components/finance/FinanceBillerCard";
+import { FinanceKindCard } from "@/components/finance/FinanceKindCard";
+import { FinanceTimelineCard } from "@/components/finance/FinanceTimelineCard";
 
-// ─── Date preset helpers (lifted from old SettingsPage) ───────────────
+// ─── Date preset helpers ───────────────────────────────────────────────
 type DatePreset = "mtd" | "7d" | "30d" | "ytd" | "all" | "custom";
 
 const PRESET_LABELS: Record<DatePreset, string> = {
@@ -37,27 +49,54 @@ function computeRange(preset: DatePreset): { from: string; to: string } {
       const d = new Date(now.getFullYear(), now.getMonth(), 1);
       return { from: d.toISOString(), to };
     }
-    case "7d": {
-      const d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      return { from: d.toISOString(), to };
-    }
-    case "30d": {
-      const d = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      return { from: d.toISOString(), to };
-    }
-    case "ytd": {
-      const d = new Date(now.getFullYear(), 0, 1);
-      return { from: d.toISOString(), to };
-    }
+    case "7d":
+      return { from: new Date(now.getTime() - 7 * 86_400_000).toISOString(), to };
+    case "30d":
+      return { from: new Date(now.getTime() - 30 * 86_400_000).toISOString(), to };
+    case "ytd":
+      return { from: new Date(now.getFullYear(), 0, 1).toISOString(), to };
     case "all":
-      return { from: "", to: "" };
     case "custom":
       return { from: "", to: "" };
   }
 }
 
+function rollupBiller(
+  rows: CostByBillerRow[],
+  billerKeys: string[],
+): SubscriptionRollup | null {
+  const matches = rows.filter(
+    (r) => r.biller != null && billerKeys.includes(r.biller.toLowerCase()),
+  );
+  if (matches.length === 0) return null;
+  return matches.reduce<SubscriptionRollup>(
+    (acc, r) => ({
+      spendCents: acc.spendCents + r.totalCostCents,
+      eventCount: acc.eventCount + r.eventCount,
+      inputTokens: acc.inputTokens + r.totalInputTokens,
+      cachedInputTokens: acc.cachedInputTokens + r.totalCachedInputTokens,
+      outputTokens: acc.outputTokens + r.totalOutputTokens,
+    }),
+    { spendCents: 0, eventCount: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+  );
+}
+
+// ─── Section placeholder ───────────────────────────────────────────────
+function SectionPlaceholder({ title, description }: { title: string; description: string }) {
+  return (
+    <Card>
+      <CardContent className="p-4 space-y-1.5">
+        <h3 className="text-sm font-semibold">{title}</h3>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Main section ──────────────────────────────────────────────────────
 export function BudgetCapsSection() {
   const { selectedCompanyId } = useCompany();
+  const queryClient = useQueryClient();
 
   const [preset, setPreset] = useState<DatePreset>("mtd");
   const [customFrom, setCustomFrom] = useState("");
@@ -68,61 +107,123 @@ export function BudgetCapsSection() {
     if (preset === "custom") {
       return {
         from: customFrom ? new Date(customFrom).toISOString() : "",
-        to: customTo
-          ? new Date(customTo + "T23:59:59.999Z").toISOString()
-          : "",
+        to: customTo ? new Date(customTo + "T23:59:59.999Z").toISOString() : "",
       };
     }
     return computeRange(preset);
   }, [preset, customFrom, customTo]);
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.costs(
-      selectedCompanyId!,
-      from || undefined,
-      to || undefined
-    ),
-    queryFn: async () => {
-      const [summary, byAgent, byProject] = await Promise.all([
-        costsApi.summary(selectedCompanyId!, from || undefined, to || undefined),
-        costsApi.byAgent(selectedCompanyId!, from || undefined, to || undefined),
-        costsApi.byProject(
-          selectedCompanyId!,
-          from || undefined,
-          to || undefined
-        ),
-      ]);
-      return { summary, byAgent, byProject };
-    },
+  // ── Queries ────────────────────────────────────────────────────────
+  const costsSummaryQuery = useQuery({
+    queryKey: queryKeys.costs(selectedCompanyId!, from || undefined, to || undefined),
+    queryFn: () => costsApi.summary(selectedCompanyId!, from || undefined, to || undefined),
     enabled: !!selectedCompanyId,
   });
 
-  const { data: agentConfig } = useQuery({
+  const costsByAgentQuery = useQuery({
+    queryKey: ["costs", "by-agent", selectedCompanyId, from, to],
+    queryFn: () => costsApi.byAgent(selectedCompanyId!, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId,
+  });
+
+  const costsByProjectQuery = useQuery({
+    queryKey: ["costs", "by-project", selectedCompanyId, from, to],
+    queryFn: () => costsApi.byProject(selectedCompanyId!, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId,
+  });
+
+  const costsByModelQuery = useQuery({
+    queryKey: ["costs", "by-model", selectedCompanyId, from, to],
+    queryFn: () => costsApi.byModel(selectedCompanyId!, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId,
+  });
+
+  const costsByBillerQuery = useQuery({
+    queryKey: ["costs", "by-biller", selectedCompanyId, from, to],
+    queryFn: () => costsApi.byBiller(selectedCompanyId!, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId,
+  });
+
+  const financeByBillerQuery = useQuery({
+    queryKey: ["finance", "by-biller", selectedCompanyId, from, to],
+    queryFn: () => financeApi.byBiller(selectedCompanyId!, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId,
+  });
+
+  const financeByKindQuery = useQuery({
+    queryKey: ["finance", "by-kind", selectedCompanyId, from, to],
+    queryFn: () => financeApi.byKind(selectedCompanyId!, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId,
+  });
+
+  const financeListQuery = useQuery({
+    queryKey: ["finance", "list", selectedCompanyId, from, to],
+    queryFn: () =>
+      financeApi.list(selectedCompanyId!, { from: from || undefined, to: to || undefined, limit: 25 }),
+    enabled: !!selectedCompanyId,
+  });
+
+  const agentConfigQuery = useQuery({
     queryKey: queryKeys.agentConfig(selectedCompanyId!),
     queryFn: () => internalAgentApi.getConfig(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
-  const { data: budgetOverview, refetch: refetchOverview } = useQuery({
+  const budgetOverviewQuery = useQuery({
     queryKey: ["budgets", "overview", selectedCompanyId],
     queryFn: () => budgetsApi.overview(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
-  const resolveIncident = useMutation({
-    mutationFn: ({ incidentId, input }: { incidentId: string; input: ResolveBudgetIncidentInput }) =>
-      budgetsApi.resolveIncident(selectedCompanyId!, incidentId, input),
-    onSuccess: () => { refetchOverview(); },
+  const quotasQuery = useQuery({
+    queryKey: ["quotas", selectedCompanyId],
+    queryFn: () => quotasApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
   });
 
-  const presetKeys: DatePreset[] = [
-    "mtd",
-    "7d",
-    "30d",
-    "ytd",
-    "all",
-    "custom",
-  ];
+  // ── Mutations ──────────────────────────────────────────────────────
+  const deletePolicyMutation = useMutation({
+    mutationFn: (policyId: string) => budgetsApi.deletePolicy(selectedCompanyId!, policyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["budgets", "overview", selectedCompanyId] });
+    },
+  });
+
+  const refreshQuotaMutation = useMutation({
+    mutationFn: () => quotasApi.refresh(selectedCompanyId!, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quotas", selectedCompanyId] });
+    },
+  });
+
+  const presetKeys: DatePreset[] = ["mtd", "7d", "30d", "ytd", "all", "custom"];
+
+  const summary = costsSummaryQuery.data;
+  const agentConfig = agentConfigQuery.data;
+  const budgetOverview = budgetOverviewQuery.data;
+  const policies = budgetOverview?.policies ?? [];
+  const incidents = budgetOverview?.openIncidents ?? [];
+
+  const claudeRollup = rollupBiller(costsByBillerQuery.data ?? [], ["claude_local"]);
+  const codexRollup = rollupBiller(costsByBillerQuery.data ?? [], ["codex_local"]);
+
+  const groupedQuotas = useMemo(() => {
+    const windows = quotasQuery.data;
+    if (!windows) return [] as Array<{ provider: string; rows: ProviderQuotaWindow[]; lastUpdatedAt: string | null }>;
+    const byProvider = new Map<string, ProviderQuotaWindow[]>();
+    for (const w of windows) {
+      const bucket = byProvider.get(w.provider);
+      if (bucket) bucket.push(w);
+      else byProvider.set(w.provider, [w]);
+    }
+    return Array.from(byProvider.entries()).map(([provider, rows]) => {
+      const lastUpdatedAt = rows.reduce<string | null>((acc, r) => {
+        if (!acc) return r.lastUpdatedAt;
+        return new Date(r.lastUpdatedAt) > new Date(acc) ? r.lastUpdatedAt : acc;
+      }, null);
+      return { provider, rows, lastUpdatedAt };
+    });
+  }, [quotasQuery.data]);
 
   return (
     <div>
@@ -135,47 +236,17 @@ export function BudgetCapsSection() {
           Budget &amp; caps<span className="text-brand">.</span>
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Caps, alerts, agent and project breakdowns, and active overruns.
+          Spend, budgets, quotas, and the finance ledger across the company.
         </p>
       </div>
 
       <div className="p-8">
         {!selectedCompanyId ? (
           <EmptyState icon={DollarSign} message="Select a company to view budget." />
-        ) : isLoading ? (
+        ) : costsSummaryQuery.isLoading ? (
           <PageSkeleton variant="costs" />
         ) : (
           <div className="space-y-6">
-            {/* Cross-link to full Budget page (primary entry point for finance analytics) */}
-            <div className="flex flex-wrap items-stretch gap-3">
-              <Link
-                to="../budget"
-                className="group flex-1 min-w-[260px] flex items-center justify-between gap-3 rounded-md border border-primary/40 bg-primary/5 px-4 py-3 hover:bg-primary/10 hover:border-primary/60 transition-colors"
-              >
-                <div className="min-w-0">
-                  <p className="text-sm font-medium">Open full Budget page</p>
-                  <p className="text-xs text-muted-foreground">
-                    Breakdown, budgets, quotas, and the finance ledger in one place. This tab shows a quick summary.
-                  </p>
-                </div>
-                <ArrowRight className="h-4 w-4 text-primary group-hover:translate-x-0.5 transition-transform shrink-0" />
-              </Link>
-              <Button
-                variant="outline"
-                className="shrink-0 self-center"
-                onClick={() => setNewPolicyOpen(true)}
-              >
-                <Plus className="h-3.5 w-3.5 mr-1.5" />
-                New Budget Policy
-              </Button>
-            </div>
-
-            <CreateBudgetPolicyDialog
-              open={newPolicyOpen}
-              onOpenChange={setNewPolicyOpen}
-              onCreated={() => refetchOverview()}
-            />
-
             {/* Date range selector */}
             <div className="flex flex-wrap items-center gap-2">
               {presetKeys.map((p) => (
@@ -189,7 +260,7 @@ export function BudgetCapsSection() {
                 </Button>
               ))}
               {preset === "custom" && (
-                <div className="flex items-center gap-2 ml-2">
+                <div className="flex items-center gap-2 ml-1">
                   <input
                     type="date"
                     value={customFrom}
@@ -207,235 +278,276 @@ export function BudgetCapsSection() {
               )}
             </div>
 
-            {error && <p className="text-sm text-destructive">{error.message}</p>}
+            {costsSummaryQuery.error && (
+              <p className="text-sm text-destructive">{costsSummaryQuery.error.message}</p>
+            )}
 
-            {data && (
-              <>
-                {/* Summary card */}
-                <Card>
-                  <CardContent className="p-4 space-y-3">
-                    <div className="flex items-center justify-between">
+            {/* Summary card */}
+            {summary && (
+              <Card>
+                <CardContent className="p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm text-muted-foreground">{PRESET_LABELS[preset]}</p>
+                    {summary.budgetCents > 0 && (
                       <p className="text-sm text-muted-foreground">
-                        {PRESET_LABELS[preset]}
+                        {summary.utilizationPercent}% utilized
                       </p>
-                      {data.summary.budgetCents > 0 && (
-                        <p className="text-sm text-muted-foreground">
-                          {data.summary.utilizationPercent}% utilized
-                        </p>
-                      )}
+                    )}
+                  </div>
+                  <p className="text-2xl font-bold">
+                    {formatCents(
+                      summary.spendCents + (agentConfig?.spentMonthlyCents ?? 0),
+                    )}{" "}
+                    <span className="text-base font-normal text-muted-foreground">
+                      {summary.budgetCents > 0
+                        ? `/ ${formatCents(summary.budgetCents)}`
+                        : "Unlimited budget"}
+                    </span>
+                  </p>
+                  {summary.budgetCents > 0 && (
+                    <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-[width,background-color] duration-150 ${
+                          summary.utilizationPercent > 90
+                            ? "bg-red-400"
+                            : summary.utilizationPercent > 70
+                              ? "bg-yellow-400"
+                              : "bg-green-400"
+                        }`}
+                        style={{ width: `${Math.min(100, summary.utilizationPercent)}%` }}
+                      />
                     </div>
-                    <p className="text-2xl font-bold">
-                      {formatCents(
-                        data.summary.spendCents +
-                          (agentConfig?.spentMonthlyCents ?? 0),
-                      )}{" "}
-                      <span className="text-base font-normal text-muted-foreground">
-                        {data.summary.budgetCents > 0
-                          ? `/ ${formatCents(data.summary.budgetCents)}`
-                          : "Unlimited budget"}
-                      </span>
-                    </p>
-                    {data.summary.budgetCents > 0 && (
-                      <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Budget Policies */}
+            {policies.length === 0 && incidents.length === 0 ? (
+              <Card>
+                <CardContent className="p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold">Budgets</h3>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        No budget policies configured yet. Create one to cap monthly spend for the
+                        whole company or a single agent.
+                      </p>
+                    </div>
+                    <Button size="sm" onClick={() => setNewPolicyOpen(true)} className="shrink-0">
+                      <Plus className="h-3.5 w-3.5 mr-1.5" />
+                      New Policy
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold">Budgets</h3>
+                  <Button size="sm" variant="outline" onClick={() => setNewPolicyOpen(true)}>
+                    <Plus className="h-3.5 w-3.5 mr-1.5" />
+                    New Policy
+                  </Button>
+                </div>
+                {incidents.length > 0 && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {incidents.map((incident) => (
+                      <BudgetIncidentCard key={incident.id} incident={incident} />
+                    ))}
+                  </div>
+                )}
+                {policies.length > 0 && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {policies.map((policy) => (
+                      <BudgetPolicyCard
+                        key={policy.id}
+                        policy={policy}
+                        onDelete={(p) => {
+                          if (!window.confirm(`Delete budget policy for ${p.scopeName}? This cannot be undone.`)) return;
+                          deletePolicyMutation.mutate(p.id);
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <CreateBudgetPolicyDialog
+              open={newPolicyOpen}
+              onOpenChange={setNewPolicyOpen}
+              onCreated={() => {
+                queryClient.invalidateQueries({ queryKey: ["budgets", "overview", selectedCompanyId] });
+              }}
+            />
+
+            {/* Quotas */}
+            {groupedQuotas.length === 0 ? (
+              <SectionPlaceholder
+                title="Quotas"
+                description="Provider rate-limit windows will appear here once an adapter reports quota usage."
+              />
+            ) : (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold">Quotas</h3>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {groupedQuotas.map((g) => (
+                    <ProviderQuotaCard
+                      key={g.provider}
+                      provider={g.provider}
+                      windows={g.rows}
+                      lastUpdatedAt={g.lastUpdatedAt}
+                      onRefresh={() => refreshQuotaMutation.mutate()}
+                      isRefreshing={refreshQuotaMutation.isPending}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Breakdown — by model + subscription panels */}
+            {(costsByModelQuery.data?.length ?? 0) === 0 && claudeRollup == null && codexRollup == null ? (
+              <SectionPlaceholder
+                title="Breakdown"
+                description="Per-model spend and subscription utilization appear here once cost events are recorded."
+              />
+            ) : (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold">Breakdown</h3>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <AccountingModelCard rows={costsByModelQuery.data ?? []} />
+                  <div className="space-y-3">
+                    <ClaudeSubscriptionPanel rollup={claudeRollup} settingsHref="" />
+                    <CodexSubscriptionPanel rollup={codexRollup} settingsHref="" />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* By Agent / By Project */}
+            <div className="grid md:grid-cols-2 gap-4">
+              <Card>
+                <CardContent className="p-4">
+                  <h3 className="text-sm font-semibold mb-3">By Agent</h3>
+                  {(costsByAgentQuery.data?.length ?? 0) === 0 ? (
+                    <p className="text-sm text-muted-foreground">No cost events yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {costsByAgentQuery.data!.map((row) => (
                         <div
-                          className={`h-full rounded-full transition-[width,background-color] duration-150 ${
-                            data.summary.utilizationPercent > 90
-                              ? "bg-red-400"
-                              : data.summary.utilizationPercent > 70
-                                ? "bg-yellow-400"
-                                : "bg-green-400"
-                          }`}
+                          key={row.agentId}
+                          className="flex items-start justify-between text-sm"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Identity name={row.agentName ?? row.agentId} size="sm" />
+                            {row.agentStatus === "terminated" && (
+                              <StatusBadge status="terminated" />
+                            )}
+                          </div>
+                          <div className="text-right shrink-0 ml-2">
+                            <span className="font-medium block">{formatCents(row.costCents)}</span>
+                            <span className="text-xs text-muted-foreground block">
+                              in {formatTokens(row.inputTokens)} / out{" "}
+                              {formatTokens(row.outputTokens)} tok
+                            </span>
+                            {(row.apiRunCount > 0 || row.subscriptionRunCount > 0) && (
+                              <span className="text-xs text-muted-foreground block">
+                                {row.apiRunCount > 0 ? `metered runs: ${row.apiRunCount}` : null}
+                                {row.apiRunCount > 0 && row.subscriptionRunCount > 0 ? " | " : null}
+                                {row.subscriptionRunCount > 0
+                                  ? `subscription runs: ${row.subscriptionRunCount} (${formatTokens(row.subscriptionInputTokens)} in / ${formatTokens(row.subscriptionOutputTokens)} out tok)`
+                                  : null}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {agentConfig && agentConfig.budgetMonthlyCents != null && (
+                    <div className="mt-4 pt-4 border-t border-border">
+                      <p className="text-xs font-medium text-muted-foreground mb-2">Commander</p>
+                      <div className="flex items-center justify-between text-sm">
+                        <span>AI Assistant</span>
+                        <span>
+                          {formatCents(agentConfig.spentMonthlyCents)} /{" "}
+                          {formatCents(agentConfig.budgetMonthlyCents)}
+                        </span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-muted overflow-hidden mt-1">
+                        <div
+                          className={`h-full rounded-full ${budgetProgressColor(
+                            agentConfig.budgetMonthlyCents > 0
+                              ? (agentConfig.spentMonthlyCents / agentConfig.budgetMonthlyCents) * 100
+                              : 0,
+                          )}`}
                           style={{
-                            width: `${Math.min(100, data.summary.utilizationPercent)}%`,
+                            width: `${
+                              agentConfig.budgetMonthlyCents > 0
+                                ? Math.min(
+                                    (agentConfig.spentMonthlyCents / agentConfig.budgetMonthlyCents) * 100,
+                                    100,
+                                  )
+                                : 0
+                            }%`,
                           }}
                         />
                       </div>
-                    )}
-                  </CardContent>
-                </Card>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
 
-                {/* By Agent / By Project */}
-                <div className="grid md:grid-cols-2 gap-4">
-                  <Card>
-                    <CardContent className="p-4">
-                      <h3 className="text-sm font-semibold mb-3">By Agent</h3>
-                      {data.byAgent.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">
-                          No cost events yet.
-                        </p>
-                      ) : (
-                        <div className="space-y-2">
-                          {data.byAgent.map((row) => (
-                            <div
-                              key={row.agentId}
-                              className="flex items-start justify-between text-sm"
-                            >
-                              <div className="flex items-center gap-2 min-w-0">
-                                <Identity
-                                  name={row.agentName ?? row.agentId}
-                                  size="sm"
-                                />
-                                {row.agentStatus === "terminated" && (
-                                  <StatusBadge status="terminated" />
-                                )}
-                              </div>
-                              <div className="text-right shrink-0 ml-2">
-                                <span className="font-medium block">
-                                  {formatCents(row.costCents)}
-                                </span>
-                                <span className="text-xs text-muted-foreground block">
-                                  in {formatTokens(row.inputTokens)} / out{" "}
-                                  {formatTokens(row.outputTokens)} tok
-                                </span>
-                                {(row.apiRunCount > 0 ||
-                                  row.subscriptionRunCount > 0) && (
-                                  <span className="text-xs text-muted-foreground block">
-                                    {/* apiRunCount includes 'api' and 'metered_api' variants */}
-                                    {row.apiRunCount > 0
-                                      ? `metered runs: ${row.apiRunCount}`
-                                      : null}
-                                    {row.apiRunCount > 0 &&
-                                    row.subscriptionRunCount > 0
-                                      ? " | "
-                                      : null}
-                                    {/* subscriptionRunCount includes 'subscription', 'subscription_included', 'subscription_overage' */}
-                                    {row.subscriptionRunCount > 0
-                                      ? `subscription runs: ${row.subscriptionRunCount} (${formatTokens(row.subscriptionInputTokens)} in / ${formatTokens(row.subscriptionOutputTokens)} out tok)`
-                                      : null}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          ))}
+              <Card>
+                <CardContent className="p-4">
+                  <h3 className="text-sm font-semibold mb-3">By Project</h3>
+                  {(costsByProjectQuery.data?.length ?? 0) === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No project-attributed run costs yet.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {costsByProjectQuery.data!.map((row) => (
+                        <div
+                          key={row.projectId ?? "na"}
+                          className="flex items-center justify-between text-sm"
+                        >
+                          <span className="truncate">
+                            {row.projectName ?? row.projectId ?? "Unattributed"}
+                          </span>
+                          <span className="font-medium">{formatCents(row.costCents)}</span>
                         </div>
-                      )}
-                      {/* Commander spend mini-row */}
-                      {agentConfig && agentConfig.budgetMonthlyCents != null && (
-                        <div className="mt-4 pt-4 border-t border-border">
-                          <p className="text-xs font-medium text-muted-foreground mb-2">
-                            Commander
-                          </p>
-                          <div className="flex items-center justify-between text-sm">
-                            <span>AI Assistant</span>
-                            <span>
-                              {formatCents(agentConfig.spentMonthlyCents)} /{" "}
-                              {formatCents(agentConfig.budgetMonthlyCents)}
-                            </span>
-                          </div>
-                          <div className="h-1.5 rounded-full bg-muted overflow-hidden mt-1">
-                            <div
-                              className={`h-full rounded-full ${budgetProgressColor(
-                                agentConfig.budgetMonthlyCents > 0
-                                  ? (agentConfig.spentMonthlyCents / agentConfig.budgetMonthlyCents) * 100
-                                  : 0,
-                              )}`}
-                              style={{
-                                width: `${
-                                  agentConfig.budgetMonthlyCents > 0
-                                    ? Math.min(
-                                        (agentConfig.spentMonthlyCents / agentConfig.budgetMonthlyCents) * 100,
-                                        100,
-                                      )
-                                    : 0
-                                }%`,
-                              }}
-                            />
-                          </div>
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
 
-                  <Card>
-                    <CardContent className="p-4">
-                      <h3 className="text-sm font-semibold mb-3">By Project</h3>
-                      {data.byProject.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">
-                          No project-attributed run costs yet.
-                        </p>
-                      ) : (
-                        <div className="space-y-2">
-                          {data.byProject.map((row) => (
-                            <div
-                              key={row.projectId ?? "na"}
-                              className="flex items-center justify-between text-sm"
-                            >
-                              <span className="truncate">
-                                {row.projectName ?? row.projectId ?? "Unattributed"}
-                              </span>
-                              <span className="font-medium">
-                                {formatCents(row.costCents)}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
+            {/* Ledger — biller + kind + timeline */}
+            {(financeByBillerQuery.data?.length ?? 0) === 0 &&
+            (financeByKindQuery.data?.length ?? 0) === 0 &&
+            (financeListQuery.data?.length ?? 0) === 0 ? (
+              <SectionPlaceholder
+                title="Ledger"
+                description="Finance events by biller, by kind, and over time load here once any finance event is recorded."
+              />
+            ) : (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold">Ledger</h3>
+                {(financeByBillerQuery.data?.length ?? 0) > 0 && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {financeByBillerQuery.data!.map((row) => (
+                      <FinanceBillerCard key={row.biller ?? "__unknown"} row={row} />
+                    ))}
+                  </div>
+                )}
+                <div className="grid gap-3 md:grid-cols-2">
+                  <FinanceKindCard rows={financeByKindQuery.data ?? []} />
+                  <FinanceTimelineCard rows={financeListQuery.data ?? []} />
                 </div>
-
-                {/* Open Budget Incidents */}
-                <Card>
-                  <CardContent className="p-4 space-y-3">
-                    <h3 className="text-sm font-semibold">Open Incidents</h3>
-                    {!budgetOverview || budgetOverview.openIncidents.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">
-                        No open budget incidents.
-                      </p>
-                    ) : (
-                      <div className="space-y-3">
-                        {budgetOverview.openIncidents.map((incident) => (
-                          <div key={incident.id} className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
-                            <div className="min-w-0 space-y-1">
-                              <div className="flex items-center gap-2">
-                                <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${incident.thresholdType === "hard_stop" ? "bg-red-500/10 text-red-400" : "bg-yellow-500/10 text-yellow-400"}`}>
-                                  {incident.thresholdType === "hard_stop" ? "Hard Stop" : "Warning"}
-                                </span>
-                                <span className="text-sm font-medium">{incident.scopeName ?? incident.scopeId}</span>
-                              </div>
-                              <p className="text-xs text-muted-foreground">
-                                ${(incident.amountObservedCents / 100).toFixed(2)} observed / ${(incident.amountLimitCents / 100).toFixed(2)} limit
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                Created {new Date(incident.createdAt).toLocaleDateString()}
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              {incident.thresholdType === "hard_stop" && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  disabled={resolveIncident.isPending}
-                                  onClick={() => {
-                                    const newAmount = window.prompt("New budget limit in dollars:", String(Math.round(incident.amountLimitCents / 100 * 1.5)));
-                                    if (!newAmount) return;
-                                    const parsed = parseFloat(newAmount);
-                                    if (isNaN(parsed) || parsed <= 0) { window.alert("Please enter a valid dollar amount."); return; }
-                                    resolveIncident.mutate({
-                                      incidentId: incident.id,
-                                      input: { action: "raise_and_resume", newAmountCents: Math.round(parsed * 100) },
-                                    });
-                                  }}
-                                >
-                                  Raise &amp; Resume
-                                </Button>
-                              )}
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                disabled={resolveIncident.isPending}
-                                onClick={() => resolveIncident.mutate({ incidentId: incident.id, input: { action: "dismiss" } })}
-                              >
-                                Dismiss
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </>
+              </div>
             )}
           </div>
         )}

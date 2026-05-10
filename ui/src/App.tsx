@@ -29,7 +29,6 @@ import { VisionMission } from "./pages/VisionMission";
 import { Objectives } from "./pages/Objectives";
 import { Commander } from "./pages/Commander";
 import { DesignGuide } from "./pages/DesignGuide";
-import { Costs } from "./pages/Costs";
 import { TeamPage } from "./pages/TeamPage";
 import { TeamDetail } from "./pages/TeamDetail";
 import { HumanDetail } from "./pages/HumanDetail";
@@ -181,8 +180,8 @@ function boardRoutes() {
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
-      <Route path="budget" element={<Costs />} />
-      <Route path="costs" element={<Navigate to="../budget" replace />} />
+      <Route path="budget" element={<Navigate to="../settings?tab=budget" replace />} />
+      <Route path="costs" element={<Navigate to="../settings?tab=budget" replace />} />
       <Route path="activity" element={<CompanyActivityPage />} />
       <Route path="inbox" element={<Navigate to="/inbox/new" replace />} />
       <Route path="inbox/new" element={<Inbox />} />

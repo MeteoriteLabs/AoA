@@ -64,6 +64,24 @@ vi.mock("@/api/costs", () => ({
     }),
     byAgent: vi.fn().mockResolvedValue([]),
     byProject: vi.fn().mockResolvedValue([]),
+    byModel: vi.fn().mockResolvedValue([]),
+    byBiller: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+vi.mock("@/api/finance", () => ({
+  financeApi: {
+    summary: vi.fn().mockResolvedValue({ totalCents: 0, eventCount: 0 }),
+    byBiller: vi.fn().mockResolvedValue([]),
+    byKind: vi.fn().mockResolvedValue([]),
+    list: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+vi.mock("@/api/quotas", () => ({
+  quotasApi: {
+    list: vi.fn().mockResolvedValue([]),
+    refresh: vi.fn().mockResolvedValue({ ok: true }),
   },
 }));
 
@@ -308,13 +326,14 @@ describe("SettingsPage redesign — Phase F shell", () => {
     expect(buttons.length).toBeGreaterThan(2);
   });
 
-  it("Budget section: renders date presets, summary, by-agent, by-project, open-incidents", async () => {
+  it("Budget section: renders date presets, summary, by-agent, by-project, budgets, quotas, breakdown", async () => {
     renderSettings("/P4/settings?tab=budget");
     expect(await screen.findByRole("button", { name: /MTD/i })).toBeInTheDocument();
     expect(screen.getByText(/By Agent/i)).toBeInTheDocument();
     expect(screen.getByText(/By Project/i)).toBeInTheDocument();
-    expect(screen.getByText(/Open Incidents/i)).toBeInTheDocument();
-    expect(screen.getByText(/Open full Budget page/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Budgets/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Quotas/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Breakdown/i)).toBeInTheDocument();
   });
 
   it("MCP API keys section: renders MCP server controls — NO GitHub card", async () => {
