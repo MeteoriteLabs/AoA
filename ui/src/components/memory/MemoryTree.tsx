@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import {
-  PanelLeftClose,
   IdCard,
   Building2,
   Target,
@@ -41,7 +40,6 @@ interface MemoryTreeProps {
   selectedDepartmentId: string | null;
   selectedLayer: string | null;
   selectedGoalId: string | null;
-  onCollapseRequest?: () => void;
 }
 
 interface TreeNode {
@@ -85,7 +83,6 @@ export function MemoryTree({
   selectedDepartmentId,
   selectedLayer,
   selectedGoalId,
-  onCollapseRequest,
 }: MemoryTreeProps) {
   const navigate = useNavigate();
   const { selectedCompany } = useCompany();
@@ -394,16 +391,6 @@ export function MemoryTree({
     <div className="h-full flex flex-col bg-card/50">
       <div className="flex items-center px-2 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground">
         <span>Folders</span>
-        <span className="flex-1" />
-        <button
-          type="button"
-          onClick={onCollapseRequest}
-          className="p-1 rounded hover:bg-accent/50 transition-colors"
-          aria-label="Collapse folders pane"
-          disabled={!onCollapseRequest}
-        >
-          <PanelLeftClose className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
-        </button>
       </div>
       <div className="flex-1 overflow-auto py-1">
         {isLoading ? (

@@ -4,6 +4,7 @@ import { MemoryRecentsStrip } from "./MemoryRecentsStrip";
 
 interface MemoryHomeDashboardProps {
   companyId: string;
+  showQuickJump?: boolean;
 }
 
 /**
@@ -17,11 +18,11 @@ interface MemoryHomeDashboardProps {
  * The right pane (handled by MemoryExplorer) shows the future graph viz
  * placeholder when this dashboard is rendered.
  */
-export function MemoryHomeDashboard({ companyId }: MemoryHomeDashboardProps) {
+export function MemoryHomeDashboard({ companyId, showQuickJump = true }: MemoryHomeDashboardProps) {
   return (
     <div className="h-full overflow-auto">
       <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-5 sm:space-y-6">
-        <button
+        {showQuickJump && <button
           type="button"
           onClick={() =>
             window.dispatchEvent(new CustomEvent("memory:open-quick-switcher"))
@@ -31,7 +32,7 @@ export function MemoryHomeDashboard({ companyId }: MemoryHomeDashboardProps) {
         >
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
           Quick-jump to a memory item or file…
-        </button>
+        </button>}
 
         <LayerTilesPanel companyId={companyId} />
 
