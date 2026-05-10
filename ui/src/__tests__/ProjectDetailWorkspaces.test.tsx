@@ -349,9 +349,11 @@ describe("ProjectDetail — Workspaces tab", () => {
     // while readiness is loading. Re-query the button each waitFor tick so
     // a React re-render between findByTestId and the assertion can't leave
     // us holding a stale DOM node (this races under parallel-suite load).
+    // 5 s timeout matches the rest of the file — 1 s was too tight under
+    // heavy parallel-suite CPU contention on Windows CI.
     await waitFor(() => {
       expect(screen.getByTestId("confirm-archive-workspace")).not.toBeDisabled();
-    });
+    }, { timeout: 5000 });
 
     fireEvent.click(screen.getByTestId("confirm-archive-workspace"));
 
