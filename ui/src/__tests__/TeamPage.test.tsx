@@ -75,9 +75,9 @@ describe("TeamPage", () => {
   it("defaults to Org Tree tab", () => {
     renderWithProviders(<TeamPage />);
 
-    expect(screen.getByRole("button", { name: /org tree/i })).toHaveAttribute(
-      "data-active",
-      "true",
+    expect(screen.getByRole("tab", { name: /org tree/i })).toHaveAttribute(
+      "data-state",
+      "active",
     );
   });
 
@@ -87,9 +87,9 @@ describe("TeamPage", () => {
 
     await user.click(screen.getByText("Agents"));
 
-    expect(screen.getByRole("button", { name: /agents/i })).toHaveAttribute(
-      "data-active",
-      "true",
+    expect(screen.getByRole("tab", { name: /agents/i })).toHaveAttribute(
+      "data-state",
+      "active",
     );
   });
 
@@ -98,9 +98,9 @@ describe("TeamPage", () => {
       initialEntries: ["/team?tab=humans"],
     });
 
-    expect(screen.getByRole("button", { name: /humans/i })).toHaveAttribute(
-      "data-active",
-      "true",
+    expect(screen.getByRole("tab", { name: /humans/i })).toHaveAttribute(
+      "data-state",
+      "active",
     );
   });
 
@@ -109,9 +109,9 @@ describe("TeamPage", () => {
       initialEntries: ["/team?tab=invalid"],
     });
 
-    expect(screen.getByRole("button", { name: /org tree/i })).toHaveAttribute(
-      "data-active",
-      "true",
+    expect(screen.getByRole("tab", { name: /org tree/i })).toHaveAttribute(
+      "data-state",
+      "active",
     );
   });
 

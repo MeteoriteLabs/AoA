@@ -116,8 +116,8 @@ describe("Sidebar — Phase E chrome", () => {
     expect(square).not.toBeNull();
   });
 
-  it("renders Activity nav item under WORK section", () => {
+  it("renders Workspaces nav item under WORK section", () => {
     renderSidebar();
-    expect(screen.getByText("Activity")).toBeInTheDocument();
+    expect(screen.getByText("Workspaces")).toBeInTheDocument();
   });
 });
