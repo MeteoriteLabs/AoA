@@ -474,7 +474,18 @@ async function fetchText(url: string): Promise<string | null> {
   // contract. Hiding "private IP blocked" behind a null return is a footgun.
   const target = await validateAndResolveFetchUrl(url);
   try {
-    const response = await executePinnedRequest(target, undefined, AbortSignal.timeout(30_000));
+    const response = await executePinnedRequest(
+      target,
+      // GitHub API requires a User-Agent header (returns 403 without one).
+      // Node's https.request — unlike the built-in fetch() — does NOT add one
+      // automatically, so we must set it explicitly on every outbound call.
+      { headers: { "User-Agent": "ArmyOfAgents/1.0" } },
+      AbortSignal.timeout(30_000),
+      // Raise the body cap from the default 1 MiB to 10 MiB so that large
+      // GitHub recursive-tree responses (repos with thousands of files) are
+      // not silently truncated and returned as null.
+      { maxBodyBytes: 10 * 1024 * 1024 },
+    );
     if (response.status >= 400) return null;
     return response.body;
   } catch {

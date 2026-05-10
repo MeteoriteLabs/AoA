@@ -197,8 +197,10 @@ describe("fetch helpers — happy path with pinned IP", () => {
     }
   });
 
-  it("company-skills fetchText returns body, returns null on 404 (preserves fail-soft contract)", async () => {
+  it("company-skills fetchText sends User-Agent header and returns body, returns null on 404", async () => {
+    let seenUserAgent: string | undefined;
     const server = createServer((req, res) => {
+      seenUserAgent = req.headers["user-agent"];
       if (req.url === "/missing") {
         res.writeHead(404);
         res.end("not found");
@@ -236,6 +238,11 @@ describe("fetch helpers — happy path with pinned IP", () => {
       const { __test__ } = await import("../services/company-skills.js");
       const ok = await __test__.fetchText("http://example.test/SKILL.md");
       expect(ok).toBe("# SKILL\n\npinned-skill-content");
+
+      // GitHub requires a User-Agent header and returns 403 without one.
+      // Node's https.request does not add one automatically, so fetchText
+      // must set it explicitly (regression guard for the SSRF-guard rewrite).
+      expect(seenUserAgent).toBe("ArmyOfAgents/1.0");
 
       // The skills helpers are intentionally fail-soft on ordinary HTTP
       // failures (a missing GitHub blob, stale raw URL, etc.) — only SSRF
