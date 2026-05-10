@@ -31,7 +31,7 @@ import { MarkdownEditor, type MarkdownEditorRef } from "../components/MarkdownEd
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter } from "@/components/ui/sheet";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -68,6 +68,7 @@ export function Routines() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [filterTab, setFilterTab] = useState<"all" | "active" | "paused" | "archived">("all");
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(["archived"]));
   const [draft, setDraft] = useState({
     title: "",
     description: "",
@@ -190,12 +191,20 @@ export function Routines() {
     () => new Map((projects ?? []).map((project) => [project.id, project])),
     [projects],
   );
+  const activeCount = useMemo(() => (routines ?? []).filter((r) => r.status === "active").length, [routines]);
+  const pausedCount = useMemo(() => (routines ?? []).filter((r) => r.status === "paused").length, [routines]);
+  const archivedCount = useMemo(() => (routines ?? []).filter((r) => r.status === "archived").length, [routines]);
+
   const filteredRoutines = useMemo(() => {
     return (routines ?? []).filter((r) => {
       if (filterTab === "all") return r.status !== "archived";
       return r.status === filterTab;
     });
   }, [routines, filterTab]);
+
+  const activeRoutines = useMemo(() => (routines ?? []).filter((r) => r.status === "active"), [routines]);
+  const pausedRoutines = useMemo(() => (routines ?? []).filter((r) => r.status === "paused"), [routines]);
+  const archivedRoutines = useMemo(() => (routines ?? []).filter((r) => r.status === "archived"), [routines]);
   const currentAssignee = draft.assigneeAgentId ? agentById.get(draft.assigneeAgentId) ?? null : null;
   const currentProject = draft.projectId ? projectById.get(draft.projectId) ?? null : null;
 
@@ -211,19 +220,34 @@ export function Routines() {
     <div className="space-y-6">
       {/* Page header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-0.5">
-          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
-            Routines
-            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">Beta</span>
+        <div>
+          <h1 className="text-[1.6rem] font-bold tracking-tight leading-none">
+            Routines<span className="text-brand">.</span>
           </h1>
-          <p className="text-sm text-muted-foreground">
-            {(routines ?? []).length} {(routines ?? []).length === 1 ? "routine" : "routines"}
+          <p className="mt-1 text-[12.5px] text-muted-foreground">
+            Automated workflows that run on a schedule or webhook.
           </p>
         </div>
         <Button onClick={() => setComposerOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
           Create routine
         </Button>
+      </div>
+
+      {/* Stats bar */}
+      <div className="flex items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs text-muted-foreground">
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+          {activeCount} Active
+        </span>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs text-muted-foreground">
+          <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+          {pausedCount} Paused
+        </span>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs text-muted-foreground">
+          <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+          {archivedCount} Archived
+        </span>
       </div>
 
       {/* Filter tabs + view toggle */}
@@ -268,75 +292,64 @@ export function Routines() {
         </div>
       </div>
 
-      <Dialog
+      <Sheet
         open={composerOpen}
         onOpenChange={(open) => {
           if (!createRoutine.isPending) {
             setComposerOpen(open);
+            if (!open) setAdvancedOpen(false);
           }
         }}
       >
-        <DialogContent showCloseButton={false} className="max-w-3xl gap-0 overflow-hidden p-0">
-          <DialogTitle className="sr-only">New routine</DialogTitle>
-          <DialogDescription className="sr-only">Create a recurring routine for agents to execute</DialogDescription>
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-            <div>
-              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>
-              <p className="text-sm text-muted-foreground">
-                Define the recurring work first. Trigger setup comes next on the detail page.
-              </p>
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setComposerOpen(false);
-                setAdvancedOpen(false);
-              }}
-              disabled={createRoutine.isPending}
-            >
-              Cancel
-            </Button>
-          </div>
+        <SheetContent side="right">
+          <SheetHeader>
+            <SheetTitle>Create routine</SheetTitle>
+            <SheetDescription>
+              Define the work first — triggers come next on the detail page.
+            </SheetDescription>
+          </SheetHeader>
 
-          <div className="px-5 pt-5 pb-3">
-            <textarea
-              ref={titleInputRef}
-              className="w-full resize-none overflow-hidden bg-transparent text-xl font-semibold outline-none placeholder:text-muted-foreground/50"
-              placeholder="Routine title"
-              rows={1}
-              value={draft.title}
-              onChange={(event) => {
-                setDraft((current) => ({ ...current, title: event.target.value }));
-                autoResizeTextarea(event.target);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  descriptionEditorRef.current?.focus();
-                  return;
-                }
-                if (event.key === "Tab" && !event.shiftKey) {
-                  event.preventDefault();
-                  if (draft.assigneeAgentId) {
-                    if (draft.projectId) {
-                      descriptionEditorRef.current?.focus();
-                    } else {
-                      projectSelectorRef.current?.focus();
-                    }
-                  } else {
-                    assigneeSelectorRef.current?.focus();
+          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+            {/* Title */}
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Name</p>
+              <textarea
+                ref={titleInputRef}
+                className="w-full resize-none overflow-hidden bg-transparent text-sm font-medium outline-none placeholder:text-muted-foreground/50 border border-border rounded-md px-3 py-2 focus:ring-1 focus:ring-ring"
+                placeholder="Routine title"
+                rows={1}
+                value={draft.title}
+                onChange={(event) => {
+                  setDraft((current) => ({ ...current, title: event.target.value }));
+                  autoResizeTextarea(event.target);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    descriptionEditorRef.current?.focus();
+                    return;
                   }
-                }
-              }}
-              autoFocus
-            />
-          </div>
+                  if (event.key === "Tab" && !event.shiftKey) {
+                    event.preventDefault();
+                    if (draft.assigneeAgentId) {
+                      if (draft.projectId) {
+                        descriptionEditorRef.current?.focus();
+                      } else {
+                        projectSelectorRef.current?.focus();
+                      }
+                    } else {
+                      assigneeSelectorRef.current?.focus();
+                    }
+                  }
+                }}
+                autoFocus
+              />
+            </div>
 
-          <div className="px-5 pb-3">
-            <div className="overflow-x-auto overscroll-x-contain">
-              <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
-                <span>For</span>
+            {/* Agent + Project */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Agent</p>
                 <InlineEntitySelector
                   ref={assigneeSelectorRef}
                   value={draft.assigneeAgentId}
@@ -367,7 +380,7 @@ export function Routines() {
                         <span className="truncate">{option.label}</span>
                       )
                     ) : (
-                      <span className="text-muted-foreground">Assignee</span>
+                      <span className="text-muted-foreground">Select agent...</span>
                     )
                   }
                   renderOption={(option) => {
@@ -381,7 +394,9 @@ export function Routines() {
                     );
                   }}
                 />
-                <span>in</span>
+              </div>
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Project</p>
                 <InlineEntitySelector
                   ref={projectSelectorRef}
                   value={draft.projectId}
@@ -402,7 +417,7 @@ export function Routines() {
                         <span className="truncate">{option.label}</span>
                       </>
                     ) : (
-                      <span className="text-muted-foreground">Project</span>
+                      <span className="text-muted-foreground">Select project...</span>
                     )
                   }
                   renderOption={(option) => {
@@ -421,35 +436,33 @@ export function Routines() {
                 />
               </div>
             </div>
-          </div>
 
-          <div className="border-t border-border/60 px-5 py-4">
-            <MarkdownEditor
-              ref={descriptionEditorRef}
-              value={draft.description}
-              onChange={(description) => setDraft((current) => ({ ...current, description }))}
-              placeholder="Add instructions..."
-              bordered={false}
-              contentClassName="min-h-[160px] text-sm text-muted-foreground"
-              onSubmit={() => {
-                if (!createRoutine.isPending && draft.title.trim() && draft.projectId && draft.assigneeAgentId) {
-                  createRoutine.mutate();
-                }
-              }}
-            />
-          </div>
+            {/* Description */}
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Instructions</p>
+              <MarkdownEditor
+                ref={descriptionEditorRef}
+                value={draft.description}
+                onChange={(description) => setDraft((current) => ({ ...current, description }))}
+                placeholder="What should this routine do?"
+                bordered
+                contentClassName="min-h-[120px] text-sm text-muted-foreground"
+                onSubmit={() => {
+                  if (!createRoutine.isPending && draft.title.trim()) {
+                    createRoutine.mutate();
+                  }
+                }}
+              />
+            </div>
 
-          <div className="border-t border-border/60 px-5 py-3">
+            {/* Advanced */}
             <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-              <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
-                <div>
-                  <p className="text-sm font-medium">Advanced delivery settings</p>
-                  <p className="text-sm text-muted-foreground">Keep policy controls secondary to the work definition.</p>
-                </div>
-                {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+              <CollapsibleTrigger className="flex w-full items-center gap-2 text-left text-xs text-muted-foreground hover:text-foreground transition-colors">
+                {advancedOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                Advanced settings
               </CollapsibleTrigger>
               <CollapsibleContent className="pt-3">
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-4 grid-cols-2">
                   <div className="space-y-2">
                     <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
                     <Select
@@ -489,32 +502,38 @@ export function Routines() {
             </Collapsible>
           </div>
 
-          <div className="flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-muted-foreground">
-              After creation, AoA takes you straight to trigger setup for schedules. Webhook triggers ship in a future release.
+          <SheetFooter>
+            <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-muted-foreground">
+                You'll set up triggers on the next screen.
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { setComposerOpen(false); setAdvancedOpen(false); }}
+                  disabled={createRoutine.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => createRoutine.mutate()}
+                  disabled={createRoutine.isPending || !draft.title.trim()}
+                >
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />
+                  {createRoutine.isPending ? "Creating..." : "Create routine"}
+                </Button>
+              </div>
             </div>
-            <div className="flex flex-col gap-2 sm:items-end">
-              <Button
-                onClick={() => createRoutine.mutate()}
-                disabled={
-                  createRoutine.isPending ||
-                  !draft.title.trim() ||
-                  !draft.projectId ||
-                  !draft.assigneeAgentId
-                }
-              >
-                <Plus className="mr-2 h-4 w-4" />
-                {createRoutine.isPending ? "Creating..." : "Create routine"}
-              </Button>
-              {createRoutine.isError ? (
-                <p className="text-sm text-destructive">
-                  {createRoutine.error instanceof Error ? createRoutine.error.message : "Failed to create routine"}
-                </p>
-              ) : null}
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+            {createRoutine.isError ? (
+              <p className="w-full text-xs text-destructive">
+                {createRoutine.error instanceof Error ? createRoutine.error.message : "Failed to create routine"}
+              </p>
+            ) : null}
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
 
       {error ? (
         <Card>
@@ -525,7 +544,7 @@ export function Routines() {
       ) : null}
 
       {/* Empty state */}
-      {filteredRoutines.length === 0 ? (
+      {filteredRoutines.length === 0 && (filterTab !== "all" || (routines ?? []).length === 0) ? (
         <div className="py-12">
           <EmptyState
             icon={Repeat}
@@ -539,8 +558,73 @@ export function Routines() {
             onAction={filterTab === "all" ? () => setComposerOpen(true) : undefined}
           />
         </div>
+      ) : viewMode === "grid" && filterTab === "all" ? (
+        /* Grouped grid view — Active / Paused / Archived sections */
+        <div className="space-y-6">
+          {(
+            [
+              { key: "active", label: "Active", list: activeRoutines, dot: "bg-emerald-500" },
+              { key: "paused", label: "Paused", list: pausedRoutines, dot: "bg-amber-500" },
+              { key: "archived", label: "Archived", list: archivedRoutines, dot: "bg-muted-foreground/40" },
+            ] as const
+          ).map(({ key, label, list, dot }) => {
+            if (list.length === 0) return null;
+            const collapsed = collapsedSections.has(key);
+            return (
+              <div key={key}>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 py-1 text-left text-sm font-medium text-foreground hover:text-foreground/80 transition-colors"
+                  onClick={() =>
+                    setCollapsedSections((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(key)) next.delete(key);
+                      else next.add(key);
+                      return next;
+                    })
+                  }
+                >
+                  <span className={`h-2 w-2 rounded-full ${dot}`} />
+                  {label}
+                  <span className="text-muted-foreground font-normal">— {list.length}</span>
+                  {collapsed
+                    ? <ChevronRight className="ml-auto h-4 w-4 text-muted-foreground" />
+                    : <ChevronDown className="ml-auto h-4 w-4 text-muted-foreground" />}
+                </button>
+                {!collapsed && (
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {list.map((routine) => (
+                      <RoutineCard
+                        key={routine.id}
+                        routine={routine}
+                        agentById={agentById}
+                        projectById={projectById}
+                        isRunning={runDialogRoutine?.id === routine.id}
+                        isStatusPending={statusMutationRoutineId === routine.id}
+                        onNavigate={() => navigate(`/routines/${routine.id}`)}
+                        onRun={() => setRunDialogRoutine(routine)}
+                        onToggleStatus={() =>
+                          updateRoutineStatus.mutate({
+                            id: routine.id,
+                            status: nextRoutineStatus(routine.status, routine.status !== "active"),
+                          })
+                        }
+                        onArchive={() =>
+                          updateRoutineStatus.mutate({
+                            id: routine.id,
+                            status: routine.status === "archived" ? "active" : "archived",
+                          })
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       ) : viewMode === "grid" ? (
-        /* Card grid view */
+        /* Flat grid — specific tab filter */
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredRoutines.map((routine) => (
             <RoutineCard

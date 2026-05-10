@@ -245,7 +245,7 @@ export function Layout() {
           tabIndex={-1}
           className={cn(
             "flex-1 overflow-auto",
-            !location.pathname.match(/\/(workspaces\/|settings(\?|$|\/)|memory(\?|$|\/))/) && "p-4 md:p-6",
+            !location.pathname.match(/\/(workspaces\/|settings(\?|$|\/)|memory(\?|$|\/)|skills(\?|$|\/))/) && "p-4 md:p-6",
             isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]",
           )}
           onScroll={handleMainScroll}

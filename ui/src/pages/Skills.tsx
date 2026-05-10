@@ -9,7 +9,9 @@ import type {
   CompanySkillFileDetail,
   CompanySkillProjectScanResult,
 } from "@armyofagents/shared";
-import { Boxes } from "lucide-react";
+import { Boxes, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Search } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { companySkillsApi } from "../api/companySkills";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -20,7 +22,6 @@ import { derivePackagesForLibrary } from "../lib/skillPackages";
 import { EmptyState } from "../components/EmptyState";
 import { AddSkillModal } from "../components/skills/AddSkillModal";
 import { DeleteSkillModal } from "../components/skills/DeleteSkillModal";
-import { SkillsPageHeader } from "../components/skills/SkillsPageHeader";
 import { SkillLibrary } from "../components/skills/SkillLibrary";
 import { SkillViewer } from "../components/skills/SkillViewer";
 import { SkillPackageOverview } from "../components/skills/SkillPackageOverview";
@@ -115,6 +116,7 @@ export function Skills() {
   const [addSkillOpen, setAddSkillOpen] = useState(false);
   const [deleteSkillOpen, setDeleteSkillOpen] = useState(false);
   const [expandedPackageIds, setExpandedPackageIds] = useState<Set<string>>(new Set());
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const route = useMemo(() => parseSkillRoute(routePath), [routePath]);
 
@@ -443,41 +445,96 @@ export function Skills() {
         pending={deleteSkill.isPending}
       />
 
-      <div className="flex h-[calc(100vh-3rem)] flex-col">
-        <SkillsPageHeader
-          skillCount={skills.length}
-          packageCount={packages.length}
-          standaloneCount={standalones.length}
-          pendingUpdateCount={0}
-          unsavedCount={0}
-          filter={skillFilter}
-          onFilterChange={setSkillFilter}
-          onScan={() => scanProjects.mutate()}
-          onAddSkill={() => setAddSkillOpen(true)}
-          scanPending={scanProjects.isPending}
-        />
-
+      <div className="flex h-full flex-col">
         <div className="flex min-h-0 flex-1">
-          <aside className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border">
-            <SkillLibrary
-              skills={skills}
-              filter={skillFilter}
-              selectedSkillId={route.kind === "skill" ? route.skillId : null}
-              selectedPackageId={route.kind === "package" ? route.packageId : null}
-              expandedPackageIds={expandedPackageIds}
-              packagesWithUpdate={new Set()}
-              onTogglePackage={(packageId) => {
-                setExpandedPackageIds((cur) => {
-                  const next = new Set(cur);
-                  if (next.has(packageId)) next.delete(packageId);
-                  else next.add(packageId);
-                  return next;
-                });
-              }}
-            />
+          <aside
+            className={cn(
+              "flex shrink-0 flex-col border-r border-border transition-[width] duration-200",
+              sidebarCollapsed ? "w-10 overflow-hidden" : "w-[300px] overflow-y-auto",
+            )}
+          >
+            <div className="flex h-12 shrink-0 items-center border-b border-border px-1">
+              {!sidebarCollapsed && (
+                <span className="flex-1 px-2 text-xs font-medium text-muted-foreground">
+                  Library
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => setSidebarCollapsed((v) => !v)}
+                className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              >
+                {sidebarCollapsed ? (
+                  <PanelLeftOpen className="size-4" />
+                ) : (
+                  <PanelLeftClose className="size-4" />
+                )}
+              </button>
+            </div>
+            {!sidebarCollapsed && (
+              <SkillLibrary
+                skills={skills}
+                filter={skillFilter}
+                selectedSkillId={route.kind === "skill" ? route.skillId : null}
+                selectedPackageId={route.kind === "package" ? route.packageId : null}
+                expandedPackageIds={expandedPackageIds}
+                packagesWithUpdate={new Set()}
+                onTogglePackage={(packageId) => {
+                  setExpandedPackageIds((cur) => {
+                    const next = new Set(cur);
+                    if (next.has(packageId)) next.delete(packageId);
+                    else next.add(packageId);
+                    return next;
+                  });
+                }}
+              />
+            )}
           </aside>
 
-          <section className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+          <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
+            {/* Toolbar — lives in the right pane so the sidebar runs full-height */}
+            <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
+              <span className="flex-1 text-xs text-muted-foreground">
+                {skills.length} {skills.length === 1 ? "skill" : "skills"} &nbsp;·&nbsp;{" "}
+                {packages.length} {packages.length === 1 ? "package" : "packages"} &nbsp;·&nbsp;{" "}
+                {standalones.length} standalone
+              </span>
+              <div className="relative w-56">
+                <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
+                <input
+                  value={skillFilter}
+                  onChange={(e) => setSkillFilter(e.target.value)}
+                  placeholder="Filter skills…"
+                  className="h-7 w-full rounded-md border border-border bg-transparent pl-8 pr-2 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
+                />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => scanProjects.mutate()}
+                disabled={scanProjects.isPending}
+                className="h-7 gap-1.5 text-xs"
+                title="Scan project workspaces for skills"
+                aria-label="Scan"
+              >
+                <RefreshCw className={cn("size-3.5", scanProjects.isPending && "animate-spin")} />
+                Scan
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => setAddSkillOpen(true)}
+                className="h-7 gap-1.5 text-xs"
+                aria-label="Add skill"
+              >
+                <Plus className="size-3.5" />
+                Add skill
+              </Button>
+            </header>
+
+            <div className="flex-1 overflow-y-auto">
             {route.kind === "package" && activePackage ? (
               <SkillPackageOverview
                 pkg={activePackage}
@@ -519,6 +576,7 @@ export function Skills() {
                 onAddSkill={() => setAddSkillOpen(true)}
               />
             )}
+            </div>
           </section>
         </div>
       </div>
