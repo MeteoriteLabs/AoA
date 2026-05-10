@@ -1,7 +1,6 @@
 import {
   FileText,
   Image as ImageIcon,
-  PanelRightOpen,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -11,7 +10,6 @@ interface Props {
   tabs: ReadonlyArray<MemoryTab>;
   activeKey: TabKey | null;
   onActivate: (id: string, kind: MemoryTabKind) => void;
-  onExpand: () => void;
 }
 
 const ICON_FOR_KIND: Record<MemoryTabKind, LucideIcon> = {
@@ -31,21 +29,9 @@ function isActive(tab: MemoryTab, key: TabKey | null): boolean {
  * Top of the strip carries a single "expand pane" button so users can
  * re-open the pane without changing the active tab.
  */
-export function MemoryCollapsedTabStrip({ tabs, activeKey, onActivate, onExpand }: Props) {
+export function MemoryCollapsedTabStrip({ tabs, activeKey, onActivate }: Props) {
   return (
     <aside className="flex h-full w-12 shrink-0 flex-col items-center gap-1 border-l border-border bg-card py-2">
-      <button
-        type="button"
-        title="Expand pane"
-        aria-label="Expand pane"
-        onClick={onExpand}
-        className="flex size-10 items-center justify-center rounded-md text-muted-foreground hover:bg-white/[0.04] hover:text-foreground"
-      >
-        <PanelRightOpen className="size-4" aria-hidden />
-      </button>
-
-      {tabs.length > 0 && <div className="my-1 h-px w-6 bg-border-soft" />}
-
       {tabs.map((t) => {
         const active = isActive(t, activeKey);
         const Icon = ICON_FOR_KIND[t.kind];

@@ -16,7 +16,6 @@ const baseProps = {
   activeKey,
   onActivate: () => {},
   onClose: () => {},
-  onCollapse: () => {},
 };
 
 describe("MemoryViewerTabs", () => {
@@ -35,7 +34,6 @@ describe("MemoryViewerTabs", () => {
   });
 
   it("disambiguates the active tab by both id AND kind", () => {
-    // Two tabs sharing id "x" but different kinds
     const tabs2: MemoryTab[] = [
       { id: "x", kind: "memory_item", title: "Item X" },
       { id: "x", kind: "asset", title: "Asset X" },
@@ -80,24 +78,10 @@ describe("MemoryViewerTabs", () => {
     expect(onActivate).not.toHaveBeenCalled();
   });
 
-  it("calls onCollapse when the collapse-pane button is clicked", () => {
-    const onCollapse = vi.fn();
-    const { getByTitle } = render(
-      <MemoryViewerTabs {...baseProps} onCollapse={onCollapse} />,
-    );
-    fireEvent.click(getByTitle("Collapse pane"));
-    expect(onCollapse).toHaveBeenCalled();
-  });
-
-  it("renders nothing useful when tabs is empty (collapse button still present)", () => {
-    const { getByTitle, container } = render(
-      <MemoryViewerTabs
-        {...baseProps}
-        tabs={[]}
-        activeKey={null}
-      />,
+  it("renders no tabs when tabs is empty", () => {
+    const { container } = render(
+      <MemoryViewerTabs {...baseProps} tabs={[]} activeKey={null} />,
     );
     expect(container.querySelectorAll("[data-tab-id]")).toHaveLength(0);
-    expect(getByTitle("Collapse pane")).toBeInTheDocument();
   });
 });

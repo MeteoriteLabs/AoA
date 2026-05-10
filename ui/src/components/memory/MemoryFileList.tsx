@@ -1,13 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import type { MemoryItem, MemoryAssetRecord, MemoryFolderRecord } from "@armyofagents/shared";
+import { Plus, Search, X } from "lucide-react";
 import { memoryApi } from "../../api/memory";
 import { memoryAssetsApi } from "../../api/memoryAssets";
 import { memoryFoldersApi } from "../../api/memoryFolders";
 import { projectsApi } from "../../api/projects";
 import { queryKeys } from "../../lib/queryKeys";
 import { useCompany } from "../../context/CompanyContext";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useMemoryViewMode } from "../../hooks/useMemoryViewMode";
@@ -15,7 +18,13 @@ import { MemoryViewToggle } from "./MemoryViewToggle";
 import { MemoryItemRow, type MemoryItemRowData } from "./MemoryItemRow";
 import { MemoryItemTable, type MemoryItemTableRowData, type MemoryTableSortColumn } from "./MemoryItemTable";
 import { MemoryItemCardGrid } from "./MemoryItemCardGrid";
+import { MemoryUploadButton } from "./MemoryUploadButton";
 import type { MemoryItemCardData } from "./MemoryItemCard";
+
+interface UploadContext {
+  departmentId: string | null;
+  folderPath: string;
+}
 
 interface MemoryFileListProps {
   companyId: string;
@@ -25,6 +34,10 @@ interface MemoryFileListProps {
   selectedItemId: string | null;
   selectedItemType: "memory_item" | "asset" | null;
   searchQuery?: string;
+  onSearchChange?: (value: string) => void;
+  onNewItem?: () => void;
+  uploadContext?: UploadContext;
+  totalItems?: number;
   onSelectRow: (id: string, kind: "memory_item" | "asset", title: string) => void;
 }
 
@@ -39,23 +52,24 @@ interface ListRow {
   raw: MemoryItem | MemoryAssetRecord;
 }
 
-function folderLabel(folderPath: string, layer?: string | null, deptOnly?: boolean, deptName?: string): string {
-  if (folderPath === "__pinned") return "📌 Pinned";
-  if (folderPath === "__pending") return "📋 Pending Review";
-  if (folderPath === "__recent") return "🕒 Recent (last 14 days)";
-  if (folderPath === "__archived") return "📦 Archived";
+
+function scopeTitle(folderPath: string, layer?: string | null, deptOnly?: boolean, deptName?: string): string {
+  if (folderPath === "__pinned") return "Pinned";
+  if (folderPath === "__pending") return "Pending Review";
+  if (folderPath === "__recent") return "Recent";
+  if (folderPath === "__archived") return "Archived";
   if (!folderPath && layer) {
     const labels: Record<string, string> = {
-      identity: "🪪 Identity",
-      domain: "🏢 Domain",
-      active_context: "🎯 Active Context",
-      working: "⚡ Working",
+      identity: "Identity",
+      domain: "Domain",
+      active_context: "Active Context",
+      working: "Working",
     };
     return labels[layer] ?? layer;
   }
-  if (deptOnly && deptName) return `📁 ${deptName}`;
-  if (deptOnly) return "📁 Department";
-  return folderPath;
+  if (deptOnly && deptName) return deptName;
+  if (deptOnly) return "Department";
+  return folderPath || "Memory";
 }
 
 function toRowData(row: ListRow): MemoryItemRowData & MemoryItemTableRowData & MemoryItemCardData {
@@ -96,6 +110,10 @@ export function MemoryFileList({
   selectedItemId,
   selectedItemType,
   searchQuery,
+  onSearchChange,
+  onNewItem,
+  uploadContext,
+  totalItems,
   onSelectRow,
 }: MemoryFileListProps) {
   const navigate = useNavigate();
@@ -105,6 +123,12 @@ export function MemoryFileList({
   const { mode, setMode } = useMemoryViewMode();
   const [sortBy, setSortBy] = useState<MemoryTableSortColumn>("modifiedAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [searchOpen, setSearchOpen] = useState(Boolean(searchQuery?.trim()));
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
 
   function handleSortChange(col: MemoryTableSortColumn) {
     if (col === sortBy) {
@@ -316,6 +340,19 @@ export function MemoryFileList({
   }
 
   const isLoading = itemsQuery.isLoading || assetsQuery.isLoading;
+  const title = scopeTitle(folderPath, layer, isDeptOnly, deptName);
+  const countLabel = [
+    subfolders.length > 0
+      ? `${subfolders.length} ${subfolders.length === 1 ? "folder" : "folders"}`
+      : null,
+    `${filteredRows.length} ${filteredRows.length === 1 ? "item" : "items"}`,
+    totalItems !== undefined ? `${totalItems} total` : null,
+  ].filter(Boolean).join(" · ");
+
+  function closeSearch() {
+    onSearchChange?.("");
+    setSearchOpen(false);
+  }
 
   if (!folderPath && !isLayerOnly && !isDeptOnly) {
     return (
@@ -327,11 +364,74 @@ export function MemoryFileList({
 
   return (
     <div className="h-full flex flex-col bg-card/30">
-      <div className="flex items-center px-3 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground gap-2">
-        <span className="truncate">{folderLabel(folderPath, layer, isDeptOnly, deptName)}</span>
-        <span className="flex-1" />
+      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-card px-3">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-semibold">{title}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{countLabel}</div>
+        </div>
+        {searchOpen ? (
+          <div className="relative w-[min(260px,36vw)] shrink-0">
+            <Search
+              aria-hidden
+              className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-very-dim"
+            />
+            <Input
+              ref={searchInputRef}
+              type="search"
+              value={searchQuery ?? ""}
+              onChange={(e) => onSearchChange?.(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") closeSearch();
+              }}
+              placeholder="Search this scope"
+              aria-label="Search this scope"
+              className="h-7 pl-8 pr-7 text-xs"
+            />
+            <button
+              type="button"
+              title="Close search"
+              aria-label="Close search"
+              onClick={closeSearch}
+              className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-white/[0.06] hover:text-foreground"
+            >
+              <X className="size-3" aria-hidden />
+            </button>
+          </div>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            title="Search this scope"
+            aria-label="Search this scope"
+            onClick={() => setSearchOpen(true)}
+            className="h-7 w-7 p-0"
+          >
+            <Search className="size-3.5" aria-hidden />
+          </Button>
+        )}
+        {uploadContext && (
+          <MemoryUploadButton
+            companyId={companyId}
+            departmentId={uploadContext.departmentId}
+            folderPath={uploadContext.folderPath}
+            iconOnly
+          />
+        )}
+        {onNewItem && (
+          <Button
+            type="button"
+            size="sm"
+            title="New item"
+            aria-label="New item"
+            onClick={onNewItem}
+            className="h-7 w-7 p-0"
+          >
+            <Plus className="size-3.5" aria-hidden />
+          </Button>
+        )}
         <MemoryViewToggle mode={mode} onChange={setMode} />
-        <span className="text-[10px] text-muted-foreground">
+        <span className="hidden text-[10px] text-muted-foreground">
           {subfolders.length > 0 && `${subfolders.length} ${subfolders.length === 1 ? "folder" : "folders"} · `}
           {filteredRows.length} {filteredRows.length === 1 ? "item" : "items"}
         </span>

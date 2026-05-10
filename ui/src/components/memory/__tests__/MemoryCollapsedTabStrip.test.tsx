@@ -14,13 +14,11 @@ const baseProps = {
   tabs,
   activeKey,
   onActivate: () => {},
-  onExpand: () => {},
 };
 
 describe("MemoryCollapsedTabStrip", () => {
-  it("renders an expand-pane button + one icon per open tab", () => {
-    const { getByTitle, container } = render(<MemoryCollapsedTabStrip {...baseProps} />);
-    expect(getByTitle("Expand pane")).toBeInTheDocument();
+  it("renders one icon per open tab", () => {
+    const { container } = render(<MemoryCollapsedTabStrip {...baseProps} />);
     expect(container.querySelectorAll("[data-tab-id]")).toHaveLength(2);
   });
 
@@ -61,20 +59,10 @@ describe("MemoryCollapsedTabStrip", () => {
     expect(onActivate).toHaveBeenCalledWith("b", "asset");
   });
 
-  it("calls onExpand when the expand-pane button is clicked", () => {
-    const onExpand = vi.fn();
-    const { getByTitle } = render(
-      <MemoryCollapsedTabStrip {...baseProps} onExpand={onExpand} />,
-    );
-    fireEvent.click(getByTitle("Expand pane"));
-    expect(onExpand).toHaveBeenCalled();
-  });
-
-  it("renders only the expand button when tabs is empty", () => {
-    const { getByTitle, container } = render(
+  it("renders no tab icons when tabs is empty", () => {
+    const { container } = render(
       <MemoryCollapsedTabStrip {...baseProps} tabs={[]} activeKey={null} />,
     );
-    expect(getByTitle("Expand pane")).toBeInTheDocument();
     expect(container.querySelectorAll("[data-tab-id]")).toHaveLength(0);
   });
 });

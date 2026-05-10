@@ -8,16 +8,15 @@ const zeroCounts = {
 };
 
 describe("MemoryFolderRail", () => {
-  it("renders 1 expand + 5 shortcuts + 4 layer = 10 buttons total", () => {
+  it("renders 5 shortcuts + 4 layer = 9 buttons total", () => {
     const { container } = render(
       <MemoryFolderRail
         counts={{ pinned: 7, pending: 3, recent: 22, archived: 36, identity: 12, domain: 24, active_context: 8, working: 2 }}
         activeKind={null}
         onSelect={() => {}}
-        onExpand={() => {}}
       />
     );
-    expect(container.querySelectorAll("button")).toHaveLength(10);
+    expect(container.querySelectorAll("button")).toHaveLength(9);
   });
 
   it("renders pending badge with brand tone when count > 0", () => {
@@ -26,7 +25,6 @@ describe("MemoryFolderRail", () => {
         counts={{ ...zeroCounts, pending: 3 }}
         activeKind={null}
         onSelect={() => {}}
-        onExpand={() => {}}
       />
     );
     expect(container.querySelector("[data-badge='pending']")).toHaveTextContent("3");
@@ -34,24 +32,15 @@ describe("MemoryFolderRail", () => {
 
   it("does not render a badge when count is 0", () => {
     const { container } = render(
-      <MemoryFolderRail counts={zeroCounts} activeKind={null} onSelect={() => {}} onExpand={() => {}} />
+      <MemoryFolderRail counts={zeroCounts} activeKind={null} onSelect={() => {}} />
     );
     expect(container.querySelector("[data-badge='pending']")).toBeNull();
-  });
-
-  it("calls onExpand when expand button is clicked", () => {
-    const onExpand = vi.fn();
-    const { container } = render(
-      <MemoryFolderRail counts={zeroCounts} activeKind={null} onSelect={() => {}} onExpand={onExpand} />
-    );
-    fireEvent.click(container.querySelectorAll("button")[0]);
-    expect(onExpand).toHaveBeenCalledOnce();
   });
 
   it("calls onSelect with correct kind when a shortcut is clicked", () => {
     const onSelect = vi.fn();
     const { getByTitle } = render(
-      <MemoryFolderRail counts={zeroCounts} activeKind={null} onSelect={onSelect} onExpand={() => {}} />
+      <MemoryFolderRail counts={zeroCounts} activeKind={null} onSelect={onSelect} />
     );
     fireEvent.click(getByTitle("Pending Review"));
     expect(onSelect).toHaveBeenCalledWith("pending");

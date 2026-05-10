@@ -2,7 +2,6 @@ import {
   FileText,
   Image as ImageIcon,
   X,
-  PanelRightClose,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -13,7 +12,6 @@ interface Props {
   activeKey: TabKey | null;
   onActivate: (id: string, kind: MemoryTabKind) => void;
   onClose: (id: string, kind: MemoryTabKind) => void;
-  onCollapse: () => void;
 }
 
 const ICON_FOR_KIND: Record<MemoryTabKind, LucideIcon> = {
@@ -30,7 +28,6 @@ export function MemoryViewerTabs({
   activeKey,
   onActivate,
   onClose,
-  onCollapse,
 }: Props) {
   return (
     <div className="flex h-9 shrink-0 items-center border-b border-border bg-card">
@@ -95,15 +92,6 @@ export function MemoryViewerTabs({
           );
         })}
       </div>
-      <button
-        type="button"
-        title="Collapse pane"
-        aria-label="Collapse pane"
-        onClick={onCollapse}
-        className="flex h-9 w-9 shrink-0 items-center justify-center border-l border-border text-very-dim hover:bg-white/[0.04] hover:text-foreground"
-      >
-        <PanelRightClose className="size-3.5" aria-hidden />
-      </button>
     </div>
   );
 }
