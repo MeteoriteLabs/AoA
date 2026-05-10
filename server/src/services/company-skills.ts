@@ -2311,6 +2311,7 @@ export function companySkillService(db: Db) {
       trustLevel: skill.trustLevel,
       compatibility: skill.compatibility,
       fileInventory: skill.fileInventory,
+      metadata: skill.metadata,
       createdAt: skill.createdAt,
       updatedAt: skill.updatedAt,
       attachedAgentCount,
