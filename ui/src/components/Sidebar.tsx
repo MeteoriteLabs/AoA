@@ -13,7 +13,6 @@ import {
   Shield,
   Puzzle,
   FolderGit2,
-  Activity,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
@@ -140,7 +139,6 @@ export function Sidebar() {
             <SidebarNavItem to="/agents/all" label="Agents" icon={Bot} collapsed={collapsed} />
             <SidebarNavItem to="/routines" label="Routines" icon={Repeat} collapsed={collapsed} />
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={FolderGit2} collapsed={collapsed} />
-            <SidebarNavItem to="/activity" label="Activity" icon={Activity} collapsed={collapsed} />
           </SidebarSection>
 
           {/* DEPARTMENTS — colored square (Pattern A, unchanged) */}

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { useSidebar } from "@/context/SidebarContext";
-import { Building, Shield, KeyRound, DollarSign, Plug, Puzzle, Store, Archive, Github } from "lucide-react";
+import { Building, Shield, KeyRound, DollarSign, Plug, Puzzle, Store, Archive, Github, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SidebarCollapseToggle } from "@/components/SidebarCollapseToggle";
@@ -10,7 +10,8 @@ const SECONDARY_COLLAPSED_KEY = "aoa.settings-secondary-collapsed";
 
 export type SettingsSectionId =
   | "general" | "commander" | "llm" | "budget" | "mcp" | "github"
-  | "plugins" | "marketplace" | "archive";
+  | "plugins" | "marketplace" | "archive"
+  | "activity";
 
 interface SettingsItem {
   id: SettingsSectionId;
@@ -27,6 +28,7 @@ interface SettingsGroup {
 export const SETTINGS_SECTIONS: readonly SettingsGroup[] = [
   { group: "Company",    items: [
     { id: "general",     label: "General",            icon: Building },
+    { id: "activity",    label: "Activity",           icon: Activity },
   ]},
   { group: "Operations", items: [
     { id: "commander",   label: "Commander",          icon: Shield },
