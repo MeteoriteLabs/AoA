@@ -13,6 +13,13 @@ import { seedCompany, cleanupTestCompanies } from "./helpers/seed-company";
  *   /marketplace/:type                 — redirects to /marketplace?type=:type
  *   /:prefix/marketplace-updates       — company-scoped updates page
  *
+ * UI overhaul (May 2026):
+ *   - Marketplace h1 changed to "Marketplace." (brand dot)
+ *   - Filter chips use MarketplaceFilterChips — accessible name is label+count,
+ *     e.g. "Plugins4" (no "available" text). Match by label prefix /^plugins/i.
+ *   - /marketplace/:type redirects to /marketplace?type=:type; no separate h1
+ *     per type — the active chip identifies the current filter.
+ *
  * Catalog in the test instance comes from the bundled aoa-marketplace-snapshot.json
  * (2 items at time of writing: Slack plugin + template-skill).
  *
@@ -201,12 +208,13 @@ test.describe("Marketplace UI", () => {
       page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Type pills aren't h3 anymore — they're buttons with span labels.
-    // Locate by button name combining label + count text ("Plugins 4 available", etc.)
-    await expect(page.getByRole("button", { name: /Plugins\s+\d+\s+available/i })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Skills\s+\d+\s+available/i })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Agents\s+\d+\s+available/i })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Teams\s+\d+\s+available/i })).toBeVisible();
+    // MarketplaceFilterChips renders one button per type.
+    // Accessible name = label + count concatenated (e.g. "Plugins4").
+    // Match by label prefix — count format may vary.
+    await expect(page.getByRole("button", { name: /^plugins/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^skills/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^agents/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^teams/i })).toBeVisible();
   });
 
   test("Marketplace home does not show error state", async ({ page }) => {
@@ -231,7 +239,7 @@ test.describe("Marketplace UI", () => {
     ).toBeVisible({ timeout: 15_000 });
 
     // The Plugins filter chip should be active when ?type=plugin is set
-    const pluginsPill = page.getByRole("button", { name: /Plugins\s+\d+\s+available/i });
+    const pluginsPill = page.getByRole("button", { name: /^plugins/i });
     await expect(pluginsPill).toHaveAttribute("data-active", "true");
 
     // Slack plugin card should be listed (present in bundled snapshot)
@@ -251,7 +259,7 @@ test.describe("Marketplace UI", () => {
     ).toBeVisible({ timeout: 15_000 });
 
     // Skills filter chip is active
-    const skillsPill = page.getByRole("button", { name: /Skills\s+\d+\s+available/i });
+    const skillsPill = page.getByRole("button", { name: /^skills/i });
     await expect(skillsPill).toHaveAttribute("data-active", "true");
 
     // template-skill is the skill in the bundled snapshot
@@ -294,8 +302,8 @@ test.describe("Marketplace UI", () => {
       page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Click the Plugins pill (button)
-    const pluginsPill = page.getByRole("button", { name: /Plugins\s+\d+\s+available/i });
+    // Click the Plugins pill (button). Accessible name = "Plugins" + count (e.g. "Plugins4").
+    const pluginsPill = page.getByRole("button", { name: /^plugins/i });
     await pluginsPill.click();
 
     // Pill should reflect active state (data-active="true" on the button)

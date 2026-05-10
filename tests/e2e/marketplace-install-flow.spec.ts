@@ -184,11 +184,12 @@ test.describe("Marketplace install flow", () => {
       page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Activate the Plugins type pill (button text is "Plugins N available")
-    const pluginsPill = page.getByRole("button", { name: /Plugins\s+\d+\s+available/i });
+    // Activate the Plugins type pill. MarketplaceFilterChips accessible name = label+count
+    // (e.g. "Plugins4") — no "available" text in the new component. Match by label prefix.
+    const pluginsPill = page.getByRole("button", { name: /^plugins/i });
     await pluginsPill.click();
 
-    // Pill reflects active state (data-active="true" matches the existing spec pattern)
+    // Pill reflects active state (data-active="true" on the button)
     await expect(pluginsPill).toHaveAttribute("data-active", "true");
 
     // Screenshot: marketplace filtered to Plugins — full page for visual diffing
