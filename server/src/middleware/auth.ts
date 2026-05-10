@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agentApiKeys, agents, boardApiKeys, companyMemberships, instanceUserRoles, mcpApiKeys } from "@armyofagents/db";
+import { agentApiKeys, agents, boardApiKeys, companyMemberships, heartbeatRuns, instanceUserRoles, mcpApiKeys } from "@armyofagents/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@armyofagents/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -69,6 +69,29 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
       }
+      // In local_trusted mode, resolve the agent identity from x-paperclip-run-id
+      // when no Bearer token is present. This is a fallback for environments where
+      // the JWT secret is not configured — without it, agent subprocesses silently
+      // fall through to the local-board actor and all comments appear as "You".
+      if (runIdHeader && opts.deploymentMode === "local_trusted") {
+        const run = await db
+          .select({ agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runIdHeader))
+          .then((rows) => rows[0] ?? null);
+        if (run) {
+          req.actor = {
+            type: "agent",
+            agentId: run.agentId,
+            companyId: run.companyId,
+            runId: runIdHeader,
+            source: "run_id_implicit",
+          };
+          next();
+          return;
+        }
+      }
+
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;

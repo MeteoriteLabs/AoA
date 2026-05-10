@@ -172,8 +172,10 @@ const TimelineList = memo(function TimelineList({
                     size="sm"
                   />
                 </Link>
-              ) : (
+              ) : comment.authorUserId ? (
                 <Identity name="You" size="sm" />
+              ) : (
+                <span className="text-xs text-muted-foreground italic">System</span>
               )}
               <a
                 href={`#comment-${comment.id}`}

@@ -25,7 +25,6 @@ export function TimelineUserMessage({ comment, authorName, isAgent = false }: Ti
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{comment.body}</ReactMarkdown>
         <div className={cn("flex items-center gap-1.5 mt-1 not-prose", isAgent ? "justify-start" : "justify-end")}>
           <Identity name={authorName} size="xs" />
-          <span className="text-[10px] text-muted-foreground">{authorName}</span>
           <span className="text-[10px] text-muted-foreground">·</span>
           <span className="text-[10px] text-muted-foreground">{relativeTime(comment.createdAt)}</span>
         </div>
