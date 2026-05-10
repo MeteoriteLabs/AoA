@@ -83,7 +83,7 @@ export function SettingsLayout({ activeSection, onSectionChange, children }: Set
       {/* SecondarySidebar — desktop only. NO redundant "Settings" header. */}
       <aside
         className={cn(
-          "hidden md:flex shrink-0 flex-col bg-card/30 border-r border-border transition-[width] duration-180",
+          "hidden md:flex shrink-0 flex-col bg-card/30 border-r border-border transition-[width] duration-[180ms]",
           secondaryCollapsed ? "w-[48px]" : "w-[200px]",
         )}
       >

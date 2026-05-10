@@ -16,6 +16,7 @@ import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
 import { StatusBadge } from "@/components/StatusBadge";
 import { CreateBudgetPolicyDialog } from "@/components/finance/CreateBudgetPolicyDialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { BudgetPolicyCard } from "@/components/finance/BudgetPolicyCard";
 import { BudgetIncidentCard } from "@/components/finance/BudgetIncidentCard";
 import { ProviderQuotaCard } from "@/components/finance/ProviderQuotaCard";
@@ -102,6 +103,7 @@ export function BudgetCapsSection() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [newPolicyOpen, setNewPolicyOpen] = useState(false);
+  const [deletePolicyTarget, setDeletePolicyTarget] = useState<{ id: string; scopeName: string } | null>(null);
 
   const { from, to } = useMemo(() => {
     if (preset === "custom") {
@@ -363,10 +365,7 @@ export function BudgetCapsSection() {
                       <BudgetPolicyCard
                         key={policy.id}
                         policy={policy}
-                        onDelete={(p) => {
-                          if (!window.confirm(`Delete budget policy for ${p.scopeName}? This cannot be undone.`)) return;
-                          deletePolicyMutation.mutate(p.id);
-                        }}
+                        onDelete={(p) => setDeletePolicyTarget({ id: p.id, scopeName: p.scopeName })}
                       />
                     ))}
                   </div>
@@ -379,6 +378,18 @@ export function BudgetCapsSection() {
               onOpenChange={setNewPolicyOpen}
               onCreated={() => {
                 queryClient.invalidateQueries({ queryKey: ["budgets", "overview", selectedCompanyId] });
+              }}
+            />
+            <ConfirmDialog
+              open={deletePolicyTarget !== null}
+              onOpenChange={(open) => { if (!open) setDeletePolicyTarget(null); }}
+              title={`Delete budget policy for ${deletePolicyTarget?.scopeName ?? ""}?`}
+              description="This cannot be undone."
+              confirmLabel="Delete"
+              destructive
+              onConfirm={() => {
+                if (deletePolicyTarget) deletePolicyMutation.mutate(deletePolicyTarget.id);
+                setDeletePolicyTarget(null);
               }}
             />
 

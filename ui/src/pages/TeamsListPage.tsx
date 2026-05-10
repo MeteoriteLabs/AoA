@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useQuery, useQueries } from "@tanstack/react-query";
-import { Plus, ChevronDown, Users, Search } from "lucide-react";
+import { Plus, ChevronDown, Users, Search, Sparkles, Upload } from "lucide-react";
 import { teamsApi } from "../api/teams";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
@@ -156,11 +156,11 @@ export function TeamsListPage() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-44">
             <DropdownMenuItem onClick={() => setEntryMode("build")}>
-              <span className="mr-2">✨</span>
+              <Sparkles className="h-4 w-4 mr-2" />
               Build from scratch
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => setEntryMode("import")}>
-              <span className="mr-2">📥</span>
+              <Upload className="h-4 w-4 mr-2" />
               Import from file
             </DropdownMenuItem>
           </DropdownMenuContent>

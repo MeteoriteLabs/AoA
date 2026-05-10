@@ -162,7 +162,7 @@ export function LobbySidebar({
         data-drawer={drawer || undefined}
         className={cn(
           "relative flex h-dvh shrink-0 flex-col",
-          drawer ? "w-full" : "border-r border-border bg-card/50 backdrop-blur-sm transition-[width] duration-180",
+          drawer ? "w-full" : "border-r border-border bg-card/50 backdrop-blur-sm transition-[width] duration-[180ms]",
           !drawer && (collapsed ? "w-[56px]" : "w-[220px]"),
           !drawer && "lobby-sidebar-enter",
         )}

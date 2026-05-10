@@ -33,7 +33,7 @@ export function SecondarySidebar({
     <div
       className={cn(
         "border-r border-border bg-[oklch(0.155_0.005_30)] flex flex-col pt-16 pb-3.5",
-        "transition-[width] duration-180",
+        "transition-[width] duration-[180ms]",
         collapsed ? "w-12 px-1" : "w-50 px-2",
         className
       )}

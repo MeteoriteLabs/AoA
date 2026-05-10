@@ -44,7 +44,7 @@ export function LobbyCompanyCard({ company, stats, statsLoading, onClick }: Lobb
       className={cn(
         "group relative w-full rounded-[14px] border border-border-strong bg-card p-4 sm:p-5 md:p-6 text-left",
         "shadow-[0_1px_0_rgba(255,255,255,0.02),0_4px_12px_rgba(0,0,0,0.25)]",
-        "transition-[border-color,background,box-shadow,transform] duration-180",
+        "transition-[border-color,background,box-shadow,transform] duration-[180ms]",
         "hover:border-brand/40 hover:bg-card-2 hover:shadow-[0_1px_0_rgba(255,255,255,0.04),0_8px_24px_rgba(0,0,0,0.4),0_0_24px_rgba(184,45,28,0.08)] hover:scale-[1.005]",
         "motion-reduce:hover:scale-100",
         "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring focus-visible:border-brand",
