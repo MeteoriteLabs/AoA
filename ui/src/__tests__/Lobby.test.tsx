@@ -33,11 +33,18 @@ vi.mock("@tanstack/react-query", async () => {
 });
 
 vi.mock("@/lib/queryKeys", () => ({
-  queryKeys: { companies: { stats: ["companies", "stats"] } },
+  queryKeys: {
+    companies: { stats: ["companies", "stats"] },
+    auth: { profile: ["auth", "profile"] },
+  },
 }));
 
 vi.mock("@/api/companies", () => ({
   companiesApi: { stats: vi.fn().mockResolvedValue({}) },
+}));
+
+vi.mock("@/api/profile", () => ({
+  profileApi: { get: vi.fn().mockResolvedValue(undefined) },
 }));
 
 vi.mock("@/components/LobbyCompanyCard", () => ({
@@ -50,6 +57,13 @@ vi.mock("@/components/LobbyCompanyCard", () => ({
 
 vi.mock("@/components/LobbySidebar", () => ({
   LobbySidebar: () => <aside data-testid="lobby-sidebar" />,
+}));
+
+// Sheet primitive needs Radix portals & focus management; stub as a no-op
+// passthrough so the mobile drawer in Lobby renders without complications.
+vi.mock("@/components/ui/sheet", () => ({
+  Sheet: ({ children }: any) => <>{children}</>,
+  SheetContent: ({ children }: any) => <>{children}</>,
 }));
 
 vi.mock("@/components/LobbyEmptyState", () => ({
@@ -74,10 +88,12 @@ describe("Lobby", () => {
     mockCompanyContext.companies = [];
   });
 
-  it("renders the LobbySidebar", () => {
+  it("renders the LobbySidebar (desktop inline + mobile drawer instance)", () => {
     mockCompanyContext.companies = [makeCompany()];
     renderWithProviders(<Lobby />);
-    expect(screen.getByTestId("lobby-sidebar")).toBeInTheDocument();
+    // Lobby renders the sidebar twice: once inline for desktop (md+), and
+    // once inside the mobile Sheet drawer. Both share the same mock test-id.
+    expect(screen.getAllByTestId("lobby-sidebar").length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders company cards when companies exist", () => {
@@ -93,42 +109,22 @@ describe("Lobby", () => {
     expect(screen.getByText("Beta Corp")).toBeInTheDocument();
   });
 
-  it("renders a +New header dropdown trigger when companies exist", () => {
-    mockCompanyContext.companies = [makeCompany()];
-    renderWithProviders(<Lobby />);
-    expect(screen.getByRole("button", { name: /\+ new/i })).toBeInTheDocument();
-  });
+  // The lobby v4 redesign drops the top header bar entirely. The "+ New
+  // company" CTA lives in the LobbySidebar (mocked in this file). Import
+  // company is only surfaced from the empty state. Tests for the prior
+  // header dropdown (+New menu, Create/Import items) are removed.
 
   it("does NOT render the legacy dashed Create/Import grid cards", () => {
     mockCompanyContext.companies = [makeCompany()];
     renderWithProviders(<Lobby />);
-    // Legacy cards rendered "Create Company" and "Import Company" inside the
-    // grid. The +New dropdown surfaces them on demand instead, so they should
-    // not be visible at idle.
     expect(screen.queryByText("Create Company")).not.toBeInTheDocument();
     expect(screen.queryByText("Import Company")).not.toBeInTheDocument();
   });
 
-  it("opens the onboarding dialog when +New > Create company is selected", async () => {
-    const user = userEvent.setup();
+  it("renders a hamburger button on mobile (md:hidden) that opens the drawer", () => {
     mockCompanyContext.companies = [makeCompany()];
-
     renderWithProviders(<Lobby />);
-
-    await user.click(screen.getByRole("button", { name: /\+ new/i }));
-    await user.click(await screen.findByRole("menuitem", { name: /create company/i }));
-    expect(mockDialogContext.openOnboarding).toHaveBeenCalled();
-  });
-
-  it("navigates to /import when +New > Import company is selected", async () => {
-    const user = userEvent.setup();
-    mockCompanyContext.companies = [makeCompany()];
-
-    renderWithProviders(<Lobby />);
-
-    await user.click(screen.getByRole("button", { name: /\+ new/i }));
-    await user.click(await screen.findByRole("menuitem", { name: /import company/i }));
-    expect(mockNavigate).toHaveBeenCalledWith("/import", undefined);
+    expect(screen.getByRole("button", { name: /open menu/i })).toBeInTheDocument();
   });
 
   it("clicking a company card navigates to that company's home", async () => {
@@ -197,23 +193,21 @@ describe("Lobby", () => {
     expect(screen.getByText("Loading...")).toBeInTheDocument();
   });
 
-  // PR-C polish: page background should use the diagonal purple-wash gradient
-  // (bg-background flat fill is replaced with a Tailwind arbitrary-value
-  // linear-gradient utility).
-  it("applies the diagonal purple-wash gradient on the lobby root", () => {
+  // Phase 2 lobby pilot: page background uses brand-red radial wash
+  // anchored top-center (replaces the prior diagonal purple-wash gradient).
+  // Per design-system §8.4: lobby surfaces get full brand-tinted radial wash.
+  it("applies the brand-red radial wash gradient on the lobby root", () => {
     mockCompanyContext.companies = [makeCompany()];
     const { container } = renderWithProviders(<Lobby />);
     const root = container.firstChild as HTMLElement | null;
     expect(root).toBeTruthy();
-    expect(root!.className).toMatch(/linear-gradient/);
-    expect(root!.className).toContain("hsl(260");
+    expect(root!.className).toMatch(/radial-gradient/);
+    expect(root!.className).toContain("brand-focus-ring");
   });
 
-  // PR-C polish: mount choreography classes are applied to heading + each card
-  // wrapper. Sidebar's own .lobby-sidebar-enter class is asserted in
+  // Mount choreography classes are applied to heading + each card wrapper.
+  // Sidebar's own .lobby-sidebar-enter class is asserted in
   // LobbySidebar.test.tsx (the sidebar is mocked in this file's renderer).
-  // CSS-keyframe-driven animations respect prefers-reduced-motion via a media
-  // query in index.css.
   it("applies mount-choreography animation classes to heading + card wrappers", () => {
     mockCompanyContext.companies = [
       makeCompany({ id: "c1", name: "Acme" }),

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -128,7 +129,7 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
           <DialogDescription>{item.description}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <DialogBody className="space-y-4">
           <div className="flex items-center gap-2">
             <TrustBadge tier={item.trust.tier} />
             <Badge variant="outline" className="text-xs">
@@ -149,7 +150,7 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
           <p className="text-xs text-muted-foreground">
             Plugins are installed instance-wide and available to all companies.
           </p>
-        </div>
+        </DialogBody>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>

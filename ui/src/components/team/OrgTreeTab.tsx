@@ -6,11 +6,16 @@ import { adapterLabels, roleLabels } from "../agent-config-primitives";
 import { teamsApi } from "../../api/teams";
 import { useCompany } from "../../context/CompanyContext";
 import { queryKeys } from "../../lib/queryKeys";
+import { agentStatusDotHex, agentStatusDotHexDefault } from "../../lib/status-colors";
+import { getInitials } from "../../lib/initials";
 import { TeamOrgOverlay } from "./TeamOrgOverlay";
 import { computeTeamBoxes, type LaidOutCard } from "./teamBoundingBox";
-import { Network, MoreVertical } from "lucide-react";
+import { Network, MoreVertical, Plus, Minus, Maximize2, Star } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ClickableDiv } from "../ui/clickable-div";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -153,16 +158,8 @@ function collectEdges(nodes: LayoutNode[]): Array<{ parent: LayoutNode; child: L
 }
 
 // ── Status dot colors ────────────────────────────────────────────────────
-
-const statusDotColor: Record<string, string> = {
-  running: "#22d3ee",
-  active: "#4ade80",
-  paused: "#facc15",
-  idle: "#facc15",
-  error: "#f87171",
-  terminated: "#a3a3a3",
-};
-const defaultDotColor = "#a3a3a3";
+// Sourced from the shared status-colors module so the canvas (inline-style)
+// and the agents grid (Tailwind class) stay in sync.
 
 // ── Team overlay colors ──────────────────────────────────────────────────
 //
@@ -438,11 +435,12 @@ export function OrgTreeTab({ orgTree, pendingInvites, onNodeClick, onNodeAction 
   // Empty state
   if (orgTree.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-20 text-center" data-testid="org-tree-empty">
-        <Network className="h-10 w-10 text-muted-foreground/40 mb-3" />
-        <p className="text-sm text-muted-foreground">
-          Add agents and invite teammates to build your org chart
-        </p>
+      <div data-testid="org-tree-empty" className="py-20">
+        <EmptyState
+          icon={<Network />}
+          title="Build your org"
+          description="Add agents and invite teammates to build your org chart"
+        />
       </div>
     );
   }
@@ -461,28 +459,21 @@ export function OrgTreeTab({ orgTree, pendingInvites, onNodeClick, onNodeAction 
     >
       {/* Zoom controls */}
       <div className="absolute top-3 right-3 z-10 flex flex-col gap-1">
-        <button
-          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-sm hover:bg-accent transition-colors"
-          onClick={() => zoomTo(1.2)}
-          aria-label="Zoom in"
-        >
-          +
-        </button>
-        <button
-          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-sm hover:bg-accent transition-colors"
-          onClick={() => zoomTo(0.8)}
-          aria-label="Zoom out"
-        >
-          &minus;
-        </button>
-        <button
-          className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-[10px] hover:bg-accent transition-colors"
+        <Button variant="outline" size="icon-xs" onClick={() => zoomTo(1.2)} aria-label="Zoom in">
+          <Plus />
+        </Button>
+        <Button variant="outline" size="icon-xs" onClick={() => zoomTo(0.8)} aria-label="Zoom out">
+          <Minus />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon-xs"
           onClick={fitToScreen}
           title="Fit to screen"
           aria-label="Fit chart to screen"
         >
-          Fit
-        </button>
+          <Maximize2 />
+        </Button>
       </div>
 
       {/* SVG layer for edges */}
@@ -548,7 +539,7 @@ function AgentNodeCard({
   onClick: (id: string, nodeType: "agent" | "user") => void;
   onNodeAction?: (action: OrgNodeAction) => void;
 }) {
-  const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+  const dotColor = agentStatusDotHex[node.status] ?? agentStatusDotHexDefault;
   // Apex CXO = "Chief of Staff": a CXO-tier agent reporting either to a
   // human or to no one. Computed live from the role + parentType pair —
   // not stored on the agent. See plan
@@ -578,12 +569,14 @@ function AgentNodeCard({
       aria-label={`View agent ${node.name}`}
     >
       {isChiefOfStaff && (
-        <span
-          className="absolute -top-2.5 left-3 rounded bg-amber-500 text-white px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide shadow-sm"
+        <Badge
+          variant="secondary"
+          className="absolute -top-2.5 left-3 bg-amber-500 text-white border-0 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide shadow-sm gap-1"
           aria-label="Chief of Staff (apex executive)"
         >
-          ⭐ Chief of Staff
-        </span>
+          <Star className="h-2.5 w-2.5 fill-current" />
+          Chief of Staff
+        </Badge>
       )}
       <div className="flex items-center px-4 py-3 gap-3">
         <div className="relative shrink-0">
@@ -644,14 +637,6 @@ function AgentNodeCard({
 }
 
 // ── Human node card ──────────────────────────────────────────────────────
-
-function getInitials(name: string): string {
-  return name
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase() ?? "")
-    .join("");
-}
 
 function HumanNodeCard({
   node,

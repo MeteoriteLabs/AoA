@@ -24,6 +24,9 @@ function SettingsStub() {
 function GoalsStub() {
   return <div data-testid="goals-page">Goals</div>;
 }
+function TeamStub() {
+  return <div data-testid="team-page">Team</div>;
+}
 function LayoutStub() {
   return (
     <div data-testid="layout">
@@ -51,8 +54,10 @@ function TestRoutes() {
         <Route path="issues" element={<IssuesStub />} />
         <Route path="issues/:issueId" element={<IssuesStub />} />
         <Route path="goals" element={<GoalsStub />} />
+        <Route path="team" element={<TeamStub />} />
         <Route path="settings" element={<SettingsStub />} />
         {/* Redirects */}
+        <Route path="org" element={<Navigate to="../team" replace />} />
         <Route path="costs" element={<Navigate to="../settings" replace />} />
         <Route path="activity" element={<Navigate to="../settings" replace />} />
       </Route>
@@ -144,6 +149,16 @@ describe("Navigation", () => {
     );
 
     expect(screen.getByTestId("dashboard-page")).toBeInTheDocument();
+  });
+
+  it("/org redirects to /team", () => {
+    render(
+      <MemoryRouter initialEntries={["/TC/org"]}>
+        <TestRoutes />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("team-page")).toBeInTheDocument();
   });
 });
 

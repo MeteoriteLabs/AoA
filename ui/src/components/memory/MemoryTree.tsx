@@ -2,7 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import { PanelLeftClose } from "lucide-react";
+import {
+  IdCard,
+  Building2,
+  Target,
+  Zap,
+  Home,
+  Pin,
+  Clock,
+  Inbox,
+  Archive,
+  type LucideIcon,
+} from "lucide-react";
 import type {
   MemoryFolderRecord,
   MemoryItem,
@@ -14,6 +25,7 @@ import { memoryApi } from "../../api/memory";
 import { projectsApi } from "../../api/projects";
 import { goalsApi } from "../../api/goals";
 import { queryKeys } from "../../lib/queryKeys";
+import { LAYER_LABELS } from "../../lib/memoryItemView";
 import { useCompany } from "../../context/CompanyContext";
 import { FolderTreeNode } from "./FolderTreeNode";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -28,14 +40,17 @@ interface MemoryTreeProps {
   selectedDepartmentId: string | null;
   selectedLayer: string | null;
   selectedGoalId: string | null;
-  onCollapseRequest?: () => void;
 }
 
 interface TreeNode {
   key: string;
   label: string;
-  icon?: string;
+  Icon?: LucideIcon;       // Lucide component reference (layer headers + shortcuts)
+  icon?: string;           // Emoji/string icon (folder nodes — user data, not migrated here)
+  iconTone?: string;       // Inline color for the icon span (e.g. "var(--data-indigo)")
   count?: number;
+  /** Count badge tone. "brand" wraps the count in a brand-red pill (used for Pending Review). */
+  countTone?: "default" | "brand";
   depth: number;
   hasChildren: boolean;
   /** When set, click navigates here. When null, clicking only toggles expand. */
@@ -47,11 +62,14 @@ interface TreeNode {
 
 type LayerKey = "identity" | "domain" | "active_context" | "working";
 
-const LAYER_META: Record<LayerKey, { label: string; icon: string }> = {
-  identity: { label: "Identity", icon: "🪪" },
-  domain: { label: "Domain", icon: "🏢" },
-  active_context: { label: "Active Context", icon: "🎯" },
-  working: { label: "Working", icon: "⚡" },
+// Icon + tone metadata for layer headers. Labels come from the canonical
+// LAYER_LABELS map in `lib/memoryItemView.ts` so the tree, dashboard tiles,
+// dialogs, and viewer all read the same string.
+const LAYER_META: Record<LayerKey, { Icon: LucideIcon; tone: string }> = {
+  identity: { Icon: IdCard, tone: "var(--data-indigo)" },
+  domain: { Icon: Building2, tone: "var(--data-teal)" },
+  active_context: { Icon: Target, tone: "var(--data-amber)" },
+  working: { Icon: Zap, tone: "var(--data-magenta)" },
 };
 
 const DEFAULT_EXPANDED = new Set<string>([
@@ -65,7 +83,6 @@ export function MemoryTree({
   selectedDepartmentId,
   selectedLayer,
   selectedGoalId,
-  onCollapseRequest,
 }: MemoryTreeProps) {
   const navigate = useNavigate();
   const { selectedCompany } = useCompany();
@@ -348,8 +365,10 @@ export function MemoryTree({
       <div key={node.key}>
         <FolderTreeNode
           label={node.label}
-          icon={node.icon}
+          icon={node.Icon ?? node.icon}
+          iconTone={node.iconTone}
           count={node.count}
+          countTone={node.countTone}
           depth={node.depth}
           expanded={isExpanded}
           selected={isSelected(node.target)}
@@ -372,16 +391,6 @@ export function MemoryTree({
     <div className="h-full flex flex-col bg-card/50">
       <div className="flex items-center px-2 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground">
         <span>Folders</span>
-        <span className="flex-1" />
-        <button
-          type="button"
-          onClick={onCollapseRequest}
-          className="p-1 rounded hover:bg-accent/50 transition-colors"
-          aria-label="Collapse folders pane"
-          disabled={!onCollapseRequest}
-        >
-          <PanelLeftClose className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
-        </button>
       </div>
       <div className="flex-1 overflow-auto py-1">
         {isLoading ? (
@@ -475,7 +484,7 @@ function buildTree({
   top.push({
     key: "__home",
     label: "Home",
-    icon: "🏠",
+    Icon: Home,
     depth: 0,
     hasChildren: false,
     target: { folder: "", dept: null }, // empty params = home
@@ -483,7 +492,7 @@ function buildTree({
   top.push({
     key: "__pinned",
     label: "Pinned",
-    icon: "📌",
+    Icon: Pin,
     count: counts.pinned > 0 ? counts.pinned : undefined,
     depth: 0,
     hasChildren: false,
@@ -492,8 +501,10 @@ function buildTree({
   top.push({
     key: "__pending",
     label: "Pending Review",
-    icon: "📋",
+    Icon: Inbox,
+    iconTone: "var(--data-amber)",
     count: counts.pending > 0 ? counts.pending : undefined,
+    countTone: "brand",
     depth: 0,
     hasChildren: false,
     target: { folder: "__pending", dept: null },
@@ -501,7 +512,7 @@ function buildTree({
   top.push({
     key: "__recent",
     label: "Recent",
-    icon: "🕒",
+    Icon: Clock,
     count: counts.recent > 0 ? counts.recent : undefined,
     depth: 0,
     hasChildren: false,
@@ -510,7 +521,7 @@ function buildTree({
   top.push({
     key: "__archived",
     label: "Archived",
-    icon: "📦",
+    Icon: Archive,
     count: counts.archived > 0 ? counts.archived : undefined,
     depth: 0,
     hasChildren: false,
@@ -540,8 +551,9 @@ function buildTree({
   }
   top.push({
     key: "__layer-identity",
-    label: LAYER_META.identity.label,
-    icon: LAYER_META.identity.icon,
+    label: LAYER_LABELS.identity,
+    Icon: LAYER_META.identity.Icon,
+    iconTone: LAYER_META.identity.tone,
     count: counts.byLayer.identity, // always show, even 0 — spec §3 "predictable structure"
     depth: 0,
     hasChildren: identityChildren.length > 0,
@@ -583,8 +595,9 @@ function buildTree({
   }
   top.push({
     key: "__layer-domain",
-    label: LAYER_META.domain.label,
-    icon: LAYER_META.domain.icon,
+    label: LAYER_LABELS.domain,
+    Icon: LAYER_META.domain.Icon,
+    iconTone: LAYER_META.domain.tone,
     count: counts.byLayer.domain, // always show, even 0
     depth: 0,
     hasChildren: domainChildren.length > 0,
@@ -604,8 +617,9 @@ function buildTree({
   }));
   top.push({
     key: "__layer-active_context",
-    label: LAYER_META.active_context.label,
-    icon: LAYER_META.active_context.icon,
+    label: LAYER_LABELS.active_context,
+    Icon: LAYER_META.active_context.Icon,
+    iconTone: LAYER_META.active_context.tone,
     count: counts.byLayer.active_context, // always show, even 0
     depth: 0,
     hasChildren: activeChildren.length > 0,
@@ -616,8 +630,9 @@ function buildTree({
   // Working layer (flat — no children even when expanded).
   top.push({
     key: "__layer-working",
-    label: LAYER_META.working.label,
-    icon: LAYER_META.working.icon,
+    label: LAYER_LABELS.working,
+    Icon: LAYER_META.working.Icon,
+    iconTone: LAYER_META.working.tone,
     count: counts.byLayer.working, // always show, even 0
     depth: 0,
     hasChildren: false,

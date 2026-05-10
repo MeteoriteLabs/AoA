@@ -8,6 +8,7 @@ import { useToast } from "../../context/ToastContext";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -151,7 +152,7 @@ export function AddMemberDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <DialogBody className="space-y-4">
           {/* Mode toggle */}
           <div className="flex gap-2">
             <Button
@@ -256,7 +257,7 @@ export function AddMemberDialog({
               </Button>
             </div>
           )}
-        </div>
+        </DialogBody>
 
         <DialogFooter>
           <Button

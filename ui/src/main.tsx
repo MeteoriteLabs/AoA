@@ -12,6 +12,7 @@ import { DialogProvider } from "./context/DialogContext";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Toaster } from "@/components/ui/toaster";
 import { ToastProvider as MarketplaceToastProvider } from "@/components/marketplace/toast/ToastProvider";
 import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
 import { initPluginBridge } from "./plugins/bridge-init";
@@ -56,6 +57,7 @@ createRoot(document.getElementById("root")!).render(
                         <MarketplaceToastProvider>
                           <App />
                           <InstallToastSlot />
+                          <Toaster />
                         </MarketplaceToastProvider>
                       </DialogProvider>
                     </SidebarProvider>

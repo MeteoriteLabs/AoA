@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Apple, Monitor, Terminal } from "lucide-react";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -77,43 +78,45 @@ export function PathInstructionsModal({
           </DialogDescription>
         </DialogHeader>
 
-        {/* Platform tabs */}
-        <div className="flex gap-1 rounded-md border border-border p-0.5">
-          {platforms.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-xs transition-colors",
-                platform === p.id
-                  ? "bg-accent text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
-              )}
-              onClick={() => setPlatform(p.id)}
-            >
-              <p.icon className="h-3.5 w-3.5" />
-              {p.label}
-            </button>
-          ))}
-        </div>
+        <DialogBody>
+          {/* Platform tabs */}
+          <div className="flex gap-1 rounded-md border border-border p-0.5">
+            {platforms.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={cn(
+                  "flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-xs transition-colors",
+                  platform === p.id
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
+                )}
+                onClick={() => setPlatform(p.id)}
+              >
+                <p.icon className="h-3.5 w-3.5" />
+                {p.label}
+              </button>
+            ))}
+          </div>
 
-        {/* Steps */}
-        <ol className="space-y-2 text-sm">
-          {current.steps.map((step, i) => (
-            <li key={i} className="flex gap-2">
-              <span className="text-muted-foreground font-mono text-xs mt-0.5 shrink-0">
-                {i + 1}.
-              </span>
-              <span>{step}</span>
-            </li>
-          ))}
-        </ol>
+          {/* Steps */}
+          <ol className="space-y-2 text-sm">
+            {current.steps.map((step, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="text-muted-foreground font-mono text-xs mt-0.5 shrink-0">
+                  {i + 1}.
+                </span>
+                <span>{step}</span>
+              </li>
+            ))}
+          </ol>
 
-        {current.tip && (
-          <p className="text-xs text-muted-foreground border-l-2 border-border pl-3">
-            {current.tip}
-          </p>
-        )}
+          {current.tip && (
+            <p className="text-xs text-muted-foreground border-l-2 border-border pl-3">
+              {current.tip}
+            </p>
+          )}
+        </DialogBody>
       </DialogContent>
     </Dialog>
   );

@@ -41,6 +41,15 @@ export function MyIssues() {
 
   return (
     <div className="space-y-4">
+      <div>
+        <h1 className="text-[1.6rem] font-bold tracking-tight">
+          My Tasks<span className="text-brand">.</span>
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Tasks unassigned or routed to you for action.
+        </p>
+      </div>
+
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {myIssues.length === 0 && (

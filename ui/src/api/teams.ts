@@ -20,6 +20,10 @@ export interface Team {
   templateVersion: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Populated by the list endpoint — avoids N+1 member queries in the list view. */
+  memberCount: number;
+  leadAgentId: string | null;
+  memberAgentIds: string[];
 }
 
 export interface TeamMember {
@@ -86,6 +90,9 @@ export const teamsApi = {
 
   listMembers: (teamId: string) =>
     api.get<{ items: TeamMember[] }>(`/teams/${teamId}/members`),
+
+  getMember: (teamId: string, agentId: string) =>
+    api.get<TeamMember>(`/teams/${teamId}/members/${agentId}`),
 
   addMember: (teamId: string, input: AddTeamMemberInput) =>
     api.post<TeamMember>(`/teams/${teamId}/members`, input),

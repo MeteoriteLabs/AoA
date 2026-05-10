@@ -86,7 +86,9 @@ export function CreateFolderDialog({
         <DialogHeader>
           <DialogTitle>New folder</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4 py-2">
+        {/* px-7 matches DialogHeader / DialogFooter inset so fields don't
+            sit flush against the dialog edge. */}
+        <div className="space-y-4 px-7 pb-5">
           <div className="text-xs text-muted-foreground">
             In: {parentDisplayPath ?? parentPath ?? "(root)"}
           </div>

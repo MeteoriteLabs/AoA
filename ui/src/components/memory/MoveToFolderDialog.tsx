@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -78,7 +79,8 @@ export function MoveToFolderDialog({
             Pick a destination folder. The item moves immediately.
           </DialogDescription>
         </DialogHeader>
-        <div className="max-h-72 overflow-auto border border-border rounded-md">
+        <DialogBody>
+          <div className="max-h-72 overflow-auto border border-border rounded-md">
           {foldersQuery.isLoading ? (
             <div className="px-3 py-2 text-xs text-muted-foreground">
               Loading folders…
@@ -104,7 +106,8 @@ export function MoveToFolderDialog({
               </div>
             ))
           )}
-        </div>
+          </div>
+        </DialogBody>
         <DialogFooter>
           <Button
             variant="ghost"

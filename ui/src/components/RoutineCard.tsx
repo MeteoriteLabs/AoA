@@ -61,10 +61,11 @@ export const RoutineCard = memo(function RoutineCard({
   return (
     <ClickableDiv
       className={cn(
-        "group relative border bg-card rounded-lg p-4 cursor-pointer transition-all",
+        "group relative border bg-card rounded-lg p-4 cursor-pointer transition-all border-l-4",
         hasLiveRun
           ? "border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.06)]"
           : "border-border",
+        enabled && !isArchived ? "border-l-emerald-500" : isArchived ? "border-l-border" : "border-l-amber-500",
       )}
       onClick={onNavigate}
     >
@@ -142,7 +143,12 @@ export const RoutineCard = memo(function RoutineCard({
 
       {/* Last run line */}
       <div className="mt-1 text-xs text-muted-foreground">
-        {routine.lastRun ? (() => {
+        {isRunning || hasLiveRun ? (
+          <span className="flex items-center gap-1.5 text-cyan-400">
+            <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
+            Running now...
+          </span>
+        ) : routine.lastRun ? (() => {
           const { label, colorClass } = runStatusStyle(routine.lastRun!.status);
           return (
             <>
@@ -158,19 +164,35 @@ export const RoutineCard = memo(function RoutineCard({
 
       {/* Hover footer */}
       <div className="mt-3 border-t border-border/50 pt-2.5 opacity-0 transition-opacity group-hover:opacity-100 flex items-center justify-between">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          disabled={isRunning || isArchived}
-          onClick={(e) => {
-            e.stopPropagation();
-            onRun();
-          }}
-        >
-          <Play className="mr-1 h-3 w-3" />
-          {isRunning ? "Running..." : "Run now"}
-        </Button>
+        {!enabled && !isArchived ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs text-amber-400 hover:text-amber-300"
+            disabled={isStatusPending}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleStatus();
+            }}
+          >
+            <Play className="mr-1 h-3 w-3" />
+            Resume
+          </Button>
+        ) : (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs"
+            disabled={isRunning || isArchived}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRun();
+            }}
+          >
+            <Play className="mr-1 h-3 w-3" />
+            {isRunning ? "Running..." : "Run now"}
+          </Button>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
             <Button variant="ghost" size="icon-sm" aria-label="More actions">

@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Plus } from "lucide-react";
+import { ChevronRight, Plus, Rocket } from "lucide-react";
 import {
   DndContext,
   PointerSensor,
@@ -48,6 +48,8 @@ function SortableProjectItem({
   } = useSortable({ id: project.id });
 
   const routeRef = projectRouteRef(project);
+  const isActive = activeProjectRef === routeRef || activeProjectRef === project.id;
+  const tint = project.color ?? "#6366f1";
 
   return (
     <div
@@ -63,21 +65,26 @@ function SortableProjectItem({
     >
       <NavLink
         to={`/projects/${routeRef}/issues`}
-        onClick={() => {
-          if (isMobile) setSidebarOpen(false);
-        }}
+        onClick={() => { if (isMobile) setSidebarOpen(false); }}
         className={cn(
-          "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
-          activeProjectRef === routeRef || activeProjectRef === project.id
-            ? "bg-accent text-foreground"
-            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+          "relative flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors",
+          isActive
+            ? "bg-brand/[0.08] text-[hsl(15_60%_75%)]"
+            : "text-foreground/[0.78] hover:bg-white/[0.04] hover:text-foreground",
         )}
       >
-        <span
-          className="shrink-0 h-3.5 w-3.5 rounded-sm"
-          style={{ backgroundColor: project.color ?? "#6366f1" }}
-        />
+        {project.type === "project" ? (
+          <Rocket className="size-4 shrink-0" style={{ color: tint }} />
+        ) : (
+          <span className="shrink-0 size-3.5 rounded-sm" style={{ backgroundColor: tint }} />
+        )}
         <span className="flex-1 truncate">{project.name}</span>
+        {isActive && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 size-[5px] rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
+          />
+        )}
       </NavLink>
     </div>
   );
@@ -153,16 +160,26 @@ export function SidebarProjectsByType({ type, label, collapsed }: SidebarProject
                     to={`/projects/${routeRef}/issues`}
                     onClick={() => { if (isMobile) setSidebarOpen(false); }}
                     className={cn(
-                      "flex items-center justify-center w-10 h-8 rounded-md transition-colors",
+                      "relative flex items-center justify-center size-9 rounded-md transition-colors",
                       isActive
-                        ? "bg-accent"
-                        : "hover:bg-accent/50",
+                        ? "bg-brand/[0.08]"
+                        : "hover:bg-white/[0.04]",
                     )}
                   >
-                    <span
-                      className="h-3.5 w-3.5 rounded-sm shrink-0"
-                      style={{ backgroundColor: project.color ?? "#6366f1" }}
-                    />
+                    {project.type === "project" ? (
+                      <Rocket className="size-4 shrink-0" style={{ color: project.color ?? "#6366f1" }} />
+                    ) : (
+                      <span
+                        className="size-3.5 rounded-sm shrink-0"
+                        style={{ backgroundColor: project.color ?? "#6366f1" }}
+                      />
+                    )}
+                    {isActive && (
+                      <span
+                        aria-hidden
+                        className="pointer-events-none absolute right-1.5 top-1.5 size-[5px] rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
+                      />
+                    )}
                   </NavLink>
                 </TooltipTrigger>
                 <TooltipContent side="right" sideOffset={8}>{project.name}</TooltipContent>
@@ -182,7 +199,7 @@ export function SidebarProjectsByType({ type, label, collapsed }: SidebarProject
           <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
             <ChevronRight
               className={cn(
-                "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
+                "size-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
                 open && "rotate-90"
               )}
             />
@@ -195,10 +212,10 @@ export function SidebarProjectsByType({ type, label, collapsed }: SidebarProject
               e.stopPropagation();
               openNewProject({ type });
             }}
-            className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
+            className="flex items-center justify-center size-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
             aria-label={newLabel}
           >
-            <Plus className="h-3 w-3" />
+            <Plus className="size-3" />
           </button>
         </div>
       </div>

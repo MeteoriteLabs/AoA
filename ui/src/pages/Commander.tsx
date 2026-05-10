@@ -28,7 +28,16 @@ export function Commander() {
   const hasMission = !!selectedCompany?.mission;
 
   return (
-    <div className="flex gap-6 h-[calc(100vh-8rem)]">
+    <div className="flex flex-col gap-4 h-[calc(100vh-8rem)]">
+      <div>
+        <h1 className="text-[1.6rem] font-bold tracking-tight">
+          Commander<span className="text-brand">.</span>
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Your always-on AI assistant for coordination and proactive monitoring.
+        </p>
+      </div>
+      <div className="flex gap-6 flex-1 min-h-0">
       {/* Context sidebar */}
       <div className="hidden lg:flex flex-col gap-3 w-64 shrink-0">
         {/* Identity snapshot */}
@@ -64,7 +73,7 @@ export function Commander() {
 
         {/* Quick links */}
         <Link
-          to="/settings/commander"
+          to="/settings?tab=commander"
           className="flex items-center gap-2 rounded-lg border border-border p-3 text-xs text-muted-foreground hover:text-foreground hover:border-foreground/20 transition-colors"
         >
           <Settings className="h-3 w-3" />
@@ -75,6 +84,7 @@ export function Commander() {
       {/* Conversation area */}
       <div className="flex-1 min-w-0 rounded-lg border border-border overflow-hidden bg-background">
         <AgentPanelContent />
+      </div>
       </div>
     </div>
   );

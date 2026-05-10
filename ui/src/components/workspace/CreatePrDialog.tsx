@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, ExternalLink, Github, Loader2 } from "lucide-react";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -142,29 +143,31 @@ export function CreatePrDialog({
           </DialogHeader>
 
           {existingPr ? (
-            <div className="space-y-4">
-              <div
-                className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
-                data-testid="pr-already-exists"
-              >
-                <AlertCircle
-                  className="mt-0.5 h-4 w-4 shrink-0 text-amber-500"
-                  aria-hidden="true"
-                />
-                <div className="flex-1 space-y-1">
-                  <div className="font-medium">PR already created</div>
-                  <a
-                    href={existingPr.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-xs text-foreground hover:underline"
-                    data-testid="pr-already-exists-link"
-                  >
-                    View PR #{existingPr.number}
-                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                  </a>
+            <>
+              <DialogBody>
+                <div
+                  className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+                  data-testid="pr-already-exists"
+                >
+                  <AlertCircle
+                    className="mt-0.5 h-4 w-4 shrink-0 text-amber-500"
+                    aria-hidden="true"
+                  />
+                  <div className="flex-1 space-y-1">
+                    <div className="font-medium">PR already created</div>
+                    <a
+                      href={existingPr.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-foreground hover:underline"
+                      data-testid="pr-already-exists-link"
+                    >
+                      View PR #{existingPr.number}
+                      <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                    </a>
+                  </div>
                 </div>
-              </div>
+              </DialogBody>
               <DialogFooter>
                 <Button
                   type="button"
@@ -174,8 +177,9 @@ export function CreatePrDialog({
                   Close
                 </Button>
               </DialogFooter>
-            </div>
+            </>
           ) : (
+          <DialogBody>
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Title */}
             <div className="space-y-1.5">
@@ -337,6 +341,7 @@ export function CreatePrDialog({
               </Button>
             </DialogFooter>
           </form>
+          </DialogBody>
           )}
         </DialogContent>
       )}

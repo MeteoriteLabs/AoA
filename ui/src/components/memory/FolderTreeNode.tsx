@@ -5,7 +5,11 @@ import { cn } from "@/lib/utils";
 interface FolderTreeNodeProps {
   label: string;
   icon?: string | LucideIcon;
+  /** Optional inline color applied to the icon span (e.g. "var(--data-indigo)"). */
+  iconTone?: string;
   count?: number;
+  /** Count badge tone. "brand" wraps the count in a brand-red pill (used for Pending Review). */
+  countTone?: "default" | "brand";
   depth: number;
   expanded: boolean;
   selected: boolean;
@@ -22,7 +26,9 @@ interface FolderTreeNodeProps {
 export function FolderTreeNode({
   label,
   icon,
+  iconTone,
   count,
+  countTone = "default",
   depth,
   expanded,
   selected,
@@ -34,7 +40,9 @@ export function FolderTreeNode({
   tooltip,
 }: FolderTreeNodeProps) {
   const indent = depth * 12 + 8;
-  const Icon = typeof icon === "function" ? (icon as LucideIcon) : null;
+  // Lucide icons are forwardRef *objects*, not plain functions. Treat any
+  // non-string truthy value as a component to render.
+  const Icon = icon && typeof icon !== "string" ? (icon as LucideIcon) : null;
 
   return (
     <div
@@ -45,8 +53,9 @@ export function FolderTreeNode({
       title={tooltip}
       className={cn(
         "group flex items-center gap-1 py-1.5 pr-2 cursor-pointer text-xs leading-snug select-none",
+        "relative",
         "hover:bg-muted/60 transition-colors duration-100",
-        selected && "bg-primary/10 text-primary",
+        selected && "bg-brand/[0.08] text-[hsl(15_60%_75%)]",
         tintClass,
       )}
       style={{ paddingLeft: indent }}
@@ -69,16 +78,32 @@ export function FolderTreeNode({
           )
         ) : null}
       </button>
-      <span className="flex-shrink-0 text-sm leading-none">
+      <span
+        className="flex-shrink-0 text-sm leading-none"
+        style={iconTone ? { color: iconTone } : undefined}
+      >
         {Icon ? <Icon className="h-3.5 w-3.5" /> : (typeof icon === "string" ? icon : "📁")}
       </span>
       <span className="truncate flex-1">{label}</span>
       {count !== undefined && (
-        <span className="text-[10px] text-muted-foreground tabular-nums">
+        <span
+          className={cn(
+            "text-[10px] tabular-nums",
+            countTone === "brand"
+              ? "rounded px-1.5 py-0.5 bg-brand/[0.08] text-[hsl(15_60%_75%)]"
+              : "text-muted-foreground",
+          )}
+        >
           {count}
         </span>
       )}
       {actions}
+      {selected && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 size-[5px] rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
+        />
+      )}
     </div>
   );
 }

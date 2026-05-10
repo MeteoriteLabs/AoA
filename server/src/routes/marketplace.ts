@@ -49,5 +49,15 @@ export function createMarketplaceRouter(deps: MarketplaceRoutesDeps): Router {
     res.json(status);
   });
 
+  router.get("/packages", async (req, res) => {
+    assertBoard(req);
+    const packages = await service.getPackages();
+    if (!packages) {
+      res.status(503).json({ error: "Catalog not yet synced" });
+      return;
+    }
+    res.json({ packages });
+  });
+
   return router;
 }

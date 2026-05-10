@@ -37,8 +37,9 @@ describe("TeamCard", () => {
   });
 
   it("renders member count", () => {
-    render(<TeamCard team={SAMPLE_TEAM} onClick={() => {}} />);
-    expect(screen.getByText(/3 agents/)).toBeInTheDocument();
+    // Avatar stack + overflow badge: 2 visible initials, memberCount=3 → "+1" overflow shown
+    render(<TeamCard team={{ ...SAMPLE_TEAM, memberInitials: ["A", "B"] }} onClick={() => {}} />);
+    expect(screen.getByText("+1")).toBeInTheDocument();
   });
 
   it("does NOT render any human-style avatar", () => {

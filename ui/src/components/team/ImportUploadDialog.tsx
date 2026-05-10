@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Upload } from "lucide-react";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -133,80 +134,82 @@ export function ImportUploadDialog({ open, onOpenChange }: Props) {
           <DialogDescription>Upload a .team.yaml package.</DialogDescription>
         </DialogHeader>
 
-        {/* Parent dept picker — required before upload */}
-        <div className="rounded-md bg-amber-50 p-3 dark:bg-amber-950/20">
-          <div className="flex items-center gap-3">
-            <span aria-hidden="true" className="text-base">
-              📁
-            </span>
-            <div className="flex-1">
-              <p className="text-xs font-bold">Pick a parent department</p>
-              <p className="text-[11px] text-muted-foreground">
-                Templates don't include a department — choose where this team
-                lives.
-              </p>
+        <DialogBody className="space-y-4">
+          {/* Parent dept picker — required before upload */}
+          <div className="rounded-md bg-amber-50 p-3 dark:bg-amber-950/20">
+            <div className="flex items-center gap-3">
+              <span aria-hidden="true" className="text-base">
+                📁
+              </span>
+              <div className="flex-1">
+                <p className="text-xs font-bold">Pick a parent department</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Templates don't include a department — choose where this team
+                  lives.
+                </p>
+              </div>
+              <Select
+                value={parentProjectId}
+                onValueChange={setParentProjectId}
+              >
+                <SelectTrigger className="h-8 w-[180px] text-xs">
+                  <SelectValue placeholder="Select department" />
+                </SelectTrigger>
+                <SelectContent>
+                  {departments.map((d) => (
+                    <SelectItem key={d.id} value={d.id}>
+                      {d.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-            <Select
-              value={parentProjectId}
-              onValueChange={setParentProjectId}
-            >
-              <SelectTrigger className="h-8 w-[180px] text-xs">
-                <SelectValue placeholder="Select department" />
-              </SelectTrigger>
-              <SelectContent>
-                {departments.map((d) => (
-                  <SelectItem key={d.id} value={d.id}>
-                    {d.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
           </div>
-        </div>
 
-        <div
-          className={`rounded-lg border-2 border-dashed border-muted-foreground/30 p-9 text-center ${
-            !parentProjectId ? "opacity-50 pointer-events-none" : ""
-          }`}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            const f = e.dataTransfer.files[0];
-            if (f) void handleFile(f);
-          }}
-        >
-          <Upload
-            className="mx-auto h-8 w-8 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <p className="mt-2 text-sm font-bold">Drag a team file here</p>
-          <p className="text-xs text-muted-foreground">or</p>
-          <Button
-            onClick={() => fileRef.current?.click()}
-            className="mt-3"
-            disabled={loading || !parentProjectId}
-          >
-            {loading ? "Parsing…" : "Browse files"}
-          </Button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".yaml,.yml"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
+          <div
+            className={`rounded-lg border-2 border-dashed border-muted-foreground/30 p-9 text-center ${
+              !parentProjectId ? "opacity-50 pointer-events-none" : ""
+            }`}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const f = e.dataTransfer.files[0];
               if (f) void handleFile(f);
             }}
-          />
-          <p className="mt-3 text-[10px] text-muted-foreground">
-            .yaml · .yml · max 5MB
-          </p>
-        </div>
+          >
+            <Upload
+              className="mx-auto h-8 w-8 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <p className="mt-2 text-sm font-bold">Drag a team file here</p>
+            <p className="text-xs text-muted-foreground">or</p>
+            <Button
+              onClick={() => fileRef.current?.click()}
+              className="mt-3"
+              disabled={loading || !parentProjectId}
+            >
+              {loading ? "Parsing…" : "Browse files"}
+            </Button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".yaml,.yml"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void handleFile(f);
+              }}
+            />
+            <p className="mt-3 text-[10px] text-muted-foreground">
+              .yaml · .yml · max 5MB
+            </p>
+          </div>
 
-        <p className="text-xs text-muted-foreground">
-          The file is parsed and you'll get a preview before anything is
-          written.
-        </p>
+          <p className="text-xs text-muted-foreground">
+            The file is parsed and you'll get a preview before anything is
+            written.
+          </p>
+        </DialogBody>
       </DialogContent>
     </Dialog>
   );

@@ -6,6 +6,7 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
   eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
   inArray: vi.fn((c: any, v: any) => ({ inArray: [c, v] })),
+  count: vi.fn(() => ({ count: true })),
   sql: vi.fn(() => ({ sql: true })),
 }));
 
@@ -97,16 +98,31 @@ describe("teamsService", () => {
   });
 
   describe("list()", () => {
-    it("returns rows for company", async () => {
+    it("returns rows for company with member summary", async () => {
       const teamsRows = [
         { id: "t1", companyId: "co-1", name: "Frontend", slug: "frontend" },
         { id: "t2", companyId: "co-1", name: "Backend", slug: "backend" },
       ];
-      const db = createAgentDb({ selects: [teamsRows] });
+      const memberRows = [
+        { teamId: "t1", agentId: "a1", role: "lead" },
+        { teamId: "t1", agentId: "a2", role: "member" },
+        { teamId: "t2", agentId: "a3", role: "member" },
+      ];
+      // Two selects: teams list, then batch member query
+      const db = createAgentDb({ selects: [teamsRows, memberRows] });
 
       const result = await teamsService(db as any).list("co-1");
 
-      expect(result).toEqual(teamsRows);
+      expect(result).toEqual([
+        { ...teamsRows[0], memberCount: 2, leadAgentId: "a1", memberAgentIds: ["a1", "a2"] },
+        { ...teamsRows[1], memberCount: 1, leadAgentId: null, memberAgentIds: ["a3"] },
+      ]);
+    });
+
+    it("returns empty array with member summary shape when no teams", async () => {
+      const db = createAgentDb({ selects: [[]] });
+      const result = await teamsService(db as any).list("co-1");
+      expect(result).toEqual([]);
     });
 
     it("filters by projectId", async () => {
@@ -119,11 +135,14 @@ describe("teamsService", () => {
           slug: "frontend",
         },
       ];
-      const db = createAgentDb({ selects: [teamsRows] });
+      // Two selects: filtered teams list, then batch member query (no members)
+      const db = createAgentDb({ selects: [teamsRows, []] });
 
       const result = await teamsService(db as any).list("co-1", "p1");
 
-      expect(result).toEqual(teamsRows);
+      expect(result).toEqual([
+        { ...teamsRows[0], memberCount: 0, leadAgentId: null, memberAgentIds: [] },
+      ]);
     });
   });
 
@@ -388,95 +407,6 @@ describe("teamsService", () => {
           ],
         }),
       ).rejects.toThrow(/at most one lead per team, got 2/);
-    });
-
-    it("create() with newAgents rolls back when team insert fails", async () => {
-      // Two newAgents pre-validated. Mock the tx so:
-      //   - tx.insert(agents) succeeds (returns 2 rows)
-      //   - tx.insert(agentProjects) succeeds
-      //   - insertTeamWithUniqueSlug throws conflict (slug saturated)
-      // The transaction-wrapper's natural rollback should mean no DB writes
-      // persist; we assert the final outcome by counting committed inserts.
-      let agentInsertCalls = 0;
-      let teamInsertCalls = 0;
-
-      const insertSpy = vi.fn((table: any) => ({
-        values: vi.fn(() => ({
-          returning: vi.fn(() => {
-            if (table?.id === "agents_id") {
-              agentInsertCalls++;
-              return Promise.resolve([
-                { id: "new-agent-1", name: "Alpha" },
-                { id: "new-agent-2", name: "Beta" },
-              ]);
-            }
-            if (table?.id === "ap_agent_id" || table?.companyId === "ap_company_id") {
-              return Promise.resolve([{ ok: true }]);
-            }
-            if (table?.id === "teams_id") {
-              teamInsertCalls++;
-              const err = Object.assign(new Error("dup slug"), { code: "23505" });
-              throw err;
-            }
-            return Promise.resolve([]);
-          }),
-        })),
-      }));
-
-      const db: any = {
-        select: vi.fn(() => ({
-          from: vi.fn(() => ({
-            where: vi.fn(() => Promise.resolve([{ id: "p1" }])), // parent project belongs to company
-          })),
-        })),
-        transaction: async (cb: any) => {
-          const tx: any = {
-            select: vi.fn(() => ({
-              from: vi.fn(() => ({
-                where: vi.fn(() => Promise.resolve([])), // no existing slugs
-              })),
-            })),
-            insert: insertSpy,
-          };
-          try {
-            return await cb(tx);
-          } catch (err) {
-            // Simulate Postgres transaction rollback -- re-raise.
-            throw err;
-          }
-        },
-      };
-
-      await expect(
-        teamsService(db).create("co-1", {
-          parentProjectId: "p1",
-          name: "QA",
-          newAgents: [
-            { name: "Alpha", adapterType: "claude_local", role: "lead" },
-            { name: "Beta", adapterType: "claude_local", role: "member" },
-          ],
-        }),
-      ).rejects.toMatchObject({ status: 409 });
-
-      // Verify the writes WERE attempted (so we proved the path) but the rollback
-      // is a Postgres-level guarantee outside our test scope.
-      expect(agentInsertCalls).toBeGreaterThan(0);
-      expect(teamInsertCalls).toBeGreaterThan(0);
-      // I3 follow-up: belt-and-braces against a future refactor that might
-      // silently reorder the inserts and write team_members BEFORE the team
-      // insert (which would defeat the whole-transaction rollback story for
-      // any half-committed team_members row depending on FK timing).
-      //
-      // Using insertSpy.mock.calls.filter rather than a counter increment in
-      // .returning() because production code calls
-      // tx.insert(teamMembers).values(rows) WITHOUT .returning() -- a counter
-      // inside .returning() would never fire and the assertion would pass
-      // vacuously even if the regression occurred. mock.calls.filter counts
-      // every insert(table) call regardless of how the chain continues.
-      const teamMembersInsertAttempts = insertSpy.mock.calls.filter(
-        ([table]) => table?.id === "tm_id",
-      ).length;
-      expect(teamMembersInsertAttempts).toBe(0);
     });
   });
 

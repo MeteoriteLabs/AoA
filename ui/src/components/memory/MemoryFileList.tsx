@@ -1,24 +1,30 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import {
-  FileText,
-  Image as ImageIcon,
-  FileType,
-  Film,
-  Presentation,
-  File as FileIcon,
-} from "lucide-react";
 import type { MemoryItem, MemoryAssetRecord, MemoryFolderRecord } from "@armyofagents/shared";
+import { Plus, Search, X } from "lucide-react";
 import { memoryApi } from "../../api/memory";
 import { memoryAssetsApi } from "../../api/memoryAssets";
 import { memoryFoldersApi } from "../../api/memoryFolders";
 import { projectsApi } from "../../api/projects";
 import { queryKeys } from "../../lib/queryKeys";
 import { useCompany } from "../../context/CompanyContext";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { ExpiresAtChip } from "./ExpiresAtChip";
+import { useMemoryViewMode } from "../../hooks/useMemoryViewMode";
+import { MemoryViewToggle } from "./MemoryViewToggle";
+import { MemoryItemRow, type MemoryItemRowData } from "./MemoryItemRow";
+import { MemoryItemTable, type MemoryItemTableRowData, type MemoryTableSortColumn } from "./MemoryItemTable";
+import { MemoryItemCardGrid } from "./MemoryItemCardGrid";
+import { MemoryUploadButton } from "./MemoryUploadButton";
+import type { MemoryItemCardData } from "./MemoryItemCard";
+
+interface UploadContext {
+  departmentId: string | null;
+  folderPath: string;
+}
 
 interface MemoryFileListProps {
   companyId: string;
@@ -28,6 +34,11 @@ interface MemoryFileListProps {
   selectedItemId: string | null;
   selectedItemType: "memory_item" | "asset" | null;
   searchQuery?: string;
+  onSearchChange?: (value: string) => void;
+  onNewItem?: () => void;
+  uploadContext?: UploadContext;
+  totalItems?: number;
+  onSelectRow: (id: string, kind: "memory_item" | "asset", title: string) => void;
 }
 
 interface ListRow {
@@ -41,51 +52,54 @@ interface ListRow {
   raw: MemoryItem | MemoryAssetRecord;
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  approved: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
-  pending: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
-  archived: "bg-gray-100 text-gray-800 dark:bg-gray-900/40 dark:text-gray-300",
-  rejected: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
-  draft: "bg-slate-100 text-slate-800 dark:bg-slate-900/40 dark:text-slate-300",
-};
 
-function iconForRow(row: ListRow) {
-  if (row.kind === "memory_item") return FileText;
-  if (!row.mimeType) return FileIcon;
-  if (row.mimeType.startsWith("image/")) return ImageIcon;
-  if (row.mimeType.startsWith("video/")) return Film;
-  if (row.mimeType === "application/pdf") return FileType;
-  if (row.mimeType.includes("presentation")) return Presentation;
-  return FileIcon;
-}
-
-function formatRelative(isoOrDate: string): string {
-  const ms = Date.now() - new Date(isoOrDate).getTime();
-  const days = Math.floor(ms / (1000 * 60 * 60 * 24));
-  if (days < 1) return "today";
-  if (days < 7) return `${days}d`;
-  if (days < 30) return `${Math.floor(days / 7)}w`;
-  if (days < 365) return `${Math.floor(days / 30)}mo`;
-  return `${Math.floor(days / 365)}y`;
-}
-
-function folderLabel(folderPath: string, layer?: string | null, deptOnly?: boolean, deptName?: string): string {
-  if (folderPath === "__pinned") return "📌 Pinned";
-  if (folderPath === "__pending") return "📋 Pending Review";
-  if (folderPath === "__recent") return "🕒 Recent (last 14 days)";
-  if (folderPath === "__archived") return "📦 Archived";
+function scopeTitle(folderPath: string, layer?: string | null, deptOnly?: boolean, deptName?: string): string {
+  if (folderPath === "__pinned") return "Pinned";
+  if (folderPath === "__pending") return "Pending Review";
+  if (folderPath === "__recent") return "Recent";
+  if (folderPath === "__archived") return "Archived";
   if (!folderPath && layer) {
     const labels: Record<string, string> = {
-      identity: "🪪 Identity",
-      domain: "🏢 Domain",
-      active_context: "🎯 Active Context",
-      working: "⚡ Working",
+      identity: "Identity",
+      domain: "Domain",
+      active_context: "Active Context",
+      working: "Working",
     };
     return labels[layer] ?? layer;
   }
-  if (deptOnly && deptName) return `📁 ${deptName}`;
-  if (deptOnly) return "📁 Department";
-  return folderPath;
+  if (deptOnly && deptName) return deptName;
+  if (deptOnly) return "Department";
+  return folderPath || "Memory";
+}
+
+function toRowData(row: ListRow): MemoryItemRowData & MemoryItemTableRowData & MemoryItemCardData {
+  const raw = row.raw as {
+    layer?: string | null;
+    runUsageCount?: number | null;
+    tokenCount?: number | null;
+    sizeBytes?: number | null;
+    pageCount?: number | null;
+    chunkCount?: number | null;
+    content?: string | null;
+    extractedText?: string | null;
+  };
+  return {
+    kind: row.kind,
+    id: row.id,
+    title: row.name,
+    category: row.category ?? null,
+    status: row.status ?? null,
+    mimeType: row.mimeType ?? null,
+    modifiedAt: row.modifiedAt,
+    layer: raw.layer ?? null,
+    content: raw.content ?? null,
+    extractedText: raw.extractedText ?? null,
+    usedCount: raw.runUsageCount ?? undefined,
+    tokenEstimate: raw.tokenCount ?? undefined,
+    sizeBytes: raw.sizeBytes ?? undefined,
+    pageCount: raw.pageCount ?? null,
+    chunkCount: raw.chunkCount ?? null,
+  };
 }
 
 export function MemoryFileList({
@@ -96,10 +110,34 @@ export function MemoryFileList({
   selectedItemId,
   selectedItemType,
   searchQuery,
+  onSearchChange,
+  onNewItem,
+  uploadContext,
+  totalItems,
+  onSelectRow,
 }: MemoryFileListProps) {
   const navigate = useNavigate();
   const { selectedCompany } = useCompany();
   const companyPrefix = selectedCompany?.issuePrefix ?? "";
+
+  const { mode, setMode } = useMemoryViewMode();
+  const [sortBy, setSortBy] = useState<MemoryTableSortColumn>("modifiedAt");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [searchOpen, setSearchOpen] = useState(Boolean(searchQuery?.trim()));
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
+
+  function handleSortChange(col: MemoryTableSortColumn) {
+    if (col === sortBy) {
+      setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(col);
+      setSortDir("desc");
+    }
+  }
 
   const isVirtualFolder =
     folderPath === "__pinned" ||
@@ -232,6 +270,24 @@ export function MemoryFileList({
     );
   }, [rows, searchQuery]);
 
+  // Apply table-mode sort to a derived copy; list + cards keep the natural
+  // modifiedAt-desc order that comes out of the rows memo.
+  const displayRows = useMemo(() => {
+    if (mode !== "table") return filteredRows;
+    const copy = [...filteredRows];
+    copy.sort((a, b) => {
+      if (sortBy === "title") return a.name.localeCompare(b.name);
+      if (sortBy === "usedCount") {
+        const av = (a.raw as { runUsageCount?: number }).runUsageCount ?? 0;
+        const bv = (b.raw as { runUsageCount?: number }).runUsageCount ?? 0;
+        return av - bv;
+      }
+      return new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime();
+    });
+    if (sortDir === "desc") copy.reverse();
+    return copy;
+  }, [filteredRows, mode, sortBy, sortDir]);
+
   // Phase 6.2f: compute direct subfolders for folder/dept modes.
   const subfolders = useMemo<MemoryFolderRecord[]>(() => {
     if (isVirtualFolder || isLayerOnly) return [];
@@ -280,13 +336,23 @@ export function MemoryFileList({
   }
 
   function selectRow(row: ListRow) {
-    const params = new URLSearchParams(window.location.search);
-    params.set("item", row.id);
-    params.set("type", row.kind);
-    navigate(`/${companyPrefix}/memory/explore?${params.toString()}`);
+    onSelectRow(row.id, row.kind, row.name);
   }
 
   const isLoading = itemsQuery.isLoading || assetsQuery.isLoading;
+  const title = scopeTitle(folderPath, layer, isDeptOnly, deptName);
+  const countLabel = [
+    subfolders.length > 0
+      ? `${subfolders.length} ${subfolders.length === 1 ? "folder" : "folders"}`
+      : null,
+    `${filteredRows.length} ${filteredRows.length === 1 ? "item" : "items"}`,
+    totalItems !== undefined ? `${totalItems} total` : null,
+  ].filter(Boolean).join(" · ");
+
+  function closeSearch() {
+    onSearchChange?.("");
+    setSearchOpen(false);
+  }
 
   if (!folderPath && !isLayerOnly && !isDeptOnly) {
     return (
@@ -298,10 +364,74 @@ export function MemoryFileList({
 
   return (
     <div className="h-full flex flex-col bg-card/30">
-      <div className="flex items-center px-3 py-2 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground gap-2">
-        <span className="truncate">{folderLabel(folderPath, layer, isDeptOnly, deptName)}</span>
-        <span className="flex-1" />
-        <span className="text-[10px] text-muted-foreground">
+      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-card px-3">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-semibold">{title}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{countLabel}</div>
+        </div>
+        {searchOpen ? (
+          <div className="relative w-[min(260px,36vw)] shrink-0">
+            <Search
+              aria-hidden
+              className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-very-dim"
+            />
+            <Input
+              ref={searchInputRef}
+              type="search"
+              value={searchQuery ?? ""}
+              onChange={(e) => onSearchChange?.(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") closeSearch();
+              }}
+              placeholder="Search this scope"
+              aria-label="Search this scope"
+              className="h-7 pl-8 pr-7 text-xs"
+            />
+            <button
+              type="button"
+              title="Close search"
+              aria-label="Close search"
+              onClick={closeSearch}
+              className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-white/[0.06] hover:text-foreground"
+            >
+              <X className="size-3" aria-hidden />
+            </button>
+          </div>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            title="Search this scope"
+            aria-label="Search this scope"
+            onClick={() => setSearchOpen(true)}
+            className="h-7 w-7 p-0"
+          >
+            <Search className="size-3.5" aria-hidden />
+          </Button>
+        )}
+        {uploadContext && (
+          <MemoryUploadButton
+            companyId={companyId}
+            departmentId={uploadContext.departmentId}
+            folderPath={uploadContext.folderPath}
+            iconOnly
+          />
+        )}
+        {onNewItem && (
+          <Button
+            type="button"
+            size="sm"
+            title="New item"
+            aria-label="New item"
+            onClick={onNewItem}
+            className="h-7 w-7 p-0"
+          >
+            <Plus className="size-3.5" aria-hidden />
+          </Button>
+        )}
+        <MemoryViewToggle mode={mode} onChange={setMode} />
+        <span className="hidden text-[10px] text-muted-foreground">
           {subfolders.length > 0 && `${subfolders.length} ${subfolders.length === 1 ? "folder" : "folders"} · `}
           {filteredRows.length} {filteredRows.length === 1 ? "item" : "items"}
         </span>
@@ -345,53 +475,43 @@ export function MemoryFileList({
             )}
             {filteredRows.length > 0 ? (
               <div>
-                <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                <div className="px-4 py-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                   Items at this level ({filteredRows.length})
                 </div>
-                {filteredRows.map((row) => {
-                  const Icon = iconForRow(row);
-                  const isSelected =
-                    row.id === selectedItemId && row.kind === selectedItemType;
-                  const expiresAt =
-                    row.kind === "memory_item"
-                      ? (row.raw as MemoryItem & { expiresAt?: Date | string | null })
-                          .expiresAt ?? null
-                      : null;
-                  return (
-                    <button
-                      key={`${row.kind}-${row.id}`}
-                      onClick={() => selectRow(row)}
-                      className={cn(
-                        "w-full text-left flex items-center gap-2 px-3 py-2 text-xs transition-colors",
-                        isSelected
-                          ? "bg-primary/10 text-primary"
-                          : "hover:bg-muted/40",
-                      )}
-                    >
-                      <Icon className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-                      <span className="flex-1 truncate">{row.name}</span>
-                      {row.category && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/60 text-muted-foreground">
-                          {row.category}
-                        </span>
-                      )}
-                      {row.status && (
-                        <span
-                          className={cn(
-                            "text-[10px] px-1.5 py-0.5 rounded",
-                            STATUS_COLORS[row.status] ?? "",
-                          )}
-                        >
-                          {row.status}
-                        </span>
-                      )}
-                      <ExpiresAtChip expiresAt={expiresAt} />
-                      <span className="text-muted-foreground tabular-nums text-[10px]">
-                        {formatRelative(row.modifiedAt)}
-                      </span>
-                    </button>
-                  );
-                })}
+                {mode === "list" && displayRows.map((r) => (
+                  <MemoryItemRow
+                    key={`${r.kind}-${r.id}`}
+                    row={toRowData(r)}
+                    active={r.id === selectedItemId && r.kind === selectedItemType}
+                    onSelect={(id, kind) => {
+                      const row = displayRows.find((x) => x.id === id && x.kind === kind);
+                      if (row) selectRow(row);
+                    }}
+                  />
+                ))}
+                {mode === "table" && (
+                  <MemoryItemTable
+                    rows={displayRows.map(toRowData)}
+                    activeId={selectedItemId}
+                    onSelect={(id, kind) => {
+                      const row = displayRows.find((x) => x.id === id && x.kind === kind);
+                      if (row) selectRow(row);
+                    }}
+                    sortBy={sortBy}
+                    sortDir={sortDir}
+                    onSortChange={handleSortChange}
+                  />
+                )}
+                {mode === "cards" && (
+                  <MemoryItemCardGrid
+                    rows={displayRows.map(toRowData)}
+                    activeId={selectedItemId}
+                    onSelect={(id, kind) => {
+                      const row = displayRows.find((x) => x.id === id && x.kind === kind);
+                      if (row) selectRow(row);
+                    }}
+                  />
+                )}
               </div>
             ) : subfolders.length === 0 ? (
               <div className="flex items-center justify-center h-full text-xs text-muted-foreground">

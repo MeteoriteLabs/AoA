@@ -800,6 +800,7 @@ export {
   MarketplaceItemTypeSchema,
   MarketplaceCatalogItemSchema,
   MarketplaceCatalogFileSchema,
+  MarketplacePackageSchema,
   isSchemaVersionSupported,
   MARKETPLACE_SETTINGS_DEFAULTS,
   type MarketplaceCategory,
@@ -814,6 +815,7 @@ export {
   type PendingUpdateStatus,
   type PendingUpdateType,
   type PendingUpdate,
+  type MarketplacePackage,
 } from "./marketplace.js";
 export {
   ROUTINE_VARIABLE_NAME_PATTERN,

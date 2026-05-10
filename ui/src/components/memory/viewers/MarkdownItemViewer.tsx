@@ -8,31 +8,22 @@ import { memoryApi } from "../../../api/memory";
 import { queryKeys } from "../../../lib/queryKeys";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import { MarkdownEditorView } from "./MarkdownEditorView";
 import { MemoryApprovalActions } from "../MemoryApprovalActions";
 import { MemoryItemActions } from "../MemoryItemActions";
 import { SourceTextDrawer } from "../SourceTextDrawer";
+import { MemoryChip } from "../MemoryChip";
+import {
+  STATUS_TONE,
+  LAYER_TONE,
+  CATEGORY_TONE,
+  LAYER_LABELS,
+} from "../../../lib/memoryItemView";
 
 interface MarkdownItemViewerProps {
   companyId: string;
   itemId: string;
 }
-
-const STATUS_PILL: Record<string, string> = {
-  approved: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
-  pending: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
-  archived: "bg-gray-100 text-gray-800 dark:bg-gray-900/40 dark:text-gray-300",
-  rejected: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
-  draft: "bg-slate-100 text-slate-800 dark:bg-slate-900/40 dark:text-slate-300",
-};
-
-const LAYER_PILL: Record<string, string> = {
-  identity: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-300",
-  domain: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300",
-  active_context: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
-  working: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300",
-};
 
 const EDIT_DEFAULT_STATUSES = new Set(["pending", "draft", "rejected"]);
 
@@ -83,8 +74,10 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
     );
   }
 
+  // Narrow the API row to the fields we touch here. We deliberately don't widen
+  // `layer` to `string` — the shared MemoryItem.layer is already MemoryItemLayer | null,
+  // and keeping the union lets the chip render without `as` casts below.
   const i = item as MemoryItem & {
-    layer?: string | null;
     pinnedToSkill?: boolean;
     folderPath?: string;
     departmentId?: string | null;
@@ -102,29 +95,16 @@ export function MarkdownItemViewer({ companyId, itemId }: MarkdownItemViewerProp
             {/* chips row */}
             <div className="flex items-center gap-2 text-[10px] mb-2">
               {i.status && (
-                <span
-                  className={cn(
-                    "px-1.5 py-0.5 rounded font-medium uppercase tracking-[0.06em]",
-                    STATUS_PILL[i.status] ?? "bg-muted text-muted-foreground",
-                  )}
-                >
-                  {i.status}
-                </span>
+                <MemoryChip label={i.status} tone={STATUS_TONE[i.status]} />
               )}
               {i.layer && (
-                <span
-                  className={cn(
-                    "px-1.5 py-0.5 rounded font-medium uppercase tracking-[0.06em]",
-                    LAYER_PILL[i.layer] ?? "bg-muted text-muted-foreground",
-                  )}
-                >
-                  {i.layer.replace("_", " ")}
-                </span>
+                <MemoryChip
+                  label={LAYER_LABELS[i.layer]}
+                  tone={LAYER_TONE[i.layer]}
+                />
               )}
               {i.category && (
-                <span className="px-1.5 py-0.5 rounded bg-muted text-muted-foreground uppercase tracking-[0.06em] font-medium">
-                  {i.category}
-                </span>
+                <MemoryChip label={i.category} tone={CATEGORY_TONE[i.category]} />
               )}
               {i.pinnedToSkill && (
                 <span

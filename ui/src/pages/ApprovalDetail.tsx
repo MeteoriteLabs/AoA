@@ -210,7 +210,7 @@ export function ApprovalDetail() {
           <div className="flex items-center gap-2">
             <TypeIcon className="h-5 w-5 text-muted-foreground shrink-0" />
             <div>
-              <h2 className="text-lg font-semibold">{typeLabel[approval.type] ?? approval.type.replace(/_/g, " ")}</h2>
+              <h1 className="text-lg font-semibold">{typeLabel[approval.type] ?? approval.type.replace(/_/g, " ")}</h1>
               <p className="text-xs text-muted-foreground font-mono">{approval.id}</p>
             </div>
           </div>

@@ -1,8 +1,9 @@
 import { useState, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -27,7 +28,6 @@ import { useCompany } from "../../context/CompanyContext";
 import { useToast } from "../../context/ToastContext";
 import { useNavigate } from "@/lib/router";
 import { queryKeys } from "../../lib/queryKeys";
-import type { AgentAdapterType } from "@armyofagents/shared";
 import { MemberRow, type DraftMember } from "./MemberRow";
 
 interface Props {
@@ -81,9 +81,7 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
   });
 
   const availableAgents = useMemo(() => {
-    const taken = new Set(
-      members.filter((m) => m.kind === "existing").map((m) => m.agentId),
-    );
+    const taken = new Set(members.map((m) => m.agentId));
     return (agentsQuery.data ?? []).filter((a) => !taken.has(a.id));
   }, [agentsQuery.data, members]);
 
@@ -96,49 +94,11 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
 
   const createMut = useMutation({
     mutationFn: async () => {
-      // P1-G: single atomic call. The server accepts both existing-agent
-      // members and new-agent specs in one request and runs the agent +
-      // agent_projects + team + team_members inserts inside one
-      // transaction. Any failure rolls every preceding insert back, so
-      // a retry hits a clean state — no orphan agent rows.
-      //
-      // Previously this mutationFn looped per-agent agentsApi.create +
-      // projectsApi.assignAgent calls BEFORE the team-create. A failure
-      // partway through left committed agent rows the founder couldn't
-      // see in any UI surface, and a retry created MORE duplicates
-      // (agents has no unique constraint on name).
-      const memberPayload = members
-        .filter(
-          (m): m is Extract<DraftMember, { kind: "existing" }> =>
-            m.kind === "existing",
-        )
-        .map((m) => ({ agentId: m.agentId, role: m.role }));
-
-      const newAgentPayload = members
-        .filter(
-          (m): m is Extract<DraftMember, { kind: "new" }> => m.kind === "new",
-        )
-        .map((m) => ({
-          name: m.name,
-          // The DraftMember.adapterType is typed as `string` in MemberRow's
-          // discriminated union; the dropdown only ever sets one of the
-          // server-validated values. Cast narrows it for the wire payload —
-          // server-side Zod re-validates against AGENT_ADAPTER_TYPES.
-          adapterType: m.adapterType as AgentAdapterType,
-          role: m.role,
-          // C1 follow-up: forward the comma-parsed Skills input from
-          // MemberRow. Without this, the input was silently dropped on the
-          // atomic newAgents path (the OLD per-agent loop wrote it via
-          // agentsApi.create; the new in-tx insert needs it explicit).
-          skillKeys: m.skillKeys ?? [],
-        }));
-
       const team = await teamsApi.create(selectedCompanyId!, {
         name,
         parentProjectId,
         description: description || undefined,
-        members: memberPayload,
-        newAgents: newAgentPayload.length > 0 ? newAgentPayload : undefined,
+        members: members.map((m) => ({ agentId: m.agentId, role: m.role })),
       });
 
       // Trigger initial coordination.md scaffolding.
@@ -162,9 +122,6 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
       return team;
     },
     onSuccess: (team) => {
-      // P1-G: invalidate agents + projects caches too — newAgents created
-      // server-side won't show up in the agents list / dept assignments
-      // until queries refetch.
       queryClient.invalidateQueries({
         queryKey: queryKeys.teams.list(selectedCompanyId!),
       });
@@ -190,9 +147,6 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
       navigate(`/team/teams/${team.slug}`);
     },
     onError: (err) => {
-      // P1-G: no compensating cleanup needed — server-side transaction
-      // rolls back every preceding insert if anything fails. Just surface
-      // the error; the founder retries from a clean state.
       pushToast({
         title: "Failed to create team",
         body: (err as Error).message,
@@ -201,8 +155,7 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
     },
   });
 
-  const newAgentsCount = members.filter((m) => m.kind === "new").length;
-  const summary = `Will create: ${newAgentsCount} agent${newAgentsCount === 1 ? "" : "s"} · 1 team · 1 coordination.md`;
+  const summary = "Will create: 1 team · 1 coordination.md";
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -214,7 +167,7 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto space-y-4 py-2">
+        <DialogBody className="flex-1 overflow-y-auto space-y-4 py-2">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label htmlFor="team-name">Team name *</Label>
@@ -267,23 +220,14 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
                   {members.length} added
                 </span>
               </h3>
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setPickerOpen(!pickerOpen)}
-                >
-                  <Search className="h-3.5 w-3.5 mr-1" />
-                  Pick existing
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={() => setMembers([...members, makeDraftNew()])}
-                >
-                  <Plus className="h-3.5 w-3.5 mr-1" />
-                  Create new
-                </Button>
-              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setPickerOpen(!pickerOpen)}
+              >
+                <Search className="h-3.5 w-3.5 mr-1" />
+                Add agent
+              </Button>
             </div>
 
             {pickerOpen && (
@@ -301,12 +245,7 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
                       onClick={() => {
                         setMembers([
                           ...members,
-                          {
-                            kind: "existing",
-                            agentId: a.id,
-                            name: a.name,
-                            role: "member",
-                          },
+                          { agentId: a.id, name: a.name, role: "member" },
                         ]);
                         setPickerOpen(false);
                       }}
@@ -323,7 +262,7 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
 
             {members.map((m, idx) => (
               <MemberRow
-                key={m.kind === "existing" ? `e-${m.agentId}` : m.tempId}
+                key={m.agentId}
                 member={m}
                 onChange={(updated) => {
                   const copy = [...members];
@@ -342,10 +281,6 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
               </p>
             )}
 
-            <p className="mt-2 border-t border-dashed pt-2 text-[11px] text-muted-foreground">
-              ⚙️ Agent instructions auto-scaffolded from role + dept. Editable
-              on the agent's detail page after save.
-            </p>
           </div>
 
           {leadCount !== 1 && members.length > 0 && (
@@ -353,7 +288,7 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
               Exactly one member must be the Lead. Currently: {leadCount}.
             </p>
           )}
-        </div>
+        </DialogBody>
 
         <DialogFooter className="border-t pt-3 flex items-center justify-between">
           <span className="text-xs text-muted-foreground">{summary}</span>
@@ -374,13 +309,3 @@ export function BuildFromScratchForm({ open, onOpenChange }: Props) {
   );
 }
 
-function makeDraftNew(): DraftMember {
-  return {
-    kind: "new",
-    tempId: crypto.randomUUID(),
-    name: "",
-    adapterType: "claude_local",
-    skillKeys: [],
-    role: "member",
-  };
-}

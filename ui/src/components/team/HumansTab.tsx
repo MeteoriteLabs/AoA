@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Users, UserPlus, Shield, ArrowRightLeft, RotateCw, X } from "lucide-react";
+import { Users, UserPlus, Shield, ArrowRightLeft, RotateCw, X, Search, Mail } from "lucide-react";
 import type { TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@armyofagents/shared";
 import { useNavigate } from "@/lib/router";
 import { teamApi } from "../../api/team";
@@ -12,23 +12,30 @@ import { AddMemberDialog } from "./AddMemberDialog";
 import { TransferAdminDialog } from "./TransferAdminDialog";
 import { EmptyState } from "../EmptyState";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { ClickableDiv } from "@/components/ui/clickable-div";
 import { cn } from "@/lib/utils";
+import { getInitials } from "@/lib/initials";
+import { RoleBadge } from "./RoleBadge";
 
-const ROLE_STYLES: Record<UserRole, string> = {
-  founder: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
-  team_lead: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-  team_member: "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
-};
+type RoleFilter = "all" | "founder" | "team_lead" | "team_member" | "pending";
 
 const ROLE_LABELS: Record<UserRole, string> = {
   founder: "Founder",
   team_lead: "Team Lead",
   team_member: "Team Member",
 };
+
+const ROLE_FILTERS: { value: RoleFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "founder", label: "Founder" },
+  { value: "team_lead", label: "Team Lead" },
+  { value: "team_member", label: "Member" },
+  { value: "pending", label: "Pending" },
+];
 
 interface HumansTabProps {
   teamSummary: TeamSummary;
@@ -58,12 +65,6 @@ function PermissionDisabledButton({
   );
 }
 
-function deriveInitials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  return name.slice(0, 2).toUpperCase();
-}
-
 function MemberCard({
   member,
   members,
@@ -76,7 +77,7 @@ function MemberCard({
   const navigate = useNavigate();
   const cardRef = useRef<HTMLDivElement>(null);
   const displayName = member.displayName ?? member.email ?? member.userId.slice(0, 8);
-  const initials = deriveInitials(displayName);
+  const initials = getInitials(displayName);
   const parent = member.parentId
     ? members.find((m) => m.userId === member.parentId)
     : null;
@@ -118,9 +119,7 @@ function MemberCard({
       {/* Body */}
       <div className="mt-3 space-y-1.5">
         <div className="flex items-center gap-1.5 flex-wrap">
-          <Badge variant="secondary" className={cn("border-0 text-[10px]", ROLE_STYLES[member.role])}>
-            {ROLE_LABELS[member.role]}
-          </Badge>
+          <RoleBadge role={member.role} />
           {member.isSystemAdmin && (
             <Badge variant="secondary" className="border-0 text-[10px] bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
               <Shield className="mr-0.5 h-2.5 w-2.5" />
@@ -143,21 +142,20 @@ function MemberCard({
   );
 }
 
-function PendingInvitesSection({
-  companyId,
-  pendingInvites,
+function InviteCard({
+  invite,
   canManage,
   onMutationSuccess,
 }: {
-  companyId: string;
-  pendingInvites: TeamSummary["pendingInvites"];
+  invite: TeamSummary["pendingInvites"][number];
   canManage: boolean;
   onMutationSuccess: () => Promise<void>;
 }) {
+  const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
 
   const resendMutation = useMutation({
-    mutationFn: (inviteId: string) => teamApi.resendInvite(companyId, inviteId),
+    mutationFn: () => teamApi.resendInvite(selectedCompanyId!, invite.id),
     onSuccess: async () => {
       await onMutationSuccess();
       pushToast({ title: "Invite resent", tone: "success" });
@@ -168,7 +166,7 @@ function PendingInvitesSection({
   });
 
   const revokeMutation = useMutation({
-    mutationFn: (inviteId: string) => teamApi.revokeInvite(companyId, inviteId),
+    mutationFn: () => teamApi.revokeInvite(selectedCompanyId!, invite.id),
     onSuccess: async () => {
       await onMutationSuccess();
       pushToast({ title: "Invite revoked", tone: "success" });
@@ -179,59 +177,64 @@ function PendingInvitesSection({
   });
 
   return (
-    <div className="rounded-2xl border border-border bg-card p-5">
-      <h2 className="text-sm font-semibold">Pending invites</h2>
-      <div className="mt-3 space-y-2">
-        {pendingInvites.map((invite) => (
-          <div
-            key={invite.id}
-            className="flex flex-col gap-1 rounded-lg border border-border/80 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
-          >
-            <div>
-              <div className="font-medium">{invite.email ?? "Pending invite"}</div>
-              <div className="text-xs text-muted-foreground">
-                {ROLE_LABELS[invite.role]} · {invite.departmentName ?? "No department"}
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">
-                Expires {new Date(invite.expiresAt).toLocaleString()}
-              </span>
-              {canManage && (
-                <>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={() => resendMutation.mutate(invite.id)}
-                        disabled={resendMutation.isPending || revokeMutation.isPending}
-                      >
-                        <RotateCw className="h-3.5 w-3.5" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Resend invite</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                        onClick={() => revokeMutation.mutate(invite.id)}
-                        disabled={resendMutation.isPending || revokeMutation.isPending}
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Revoke invite</TooltipContent>
-                  </Tooltip>
-                </>
-              )}
-            </div>
+    <div className="flex flex-col gap-3 rounded-lg border border-dashed border-border bg-card p-4">
+      {/* Header */}
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-dashed border-border bg-muted text-muted-foreground">
+          <Mail className="h-4 w-4" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <span className="block truncate text-sm font-semibold">
+            {invite.email ?? "Pending invite"}
+          </span>
+          <span className="text-xs text-muted-foreground">Pending invite</span>
+        </div>
+      </div>
+
+      {/* Role + dept */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <RoleBadge role={invite.role} />
+        <span className="text-xs text-muted-foreground">
+          {invite.departmentName ?? "No department"}
+        </span>
+      </div>
+
+      {/* Footer */}
+      <div className="flex items-center justify-between border-t border-dashed border-border/50 pt-2.5">
+        <span className="text-[11px] text-muted-foreground">
+          Expires {new Date(invite.expiresAt).toLocaleDateString()}
+        </span>
+        {canManage && (
+          <div className="flex items-center gap-1">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={() => resendMutation.mutate()}
+                  disabled={resendMutation.isPending || revokeMutation.isPending}
+                >
+                  <RotateCw className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Resend invite</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="text-muted-foreground hover:text-destructive"
+                  onClick={() => revokeMutation.mutate()}
+                  disabled={resendMutation.isPending || revokeMutation.isPending}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Revoke invite</TooltipContent>
+            </Tooltip>
           </div>
-        ))}
+        )}
       </div>
     </div>
   );
@@ -242,8 +245,9 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
   const queryClient = useQueryClient();
   const [addMemberOpen, setAddMemberOpen] = useState(false);
   const [transferAdminOpen, setTransferAdminOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
 
-  // Departments needed for AddMemberDialog
   const { data: projects } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.projects.list(selectedCompanyId) : ["projects", "none"],
     queryFn: () => projectsApi.list(selectedCompanyId!),
@@ -258,6 +262,40 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
   const members = teamSummary.members;
   const pendingInvites = teamSummary.pendingInvites;
 
+  const founderCount = members.filter((m) => m.role === "founder").length;
+  const teamLeadCount = members.filter((m) => m.role === "team_lead").length;
+  const memberCount = members.filter((m) => m.role === "team_member").length;
+  const pendingCount = pendingInvites.length;
+
+  const { filteredMembers, filteredInvites } = useMemo(() => {
+    const showMembers = roleFilter !== "pending";
+    const showInvites = roleFilter === "all" || roleFilter === "pending";
+    const roleToMatch = roleFilter !== "all" && roleFilter !== "pending" ? roleFilter : null;
+
+    const fMembers = showMembers
+      ? members.filter((m) => {
+          if (roleToMatch && m.role !== roleToMatch) return false;
+          if (search) {
+            const q = search.toLowerCase();
+            return (
+              (m.displayName ?? "").toLowerCase().includes(q) ||
+              (m.email ?? "").toLowerCase().includes(q)
+            );
+          }
+          return true;
+        })
+      : [];
+
+    const fInvites = showInvites
+      ? pendingInvites.filter((inv) => {
+          if (!search) return true;
+          return (inv.email ?? "").toLowerCase().includes(search.toLowerCase());
+        })
+      : [];
+
+    return { filteredMembers: fMembers, filteredInvites: fInvites };
+  }, [members, pendingInvites, roleFilter, search]);
+
   const invalidateTeam = useCallback(async () => {
     if (selectedCompanyId) {
       await queryClient.invalidateQueries({ queryKey: queryKeys.team.summary(selectedCompanyId) });
@@ -269,19 +307,28 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
     return <EmptyState icon={Users} message="Select a company to view team." />;
   }
 
+  const isEmpty = members.length === 0 && pendingInvites.length === 0;
+  const isFilteredEmpty = filteredMembers.length === 0 && filteredInvites.length === 0;
+
   return (
     <TooltipProvider>
-      <div className="space-y-6">
-        <div className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="space-y-1">
-            <h2 className="text-lg font-semibold">Team Members</h2>
-            <p className="text-sm text-muted-foreground">
-              Manage roles, reporting structure, and invites for human collaborators.
+      <div className="p-5 space-y-4">
+        {/* Header */}
+        <header className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-bold">
+              Humans
+              <span className="ml-1 font-mono text-xs font-medium text-muted-foreground">
+                {members.length}
+              </span>
+            </h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Roles, reporting structure, and invites for human collaborators.
             </p>
           </div>
           <div className="flex gap-2">
             {isSystemAdmin && (
-              <Button variant="outline" onClick={() => setTransferAdminOpen(true)}>
+              <Button variant="outline" size="sm" onClick={() => setTransferAdminOpen(true)}>
                 <ArrowRightLeft className="mr-1.5 h-4 w-4" />
                 Transfer Admin
               </Button>
@@ -291,6 +338,7 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
               tooltip="You don't have permission to add members"
             >
               <Button
+                size="sm"
                 onClick={() => setAddMemberOpen(true)}
                 disabled={!permissions.canInviteUsers}
               >
@@ -299,9 +347,96 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
               </Button>
             </PermissionDisabledButton>
           </div>
+        </header>
+
+        {/* Stats bar */}
+        <div className="flex items-center gap-3 overflow-x-auto rounded-lg border border-border bg-card px-4 py-3 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
+          <div className="flex flex-col items-center gap-0.5 shrink-0">
+            <span className="font-mono text-sm font-bold tabular-nums">{members.length}</span>
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Members</span>
+          </div>
+          <div className="h-6 w-px shrink-0 bg-border" />
+          <div className="flex flex-col items-center gap-0.5 shrink-0">
+            <span className="font-mono text-sm font-bold tabular-nums text-brand">{founderCount}</span>
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Founder</span>
+          </div>
+          <div className="h-6 w-px shrink-0 bg-border" />
+          <div className="flex flex-col items-center gap-0.5 shrink-0">
+            <span
+              className="font-mono text-sm font-bold tabular-nums"
+              style={{ color: "var(--data-indigo)" }}
+            >
+              {teamLeadCount}
+            </span>
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Team Lead</span>
+          </div>
+          <div className="h-6 w-px shrink-0 bg-border" />
+          <div className="flex flex-col items-center gap-0.5 shrink-0">
+            <span className="font-mono text-sm font-bold tabular-nums">{memberCount}</span>
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Member</span>
+          </div>
+          {pendingCount > 0 && (
+            <>
+              <div className="h-6 w-px shrink-0 bg-border" />
+              <div className="flex flex-col items-center gap-0.5 shrink-0">
+                <span
+                  className="font-mono text-sm font-bold tabular-nums"
+                  style={{ color: "var(--warning)" }}
+                >
+                  {pendingCount}
+                </span>
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Pending</span>
+              </div>
+            </>
+          )}
         </div>
 
-        {members.length === 0 && pendingInvites.length === 0 ? (
+        {/* Search + role filter */}
+        <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by name or email…"
+              className="h-8 pl-8 text-xs"
+            />
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {ROLE_FILTERS.map(({ value, label }) => {
+              const isActive = roleFilter === value;
+              const count =
+                value === "all"
+                  ? members.length + pendingCount
+                  : value === "pending"
+                    ? pendingCount
+                    : value === "founder"
+                      ? founderCount
+                      : value === "team_lead"
+                        ? teamLeadCount
+                        : memberCount;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setRoleFilter(value)}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors whitespace-nowrap",
+                    isActive
+                      ? "bg-foreground text-background border-foreground"
+                      : "bg-card border-border text-foreground/70 hover:bg-accent hover:text-foreground",
+                  )}
+                >
+                  {label}
+                  <span className="font-mono text-[10px] opacity-70">{count}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Grid */}
+        {isEmpty ? (
           <EmptyState
             icon={Users}
             message="Add your first team member"
@@ -309,9 +444,13 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
             action="Add Member"
             onAction={permissions.canInviteUsers ? () => setAddMemberOpen(true) : undefined}
           />
+        ) : isFilteredEmpty ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            No results match your search or filter.
+          </p>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {members.map((member) => (
+            {filteredMembers.map((member) => (
               <MemberCard
                 key={member.userId}
                 member={member}
@@ -319,16 +458,15 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
                 isHighlighted={highlightId === member.userId}
               />
             ))}
+            {filteredInvites.map((invite) => (
+              <InviteCard
+                key={invite.id}
+                invite={invite}
+                canManage={permissions.canInviteUsers}
+                onMutationSuccess={invalidateTeam}
+              />
+            ))}
           </div>
-        )}
-
-        {pendingInvites.length > 0 && (
-          <PendingInvitesSection
-            companyId={selectedCompanyId}
-            pendingInvites={pendingInvites}
-            canManage={permissions.canInviteUsers}
-            onMutationSuccess={invalidateTeam}
-          />
         )}
 
         <AddMemberDialog

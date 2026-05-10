@@ -43,6 +43,8 @@ export interface CompanySkillListItem {
   trustLevel: CompanySkillTrustLevel;
   compatibility: CompanySkillCompatibility;
   fileInventory: CompanySkillFileInventoryEntry[];
+  /** Import-time frontmatter (owner, repo, packageId, canonicalKey, etc.). Included in list response for client-side package derivation. */
+  metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
   attachedAgentCount: number;

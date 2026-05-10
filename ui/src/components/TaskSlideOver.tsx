@@ -37,7 +37,7 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Sheet, SheetContent, SheetTitle, SheetDescription } from "@/components/ui/sheet";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -1200,6 +1200,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                       <DialogTitle>Add Dependency</DialogTitle>
                       <DialogDescription className="text-xs">Select a task that must be completed before this one can start.</DialogDescription>
                     </DialogHeader>
+                    <DialogBody>
                     <div className="relative">
                       <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                       <Input
@@ -1231,6 +1232,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                         ))
                       )}
                     </div>
+                    </DialogBody>
                   </DialogContent>
                 </Dialog>
 

@@ -24,12 +24,10 @@ import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Inbox } from "./pages/Inbox";
 import { SettingsPage } from "./pages/SettingsPage";
-import { InternalAgentSettingsPage } from "./pages/InternalAgentSettingsPage";
 import { VisionMission } from "./pages/VisionMission";
 import { Objectives } from "./pages/Objectives";
 import { Commander } from "./pages/Commander";
 import { DesignGuide } from "./pages/DesignGuide";
-import { Costs } from "./pages/Costs";
 import { TeamPage } from "./pages/TeamPage";
 import { TeamDetail } from "./pages/TeamDetail";
 import { HumanDetail } from "./pages/HumanDetail";
@@ -57,6 +55,7 @@ import { Navigate as RawNavigate, useParams as useRawParams } from "react-router
 import MarketplaceDetail from "./pages/MarketplaceDetail";
 import MarketplaceSearch from "./pages/MarketplaceSearch";
 import MarketplaceUpdates from "./pages/MarketplaceUpdates";
+import MarketplacePackageDetail from "./pages/MarketplacePackageDetail";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -128,10 +127,11 @@ function boardRoutes() {
       <Route path="objectives" element={<Objectives />} />
       <Route path="commander" element={<Commander />} />
       <Route path="settings" element={<SettingsPage />} />
-      <Route path="settings/commander" element={<InternalAgentSettingsPage />} />
-      <Route path="settings/internal-agent" element={<Navigate to="../settings/commander" replace />} />
+      <Route path="settings/commander" element={<Navigate to="../settings?tab=commander" replace />} />
+      <Route path="settings/internal-agent" element={<Navigate to="../settings?tab=commander" replace />} />
       <Route path="company/settings" element={<Navigate to="../settings" replace />} />
-      <Route path="org" element={<TeamPage />} />
+      <Route path="team" element={<TeamPage />} />
+      <Route path="org" element={<Navigate to="../team" replace />} />
       <Route path="team/teams/:slug" element={<TeamDetail />} />
       <Route path="team/:userId" element={<HumanDetail />} />
       <Route path="team/:userId/:tab" element={<HumanDetail />} />
@@ -179,9 +179,9 @@ function boardRoutes() {
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
-      <Route path="budget" element={<Costs />} />
-      <Route path="costs" element={<Navigate to="../budget" replace />} />
-      <Route path="activity" element={<Navigate to="../settings" replace />} />
+      <Route path="budget" element={<Navigate to="../settings?tab=budget" replace />} />
+      <Route path="costs" element={<Navigate to="../settings?tab=budget" replace />} />
+      <Route path="activity" element={<Navigate to="../settings?tab=activity" replace />} />
       <Route path="inbox" element={<Navigate to="/inbox/new" replace />} />
       <Route path="inbox/new" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />
@@ -291,6 +291,7 @@ export function App() {
           <Route path="instance/access" element={<InstanceAccessPage />} />
           <Route path="marketplace" element={<Marketplace />} />
           <Route path="marketplace/search" element={<MarketplaceSearch />} />
+          <Route path="marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
           <Route path="marketplace/:type" element={<MarketplaceTypeRedirect />} />
           <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />

@@ -11,12 +11,14 @@ interface MemoryUploadButtonProps {
   companyId: string;
   departmentId: string | null;
   folderPath: string;
+  iconOnly?: boolean;
 }
 
 export function MemoryUploadButton({
   companyId,
   departmentId,
   folderPath,
+  iconOnly = false,
 }: MemoryUploadButtonProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
@@ -99,14 +101,16 @@ export function MemoryUploadButton({
         variant="outline"
         onClick={handlePick}
         disabled={uploadMutation.isPending || awaitingDeptSlug}
-        className="h-7 gap-1 text-xs"
+        title="Upload"
+        aria-label="Upload"
+        className={iconOnly ? "h-7 w-7 p-0" : "h-7 gap-1 text-xs"}
       >
         {uploadMutation.isPending ? (
           <Loader2 className="h-3 w-3 animate-spin" />
         ) : (
           <Upload className="h-3 w-3" />
         )}
-        Upload
+        {!iconOnly && "Upload"}
       </Button>
       <input
         ref={fileInputRef}

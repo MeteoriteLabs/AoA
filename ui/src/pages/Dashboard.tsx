@@ -29,7 +29,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -486,7 +486,7 @@ function SuggestedMemoryDialog({
         <DialogHeader>
           <DialogTitle>Add Suggested Memory</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4">
+        <DialogBody className="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="dashboard-memory-title">Title</Label>
             <Input id="dashboard-memory-title" value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -572,7 +572,7 @@ function SuggestedMemoryDialog({
               rows={6}
             />
           </div>
-        </div>
+        </DialogBody>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={createMemory.isPending}>
             Cancel

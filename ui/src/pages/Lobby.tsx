@@ -1,26 +1,37 @@
-import type { CSSProperties } from "react";
+import { type CSSProperties } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, Plus, Upload } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialog } from "@/context/DialogContext";
+import { profileApi } from "@/api/profile";
 import { companiesApi, type CompanyStats } from "@/api/companies";
 import { queryKeys } from "@/lib/queryKeys";
 import { LobbyCompanyCard } from "@/components/LobbyCompanyCard";
 import { LobbyEmptyState } from "@/components/LobbyEmptyState";
-import { LobbySidebar } from "@/components/LobbySidebar";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { cn } from "@/lib/utils";
+import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
+
+function deriveFirstName(displayName: string | undefined, email: string | undefined): string {
+  if (displayName?.trim()) {
+    const first = displayName.trim().split(/\s+/)[0];
+    if (first) return first;
+  }
+  if (email) {
+    const local = email.split("@")[0] ?? "";
+    return local.split(".")[0] ?? local;
+  }
+  return "there";
+}
 
 export function Lobby() {
   const { companies, loading: companiesLoading } = useCompany();
   const { openOnboarding } = useDialog();
   const navigate = useNavigate();
+
+  const { data: profile } = useQuery({
+    queryKey: queryKeys.auth.profile,
+    queryFn: () => profileApi.get(),
+    staleTime: 60_000,
+  });
 
   // Filter out archived companies
   const visibleCompanies = companies.filter((c) => c.status !== "archived");
@@ -36,85 +47,70 @@ export function Lobby() {
 
   if (companiesLoading) {
     return (
-      <div className="flex h-dvh items-center justify-center bg-background text-muted-foreground">
+      <div className="flex h-dvh items-center justify-center bg-bg text-dim">
         <span className="text-sm">Loading...</span>
       </div>
     );
   }
 
   const isEmpty = visibleCompanies.length === 0;
+  const firstName = deriveFirstName(profile?.displayName ?? undefined, profile?.email ?? undefined);
+  const pendingCompanies = stats
+    ? visibleCompanies.filter((c) => (stats[c.id]?.pendingApprovalCount ?? 0) > 0).length
+    : 0;
+  const subtitleParts: string[] = [];
+  subtitleParts.push(
+    `${visibleCompanies.length} ${visibleCompanies.length === 1 ? "organization" : "organizations"}`,
+  );
+  if (pendingCompanies > 0) {
+    subtitleParts.push(
+      `${pendingCompanies} with pending approval${pendingCompanies === 1 ? "" : "s"}`,
+    );
+  }
 
   return (
-    <div className="flex h-dvh text-foreground bg-[linear-gradient(135deg,hsl(260_40%_8%),hsl(240_25%_5%)_60%,hsl(220_30%_4%))]">
-      <LobbySidebar />
+    <LobbyShell activeItem="organizations" onCreateCompany={() => openOnboarding()}>
+      {isEmpty ? (
+        <LobbyEmptyState
+          onCreate={() => openOnboarding()}
+          onImport={() => navigate("/import")}
+        />
+      ) : (
+        <div className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-7 md:px-10 md:py-9">
+          {/* Mobile hamburger — hidden on tablet+ */}
+          <LobbyShellMobileMenuButton className="mb-4" />
 
-      {/* Main column */}
-      <div className="flex flex-1 flex-col min-w-0">
-        {/* Header */}
-        <header className="flex items-center justify-between px-6 h-14 shrink-0 border-b border-border lobby-heading-enter">
-          <h1 className="text-sm font-semibold text-foreground">Companies</h1>
-          {!isEmpty && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className={cn(
-                    "inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium",
-                    "bg-primary text-primary-foreground transition-colors",
-                    "hover:bg-primary/90",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                  )}
-                >
-                  <span>+ New</span>
-                  <ChevronDown className="h-3.5 w-3.5 opacity-80" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" sideOffset={6} className="min-w-48">
-                <DropdownMenuItem onSelect={() => openOnboarding()}>
-                  <Plus />
-                  Create company
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => navigate("/import")}>
-                  <Upload />
-                  Import company
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-        </header>
+          {/* Welcome */}
+          <div className="mb-6 sm:mb-7 lobby-heading-enter">
+            <h1 className="text-[1.25rem] sm:text-[1.4rem] md:text-[1.55rem] font-bold tracking-[-0.025em] text-foreground">
+              Welcome back, {firstName}
+              <span className="text-brand">.</span>
+            </h1>
+            <p className="mt-1 text-[0.82rem] sm:text-[0.86rem] text-dim">{subtitleParts.join(" · ")}.</p>
+          </div>
 
-        {/* Body */}
-        <main className="flex flex-1 flex-col overflow-auto">
-          {isEmpty ? (
-            <LobbyEmptyState
-              onCreate={() => openOnboarding()}
-              onImport={() => navigate("/import")}
-            />
-          ) : (
-            <div className="mx-auto w-full max-w-5xl px-6 py-10">
-              <p className="text-sm text-muted-foreground">
-                Select a company to get started.
-              </p>
-              <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {visibleCompanies.map((company, i) => (
-                  <div
-                    key={company.id}
-                    className="lobby-card-enter"
-                    style={{ "--lobby-card-index": i } as CSSProperties}
-                  >
-                    <LobbyCompanyCard
-                      company={company}
-                      stats={stats?.[company.id]}
-                      statsLoading={statsLoading}
-                      onClick={() => navigate(`/${company.issuePrefix}/home`)}
-                    />
-                  </div>
-                ))}
+          <div className="mb-3 sm:mb-3.5 text-[0.66rem] sm:text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-dim">
+            Your organizations
+          </div>
+
+          <div className="flex flex-col gap-3 sm:gap-3.5">
+            {visibleCompanies.map((company, i) => (
+              <div
+                key={company.id}
+                className="lobby-card-enter"
+                style={{ "--lobby-card-index": i } as CSSProperties}
+              >
+                <LobbyCompanyCard
+                  company={company}
+                  stats={stats?.[company.id]}
+                  statsLoading={statsLoading}
+                  onClick={() => navigate(`/${company.issuePrefix}/home`)}
+                />
               </div>
-            </div>
-          )}
-        </main>
-      </div>
-    </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </LobbyShell>
   );
 }

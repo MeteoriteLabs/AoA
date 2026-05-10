@@ -10,6 +10,7 @@ import { transcriptionApi } from "../api/transcription";
 import { queryKeys } from "../lib/queryKeys";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -243,9 +244,9 @@ export function DiscussionCaptureModal() {
     <Dialog open={discussionCaptureOpen} onOpenChange={(open) => { if (!open) resetAndClose(); }}>
       <DialogContent
         showCloseButton={!isSubmitting}
-        className="sm:max-w-[600px] max-h-[80vh] overflow-y-auto gap-0 flex flex-col"
+        className="sm:max-w-[600px] max-h-[80vh] overflow-y-auto flex flex-col"
       >
-        <DialogHeader className="px-6 pt-6 pb-4">
+        <DialogHeader>
           <DialogTitle>
             {existingDiscussionId ? "Add to Discussion" : "New Discussion"}
           </DialogTitle>
@@ -255,15 +256,15 @@ export function DiscussionCaptureModal() {
         </DialogHeader>
 
         {isSubmitting ? (
-          <div className="flex flex-col items-center justify-center gap-3 py-12 px-6">
+          <DialogBody className="flex flex-col items-center justify-center gap-3 py-12">
             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             <p className="text-sm text-muted-foreground">Submitting...</p>
             <p className="text-xs text-muted-foreground/60">
               Content will be processed asynchronously
             </p>
-          </div>
+          </DialogBody>
         ) : (
-          <div className="px-6 pb-6 flex flex-col gap-4">
+          <DialogBody className="flex flex-col gap-4">
             {/* Add to existing discussion */}
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="discussion-existing" className="text-xs text-muted-foreground">
@@ -404,7 +405,7 @@ export function DiscussionCaptureModal() {
                 {existingDiscussionId ? "Add Entry" : "Start Discussion"}
               </Button>
             </div>
-          </div>
+          </DialogBody>
         )}
       </DialogContent>
     </Dialog>

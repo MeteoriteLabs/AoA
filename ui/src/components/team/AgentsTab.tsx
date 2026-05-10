@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Agent, AgentTrustScore } from "@armyofagents/shared";
 import type { OrgNode } from "../../api/agents";
@@ -6,23 +6,13 @@ import { agentsApi } from "../../api/agents";
 import { useCompany } from "../../context/CompanyContext";
 import { useDialog } from "../../context/DialogContext";
 import { useToast } from "../../context/ToastContext";
-import { useNavigate } from "../../lib/router";
 import { queryKeys } from "../../lib/queryKeys";
-import { agentStatusDot, agentStatusDotDefault } from "../../lib/status-colors";
-import { cn, formatCents, agentUrl } from "../../lib/utils";
-import { adapterLabels, roleLabels } from "../agent-config-primitives";
-import { AgentIcon } from "../AgentIconPicker";
-import { TrustScoreBadge } from "../TrustScoreBadge";
-import { TeamsSection } from "./TeamsSection";
+import { cn } from "../../lib/utils";
+import { AgentCard } from "../AgentCard";
 
-import { StatusBadge } from "../StatusBadge";
 import { Button } from "@/components/ui/button";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
   Dialog,
@@ -32,21 +22,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   Bot,
-  Edit2,
-  MoreHorizontal,
-  Pause,
-  Play,
   Plus,
   Trash2,
   XCircle,
-  User,
 } from "lucide-react";
 
 interface AgentsTabPermissions {
@@ -55,19 +36,23 @@ interface AgentsTabPermissions {
 
 interface AgentsTabProps {
   agents: Agent[];
-  orgTree: OrgNode[];
+  /**
+   * @deprecated No longer consumed — `<AgentCard>` resolves its own metadata.
+   * Kept on the interface for now so the parent (`TeamPage`) compiles without
+   * a coordinated change. Drop after the next AgentsTab API audit.
+   */
+  orgTree?: OrgNode[];
   highlightId?: string | null;
   permissions: AgentsTabPermissions;
   trustScores?: Map<string, AgentTrustScore>;
   onMutationSuccess?: () => void;
 }
 
-export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScores, onMutationSuccess }: AgentsTabProps) {
+export function AgentsTab({ agents, highlightId, permissions, trustScores, onMutationSuccess }: AgentsTabProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const [confirmAction, setConfirmAction] = useState<{ type: "terminate" | "delete"; agent: Agent } | null>(null);
 
   const highlightRef = useRef<HTMLDivElement>(null);
@@ -78,45 +63,6 @@ export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScor
       highlightRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   }, [highlightId]);
-
-  // Build parent name map from agents + org tree (includes users)
-  const parentNameMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const a of agents) map.set(a.id, a.name);
-    const walk = (nodes: OrgNode[]) => {
-      for (const n of nodes) {
-        if (!map.has(n.id)) map.set(n.id, n.name);
-        walk(n.children);
-      }
-    };
-    walk(orgTree);
-    return map;
-  }, [agents, orgTree]);
-
-  const pauseResume = useMutation({
-    mutationFn: async ({ agent, action }: { agent: Agent; action: "pause" | "resume" }) => {
-      return action === "pause"
-        ? agentsApi.pause(agent.id, selectedCompanyId ?? undefined)
-        : agentsApi.resume(agent.id, selectedCompanyId ?? undefined);
-    },
-    onSuccess: (_, { agent, action }) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-      onMutationSuccess?.();
-      pushToast({
-        title: action === "pause" ? "Agent paused" : "Agent resumed",
-        body: agent.name,
-        tone: "success",
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        title: "Action failed",
-        body: error instanceof Error ? error.message : "Unknown error",
-        tone: "error",
-      });
-    },
-  });
 
   const terminateAgent = useMutation({
     mutationFn: (agent: Agent) =>
@@ -154,78 +100,46 @@ export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScor
     },
   });
 
-  function handleEdit(agent: Agent) {
-    navigate(agentUrl(agent) + "/configure");
-  }
-
   if (agents.length === 0) {
     return (
-      <div className="space-y-4">
-        {/* Teams section renders above even when there are no individual agents */}
-        <TeamsSection />
-
-        <section>
-          <header className="mb-3">
-            <h2 className="text-sm font-bold">
-              Individual agents <span className="ml-1 text-xs font-medium text-muted-foreground">0</span>
-            </h2>
-            {/* Subtitle says "All agents" rather than "not on any team" to
-                match the unfiltered list shown below. Proper team-membership
-                filtering is deferred to v1.1 (would require fetching every
-                team's members). */}
-            <p className="mt-0.5 text-xs text-muted-foreground">All agents in this department</p>
-          </header>
-          <div className="flex items-center justify-center py-12 text-center">
-            <div className="space-y-3">
-              <Bot className="h-10 w-10 mx-auto text-muted-foreground/50" />
-              <p className="text-sm text-muted-foreground">No agents yet</p>
-              {permissions.isFounder && (
-                <Button size="sm" onClick={openNewAgent}>
-                  <Plus className="h-3.5 w-3.5 mr-1.5" />
-                  New Agent
-                </Button>
-              )}
-            </div>
-          </div>
-        </section>
-      </div>
+      <EmptyState
+        icon={<Bot />}
+        title="No agents yet"
+        description="Hire your first agent. Pick a Claude / Codex / OpenClaw adapter and assign a role."
+        action={
+          permissions.isFounder ? (
+            <Button size="sm" onClick={openNewAgent}>
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              New Agent
+            </Button>
+          ) : undefined
+        }
+      />
     );
   }
 
   return (
     <div className="space-y-4">
-      {/* NEW: Teams section at the top */}
-      <TeamsSection />
+      <header className="mb-3 flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-bold">
+            Agents <span className="ml-1 text-xs font-medium text-muted-foreground">{agents.length}</span>
+          </h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">All agents in this department</p>
+        </div>
+        {permissions.isFounder && (
+          <Button size="sm" variant="outline" onClick={openNewAgent}>
+            <Plus className="h-3.5 w-3.5 mr-1.5" />
+            New Agent
+          </Button>
+        )}
+      </header>
 
-      {/* Individual agents section (existing content, restructured) */}
-      <section>
-        <header className="mb-3 flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-bold">
-              Individual agents <span className="ml-1 text-xs font-medium text-muted-foreground">{agents.length}</span>
-            </h2>
-            {/* Subtitle says "All agents" rather than "not on any team" to
-                match the unfiltered list shown below. Proper team-membership
-                filtering is deferred to v1.1 (would require fetching every
-                team's members). */}
-            <p className="mt-0.5 text-xs text-muted-foreground">All agents in this department</p>
-          </div>
-          {permissions.isFounder && (
-            <Button size="sm" variant="outline" onClick={openNewAgent}>
-              <Plus className="h-3.5 w-3.5 mr-1.5" />
-              New Agent
-            </Button>
-          )}
-        </header>
-
-        {/* Agent cards grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {/* Agent cards grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {agents.map((agent) => {
           const isHighlighted = agent.id === highlightId;
-          const statusColor = agentStatusDot[agent.status] ?? agentStatusDotDefault;
-          const isPaused = agent.status === "paused";
           const isTerminated = agent.status === "terminated";
-          const reportsToName = agent.parentId ? (parentNameMap.get(agent.parentId) ?? null) : null;
           const score = trustScores?.get(agent.id) ?? null;
 
           return (
@@ -234,138 +148,40 @@ export function AgentsTab({ agents, orgTree, highlightId, permissions, trustScor
               ref={isHighlighted ? highlightRef : undefined}
               data-testid={`agent-card-${agent.id}`}
               className={cn(
-                "group relative border border-border bg-card rounded-lg p-4 transition-all duration-200",
-                isHighlighted && "ring-2 ring-primary animate-pulse"
+                "rounded-lg",
+                isHighlighted && "ring-2 ring-primary animate-pulse",
               )}
             >
-              {/* Header: Icon + Name + Status + Actions */}
-              <div className="flex items-start gap-3">
-                <div className="shrink-0 flex items-center justify-center h-10 w-10 rounded-lg bg-accent">
-                  <AgentIcon icon={agent.icon} className="h-5 w-5" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold truncate">
-                      <button
-                        type="button"
-                        className="cursor-pointer hover:underline text-left"
-                        onClick={() => navigate(agentUrl(agent))}
+              <AgentCard
+                agent={agent}
+                trustScore={score}
+                dropdownExtras={
+                  <>
+                    {!isTerminated && (
+                      <DropdownMenuItem
+                        onClick={() => setConfirmAction({ type: "terminate", agent })}
+                        className="text-orange-600 dark:text-orange-400"
                       >
-                        {agent.name}
-                      </button>
-                    </h3>
-                    <span className="relative flex h-2.5 w-2.5 shrink-0">
-                      <span className={cn("absolute inline-flex h-full w-full rounded-full", statusColor)} />
-                    </span>
-                  </div>
-                  <p className="text-xs text-muted-foreground truncate">
-                    {roleLabels[agent.role] ?? agent.role}
-                    {agent.title ? ` \u00B7 ${agent.title}` : ""}
-                  </p>
-                </div>
-
-                {/* Quick actions */}
-                <div
-                  className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                >
-                  {/* Pause/Resume */}
-                  {!isTerminated && (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          onClick={() => pauseResume.mutate({ agent, action: isPaused ? "resume" : "pause" })}
-                          disabled={pauseResume.isPending || agent.status === "pending_approval"}
-                        >
-                          {isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="top">{isPaused ? "Resume" : "Pause"}</TooltipContent>
-                    </Tooltip>
-                  )}
-
-                  {/* Edit */}
-                  {permissions.isFounder && (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          onClick={() => handleEdit(agent)}
-                        >
-                          <Edit2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="top">Edit</TooltipContent>
-                    </Tooltip>
-                  )}
-
-                  {/* More menu */}
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon-xs">
-                        <MoreHorizontal className="h-3.5 w-3.5" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-44">
-                      {!isTerminated && (
-                        <DropdownMenuItem
-                          onClick={() => setConfirmAction({ type: "terminate", agent })}
-                          className="text-orange-600 dark:text-orange-400"
-                        >
-                          <XCircle className="h-3.5 w-3.5 mr-2" />
-                          Terminate
-                        </DropdownMenuItem>
-                      )}
-                      {permissions.isFounder && (
-                        <>
-                          {!isTerminated && <DropdownMenuSeparator />}
-                          <DropdownMenuItem
-                            variant="destructive"
-                            onClick={() => setConfirmAction({ type: "delete", agent })}
-                          >
-                            <Trash2 className="h-3.5 w-3.5 mr-2" />
-                            Delete
-                          </DropdownMenuItem>
-                        </>
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </div>
-
-              {/* Body: adapter + reports to */}
-              <div className="mt-3 space-y-1.5">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="font-mono">
-                    {adapterLabels[agent.adapterType] ?? agent.adapterType}
-                  </span>
-                  <span className="text-border">&middot;</span>
-                  <StatusBadge status={agent.status} />
-                </div>
-                {reportsToName && (
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <User className="h-3 w-3" />
-                    <span>Reports to: {reportsToName}</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Footer: trust score + budget */}
-              <div className="mt-3 pt-3 border-t border-border/50 flex items-center justify-between text-[11px] text-muted-foreground">
-                <span>
-                  {agent.budgetMonthlyCents > 0
-                    ? `Budget: ${formatCents(agent.budgetMonthlyCents)}/mo`
-                    : "No budget set"}
-                </span>
-                <TrustScoreBadge score={score} />
-              </div>
+                        <XCircle className="h-3.5 w-3.5 mr-2" />
+                        Terminate
+                      </DropdownMenuItem>
+                    )}
+                    {permissions.isFounder && (
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onClick={() => setConfirmAction({ type: "delete", agent })}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 mr-2" />
+                        Delete
+                      </DropdownMenuItem>
+                    )}
+                  </>
+                }
+              />
             </div>
           );
         })}
-        </div>
-      </section>
+      </div>
 
       {/* Edit Agent Dialog */}
       {/* Confirmation Dialog */}

@@ -1,10 +1,11 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Star, MoreHorizontal, Trash2, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs } from "@/components/ui/tabs";
+import { PageHeader } from "../components/PageHeader";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,8 +23,10 @@ import { queryKeys } from "../lib/queryKeys";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { EmptyState } from "../components/EmptyState";
 import { PageTabBar } from "../components/PageTabBar";
+import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { CoordinationEditor } from "../components/team/CoordinationEditor";
 import { ManifestEditor } from "../components/team/ManifestEditor";
+import { TeamAgentSlideOver } from "../components/team/TeamAgentSlideOver";
 
 const VALID_TABS = ["overview", "coordination", "manifest", "activity"] as const;
 type TeamDetailTab = (typeof VALID_TABS)[number];
@@ -49,6 +52,7 @@ export function TeamDetail() {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawTab = searchParams.get("tab");
   const activeTab: TeamDetailTab = isValidTab(rawTab) ? rawTab : "overview";
+  const [dismantleConfirmOpen, setDismantleConfirmOpen] = useState(false);
 
   // Fetch teams list and find by slug.
   // Backend doesn't expose getBySlug; we filter client-side. Acceptable v1.
@@ -113,7 +117,7 @@ export function TeamDetail() {
   useEffect(() => {
     if (teamQuery.data) {
       setBreadcrumbs([
-        { label: "Team", href: "/org" },
+        { label: "Team", href: "/team" },
         { label: teamQuery.data.name },
       ]);
     }
@@ -142,7 +146,7 @@ export function TeamDetail() {
           queryKey: queryKeys.teams.list(selectedCompanyId),
         });
       }
-      navigate("/org");
+      navigate("/team");
     },
     onError: (err) => {
       pushToast({
@@ -172,46 +176,28 @@ export function TeamDetail() {
   }
 
   function handleDismantle() {
-    const confirmed = window.confirm(
-      `Dismantle "${team.name}"? This deletes the team and its coordination but keeps the ${members.length} agent(s) in their department. This cannot be undone.`,
-    );
-    if (confirmed) dismantleMut.mutate();
+    setDismantleConfirmOpen(true);
   }
 
+  const leadName = lead ? (agentMap.get(lead.agentId)?.name ?? "Unknown agent") : "No lead";
+
   return (
-    <div className="p-5">
-      <header className="mb-5 flex items-start justify-between">
-        <div className="flex items-start gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-accent text-xl font-bold">
-            {team.name.charAt(0).toUpperCase()}
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-bold">{team.name}</h1>
-              <Badge variant="outline" className="text-[10px] uppercase tracking-wide">
-                {parentProjectName ?? "DEPT"}
-              </Badge>
-              <Badge variant="outline" className="text-[10px] capitalize">
-                {team.status}
-              </Badge>
-            </div>
-            <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+    <>
+      <PageHeader
+        breadcrumb={parentProjectName ?? "Team"}
+        title={team.name}
+        subtitle={
+          <span className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1">
               <Star className="h-3 w-3 text-amber-500" aria-hidden="true" />
-              <span className="sr-only">Lead: </span>
-              {lead
-                ? (agentMap.get(lead.agentId)?.name ?? "Unknown agent")
-                : "No lead"}
-              <span className="opacity-50">·</span>
-              <span>
-                {members.length} member{members.length === 1 ? "" : "s"}
-              </span>
-            </p>
-          </div>
-        </div>
-        <div className="flex gap-1.5">
-          <Button size="sm" variant="outline">
-            Edit
-          </Button>
+              {leadName}
+            </span>
+            <span className="opacity-40">·</span>
+            <span>{members.length} member{members.length === 1 ? "" : "s"}</span>
+            <Badge variant="outline" className="text-[10px] capitalize">{team.status}</Badge>
+          </span>
+        }
+        primaryAction={
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button size="icon-sm" variant="outline" aria-label="More options">
@@ -233,32 +219,45 @@ export function TeamDetail() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-        </div>
-      </header>
+        }
+      />
 
-      <Tabs value={activeTab} onValueChange={handleTabChange}>
-        <PageTabBar
-          items={TAB_ITEMS}
-          value={activeTab}
-          onValueChange={handleTabChange}
-        />
+      <div className="p-5">
+        <Tabs value={activeTab} onValueChange={handleTabChange}>
+          <PageTabBar
+            items={TAB_ITEMS}
+            value={activeTab}
+            onValueChange={handleTabChange}
+          />
 
-        <div className="mt-4">
-          {activeTab === "overview" && (
-            <OverviewTab team={team} members={members} agentMap={agentMap} />
-          )}
-          {activeTab === "coordination" && (
-            <CoordinationEditor teamId={team.id} teamName={team.name} />
-          )}
-          {activeTab === "manifest" && (
-            <ManifestEditor teamId={team.id} initialManifest={team.manifest} />
-          )}
-          {activeTab === "activity" && (
-            <p className="text-sm text-muted-foreground">Activity tab — future slice.</p>
-          )}
-        </div>
-      </Tabs>
-    </div>
+          <div className="mt-4">
+            {activeTab === "overview" && (
+              <OverviewTab team={team} members={members} agentMap={agentMap} />
+            )}
+            {activeTab === "coordination" && (
+              <CoordinationEditor teamId={team.id} teamName={team.name} />
+            )}
+            {activeTab === "manifest" && (
+              <ManifestEditor teamId={team.id} initialManifest={team.manifest} />
+            )}
+            {activeTab === "activity" && (
+              <p className="text-sm text-muted-foreground">Activity tab — future slice.</p>
+            )}
+          </div>
+        </Tabs>
+      </div>
+
+      <ConfirmDialog
+        open={dismantleConfirmOpen}
+        onOpenChange={setDismantleConfirmOpen}
+        title={`Dismantle "${team.name}"?`}
+        description={`This deletes the team and its coordination but keeps the ${members.length} agent${members.length === 1 ? "" : "s"} in their department. This cannot be undone.`}
+        confirmLabel="Dismantle"
+        destructive
+        onConfirm={() => dismantleMut.mutate()}
+        disabled={dismantleMut.isPending}
+      />
+    </>
   );
 }
 
@@ -268,7 +267,11 @@ interface OverviewProps {
   agentMap: Map<string, Agent>;
 }
 
-function OverviewTab({ members, agentMap }: OverviewProps) {
+function OverviewTab({ team, members, agentMap }: OverviewProps) {
+  const [slideOverAgentId, setSlideOverAgentId] = useState<string | null>(null);
+  const selectedAgent = slideOverAgentId ? (agentMap.get(slideOverAgentId) ?? null) : null;
+  const selectedMember = slideOverAgentId ? (members.find((m) => m.agentId === slideOverAgentId) ?? null) : null;
+
   return (
     <div className="grid grid-cols-3 gap-4">
       <section className="col-span-2 rounded-lg border bg-card p-4">
@@ -281,13 +284,15 @@ function OverviewTab({ members, agentMap }: OverviewProps) {
             const displayName = agent?.name ?? "Unknown agent";
             const avatarLetter = agent?.name?.charAt(0).toUpperCase() ?? "?";
             return (
-              <div
+              <button
                 key={m.id}
-                className={`mb-2 flex items-center gap-3 rounded-md p-2.5 ${
+                type="button"
+                className={`mb-2 flex w-full items-center gap-3 rounded-md p-2.5 text-left transition-colors hover:bg-accent/60 ${
                   m.role === "lead"
                     ? "border-l-[3px] border-l-indigo-500 bg-indigo-50/30 dark:bg-indigo-950/10"
                     : "bg-muted/30"
                 }`}
+                onClick={() => setSlideOverAgentId(m.agentId)}
               >
                 <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-sm">
                   <span aria-hidden="true">{avatarLetter}</span>
@@ -301,7 +306,7 @@ function OverviewTab({ members, agentMap }: OverviewProps) {
                     </span>
                   )}
                 </div>
-              </div>
+              </button>
             );
           })
         )}
@@ -324,6 +329,14 @@ function OverviewTab({ members, agentMap }: OverviewProps) {
           </div>
         </div>
       </aside>
+
+      <TeamAgentSlideOver
+        open={Boolean(slideOverAgentId)}
+        onOpenChange={(open) => { if (!open) setSlideOverAgentId(null); }}
+        agent={selectedAgent}
+        teamId={team.id}
+        teamMember={selectedMember}
+      />
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { filesystemApi, type FsBrowseEntry } from "../api/filesystem";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -170,8 +171,8 @@ export function FolderBrowserDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="sm:max-w-[560px] max-h-[80vh] flex flex-col gap-0 p-0">
-        <DialogHeader className="px-5 pt-5 pb-3">
+      <DialogContent className="sm:max-w-[560px] max-h-[80vh] flex flex-col">
+        <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription className="text-sm">{description}</DialogDescription>
           <p className="text-xs text-muted-foreground mt-0.5">
@@ -179,7 +180,7 @@ export function FolderBrowserDialog({
           </p>
         </DialogHeader>
 
-        <div className="px-5 space-y-3">
+        <DialogBody className="flex-1 min-h-0 flex flex-col gap-3">
           {/* Manual path entry */}
           <div>
             <label className="text-xs font-medium text-muted-foreground mb-1 block">
@@ -252,121 +253,121 @@ export function FolderBrowserDialog({
               </Button>
             )}
           </div>
-        </div>
 
-        {/* Directory listing / Drives listing */}
-        <div className="flex-1 min-h-0 overflow-y-auto mx-5 mt-2 mb-3 border rounded-md">
-          {showDrives ? (
-            drivesLoading ? (
+          {/* Directory listing / Drives listing */}
+          <div className="flex-1 min-h-0 overflow-y-auto border rounded-md">
+            {showDrives ? (
+              drivesLoading ? (
+                <div className="flex items-center justify-center py-12 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  Detecting drives...
+                </div>
+              ) : drivesData?.drives.length ? (
+                <div className="divide-y divide-border">
+                  {drivesData.drives.map((drive) => (
+                    <button
+                      key={drive.path}
+                      type="button"
+                      className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-left hover:bg-accent/50 transition-colors"
+                      onClick={() => handleNavigate(drive.path)}
+                    >
+                      <HardDrive className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <span className="font-mono">{drive.name}</span>
+                      <span className="text-xs text-muted-foreground ml-1">{drive.path}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
+                  No drives detected
+                </div>
+              )
+            ) : isLoading ? (
               <div className="flex items-center justify-center py-12 text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                Detecting drives...
+                Loading...
               </div>
-            ) : drivesData?.drives.length ? (
+            ) : error ? (
+              <div className="flex items-center justify-center py-12 text-sm text-destructive px-4 text-center">
+                {(error as Error).message || "Failed to read directory"}
+              </div>
+            ) : filteredEntries.length === 0 ? (
+              <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
+                {filter ? "No matching folders" : "Empty directory"}
+              </div>
+            ) : (
               <div className="divide-y divide-border">
-                {drivesData.drives.map((drive) => (
+                {filteredEntries.map((entry) => (
                   <button
-                    key={drive.path}
+                    key={entry.path}
                     type="button"
-                    className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-left hover:bg-accent/50 transition-colors"
-                    onClick={() => handleNavigate(drive.path)}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-accent/50 transition-colors"
+                    onClick={() => handleNavigate(entry.path)}
                   >
-                    <HardDrive className="h-4 w-4 text-muted-foreground shrink-0" />
-                    <span className="font-mono">{drive.name}</span>
-                    <span className="text-xs text-muted-foreground ml-1">{drive.path}</span>
+                    {entry.isGitRepo ? (
+                      <FolderGit2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                    ) : (
+                      <Folder className="h-4 w-4 text-muted-foreground shrink-0" />
+                    )}
+                    <span className="truncate">{entry.name}</span>
+                    {entry.isGitRepo && (
+                      <span className="ml-auto shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+                        git repo
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
-            ) : (
-              <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-                No drives detected
-              </div>
-            )
-          ) : isLoading ? (
-            <div className="flex items-center justify-center py-12 text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              Loading...
-            </div>
-          ) : error ? (
-            <div className="flex items-center justify-center py-12 text-sm text-destructive px-4 text-center">
-              {(error as Error).message || "Failed to read directory"}
-            </div>
-          ) : filteredEntries.length === 0 ? (
-            <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-              {filter ? "No matching folders" : "Empty directory"}
-            </div>
-          ) : (
-            <div className="divide-y divide-border">
-              {filteredEntries.map((entry) => (
-                <button
-                  key={entry.path}
-                  type="button"
-                  className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-accent/50 transition-colors"
-                  onClick={() => handleNavigate(entry.path)}
-                >
-                  {entry.isGitRepo ? (
-                    <FolderGit2 className="h-4 w-4 text-emerald-500 shrink-0" />
-                  ) : (
-                    <Folder className="h-4 w-4 text-muted-foreground shrink-0" />
-                  )}
-                  <span className="truncate">{entry.name}</span>
-                  {entry.isGitRepo && (
-                    <span className="ml-auto shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
-                      git repo
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+            )}
+          </div>
 
-        {/* New folder inline input */}
-        {newFolderMode && (
-          <div className="mx-5 mb-2 flex items-center gap-1.5">
-            <FolderPlus className="h-4 w-4 text-muted-foreground shrink-0" />
-            <Input
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-              placeholder="New folder name"
-              className="text-xs flex-1"
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleCreateFolder();
-                if (e.key === "Escape") {
+          {/* New folder inline input */}
+          {newFolderMode && (
+            <div className="flex items-center gap-1.5">
+              <FolderPlus className="h-4 w-4 text-muted-foreground shrink-0" />
+              <Input
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                placeholder="New folder name"
+                className="text-xs flex-1"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleCreateFolder();
+                  if (e.key === "Escape") {
+                    setNewFolderMode(false);
+                    setNewFolderName("");
+                  }
+                }}
+              />
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7"
+                onClick={handleCreateFolder}
+                disabled={!newFolderName.trim() || mkdirMutation.isPending}
+              >
+                {mkdirMutation.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" />
+                )}
+              </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7"
+                onClick={() => {
                   setNewFolderMode(false);
                   setNewFolderName("");
-                }
-              }}
-            />
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-7 w-7"
-              onClick={handleCreateFolder}
-              disabled={!newFolderName.trim() || mkdirMutation.isPending}
-            >
-              {mkdirMutation.isPending ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Check className="h-3.5 w-3.5" />
-              )}
-            </Button>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-7 w-7"
-              onClick={() => {
-                setNewFolderMode(false);
-                setNewFolderName("");
-              }}
-            >
-              <X className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        )}
+                }}
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          )}
+        </DialogBody>
 
-        <DialogFooter className="px-5 pb-5 pt-2 border-t flex items-center gap-2">
+        <DialogFooter className="flex items-center gap-2">
           {!showDrives && (
             <Button
               variant="outline"

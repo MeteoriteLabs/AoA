@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import MarketplaceSearch from "@/pages/MarketplaceSearch";
 import { marketplaceApi } from "@/api/marketplace";
 import { FULL_CATALOG } from "@/__tests__/__fixtures__/marketplace-catalog";
-import { mockCompanyContext } from "@/__tests__/test-utils";
+import { renderWithProviders, mockCompanyContext, mockDialogContext } from "@/__tests__/test-utils";
 
 vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>(
@@ -15,10 +15,17 @@ vi.mock("@/api/marketplace", async () => {
   return { ...actual, marketplaceApi: { getCatalog: vi.fn() } };
 });
 
-// MarketplaceLayout uses the custom useNavigate which requires CompanyContext.
-vi.mock("@/context/CompanyContext", () => ({
-  useCompany: () => mockCompanyContext,
+vi.mock("@/context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
+vi.mock("@/context/DialogContext", () => ({ useDialog: () => mockDialogContext }));
+
+vi.mock("@/components/LobbySidebar", () => ({
+  LobbySidebar: () => <aside data-testid="lobby-sidebar" />,
 }));
+vi.mock("@/components/ui/sheet", () => ({
+  Sheet: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SheetContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+vi.mock("@/components/UserMenu", () => ({ UserMenu: () => <div /> }));
 
 function wrap(initialPath: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -64,5 +71,10 @@ describe("MarketplaceSearch", () => {
     await waitFor(() =>
       expect(screen.getByText(/category: engineering/)).toBeInTheDocument(),
     );
+  });
+
+  it("renders inside LobbyShell with marketplace active", () => {
+    renderWithProviders(<MarketplaceSearch />);
+    expect(screen.getAllByTestId("lobby-sidebar").length).toBeGreaterThanOrEqual(1);
   });
 });

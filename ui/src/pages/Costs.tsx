@@ -170,7 +170,9 @@ export function Costs() {
   if (!selectedCompanyId) {
     return (
       <div className="space-y-6">
-        <h2 className="text-xl font-bold">Budget</h2>
+        <h1 className="text-[1.6rem] font-bold tracking-tight">
+          Budget<span className="text-brand">.</span>
+        </h1>
         <EmptyState icon={DollarSign} message="Select a company to view budget." />
       </div>
     );
@@ -184,8 +186,10 @@ export function Costs() {
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-xl font-bold">Budget</h2>
-          <p className="text-sm text-muted-foreground mt-1">
+          <h1 className="text-[1.6rem] font-bold tracking-tight">
+            Budget<span className="text-brand">.</span>
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
             Spend, budgets, quotas, and the finance ledger across the company.
           </p>
         </div>

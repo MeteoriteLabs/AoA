@@ -28,77 +28,56 @@ describe("LobbyCompanyCard", () => {
     expect(screen.getByText("Acme Inc")).toBeInTheDocument();
   });
 
-  it("renders all four stats when stats are provided", () => {
+  it("renders the issue prefix in mono", () => {
+    const { container } = renderWithProviders(
+      <LobbyCompanyCard
+        company={makeCompany({ name: "Acme Inc", issuePrefix: "ACM" })}
+        onClick={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("ACM")).toBeInTheDocument();
+    const prefix = container.querySelector(".font-mono");
+    expect(prefix).toBeTruthy();
+  });
+
+  it("renders agent count in the sub-line", () => {
     renderWithProviders(
       <LobbyCompanyCard
         company={makeCompany()}
-        stats={makeStats({
-          agentCount: 5,
-          issueCount: 12,
-          pendingApprovalCount: 3,
-          unreadNotificationCount: 7,
-        })}
+        stats={makeStats({ agentCount: 5 })}
         onClick={vi.fn()}
       />,
     );
     expect(screen.getByText(/5 agents/i)).toBeInTheDocument();
-    expect(screen.getByText(/12 tasks/i)).toBeInTheDocument();
-    expect(screen.getByText(/3/)).toBeInTheDocument();
-    expect(screen.getByText(/7/)).toBeInTheDocument();
   });
 
-  it("uses singular forms when count is 1", () => {
+  it("uses singular form when agent count is 1", () => {
     renderWithProviders(
       <LobbyCompanyCard
         company={makeCompany()}
-        stats={makeStats({ agentCount: 1, issueCount: 1 })}
+        stats={makeStats({ agentCount: 1 })}
         onClick={vi.fn()}
       />,
     );
-    expect(screen.getByText(/1 agent$/)).toBeInTheDocument();
-    expect(screen.getByText(/1 task$/)).toBeInTheDocument();
+    expect(screen.getByText(/^1 agent$/)).toBeInTheDocument();
   });
 
-  it("hides approvals + notifications stats when their counts are 0", () => {
+  it("renders the 3 stat cells (Active tasks · Pending approvals · Tasks today)", () => {
     renderWithProviders(
       <LobbyCompanyCard
         company={makeCompany()}
-        stats={makeStats({
-          agentCount: 2,
-          issueCount: 4,
-          pendingApprovalCount: 0,
-          unreadNotificationCount: 0,
-        })}
+        stats={makeStats({ agentCount: 4, issueCount: 38, pendingApprovalCount: 3 })}
         onClick={vi.fn()}
       />,
     );
-    expect(screen.queryByLabelText(/pending approvals/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/unread notifications/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/active tasks/i)).toBeInTheDocument();
+    expect(screen.getByText(/pending approvals/i)).toBeInTheDocument();
+    expect(screen.getByText(/tasks today/i)).toBeInTheDocument();
+    expect(screen.getByText("38")).toBeInTheDocument();
+    expect(screen.getByText("3")).toBeInTheDocument();
   });
 
-  it("shows pending approvals stat when count > 0", () => {
-    renderWithProviders(
-      <LobbyCompanyCard
-        company={makeCompany()}
-        stats={makeStats({ pendingApprovalCount: 3 })}
-        onClick={vi.fn()}
-      />,
-    );
-    expect(screen.getByLabelText(/pending approvals/i)).toBeInTheDocument();
-  });
-
-  it("shows unread notifications stat when count > 0", () => {
-    renderWithProviders(
-      <LobbyCompanyCard
-        company={makeCompany()}
-        stats={makeStats({ unreadNotificationCount: 9 })}
-        onClick={vi.fn()}
-      />,
-    );
-    expect(screen.getByLabelText(/unread notifications/i)).toBeInTheDocument();
-  });
-
-  it("calls onClick when clicked", async () => {
+  it("calls onClick when the card is clicked", async () => {
     const user = userEvent.setup();
     const onClick = vi.fn();
     renderWithProviders(
@@ -116,27 +95,55 @@ describe("LobbyCompanyCard", () => {
         onClick={vi.fn()}
       />,
     );
-    // Skeletons render as elements with the animate-pulse class.
-    expect(container.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
+    // Skeletons render with the animate-shimmer gradient-sweep class
+    // (replaced animate-pulse in the UI overhaul, §9.9 Loading-B).
+    expect(container.querySelectorAll(".animate-shimmer").length).toBeGreaterThan(0);
   });
 
-  it("uses the bg-card/85 surface (PR-C gradient prep)", () => {
+  // Lobby v4: card uses solid bg-card surface + brand-red hover state
+  // per design-system §10 (cards) + §9.1 (focus ring). No top color stripe.
+  it("uses the bg-card surface with brand-red hover state", () => {
     const { container } = renderWithProviders(
       <LobbyCompanyCard company={makeCompany()} onClick={vi.fn()} />,
     );
     const button = container.querySelector("button");
-    expect(button?.className).toMatch(/bg-card\/85/);
+    expect(button?.className).toMatch(/bg-card(?!-2)/);
+    expect(button?.className).toMatch(/hover:border-brand/);
+    expect(button?.className).toMatch(/focus-visible:ring-brand-focus-ring/);
   });
 
-  // PR-C polish: card hover gets a 1.02 scale via Tailwind, with a
-  // motion-reduce:hover:scale-100 branch so users with prefers-reduced-motion
-  // don't see the transform.
-  it("applies hover scale and motion-reduce override classes", () => {
+  // Lobby v4: card hover scales subtly (1.005, smaller than the prior 1.02)
+  // and motion-reduce reverts the transform.
+  it("applies subtle hover scale and motion-reduce override class", () => {
     const { container } = renderWithProviders(
       <LobbyCompanyCard company={makeCompany()} onClick={vi.fn()} />,
     );
     const button = container.querySelector("button");
-    expect(button?.className).toContain("hover:scale-[1.02]");
+    expect(button?.className).toMatch(/hover:scale-\[1\.\d+\]/);
     expect(button?.className).toContain("motion-reduce:hover:scale-100");
+  });
+
+  // Lobby v4: shows live/pending/failed pills conditionally; pending pill
+  // appears when pendingApprovalCount > 0.
+  it("shows the pending pill when pending approvals > 0", () => {
+    renderWithProviders(
+      <LobbyCompanyCard
+        company={makeCompany()}
+        stats={makeStats({ pendingApprovalCount: 3 })}
+        onClick={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/3 pending/i)).toBeInTheDocument();
+  });
+
+  it("does NOT show the pending pill when count is 0", () => {
+    renderWithProviders(
+      <LobbyCompanyCard
+        company={makeCompany()}
+        stats={makeStats({ pendingApprovalCount: 0 })}
+        onClick={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/pending/i, { selector: "span" })).not.toBeInTheDocument();
   });
 });

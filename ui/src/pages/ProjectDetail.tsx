@@ -1056,7 +1056,7 @@ export function ProjectDetail() {
       <InlineEditor
         value={project.name}
         onSave={(name) => updateProject.mutate({ name })}
-        as="h2"
+        as="h1"
         className="text-xl font-bold"
       />
     </div>

@@ -38,7 +38,15 @@ export function Projects() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <h1 className="text-[1.6rem] font-bold tracking-tight">
+            Projects<span className="text-brand">.</span>
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Group related tasks and goals together to organize work.
+          </p>
+        </div>
         <Button size="sm" variant="outline" onClick={() => openNewProject()}>
           <Plus className="h-4 w-4 mr-1" />
           Add Project

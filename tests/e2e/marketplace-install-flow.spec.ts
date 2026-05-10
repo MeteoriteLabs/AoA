@@ -27,7 +27,7 @@ test.describe("Marketplace install flow", () => {
 
     // Wait for catalog to load
     await expect(
-      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
     // At least one Install button should be visible in the grid
@@ -47,7 +47,7 @@ test.describe("Marketplace install flow", () => {
     await page.goto("/marketplace");
 
     await expect(
-      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
     // Click the first Install button on a plugin card
@@ -77,7 +77,7 @@ test.describe("Marketplace install flow", () => {
     await page.goto("/marketplace");
 
     await expect(
-      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
     // Open install modal for the first visible plugin card
@@ -114,7 +114,7 @@ test.describe("Marketplace install flow", () => {
     await page.goto("/marketplace");
 
     await expect(
-      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
     await page.getByRole("button", { name: /^install$/i }).first().click();
@@ -163,7 +163,7 @@ test.describe("Marketplace install flow", () => {
     // rather than flake — the important assertion is that the API accepted the request.
     await page.goto("/marketplace");
     await expect(
-      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
     // Screenshot: marketplace after install request submitted
@@ -181,14 +181,15 @@ test.describe("Marketplace install flow", () => {
   }) => {
     await page.goto("/marketplace");
     await expect(
-      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Activate the Plugins type pill (button text is "Plugins N available")
-    const pluginsPill = page.getByRole("button", { name: /Plugins\s+\d+\s+available/i });
+    // Activate the Plugins type pill. MarketplaceFilterChips accessible name = label+count
+    // (e.g. "Plugins4") — no "available" text in the new component. Match by label prefix.
+    const pluginsPill = page.getByRole("button", { name: /^plugins/i });
     await pluginsPill.click();
 
-    // Pill reflects active state (data-active="true" matches the existing spec pattern)
+    // Pill reflects active state (data-active="true" on the button)
     await expect(pluginsPill).toHaveAttribute("data-active", "true");
 
     // Screenshot: marketplace filtered to Plugins — full page for visual diffing
@@ -212,7 +213,7 @@ test.describe("Marketplace install flow", () => {
     await page.goto("/marketplace");
 
     await expect(
-      page.getByRole("heading", { level: 1, name: /extend your workforce/i }),
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
     await page.getByRole("button", { name: /^install$/i }).first().click();

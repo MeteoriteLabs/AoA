@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -86,16 +87,18 @@ export function SnapshotUpdateModal({
           </DialogDescription>
         </DialogHeader>
 
-        {isLoading && (
-          <p className="text-sm text-muted-foreground py-4">Loading changes…</p>
-        )}
+        <DialogBody className="px-0 py-4">
+          {isLoading && (
+            <p className="text-sm text-muted-foreground px-7">Loading changes…</p>
+          )}
 
-        {diffData && (
-          <MergeDiffPane
-            sections={diffData.diff}
-            onChange={setDecisions}
-          />
-        )}
+          {diffData && (
+            <MergeDiffPane
+              sections={diffData.diff}
+              onChange={setDecisions}
+            />
+          )}
+        </DialogBody>
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>

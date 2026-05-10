@@ -1,81 +1,294 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { renderWithProviders, mockCompanyContext, mockDialogContext } from "./test-utils";
+import Marketplace from "../pages/Marketplace";
+import type { CatalogItem, MarketplaceCatalogFile } from "@armyofagents/shared";
+import { usePackages } from "@/hooks/usePackages";
+import { useCatalog } from "@/hooks/useCatalog";
 
-import Marketplace from "@/pages/Marketplace";
-import { marketplaceApi } from "@/api/marketplace";
-import { FULL_CATALOG, EMPTY_CATALOG } from "@/__tests__/__fixtures__/marketplace-catalog";
-import { mockCompanyContext } from "@/__tests__/test-utils";
+const mockCatalog: MarketplaceCatalogFile = {
+  schemaVersion: "1.0.0",
+  generatedAt: "2026-05-01T00:00:00Z",
+  itemCount: 4,
+  items: [
+    {
+      id: "skill:office-hours", type: "skill", name: "/office-hours",
+      description: "YC product interrogation", version: "1.0.0",
+      source: { adapter: "github", url: "https://github.com/garrytan/gstack", locator: "office-hours" },
+      trust: { tier: "verified", source: "x" }, status: "active", addedAt: "2026-05-01T00:00:00Z",
+      category: "engineering", tags: ["featured"], featured: true,
+    } as CatalogItem,
+    {
+      id: "plugin:gh", type: "plugin", name: "github-issues",
+      description: "GH sync", version: "1.0.0",
+      source: { adapter: "github", url: "https://github.com/anthropic/plugin-gh", locator: "github-issues" },
+      npm: { packageName: "@aoa/gh", version: "1.0.0" },
+      trust: { tier: "verified", source: "x" }, status: "active", addedAt: "2026-05-02T00:00:00Z",
+      category: "integrations", tags: [],
+    } as CatalogItem,
+    {
+      id: "agent:claude-eng", type: "agent", name: "claude-engineer",
+      description: "Engineer agent", version: "1.0.0",
+      source: { adapter: "github", url: "https://github.com/anthropic/agents", locator: "claude-engineer" },
+      trust: { tier: "community", source: "x" }, status: "active", addedAt: "2026-04-01T00:00:00Z",
+      category: "engineering", tags: [],
+    } as CatalogItem,
+    {
+      id: "team:product", type: "team", name: "product-team",
+      description: "Multi-agent product team", version: "1.0.0",
+      source: { adapter: "github", url: "https://github.com/aoa/teams", locator: "product-team" },
+      trust: { tier: "community", source: "x" }, status: "active", addedAt: "2026-03-01T00:00:00Z",
+      category: "engineering", tags: [],
+    } as CatalogItem,
+  ],
+};
 
-vi.mock("@/api/marketplace", async () => {
-  const actual = await vi.importActual<typeof import("@/api/marketplace")>("@/api/marketplace");
-  return { ...actual, marketplaceApi: { getCatalog: vi.fn() } };
-});
-
-// MarketplaceLayout > useNavigate (custom router) > useActiveCompanyPrefix > useCompany.
-// Other UI tests in this directory follow the same file-level mock pattern.
-vi.mock("@/context/CompanyContext", () => ({
-  useCompany: () => mockCompanyContext,
+vi.mock("@/hooks/useCatalog", () => ({
+  useCatalog: vi.fn(),
 }));
 
-function wrap(node: ReactNode) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter>{node}</MemoryRouter>
-    </QueryClientProvider>,
-  );
+vi.mock("@/hooks/usePackages", () => ({
+  usePackages: vi.fn(),
+}));
+
+vi.mock("@tanstack/react-query", async () => {
+  const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
+  return {
+    ...actual,
+    useQuery: vi.fn().mockReturnValue({ data: [], isLoading: false }),
+  };
+});
+
+vi.mock("@/context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
+vi.mock("@/context/DialogContext", () => ({ useDialog: () => mockDialogContext }));
+
+vi.mock("@/components/LobbySidebar", () => ({
+  LobbySidebar: () => <aside data-testid="lobby-sidebar" />,
+}));
+
+vi.mock("@/components/ui/sheet", () => ({
+  Sheet: ({ children }: any) => <>{children}</>,
+  SheetContent: ({ children }: any) => <>{children}</>,
+}));
+
+vi.mock("@/components/UserMenu", () => ({ UserMenu: () => <div /> }));
+
+vi.mock("@/components/marketplace/install/SnapshotInstallModal", () => ({
+  SnapshotInstallModal: () => null,
+}));
+
+vi.mock("@/components/marketplace/install/PluginInstallModal", () => ({
+  PluginInstallModal: () => null,
+}));
+
+function makeFixtureItem(overrides: Partial<CatalogItem> & Pick<CatalogItem, "id" | "type" | "name">): CatalogItem {
+  return {
+    description: "fixture item",
+    version: "1.0.0",
+    source: { adapter: "github", url: "https://github.com/x/y", locator: overrides.id },
+    trust: { tier: "community", source: "x" },
+    status: "active",
+    addedAt: "2026-05-01T00:00:00Z",
+    category: "engineering",
+    tags: [],
+    ...overrides,
+  } as CatalogItem;
 }
 
-describe("Marketplace homepage", () => {
-  beforeEach(() => { vi.clearAllMocks(); });
-
-  it("shows loading state initially (skeleton placeholders, no hero)", () => {
-    vi.mocked(marketplaceApi.getCatalog).mockImplementation(() => new Promise(() => {}));
-    const { container } = wrap(<Marketplace />);
-    // The loading branch renders skeleton placeholders inside MarketplaceLayout.
-    // Hero h1 ("Extend your workforce") only appears once data loads, so its
-    // absence is the most reliable loading-state signal.
-    expect(container.querySelector("h1")).toBeNull();
+describe("Marketplace (hub)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useCatalog).mockReturnValue({
+      data: mockCatalog,
+      isLoading: false,
+      error: null,
+    } as any);
+    vi.mocked(usePackages).mockReturnValue({
+      data: [
+        {
+          id: "garrytan/gstack",
+          name: "gstack",
+          sourceUrl: "https://github.com/garrytan/gstack",
+          memberItemIds: ["skill:office-hours", "skill:qa"],
+          count: 2,
+          verified: true,
+          explicit: false,
+        },
+      ],
+      isLoading: false,
+      error: null,
+    } as any);
   });
 
-  it("renders the hero, type pills and category grid with a full catalog", async () => {
-    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
-    wrap(<Marketplace />);
+  it("renders inside LobbyShell with marketplace active", () => {
+    renderWithProviders(<Marketplace />);
+    expect(screen.getAllByTestId("lobby-sidebar").length).toBeGreaterThanOrEqual(1);
+  });
 
-    // Hero
-    await waitFor(() =>
-      expect(screen.getByText(/extend your workforce/i)).toBeInTheDocument(),
+  it("renders the filter chip row with all 5 chips", () => {
+    renderWithProviders(<Marketplace />);
+    // "All" appears in both FilterChips and SubfilterChips rows — just check at least one exists
+    expect(screen.getAllByRole("button", { name: /^all$/i }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole("button", { name: /skills/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /plugins/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /agents/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /teams/i })).toBeInTheDocument();
+  });
+
+  it("clicking the Skills chip filters the grid to skill items", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Marketplace />);
+    await user.click(screen.getByRole("button", { name: /skills/i }));
+    // Skill is shown, plugin name is not.
+    expect(screen.getByText("/office-hours")).toBeInTheDocument();
+    expect(screen.queryByText("github-issues")).not.toBeInTheDocument();
+  });
+
+  it("renders the sub-filter chip row with sort modes", () => {
+    renderWithProviders(<Marketplace />);
+    expect(screen.getByRole("button", { name: /featured$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /recently added/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /a–z/i })).toBeInTheDocument();
+  });
+
+  it("clicking Featured filters to items with featured=true", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Marketplace />);
+    await user.click(screen.getByRole("button", { name: /featured$/i }));
+    expect(screen.getByText("/office-hours")).toBeInTheDocument();
+    expect(screen.queryByText("github-issues")).not.toBeInTheDocument();
+  });
+
+  it("renders a mobile hamburger button (md:hidden)", () => {
+    renderWithProviders(<Marketplace />);
+    expect(screen.getByRole("button", { name: /open menu/i })).toBeInTheDocument();
+  });
+
+  it("renders the Packages section heading when type filter is null", () => {
+    renderWithProviders(<Marketplace />);
+    expect(screen.getByText(/^packages$/i)).toBeInTheDocument();
+  });
+
+  it("renders package cards when packages are available", () => {
+    renderWithProviders(<Marketplace />);
+    // gstack is the only package fixture
+    expect(screen.getByText("gstack")).toBeInTheDocument();
+  });
+
+  it("hides the Packages strip when a non-Skills chip is active", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Marketplace />);
+    await user.click(screen.getByRole("button", { name: /plugins/i }));
+    expect(screen.queryByText(/^packages$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("gstack")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Packages strip visible when the Skills chip is active", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Marketplace />);
+    // Chip's accessible name is "Skills{count}" (e.g. "Skills1"); start-anchored partial match.
+    await user.click(screen.getByRole("button", { name: /^skills/i }));
+    expect(screen.getByText(/^packages$/i)).toBeInTheDocument();
+    expect(screen.getByText("gstack")).toBeInTheDocument();
+  });
+});
+
+describe("Marketplace (hub) — sections", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useCatalog).mockReturnValue({
+      data: mockCatalog,
+      isLoading: false,
+      error: null,
+    } as any);
+    vi.mocked(usePackages).mockReturnValue({
+      data: [], isLoading: false, error: null,
+    } as any);
+  });
+
+  it("renders all four section headers in order Skills → Plugins → Agents → Teams", () => {
+    renderWithProviders(<Marketplace />);
+    const headers = screen.getAllByRole("heading", { level: 2 });
+    const labels = headers.map((h) => h.textContent?.toLowerCase() ?? "");
+    const idxSkill = labels.findIndex((l) => l.includes("skills"));
+    const idxPlug = labels.findIndex((l) => l.includes("plugins"));
+    const idxAgent = labels.findIndex((l) => l.includes("agents"));
+    const idxTeam = labels.findIndex((l) => l.includes("teams"));
+    expect(idxSkill).toBeGreaterThanOrEqual(0);
+    expect(idxPlug).toBeGreaterThan(idxSkill);
+    expect(idxAgent).toBeGreaterThan(idxPlug);
+    expect(idxTeam).toBeGreaterThan(idxAgent);
+  });
+
+  it("hides a section whose post-filter item count is zero", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Marketplace />);
+    // Sort = "Featured" — only office-hours is featured (a skill). Plugins/Agents/Teams sections must hide.
+    await user.click(screen.getByRole("button", { name: /featured$/i }));
+    const headers = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent?.toLowerCase() ?? "");
+    const has = (label: string) => headers.some((h) => h.includes(label));
+    expect(has("skills")).toBe(true);
+    expect(has("plugins")).toBe(false);
+    expect(has("agents")).toBe(false);
+    expect(has("teams")).toBe(false);
+  });
+
+  it("clicking 'See all →' on a section sets the type chip to that type", async () => {
+    // Override the default catalog so Skills overflows the cap (need > 6 skills)
+    const overflow = Array.from({ length: 8 }).map((_, i) =>
+      makeFixtureItem({ id: `skill:s${i}`, type: "skill", name: `skill-${i}` }),
     );
-
-    // Type pills (4 across the top)
-    expect(screen.getByText("Plugins")).toBeInTheDocument();
-    expect(screen.getByText("Skills")).toBeInTheDocument();
-    expect(screen.getByText("Agents")).toBeInTheDocument();
-    expect(screen.getByText("Teams")).toBeInTheDocument();
-
-    // FULL_CATALOG has at least one item — its name appears as a card heading
-    expect(screen.getAllByRole("heading", { level: 3 }).length).toBeGreaterThan(0);
+    vi.mocked(useCatalog).mockReturnValue({
+      data: { schemaVersion: "1.0.0", generatedAt: "2026-05-01T00:00:00Z", itemCount: 8, items: overflow },
+      isLoading: false, error: null,
+    } as any);
+    const user = userEvent.setup();
+    renderWithProviders(<Marketplace />);
+    const seeAll = screen.getByRole("button", { name: /see all/i });
+    await user.click(seeAll);
+    // After clicking "See all", the Skills chip should be in the active state.
+    // Chip's accessible name is "Skills{count}" — start-anchored partial match.
+    const skillsChip = screen.getByRole("button", { name: /^skills/i });
+    expect(skillsChip).toHaveAttribute("data-active", "true");
   });
 
-  it("renders the homepage with an empty catalog (counts read 0 available)", async () => {
-    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(EMPTY_CATALOG);
-    wrap(<Marketplace />);
-
-    await waitFor(() =>
-      expect(screen.getByText(/extend your workforce/i)).toBeInTheDocument(),
+  it("caps each section at SECTION_CAP items in the all-view", async () => {
+    const overflow = Array.from({ length: 8 }).map((_, i) =>
+      makeFixtureItem({ id: `skill:s${i}`, type: "skill", name: `skill-${i}` }),
     );
-
-    // All four type pills show "0 available" when the catalog is empty
-    expect(screen.getAllByText("0 available").length).toBe(4);
+    vi.mocked(useCatalog).mockReturnValue({
+      data: { schemaVersion: "1.0.0", generatedAt: "2026-05-01T00:00:00Z", itemCount: 8, items: overflow },
+      isLoading: false, error: null,
+    } as any);
+    renderWithProviders(<Marketplace />);
+    // Only first 6 skill names should render; the 7th and 8th are clipped.
+    expect(screen.getByText("skill-0")).toBeInTheDocument();
+    expect(screen.getByText("skill-5")).toBeInTheDocument();
+    expect(screen.queryByText("skill-6")).not.toBeInTheDocument();
+    expect(screen.queryByText("skill-7")).not.toBeInTheDocument();
   });
 
-  it("renders error state when catalog fetch fails", async () => {
-    vi.mocked(marketplaceApi.getCatalog).mockRejectedValueOnce(new Error("503 Catalog not yet synced"));
-    wrap(<Marketplace />);
+  it("removes the cap when a single type chip is active (single-section view)", async () => {
+    const overflow = Array.from({ length: 8 }).map((_, i) =>
+      makeFixtureItem({ id: `skill:s${i}`, type: "skill", name: `skill-${i}` }),
+    );
+    vi.mocked(useCatalog).mockReturnValue({
+      data: { schemaVersion: "1.0.0", generatedAt: "2026-05-01T00:00:00Z", itemCount: 8, items: overflow },
+      isLoading: false, error: null,
+    } as any);
+    const user = userEvent.setup();
+    renderWithProviders(<Marketplace />);
+    // Chip's accessible name is "Skills{count}" — start-anchored partial match.
+    await user.click(screen.getByRole("button", { name: /^skills/i }));
+    // All 8 should render now.
+    expect(screen.getByText("skill-0")).toBeInTheDocument();
+    expect(screen.getByText("skill-7")).toBeInTheDocument();
+  });
 
-    await waitFor(() => expect(screen.getByText(/Could not load the marketplace/i)).toBeInTheDocument());
+  it("hides 'See all →' when a section's total fits inside the cap", () => {
+    // Default fixture has 1 of each type — far below SECTION_CAP=6.
+    renderWithProviders(<Marketplace />);
+    expect(screen.queryByRole("button", { name: /see all/i })).not.toBeInTheDocument();
   });
 });

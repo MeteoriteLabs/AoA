@@ -145,6 +145,7 @@ export function PluginPage() {
           </Link>
         </Button>
       </div>
+      <h1 className="sr-only">{pageSlot.pluginDisplayName}</h1>
       <PluginSlotMount
         slot={pageSlot}
         context={context}

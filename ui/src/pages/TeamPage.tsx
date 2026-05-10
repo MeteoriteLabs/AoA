@@ -13,23 +13,25 @@ import { queryKeys } from "../lib/queryKeys";
 import { OrgTreeTab, type OrgNodeAction } from "../components/team/OrgTreeTab";
 import { AgentsTab } from "../components/team/AgentsTab";
 import { HumansTab } from "../components/team/HumansTab";
+import { TeamsListPage } from "./TeamsListPage";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { PageTabBar } from "../components/PageTabBar";
-import { Tabs } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Tabs } from "@/components/ui/tabs";
+import { PageTabBar, type PageTabItem } from "../components/PageTabBar";
 
-const VALID_TABS = ["org", "agents", "humans"] as const;
+const VALID_TABS = ["org", "agents", "humans", "teams"] as const;
 type TeamTab = (typeof VALID_TABS)[number];
 
 function isValidTab(value: string | null): value is TeamTab {
   return VALID_TABS.includes(value as TeamTab);
 }
 
-const TAB_ITEMS = [
+const TAB_ITEMS: PageTabItem[] = [
   { value: "org", label: "Org Tree" },
   { value: "agents", label: "Agents" },
   { value: "humans", label: "Humans" },
+  { value: "teams", label: "Teams" },
 ];
 
 export function TeamPage() {
@@ -46,7 +48,6 @@ export function TeamPage() {
   const { pushToast } = useToast();
   const { summary: teamSummary, permissions, role, isLoading: isTeamLoading } = useTeamAccess(selectedCompanyId);
 
-  // Org tree (shared: OrgTreeTab + AgentsTab)
   const orgTreeQuery = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.org.tree(selectedCompanyId)
@@ -55,7 +56,6 @@ export function TeamPage() {
     enabled: Boolean(selectedCompanyId),
   });
 
-  // Agents list
   const agentsQuery = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.agents.list(selectedCompanyId)
@@ -68,7 +68,6 @@ export function TeamPage() {
     setBreadcrumbs([{ label: "Team" }]);
   }, [setBreadcrumbs]);
 
-  // Tab change — clears highlight when manually switching
   const handleTabChange = useCallback(
     (value: string) => {
       setSearchParams((prev) => {
@@ -81,7 +80,6 @@ export function TeamPage() {
     [setSearchParams],
   );
 
-  // OrgTree node click → switch to corresponding tab + highlight
   const handleNodeClick = useCallback(
     (id: string, nodeType: "agent" | "user") => {
       const next = new URLSearchParams();
@@ -92,7 +90,6 @@ export function TeamPage() {
     [setSearchParams],
   );
 
-  // Cache invalidation — all three data sets
   const invalidateAll = useCallback(() => {
     if (!selectedCompanyId) return;
     queryClient.invalidateQueries({ queryKey: queryKeys.org.tree(selectedCompanyId) });
@@ -158,25 +155,19 @@ export function TeamPage() {
 
   return (
     <TooltipProvider>
-      <div className="space-y-6">
-        {/* Page header */}
-        <div className="rounded-2xl border border-border bg-card p-5">
-          <div className="space-y-1">
-            <h1 className="text-lg font-semibold">Team</h1>
-            <p className="text-sm text-muted-foreground">
-              Manage your organization, agents, and team members.
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="flex flex-col h-full overflow-hidden">
+        <div className="shrink-0 px-5 pt-5 pb-0">
+          <div className="mb-4">
+            <h1 className="text-[1.6rem] font-bold tracking-tight">
+              Team<span className="text-brand">.</span>
+            </h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Your workforce — AI agents, human collaborators, and operational teams.
             </p>
           </div>
+          <PageTabBar items={TAB_ITEMS} value={activeTab} onValueChange={handleTabChange} />
         </div>
-
-        {/* Tabbed content */}
-        <Tabs value={activeTab} onValueChange={handleTabChange}>
-          <PageTabBar
-            items={TAB_ITEMS}
-            value={activeTab}
-            onValueChange={handleTabChange}
-          />
-
+        <div className="flex-1 min-h-0 overflow-y-auto">
           {isLoading && <PageSkeleton variant={activeTab === "org" ? "org-chart" : "list"} />}
 
           {!isLoading && activeTab === "org" && (
@@ -207,8 +198,10 @@ export function TeamPage() {
               onMutationSuccess={invalidateAll}
             />
           )}
-        </Tabs>
-      </div>
+
+          {!isLoading && activeTab === "teams" && <TeamsListPage />}
+        </div>
+      </Tabs>
     </TooltipProvider>
   );
 }

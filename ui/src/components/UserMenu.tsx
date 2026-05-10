@@ -60,7 +60,7 @@ export function UserMenu({ collapsed, className }: UserMenuProps) {
 
   const triggerContent = (
     <>
-      <Avatar size={collapsed ? "sm" : "default"} className="shrink-0">
+      <Avatar size={collapsed ? "sm" : "default"} shape="squircle" className="shrink-0">
         {profile?.avatarUrl ? <AvatarImage src={profile.avatarUrl} alt={displayName} /> : null}
         <AvatarFallback>{initials}</AvatarFallback>
       </Avatar>

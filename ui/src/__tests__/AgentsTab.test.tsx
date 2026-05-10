@@ -67,6 +67,7 @@ vi.mock("../lib/utils", () => ({
   cn: (...args: any[]) => args.filter(Boolean).join(" "),
   agentUrl: (agent: any) => `/agents/${agent.id}`,
   agentRouteRef: (agent: any) => agent.id,
+  relativeTime: (date: any) => (date ? "just now" : ""),
 }));
 
 vi.mock("../components/AgentIconPicker", () => ({
@@ -137,12 +138,6 @@ vi.mock("../components/NewAgentDialog", () => ({
   NewAgentDialog: () => null,
 }));
 
-// Mock TeamsSection — it has its own data fetching (teams + projects + members)
-// and is covered by its own tests. Stub it out so AgentsTab tests stay focused.
-vi.mock("../components/team/TeamsSection", () => ({
-  TeamsSection: () => <div data-testid="teams-section-stub" />,
-}));
-
 // --- Tests ---
 
 describe("AgentsTab", () => {
@@ -185,12 +180,11 @@ describe("AgentsTab", () => {
     expect(screen.getByText("Codex (local)")).toBeInTheDocument();
     expect(screen.getByText("Claude (local)")).toBeInTheDocument();
 
-    // Reports to
-    expect(screen.getByText("Reports to: Alice")).toBeInTheDocument();
-
-    // Budget
-    expect(screen.getByText("Budget: $50.00/mo")).toBeInTheDocument();
-    expect(screen.getByText("No budget set")).toBeInTheDocument();
+    // Reports-to / budget rendering moved into <AgentCard>'s own surface;
+    // assertions now belong to AgentCard.test.tsx. AgentsTab just composes
+    // the grid + destructive dropdown items.
+    // Last-active relative time replaces budget in AgentCard's footer.
+    expect(screen.getAllByText(/Last active|No activity yet/).length).toBeGreaterThan(0);
   });
 
   it("shows trust scores when provided", () => {
@@ -370,16 +364,16 @@ describe("AgentsTab", () => {
 });
 
 describe("AgentsTab navigation", () => {
-  it("agent name is clickable for navigation", () => {
+  it("agent card surface is clickable for navigation", () => {
     const agents = [makeAgent({ id: "a1", name: "Alice", status: "active" })];
 
     renderWithProviders(
       <AgentsTab agents={agents as any} orgTree={[]} permissions={{ isFounder: true }} />,
     );
 
-    // Agent name should be present and clickable
-    const nameEl = screen.getByText("Alice");
-    expect(nameEl).toBeInTheDocument();
-    expect(nameEl.className).toContain("cursor-pointer");
+    // <AgentCard> wraps the whole surface in a ClickableDiv with cursor-pointer.
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+    const clickableSurface = document.querySelector(".cursor-pointer");
+    expect(clickableSurface).not.toBeNull();
   });
 });

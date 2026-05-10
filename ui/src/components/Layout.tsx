@@ -26,7 +26,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { AgentPanelProvider } from "../context/AgentPanelContext";
 
 export function Layout() {
-  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, collapsed, setCollapsed, toggleCollapse } = useSidebar();
+  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, setCollapsed, toggleCollapse } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { companies, loading: companiesLoading, selectedCompanyId, selectionSource, setSelectedCompanyId } = useCompany();
 
@@ -230,16 +230,9 @@ export function Layout() {
           </div>
         </div>
       ) : (
-        <div className="flex flex-col shrink-0 h-full">
+        <div className="relative flex flex-col shrink-0 h-full">
           <div className="flex flex-1 min-h-0">
-            <div
-              className={cn(
-                "overflow-hidden transition-[width] duration-100 ease-out",
-                collapsed ? "w-12" : "w-60"
-              )}
-            >
-              <Sidebar />
-            </div>
+            <Sidebar />
           </div>
         </div>
       )}
@@ -252,7 +245,7 @@ export function Layout() {
           tabIndex={-1}
           className={cn(
             "flex-1 overflow-auto",
-            !location.pathname.includes("/workspaces/") && "p-4 md:p-6",
+            !location.pathname.match(/\/(workspaces\/|settings(\?|$|\/)|memory(\?|$|\/)|skills(\?|$|\/))/) && "p-4 md:p-6",
             isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]",
           )}
           onScroll={handleMainScroll}

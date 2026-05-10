@@ -12,19 +12,19 @@ describe("LobbyEmptyState", () => {
 
   it("shows a Create company CTA", () => {
     renderWithProviders(<LobbyEmptyState onCreate={vi.fn()} onImport={vi.fn()} />);
-    expect(screen.getByRole("button", { name: /create company/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create organization/i })).toBeInTheDocument();
   });
 
   it("shows an Import company CTA", () => {
     renderWithProviders(<LobbyEmptyState onCreate={vi.fn()} onImport={vi.fn()} />);
-    expect(screen.getByRole("button", { name: /import company/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /import organization/i })).toBeInTheDocument();
   });
 
   it("invokes onCreate when the create button is clicked", async () => {
     const user = userEvent.setup();
     const onCreate = vi.fn();
     renderWithProviders(<LobbyEmptyState onCreate={onCreate} onImport={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /create company/i }));
+    await user.click(screen.getByRole("button", { name: /create organization/i }));
     expect(onCreate).toHaveBeenCalledTimes(1);
   });
 
@@ -32,7 +32,7 @@ describe("LobbyEmptyState", () => {
     const user = userEvent.setup();
     const onImport = vi.fn();
     renderWithProviders(<LobbyEmptyState onCreate={vi.fn()} onImport={onImport} />);
-    await user.click(screen.getByRole("button", { name: /import company/i }));
+    await user.click(screen.getByRole("button", { name: /import organization/i }));
     expect(onImport).toHaveBeenCalledTimes(1);
   });
 

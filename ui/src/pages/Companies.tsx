@@ -89,7 +89,15 @@ export function Companies() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-end">
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <h1 className="text-[1.6rem] font-bold tracking-tight">
+            Companies<span className="text-brand">.</span>
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Switch between or manage the companies on this instance.
+          </p>
+        </div>
         <Button size="sm" onClick={() => openOnboarding()}>
           <Plus className="h-3.5 w-3.5 mr-1.5" />
           New Company

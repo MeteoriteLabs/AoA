@@ -13,7 +13,7 @@ import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlo
 
 vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>("@/api/marketplace");
-  return { ...actual, marketplaceApi: { getCatalog: vi.fn() } };
+  return { ...actual, marketplaceApi: { getCatalog: vi.fn(), getPackages: vi.fn() } };
 });
 
 vi.mock("@/api/plugins", async () => {
@@ -33,6 +33,18 @@ vi.mock("@/context/CompanyContext", () => ({
     companies: [{ id: "c1", name: "Acme", status: "active" }],
   }),
 }));
+
+vi.mock("@/components/LobbySidebar", () => ({
+  LobbySidebar: () => <aside data-testid="lobby-sidebar" />,
+}));
+vi.mock("@/components/ui/sheet", () => ({
+  Sheet: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SheetContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+vi.mock("@/context/DialogContext", () => ({
+  useDialog: () => ({ openOnboarding: vi.fn() }),
+}));
+vi.mock("@/components/UserMenu", () => ({ UserMenu: () => <div /> }));
 
 function wrap(initialPath: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -54,6 +66,7 @@ describe("MarketplaceDetail", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(pluginsApi.list).mockResolvedValue([]);
+    vi.mocked(marketplaceApi.getPackages).mockResolvedValue([]);
   });
 
   it("renders skill detail with inline README", async () => {
@@ -172,5 +185,72 @@ describe("MarketplaceDetail", () => {
     );
 
     expect(screen.getByRole("button", { name: /^install$/i })).toBeInTheDocument();
+  });
+
+  it("renders inside LobbyShell with marketplace active", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    wrap("/marketplace/skill/aoa-curated/code-review");
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("heading", { level: 1, name: "Code Review" }).length).toBeGreaterThanOrEqual(1),
+    );
+    expect(screen.getAllByTestId("lobby-sidebar").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders a verified-blue checkmark for verified items in the hero", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    // CODE_REVIEW_SKILL has trust.tier === "verified"
+    wrap("/marketplace/skill/aoa-curated/code-review");
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("heading", { level: 1, name: "Code Review" }).length).toBeGreaterThanOrEqual(1),
+    );
+    expect(screen.getByTestId("hero-verified")).toBeInTheDocument();
+  });
+
+  it("does NOT render the verified checkmark for community items", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    // COMMUNITY_SKILL has trust.tier === "community"
+    wrap("/marketplace/skill/community/example-author/quick-tip");
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1, name: "Quick Tip" })).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("hero-verified")).not.toBeInTheDocument();
+  });
+
+  it("renders 'Part of X' pill above the name when the item belongs to a package", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    // CODE_REVIEW_SKILL.id = "skill:aoa-curated/code-review"
+    vi.mocked(marketplaceApi.getPackages).mockResolvedValue([
+      {
+        id: "garrytan/gstack",
+        name: "gstack",
+        sourceUrl: "https://github.com/garrytan/gstack",
+        memberItemIds: ["skill:aoa-curated/code-review"],
+        count: 1,
+        verified: true,
+        explicit: false,
+      },
+    ]);
+    wrap("/marketplace/skill/aoa-curated/code-review");
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("heading", { level: 1, name: "Code Review" }).length).toBeGreaterThanOrEqual(1),
+    );
+    const pill = screen.getByRole("link", { name: /part of gstack/i });
+    expect(pill).toBeInTheDocument();
+    expect(pill.getAttribute("href")).toBe("/marketplace/package/garrytan/gstack");
+  });
+
+  it("does NOT render the 'Part of X' pill when the item is not in any package", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    // getPackages defaults to [] in beforeEach — no packages at all
+    wrap("/marketplace/skill/aoa-curated/code-review");
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("heading", { level: 1, name: "Code Review" }).length).toBeGreaterThanOrEqual(1),
+    );
+    expect(screen.queryByText(/part of/i)).not.toBeInTheDocument();
   });
 });

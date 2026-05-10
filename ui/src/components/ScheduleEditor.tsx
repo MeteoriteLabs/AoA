@@ -114,9 +114,24 @@ function buildCron(preset: SchedulePreset, hour: string, minute: string, dayOfWe
 }
 
 function describeSchedule(cron: string): string {
+  // Handle comma-separated specific days: "M H * * 1,3,5"
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length === 5) {
+    const [min, hr, dom, , dow] = parts;
+    if (dom === "*" && hr !== "*" && dow !== "*" && dow.includes(",")) {
+      const hourLabel = HOURS.find((h) => h.value === hr)?.label ?? hr;
+      const timeStr = `${hourLabel.replace(/ (AM|PM)$/, "")}:${(min === "*" ? "0" : min).padStart(2, "0")} ${hourLabel.match(/(AM|PM)$/)?.[0] ?? ""}`.trim();
+      const dayNames = dow
+        .split(",")
+        .sort((a, b) => Number(a) - Number(b))
+        .map((v) => DAYS_OF_WEEK.find((d) => d.value === v.trim())?.label ?? v);
+      return `Every ${dayNames.join(", ")} at ${timeStr}`;
+    }
+  }
+
   const { preset, hour, minute, dayOfWeek, dayOfMonth } = parseCronToPreset(cron);
   const hourLabel = HOURS.find((h) => h.value === hour)?.label ?? `${hour}`;
-  const timeStr = `${hourLabel.replace(/ (AM|PM)$/, "")}:${minute.padStart(2, "0")} ${hourLabel.match(/(AM|PM)$/)?.[0] ?? ""}`;
+  const timeStr = `${hourLabel.replace(/ (AM|PM)$/, "")}:${minute.padStart(2, "0")} ${hourLabel.match(/(AM|PM)$/)?.[0] ?? ""}`.trim();
 
   switch (preset) {
     case "every_minute":

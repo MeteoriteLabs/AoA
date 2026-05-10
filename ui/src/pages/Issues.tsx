@@ -143,7 +143,15 @@ export function Issues() {
   }
 
   return (
-    <>
+    <div className="space-y-4">
+      <div>
+        <h1 className="text-[1.6rem] font-bold tracking-tight">
+          Tasks<span className="text-brand">.</span>
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          The primary unit of work agents execute on your behalf.
+        </p>
+      </div>
       <IssuesList
         issues={issues ?? []}
         isLoading={isLoading}
@@ -162,6 +170,6 @@ export function Issues() {
         open={slideOverOpen}
         onClose={handleCloseSlideOver}
       />
-    </>
+    </div>
   );
 }

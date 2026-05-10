@@ -1,12 +1,14 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import { Building, Building2, Clock, Zap, type LucideIcon } from "lucide-react";
+import { IdCard, Building2, Target, Zap, type LucideIcon } from "lucide-react";
 import { memoryApi } from "../../api/memory";
 import { queryKeys } from "../../lib/queryKeys";
 import { useCompany } from "../../context/CompanyContext";
 import { cn } from "@/lib/utils";
 import type { MemoryItem } from "@armyofagents/shared";
+import { LAYER_LABELS } from "../../lib/memoryItemView";
+import { MemoryChip } from "./MemoryChip";
 
 interface LayerTilesPanelProps {
   companyId: string;
@@ -16,41 +18,16 @@ type LayerKey = "identity" | "domain" | "active_context" | "working";
 
 interface LayerSpec {
   key: LayerKey;
-  label: string;
-  icon: LucideIcon;
-  emoji: string;
+  Icon: LucideIcon;
+  tone: string;
   description: string;
 }
 
 const LAYERS: LayerSpec[] = [
-  {
-    key: "identity",
-    label: "Identity",
-    icon: Building,
-    emoji: "🪪",
-    description: "Permanent — always in agent context",
-  },
-  {
-    key: "domain",
-    label: "Domain",
-    icon: Building2,
-    emoji: "🏢",
-    description: "Department-scoped knowledge",
-  },
-  {
-    key: "active_context",
-    label: "Active Context",
-    icon: Clock,
-    emoji: "🎯",
-    description: "Goal-scoped, expires",
-  },
-  {
-    key: "working",
-    label: "Working",
-    icon: Zap,
-    emoji: "⚡",
-    description: "Task-ephemeral, 7d auto-archive",
-  },
+  { key: "identity",       Icon: IdCard,    tone: "var(--data-indigo)",  description: "Permanent — always in agent context" },
+  { key: "domain",         Icon: Building2, tone: "var(--data-teal)",    description: "Department-scoped knowledge" },
+  { key: "active_context", Icon: Target,    tone: "var(--data-amber)",   description: "Goal-scoped, expires" },
+  { key: "working",        Icon: Zap,       tone: "var(--data-magenta)", description: "Task-ephemeral, 7d auto-archive" },
 ];
 
 export function LayerTilesPanel({ companyId }: LayerTilesPanelProps) {
@@ -100,21 +77,23 @@ export function LayerTilesPanel({ companyId }: LayerTilesPanelProps) {
               onClick={() => openLayer(layer.key)}
               className={cn(
                 "text-left p-4 rounded-md border border-border bg-card",
-                "hover:border-primary/50 hover:shadow-md transition-all duration-150",
+                "hover:border-border-strong hover:bg-card-2 transition-colors",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               )}
             >
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-base leading-none">{layer.emoji}</span>
-                <div className="font-medium text-sm">{layer.label}</div>
+                <span
+                  className="size-7 rounded-lg flex items-center justify-center bg-white/[0.04]"
+                >
+                  <layer.Icon className="size-4" style={{ color: layer.tone }} />
+                </span>
+                <div className="font-medium text-sm">{LAYER_LABELS[layer.key]}</div>
               </div>
               <div className="text-[11px] text-muted-foreground">
                 {c.total} {itemLabel}
               </div>
               {c.pending > 0 && (
-                <div className="text-[11px] text-amber-700 dark:text-amber-300 mt-1">
-                  ⏳ {c.pending} pending
-                </div>
+                <MemoryChip label={`${c.pending} pending`} tone="amber" className="mt-1" />
               )}
               <div className="text-[10px] text-muted-foreground/60 mt-2 leading-snug">
                 {layer.description}
