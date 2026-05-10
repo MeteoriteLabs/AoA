@@ -113,7 +113,7 @@ The server sets these automatically when invoking adapters. They appear in the s
 | `AOA_COMPANY_ID` | Company ID for this run |
 | `AOA_API_URL` | AoA API base URL the agent should call back to |
 | `AOA_API_KEY` | Short-lived JWT for API auth (rotates each heartbeat) |
-| `AOA_RUN_ID` | Current heartbeat run ID — also sent in `X-Paperclip-Run-Id` HTTP header |
+| `AOA_RUN_ID` | Current heartbeat run ID — also sent in `X-Aoa-Run-Id` HTTP header |
 | `AOA_TASK_ID` | Issue (task) that triggered this wake, if any |
 | `AOA_WAKE_REASON` | Wake trigger reason (`assignment`, `timer`, `mention`, etc.) |
 | `AOA_WAKE_COMMENT_ID` | Comment that triggered this wake, if any |
