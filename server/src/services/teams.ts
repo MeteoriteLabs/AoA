@@ -1,4 +1,4 @@
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, count } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { teams, teamMembers, agentProjects, projects, teamCoordinations } from "@armyofagents/db";
 import type {
@@ -93,18 +93,42 @@ export async function insertTeamWithUniqueSlug(
 export function teamsService(db: Db) {
   return {
     list: async (companyId: string, projectId?: string) => {
-      if (projectId) {
-        return db
-          .select()
-          .from(teams)
-          .where(
-            and(
-              eq(teams.companyId, companyId),
-              eq(teams.parentProjectId, projectId),
-            ),
-          );
+      // Fetch team rows
+      const teamRows = await (projectId
+        ? db
+            .select()
+            .from(teams)
+            .where(and(eq(teams.companyId, companyId), eq(teams.parentProjectId, projectId)))
+        : db.select().from(teams).where(eq(teams.companyId, companyId)));
+
+      if (teamRows.length === 0) {
+        return teamRows.map((t) => ({ ...t, memberCount: 0, leadAgentId: null as string | null, memberAgentIds: [] as string[] }));
       }
-      return db.select().from(teams).where(eq(teams.companyId, companyId));
+
+      // Single batch query for member summaries — avoids N+1 in the list view.
+      const ids = teamRows.map((t) => t.id);
+      const memberRows = await db
+        .select({ teamId: teamMembers.teamId, agentId: teamMembers.agentId, role: teamMembers.role })
+        .from(teamMembers)
+        .where(inArray(teamMembers.teamId, ids));
+
+      const byTeam = new Map<string, { agentId: string; role: string }[]>();
+      for (const m of memberRows) {
+        const bucket = byTeam.get(m.teamId);
+        if (bucket) bucket.push(m);
+        else byTeam.set(m.teamId, [m]);
+      }
+
+      return teamRows.map((t) => {
+        const members = byTeam.get(t.id) ?? [];
+        const lead = members.find((m) => m.role === "lead");
+        return {
+          ...t,
+          memberCount: members.length,
+          leadAgentId: lead?.agentId ?? null,
+          memberAgentIds: members.map((m) => m.agentId),
+        };
+      });
     },
 
     getById: async (id: string) => {

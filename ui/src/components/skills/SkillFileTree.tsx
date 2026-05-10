@@ -79,7 +79,7 @@ function Rows({ nodes, depth, selectedPath, expandedDirs, onToggleDir, onSelect 
                 type="button"
                 onClick={() => node.path && onToggleDir(node.path)}
                 style={{ paddingLeft: `${indent}px` }}
-                className="flex w-full items-center gap-2 py-1.5 pr-4 text-[12px] text-foreground/85 hover:bg-white/[0.04] hover:text-foreground"
+                className="flex w-full items-center gap-2 py-1.5 pr-4 text-[12px] text-text/85 hover:bg-white/[0.04] hover:text-text"
               >
                 {expanded ? (
                   <FolderOpen className="size-3.5" />
@@ -110,8 +110,8 @@ function Rows({ nodes, depth, selectedPath, expandedDirs, onToggleDir, onSelect 
             onClick={() => node.path && onSelect(node.path)}
             style={{ paddingLeft: `${indent}px` }}
             className={cn(
-              "relative flex w-full items-center gap-2 py-1.5 pr-4 text-[12px] text-foreground/85 hover:bg-white/[0.04] hover:text-foreground",
-              active && "bg-primary/10 text-primary",
+              "relative flex w-full items-center gap-2 py-1.5 pr-4 text-[12px] text-text/85 hover:bg-white/[0.04] hover:text-text",
+              active && "bg-brand/10 text-brand",
             )}
           >
             <FileIcon className="size-3.5" />
@@ -119,7 +119,7 @@ function Rows({ nodes, depth, selectedPath, expandedDirs, onToggleDir, onSelect 
             {active && (
               <span
                 aria-hidden
-                className="absolute right-3.5 top-1/2 size-[5px] -translate-y-1/2 rounded-full bg-primary shadow-[0_0_6px_rgba(184,45,28,0.55)]"
+                className="absolute right-3.5 top-1/2 size-[5px] -translate-y-1/2 rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
               />
             )}
           </button>

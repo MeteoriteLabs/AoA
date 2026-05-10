@@ -37,7 +37,7 @@ describe("SkillLibraryRow", () => {
   it("applies brand-wash class when active", () => {
     const { container } = renderRow({ active: true });
     const link = container.querySelector("a");
-    expect(link?.getAttribute("class") ?? "").toMatch(/bg-primary\/10/);
+    expect(link?.getAttribute("class") ?? "").toMatch(/bg-brand\/10/);
   });
 
   it("renders source icon for standalone rows (hideSourceIcon=false)", () => {

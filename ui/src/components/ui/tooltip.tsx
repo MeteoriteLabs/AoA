@@ -43,8 +43,7 @@ function TooltipContent({
         sideOffset={sideOffset}
         className={cn(
           "z-50 max-w-[240px] w-fit origin-(--radix-tooltip-content-transform-origin)",
-          "bg-[oklch(0.98_0.005_30)] text-[hsl(20_12%_18%)]",
-          "dark:bg-[oklch(0.98_0.005_30)] dark:text-[hsl(20_12%_18%)]",
+          "bg-tooltip-surface text-tooltip-text",
           "text-xs font-medium px-2.5 py-1 rounded-md text-balance",
           "backdrop-blur-md backdrop-saturate-150",
           "border border-white/40",
@@ -57,7 +56,7 @@ function TooltipContent({
         {...props}
       >
         {children}
-        <TooltipPrimitive.Arrow className="fill-[oklch(0.98_0.005_30)] z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px]" />
+        <TooltipPrimitive.Arrow className="fill-tooltip-surface z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px]" />
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   )

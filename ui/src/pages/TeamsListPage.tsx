@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { useQuery, useQueries } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Plus, ChevronDown, Users, Search, Sparkles, Upload } from "lucide-react";
 import { teamsApi } from "../api/teams";
 import { projectsApi } from "../api/projects";
@@ -76,22 +76,16 @@ export function TeamsListPage() {
   }, [agentsQuery.data]);
 
   const teams = teamsQuery.data?.items ?? [];
-  const memberQueries = useQueries({
-    queries: teams.map((t) => ({
-      queryKey: queryKeys.teams.members(selectedCompanyId!, t.id),
-      queryFn: () => teamsApi.listMembers(t.id),
-      enabled: Boolean(selectedCompanyId),
-    })),
-  });
 
+  // Member summary (memberCount, leadAgentId, memberAgentIds) is now bundled
+  // into the list response — no per-team member requests needed.
   const teamCards: TeamCardData[] = useMemo(() => {
     return teams.map((t, idx) => {
-      const members = memberQueries[idx]?.data?.items ?? [];
-      const lead = members.find((m) => m.role === "lead");
-      const memberInitials = members
+      const leadName = t.leadAgentId ? (agentNameById.get(t.leadAgentId) ?? "--") : "--";
+      const memberInitials = (t.memberAgentIds ?? [])
         .slice(0, 4)
-        .map((m) => {
-          const name = agentNameById.get(m.agentId) ?? "";
+        .map((aid) => {
+          const name = agentNameById.get(aid) ?? "";
           return name.substring(0, 2).toUpperCase();
         })
         .filter(Boolean);
@@ -101,13 +95,13 @@ export function TeamsListPage() {
         slug: t.slug,
         parentProjectName: projectsById.get(t.parentProjectId)?.name ?? "—",
         status: t.status,
-        memberCount: members.length,
-        leadName: lead ? agentNameById.get(lead.agentId) ?? lead.agentId : "--",
+        memberCount: t.memberCount ?? 0,
+        leadName,
         memberInitials,
         iconColor: TEAM_COLORS[idx % TEAM_COLORS.length],
       };
     });
-  }, [teams, memberQueries, projectsById, agentNameById]);
+  }, [teams, projectsById, agentNameById]);
 
   const filteredTeamCards = useMemo(() => {
     return teamCards.filter((card) => {

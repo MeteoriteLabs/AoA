@@ -1,4 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
+
+/** Matches the 4 layers defined in MemoryFolderRail: identity / domain / active_context / working */
+const LAYER_COUNT = 4 as const;
 import { Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,7 +48,7 @@ export function MemoryToolbar({
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
       <h1 className="text-sm font-semibold">Memory</h1>
       <span className="text-xs text-very-dim">
-        · {total} {total === 1 ? "item" : "items"} · 4 layers
+        · {total} {total === 1 ? "item" : "items"} · {LAYER_COUNT} layers
       </span>
       <span className="flex-1" />
 

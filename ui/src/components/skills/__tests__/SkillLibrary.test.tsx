@@ -121,6 +121,6 @@ describe("SkillLibrary", () => {
   it("highlights the active package row", () => {
     const { container } = renderLib({ selectedPackageId: "garrytan/gstack" });
     const pkgRow = container.querySelector("[class*='border-l']");
-    expect(pkgRow?.className ?? "").toMatch(/border-l-primary|primary/);
+    expect(pkgRow?.className ?? "").toMatch(/border-l-brand|brand/);
   });
 });

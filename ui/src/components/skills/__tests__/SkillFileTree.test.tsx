@@ -107,6 +107,6 @@ describe("SkillFileTree", () => {
       />,
     );
     const row = getByText("runbook.md").closest("button, a, div");
-    expect(row?.className ?? "").toMatch(/bg-primary\/10/);
+    expect(row?.className ?? "").toMatch(/bg-brand\/10/);
   });
 });

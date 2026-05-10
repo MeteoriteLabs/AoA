@@ -36,11 +36,11 @@ export function SkillPackageOverview({
           <div className="flex min-w-0 items-start gap-4">
             <StackedIcon icon={Sparkles} tone="amber" className="size-12 shrink-0" />
             <div className="min-w-0">
-              <div className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+              <div className="text-[10px] uppercase tracking-[0.1em] text-dim">
                 Package
               </div>
               <h2 className="mt-0.5 text-[20px] font-semibold">{pkg.name}</h2>
-              <p className="mt-1 max-w-[68ch] text-[13px] text-muted-foreground">
+              <p className="mt-1 max-w-[68ch] text-[13px] text-dim">
                 {pkg.count} {pkg.count === 1 ? "skill" : "skills"} · {pkg.id}
               </p>
             </div>
@@ -73,14 +73,14 @@ export function SkillPackageOverview({
           </div>
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11.5px] text-muted-foreground">
+        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11.5px] text-dim">
           <span className="flex items-center gap-1.5">
             <span className="text-[10px] uppercase tracking-[0.18em]">Source</span>
             <a
               href={pkg.sourceUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 text-foreground hover:underline"
+              className="inline-flex items-center gap-1 text-text hover:underline"
             >
               {pkg.id}
               <ExternalLink className="size-3" />
@@ -97,7 +97,7 @@ export function SkillPackageOverview({
           )}
           <span className="flex items-center gap-1.5">
             <span className="text-[10px] uppercase tracking-[0.18em]">Used by</span>
-            <span className="text-foreground">{totalUsedByAgents} of your agents</span>
+            <span className="text-text">{totalUsedByAgents} of your agents</span>
           </span>
         </div>
       </div>
@@ -105,7 +105,7 @@ export function SkillPackageOverview({
       <div className="flex-1 overflow-auto px-6 py-5">
         <div className="mb-3 flex items-center gap-2">
           <h3 className="text-[13px] font-semibold">Member skills</h3>
-          <span className="text-[11px] text-muted-foreground">{pkg.count}</span>
+          <span className="text-[11px] text-dim">{pkg.count}</span>
         </div>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
           {members.map((m) => (

@@ -27,7 +27,7 @@ function stripFrontmatter(markdown: string): string {
 export function SkillBody({ file, editing, viewMode, draft, onDraftChange, externalUrl }: Props) {
   if (!file) {
     return (
-      <div className="px-6 py-5 text-sm text-muted-foreground">Select a file to inspect.</div>
+      <div className="px-6 py-5 text-sm text-dim">Select a file to inspect.</div>
     );
   }
 
@@ -36,14 +36,14 @@ export function SkillBody({ file, editing, viewMode, draft, onDraftChange, exter
   if (!editing && file.path !== "SKILL.md" && file.content === "" && externalUrl) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-dim">
           File body isn't stored locally for managed skills.
         </p>
         <a
           href={externalUrl}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent"
+          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-hd"
         >
           View on GitHub <ExternalLink className="size-3" />
         </a>
@@ -84,7 +84,7 @@ export function SkillBody({ file, editing, viewMode, draft, onDraftChange, exter
   }
 
   return (
-    <pre className="overflow-x-auto whitespace-pre-wrap break-words bg-transparent px-6 py-5 font-mono text-sm text-foreground">
+    <pre className="overflow-x-auto whitespace-pre-wrap break-words bg-transparent px-6 py-5 font-mono text-sm text-text">
       <code>{file.content}</code>
     </pre>
   );

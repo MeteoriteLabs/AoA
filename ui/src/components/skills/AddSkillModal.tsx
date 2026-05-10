@@ -76,7 +76,7 @@ export function AddSkillModal({
                     if (e.key === "Enter" && source.trim()) onImport(source.trim());
                   }}
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-dim">
                   e.g. <code className="text-[11px]">https://github.com/owner/repo</code> or{" "}
                   <code className="text-[11px]">npx skills add owner/repo/skill</code>
                 </p>
@@ -86,7 +86,7 @@ export function AddSkillModal({
                       href="https://skills.sh"
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                      className="inline-flex items-center gap-1 text-xs text-dim transition-colors hover:text-text"
                     >
                       Browse skills.sh <ExternalLink className="h-3 w-3" />
                     </a>
@@ -94,7 +94,7 @@ export function AddSkillModal({
                       href="https://github.com/search?q=SKILL.md&type=code"
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                      className="inline-flex items-center gap-1 text-xs text-dim transition-colors hover:text-text"
                     >
                       Search GitHub <ExternalLink className="h-3 w-3" />
                     </a>

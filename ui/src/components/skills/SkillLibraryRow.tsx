@@ -39,26 +39,26 @@ export function SkillLibraryRow({
       style={indent ? { paddingLeft: `${indent}px` } : undefined}
       className={cn(
         "group relative flex items-center gap-2 px-3 py-1.5 text-[12.5px] no-underline",
-        "text-foreground/85 hover:bg-white/[0.04] hover:text-foreground",
-        active && "bg-primary/10 text-primary",
+        "text-text/85 hover:bg-white/[0.04] hover:text-text",
+        active && "bg-brand/10 text-brand",
       )}
       aria-current={active ? "page" : undefined}
     >
       {hideSourceIcon ? (
-        <FileText className="size-3 shrink-0 text-muted-foreground" />
+        <FileText className="size-3 shrink-0 text-dim" />
       ) : (
         <SkillSourceIcon badge={badge} sourceLabel={sourceLabel} />
       )}
       <span className="min-w-0 flex-1 truncate">{name}</span>
       {chip && (
-        <span className="rounded border border-border bg-white/[0.04] px-1.5 py-px text-[10px] text-muted-foreground">
+        <span className="rounded border border-border bg-white/[0.04] px-1.5 py-px text-[10px] text-dim">
           {chip}
         </span>
       )}
       {active && (
         <span
           aria-hidden
-          className="absolute right-2.5 top-1/2 size-[5px] -translate-y-1/2 rounded-full bg-primary shadow-[0_0_6px_rgba(184,45,28,0.55)]"
+          className="absolute right-2.5 top-1/2 size-[5px] -translate-y-1/2 rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
         />
       )}
     </Link>

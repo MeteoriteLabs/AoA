@@ -72,7 +72,7 @@ export function SkillLibrary({
 
   if (skills.length === 0) {
     return (
-      <div className="px-4 py-6 text-sm text-muted-foreground">
+      <div className="px-4 py-6 text-sm text-dim">
         <p>
           No custom skills yet. Built-in skills (like aoa-create-agent) are managed by the
           underlying CLI tool and aren't shown here.
@@ -89,7 +89,7 @@ export function SkillLibrary({
 
   if (totalVisible === 0) {
     return (
-      <div className="px-4 py-6 text-sm text-muted-foreground">
+      <div className="px-4 py-6 text-sm text-dim">
         No skills match this filter.
       </div>
     );
@@ -99,7 +99,7 @@ export function SkillLibrary({
     <div className="py-1">
       {filteredPackages.length > 0 && (
         <>
-          <div className="flex items-center gap-2 px-3 py-2 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+          <div className="flex items-center gap-2 px-3 py-2 text-[10px] uppercase tracking-[0.08em] text-dim">
             <Sparkles className="size-3" />
             <span>{`Packages · ${filteredPackages.length}`}</span>
           </div>
@@ -145,7 +145,7 @@ export function SkillLibrary({
           {filteredPackages.length > 0 && (
             <div className="my-2 border-t border-border" aria-hidden />
           )}
-          <div className="px-3 py-2 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+          <div className="px-3 py-2 text-[10px] uppercase tracking-[0.08em] text-dim">
             {`Standalone · ${filteredStandalones.length}`}
           </div>
           {filteredStandalones.map((skill) => (

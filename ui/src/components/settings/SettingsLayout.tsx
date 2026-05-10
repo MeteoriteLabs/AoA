@@ -115,7 +115,7 @@ export function SettingsLayout({ activeSection, onSectionChange, children }: Set
                         ? "h-9 justify-center"
                         : "h-[30px] gap-2.5 px-2.5 text-[13px] font-medium",
                       active
-                        ? "bg-brand/[0.08] text-[hsl(15_60%_75%)]"
+                        ? "bg-brand/[0.08] text-sidebar-active-text"
                         : "text-foreground/[0.78] hover:bg-white/[0.04] hover:text-foreground",
                     )}
                   >
@@ -180,7 +180,7 @@ export function SettingsLayout({ activeSection, onSectionChange, children }: Set
               className={cn(
                 "shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12.5px] font-medium border whitespace-nowrap",
                 active
-                  ? "bg-brand/[0.12] border-brand/40 text-[hsl(15_60%_75%)]"
+                  ? "bg-brand/[0.12] border-brand/40 text-sidebar-active-text"
                   : "bg-card border-border text-muted-foreground",
                 isDanger && !active && "text-red-400/80",
                 isTransitional && !active && "border-amber-500/30 text-amber-400/80",

@@ -6,6 +6,7 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: any[]) => args),
   eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
   inArray: vi.fn((c: any, v: any) => ({ inArray: [c, v] })),
+  count: vi.fn(() => ({ count: true })),
   sql: vi.fn(() => ({ sql: true })),
 }));
 
@@ -97,16 +98,31 @@ describe("teamsService", () => {
   });
 
   describe("list()", () => {
-    it("returns rows for company", async () => {
+    it("returns rows for company with member summary", async () => {
       const teamsRows = [
         { id: "t1", companyId: "co-1", name: "Frontend", slug: "frontend" },
         { id: "t2", companyId: "co-1", name: "Backend", slug: "backend" },
       ];
-      const db = createAgentDb({ selects: [teamsRows] });
+      const memberRows = [
+        { teamId: "t1", agentId: "a1", role: "lead" },
+        { teamId: "t1", agentId: "a2", role: "member" },
+        { teamId: "t2", agentId: "a3", role: "member" },
+      ];
+      // Two selects: teams list, then batch member query
+      const db = createAgentDb({ selects: [teamsRows, memberRows] });
 
       const result = await teamsService(db as any).list("co-1");
 
-      expect(result).toEqual(teamsRows);
+      expect(result).toEqual([
+        { ...teamsRows[0], memberCount: 2, leadAgentId: "a1", memberAgentIds: ["a1", "a2"] },
+        { ...teamsRows[1], memberCount: 1, leadAgentId: null, memberAgentIds: ["a3"] },
+      ]);
+    });
+
+    it("returns empty array with member summary shape when no teams", async () => {
+      const db = createAgentDb({ selects: [[]] });
+      const result = await teamsService(db as any).list("co-1");
+      expect(result).toEqual([]);
     });
 
     it("filters by projectId", async () => {
@@ -119,11 +135,14 @@ describe("teamsService", () => {
           slug: "frontend",
         },
       ];
-      const db = createAgentDb({ selects: [teamsRows] });
+      // Two selects: filtered teams list, then batch member query (no members)
+      const db = createAgentDb({ selects: [teamsRows, []] });
 
       const result = await teamsService(db as any).list("co-1", "p1");
 
-      expect(result).toEqual(teamsRows);
+      expect(result).toEqual([
+        { ...teamsRows[0], memberCount: 0, leadAgentId: null, memberAgentIds: [] },
+      ]);
     });
   });
 

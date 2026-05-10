@@ -34,10 +34,10 @@ export function SkillsHomeEmpty({ skills, recent, onAddSkill }: Props) {
     <div className="flex flex-1 flex-col items-center px-6 py-10">
       <div className="flex flex-col items-center text-center">
         <div className="mb-3 flex size-12 items-center justify-center rounded-lg bg-white/[0.04]">
-          <Boxes className="size-6 text-muted-foreground/60" />
+          <Boxes className="size-6 text-dim/60" />
         </div>
         <h2 className="text-[15px] font-semibold">Pick a skill from the library</h2>
-        <p className="mt-1.5 max-w-[44ch] text-[12.5px] text-muted-foreground">
+        <p className="mt-1.5 max-w-[44ch] text-[12.5px] text-dim">
           Browse a package, open a standalone skill, or add a new one from a github URL or
           skills.sh source.
         </p>
@@ -62,7 +62,7 @@ export function SkillsHomeEmpty({ skills, recent, onAddSkill }: Props) {
 
       {resolvedRecent.length > 0 && (
         <div className="mt-10 w-full max-w-[640px]">
-          <div className="mb-2 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+          <div className="mb-2 text-[10px] uppercase tracking-[0.08em] text-dim">
             Recently opened
           </div>
           <div className="rounded-lg border border-border">
@@ -75,9 +75,9 @@ export function SkillsHomeEmpty({ skills, recent, onAddSkill }: Props) {
                 }`}
               >
                 <SkillSourceIcon badge={r.skill.sourceBadge} sourceLabel={r.skill.sourceLabel} />
-                <span className="text-[12.5px] text-foreground">{r.skill.name}</span>
+                <span className="text-[12.5px] text-text">{r.skill.name}</span>
                 <div className="flex-1" />
-                <span className="text-[10.5px] text-muted-foreground">
+                <span className="text-[10.5px] text-dim">
                   {formatRelativeTime(r.entry.openedAt)}
                 </span>
               </Link>

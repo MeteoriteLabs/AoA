@@ -40,9 +40,9 @@ export function SkillFilePathStrip({
           aria-label="Toggle file tree"
           onClick={onToggleTree}
           className={cn(
-            "-mx-1.5 flex items-center gap-1.5 rounded px-1.5 py-1 text-muted-foreground",
-            "hover:text-foreground",
-            treeExpanded && "text-primary",
+            "-mx-1.5 flex items-center gap-1.5 rounded px-1.5 py-1 text-dim",
+            "hover:text-text",
+            treeExpanded && "text-brand",
           )}
         >
           <Chevron className="size-3.5" />
@@ -55,7 +55,7 @@ export function SkillFilePathStrip({
           )}
         </button>
       ) : (
-        <span className="flex items-center gap-1.5 text-foreground">
+        <span className="flex items-center gap-1.5 text-text">
           <FileText className="size-3.5" />
           <span className="font-mono text-[11.5px]">{filePath}</span>
           {hasUnsavedChanges && (
@@ -65,7 +65,7 @@ export function SkillFilePathStrip({
           )}
         </span>
       )}
-      <span className="text-[11px] text-muted-foreground">
+      <span className="text-[11px] text-dim">
         {hasUnsavedChanges
           ? "· unsaved changes"
           : `· ${fileCount} ${fileCount === 1 ? "file" : "files"} in this skill`}
@@ -103,7 +103,7 @@ export function SkillFilePathStrip({
             onClick={() => onViewMode("preview")}
             className={cn(
               "flex items-center gap-1.5 px-2.5 py-1 text-[11px]",
-              viewMode === "preview" ? "bg-primary/10 text-primary" : "text-muted-foreground",
+              viewMode === "preview" ? "bg-brand/10 text-brand" : "text-dim",
             )}
           >
             <Eye className="size-3" />
@@ -114,7 +114,7 @@ export function SkillFilePathStrip({
             onClick={() => onViewMode("code")}
             className={cn(
               "flex items-center gap-1.5 border-l border-border px-2.5 py-1 text-[11px]",
-              viewMode === "code" ? "bg-primary/10 text-primary" : "text-muted-foreground",
+              viewMode === "code" ? "bg-brand/10 text-brand" : "text-dim",
             )}
           >
             <Code2 className="size-3" />

@@ -35,7 +35,7 @@ function LobbyNavRow({ icon: Icon, label, active, collapsed, onClick }: LobbyNav
         "relative flex w-full items-center gap-2.5 rounded-md text-[13px] font-medium transition-colors",
         collapsed ? "h-9 justify-center px-0" : "px-3 py-2",
         active
-          ? "bg-brand/[0.08] text-[hsl(15_60%_75%)]"
+          ? "bg-brand/[0.08] text-sidebar-active-text"
           : "text-foreground/[0.78] hover:bg-white/[0.04] hover:text-foreground",
       )}
     >

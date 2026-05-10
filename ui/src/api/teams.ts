@@ -20,6 +20,10 @@ export interface Team {
   templateVersion: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Populated by the list endpoint — avoids N+1 member queries in the list view. */
+  memberCount: number;
+  leadAgentId: string | null;
+  memberAgentIds: string[];
 }
 
 export interface TeamMember {

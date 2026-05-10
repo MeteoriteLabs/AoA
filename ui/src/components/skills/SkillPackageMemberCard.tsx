@@ -19,8 +19,8 @@ export function SkillPackageMemberCard({ skill, hasUpdate }: Props) {
       )}
     >
       <div className="flex items-center gap-2">
-        <FileText className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="truncate text-[12.5px] font-medium text-foreground">{skill.name}</span>
+        <FileText className="size-3.5 shrink-0 text-dim" />
+        <span className="truncate text-[12.5px] font-medium text-text">{skill.name}</span>
         {hasUpdate && (
           <span
             title="Update available"
@@ -32,11 +32,11 @@ export function SkillPackageMemberCard({ skill, hasUpdate }: Props) {
         )}
       </div>
       {skill.description && (
-        <p className="mt-1.5 line-clamp-2 text-[11.5px] text-muted-foreground">
+        <p className="mt-1.5 line-clamp-2 text-[11.5px] text-dim">
           {skill.description}
         </p>
       )}
-      <div className="mt-2 text-[10px] text-muted-foreground">
+      <div className="mt-2 text-[10px] text-dim">
         Used by {skill.attachedAgentCount}
       </div>
     </Link>

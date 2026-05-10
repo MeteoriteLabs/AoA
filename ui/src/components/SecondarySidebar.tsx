@@ -32,9 +32,9 @@ export function SecondarySidebar({
   return (
     <div
       className={cn(
-        "border-r border-border bg-[oklch(0.155_0.005_30)] flex flex-col pt-16 pb-3.5",
+        "border-r border-border bg-secondary-sidebar flex flex-col pt-16 pb-3.5",
         "transition-[width] duration-[180ms]",
-        collapsed ? "w-12 px-1" : "w-50 px-2",
+        collapsed ? "w-12 px-1" : "w-[200px] px-2",
         className
       )}
       data-collapsed={collapsed}
@@ -43,7 +43,7 @@ export function SecondarySidebar({
     >
       {sections.map((section, idx) => (
         <div
-          key={idx}
+          key={section.title ?? String(idx)}
           className={cn(idx > 0 && "mt-2 pt-2 border-t border-border-soft")}
         >
           {!collapsed && section.title && (
@@ -62,8 +62,8 @@ export function SecondarySidebar({
                 "relative w-full grid items-center gap-2 px-2.5 py-2 rounded-md text-sm transition-colors",
                 collapsed ? "grid-cols-[20px] justify-center" : "grid-cols-[1fr_auto]",
                 item.active
-                  ? "bg-brand/[0.08] text-[hsl(15_60%_75%)]"
-                  : "text-foreground/[0.78] hover:bg-white/[0.04] hover:text-foreground",
+                  ? "bg-brand/[0.08] text-sidebar-active-text"
+                  : "text-text/[0.78] hover:bg-white/[0.04] hover:text-text",
               )}
             >
               {collapsed ? (
@@ -80,7 +80,7 @@ export function SecondarySidebar({
                     <span
                       className={cn(
                         "font-mono text-[0.68rem] text-very-dim",
-                        item.active && "text-[hsl(15_60%_75%)]/[0.8]"
+                        item.active && "text-sidebar-active-text/80"
                       )}
                     >
                       {item.count}

@@ -30,21 +30,21 @@ export function SkillPackageRow({
         "border-l-[3px] border-amber-500",
         "bg-gradient-to-r from-amber-500/[0.04] from-0% to-transparent to-[36%]",
         "hover:from-amber-500/[0.075] hover:to-white/[0.02]",
-        active && "border-l-primary bg-primary/10 text-primary",
+        active && "border-l-brand bg-brand/10 text-brand",
       )}
     >
       <button
         type="button"
         aria-label={expanded ? `Collapse ${name}` : `Expand ${name}`}
         onClick={() => onToggleExpand(packageId)}
-        className="flex size-4 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+        className="flex size-4 shrink-0 items-center justify-center text-dim hover:text-text"
       >
         <Chevron data-icon={chevronName} className="size-3.5" />
       </button>
       <Sparkles className="size-3.5 shrink-0 text-amber-500" aria-hidden />
       <Link
         to={`/skills/package/${packageId}`}
-        className="min-w-0 flex-1 truncate font-medium no-underline text-current hover:text-foreground"
+        className="min-w-0 flex-1 truncate font-medium no-underline text-current hover:text-text"
       >
         {name}
       </Link>
@@ -63,7 +63,7 @@ export function SkillPackageRow({
       {active && (
         <span
           aria-hidden
-          className="absolute right-2.5 top-1/2 size-[5px] -translate-y-1/2 rounded-full bg-primary shadow-[0_0_6px_rgba(184,45,28,0.55)]"
+          className="absolute right-2.5 top-1/2 size-[5px] -translate-y-1/2 rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]"
         />
       )}
     </div>

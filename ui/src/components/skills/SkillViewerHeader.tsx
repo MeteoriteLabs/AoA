@@ -69,8 +69,8 @@ export function SkillViewerHeader({
             ) : (
               <span className={toneTextClass(meta.tone)}>{meta.label}</span>
             )}
-            <span className="text-muted-foreground">/</span>
-            <span className="text-muted-foreground">{detail.slug}</span>
+            <span className="text-dim">/</span>
+            <span className="text-dim">{detail.slug}</span>
             {editing && (
               <span className="text-amber-500" aria-label="Editing in progress">
                 · editing
@@ -79,7 +79,7 @@ export function SkillViewerHeader({
           </div>
           <h2 className="mt-1 truncate text-[18px] font-semibold">{detail.name}</h2>
           {detail.description && (
-            <p className="mt-1.5 max-w-[68ch] text-[13px] text-muted-foreground">
+            <p className="mt-1.5 max-w-[68ch] text-[13px] text-dim">
               {detail.description}
             </p>
           )}
@@ -100,7 +100,7 @@ export function SkillViewerHeader({
           ) : (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="inline-flex items-center gap-1 rounded border border-border bg-white/[0.04] px-2 py-0.5 text-[10px] text-muted-foreground">
+                <span className="inline-flex items-center gap-1 rounded border border-border bg-white/[0.04] px-2 py-0.5 text-[10px] text-dim">
                   <Lock className="size-3" />
                   Read only · {meta.managedLabel.replace(" managed", "")}
                 </span>
@@ -124,16 +124,16 @@ export function SkillViewerHeader({
         </div>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11.5px] text-muted-foreground">
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11.5px] text-dim">
         <span className="flex items-center gap-1.5">
           <span className="text-[10px] uppercase tracking-[0.18em]">Source</span>
           <SourceIcon className={cn("size-3", toneTextClass(meta.tone))} aria-hidden />
-          <span className="text-foreground">{meta.label}</span>
+          <span className="text-text">{meta.label}</span>
         </span>
         {detail.sourceType === "github" && currentPin && (
           <span className="flex items-center gap-1.5">
             <span className="text-[10px] uppercase tracking-[0.18em]">Pin</span>
-            <code className="text-[11px] text-foreground">{currentPin}</code>
+            <code className="text-[11px] text-text">{currentPin}</code>
             {updateStatus?.trackingRef && (
               <>
                 <span>tracking</span>
@@ -189,10 +189,10 @@ export function SkillViewerHeader({
             <span className="flex items-center gap-2">
               {usedBy.map((agent, i) => (
                 <span key={agent.id} className="flex items-center gap-2">
-                  {i > 0 && <span className="text-muted-foreground">·</span>}
+                  {i > 0 && <span className="text-dim">·</span>}
                   <Link
                     to={`/agents/${agent.urlKey}/skills`}
-                    className="text-foreground no-underline hover:underline"
+                    className="text-text no-underline hover:underline"
                   >
                     {agent.name}
                   </Link>

@@ -56,10 +56,10 @@ describe("SecondarySidebar", () => {
     expect(root?.getAttribute("data-collapsed")).toBe("true");
   });
 
-  it("expanded state applies w-50 width", () => {
+  it("expanded state applies w-[200px] width", () => {
     const { container } = render(<SecondarySidebar sections={SECTIONS} />);
     const root = container.querySelector("[role='navigation']");
-    expect(root?.className).toContain("w-50");
+    expect(root?.className).toContain("w-[200px]");
     expect(root?.getAttribute("data-collapsed")).toBe("false");
   });
 

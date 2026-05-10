@@ -30,7 +30,7 @@ export function SkillsPageHeader({
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
       <h1 className="text-sm font-semibold">Skills</h1>
-      <span className="text-xs text-muted-foreground">
+      <span className="text-xs text-dim">
         · {skillCount} across {packageCount}{" "}
         {packageCount === 1 ? "package" : "packages"} · {standaloneCount} standalone
       </span>
@@ -51,12 +51,12 @@ export function SkillsPageHeader({
       )}
       <div className="flex-1" />
       <div className="relative w-56">
-        <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-dim" />
         <input
           value={filter}
           onChange={(e) => onFilterChange(e.target.value)}
           placeholder="Filter skills…"
-          className="h-7 w-full rounded-md border border-border bg-transparent pl-8 pr-2 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
+          className="h-7 w-full rounded-md border border-border bg-transparent pl-8 pr-2 text-xs outline-none placeholder:text-dim focus-visible:ring-1 focus-visible:ring-ring"
         />
       </div>
       <Button

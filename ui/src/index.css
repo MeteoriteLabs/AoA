@@ -39,6 +39,12 @@
   --color-border-soft: var(--border-soft);
   --color-border-strong: var(--border-strong);
 
+  /* === Component tokens === */
+  --color-secondary-sidebar: var(--secondary-sidebar-bg);
+  --color-sidebar-active-text: var(--sidebar-active-text);
+  --color-tooltip-surface: var(--tooltip-surface);
+  --color-tooltip-text: var(--tooltip-text);
+
   /* === DEPRECATED shadcn aliases — remove when primitives use new tokens === */
   --color-background: var(--bg);
   --color-foreground: var(--text);
@@ -153,6 +159,12 @@
   --border-soft: hsl(20 8% 92%);
   --border-strong: hsl(20 8% 78%);
 
+  /* Component tokens (light) */
+  --secondary-sidebar-bg: oklch(0.92 0.005 30);
+  --sidebar-active-text: hsl(15 55% 40%);
+  --tooltip-surface: oklch(0.98 0.005 30);
+  --tooltip-text: hsl(20 12% 18%);
+
   /* === DEPRECATED shadcn aliases — remove when primitives use new tokens === */
   --background: var(--bg);
   --foreground: var(--text);
@@ -230,6 +242,11 @@
   --border: hsl(0 0% 14%);
   --border-soft: hsl(0 0% 11%);
   --border-strong: hsl(0 0% 22%);
+
+  /* Component tokens (dark) */
+  --secondary-sidebar-bg: oklch(0.155 0.005 30);
+  --sidebar-active-text: hsl(15 60% 75%);
+  /* tooltip-surface and tooltip-text stay light — frosted-glass is intentionally always light */
 
   /* === DEPRECATED shadcn aliases — remove when primitives use new tokens === */
   --background: var(--bg);
