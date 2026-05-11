@@ -35,6 +35,10 @@ import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
 import { createEagerWorkspaceForIssue } from "../services/eager-workspace.js";
 
+// Approval statuses that count as an active review path.
+// Extend this set if AoA adds revision_requested or other in-flight states.
+const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set(["pending"]);
+
 /**
  * Guard: reject agent-initiated transitions to `in_review` unless a human
  * review path exists.  Ports the severable middleware slice from Paperclip
@@ -43,7 +47,7 @@ import { createEagerWorkspaceForIssue } from "../services/eager-workspace.js";
  *
  * Allowed paths to in_review (any one is sufficient):
  *   1. assigneeUserId is set in the update (human hand-off)
- *   2. A linked approval with status = 'pending' already exists
+ *   2. A linked approval with status in ACTIVE_REVIEW_APPROVAL_STATUSES exists
  *
  * The guard is only triggered when ALL of these hold:
  *   - actorType === 'agent'
@@ -75,11 +79,11 @@ export async function assertAgentInReviewReviewPath(
   // Guard only fires on transitions TO in_review
   if (nextStatus !== "in_review") return;
 
-  // Allow: update includes a human assignee
+  // Allow: update sets a non-null human assignee
   if (input.updateFields.assigneeUserId) return;
 
-  // Allow: there is at least one linked approval in 'pending' state
-  // NOTE: issue_approvals has NO status column — join to approvals to read status
+  // Allow: there is at least one linked approval in an active review state.
+  // NOTE: issue_approvals has NO status column — join to approvals to read status.
   const linkedApprovals = await db
     .select({ status: approvalsTable.status })
     .from(issueApprovalsTable)
@@ -89,7 +93,7 @@ export async function assertAgentInReviewReviewPath(
     )
     .where(eq(issueApprovalsTable.issueId, input.existing.id));
 
-  if (linkedApprovals.some((a) => a.status === "pending")) return;
+  if (linkedApprovals.some((a) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(a.status)))) return;
 
   // No review path found — reject with 422
   throw unprocessable("Agent cannot move task to in_review without a review path", {
