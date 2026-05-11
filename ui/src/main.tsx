@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { CompanyProvider } from "./context/CompanyContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
-import { BreadcrumbProvider } from "./context/BreadcrumbContext";
+import { BreadcrumbProviderWithCompany } from "./context/BreadcrumbContext";
 import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
 import { ToastProvider } from "./context/ToastContext";
@@ -51,7 +51,7 @@ createRoot(document.getElementById("root")!).render(
             <LiveUpdatesProvider>
               <BrowserRouter>
                 <TooltipProvider>
-                  <BreadcrumbProvider>
+                  <BreadcrumbProviderWithCompany>
                     <SidebarProvider>
                       <DialogProvider>
                         <MarketplaceToastProvider>
@@ -61,7 +61,7 @@ createRoot(document.getElementById("root")!).render(
                         </MarketplaceToastProvider>
                       </DialogProvider>
                     </SidebarProvider>
-                  </BreadcrumbProvider>
+                  </BreadcrumbProviderWithCompany>
                 </TooltipProvider>
               </BrowserRouter>
             </LiveUpdatesProvider>
