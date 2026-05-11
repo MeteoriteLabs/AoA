@@ -31,6 +31,37 @@ You are reading this as context for working on the AoA codebase. This applies wh
 
 ---
 
+## Paperclip Divergence Points
+
+These are intentional AoA-specific choices that **differ from Paperclip** and must
+survive future Paperclip pull syncs. Future agents: when you see a Paperclip commit
+touching these areas, check against this list before porting.
+
+### D5 — Concurrency clamp (heartbeat)
+
+- `HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1` — **permanent teaching default**.
+  AoA teams opt-up per-agent as they build trust. A founding team of 3-5 people
+  running a multi-agent pipeline can set each agent to 3-5, yielding 9-25 concurrent
+  runs — well within the clamp.
+- `HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50` — raised from Paperclip's 10 in v1.1 (D5).
+  Founding teams legitimately need > 10 concurrent runs across all agents.
+- **Do NOT port** any Paperclip commit that raises the DEFAULT above 1 or the MAX
+  above 50 unless there is a specific AoA team-size reason to do so.
+
+### D6 — Hire-approval default by deployment mode (company create)
+
+- `local_trusted` mode: `requireBoardApprovalForNewAgents = false` at create time.
+  Loopback trust boundary = all users are already implicitly trusted. One-click
+  approval for every agent hire is friction with no multi-human safety benefit.
+- `authenticated` mode: `requireBoardApprovalForNewAgents = true` at create time.
+  Multi-human board → agent hiring is a governance decision. Default on = safe.
+- DB schema default (`.default(true)`) is unchanged — this is injected server-side
+  in `server/src/routes/companies.ts` POST handler using `opts.deploymentMode`.
+- **Do NOT port** any Paperclip commit that sets this field to `false` in
+  `authenticated` mode. Multi-human board accountability is the AoA thesis.
+
+---
+
 ## Naming Map (UI ↔ DB/API)
 
 | UI Label | DB Table | Notes |
@@ -85,7 +116,8 @@ Push-based agent execution. `heartbeat.wakeup()` → HeartbeatRun → adapter ex
 - **Atomic checkout:** Issues use `SELECT FOR UPDATE NO WAIT` for single-agent locking.
 - **Goal status machine:** `planned → active → at_risk → achieved/cancelled` with `at_risk → active` recovery.
 - **Why/What/How context:** Agents receive Vision + Mission + Goal + Memory items + Task details.
-- **Agent hire approvals:** When `company.requireBoardApprovalForNewAgents` is true (default), hires queue in Inbox. Agent created as `pending_approval`. Set to `false` to skip (agent created `idle` directly). See `server/src/routes/agents.ts:784`.
+- **Agent hire approvals:** When `company.requireBoardApprovalForNewAgents` is true (default for `authenticated` mode), hires queue in Inbox. Agent created as `pending_approval`. In `local_trusted` mode new companies default to `false` (agent created `idle` directly). See `server/src/routes/agents.ts:784` and **Paperclip Divergence Points § D6** above.
+- **Concurrency clamp:** `HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1` (teaching default; teams opt-up per-agent). `HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50` (v1.1 D5 raise from 10). See **Paperclip Divergence Points § D5** above.
 - **Run summary comments:** Auto-generated task comments after each heartbeat run (duration, token usage, cost, outcome, detected files). Uses `issue_comments` table. Opt-out via `runtimeConfig.autoRunSummary`. Files truncated to 10 + "+N more".
 
 ### Memory System
