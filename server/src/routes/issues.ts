@@ -1,6 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
+import { issueApprovals as issueApprovalsTable, approvals as approvalsTable } from "@armyofagents/db";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -32,6 +34,69 @@ import { documentService } from "../services/documents.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
 import { createEagerWorkspaceForIssue } from "../services/eager-workspace.js";
+
+/**
+ * Guard: reject agent-initiated transitions to `in_review` unless a human
+ * review path exists.  Ports the severable middleware slice from Paperclip
+ * commit 68f69975.  AoA-adapted: dropped executionState/monitor predicates
+ * (those columns don't exist in AoA).
+ *
+ * Allowed paths to in_review (any one is sufficient):
+ *   1. assigneeUserId is set in the update (human hand-off)
+ *   2. A linked approval with status = 'pending' already exists
+ *
+ * The guard is only triggered when ALL of these hold:
+ *   - actorType === 'agent'
+ *   - existing.status !== 'in_review'  (already there → no re-check)
+ *   - next status resolves to 'in_review'
+ *
+ * Exported so it can be tested in isolation.
+ */
+export async function assertAgentInReviewReviewPath(
+  input: {
+    existing: { id: string; status: string };
+    updateFields: { status?: string; assigneeUserId?: string | null; [key: string]: unknown };
+    actorType: "agent" | "board" | "user" | "system";
+  },
+  db: Db,
+): Promise<void> {
+  // Only applies to agent actors
+  if (input.actorType !== "agent") return;
+
+  // Guard doesn't fire if the issue is already in_review
+  if (input.existing.status === "in_review") return;
+
+  // Determine the status this update would result in
+  const nextStatus =
+    typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+
+  // Guard only fires on transitions TO in_review
+  if (nextStatus !== "in_review") return;
+
+  // Allow: update includes a human assignee
+  if (input.updateFields.assigneeUserId) return;
+
+  // Allow: there is at least one linked approval in 'pending' state
+  // NOTE: issue_approvals has NO status column — join to approvals to read status
+  const linkedApprovals = await db
+    .select({ status: approvalsTable.status })
+    .from(issueApprovalsTable)
+    .innerJoin(
+      approvalsTable,
+      eq(issueApprovalsTable.approvalId, approvalsTable.id),
+    )
+    .where(eq(issueApprovalsTable.issueId, input.existing.id));
+
+  if (linkedApprovals.some((a) => a.status === "pending")) return;
+
+  // No review path found — reject with 422
+  throw unprocessable("Agent cannot move task to in_review without a review path", {
+    code: "invalid_issue_disposition",
+    validReviewPaths: ["linked_pending_approval", "human_assignee_user_id"],
+  });
+}
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
@@ -585,6 +650,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
+
+    // Guard: prevent agents from self-marking tasks as in_review with no review path
+    await assertAgentInReviewReviewPath(
+      {
+        existing: { id: existing.id, status: existing.status },
+        updateFields,
+        actorType: req.actor.type as "agent" | "board" | "user" | "system",
+      },
+      db,
+    );
+
     let issue;
     try {
       issue = await svc.update(id, updateFields);
