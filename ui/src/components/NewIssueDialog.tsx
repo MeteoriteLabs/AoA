@@ -38,6 +38,8 @@ import {
   Tag,
   Calendar,
   Paperclip,
+  Hammer,
+  ClipboardList,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { pruneStaleId } from "../lib/issueDraft";
@@ -210,6 +212,8 @@ export function NewIssueDialog() {
   // Popover states
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
+  const [workModeOpen, setWorkModeOpen] = useState(false);
+  const [workMode, setWorkMode] = useState<"standard" | "planning">("standard");
   const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -456,6 +460,7 @@ export function NewIssueDialog() {
     setDialogCompanyId(null);
     setCompanyOpen(false);
     setFieldErrors({});
+    setWorkMode("standard");
   }
 
   function handleCompanyChange(companyId: string) {
@@ -492,6 +497,7 @@ export function NewIssueDialog() {
       description: description.trim() || undefined,
       status,
       priority: priority || "medium",
+      workMode,
       ...(assigneeId ? { assigneeAgentId: assigneeId } : {}),
       ...(projectId ? { projectId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
@@ -985,6 +991,51 @@ export function NewIssueDialog() {
                   {p.label}
                 </button>
               ))}
+            </PopoverContent>
+          </Popover>
+
+          {/* Work mode — D8 planning gate */}
+          <Popover open={workModeOpen} onOpenChange={setWorkModeOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+                  workMode === "planning" &&
+                    "border-amber-500/50 text-amber-600 dark:text-amber-400 bg-amber-500/10"
+                )}
+              >
+                {workMode === "planning" ? (
+                  <ClipboardList className="h-3 w-3" />
+                ) : (
+                  <Hammer className="h-3 w-3 text-muted-foreground" />
+                )}
+                {workMode === "planning" ? "Planning" : "Standard"}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-36 p-1" align="start">
+              <button
+                type="button"
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  workMode === "standard" && "bg-accent"
+                )}
+                onClick={() => { setWorkMode("standard"); setWorkModeOpen(false); }}
+              >
+                <Hammer className="h-3 w-3 text-muted-foreground" />
+                Standard
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  workMode === "planning" && "bg-accent"
+                )}
+                onClick={() => { setWorkMode("planning"); setWorkModeOpen(false); }}
+              >
+                <ClipboardList className="h-3 w-3 text-amber-600 dark:text-amber-400" />
+                Planning
+              </button>
             </PopoverContent>
           </Popover>
 
