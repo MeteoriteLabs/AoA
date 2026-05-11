@@ -660,7 +660,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       {
         existing: { id: existing.id, status: existing.status },
         updateFields,
-        actorType: req.actor.type as "agent" | "board" | "user" | "system",
+        actorType: (req.actor.type === "mcp" ? "board" : req.actor.type) as "agent" | "board" | "user" | "system",
       },
       db,
     );
