@@ -137,21 +137,13 @@ async function findAvailablePort(preferredPort, reserved = new Set()) {
   });
 }
 
-function isLoopbackHost(hostname) {
-  const value = hostname.trim().toLowerCase();
-  return value === "127.0.0.1" || value === "localhost" || value === "::1";
-}
-
-function rewriteLocalUrlPort(rawUrl, port) {
-  if (!rawUrl) return undefined;
-  try {
-    const parsed = new URL(rawUrl);
-    if (!isLoopbackHost(parsed.hostname)) return rawUrl;
-    parsed.port = String(port);
-    return parsed.toString();
-  } catch {
-    return rawUrl;
-  }
+function rewriteLocalUrlPort(rawUrl, newPort) {
+  if (!rawUrl) return rawUrl;
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch { return rawUrl; }
+  if (!parsed.port) return rawUrl;
+  parsed.port = String(newPort);
+  return parsed.toString();
 }
 
 function resolveRuntimeLikePath(value, configPath) {

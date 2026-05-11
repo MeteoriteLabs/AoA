@@ -88,9 +88,11 @@ export function resolveBetterAuthSigningSecret(config: Config): string {
   );
 }
 
-export function deriveAuthTrustedOrigins(config: Config): string[] {
+export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: number }): string[] {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const trustedOrigins = new Set<string>();
+  const port = opts?.listenPort ?? config.port;
+  const needsPortVariants = port !== 80 && port !== 443;
 
   if (baseUrl) {
     try {
@@ -103,6 +105,9 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
     const trimmed = hostname.trim().toLowerCase();
     if (!trimmed) continue;
     trustedOrigins.add(`https://${trimmed}`);
+    if (needsPortVariants) {
+      trustedOrigins.add(`https://${trimmed}:${port}`);
+    }
     if (config.deploymentMode === "local_trusted") {
       trustedOrigins.add(`http://${trimmed}`);
     }

@@ -218,3 +218,41 @@ describe("deriveAuthTrustedOrigins — scheme rules per deployment mode", () => 
     expect(origins).toContain("https://localhost");
   });
 });
+
+describe("deriveAuthTrustedOrigins port variants", () => {
+  it("emits :port variants for allowed hostnames when listenPort ≠ 80,443", async () => {
+    const { deriveAuthTrustedOrigins } = await import("../auth/better-auth.js");
+    const config = {
+      deploymentMode: "authenticated",
+      port: 3100,
+      allowedHostnames: ["app.example.com", "founder.tail.example.ts.net"],
+    } as any;
+    const origins = deriveAuthTrustedOrigins(config, { listenPort: 3101 });
+    expect(origins).toContain("https://app.example.com");
+    expect(origins).toContain("https://app.example.com:3101");
+    expect(origins).toContain("https://founder.tail.example.ts.net:3101");
+  });
+
+  it("omits :port variants when listenPort is 443", async () => {
+    const { deriveAuthTrustedOrigins } = await import("../auth/better-auth.js");
+    const config = {
+      deploymentMode: "authenticated",
+      port: 443,
+      allowedHostnames: ["app.example.com"],
+    } as any;
+    const origins = deriveAuthTrustedOrigins(config, { listenPort: 443 });
+    expect(origins).toContain("https://app.example.com");
+    expect(origins).not.toContain("https://app.example.com:443");
+  });
+
+  it("uses config.port when no listenPort opt is given (back-compat)", async () => {
+    const { deriveAuthTrustedOrigins } = await import("../auth/better-auth.js");
+    const config = {
+      deploymentMode: "authenticated",
+      port: 3100,
+      allowedHostnames: ["app.example.com"],
+    } as any;
+    const origins = deriveAuthTrustedOrigins(config);
+    expect(origins).toContain("https://app.example.com:3100");
+  });
+});
