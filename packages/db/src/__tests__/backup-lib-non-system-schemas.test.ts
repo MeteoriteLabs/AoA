@@ -24,7 +24,7 @@ describe("backup-lib non-system schemas", () => {
     await sql`CREATE TABLE drizzle.__drizzle_migrations (id serial PRIMARY KEY, hash text, created_at bigint)`;
     await sql`INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('test_hash', 1234567890)`;
     await sql`CREATE TABLE public.test_users (id serial PRIMARY KEY, name text)`;
-    await sql`INSERT INTO public.test_users (name) VALUES ('alice')`;
+    await sql`INSERT INTO public.test_users (name) VALUES ('alice wonderland')`;
     await sql.end();
   });
 
@@ -55,7 +55,7 @@ describe("backup-lib non-system schemas", () => {
     const migrations = await sql2`SELECT hash FROM drizzle.__drizzle_migrations`;
     const users = await sql2`SELECT name FROM public.test_users`;
     expect(migrations[0].hash).toBe("test_hash");
-    expect(users[0].name).toBe("alice");
+    expect(users[0].name).toBe("alice wonderland");
     await sql2.end();
   });
 

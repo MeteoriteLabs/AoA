@@ -279,12 +279,11 @@ function formatBackupSize(sizeBytes: number): string {
 }
 
 function formatSqlLiteral(value: string): string {
-  const sanitized = value.replace(/ /g, "");
   let tag = "$aoa$";
-  while (sanitized.includes(tag)) {
+  while (value.includes(tag)) {
     tag = `$aoa_${Math.random().toString(36).slice(2, 8)}$`;
   }
-  return `${tag}${sanitized}${tag}`;
+  return `${tag}${value}${tag}`;
 }
 
 export function normalizeTableSelector(value: string): string {
@@ -463,7 +462,7 @@ async function hasStatementBreakpoints(backupFile: string): Promise<boolean> {
   }
 }
 
-export async function* readRestoreStatements(backupFile: string): AsyncGenerator<string> {
+async function* readRestoreStatements(backupFile: string): AsyncGenerator<string> {
   const raw = createReadStream(backupFile);
   const stream = backupFile.endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
   stream.setEncoding("utf8");
@@ -502,7 +501,7 @@ export async function* readRestoreStatements(backupFile: string): AsyncGenerator
   }
 }
 
-export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
+function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
   const filePromise = openFile(filePath, "w");
   const flushThreshold = Math.max(1, Math.trunc(maxBufferedBytes));
   let bufferedLines: string[] = [];
@@ -1013,7 +1012,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         );
         const skipSequenceValue =
           seq.owner_table !== null
-            && excludedTableNames.has(seq.owner_table);
+            && excludedTableNames.has(tableKey(seq.owner_schema ?? "public", seq.owner_table));
         if (val[0] && !skipSequenceValue) {
           emitStatement(`SELECT setval('${qualifiedSequenceName.replaceAll("'", "''")}', ${val[0].last_value}, ${val[0].is_called ? "true" : "false"});`);
         }
