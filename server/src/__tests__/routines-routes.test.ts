@@ -282,7 +282,7 @@ describe("routine routes — authorization", () => {
     expect(mockRoutineService.runRoutine).toHaveBeenCalledWith(
       routineId,
       expect.objectContaining({ source: "manual" }),
-      expect.objectContaining({ agentId: null }),
+      expect.objectContaining({ agentId: null, userId: "board-user" }),
     );
   });
 
