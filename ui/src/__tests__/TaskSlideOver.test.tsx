@@ -40,6 +40,7 @@ const mockIssue = {
   parentId: null,
   goalId: null,
   labels: ["bug"],
+  workMode: "standard" as const,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
@@ -469,6 +470,43 @@ function renderSlideOverWithWorkspace() {
     </QueryClientProvider>,
   );
 }
+
+// ── Planning mode pill tests ──────────────────────────────────────────────────
+
+function makeQueryImpl(overrideIssue: typeof mockIssue) {
+  return ({ queryKey }: any) => {
+    const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+    if (key.includes("detail")) return { data: overrideIssue, isLoading: false, error: null } as any;
+    if (key.includes("comments") || key.includes("activity") || key.includes("runs") ||
+        key.includes("approvals") || key.includes("attachments") || key.includes("liveRuns") ||
+        key.includes("dependencies") || key.includes("list") || key.includes("agents") ||
+        key.includes("projects")) return { data: [], isLoading: false, error: null } as any;
+    if (key.includes("activeRun")) return { data: null, isLoading: false, error: null } as any;
+    if (key.includes("artifacts")) return { data: null, isLoading: false, error: null } as any;
+    if (key.includes("detected-outputs")) return { data: [], isLoading: false, error: null } as any;
+    if (key.includes("executionWorkspaces")) return { data: null, isLoading: false, error: null } as any;
+    return { data: undefined, isLoading: false, error: null } as any;
+  };
+}
+
+describe("planning mode pill", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Restore the default useQuery implementation before each test in this block
+    vi.mocked(useQuery).mockImplementation(makeQueryImpl(mockIssue));
+  });
+
+  it("shows Planning pill when workMode is planning", () => {
+    vi.mocked(useQuery).mockImplementation(makeQueryImpl({ ...mockIssue, workMode: "planning" as const }));
+    renderSlideOver({ issueId: "issue-1", open: true });
+    expect(screen.getByText("Planning")).toBeInTheDocument();
+  });
+
+  it("does not show Planning pill when workMode is standard", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+    expect(screen.queryByText("Planning")).not.toBeInTheDocument();
+  });
+});
 
 describe("TaskSlideOver — workspace with executionWorkspaceId", () => {
   beforeEach(() => {
