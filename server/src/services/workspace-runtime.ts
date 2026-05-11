@@ -493,7 +493,7 @@ async function runWorkspaceCommand(input: {
 async function recordGitOperation(
   recorder: WorkspaceOperationRecorder | null | undefined,
   input: {
-    phase: "worktree_prepare" | "worktree_cleanup";
+    phase: "worktree_prepare" | "worktree_cleanup" | "user_git_operation";
     args: string[];
     cwd: string;
     metadata?: Record<string, unknown> | null;

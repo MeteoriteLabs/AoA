@@ -14,6 +14,12 @@ export interface GitHubPrCreateRequest {
   body: string;
   base: string;
   draft?: boolean;
+  /**
+   * Explicit head branch override. Used when `workspace.branchName` is null
+   * (e.g. `local_fs` shared workspaces where the branch is detected at
+   * runtime from git rather than stored in the DB).
+   */
+  head?: string;
 }
 
 export interface GitHubPrCreateResponse {

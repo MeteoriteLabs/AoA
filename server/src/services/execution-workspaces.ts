@@ -1,7 +1,5 @@
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
@@ -28,11 +26,11 @@ import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
 } from "./workspace-runtime-read-model.js";
+import { runGit as runGitService } from "./git.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 
-const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -60,8 +58,13 @@ async function pathExists(value: string | null | undefined) {
   }
 }
 
-async function runGit(args: string[], cwd: string) {
-  return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+/**
+ * Thin adapter preserving the `{ stdout }` shape the close-readiness callers expect.
+ * Delegates to the consolidated git service which returns trimmed stdout directly.
+ */
+async function runGit(args: string[], cwd: string): Promise<{ stdout: string }> {
+  const stdout = await runGitService(args, cwd);
+  return { stdout };
 }
 
 async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{

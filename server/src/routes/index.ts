@@ -26,6 +26,7 @@ export { instanceSettingsRoutes } from "./instance-settings.js";
 
 export { cliAuthRoutes } from "./cli-auth.js";
 export { executionWorkspaceRoutes } from "./execution-workspaces.js";
+export { workspaceGitRoutes } from "./workspace-git.js";
 export { filesystemRoutes } from "./filesystem.js";
 export { pluginRoutes } from "./plugins.js";
 export { pluginUiStaticRoutes } from "./plugin-ui-static.js";

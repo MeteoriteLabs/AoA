@@ -33,6 +33,8 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated?: (pr: GitHubPrCreateResponse) => void;
+  /** Live branch from git status API — used when workspace.branchName is null (local_fs workspaces). */
+  liveBranch?: string | null;
 }
 
 /**
@@ -53,6 +55,7 @@ export function CreatePrDialog({
   open,
   onOpenChange,
   onCreated,
+  liveBranch: liveBranchProp,
 }: Props) {
   const qc = useQueryClient();
   const { pushToast } = useToast();
@@ -85,6 +88,8 @@ export function CreatePrDialog({
     setDraft(false);
   }, [open, issueQuery.data, workspace.baseRef]);
 
+  const headBranch = workspace.branchName ?? liveBranchProp ?? null;
+
   const mutation = useMutation({
     mutationFn: () =>
       githubIntegrationApi.createPR(issueId, {
@@ -93,6 +98,9 @@ export function CreatePrDialog({
         body,
         base,
         draft,
+        // Send head explicitly — critical for local_fs workspaces where
+        // workspace.branchName is null in the DB.
+        ...(headBranch ? { head: headBranch } : {}),
       }),
     onSuccess: (pr) => {
       pushToast({
@@ -119,7 +127,7 @@ export function CreatePrDialog({
       : null;
 
   const canSubmit =
-    title.trim().length > 0 && base.trim().length > 0 && !mutation.isPending && !existingPr;
+    title.trim().length > 0 && base.trim().length > 0 && !!headBranch && !mutation.isPending && !existingPr;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -235,9 +243,9 @@ export function CreatePrDialog({
                 <div
                   className="rounded-md border border-input bg-muted/30 px-3 py-2 text-sm font-mono text-muted-foreground truncate"
                   data-testid="pr-head-readonly"
-                  title={workspace.branchName ?? ""}
+                  title={workspace.branchName ?? liveBranchProp ?? ""}
                 >
-                  {workspace.branchName ?? "—"}
+                  {workspace.branchName ?? liveBranchProp ?? "—"}
                 </div>
                 <p className="text-xs text-muted-foreground">
                   From this workspace.

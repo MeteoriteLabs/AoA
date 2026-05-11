@@ -31,6 +31,7 @@ import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { documentService } from "../services/documents.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
+import { createEagerWorkspaceForIssue } from "../services/eager-workspace.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
@@ -518,6 +519,22 @@ export function issueRoutes(db: Db, storage: StorageService) {
       entityId: issue.id,
       details: { title: issue.title, identifier: issue.identifier },
     });
+
+    // Eager workspace creation — if the project supports execution workspaces,
+    // create one immediately so the user sees it right away (instead of waiting
+    // for a heartbeat run to provision it).  Fire-and-forget: failures log but
+    // never block issue creation.
+    if (issue.projectId && !issue.executionWorkspaceId) {
+      void createEagerWorkspaceForIssue(db, {
+        companyId,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier ?? issue.id,
+        issueTitle: issue.title,
+        projectId: issue.projectId,
+      }).catch((err) =>
+        logger.warn({ err, issueId: issue.id }, "eager workspace creation failed (non-blocking)"),
+      );
+    }
 
     if (issue.assigneeAgentId && issue.status !== "backlog") {
       void heartbeat

@@ -85,6 +85,7 @@ export {
   sanitizeRuntimeServiceBaseEnv,
   listWorkspaceRuntimeServicesForProjectWorkspaces,
 } from "./workspace-runtime.js";
+export { createEagerWorkspaceForIssue } from "./eager-workspace.js";
 
 // Plugin system
 export { pluginRegistryService } from "./plugin-registry.js";

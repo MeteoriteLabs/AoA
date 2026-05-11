@@ -14,6 +14,60 @@ export interface WorkspaceRuntimeControlResult {
   stderr: string;
 }
 
+// --- Git operation types ---
+
+export interface GitFileEntry {
+  path: string;
+  status: "modified" | "added" | "deleted" | "renamed" | "copied" | "untracked" | "unknown";
+  staged: boolean;
+}
+
+export interface GitRemoteInfo {
+  name: string;
+  fetchUrl: string;
+  pushUrl: string;
+}
+
+export interface GitLogEntry {
+  hash: string;
+  shortHash: string;
+  message: string;
+  author: string;
+  timestamp: string;
+}
+
+export interface GitStatusResponse {
+  gitAvailable: boolean;
+  reason?: string;
+  branch?: string | null;
+  detachedHead?: boolean;
+  remote?: GitRemoteInfo | null;
+  ahead?: number | null;
+  behind?: number | null;
+  files?: GitFileEntry[];
+  clean?: boolean;
+}
+
+export interface GitLogResponse {
+  gitAvailable: boolean;
+  entries?: GitLogEntry[];
+}
+
+export interface GitCommitResponse {
+  hash: string;
+  message: string;
+  filesCommitted: string[];
+  skippedFiles: string[];
+  activeRunWarning?: boolean;
+}
+
+export interface GitPushResponse {
+  pushed: boolean;
+  remote: string;
+  branch: string;
+  activeRunWarning?: boolean;
+}
+
 export interface WorkspaceRuntimeService {
   id: string;
   serviceName: string;
@@ -101,4 +155,16 @@ export const executionWorkspacesApi = {
       `/execution-workspaces/${id}/workspace-operations${qs ? `?${qs}` : ""}`,
     );
   },
+
+  // --- Git operations ---
+  getGitStatus: (id: string) =>
+    api.get<GitStatusResponse>(`/execution-workspaces/${id}/git/status`),
+  getGitLog: (id: string, limit?: number) => {
+    const params = limit ? `?limit=${limit}` : "";
+    return api.get<GitLogResponse>(`/execution-workspaces/${id}/git/log${params}`);
+  },
+  gitCommit: (id: string, data: { message: string; files: string[] }) =>
+    api.post<GitCommitResponse>(`/execution-workspaces/${id}/git/commit`, data),
+  gitPush: (id: string, data?: { remote?: string; branch?: string }) =>
+    api.post<GitPushResponse>(`/execution-workspaces/${id}/git/push`, data ?? {}),
 };

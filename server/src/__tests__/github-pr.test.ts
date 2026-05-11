@@ -388,7 +388,7 @@ describe("POST /issues/:issueId/github-pr", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 400 when workspace has no branchName", async () => {
+  it("returns 400 when workspace has no branchName and no head override", async () => {
     mockIssueSvc.getById.mockResolvedValue(happyIssue);
     mockWsSvc.getById.mockResolvedValue({ ...happyWs, branchName: null });
     const app = createApp(boardActor);
@@ -396,6 +396,21 @@ describe("POST /issues/:issueId/github-pr", () => {
       .post("/api/issues/issue-1/github-pr")
       .send(validBody);
     expect(res.status).toBe(400);
+  });
+
+  it("uses head override when workspace.branchName is null", async () => {
+    mockHappyPath();
+    mockWsSvc.getById.mockResolvedValue({ ...happyWs, branchName: null });
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/issues/issue-1/github-pr")
+      .send({ ...validBody, head: "feature/from-client" });
+
+    expect(res.status).toBe(200);
+    // Verify Octokit was called with the client-provided head
+    expect(mockOctokit.pulls.create).toHaveBeenCalledWith(
+      expect.objectContaining({ head: "feature/from-client" }),
+    );
   });
 
   it("returns 400 when body is missing title (zod fail)", async () => {

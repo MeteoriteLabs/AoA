@@ -12,6 +12,7 @@ import { logActivity, secretService } from "../services/index.js";
 import { issueService } from "../services/issues.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { createPullRequest, GitHubPrError } from "../services/github-pr.js";
+import { resolveGitRoot, runGit, push } from "../services/git.js";
 const setPatSchema = z.object({ pat: z.string().min(1) });
 const createPrBodySchema = z.object({
   workspaceId: z.string().uuid(),
@@ -19,6 +20,8 @@ const createPrBodySchema = z.object({
   body: z.string(),
   base: z.string().min(1),
   draft: z.boolean().default(false),
+  /** Explicit head branch — used when workspace.branchName is null (local_fs). */
+  head: z.string().min(1).optional(),
 });
 
 export function githubRoutes(db: Db) {
@@ -158,9 +161,57 @@ export function githubRoutes(db: Db) {
       res.status(400).json({ error: "Workspace missing repoUrl — cannot create PR" });
       return;
     }
-    if (!ws.branchName) {
-      res.status(400).json({ error: "Workspace missing branchName — cannot create PR" });
+
+    // Resolve head branch: client-provided > DB record > live git detection
+    let headBranch = parsed.data.head ?? ws.branchName ?? null;
+    if (!headBranch && ws.cwd) {
+      try {
+        const gitRoot = await resolveGitRoot(ws.cwd);
+        if (gitRoot) {
+          const detected = await runGit(["branch", "--show-current"], gitRoot, { timeout: 5_000 });
+          if (detected) headBranch = detected;
+        }
+      } catch {
+        // Fall through — headBranch stays null
+      }
+    }
+
+    if (!headBranch) {
+      res.status(400).json({ error: "Cannot determine head branch — no branchName in DB and git detection failed" });
       return;
+    }
+
+    // Auto-push: ensure the branch exists on the remote before creating the PR.
+    // Without this, GitHub returns 422 ("head sha can't be blank").
+    if (ws.cwd) {
+      try {
+        const gitRoot = await resolveGitRoot(ws.cwd);
+        if (gitRoot) {
+          // Check if the branch has an upstream. If not, push it.
+          try {
+            await runGit(
+              ["rev-parse", "--abbrev-ref", `${headBranch}@{upstream}`],
+              gitRoot,
+              { timeout: 5_000 },
+            );
+          } catch {
+            // No upstream — need to push. Retrieve PAT for auth.
+            const sSvc = secretService(db);
+            const secret = await sSvc.getByName(issue.companyId, GITHUB_PAT_SECRET_NAME);
+            const pat = secret
+              ? await sSvc.resolveSecretValue(issue.companyId, secret.id, "latest").catch(() => null)
+              : null;
+            await push(gitRoot, "origin", headBranch, pat ? { pat } : undefined);
+          }
+        }
+      } catch (pushErr) {
+        const msg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+        res.status(400).json({
+          error: `Failed to push branch "${headBranch}" to remote before creating PR`,
+          hint: msg,
+        });
+        return;
+      }
     }
 
     try {
@@ -168,7 +219,7 @@ export function githubRoutes(db: Db) {
         companyId: issue.companyId,
         repoUrl: ws.repoUrl,
         base: parsed.data.base,
-        head: ws.branchName,
+        head: headBranch,
         title: parsed.data.title,
         body: parsed.data.body,
         draft: parsed.data.draft,

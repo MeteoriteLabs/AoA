@@ -293,7 +293,7 @@ export function WorkspaceRightPanel({
                       )}
                       {section.name === "git" && (
                         <div className="px-3">
-                          <GitPanel workspace={workspace} issueId={issueId} />
+                          <GitPanel workspace={workspace} issueId={issueId} isExpanded={!!isOpen} />
                         </div>
                       )}
                       {section.name === "terminal" && (

@@ -72,6 +72,7 @@ import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { cliAuthRoutes } from "./routes/cli-auth.js";
 import { authProfileRoutes } from "./routes/auth-profile.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
+import { workspaceGitRoutes } from "./routes/workspace-git.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
@@ -291,6 +292,7 @@ export async function createApp(
   api.use(instanceSettingsRoutes(db));
   api.use(cliAuthRoutes(db));
   api.use(executionWorkspaceRoutes(db));
+  api.use(workspaceGitRoutes(db));
   api.use(filesystemRoutes());
   api.use(adapterRoutes());
   api.use(activityRoutes(db));
