@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
@@ -9,6 +9,7 @@ import { GitPanel } from "../components/workspace/tools/GitPanel";
 const mockGetIssue = vi.fn();
 const mockCreatePR = vi.fn();
 const mockPushToast = vi.fn();
+const mockGetGitStatus = vi.fn();
 
 vi.mock("../api/issues", () => ({
   issuesApi: { get: (...args: unknown[]) => mockGetIssue(...args) },
@@ -17,6 +18,15 @@ vi.mock("../api/issues", () => ({
 vi.mock("../api/github-integration", () => ({
   githubIntegrationApi: {
     createPR: (...args: unknown[]) => mockCreatePR(...args),
+  },
+}));
+
+vi.mock("../api/execution-workspaces", () => ({
+  executionWorkspacesApi: {
+    getGitStatus: (...args: unknown[]) => mockGetGitStatus(...args),
+    getGitLog: vi.fn().mockResolvedValue({ gitAvailable: true, entries: [] }),
+    gitCommit: vi.fn().mockResolvedValue({ hash: "abc", message: "", filesCommitted: [], skippedFiles: [] }),
+    gitPush: vi.fn().mockResolvedValue({ pushed: true, remote: "origin", branch: "main" }),
   },
 }));
 
@@ -94,12 +104,23 @@ function renderPanel(
 describe("GitPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default git status: git available, clean tree, branch matches workspace.branchName
+    mockGetGitStatus.mockResolvedValue({
+      gitAvailable: true,
+      branch: "ENG-99-fix-auth",
+      detachedHead: false,
+      remote: null,
+      ahead: null,
+      behind: null,
+      files: [],
+      clean: true,
+    });
   });
 
-  it("renders branch name, base ref, and repo URL", () => {
+  it("renders branch name, base ref, and repo URL", async () => {
     renderPanel();
 
-    expect(screen.getByText("ENG-99-fix-auth")).toBeInTheDocument();
+    expect(await screen.findByText("ENG-99-fix-auth")).toBeInTheDocument();
     expect(screen.getByText("main")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /github\.com/i })).toHaveAttribute(
       "href",
@@ -114,19 +135,19 @@ describe("GitPanel", () => {
       .mockResolvedValue(undefined);
     renderPanel();
 
-    const copyBtn = screen.getByTestId("copy-branch-btn");
+    const copyBtn = await screen.findByTestId("copy-branch-btn");
     await user.click(copyBtn);
 
     expect(spy).toHaveBeenCalledWith("ENG-99-fix-auth");
     spy.mockRestore();
   });
 
-  it("shows 'No PR created' when metadata.pr is absent", () => {
+  it("shows 'No PR created' when metadata.pr is absent", async () => {
     renderPanel();
-    expect(screen.getByText("No PR created")).toBeInTheDocument();
+    expect(await screen.findByText("No PR created")).toBeInTheDocument();
   });
 
-  it("renders PR badge and link when metadata.pr has new {url, number, state} shape", () => {
+  it("renders PR badge and link when metadata.pr has new {url, number, state} shape", async () => {
     const ws = makeWorkspace({
       metadata: {
         pr: {
@@ -140,7 +161,7 @@ describe("GitPanel", () => {
     });
     renderPanel({ workspace: ws as any });
 
-    expect(screen.getByText("#42")).toBeInTheDocument();
+    expect(await screen.findByText("#42")).toBeInTheDocument();
     expect(screen.getByText("open")).toBeInTheDocument();
     // External "View PR #42" link is rendered in place of the Create PR button.
     const viewPrLink = screen.getByTestId("pr-link");
@@ -151,28 +172,43 @@ describe("GitPanel", () => {
     expect(viewPrLink).toHaveTextContent("View PR #42");
   });
 
-  it("hides repo URL row when repoUrl is null", () => {
+  it("hides repo URL row when repoUrl is null", async () => {
     renderPanel({ workspace: makeWorkspace({ repoUrl: null }) as any });
+    // Wait for status to load, then confirm repo-url-row is absent
+    await screen.findByText("No PR created");
     expect(screen.queryByTestId("repo-url-row")).not.toBeInTheDocument();
   });
 
-  it("hides branch row when branchName is null", () => {
+  it("hides branch row when branchName is null", async () => {
+    // Override status to return no branch (workspace has no branch provisioned yet)
+    mockGetGitStatus.mockResolvedValue({
+      gitAvailable: true,
+      branch: null,
+      detachedHead: false,
+      remote: null,
+      ahead: null,
+      behind: null,
+      files: [],
+      clean: true,
+    });
     renderPanel({ workspace: makeWorkspace({ branchName: null }) as any });
+    // Wait for status to load, then confirm branch-row is absent
+    await screen.findByText("No PR created");
     expect(screen.queryByTestId("branch-row")).not.toBeInTheDocument();
   });
 
-  it("Create PR button enabled when issueId provided and no PR exists", () => {
+  it("Create PR button enabled when issueId provided and no PR exists", async () => {
     renderPanel();
 
-    const btn = screen.getByTestId("create-pr-btn");
+    const btn = await screen.findByTestId("create-pr-btn");
     expect(btn).toBeEnabled();
     expect(btn).toHaveTextContent(/create pr/i);
   });
 
-  it("Create PR button disabled with helper tooltip when issueId is null", () => {
+  it("Create PR button disabled with helper tooltip when issueId is null", async () => {
     renderPanel({ issueId: null });
 
-    const btn = screen.getByTestId("create-pr-btn");
+    const btn = await screen.findByTestId("create-pr-btn");
     expect(btn).toBeDisabled();
     expect(btn).toHaveAttribute(
       "title",
@@ -189,10 +225,14 @@ describe("GitPanel", () => {
     const user = userEvent.setup();
     renderPanel();
 
+    // Wait for the git status to load so the Create PR button is rendered
+    const createPrBtn = await screen.findByTestId("create-pr-btn");
     expect(screen.queryByTestId("create-pr-dialog")).not.toBeInTheDocument();
 
-    await user.click(screen.getByTestId("create-pr-btn"));
+    await user.click(createPrBtn);
 
-    expect(screen.getByTestId("create-pr-dialog")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("create-pr-dialog")).toBeInTheDocument(),
+    );
   });
 });
