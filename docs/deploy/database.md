@@ -75,3 +75,42 @@ export function createDb(url: string) {
 | `postgres://...supabase.com...` | Hosted Supabase |
 
 The Drizzle schema (`packages/db/src/schema/`) is the same regardless of mode.
+
+## Backups
+
+AoA includes a built-in backup utility in `packages/db/src/backup-lib.ts`. It exports `runDatabaseBackup` and `runDatabaseRestore`.
+
+### Scope
+
+Backups include **all non-system schemas** — `public`, `drizzle`, and any other user-created schemas. This means the Drizzle migration journal (`drizzle.__drizzle_migrations`) is always included, so restored databases reflect the correct migration state and never enter a "pending migrations" limbo.
+
+System schemas (`pg_catalog`, `information_schema`, `pg_toast*`, `pg_temp_*`) are excluded.
+
+### Backup engine
+
+`runDatabaseBackup` selects an engine automatically (`backupEngine: "auto"`):
+
+- **pg_dump** — used when no `excludeTables` / `nullifyColumns` transforms are configured. Produces a gzip-compressed SQL file.
+- **JavaScript** — fallback when pg_dump is unavailable or when transforms are required. Uses `COPY … FROM stdin` for bulk tables (requires psql on restore) or `INSERT` statements when `backupEngine: "javascript"` is explicitly set.
+
+### Retention policies
+
+Two modes:
+
+| Mode | Config |
+|------|--------|
+| Count | `{ mode: "count", count: N }` — keep the N newest backup files |
+| Tiered | `{ dailyDays, weeklyWeeks, monthlyMonths }` — rolling daily/weekly/monthly windows |
+
+The default policy (`DEFAULT_BACKUP_RETENTION`) keeps 7 daily, 4 weekly, and 1 monthly backup.
+
+### Restore
+
+`runDatabaseRestore` tries `psql` first. If psql is unavailable and the backup file contains AoA statement breakpoints, it falls back to the JavaScript runner (statement-by-statement via the `postgres` client). Legacy backups without breakpoints require psql.
+
+### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `AOA_PG_DUMP_PATH` | Override path to the `pg_dump` binary |
+| `AOA_PSQL_PATH` | Override path to the `psql` binary |
