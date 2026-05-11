@@ -121,7 +121,14 @@ The server sets these automatically when invoking adapters. They appear in the s
 | `AOA_APPROVAL_STATUS` | Approval decision (`approved` / `rejected` / `revision_requested`) |
 | `AOA_LINKED_ISSUE_IDS` | Comma-separated linked issue IDs for cross-task context |
 | `AOA_WORKSPACE_CWD` | Working directory for the agent (when an execution workspace is provisioned) |
-| `AOA_WORKSPACE_SOURCE`, `AOA_WORKSPACE_ID`, `AOA_WORKSPACE_REPO_URL`, `AOA_WORKSPACE_REPO_REF` | Workspace metadata when applicable |
+| `AOA_WORKSPACE_SOURCE` | How the workspace was provisioned (`task`, `agent_home`, `project_primary`, etc.) |
+| `AOA_WORKSPACE_STRATEGY` | Workspace strategy: `isolated` / `shared` / `reuse_existing` |
+| `AOA_WORKSPACE_ID` | Database ID of the execution workspace record |
+| `AOA_WORKSPACE_REPO_URL` | Git remote URL when the workspace is git-backed |
+| `AOA_WORKSPACE_REPO_REF` | Base ref (branch or tag) that was cloned |
+| `AOA_WORKSPACE_BRANCH` | Git branch name when workspace is git-backed |
+| `AOA_WORKSPACE_WORKTREE_PATH` | Filesystem path to the git worktree when applicable |
+| `AGENT_HOME` | Agent's home directory (memory + life files live here) |
 
 ## Session impersonation (CLI / mcp)
 

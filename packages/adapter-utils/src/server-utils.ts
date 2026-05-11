@@ -1238,3 +1238,47 @@ export async function removeMaintainerOnlySkillSymlinks(
     return [];
   }
 }
+
+// ---------------------------------------------------------------------------
+// Workspace env-var propagation helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply AoA workspace environment variables to an env record.
+ *
+ * Centralizes all 9 AOA_WORKSPACE_* / AGENT_HOME env keys so adapters
+ * don't drift from each other. Values that are null, undefined, or empty
+ * strings are silently skipped (the key is not written to the record).
+ *
+ * Ports d47ffa87 from paperclip (rebranded paperclip→aoa).
+ */
+export function applyAoaWorkspaceEnv(
+  env: Record<string, string>,
+  input: {
+    workspaceCwd?: string | null;
+    workspaceSource?: string | null;
+    workspaceStrategy?: string | null;
+    workspaceId?: string | null;
+    workspaceRepoUrl?: string | null;
+    workspaceRepoRef?: string | null;
+    workspaceBranch?: string | null;
+    workspaceWorktreePath?: string | null;
+    agentHome?: string | null;
+  },
+): Record<string, string> {
+  const mappings: [string, string | null | undefined][] = [
+    ["AOA_WORKSPACE_CWD", input.workspaceCwd],
+    ["AOA_WORKSPACE_SOURCE", input.workspaceSource],
+    ["AOA_WORKSPACE_STRATEGY", input.workspaceStrategy],
+    ["AOA_WORKSPACE_ID", input.workspaceId],
+    ["AOA_WORKSPACE_REPO_URL", input.workspaceRepoUrl],
+    ["AOA_WORKSPACE_REPO_REF", input.workspaceRepoRef],
+    ["AOA_WORKSPACE_BRANCH", input.workspaceBranch],
+    ["AOA_WORKSPACE_WORKTREE_PATH", input.workspaceWorktreePath],
+    ["AGENT_HOME", input.agentHome],
+  ];
+  for (const [key, value] of mappings) {
+    if (typeof value === "string" && value.length > 0) env[key] = value;
+  }
+  return env;
+}

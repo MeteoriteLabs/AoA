@@ -18,6 +18,7 @@ import {
   ensurePathInEnv,
   renderTemplate,
   runChildProcess,
+  applyAoaWorkspaceEnv,
 } from "@armyofagents/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
@@ -205,21 +206,17 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (linkedIssueIds.length > 0) {
     env.AOA_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   }
-  if (effectiveWorkspaceCwd) {
-    env.AOA_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  }
-  if (workspaceSource) {
-    env.AOA_WORKSPACE_SOURCE = workspaceSource;
-  }
-  if (workspaceId) {
-    env.AOA_WORKSPACE_ID = workspaceId;
-  }
-  if (workspaceRepoUrl) {
-    env.AOA_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  }
-  if (workspaceRepoRef) {
-    env.AOA_WORKSPACE_REPO_REF = workspaceRepoRef;
-  }
+  applyAoaWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd || null,
+    workspaceSource: workspaceSource || null,
+    workspaceStrategy: asString(workspaceContext.strategy, "") || null,
+    workspaceId: workspaceId || null,
+    workspaceRepoUrl: workspaceRepoUrl || null,
+    workspaceRepoRef: workspaceRepoRef || null,
+    workspaceBranch: asString(workspaceContext.branchName, "") || null,
+    workspaceWorktreePath: asString(workspaceContext.worktreePath, "") || null,
+    agentHome: asString(workspaceContext.agentHome, "") || null,
+  });
   if (workspaceHints.length > 0) {
     env.AOA_WORKSPACES_JSON = JSON.stringify(workspaceHints);
   }
