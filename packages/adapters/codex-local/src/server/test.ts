@@ -15,6 +15,7 @@ import {
 } from "@armyofagents/adapter-utils/server-utils";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
+import { prepareManagedCodexHome } from "./codex-home.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -154,13 +155,33 @@ export async function testEnvironment(
       if (extraArgs.length > 0) args.push(...extraArgs);
       args.push("-");
 
+      // Codex CLI 0.122+ reads auth from $CODEX_HOME/auth.json rather than env.
+      // Materialize auth.json into a managed per-company home dir before the probe.
+      // On Windows, the shell trap variant is not supported (Issue #114); we fall back
+      // to a bare probe — API-key auth may return 401 on Codex 0.122+ in that case.
+      const configuredOpenAiApiKey =
+        typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim().length > 0
+          ? env.OPENAI_API_KEY.trim()
+          : typeof process.env.OPENAI_API_KEY === "string" && process.env.OPENAI_API_KEY.trim().length > 0
+            ? process.env.OPENAI_API_KEY.trim()
+            : null;
+
+      const probeRunId = `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const managedCodexHome = await prepareManagedCodexHome(
+        process.env,
+        () => {},
+        ctx.companyId,
+        { apiKey: configuredOpenAiApiKey },
+      );
+      const probeEnv = { ...env, CODEX_HOME: managedCodexHome };
+
       const probe = await runChildProcess(
-        `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        probeRunId,
         command,
         args,
         {
           cwd,
-          env,
+          env: probeEnv,
           timeoutSec: 45,
           graceSec: 5,
           stdin: "Respond with hello.",
