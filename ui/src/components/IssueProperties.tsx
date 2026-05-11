@@ -14,7 +14,7 @@ import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
-import { formatDate, formatDateTime, cn, projectUrl } from "../lib/utils";
+import { formatDateTime, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
