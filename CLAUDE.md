@@ -60,6 +60,19 @@ touching these areas, check against this list before porting.
 - **Do NOT port** any Paperclip commit that sets this field to `false` in
   `authenticated` mode. Multi-human board accountability is the AoA thesis.
 
+### D8 — Planning mode dispatch gate
+
+- `issues.work_mode` column (`"standard" | "planning"`, DB default `"standard"`).
+- When `work_mode = "planning"`, the heartbeat dispatch gate in
+  `server/src/routes/issues.ts` (CREATE line ≈609, UPDATE/PATCH line ≈772)
+  is suppressed via `shouldDispatchIssueWakeup()` in
+  `server/src/routes/issues-planning-mode-dispatch.ts`.
+- UI: amber "Planning" pill on IssuesList rows, NewIssueDialog chip bar, and
+  TaskSlideOver header (click to revert to Standard).
+- **Do NOT port** any Paperclip commit that adds `work_mode` or a similar field
+  differently — AoA's interpretation is that planning tasks are human-curated and
+  must not auto-dispatch until the founder switches them to Standard.
+
 ---
 
 ## Naming Map (UI ↔ DB/API)
