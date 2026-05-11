@@ -8,6 +8,7 @@ import {
   companyPortabilityPreviewSchema,
   createCompanySchema,
   updateCompanySchema,
+  type DeploymentMode,
 } from "@armyofagents/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -15,7 +16,7 @@ import { assertRole } from "../middleware/rbac.js";
 import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
-export function companyRoutes(db: Db) {
+export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) {
   const router = Router();
   const svc = companyService(db);
   const portability = companyPortabilityService(db);
