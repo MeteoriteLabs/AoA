@@ -118,6 +118,9 @@ export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 
+export const ISSUE_WORK_MODES = ["standard", "planning"] as const;
+export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
+
 export const ISSUE_SOURCES = ["manual", "brief", "agent_proposal", "mcp"] as const;
 export type IssueSource = (typeof ISSUE_SOURCES)[number];
 
