@@ -90,7 +90,7 @@ import {
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
-export const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
+export const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 // AoA canonical names. Existing rows still using the legacy paperclip-
 // names are read transparently via the helpers below; writes only emit
