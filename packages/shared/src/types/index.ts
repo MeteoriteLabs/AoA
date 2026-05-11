@@ -204,6 +204,8 @@ export type {
   InstanceExperimentalSettings,
   InstanceSettings,
   BackupRetentionPolicy,
+  BackupRetentionTieredPolicy,
+  BackupRetentionCountPolicy,
 } from "./instance.js";
 export {
   DAILY_RETENTION_PRESETS,

@@ -34,46 +34,82 @@ interface CompanyContextValue {
 
 const STORAGE_KEY = "aoa.selectedCompanyId";
 
+export function resolveBootstrapCompanySelection(input: {
+  companies: Company[];
+  sidebarCompanies: Company[];
+  selectedCompanyId: string | null;
+  storedCompanyId: string | null;
+}): string | null {
+  if (input.companies.length === 0) return null;
+  const selectableCompanies = input.sidebarCompanies.length > 0 ? input.sidebarCompanies : input.companies;
+  if (input.selectedCompanyId && selectableCompanies.some((c) => c.id === input.selectedCompanyId)) {
+    return input.selectedCompanyId;
+  }
+  if (input.storedCompanyId && selectableCompanies.some((c) => c.id === input.storedCompanyId)) {
+    return input.storedCompanyId;
+  }
+  return selectableCompanies[0]?.id ?? null;
+}
+
+export function shouldClearStoredCompanySelection(input: {
+  companies: Company[];
+  isLoading: boolean;
+  unauthorized: boolean;
+}): boolean {
+  return !input.isLoading && !input.unauthorized && input.companies.length === 0;
+}
+
 const CompanyContext = createContext<CompanyContextValue | null>(null);
 
 export function CompanyProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [selectionSource, setSelectionSource] = useState<CompanySelectionSource>("bootstrap");
-  const [selectedCompanyId, setSelectedCompanyIdState] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY));
+  const [selectedCompanyId, setSelectedCompanyIdState] = useState<string | null>(null);
 
-  const { data: companies = [], isLoading, error } = useQuery({
+  const companiesQuery = useQuery({
     queryKey: queryKeys.companies.all,
     queryFn: async () => {
       try {
-        return await companiesApi.list();
+        return { companies: await companiesApi.list(), unauthorized: false };
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
-          return [];
+          return { companies: [] as Company[], unauthorized: true };
         }
         throw err;
       }
     },
     retry: false,
   });
+  const companies = companiesQuery.data?.companies ?? [];
+  const unauthorized = companiesQuery.data?.unauthorized ?? false;
+  const isLoading = companiesQuery.isLoading;
+  const error = companiesQuery.error;
   const sidebarCompanies = useMemo(
     () => companies.filter((company) => company.status !== "archived"),
     [companies],
   );
 
-  // Auto-select first company when list loads
+  // Auto-select company on bootstrap, validating stored id against loaded list
   useEffect(() => {
-    if (companies.length === 0) return;
-
-    const selectableCompanies = sidebarCompanies.length > 0 ? sidebarCompanies : companies;
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && selectableCompanies.some((c) => c.id === stored)) return;
-    if (selectedCompanyId && selectableCompanies.some((c) => c.id === selectedCompanyId)) return;
-
-    const next = selectableCompanies[0]!.id;
-    setSelectedCompanyIdState(next);
-    setSelectionSource("bootstrap");
-    localStorage.setItem(STORAGE_KEY, next);
-  }, [companies, selectedCompanyId, sidebarCompanies]);
+    if (isLoading) return;
+    if (shouldClearStoredCompanySelection({ companies, isLoading, unauthorized })) {
+      setSelectedCompanyIdState(null);
+      localStorage.removeItem(STORAGE_KEY);
+      return;
+    }
+    const storedCompanyId = localStorage.getItem(STORAGE_KEY);
+    const resolved = resolveBootstrapCompanySelection({
+      companies,
+      sidebarCompanies: sidebarCompanies ?? [],
+      selectedCompanyId,
+      storedCompanyId,
+    });
+    if (resolved !== selectedCompanyId) {
+      setSelectedCompanyIdState(resolved);
+      setSelectionSource("bootstrap");
+      if (resolved) localStorage.setItem(STORAGE_KEY, resolved);
+    }
+  }, [companies, sidebarCompanies, isLoading, unauthorized, selectedCompanyId]);
 
   const setSelectedCompanyId = useCallback((companyId: string, options?: CompanySelectionOptions) => {
     setSelectedCompanyIdState(companyId);

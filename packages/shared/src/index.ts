@@ -409,6 +409,8 @@ export type {
   InstanceExperimentalSettings,
   InstanceSettings,
   BackupRetentionPolicy,
+  BackupRetentionTieredPolicy,
+  BackupRetentionCountPolicy,
   FeedbackDataSharingPreference,
   FeedbackExportSummary,
   FeedbackTargetType,

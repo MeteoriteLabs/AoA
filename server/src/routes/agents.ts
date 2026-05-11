@@ -19,6 +19,7 @@ import {
   wakeAgentSchema,
   updateAgentSchema,
   type InstanceSchedulerHeartbeatAgent,
+  type WakeAgent,
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import {
@@ -1382,7 +1383,7 @@ export function agentRoutes(db: Db) {
     res.status(202).json(run);
   });
 
-  router.post("/agents/:id/heartbeat/invoke", async (req, res) => {
+  router.post("/agents/:id/heartbeat/invoke", validate(wakeAgentSchema), async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
     if (!agent) {
@@ -1396,19 +1397,20 @@ export function agentRoutes(db: Db) {
       return;
     }
 
-    const run = await heartbeat.invoke(
-      id,
-      "on_demand",
-      {
+    const body = req.body as WakeAgent;
+    const run = await heartbeat.wakeup(id, {
+      source: body.source ?? "on_demand",
+      triggerDetail: body.triggerDetail ?? "manual",
+      reason: body.reason ?? null,
+      payload: body.payload ?? null,
+      idempotencyKey: body.idempotencyKey ?? null,
+      requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
+      requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      contextSnapshot: {
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
       },
-      "manual",
-      {
-        actorType: req.actor.type === "agent" ? "agent" : "user",
-        actorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
-      },
-    );
+    });
 
     if (!run) {
       res.status(202).json({ status: "skipped" });

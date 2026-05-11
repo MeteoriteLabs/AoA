@@ -6,7 +6,9 @@ import {
   companySecrets,
   goals,
   heartbeatRuns,
+  inboxDismissals,
   issues,
+  issueReadStates,
   projects,
   routineRuns,
   routines,
@@ -572,6 +574,33 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     return value;
   }
 
+  async function touchIssueForUserInbox(
+    executor: Db,
+    input: { companyId: string; issueId: string; userId: string; touchedAt: Date },
+  ): Promise<void> {
+    await executor
+      .insert(issueReadStates)
+      .values({
+        companyId: input.companyId,
+        issueId: input.issueId,
+        userId: input.userId,
+        lastReadAt: input.touchedAt,
+      })
+      .onConflictDoUpdate({
+        target: [issueReadStates.companyId, issueReadStates.issueId, issueReadStates.userId],
+        set: { lastReadAt: input.touchedAt, updatedAt: input.touchedAt },
+      });
+    await executor
+      .delete(inboxDismissals)
+      .where(
+        and(
+          eq(inboxDismissals.companyId, input.companyId),
+          eq(inboxDismissals.userId, input.userId),
+          eq(inboxDismissals.itemKey, `issue:${input.issueId}`),
+        ),
+      );
+  }
+
   async function dispatchRoutineRun(input: {
     routine: typeof routines.$inferSelect;
     trigger: typeof routineTriggers.$inferSelect | null;
@@ -581,6 +610,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     /** Strict per-run variable overrides; merged with stored defaults; unknown keys throw. */
     variableOverrides?: Record<string, string> | null;
     idempotencyKey?: string | null;
+    actor?: { agentId: string | null; userId: string | null } | null;
   }) {
     const routineVariables = input.routine.variables ?? [];
     // Apply explicit variableOverrides on top of stored defaults first, then
@@ -601,6 +631,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       interpolationContext,
     );
     const mergedPayload = mergeRoutineRunPayload(input.payload ?? null, resolvedVariables);
+    const manualRunnerUserId = input.source === "manual" ? input.actor?.userId ?? null : null;
+    const manualRunnerAgentId = input.source === "manual" ? input.actor?.agentId ?? null : null;
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
@@ -664,6 +696,14 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             issueId: activeIssue.id,
             nextRunAt,
           }, txDb);
+          if (manualRunnerUserId) {
+            await touchIssueForUserInbox(txDb, {
+              companyId: input.routine.companyId,
+              issueId: activeIssue.id,
+              userId: manualRunnerUserId,
+              touchedAt: triggeredAt,
+            });
+          }
           return updated ?? createdRun;
         }
 
@@ -680,6 +720,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             originKind: "routine_execution",
             originId: input.routine.id,
             originRunId: createdRun.id,
+            createdByUserId: manualRunnerUserId,
+            createdByAgentId: manualRunnerAgentId,
           });
         } catch (error) {
           const isOpenExecutionConflict =
@@ -710,6 +752,14 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             issueId: existingIssue.id,
             nextRunAt,
           }, txDb);
+          if (manualRunnerUserId) {
+            await touchIssueForUserInbox(txDb, {
+              companyId: input.routine.companyId,
+              issueId: existingIssue.id,
+              userId: manualRunnerUserId,
+              touchedAt: triggeredAt,
+            });
+          }
           return updated ?? createdRun;
         }
 
@@ -1142,7 +1192,11 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       };
     },
 
-    runRoutine: async (id: string, input: RunRoutine) => {
+    runRoutine: async (
+      id: string,
+      input: RunRoutine,
+      actor?: { agentId: string | null; userId: string | null } | null,
+    ) => {
       const routine = await getRoutineById(id);
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
@@ -1157,6 +1211,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         variables: input.variables as Record<string, unknown> | null | undefined,
         variableOverrides: input.variableOverrides as Record<string, string> | null | undefined,
         idempotencyKey: input.idempotencyKey,
+        actor,
       });
     },
 

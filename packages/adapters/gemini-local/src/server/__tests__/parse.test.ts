@@ -82,6 +82,26 @@ describe("parseGeminiJsonl", () => {
     expect(result.summary).toBe("");
     expect(result.sessionId).toBeNull();
   });
+
+  it("parses {type:'message', role:'assistant'} events", () => {
+    const input = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      content: "Hello from Gemini v0.38",
+    });
+    const result = parseGeminiJsonl(input);
+    expect(result.summary).toContain("Hello from Gemini v0.38");
+  });
+
+  it("ignores {type:'message', role:'user'} events for assistant summary", () => {
+    const input = JSON.stringify({
+      type: "message",
+      role: "user",
+      content: "User typed this",
+    });
+    const result = parseGeminiJsonl(input);
+    expect(result.summary).not.toContain("User typed this");
+  });
 });
 
 describe("isGeminiUnknownSessionError", () => {

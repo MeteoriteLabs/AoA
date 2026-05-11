@@ -334,6 +334,22 @@ function invalidateHeartbeatQueries(
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
   }
+
+  // Broaden invalidation to issue views: a run completion typically changes
+  // issue status (in_progress → in_review / done / cancelled), so the list
+  // and any cached issue details need to be refreshed.  Mirrors the
+  // issueRefs-loop from Paperclip 68f69975, adapted for AoA (no issueRefs
+  // field in the live-event payload — invalidate the whole list instead).
+  const status = readString(payload.status);
+  if (status && TERMINAL_RUN_STATUSES.has(status)) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    // Also invalidate any issue detail / run queries keyed by runId in case
+    // the UI has the run's contextSnapshot.issueId cached.
+    const runId = readString(payload.runId);
+    if (runId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.runIssues(runId) });
+    }
+  }
 }
 
 function invalidateActivityQueries(

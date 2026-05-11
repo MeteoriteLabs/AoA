@@ -435,6 +435,12 @@ if (config.deploymentMode === "authenticated") {
   }
 }
 
+const requestedListenPort = config.port;
+const listenPort = await detectPort(requestedListenPort);
+if (listenPort !== requestedListenPort) {
+  logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`);
+}
+
 let authReady = config.deploymentMode === "local_trusted";
 let betterAuthHandler: RequestHandler | undefined;
 let resolveSession:
@@ -461,7 +467,7 @@ if (config.deploymentMode === "authenticated") {
       "authenticated mode requires BETTER_AUTH_SECRET (or AOA_AGENT_JWT_SECRET) to be set",
     );
   }
-  const derivedTrustedOrigins = deriveAuthTrustedOrigins(config);
+  const derivedTrustedOrigins = deriveAuthTrustedOrigins(config, { listenPort });
   const envTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
     .split(",")
     .map((value) => value.trim())
@@ -503,11 +509,6 @@ const app = await createApp(db as any, {
   resolveSession,
 });
 const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
-const listenPort = await detectPort(config.port);
-
-if (listenPort !== config.port) {
-  logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);
-}
 
 const runtimeListenHost = config.host;
 const runtimeApiHost =

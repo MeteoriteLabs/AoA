@@ -14,6 +14,7 @@ import {
   redactEnvForLogs,
   renderTemplate,
   runChildProcess,
+  applyAoaWorkspaceEnv,
 } from "@armyofagents/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
@@ -131,12 +132,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (approvalId) env.AOA_APPROVAL_ID = approvalId;
   if (approvalStatus) env.AOA_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.AOA_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (effectiveWorkspaceCwd) env.AOA_WORKSPACE_CWD = effectiveWorkspaceCwd;
-  if (workspaceSource) env.AOA_WORKSPACE_SOURCE = workspaceSource;
-  if (workspaceId) env.AOA_WORKSPACE_ID = workspaceId;
-  if (workspaceRepoUrl) env.AOA_WORKSPACE_REPO_URL = workspaceRepoUrl;
-  if (workspaceRepoRef) env.AOA_WORKSPACE_REPO_REF = workspaceRepoRef;
-  if (agentHome) env.AGENT_HOME = agentHome;
+  applyAoaWorkspaceEnv(env, {
+    workspaceCwd: effectiveWorkspaceCwd || null,
+    workspaceSource: workspaceSource || null,
+    workspaceStrategy: asString(workspaceContext.strategy, "") || null,
+    workspaceId: workspaceId || null,
+    workspaceRepoUrl: workspaceRepoUrl || null,
+    workspaceRepoRef: workspaceRepoRef || null,
+    workspaceBranch: asString(workspaceContext.branchName, "") || null,
+    workspaceWorktreePath: asString(workspaceContext.worktreePath, "") || null,
+    agentHome: agentHome || null,
+  });
   if (workspaceHints.length > 0) env.AOA_WORKSPACES_JSON = JSON.stringify(workspaceHints);
 
   for (const [key, value] of Object.entries(envConfig)) {
