@@ -361,6 +361,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           description: input.description ?? null,
           status: "todo",
           priority: input.priority ?? "medium",
+          workMode: "standard" as const,
           assigneeAgentId: input.assigneeAgentId ?? null,
           assigneeUserId: null,
           checkoutRunId: null,
