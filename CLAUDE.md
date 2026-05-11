@@ -1,92 +1,429 @@
 # AoA (Army of Agents)
 
-> **Version status:** v1.0.0 (stable). Sprint 4 regression closed 2026-04-24.
+Hybrid Workforce Operating System for startups. Founding teams of any size — solo founders to multi-person teams — run AI agents + humans from a single control room. Agents extend your team; they don't replace it.
 
-Hybrid Workforce Operating System for solo founders. Built on Paperclip (open-source AI agent orchestration). Founder manages AI agents + humans from a single control room.
+---
 
-## Stack
+## If You Are an AI Agent
 
-- **Frontend:** React + Vite + TailwindCSS (`ui/src/`)
-- **Backend:** Express 5.x framework (`server/src/`)
-- **Database:** PostgreSQL + Drizzle ORM (`packages/db/src/schema/`)
-- **Shared types:** `packages/shared/src/`
-- **Adapters:** `packages/adapters/` + `server/src/adapters/`
+You are reading this as context for working on the AoA codebase. This applies whether you are doing feature development, bug fixes, code review, or exploration.
+
+- **Code is always truth.** If this file conflicts with what you find in source, trust the code and flag the discrepancy.
+- **Architectural decisions are locked.** Before changing how a system works, read `docs/architecture/decisions.md`. 90+ decisions are locked. Do not relitigate them.
+- **AoA is not open source.** Do not add open-source license headers, public contribution guides, or community-facing copy.
+- **Commander** is the name of the always-on internal AI assistant built into AoA. It has its own onboarding context (`server/src/onboarding-assets/`). You are not Commander unless explicitly told so.
+- **Paperclip** is the open-source base AoA forked from. It is not mentioned in user-facing docs. For wire protocol contracts and deprecated table tracking, see `docs/paperclip-migration.md`.
+
+---
 
 ## Critical Rules
 
 1. **Drizzle ORM only.** Schema changes go in `packages/db/src/schema/`. Run `pnpm db:generate` for migrations. NEVER write raw SQL migration files.
 2. **Follow existing patterns.** New services follow `server/src/services/goals.ts`. New routes follow `server/src/routes/goals.ts`. New schemas follow `packages/db/src/schema/goals.ts`.
-3. **"Issues" = "Tasks" in UI only.** The DB table is `issues`. The API routes use `/issues`. But all user-facing text says "Task" / "Tasks". Never rename the table or routes.
+3. **"Issues" = "Tasks" in UI only.** The DB table is `issues`. The API routes use `/issues`. All user-facing text says "Task" / "Tasks". Never rename the table or routes.
 4. **"Projects" table serves both Departments and Projects.** Distinguished by `type` field: `'department'` | `'project'`. Same mechanics for both.
 5. **MCP inbound with authenticated write permission may create tasks directly.** `debrief-push` remains for unstructured content requiring extraction. Anonymous MCP input must route through Discussion. (Decision #14, revised 2026-04-21)
-6. **Agents cannot write to Memory directly.** They can suggest items (status: 'pending'), but only the founder can approve identity + domain layers. V2: team leads can additionally approve active_context for their departments. Working memory is auto-created. (Decisions #15, #52)
+6. **Agents cannot write to Memory directly.** They can suggest items (status: 'pending'), but only the founder can approve identity + domain layers. Team leads can additionally approve active_context for their departments. Working memory is auto-created. (Decisions #15, #52)
 7. **Artifact versions are immutable.** Once created, never modified. Changes = new version. Founder picks winner for branching — no auto-merge. (Decisions #43, #45)
 8. **Memory feedback requires ≥3 occurrences.** Don't suggest memory from one-off edits. Pattern must be consistent. (Decision #46)
 9. **Discussion scope fallback: item-level > entry-level > discussion-level > null.** Founder's per-item override always wins. (Decision #61)
-10. **Consult `docs/aoa/reference/decisions.md` before making architectural choices.** 90 locked decisions exist. Don't relitigate.
+10. **Consult `docs/architecture/decisions.md` before making architectural choices.** 90+ locked decisions exist. Do not relitigate.
 
-## Naming Map (Paperclip → AoA)
+---
 
-| Paperclip UI | AoA UI | DB/API unchanged |
-|-------------|--------|------------------|
-| Issue | Task | `issues` table |
-| Dashboard | Home | routes |
-| Costs | Budget | `cost_events` table |
-| Org | Team | routes |
-| Debrief | Discussion | `discussions` table |
-| Brief Item | Extracted Item | `discussion_extracted_items` table |
+## Naming Map (UI ↔ DB/API)
 
-Goals, Agents, Company, Settings, Activity, Inbox — unchanged.
+| UI Label | DB Table | Notes |
+|----------|----------|-------|
+| Task | `issues` | API routes use `/issues` |
+| Home | — | Was "Dashboard" |
+| Budget | `cost_events` | Was "Costs" |
+| Team | — | Was "Org" |
+| Discussion | `discussions` | Was "Debrief" |
+| Extracted Item | `discussion_extracted_items` | Was "Brief Item" |
 
-## Key Architecture (V1)
+Goals, Agents, Company, Settings, Activity, Inbox — UI label matches DB/API name.
 
-- **Heartbeat system:** Push-based agent execution. `heartbeat.wakeup()` → HeartbeatRun → adapter executes. Agents don't pull tasks — they get told what to work on.
+---
+
+## Stack
+
+- **Frontend:** React + Vite + TailwindCSS v4 (`ui/src/`)
+- **Backend:** Express 5.x (`server/src/`)
+- **Database:** PostgreSQL + Drizzle ORM (`packages/db/src/schema/`)
+- **Shared types:** `packages/shared/src/`
+- **Adapters:** `packages/adapters/` + `server/src/adapters/`
+
+---
+
+## Adapters
+
+Registered in `server/src/adapters/registry.ts`. All agent execution is CLI-only — no direct SDK adapters.
+
+| Type | Runtime |
+|------|---------|
+| `claude_local` | Claude Code CLI |
+| `codex_local` | OpenAI Codex CLI |
+| `cursor` | Cursor IDE |
+| `opencode_local` | OpenCode CLI |
+| `openclaw` | OpenClaw runtime |
+| `gemini_local` | Gemini CLI |
+| `hermes_local` | Hermes (uses `PAPERCLIP_RUN_ID` / `PAPERCLIP_API_KEY` wire protocol — do NOT rename to AOA_*) |
+| `process` | Generic shell process |
+| `http` | HTTP webhook |
+
+API-mode adapters (`claude_api`, `openai_api`, `gemini_api`) were removed per Decision #91 and must not be re-added. The Provider SDK utilities in `server/src/services/internal-agent/providers/` remain for extraction + embedding only — not in the adapter registry.
+
+---
+
+## Architecture
+
+### Heartbeat System
+
+Push-based agent execution. `heartbeat.wakeup()` → HeartbeatRun → adapter executes. Agents don't pull tasks — they get told what to work on.
+
 - **Atomic checkout:** Issues use `SELECT FOR UPDATE NO WAIT` for single-agent locking.
-- **Adapters:** claude_local, opencode_local, openclaw, http, process, cursor, codex_local, hermes_local, gemini_local. Registered in `server/src/adapters/registry.ts`. Sprint 2A (Decision #91) removed the API-mode adapters (claude_api, openai_api, gemini_api) — agent execution is CLI-only.
-- **Provider SDK util (`server/src/services/internal-agent/providers/`):** Internal Anthropic/OpenAI/Google SDK wrappers kept for extraction + embedding generation only. Not exposed via the adapter registry. Extraction will migrate to a sub-agent CLI task when the team-under-Commander architecture lands.
-- **Discussion pipeline (V2.5):** Thread-based discussions replace Debrief/Brief. Input modes: paste, write, voice, MCP. Each entry → LLM extraction → `discussion_extracted_items` → founder approval → Tasks + Memory items. Entry-level scope overrides thread-level scope.
-- **Memory (V1):** Flat company knowledge store. Categories: decision, reference, context, insight, preference. Approval-gated. Founder is sole gatekeeper.
-- **Task dependencies:** `task_dependencies` table links tasks in blocking relationships. When a dependency task completes → dependent auto-unblocks. Separate from `parentId` (which is subtask hierarchy, not blocking). Tasks can be blocked from any non-terminal status (backlog, todo, in_progress).
-- **Why/What/How:** Agents receive context package: Vision + Mission + Goal + Memory items + Task details.
 - **Goal status machine:** `planned → active → at_risk → achieved/cancelled` with `at_risk → active` recovery.
-- **Department deletion:** Blocked if tasks or goals exist. Must reassign first. Memory items become unscoped.
-- **Extraction failure:** Discussion entry marked `failed`, founder notified via `notifications` table. Can retry or manually create.
-- **Agent hire approvals:** When `company.requireBoardApprovalForNewAgents` is true (default), agent hires go through the approval queue — the agent is created in `pending_approval` status and a `hire_agent` approval request lands in the Inbox. Nothing is auto-approved, including in `local_trusted` mode: the synthetic `local-board` actor is the lone approver and must click through the Inbox just like a real-user cloud deployment. Set `requireBoardApprovalForNewAgents: false` on the company row to skip the gate (agent is created `idle` directly). (See `server/src/routes/agents.ts:784`.)
-- **MCP inbound auth is deployment-mode-gated.** The `/companies/:cid/mcp` JSON-RPC endpoint accepts two actor types (`server/src/mcp/server.ts:146`): `mcp` (when the caller presented a Bearer token matching an `mcp_api_keys` row) and `board` (when the caller has a valid board session — i.e. the browser-board cookie in authenticated deployments, or the synthetic `local-board` actor attached automatically in `local_trusted` mode). Requests with neither are 401. This means **`local_trusted` MCP writes succeed without a Bearer token** (loopback is the trust boundary) while `cloud_auth` / `authenticated` deployments reject unauth'd MCP traffic. The MCP API keys UI is the correct call site when external clients need to authenticate — not when the host binary itself is calling.
+- **Why/What/How context:** Agents receive Vision + Mission + Goal + Memory items + Task details.
+- **Agent hire approvals:** When `company.requireBoardApprovalForNewAgents` is true (default), hires queue in Inbox. Agent created as `pending_approval`. Set to `false` to skip (agent created `idle` directly). See `server/src/routes/agents.ts:784`.
+- **Run summary comments:** Auto-generated task comments after each heartbeat run (duration, token usage, cost, outcome, detected files). Uses `issue_comments` table. Opt-out via `runtimeConfig.autoRunSummary`. Files truncated to 10 + "+N more".
 
-## V2 Architecture (Implemented)
+### Memory System
 
-V2 adds four pillars: **Intelligence**, **Team**, **Artifacts**, **Integration**. All features below are implemented and tested.
+4-layer approval-gated memory model. Founder is sole gatekeeper for identity + domain layers.
 
-- **Memory tab UI (May 2026):** 3-pane explorer with tabbed right pane (URL-backed via `?tabs=…&active=…`), three center-pane view modes (List default / Table / Cards, persisted via `localStorage["aoa:memory:view-mode"]`), Lucide-only iconography, brand-red active state matching SidebarNavItem. Collapsed left pane shows `MemoryFolderRail` (5 shortcuts + 4 layer icons + expand). Phase 2 (semantic + link graph + embedding surfaces) deferred.
-- **Layered Memory (4 layers):** [IMPLEMENTED — S8-S10, S23-S24]
-  - `identity` — permanent, always included (vision, mission, company values). Sources: companies table fields + memory items with layer='identity'.
-  - `domain` — department-scoped, semi-permanent (how we do X).
-  - `active_context` — goal/project-scoped, temporary with `expiresAt`. Team leads can approve for their departments.
-  - `working` — task-chain-scoped, ephemeral. Auto-archives (not deletes) after 7 days.
-  - Memory versioning: draft/approved/archived lifecycle with version history. `memory_item_versions` table.
-  - Memory lifecycle: auto-archive on goal completion, TTL-based working memory archival (7-day BFS chain check, max depth 50), expiresAt archival, 90-day staleness flagging via suggestions.
-  - Restore: archived items can be unarchived. `touchAccessedAt` tracks usage for staleness detection.
-- **Semantic retrieval:** [IMPLEMENTED — S11-S12] pgvector extension, 1536-dimension embeddings (OpenAI text-embedding-3-small), cosine similarity. HNSW index on `embedding` (added in migration 0083 via pgvector when available; partial index skips NULL rows). Sequential-scan fallback when the index is missing or pgvector isn't installed. Realistic per-tenant scale (hundreds to low thousands of approved items) is sub-10ms with the index; without it, ~10ms per 1000 items. Fallback to ilike text search when no API key. Similarity threshold: 0.85 (cosine), 0.6 (word overlap). Background `processEmbeddingQueue` worker with batch processing (10 items/run) and exponential backoff retry (3 attempts).
-- **Artifacts:** [IMPLEMENTED — S4-S7] Versioned deliverables (documents, presentations, code). `artifacts` table + `artifact_versions` table. Versions are immutable. Source-agnostic (agent, founder, MCP, teammate, external). Founder picks winner for branching — no auto-merge. Version numbering is atomic via transactions.
-- **Agent output capture:** [IMPLEMENTED] 3-step pipeline — workspace diff → adapter hinting → founder confirmation during review. Files copied from workspace to storage, never moved. (Decision #67)
-- **Artifact-as-input:** [IMPLEMENTED — S20] Downstream tasks auto-receive artifacts from dependency tasks as context. Enables spec→design→code→test pipelines. Context packaging includes artifacts from current task + dependency tasks, with content truncated at 2000 chars. (Decision #71)
-- **Refinement loop:** [IMPLEMENTED] Review state supports adding artifact versions (not just approve/reject). Founder can refine on external LLMs and push back via MCP, upload, or paste. (Decisions #69, #70)
-- **Suggestion engine:** [IMPLEMENTED — S16-S17] 8 categories (goal_gap, pipeline_bottleneck, memory_gap, pattern_detected, budget_optimization, recurring_work, risk_flag, workload_balance) + agent proposals. Runs on Home load + every 4 hours. Suggestions deduped by actionPayload.patternId.
-- **Feedback loops:** [IMPLEMENTED — S13] `memory_feedback_patterns` table detects recurring founder edits on agent work. 4 detector types: tone_correction, format_change, content_addition, terminology_change. Suggests memory items after ≥3 occurrences. Grouped by agent.
-- **Agent trust score:** [IMPLEMENTED — S18-S19] `(approvedWithoutChanges / totalTasksCompleted) × 100`, last 20 tasks weighted 2x. Sliding window approximation for the recent window. Auto-creates trust score row on first review. Displayed on agent cards.
-- **RBAC:** [IMPLEMENTED — S25-S27] Three roles: `founder`, `team_lead`, `team_member`. Department-scoped. Additive from restrictive defaults. Team leads can approve active_context for their departments.
-- **MCP bidirectional:** V1 inbound routed to Discussion. V2 exposes full AoA-as-MCP-server. Read tools (9): me, list-agents, get-agent, list-projects, get-project, list-tasks, get-heartbeat-context, list-task-comments, get-task-comment — plus 4 read resources (tasks, goals, memory, artifacts). Write tools (7): create-task, update-task, add-task-comment, attach-artifact-version, suggest-memory, debrief-push, update-task-status. Document tools (5, mapped to artifacts): upsert-task-document, list-task-documents, get-task-document, list-task-document-revisions, restore-task-document-revision. Approval tools (10): list-approvals, get-approval, get-approval-tasks, list-approval-comments, list-task-approvals, create-approval, approval-decision, add-approval-comment, link-task-approval, unlink-task-approval. 31 tools total. RBAC-scoped per user. (Decision #14 revised — direct task creation allowed with authenticated write permission)
-- **Global search:** [IMPLEMENTED — S28] PostgreSQL full-text search (tsvector/tsquery), cmd+K, RBAC-scoped, results grouped by entity type.
-- **Voice input:** [IMPLEMENTED — S21] Browser recording → Whisper API transcription → enters Discussion pipeline. Third input mode alongside paste and write.
-- **Context packaging:** [IMPLEMENTED — S20] "Open in [LLM]" button assembles 8-section markdown context (company identity + department/project + goal + dependencies + task details + artifacts + agent config + preferences). Token estimate: ceil(markdown.length / 4). 8000-token warning threshold.
-- **Per-agent context mode:** [IMPLEMENTED — Decision #87] Three levels (minimal/standard/full) control how much context each agent receives. Stored in `runtimeConfig.contextMode`. Default: `standard`. Prevents token waste for simple adapters.
-- **Run summary comments:** [IMPLEMENTED — S22, Decision #88] Auto-generated task comments after each heartbeat run showing duration, token usage, cost, outcome, and detected files. Uses existing `issue_comments` table. Opt-out via `runtimeConfig.autoRunSummary`. Files truncated to 10 shown + "+N more".
-- **Company portability:** [IMPLEMENTED — Phase E.1 + E.2] Export/import full company bundles at Paperclip parity plus AoA-only extensions. Bundle `schemaVersion: 2` covers 12 sections: company, agents, projects (departments + projects), issues/tasks, skills (with file inventory + source tracking), routines (triggers + variables), envInputs, plus AoA-only `internalAgentConfig` (default ON), `budgetPolicies`, `costEvents` (high-volume opt-in with 10K warning + date-range filter), `financeEvents` (with cost-event slug linkage), `quotaWindows` (composite-key UPSERT + staleness warning). All E.2 sections default OFF except `internalAgentConfig`. `POST /:companyId/export/preview` returns counts + file list + size estimate before building. README.md generated per export. Unknown bundle sections warn-and-continue — v1 Paperclip bundles import compatibly. UI: `/export` (entity checkboxes with "Budget & Finance" grouping + inline amber volume warning on Cost Events → preview → JSON download) + `/import` (upload → preview plan + bundle-derived count grid → collision strategy → import). Deferred: D1 (memory/artifacts/workflows) → Phase E.3; goals + budget incidents + ZIP + URL/GitHub imports + date-range picker UI → Phase I.
-- **Feedback + privacy:** [IMPLEMENTED — Phase F] Thumbs-up/down on agent-authored comments (`FeedbackThumbs` in CommentThread via TaskSlideOver). Vote-capture UPSERT on `UNIQUE(companyId, targetType, targetId, authorUserId)`; downvote-only reason. Routes at `/issues/:id/feedback-votes` (POST/GET) + `/issues/:id/feedback-votes/summary` + `DELETE /feedback-votes/:id`. When `instance.feedbackDataSharingPreference === "allowed"`, fire-and-forget bundle build writes to `~/.aoa/feedback-exports/<exportId>-<stamp>.json.gz` (local stub; HTTP transmission deferred to Phase I/product). Bundle envelope matches Paperclip `buildPayloadArtifacts` shape: `{schemaVersion, bundleVersion, vote, target, exportId, bundle: {primaryContent, issueContext ±3 comments, agentContext}, redactionSummary}`. Redaction service: 9 regex patterns (email / API keys / JWTs / PEM blocks / phone / GitHub tokens / DSN / etc.) + `FeedbackRedactionState`. Anonymization pure function (`{kind}_{sha256(pepper:kind:value).slice(0,16)}`) ready for transmission wire-up. Consent modal (3 options: Always allow / Don't allow / Ask each time) shown when preference is `prompt`. PrivacyTab shows last 3 bundles (exportId + timestamp + size). Plugin SDK ships `ctx.telemetry.track(event, dims)` gated by `PLUGIN_CAPABILITIES["telemetry.track"]`. Transmission destination configured via `AOA_FEEDBACK_ENDPOINT` env var + optional `AOA_FEEDBACK_API_KEY` Bearer auth; see [`docs/deploy/telemetry.md`](docs/deploy/telemetry.md). Vote bundles flow through `shareFeedbackBundle` (HTTP primary, local-fs fallback on non-2xx/network fail → votes never lost); plugin telemetry fires-and-forgets a `{kind:"plugin_telemetry",event,dims,timestamp}` envelope. Local-only fallback (prior F.3/F.4 stub) when env unset. Deferred to Phase I: per-vote "just this time" consent, thumbs on artifact versions / plugin outputs / discussion items, "view all bundles" admin page, feedback aggregation analytics.
-- **Execution Workspaces:** [IMPLEMENTED — Phase I worktree] Per-task git worktree isolation for engineering projects. Enabled instance-wide by default (`enableIsolatedWorkspaces: true`). Project gate: `functionType === "software_development"` + `executionWorkspacePolicy.defaultMode`. Per-task preference: `shared_workspace | isolated_workspace | reuse_existing` selectable via IssueWorkspaceCard in TaskSlideOver. Heartbeat short-circuits `realizeExecutionWorkspace` on reuse. Persists `metadata.config` snapshot (provisionCommand/teardownCommand/cleanupCommand/workspaceRuntime) for restart continuity. Close flow uses AlertDialog with 7 close-action kinds (archive_record, stop_runtime_services, cleanup_command, teardown_command, git_worktree_remove, git_branch_delete, remove_local_directory); blocks archive on active linked issues + dirty git. Runtime service control (start/stop/restart dev servers) via ServicesSection in WorkspaceRightPanel, gated to `software_development` functionType. `restartDesiredRuntimeServicesOnStartup` auto-resumes services after server crash. TTL sweeper (`enableWorkspaceTtlSweeper`) marks workspaces with `ttlDays` past `lastUsedAt` as `cleanupEligibleAt` — does NOT auto-archive. Settings Sheet via kebab (Configuration / Runtime Logs / Linked Issues). `/workspaces` company-wide list under WORK sidebar. Open in IDE (VS Code / Cursor / Zed) + Reveal in Finder via `filesystemApi.reveal`; preference in `localStorage["aoa:workspace:preferred-editor"]`. Create PR via GitHub PAT per-company (stored in `company_secrets` as `github_pat`); GitPanel button wired to CreatePrDialog, PR persisted to `workspace.metadata.pr` + task comment posted. Role-based authz: founder > team_lead (project-scoped) > team_member (read-only). New tables: none (schema parity with Paperclip achieved in earlier phases). See [`docs/guides/board-operator/execution-workspaces.md`](docs/guides/board-operator/execution-workspaces.md) for the user-facing guide. (Decision: Phase I worktree scope 2026-04-23.)
-- **Distribution:** [IMPLEMENTED — Phase H] Docker + NPM release pipeline. Versioning: SemVer (0.1.0+ pre-1.0 evolving); first release 0.1.0. Releases via Changesets (`.changeset/*.md` → Release PR → merge → npm publish via `changesets/action` → `docker.yml` multi-arch build (amd64+arm64) to `ghcr.io/${{ github.repository }}` → `release-smoke.yml` Playwright auth-onboarding smoke against freshly-published image, gated on `changesets/action` `published == 'true'`). Rollback: `pnpm release:rollback` (npm deprecate + tag delete + optional commit revert, 3-step, `--dry-run`/`--self-test` flags). Dockerfile hardened with gosu + USER_UID/USER_GID runtime remap (non-root container). `docker-onboard-smoke.sh` (303 LOC) handles auto-bootstrap (sign-up → sign-in → bootstrap-ceo invite → session verify) + `SMOKE_DETACH` + `$GITHUB_ENV` metadata for CI. Secrets: `NPM_TOKEN` (Automation type). 4 workflows: `pr.yml` / `release.yml` / `docker.yml` / `release-smoke.yml`. `embedded-postgres@18.1.0-beta.16` patched for `LC_MESSAGES=C` + `process.env` propagation in container `initdb`/`postgres` spawns. Full release runbook + decision locks + secrets setup in [`docs/deploy/distribution.md`](docs/deploy/distribution.md). Deferred to Phase I: `anthropic/aoa` rename (image destination auto-resolves via `${{ github.repository }}`), canary-on-push auto-wiring, desktop installer, expanded smoke coverage (discussions, MCP, budgets, artifacts).
-- **Cross-platform CI status:** Linux (`verify` + `e2e`) is the required gate. macOS verify+e2e are advisory and currently green post-PR-#125. Windows verify is advisory (4 incompatible tests skipped per Issues #113/#127). **Windows e2e is currently skipped** because GitHub's `runneradmin` runner can't start embedded-postgres (Issue #114, deferred to a future-pipeline plan that switches Windows e2e to a postgres service container, like the `migrations` job already does in `pr.yml`). Skip is implemented at the playwright config level (`tests/e2e/playwright.config.ts` — `process.platform === "win32"` gates `testIgnore: ["**/*"]` + `webServer: undefined`). When cross-platform e2e parity matters, fix #114.
+| Layer | Scope | Lifetime |
+|-------|-------|----------|
+| `identity` | Company-wide | Permanent. Vision, mission, values. Sources: companies table fields + memory items with layer='identity'. |
+| `domain` | Department-scoped | Semi-permanent. How we do X. |
+| `active_context` | Goal/project-scoped | Temporary. `expiresAt` field. Team leads can approve for their departments. |
+| `working` | Task-chain-scoped | Ephemeral. Auto-archives after 7 days (BFS chain check, max depth 50). |
+
+**Lifecycle:** Auto-archive on goal completion, TTL-based archival (7-day working memory), expiresAt archival, 90-day staleness flagging via suggestions. Archived items can be restored. `touchAccessedAt` tracks usage.
+
+**Memory versioning:** draft/approved/archived lifecycle. `memory_item_versions` table.
+
+**Memory feedback:** `memory_feedback_patterns` table detects recurring founder edits on agent work. Suggests memory items after ≥3 occurrences. Grouped by agent.
+
+See `docs/architecture/memory.md` for UI layout, semantic retrieval configuration, and feedback detector details.
+
+### Discussion Pipeline
+
+Thread-based. Input modes: paste, write, voice, MCP.
+
+Flow: Discussion entry → LLM extraction → `discussion_extracted_items` → founder approval → Tasks + Memory items.
+
+- Polymorphic scope: department / project / goal. Entry-level scope overrides thread-level scope.
+- Inline annotations on entries (anchorStart/anchorEnd character offsets).
+- Extraction failure: entry marked `failed`, founder notified via `notifications` table. Can retry or manually create.
+
+### Artifacts
+
+Versioned deliverables: documents, presentations, code, design, reports.
+
+- **Immutable versions.** Source-agnostic (agent/founder/MCP/teammate/external). Version numbering atomic via transactions.
+- **Founder picks winner** for branching — no auto-merge. (Decisions #43, #45)
+- **Agent output capture:** workspace diff → adapter hinting → founder confirmation during review. Files copied from workspace to storage, never moved. (Decision #67)
+- **Artifact-as-input:** downstream tasks auto-receive artifacts from dependency tasks as context (spec→design→code→test pipelines). Content truncated at 2000 chars per artifact. (Decision #71)
+- **Refinement loop:** review state supports adding artifact versions. Founder can refine on external LLMs and push back via MCP, upload, or paste. (Decisions #69, #70)
+
+### Task Dependencies
+
+`task_dependencies` table links tasks in blocking relationships. When a dependency task completes → dependent auto-unblocks. Separate from `parentId` (which is subtask hierarchy, not blocking). Tasks can be blocked from any non-terminal status: backlog, todo, in_progress.
+
+### RBAC
+
+Three roles: `founder`, `team_lead`, `team_member`. Department-scoped. Additive permissions from restrictive defaults.
+
+- Team leads can approve `active_context` memory for their departments.
+- Workspace authz: founder > team_lead (project-scoped) > team_member (read-only).
+- `user_roles` table. `instance_user_roles` for instance-level roles. `principal_permission_grants` for fine-grained plugin grants.
+
+### MCP (Bidirectional)
+
+**Inbound:** `/companies/:cid/mcp` JSON-RPC endpoint. Two actor types (`server/src/mcp/server.ts:146`):
+- `mcp` — caller presented a Bearer token matching an `mcp_api_keys` row
+- `board` — caller has a valid board session (browser cookie in authenticated deployments, or synthetic `local-board` actor in `local_trusted` mode)
+
+Requests with neither → 401. `local_trusted` MCP writes succeed without a Bearer token (loopback is the trust boundary). `cloud_auth` / `authenticated` deployments reject unauth'd MCP traffic.
+
+**Outbound (AoA as MCP server) — 34 tools total, RBAC-scoped:** Read (11), Write (8), Document (5), Approval (10). Also exposes 4 MCP resources. Full tool registry: `server/src/mcp/tools/index.ts`.
+
+### Commander (Internal Agent)
+
+Always-on AI assistant for coordination, proactive monitoring, and workflow management. CLI-mode execution (defaults to `claude_cli`; `codex` and `opencode` also supported). No per-company API key required. SSE streaming.
+
+- **29 tools** across 8 categories: discussion, query, action, memory, workflow, file, coordination, analysis.
+- **Per-company config** (`internal_agent_config` table): executionMode, provider, model, autonomyLevel, enabledCapabilities (12 types), budget, proactive interval.
+- **Agent loop:** HTTP route → agentLoopService (conversation + user message persistence) → cliModeService (subprocess spawn + MCP bridge + stdout streaming) → SSE to UI.
+- **One persistent conversation** per user per company. History summarization for token management.
+- **Proactive checks:** default 4-hour interval. Scans blocked tasks, budget thresholds, stale work, dependency gaps, memory conflicts, workload imbalance. Results pushed to Inbox via notifications.
+- **Event-driven:** listens to LiveEvents (heartbeat completion, activity changes, MCP inbound, discussion entry creation) with debouncing.
+- **Per-agent context mode** (`runtimeConfig.contextMode`): minimal / standard / full. Default: `standard`. Prevents token waste for simple adapters. (Decision #87)
+
+### Workflow Templates
+
+Backend-ready (schema + API). Ordered steps with dependencies that expand to tasks + `task_dependencies` on instantiation. Usage tracking (`instantiationCount`). Create programmatically via `POST /api/companies/:cid/workflow-templates`. UI list + step builder deferred to 1.1.
+
+### Suggestion Engine
+
+8 categories: goal_gap, pipeline_bottleneck, memory_gap, pattern_detected, budget_optimization, recurring_work, risk_flag, workload_balance — plus agent proposals. Runs on Home load + every 4 hours. Deduped by `actionPayload.patternId`.
+
+### Agent Trust Score
+
+Formula: `(approvedWithoutChanges / totalTasksCompleted) × 100`. Last 20 tasks weighted 2×. Sliding window approximation for the recent window. Auto-creates trust score row on first review. Displayed on agent cards.
+
+### Feedback & Privacy
+
+Thumbs-up/down on agent-authored comments (`FeedbackThumbs` in CommentThread). Routes: `POST/GET /issues/:id/feedback-votes`, `GET /issues/:id/feedback-votes/summary`, `DELETE /feedback-votes/:id`. Feedback bundles are redacted and transmitted (or written to `~/.aoa/feedback-exports/`) when `instance.feedbackDataSharingPreference === "allowed"`. See `docs/deploy/telemetry.md` for redaction pipeline, anonymization, consent settings, and plugin telemetry.
+
+### Company Portability
+
+Export/import full company bundles (`schemaVersion: 2`, 12 sections). Paperclip v1 bundles import compatibly (warn-and-continue for unknown sections). UI: `/export` (checkboxes + preview → JSON download) + `/import` (upload → plan → import). See `docs/api/companies.md` for the full bundle schema and section list.
+
+### Execution Workspaces
+
+Per-task git worktree isolation for software engineering projects. Instance-wide default: `enableIsolatedWorkspaces: true`. Gate: `functionType === "software_development"` + `executionWorkspacePolicy.defaultMode`.
+
+- **Per-task preference:** `shared_workspace | isolated_workspace | reuse_existing` (IssueWorkspaceCard in TaskSlideOver).
+- **Key files:** `ui/src/components/workspace/`, `server/src/services/workspace-runtime.ts`, `packages/db/src/schema/execution_workspaces.ts`.
+- See `docs/guides/board-operator/execution-workspaces.md` for the full guide (close flow, TTL sweeper, IDE integration, Create PR).
+
+### Marketplace
+
+- **Catalog:** sourced from `https://meteoritelabs.github.io/aoa-marketplace-cdn/catalog.json`. Schema mirror in `packages/shared/src/marketplace.ts` — bumps require coordinated changes in both repos; AoA-side code must handle new fields being absent. Build-time snapshot fallback: `ui/src/aoa-marketplace-snapshot.json` (generated by `pnpm fetch-catalog`). (Decision #96)
+- **Packages:** synthetic groupings derived server-side via `derivePackages()` in `server/src/services/derivePackages.ts`. Grouped by `owner/repo` from `source.url` (threshold ≥ 2, skill items only). `packageId` field overrides synthesis. (Decision #97)
+- **Card chrome + Hub layout:** locked in `docs/architecture/design-system.md` §9.13–9.18.
+- **Key files:** `ui/src/components/marketplace/`, `ui/src/lib/marketplace-constants.ts`, `ui/src/pages/Marketplace*.tsx`, `server/src/services/derivePackages.ts`, `packages/shared/src/marketplace.ts`.
+
+### LobbyShell & Settings Chrome
+
+`LobbyShell` (`ui/src/components/LobbyShell.tsx`): shared chrome for pre-company-selection pages (Lobby, Marketplace, Settings). Exposes a `secondarySidebar` slot rendered flush between primary sidebar and content. Auto-collapse rule: `defaultCollapsed={true}` only when a secondary sidebar is present — Settings is the only current consumer (Decision #98). Mobile sub-nav pattern: design-system §8.6. Key files: `ui/src/components/LobbyShell.tsx`, `ui/src/components/LobbySidebar.tsx`, `ui/src/components/SecondarySidebar.tsx`.
+
+### Global Search
+
+PostgreSQL full-text search (tsvector/tsquery). cmd+K. RBAC-scoped. Results grouped by entity type.
+
+### Voice Input
+
+Browser recording → Whisper API transcription → Discussion pipeline. Third input mode alongside paste and write.
+
+### Context Packaging
+
+"Open in [LLM]" assembles 8-section markdown context: company identity + department/project + goal + dependencies + task details + artifacts + agent config + preferences. Token estimate: `ceil(markdown.length / 4)`. 8000-token warning threshold.
+
+### Distribution
+
+Docker + NPM release pipeline. SemVer (0.1.0+). Multi-arch (amd64+arm64) to GHCR; `@armyofagents/*` packages to npmjs.org. Smoke-tested on each stable release. See `docs/deploy/distribution.md` for the full runbook (Changesets flow, rollback, local Docker testing).
+
+### CI Platform Status
+
+| Platform | Verify | E2E |
+|----------|--------|-----|
+| Linux | Required gate | Required gate |
+| macOS | Advisory (green) | Advisory (green) |
+| Windows | Advisory (4 tests skipped — Issues #113/#127) | Skipped — embedded-postgres can't start on `runneradmin` runner (Issue #114) |
+
+Windows e2e skip is implemented at playwright config level (`tests/e2e/playwright.config.ts`).
+
+---
+
+## Database Schema
+
+All table definitions in `packages/db/src/schema/` (93 files). Schema changes use Drizzle ORM only — never raw SQL.
+
+### Core / Company
+
+| Table | Purpose |
+|-------|---------|
+| `companies` | Company config. Key fields: `requireBoardApprovalForNewAgents`, `enableIsolatedWorkspaces`, `feedbackDataSharingPreference` |
+| `company_memberships` | User ↔ company membership |
+| `company_secrets` | Encrypted secrets per company. Includes `github_pat` for workspace PR creation |
+| `company_secret_versions` | Secret rotation history |
+| `projects` | Departments AND projects. `type`: `'department'` \| `'project'` |
+| `goals` | Company goals. Status: planned → active → at_risk → achieved/cancelled |
+| `issues` | Tasks. `parentId` = subtask hierarchy. `artifactId` = linked deliverable |
+| `task_dependencies` | Blocking relationships between tasks |
+| `issue_comments` | Task comments. Also used for heartbeat run summary comments |
+| `issue_labels`, `labels` | Task labeling |
+| `issue_attachments` | File attachments on tasks |
+| `issue_read_states` | Per-user read state on tasks |
+| `issue_approvals` | Approval linkage on tasks |
+| `issue_documents` | Document linkage on tasks |
+| `activity_log` | Full audit trail |
+| `routines` | Scheduled/trigger-based automation |
+| `sidebar_preferences` | Per-user sidebar collapse state |
+| `inbox_dismissals` | Dismissed inbox items |
+
+### Agents
+
+| Table | Purpose |
+|-------|---------|
+| `agents` | Agent definitions. `adapterType`, `adapterConfig`, `runtimeConfig` (contextMode, autoRunSummary) |
+| `agent_projects` | Agent ↔ project (department) assignments |
+| `agent_config_revisions` | Config version history |
+| `agent_runtime_state` | Current runtime state |
+| `agent_task_sessions` | Per-task execution sessions |
+| `agent_wakeup_requests` | Queued wakeup triggers |
+| `agent_api_keys` | Per-agent API keys |
+| `agent_trust_scores` | Trust score: (approvedWithoutChanges/totalCompleted)×100, last 20 tasks weighted 2× |
+| `heartbeat_runs` | Heartbeat execution records |
+| `heartbeat_run_events` | Per-event log within a heartbeat run |
+| `heartbeat_run_watchdog_decisions` | Watchdog intervention records |
+
+### Memory
+
+| Table | Purpose |
+|-------|---------|
+| `memory_items` | Core memory store. `layer`: identity/domain/active_context/working. `expiresAt`, `goalId`, `sourceArtifactId`, `embedding` (vector 1536) |
+| `memory_item_versions` | Version history. draft/approved/archived lifecycle |
+| `memory_feedback_patterns` | Recurring edit patterns. `patternType`, `occurrenceCount`, `status` |
+| `memory_folders` | Folder organization for memory items |
+| `memory_relations` | Relationships between memory items |
+| `memory_retrievals` | Retrieval history for staleness detection |
+| `memory_assets` | File assets attached to memory items |
+| `memory_extractions` | LLM extraction records |
+| `memory_extraction_batches` | Batch extraction records |
+
+### Discussions
+
+| Table | Purpose |
+|-------|---------|
+| `discussions` | Thread container. Polymorphic scope (department/project/goal). `status`: active/archived. Denormalized `entryCount`, `pendingItemCount` |
+| `discussion_entries` | Individual entries. `inputType`: paste/write/voice/mcp. `extractionStatus`. Entry-level scope override |
+| `discussion_extracted_items` | Extracted items: decision/task/insight/context/reference/preference. Approval workflow. `resultTaskId`, `resultMemoryId` |
+| `discussion_annotations` | Inline annotations. `anchorStart`/`anchorEnd` character offsets |
+| `debriefs` | @deprecated — kept for rollback safety. New code uses `discussions` |
+| `briefs` | @deprecated — kept for rollback safety. New code uses `discussions` |
+| `brief_items` | @deprecated — replaced by `discussion_extracted_items` |
+
+### Artifacts & Documents
+
+| Table | Purpose |
+|-------|---------|
+| `artifacts` | `type`: document/presentation/code/design/report/other. `status`: draft/active/archived. `currentVersionId` |
+| `artifact_versions` | Immutable. `versionNumber`, `source` (agent/founder/mcp/teammate/external), `parentVersionId` (branching) |
+| `documents` | Document system (separate from artifacts; MCP document tools map here) |
+| `document_revisions` | Document revision history |
+| `assets` | File assets. All file types, 50MB limit |
+
+### Workspaces
+
+| Table | Purpose |
+|-------|---------|
+| `execution_workspaces` | Per-task git worktrees. `metadata.config` snapshot, `metadata.pr`. Linked to issues |
+| `project_workspaces` | Project-level workspace config |
+| `workspace_operations` | Workspace lifecycle operations log |
+| `workspace_runtime_services` | Dev server service definitions per workspace |
+
+### Commander (Internal Agent)
+
+| Table | Purpose |
+|-------|---------|
+| `internal_agent_config` | Per-company: executionMode, provider, model, autonomyLevel, enabledCapabilities (12 types), budget, proactive interval |
+| `internal_agent_conversations` | One per user per company. `summarizedContext` for token management |
+| `internal_agent_messages` | `role`: user/assistant/system/tool_call/tool_result. `toolCalls`/`toolResults` JSON. `pageContext`, `departmentContext` |
+| `internal_agent_runs` | `triggerType`: conversation/proactive/event/sub_agent. `toolsCalled`, `tokenUsage`, `costCents` |
+| `internal_agent_reminders` | Scheduled reminders. `triggerAt`, `status`: pending/fired/cancelled |
+| `workflow_templates` | Reusable task chains. `steps` (JSON ordered array), `dependencies` (JSON fromStep/toStep), `instantiationCount` |
+| `notifications` | `type`: discussion.extraction_complete/failed, internal_agent.reminder/proactive/action_result. `readAt`, `dismissedAt` |
+
+### Teams
+
+| Table | Purpose |
+|-------|---------|
+| `teams` | Team definitions. `manifest`, `slug`, `status` |
+| `team_members` | Team membership |
+| `team_coordinations` | Coordination records |
+
+### Marketplace
+
+| Table | Purpose |
+|-------|---------|
+| `marketplace_catalog_cache` | CDN catalog cache |
+| `marketplace_company_settings` | Per-company marketplace settings |
+| `marketplace_install_operations` | Installation operation records |
+| `marketplace_pending_updates` | Pending catalog updates |
+
+### Plugins
+
+| Table | Purpose |
+|-------|---------|
+| `plugins` | Plugin definitions |
+| `plugin_config` | Plugin configuration |
+| `plugin_entities` | Plugin-owned entities |
+| `plugin_state` | Plugin runtime state |
+| `plugin_jobs` | Async plugin job queue |
+| `plugin_logs` | Plugin execution logs |
+| `plugin_webhooks` | Plugin webhook registrations |
+| `plugin_version_snapshots` | Plugin version history |
+| `plugin_company_settings` | Per-company plugin settings |
+| `principal_permission_grants` | Fine-grained permission grants (plugin RBAC) |
+
+### Finance & Budget
+
+| Table | Purpose |
+|-------|---------|
+| `cost_events` | Per-agent/per-run cost records |
+| `budget_policies` | Company/department budget limits |
+| `budget_incidents` | Budget threshold breach events |
+| `finance_events` | Financial events with cost-event slug linkage |
+| `provider_quota_windows` | Provider API quota tracking (composite-key UPSERT + staleness warning) |
+
+### Auth & Security
+
+| Table | Purpose |
+|-------|---------|
+| `auth` | User authentication records |
+| `invites` | Company invitations |
+| `join_requests` | Join request workflow |
+| `user_roles` | RBAC: `founder`/`team_lead`/`team_member`, department-scoped |
+| `instance_user_roles` | Instance-level roles |
+| `board_api_keys` | Board-level API keys |
+| `mcp_api_keys` | MCP authentication keys |
+| `mcp_client_connections` | MCP client connection records |
+| `cli_auth_challenges` | CLI authentication challenges |
+
+### Feedback
+
+| Table | Purpose |
+|-------|---------|
+| `feedback_votes` | Thumbs up/down on agent-authored comments |
+| `feedback_exports` | Exported feedback bundles (for telemetry transmission) |
+
+### File & Import
+
+| Table | Purpose |
+|-------|---------|
+| `file_import_jobs` | Background file import job tracking |
+| `approvals`, `approval_comments` | Approval workflow |
+| `suggestions` | Suggestion engine output. `category` (8 types + agent_proposal), `actionPayload`, `evidence`, `status` |
+
+---
+
+## Workspace System
+
+- **Route:** `/:companyPrefix/workspaces/:workspaceId` → `WorkspaceView` page
+- **Layout:** `WorkspaceLayout` — 3-panel resizable (task nav | timeline+preview | context)
+- **Mobile:** Tab-based navigation [Tasks][Timeline][Preview][Context] using CSS hidden (not conditional render)
+- **functionType:** Project field (`software_development` | `design` | `marketing` | etc.) controls workspace tool visibility
+- **executionWorkspacePolicy:** Project field (`per_task` | `shared` | `none`) controls workspace creation
+- **TaskSlideOver:** Right-side Sheet — standard (task detail) and workspace (embedded timeline) modes
+- **Lifecycle:** Archived workspaces shown in collapsed section
+- **Key files:** `ui/src/components/workspace/`, `server/src/services/workspace-runtime.ts`, `packages/db/src/schema/execution_workspaces.ts`
+
+---
+
+## Test Patterns
+
+Tests in `server/src/__tests__/`. Drizzle-orm ESM cycle workaround:
+
+- **Pure function tests:** Import and test directly (e.g., `formatRunSummary`, `detectToneCorrections`, `computeScore`).
+- **Service tests with mocks:** Mock `@armyofagents/db` and `drizzle-orm` with Proxy-based table stubs and no-op operators. Use sequence-based mock DBs (`createSequenceDb`) — each `select`/`update`/`insert` returns the next pre-configured result.
+- **Contract tests:** Verify API shapes, constants, and formulas without importing drizzle internals.
+- **QA suites:** `v2-memory-qa.test.ts`, `v2-artifacts-qa.test.ts`, `v2-integration-qa.test.ts`, `v2-edge-cases-qa.test.ts`, `v2-performance-qa.test.ts`.
+
+---
 
 ## Sidebar Structure
 
@@ -100,133 +437,43 @@ TEAM
 COMPANY: Vision & Mission, Memory, Budget, Activity, Settings
 ```
 
+---
+
 ## File Structure
 
 ```
-packages/db/src/schema/    → Drizzle table definitions
+packages/db/src/schema/    → Drizzle table definitions (93 files)
 packages/shared/src/       → Types, validators, constants
 server/src/services/       → Business logic (one file per domain)
-server/src/routes/         → Express route handlers
-server/src/adapters/       → Agent execution adapters
+server/src/routes/         → Express route handlers (65+ files)
+server/src/adapters/       → Agent execution adapters + registry
+server/src/mcp/            → MCP server implementation
+server/src/onboarding-assets/ → Agent onboarding templates (cxo/, lead/, default/)
 ui/src/components/         → React components
 ui/src/pages/              → Page-level components
 ui/src/api/                → API client functions
+ui/src/lib/                → Shared utilities + constants
 ```
 
-## V2.5 Architecture (Implemented)
+---
 
-V2.5 replaces the Debrief/Brief pipeline with **Discussions** and adds the **Internal Agent** — an always-on AI assistant for coordination, proactive monitoring, and workflow management.
+## Documentation Reference
 
-- **Discussions:** Thread-based discussions with multiple entries (paste/write/voice/MCP). Each entry is independently extracted into decisions, tasks, insights, context, references, preferences. Polymorphic scope (department/project/goal) with entry-level overrides. Inline annotations on entries. Replaces V1 Debrief → Brief flow entirely.
-- **Internal Agent ("Commander"):** Always-on AI assistant with 30 tools across 8 categories (discussion, query, action, memory, workflow, file, coordination, analysis). **CLI-mode execution** (defaults to `claude_cli`; `codex` and `opencode` also supported) — no per-company API key required. SSE streaming responses. Per-company config with capability toggles, notification preferences, and context token budget. Agent loop: HTTP route → agentLoopService (conversation + user message persistence) → cliModeService (subprocess spawn + MCP bridge + stdout streaming) → SSE back to the UI. Per-turn run records / token counts / tool confirmations are deferred to the team-under-Commander architecture work (Decision #91). `executionMode` column stays on the schema as a legacy/audit field; dispatch no longer reads it.
-- **Proactive checks:** Scheduled background monitoring (default 4-hour interval). Scans for blocked tasks, budget thresholds, stale work, dependency gaps, memory conflicts, workload imbalance. Results pushed to Inbox via notifications.
-- **Workflow templates (backend-ready, UI in 1.1):** Backend schema + API implemented; the `/TES/workflows` UI (list + step builder + "instantiate for goal") ships in 1.1. Workflow template data can still be created via `POST /api/companies/:cid/workflow-templates` for programmatic use. Underlying shape: ordered steps with dependencies that expand to tasks + `task_dependencies` on instantiation, with usage tracking (`instantiationCount`).
-- **Notifications:** Unified notification system for extraction completion/failure, agent reminders, proactive alerts, action results. Unread badge in sidebar.
-- **Conversation management:** One persistent conversation per user per company. History summarization for token management. Message-run linkage for cost tracking.
-- **Event-driven integration:** Listens to LiveEvents (heartbeat completion, activity changes, MCP inbound, discussion entry creation) to trigger agent actions with debouncing.
-
-## V2.5 New Tables
-
-- `discussions` — thread container with polymorphic scope (department/project/goal), status (active/archived), denormalized entryCount/pendingItemCount
-- `discussion_entries` — individual entries within a discussion, inputType (paste/write/voice/mcp), extractionStatus, entry-level scope override
-- `discussion_extracted_items` — extracted items (decision/task/insight/context/reference/preference), suggested fields, dedup support, approval workflow, resultTaskId/resultMemoryId
-- `discussion_annotations` — inline annotations on entries with anchorStart/anchorEnd character offsets
-- `internal_agent_config` — per-company agent config: executionMode, provider, model, autonomyLevel, enabledCapabilities (12 types), budget, proactive interval
-- `internal_agent_conversations` — one per user per company, summarizedContext for token management
-- `internal_agent_messages` — conversation messages: role (user/assistant/system/tool_call/tool_result), toolCalls/toolResults JSON, pageContext, departmentContext
-- `internal_agent_runs` — execution records: triggerType (conversation/proactive/event/sub_agent), toolsCalled, tokenUsage, costCents, provider/model
-- `internal_agent_reminders` — scheduled reminders: triggerAt, status (pending/fired/cancelled), entity linking
-- `workflow_templates` — reusable task chains: steps (JSON ordered array), dependencies (JSON fromStep/toStep), instantiationCount
-- `notifications` — type (discussion.extraction_complete/failed, internal_agent.reminder/proactive/action_result), readAt/dismissedAt
-
-## V2.5 Modified Tables
-
-- `debriefs` — @deprecated V2.5 (kept for rollback safety). New code uses `discussions`.
-- `briefs` — @deprecated V2.5 (kept for rollback safety). New code uses `discussions`.
-- `brief_items` — @deprecated V2.5. Replaced by `discussion_extracted_items`.
-
-## Workspace System
-
-- **Route:** `/:companyPrefix/workspace/:workspaceId` renders `WorkspaceView` page
-- **Layout:** `WorkspaceLayout` with 3-panel resizable layout (task nav | timeline+preview | context)
-- **Mobile:** Tab-based navigation [Tasks][Timeline][Preview][Context] using CSS hidden (not conditional render)
-- **functionType:** Project field (`software_development` | `design` | `marketing` | etc.) controls workspace tool visibility
-- **executionWorkspacePolicy:** Project field (`per_task` | `shared` | `none`) controls workspace creation
-- **TaskSlideOver:** Right-side Sheet with two modes — standard (task detail) and workspace (embedded timeline)
-- **Lifecycle:** Workspaces can be archived via status update. Archived workspaces shown in collapsed section.
-- **Key files:** `ui/src/components/workspace/`, `server/src/services/workspace-runtime.ts`, `packages/db/src/schema/execution_workspaces.ts`
-
-## Frontend chrome — Marketplace + Settings overhaul (May 2026)
-
-- **`LobbyShell`** (`ui/src/components/LobbyShell.tsx`): shared chrome for lobby-tier (pre-company-selection) pages — Lobby, all marketplace pages (Hub, Search, Detail, Updates, PackageDetail), and Settings. Owns the primary `LobbySidebar` (desktop), the mobile drawer (`Sheet`), and an optional `secondarySidebar?: ReactNode` slot rendered flush between primary and main content. Pages declare `activeItem` (which primary nav row to highlight) and optionally pass a `secondarySidebar`. Currently only `InstanceSettingsPage` consumes the slot.
-- **Auto-collapse rule (Decision #98):** `LobbyShell`'s `defaultCollapsed={true}` forces the primary sidebar collapsed on every mount, ignoring user preference. Only set this on pages that have a secondary sidebar (the secondary takes over the nav role). Marketplace pages do NOT pass `defaultCollapsed` — they respect the user's manual preference. Settings is the only consumer.
-- **Mobile sub-nav for pages with a secondary sidebar:** desktop secondary sidebar is `md:flex` only. Pages with a secondary sidebar must also render a horizontal scrollable pill row inline at the top of content (mobile-only), reusing the same `sections` data. Hidden scrollbar, brand-tinted active pill, auto-scroll active-into-view on mount + change, right-edge gradient fade. See design-system §8.6.
-- **Marketplace catalog** (Decision #96) is sourced from an EXTERNAL repo: `https://meteoritelabs.github.io/aoa-marketplace-cdn/catalog.json` (built from `MeteoriteLabs/aoa-marketplace-cdn`). The schema in `packages/shared/src/marketplace.ts` is a mirror — schema bumps require coordinated changes in both repos. AoA-side changes that depend on new fields must handle the field being missing. Build-time bundled snapshot fallback at `ui/src/aoa-marketplace-snapshot.json` (gitignored, generated by `pnpm fetch-catalog`).
-- **Marketplace packages** (Decision #97): synthetic groupings of catalog items derived server-side via `derivePackages()` (`server/src/services/derivePackages.ts`). Synthesis-with-explicit-override: items group by github `owner/repo` from `source.url` (threshold ≥ 2, **skill items only** — `PackageCard`'s amber+Sparkles visual is skill-themed); items with `packageId` set override synthesis (threshold 1, any type). Output is deterministic. Exposed via `GET /api/marketplace/packages` and the `usePackages()` hook.
-- **Marketplace card chrome (locked):** top-right `TypeChip` (uppercase 10px monochrome), verified-blue `BadgeCheck` next to title only when `trust.tier === "verified"`, aligned footer `[github] {owner/repo} ... [Install]`. Single-icon hero tones per type (skill=amber, plugin=blue, agent=purple); team uses `<StackedIcon icon={Bot} tone="teal" />`; package uses `<StackedIcon icon={Sparkles} tone="amber" />`. See design-system §9.13–§9.15.
-- **Marketplace hub "All" view** is sectioned (design-system §9.18): type-grouped sections (Skills, Plugins, Agents, Teams) each with 6-item cap + "See all →" link. Empty sections omitted. Packages strip lives inside the Skills section because packages are skill-only.
-- **Detail-page bidirectional nav:** when an item belongs to a package, the item detail page shows a "Part of {pkg}" amber pill above the `<h1>` linking back to the package detail. Same amber tone as `PackageCard`'s left-edge accent rule.
-- **Key files:** `ui/src/components/LobbyShell.tsx`, `ui/src/components/LobbySidebar.tsx`, `ui/src/components/SecondarySidebar.tsx`, `ui/src/components/marketplace/{CatalogCard,PackageCard,StackedIcon,TypeChip,MarketplaceFilterChips,MarketplaceSubfilterChips}.tsx`, `ui/src/lib/marketplace-constants.ts`, `ui/src/pages/{Marketplace,MarketplaceDetail,MarketplacePackageDetail,MarketplaceSearch,MarketplaceUpdates,InstanceSettingsPage}.tsx`, `server/src/services/derivePackages.ts`, `packages/shared/src/marketplace.ts`.
-
-## V3 Architecture
-
-V3 adds five pillars: **Autonomy**, **Workflows**, **Connectors**, **Blueprints**, **Hosted**.
-
-- **Autonomy tiers:** Per-agent levels 0-3. Level 0 = full approval (V1/V2 default). Level 1 = auto-execute known patterns. Level 2 = post-review. Level 3 = full autonomy within guardrails. Trust-based upgrade recommendations. (Decisions #74, #75)
-- **Pipeline templates:** Repeatable task chains (spec→design→code→test→UAT) as JSON manifests. One-click instantiation. Self-generated from existing work patterns. (Decision #76)
-- **Service connectors:** Bidirectional sync with GitHub, Figma, Linear, Slack. Department-scoped. AoA = control plane, external tools = execution plane. (Decisions #77, #78)
-- **Department/project blueprints:** Pre-configured templates with agents, goals, memory items, pipeline templates. Built-in + community (ClipHub). (Decision #79)
-- **Hosted deployment:** Cloud execution via **CLI-in-container** (Claude CLI / codex / opencode bundled in worker images). Cloud workspaces run the CLI in isolated containers with per-tenant auth. Same upper-layer architecture as local AoA — the execution primitive is containerized CLI, not direct SDK calls. Original V3 plan used API adapters; revised as part of Decision #91. (Decisions #80, #81, #91)
-- **Additional:** Meeting integration (Recall.ai → Discussion), mobile app, multi-company, advanced analytics, experiment system, version merge logic.
-
-## V2 New Tables
-
-- `artifacts` — type (document/presentation/code/design/report/other), status (draft/active/archived), currentVersionId
-- `artifact_versions` — versionNumber, source (agent/founder/mcp/teammate/external), sourceDetail, changelog, parentVersionId (for branching). Immutable.
-- `memory_feedback_patterns` — patternType (tone_correction/format_change/content_addition/etc.), occurrenceCount, status (detected/suggested/accepted/dismissed)
-- `user_roles` — userId, role (founder/team_lead/team_member), projectId (department-scoped)
-- `suggestions` — category (8 types + agent_proposal), actionType (create_task/flag_risk/etc.), actionPayload (JSON), evidence, status (pending/accepted/dismissed/expired)
-- `agent_trust_scores` — agentId, totalCompleted, approvedWithoutChanges, recentCompleted, recentApproved, currentScore
-
-## V2 Modified Tables
-
-- `memory_items` — adds: layer (identity/domain/active_context/working), expiresAt, goalId, sourceArtifactId, embedding (vector 1536)
-- `issues` — adds: artifactId (link to deliverable)
-- `assets` — expanded: all file types, 50MB limit (was images-only, 10MB)
-- `users` — adds: displayName, avatarUrl, invitedBy, invitedAt, role fields
-
-## V3 New Tables
-
-- `pipeline_templates` — reusable task chain patterns with step definitions (JSON manifests)
-- `pipeline_instances` — instantiated pipelines linked to goals
-- `connectors` — department-scoped integrations with external services (GitHub, Figma, etc.)
-- `connector_sync_log` — bidirectional sync history
-- `autonomy_audit_log` — all auto-executed and escalated actions
-- `blueprints` — pre-configured department/project templates
-
-## V3 Modified Tables
-
-- `agents` — adds: autonomyLevel (0-3), autonomyConfig (per-level settings)
-- `issues` — adds: pipelineInstanceId, pipelineStepOrder
-
-## V2 Test Patterns
-
-Tests in `server/src/__tests__/` use these patterns to work around the drizzle-orm ESM cycle issue:
-
-- **Pure function tests:** Import and test directly (e.g., `formatRunSummary`, `detectToneCorrections`, `computeScore`).
-- **Service tests with mocks:** Mock `@armyofagents/db` and `drizzle-orm` with Proxy-based table stubs and no-op operators. Use sequence-based mock DBs (`createSequenceDb`) where each `select`/`update`/`insert` returns the next pre-configured result.
-- **Contract tests:** Verify API shapes, constants, and formulas without importing drizzle internals.
-- **V2 QA test suites (S29):** `v2-memory-qa.test.ts`, `v2-artifacts-qa.test.ts`, `v2-integration-qa.test.ts`, `v2-edge-cases-qa.test.ts`, `v2-performance-qa.test.ts`.
-
-## Docs
-
-- `docs/aoa/specs/v1_spec.md` — Detailed V1 technical spec (tables, services, routes, UI)
-- `docs/aoa/plans/v1_plan.md` — V1 session-by-session development plan (~35 sessions across 8 phases)
-- `docs/aoa/specs/v2_spec.md` — Full V2 technical spec (intelligence, team, artifacts, integration)
-- `docs/aoa/plans/v2_plan.md` — V2 session-by-session development plan (10 phases, ~51 sessions)
-- `docs/aoa/specs/v2_5_changelog.md` — V2.5 changelog (discussions, internal agent, workflow templates, notifications)
-- `docs/aoa/specs/v3_spec.md` — Full V3 technical spec (autonomy, workflows, connectors, blueprints, hosted)
-- `docs/aoa/reference/decisions.md` — All locked decisions (#1-90). Do not relitigate unless reopened.
-- `docs/aoa/reference/prd.md` — Full product requirements document (covers V1/V2/V3 roadmap)
-- `docs/aoa/specs/paperclip_spec.md` — Original Paperclip specification
-- `docs/aoa/reference/product.md` — Original Paperclip product definition
+| Location | Purpose |
+|----------|---------|
+| `docs/architecture/decisions.md` | **Read before making any architectural change.** 90+ locked decisions. |
+| `docs/architecture/design-system.md` | Visual design system — colors, typography, component patterns |
+| `docs/architecture/memory.md` | Memory UI layout, semantic retrieval config, feedback detector details |
+| `docs/architecture/wire-compat.md` | Wire protocol compatibility tracking |
+| `docs/architecture/workspace-decisions.md` | Workspace-specific architectural decisions |
+| `docs/api/` | REST API endpoint reference (per-domain) — includes `mcp.md` (34 MCP tools + 4 resources), `discussions.md`, `workflow-templates.md` |
+| `docs/adapters/` | Adapter authoring guide + per-adapter reference |
+| `docs/deploy/` | Deployment modes, env vars, database, Docker, distribution, telemetry |
+| `docs/guides/board-operator/` | How-tos for founders and team leads |
+| `docs/guides/agent-developer/` | Heartbeat protocol, skill authoring, cost reporting |
+| `docs/start/` | What is AoA, quickstart, core concepts |
+| `docs/cli/` | CLI command reference |
+| `docs/roadmap.md` | Planned features — NOT current behavior |
+| `docs/STANDARDS.md` | Documentation lifecycle and session log extraction rules |
+| `docs/paperclip-migration.md` | Paperclip→AoA tracking: wire protocol, deprecated tables, removed adapters |
+| `docs/archive/` | Historical session logs, shipped plans, retired specs — not authoritative |

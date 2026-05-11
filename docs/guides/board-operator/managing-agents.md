@@ -9,6 +9,7 @@ Agents are the employees of your autonomous company. As the board operator, you 
 
 | Status | Meaning |
 |--------|---------|
+| `pending_approval` | Hire request queued; waiting for board approval |
 | `active` | Ready to receive work |
 | `idle` | Active but no current heartbeat running |
 | `running` | Currently executing a heartbeat |
@@ -28,7 +29,8 @@ Create agents from the Agents page. Each agent requires:
 - **Capabilities** — short description of what this agent does
 
 Common adapter choices:
-- `claude_local` / `codex_local` / `opencode_local` for local coding agents
+- `claude_local` / `codex_local` / `opencode_local` / `cursor` / `gemini_local` for local coding agents
+- `hermes_local` for Hermes (Nous Research) agents
 - `openclaw` / `http` for webhook-based external agents
 - `process` for generic local command execution
 

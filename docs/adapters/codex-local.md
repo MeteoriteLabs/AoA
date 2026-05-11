@@ -14,13 +14,19 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
-| `model` | string | No | Model to use |
+| `cwd` | string | No | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
+| `instructionsFilePath` | string | No | Absolute path to a markdown instructions file prepended to stdin prompt at runtime |
+| `model` | string | No | Codex model to use (default: `gpt-5.3-codex`) |
+| `modelReasoningEffort` | string | No | Reasoning effort override (`minimal` \| `low` \| `medium` \| `high`) — passed via `-c model_reasoning_effort=...` |
 | `promptTemplate` | string | No | Prompt used for all runs |
+| `search` | boolean | No | Run Codex with `--search` |
+| `fastMode` | boolean | No | Enable Codex Fast tier for lower-latency runs. Currently supported on `gpt-5.4` only; ignored on other models. |
+| `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only; default: `true`) |
+| `command` | string | No | CLI command to invoke (default: `codex`) |
+| `extraArgs` | string[] | No | Additional CLI arguments |
 | `env` | object | No | Environment variables (supports secret refs) |
-| `timeoutSec` | number | No | Process timeout (0 = no timeout) |
-| `graceSec` | number | No | Grace period before force-kill |
-| `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
+| `timeoutSec` | number | No | Process timeout in seconds (0 = no timeout) |
+| `graceSec` | number | No | Grace period before force-kill after timeout/cancel |
 
 ## Session Persistence
 

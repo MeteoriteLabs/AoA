@@ -10,7 +10,7 @@ AoA is a monorepo with four main layers.
 ```
 ┌─────────────────────────────────────┐
 │  React UI (Vite)                    │
-│  Dashboard, org management, tasks   │
+│  Home, org management, tasks        │
 ├─────────────────────────────────────┤
 │  Express.js REST API (Node.js)      │
 │  Routes, services, auth, adapters   │
@@ -20,6 +20,8 @@ AoA is a monorepo with four main layers.
 ├─────────────────────────────────────┤
 │  Adapters                           │
 │  Claude Local, Codex Local,         │
+│  Cursor, OpenCode, OpenClaw,        │
+│  Gemini Local, Hermes Local,        │
 │  Process, HTTP                      │
 └─────────────────────────────────────┘
 ```
@@ -32,7 +34,7 @@ AoA is a monorepo with four main layers.
 | Backend | Node.js 20+, Express.js 5, TypeScript |
 | Database | PostgreSQL 17 (or embedded `embedded-postgres@18.x` — a real Postgres binary, not PGlite/WASM), Drizzle ORM |
 | Auth | Better Auth (sessions + API keys) |
-| Adapters | Claude Code CLI, Codex CLI, shell process, HTTP webhook |
+| Adapters | Claude Code CLI, Codex CLI, Cursor, OpenCode CLI, OpenClaw, Gemini CLI, Hermes CLI, shell process, HTTP webhook |
 | Package manager | pnpm 9 with workspaces |
 
 ## Repository Structure
@@ -57,7 +59,13 @@ aoa/
 │   ├── adapter-utils/           # Adapter interfaces and helpers
 │   └── adapters/
 │       ├── claude-local/        # Claude Code adapter
-│       └── codex-local/         # OpenAI Codex adapter
+│       ├── codex-local/         # OpenAI Codex adapter
+│       ├── cursor-local/        # Cursor adapter
+│       ├── opencode-local/      # OpenCode adapter
+│       ├── openclaw/            # OpenClaw adapter
+│       └── gemini-local/        # Gemini CLI adapter
+│                                # Note: hermes_local uses the external
+│                                # hermes-paperclip-adapter npm package
 │
 ├── skills/                      # Agent skills
 │   └── aoa/                     # Core AoA skill (heartbeat protocol)
@@ -65,7 +73,7 @@ aoa/
 ├── cli/                         # CLI client
 │   └── src/                     # Setup and control-plane commands
 │
-└── doc/                         # Internal documentation
+└── docs/                        # Internal documentation
 ```
 
 ## Request Flow
@@ -87,7 +95,7 @@ Adapters are the bridge between AoA and agent runtimes. Each adapter is a packag
 - **UI module** — stdout parser for the run viewer, config form fields for agent creation
 - **CLI module** — terminal formatter for `aoa run --watch`
 
-Built-in adapters: `claude_local`, `codex_local`, `process`, `http`. You can create custom adapters for any runtime.
+Built-in adapters: `claude_local`, `codex_local`, `cursor`, `opencode_local`, `openclaw`, `gemini_local`, `hermes_local`, `process`, `http`. You can create custom adapters for any runtime.
 
 ## Key Design Decisions
 

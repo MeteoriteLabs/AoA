@@ -21,16 +21,20 @@ The `process` adapter executes arbitrary shell commands. Use it for simple scrip
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `command` | string | Yes | Shell command to execute |
-| `cwd` | string | No | Working directory |
-| `env` | object | No | Environment variables |
-| `timeoutSec` | number | No | Process timeout |
+| `args` | string[] | No | Command arguments passed separately (avoids shell quoting issues) |
+| `cwd` | string | No | Working directory (defaults to server's `process.cwd()`) |
+| `env` | object | No | Environment variables (merged on top of injected AoA vars) |
+| `timeoutSec` | number | No | Process timeout in seconds (0 = no timeout) |
+| `graceSec` | number | No | Grace period before force-kill after timeout (default: 15s) |
 
 ## How It Works
 
 1. AoA spawns the configured command as a child process
-2. Standard AoA environment variables are injected (`AOA_AGENT_ID`, `AOA_API_KEY`, etc.)
+2. Standard AoA environment variables are injected: `AOA_AGENT_ID`, `AOA_COMPANY_ID`, `AOA_API_URL`
 3. The process runs to completion
-4. Exit code determines success/failure
+4. Non-zero exit code marks the run as failed
+
+Note: The `process` adapter does not issue an agent JWT — `AOA_API_KEY` is not injected. If the script needs to authenticate to the AoA API, provide a key via `env` or use an adapter that supports `supportsLocalAgentJwt` (e.g. `claude_local`, `codex_local`).
 
 ## Example
 

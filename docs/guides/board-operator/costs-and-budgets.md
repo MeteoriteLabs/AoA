@@ -50,9 +50,9 @@ An auto-paused agent can be resumed by increasing its budget or waiting for the 
 
 ## Viewing Costs
 
-### Dashboard
+### Home
 
-The dashboard shows current month spend vs budget for the company and each agent.
+Home shows current month spend vs budget for the company and each agent.
 
 ### Cost Breakdown API
 
@@ -65,6 +65,6 @@ GET /api/companies/{companyId}/costs/by-project   # Per-project breakdown
 ## Best Practices
 
 - Set conservative budgets initially and increase as you see results
-- Monitor the dashboard regularly for unexpected cost spikes
+- Monitor Home regularly for unexpected cost spikes
 - Use per-agent budgets to limit exposure from any single agent
 - Critical agents (Director, CTO) may need higher budgets than ICs

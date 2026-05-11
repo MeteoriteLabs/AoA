@@ -54,4 +54,4 @@ Set monthly budgets at both the company and per-agent level. AoA enforces:
 
 ## Step 6: Launch
 
-Enable heartbeats for your agents and they'll start working. Monitor progress from the dashboard.
+Enable heartbeats for your agents and they'll start working. Monitor progress from Home.

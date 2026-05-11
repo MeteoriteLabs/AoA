@@ -5,9 +5,10 @@ summary: Per-task git-worktree isolation for engineering work
 
 A practical reference for the per-task git-worktree isolation system that
 powers engineering workflows in AoA. Companion to
-[`workspace-decisions.md`](/aoa/reference/workspace-decisions)
+[`workspace-decisions.md`](../../architecture/workspace-decisions.md)
 (architectural rationale) and
-[`workspace-implementation-plan.md`](/aoa/specs/workspace-implementation-plan).
+[`workspace-implementation-plan.md`](../../archive/plans/workspace-implementation-plan.md)
+(implementation history).
 
 ## What is a workspace?
 
@@ -19,7 +20,7 @@ database). Each task gets its own worktree so concurrent runs never clobber
 each other's files, branches, or ports. Non-engineering work types fall back
 to `shared` or `none` modes.
 
-Stored in [`execution_workspaces`](../packages/db/src/schema/execution_workspaces.ts)
+Stored in [`execution_workspaces`](../../../packages/db/src/schema/execution_workspaces.ts)
 with JSONB `metadata` (denormalized config snapshot, linked issues, PR info,
 close-report) + JSONB `runtime` (service state, ports, logs).
 
@@ -42,7 +43,7 @@ persistent directory for all tasks) or no-workspace mode (ephemeral).
 
 A task can opt into a **different** execution mode than its project default via
 the **Execution Workspace** card on the TaskSlideOver (see
-[`IssueWorkspaceCard`](../ui/src/components/IssueWorkspaceCard.tsx)). Three
+[`IssueWorkspaceCard`](../../../ui/src/components/IssueWorkspaceCard.tsx)). Three
 per-task choices:
 
 - `shared_workspace` — run in the project's shared directory
@@ -57,7 +58,7 @@ earlier run.
 
 1. **Auto-create** — on the first heartbeat run for an engineering task with
    `per_task` policy,
-   [`workspace-runtime`](../server/src/services/workspace-runtime.ts)
+   [`workspace-runtime`](../../../server/src/services/workspace-runtime.ts)
    materializes the worktree (git branch + directory + provision command) and
    writes a config snapshot into `metadata.config`.
 2. **Reuse** — subsequent runs on the same task (or any task set to
@@ -73,23 +74,23 @@ earlier run.
 ## The workspace cockpit
 
 - **Company-wide list:** `/:companyPrefix/workspaces` (sidebar: WORK →
-  Workspaces) — see [`WorkspacesList`](../ui/src/pages/WorkspacesList.tsx).
+  Workspaces) — see [`WorkspacesList`](../../../ui/src/pages/WorkspacesList.tsx).
   Status chips, project grouping, last-used timestamp, kebab per row.
-- **Detail view:** `/:companyPrefix/workspace/:id` — 3-panel IDE-style cockpit
-  ([`WorkspaceLayout`](../ui/src/components/workspace/WorkspaceLayout.tsx)):
+- **Detail view:** `/:companyPrefix/workspaces/:workspaceId` — 3-panel IDE-style cockpit
+  ([`WorkspaceLayout`](../../../ui/src/components/workspace/WorkspaceLayout.tsx)):
   task nav + timeline/preview + context.
 - **Header kebab menu:** Settings Sheet + Archive dialog.
 - **Open in IDE:** VS Code / Cursor / Zed buttons + Reveal in Finder/Explorer
-  + Copy path via [`OpenInIdeButton`](../ui/src/components/workspace/OpenInIdeButton.tsx).
+  + Copy path via [`OpenInIdeButton`](../../../ui/src/components/workspace/OpenInIdeButton.tsx).
   Preferred editor persists at `localStorage["aoa:workspace:preferred-editor"]`.
 - **Runtime services:** start/stop/restart dev servers from the right panel's
-  [`ServicesSection`](../ui/src/components/workspace/sections/ServicesSection.tsx)
+  [`ServicesSection`](../../../ui/src/components/workspace/sections/ServicesSection.tsx)
   (gated to `software_development` projects).
 
 ## Configuration via Settings Sheet
 
 Kebab → Settings opens
-[`WorkspaceSettingsSheet`](../ui/src/components/workspace/WorkspaceSettingsSheet.tsx)
+[`WorkspaceSettingsSheet`](../../../ui/src/components/workspace/WorkspaceSettingsSheet.tsx)
 (three tabs: Configuration / Runtime Logs / Linked Issues). Editable fields:
 
 - `name` — display name
@@ -105,7 +106,7 @@ Task 10 to accept metadata-only updates).
 ## Archiving
 
 Kebab → Archive opens the **close dialog**
-([`ExecutionWorkspaceCloseDialog`](../ui/src/components/workspace/ExecutionWorkspaceCloseDialog.tsx)),
+([`ExecutionWorkspaceCloseDialog`](../../../ui/src/components/workspace/ExecutionWorkspaceCloseDialog.tsx)),
 built on the AlertDialog primitive. Shows a preview of planned actions:
 
 - `archive_record` — mark DB row archived
@@ -129,7 +130,7 @@ GitHub-only MVP.
    `repo` scope.
 2. Open a workspace with a pushed branch on a GitHub repo.
 3. GitPanel shows a **Create PR** button — opens
-   [`CreatePrDialog`](../ui/src/components/workspace/CreatePrDialog.tsx)
+   [`CreatePrDialog`](../../../ui/src/components/workspace/CreatePrDialog.tsx)
    prefilled from the linked issue.
 4. On success, the PR link persists to `workspace.metadata.pr` and a
    "Opened PR #N" comment is posted to the linked task. The button changes to
@@ -170,11 +171,7 @@ Enforced server-side in `workspace-authz` + `assertBoard` (Task 9):
   shared across team
 - **IDE launchers use OS `open`** — no deep URL handlers; behavior depends on
   local associations
-- **Workspaces page still reads as "Discussions" in the breadcrumb** — see
-  Phase I cleanup plan (backlog item)
+- **Workspaces page breadcrumb reads as "Discussions"** — backlog cleanup item
 - **Radix DialogTitle warnings** appear in console on some dialogs (pre-existing)
 - **No idempotency guard on Create PR** — double-click protected by button
-  disable only; Phase I cleanup will add a server-side idempotency key
-
-Full deferred-item list lives in the next Phase I cleanup plan (written after
-this guide's verification pause).
+  disable only; server-side idempotency key is a backlog item

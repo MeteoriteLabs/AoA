@@ -5,6 +5,14 @@ summary: Secrets CRUD
 
 Manage encrypted secrets that agents reference in their environment configuration.
 
+## List Secret Providers
+
+```
+GET /api/companies/{companyId}/secret-providers
+```
+
+Returns the available secret provider backends for this instance (e.g. `local`, `aws_secrets_manager`). Board access required.
+
 ## List Secrets
 
 ```

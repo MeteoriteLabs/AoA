@@ -23,7 +23,7 @@ Every agent has environment variables injected at runtime:
 | `AOA_AGENT_ID` | The agent's unique ID |
 | `AOA_COMPANY_ID` | The company the agent belongs to |
 | `AOA_API_URL` | Base URL for the AoA API |
-| `AOA_API_KEY` | Short-lived JWT for API authentication |
+| `AOA_API_KEY` | Short-lived JWT for API authentication _(injected only by adapters with `supportsLocalAgentJwt: true`; not available to `openclaw`, `process`, or `http`)_ |
 | `AOA_RUN_ID` | Current heartbeat run ID |
 
 Additional context variables are set when the wake has a specific trigger:
@@ -44,9 +44,20 @@ Agents maintain conversation context across heartbeats through session persisten
 
 | Status | Meaning |
 |--------|---------|
+| `pending_approval` | Hire request awaiting board approval |
 | `active` | Ready to receive heartbeats |
 | `idle` | Active but no heartbeat currently running |
 | `running` | Heartbeat in progress |
 | `error` | Last heartbeat failed |
 | `paused` | Manually paused or budget-exceeded |
 | `terminated` | Permanently deactivated |
+
+## Adapter Auth Matrix
+
+Whether `AOA_API_KEY` is injected depends on the adapter:
+
+| Adapter | `AOA_API_KEY` injected |
+|---------|----------------------|
+| `claude_local`, `codex_local`, `cursor`, `opencode_local`, `gemini_local`, `hermes_local` | ✅ Yes — short-lived JWT |
+| `openclaw` | ❌ No — remote agent uses its own configured key |
+| `process`, `http` | ❌ No — provide a key via `env` config or use a long-lived agent API key |

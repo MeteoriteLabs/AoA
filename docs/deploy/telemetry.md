@@ -51,13 +51,38 @@ Payload shape: `FeedbackShareBundle` envelope — see
 - The plugin never observes transport outcome — `track` resolves as soon as
   the POST is launched.
 
-## Redaction
+## Redaction & anonymization
 
 AoA runs the full redaction pipeline (`feedback-redaction.ts`, 9 patterns:
-email / API keys / JWTs / PEM blocks / phone / GitHub tokens / DSN / AWS
-access keys / OpenAI keys) **before** handing the bundle to
+PEM blocks / secret key=value assignments / bearer tokens / GitHub tokens /
+provider API keys (`sk-*` prefix, catches both Anthropic and OpenAI keys) /
+JWTs / DSNs / email / phone) **before** handing the bundle to
 `shareFeedbackBundle`. Endpoints should not re-implement redaction; the
 payload they receive is already scrubbed.
+
+Identifiers that survive redaction are **anonymized**: each is replaced with
+`{kind}_{sha256(pepper:kind:value).slice(0, 16)}` where `pepper` is an
+instance-local secret. The same input always maps to the same anonymized
+token within an instance, enabling cross-bundle correlation without
+exposing raw values.
+
+## Consent & privacy settings
+
+Each instance has a `feedbackDataSharingPreference` field (on the `instances`
+table) controlled by the instance owner. Three options:
+
+| Option | Behaviour |
+|--------|-----------|
+| `allowed` | Bundles transmitted (or written locally when no endpoint set) automatically after each vote. |
+| `ask` | A consent modal is shown before each bundle is sent. Founder approves or rejects per bundle. |
+| `disallowed` | No bundles built or transmitted. Votes are stored locally only. |
+
+The **PrivacyTab** in Settings shows the last 3 exported bundles (local path,
+timestamp, status) so founders can audit what was sent.
+
+**Plugin telemetry capability gate:** `ctx.telemetry.track(event, dims)` is
+only available to plugins that declare `PLUGIN_CAPABILITIES["telemetry.track"]`
+in their manifest. Plugins without the capability receive a no-op stub.
 
 ## Disabling
 
