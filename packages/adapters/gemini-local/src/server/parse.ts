@@ -64,7 +64,10 @@ function accumulateUsage(
   );
   target.cachedInputTokens += asNumber(
     source.cached_input_tokens,
-    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount, 0)),
+    asNumber(
+      source.cachedInputTokens,
+      asNumber(source.cachedContentTokenCount, asNumber(source.cached, 0)),
+    ),
   );
   target.outputTokens += asNumber(
     source.output_tokens,
@@ -131,14 +134,17 @@ export function parseGeminiJsonl(stdout: string) {
 
     if (type === "result") {
       resultEvent = event;
-      accumulateUsage(usage, event.usage ?? event.usageMetadata);
+      accumulateUsage(usage, event.usage ?? event.usageMetadata ?? event.stats);
       const resultText =
         asString(event.result, "").trim() ||
         asString(event.text, "").trim() ||
         asString(event.response, "").trim();
       if (resultText && messages.length === 0) messages.push(resultText);
       costUsd = asNumber(event.total_cost_usd, asNumber(event.cost_usd, asNumber(event.cost, costUsd ?? 0))) || costUsd;
-      const isError = event.is_error === true || asString(event.subtype, "").toLowerCase() === "error";
+      const eventStatus = asString(event.status, "").toLowerCase();
+      const isError = event.is_error === true ||
+        asString(event.subtype, "").toLowerCase() === "error" ||
+        eventStatus === "error" || eventStatus === "failed";
       if (isError) {
         const text = asErrorText(event.error ?? event.message ?? event.result).trim();
         if (text) errorMessage = text;
