@@ -755,13 +755,14 @@ function BudgetTabContent({
 
       {/* Cost-saver fallback model */}
       <div className="space-y-2">
-        <label className="text-sm font-medium text-foreground">
+        <label htmlFor="cheap-model-input" className="text-sm font-medium text-foreground">
           Cost-saver fallback at 80%
         </label>
         <p className="text-xs text-muted-foreground">
           Model to use when monthly spend reaches 80% of budget. Leave blank to disable.
         </p>
         <input
+          id="cheap-model-input"
           type="text"
           data-testid="cheap-model-input"
           className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
