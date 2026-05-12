@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { useSidebar } from "@/context/SidebarContext";
-import { Building, Shield, KeyRound, DollarSign, Plug, Puzzle, Store, Archive, Github, Activity } from "lucide-react";
+import { Building, Shield, KeyRound, DollarSign, Plug, Puzzle, Store, Archive, Github, Activity, Layers } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SidebarCollapseToggle } from "@/components/SidebarCollapseToggle";
@@ -11,7 +11,7 @@ const SECONDARY_COLLAPSED_KEY = "aoa.settings-secondary-collapsed";
 export type SettingsSectionId =
   | "general" | "commander" | "llm" | "budget" | "mcp" | "github"
   | "plugins" | "marketplace" | "archive"
-  | "activity";
+  | "activity" | "environments";
 
 interface SettingsItem {
   id: SettingsSectionId;
@@ -31,11 +31,12 @@ export const SETTINGS_SECTIONS: readonly SettingsGroup[] = [
     { id: "activity",    label: "Activity",           icon: Activity },
   ]},
   { group: "Operations", items: [
-    { id: "commander",   label: "Commander",          icon: Shield },
-    { id: "llm",         label: "LLM providers",      icon: KeyRound },
-    { id: "budget",      label: "Budget & caps",      icon: DollarSign },
-    { id: "mcp",         label: "MCP API keys",       icon: Plug },
-    { id: "github",      label: "GitHub",             icon: Github, tone: "transitional" },
+    { id: "commander",    label: "Commander",          icon: Shield },
+    { id: "llm",          label: "LLM providers",      icon: KeyRound },
+    { id: "budget",       label: "Budget & caps",      icon: DollarSign },
+    { id: "mcp",          label: "MCP API keys",       icon: Plug },
+    { id: "environments", label: "Environments",       icon: Layers },
+    { id: "github",       label: "GitHub",             icon: Github, tone: "transitional" },
   ]},
   { group: "Extensions", items: [
     { id: "plugins",     label: "Plugins",            icon: Puzzle },
