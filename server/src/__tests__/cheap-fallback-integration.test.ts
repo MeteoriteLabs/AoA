@@ -23,7 +23,7 @@ let dataDir = "";
 let db: Db;
 let setupError: unknown = null;
 
-const PORT = 55200 + Math.floor(Math.random() * 100);
+const PORT = 57000 + Math.floor(Math.random() * 1000);
 
 beforeAll(async () => {
   try {
@@ -71,14 +71,15 @@ beforeAll(async () => {
                'Test Agent', 'claude_local', 1000)`,
     );
   } catch (err) {
+    console.error("[cheap-fallback-integration] embedded-postgres setup failed:", err);
     setupError = err;
   }
 }, 120_000);
 
 afterAll(async () => {
-  await pg?.stop();
-  if (dataDir) await rm(dataDir, { recursive: true, force: true });
-});
+  try { if (pg) await pg.stop(); } catch { /* ignore */ }
+  try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+}, 60_000);
 
 // Skipped on Windows due to embedded-postgres UTF-8 -> WIN1252 encoding
 // issue (Issue #113). The embedded-postgres cluster is initialised with the
@@ -87,7 +88,7 @@ afterAll(async () => {
 describe.skipIf(process.platform === "win32")(
   "resolveCheapFallbackModel (integration)",
   () => {
-  it("aborts setup cleanly", () => {
+  beforeEach(() => {
     if (setupError) throw setupError;
   });
 
