@@ -166,6 +166,7 @@ describe("CreatePrDialog", () => {
         body: "B",
         base: "main",
         draft: false,
+        head: "feature/x",
       });
     });
     await waitFor(() => {

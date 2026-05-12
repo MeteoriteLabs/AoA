@@ -398,7 +398,7 @@ describe("company-portability previewExport (route)", () => {
       };
       next();
     });
-    app.use("/api/companies", companyRoutes({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any));
+    app.use("/api/companies", companyRoutes({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any, { deploymentMode: "local_trusted" }));
     app.use(errorHandler);
     return app;
   }
@@ -469,9 +469,10 @@ function buildAppWithImportBodyCap(actorOverrides: Partial<any> = {}) {
   });
   app.use(
     "/api/companies",
-    companyRoutes({
-      select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
-    } as any),
+    companyRoutes(
+      { select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any,
+      { deploymentMode: "local_trusted" },
+    ),
   );
   app.use(errorHandler);
   return app;

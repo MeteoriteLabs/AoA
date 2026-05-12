@@ -690,6 +690,11 @@ export function IssuesList({
                             <Link2 className="h-3 w-3" />
                           </span>
                         )}
+                        {parent.workMode === "planning" && (
+                          <span className="hidden sm:inline-flex items-center gap-0.5 text-[10px] text-amber-600 dark:text-amber-400 bg-amber-500/10 rounded-full px-1.5 py-0 font-medium">
+                            Planning
+                          </span>
+                        )}
                         {subtaskStat && (
                           <span className="hidden sm:inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
                             <ListTree className="h-3 w-3" />
@@ -890,6 +895,12 @@ export function IssuesList({
                       {issue.status === "blocked" && (
                         <span className="hidden sm:inline-flex items-center gap-0.5 text-[10px] text-amber-600 dark:text-amber-400">
                           <Link2 className="h-3 w-3" />
+                        </span>
+                      )}
+                      {/* Planning mode pill */}
+                      {issue.workMode === "planning" && (
+                        <span className="hidden sm:inline-flex items-center gap-0.5 text-[10px] text-amber-600 dark:text-amber-400 bg-amber-500/10 rounded-full px-1.5 py-0 font-medium">
+                          Planning
                         </span>
                       )}
                       {/* Subtask progress */}

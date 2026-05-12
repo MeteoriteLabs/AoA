@@ -8,6 +8,7 @@ import {
   companyPortabilityPreviewSchema,
   createCompanySchema,
   updateCompanySchema,
+  type DeploymentMode,
 } from "@armyofagents/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -15,7 +16,7 @@ import { assertRole } from "../middleware/rbac.js";
 import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
-export function companyRoutes(db: Db) {
+export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) {
   const router = Router();
   const svc = companyService(db);
   const portability = companyPortabilityService(db);
@@ -126,7 +127,10 @@ export function companyRoutes(db: Db) {
     if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
     }
-    const company = await svc.create(req.body);
+    // D6: local_trusted = single trust boundary (loopback); one-click approve is friction.
+    // authenticated = real multi-human board; approval is multi-person accountability.
+    const requireBoardApprovalForNewAgents = opts.deploymentMode !== "local_trusted";
+    const company = await svc.create({ ...req.body, requireBoardApprovalForNewAgents });
     await access.ensureMembership(company.id, "user", req.actor.userId ?? "local-board", "owner", "active");
     await logActivity(db, {
       companyId: company.id,

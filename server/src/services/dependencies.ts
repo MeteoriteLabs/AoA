@@ -4,12 +4,14 @@ import { issues, taskDependencies } from "@armyofagents/db";
 import { logActivity } from "./activity-log.js";
 import { heartbeatService } from "./heartbeat.js";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 interface WakeTask {
   agentId: string;
   issueId: string;
+  workMode: string | null;
 }
 
 const TERMINAL_STATUSES = ["done", "cancelled"];
@@ -20,6 +22,7 @@ export function dependencyService(db: Db) {
 
   async function fireWakeups(tasks: WakeTask[]) {
     for (const wake of tasks) {
+      if (!shouldDispatchIssueWakeup({ workMode: wake.workMode })) continue;
       await heartbeat.wakeup(wake.agentId, {
         source: "automation",
         triggerDetail: "system",
@@ -228,12 +231,12 @@ export function dependencyService(db: Db) {
 
       // Collect agent for wakeup (after tx commits)
       const [task] = await (tx as Db)
-        .select({ assigneeAgentId: issues.assigneeAgentId })
+        .select({ assigneeAgentId: issues.assigneeAgentId, workMode: issues.workMode })
         .from(issues)
         .where(eq(issues.id, dep.dependentIssueId));
 
       if (task?.assigneeAgentId) {
-        wakeups.push({ agentId: task.assigneeAgentId, issueId: dep.dependentIssueId });
+        wakeups.push({ agentId: task.assigneeAgentId, issueId: dep.dependentIssueId, workMode: task.workMode ?? null });
       }
     }
 
@@ -305,12 +308,12 @@ export function dependencyService(db: Db) {
       });
 
       const [unblocked] = await (tx as Db)
-        .select({ assigneeAgentId: issues.assigneeAgentId })
+        .select({ assigneeAgentId: issues.assigneeAgentId, workMode: issues.workMode })
         .from(issues)
         .where(eq(issues.id, dependentIssueId));
 
       if (unblocked?.assigneeAgentId) {
-        return [{ agentId: unblocked.assigneeAgentId, issueId: dependentIssueId }];
+        return [{ agentId: unblocked.assigneeAgentId, issueId: dependentIssueId, workMode: unblocked.workMode ?? null }];
       }
     }
 

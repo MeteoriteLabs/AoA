@@ -67,6 +67,7 @@ import {
   ExternalLink,
   Copy,
   Sparkles,
+  ClipboardList,
 } from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import type { ActivityEvent } from "@armyofagents/shared";
@@ -869,6 +870,17 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                     </span>
                     Live
                   </span>
+                )}
+                {issue.workMode === "planning" && (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400 shrink-0 hover:bg-amber-500/20 transition-colors"
+                    onClick={() => updateIssue.mutate({ workMode: "standard" })}
+                    title="Switch to Standard mode"
+                  >
+                    <ClipboardList className="h-2.5 w-2.5" />
+                    Planning
+                  </button>
                 )}
               </>
             )}

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ISSUE_PRIORITIES, ISSUE_SOURCES, ISSUE_STATUSES } from "../constants.js";
+import { ISSUE_PRIORITIES, ISSUE_SOURCES, ISSUE_STATUSES, ISSUE_WORK_MODES } from "../constants.js";
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
@@ -17,6 +17,7 @@ export const createIssueSchema = z.object({
   description: z.string().optional().nullable(),
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
+  workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
   requestDepth: z.number().int().nonnegative().optional().default(0),

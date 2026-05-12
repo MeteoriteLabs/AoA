@@ -30,6 +30,7 @@ import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
+import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
 import { documentService } from "../services/documents.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
@@ -605,7 +606,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       );
     }
 
-    if (issue.assigneeAgentId && issue.status !== "backlog") {
+    if (issue.assigneeAgentId && issue.status !== "backlog" && shouldDispatchIssueWakeup(issue)) {
       void heartbeat
         .wakeup(issue.assigneeAgentId, {
           source: "assignment",
@@ -768,7 +769,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
 
-      if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog" && shouldDispatchIssueWakeup(issue)) {
         wakeups.set(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",

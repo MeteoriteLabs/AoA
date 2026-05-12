@@ -37,7 +37,7 @@ describe("company routes malformed issue path guard", () => {
       };
       next();
     });
-    app.use("/api/companies", companyRoutes({} as any));
+    app.use("/api/companies", companyRoutes({} as any, { deploymentMode: "local_trusted" }));
 
     const res = await request(app).get("/api/companies/issues");
 

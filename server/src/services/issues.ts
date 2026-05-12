@@ -30,6 +30,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { deriveIssueUserContext } from "./issue-user-context.js";
 import { issueExecutionWorkspaceModeForPersistedWorkspace } from "./execution-workspace-policy.js";
 import { notificationService } from "./notifications.js";
+import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -834,14 +835,14 @@ export function issueService(db: Db) {
           .where(eq(issues.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (!updated) return { result: null, tasksToWake: [] as { agentId: string; issueId: string }[] };
+        if (!updated) return { result: null, tasksToWake: [] as { agentId: string; issueId: string; workMode: string | null }[] };
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
 
         // Dependency side effects — inside transaction for atomicity
-        let wake: { agentId: string; issueId: string }[] = [];
+        let wake: { agentId: string; issueId: string; workMode: string | null }[] = [];
         if (enriched && issueData.status && issueData.status !== existing.status) {
           if (issueData.status === "done") {
             const resolved = await deps.resolveDependencies(existing.companyId, id, tx);
@@ -856,6 +857,7 @@ export function issueService(db: Db) {
 
       // Fire wakeups after transaction commits (side effects)
       for (const wake of tasksToWake) {
+        if (!shouldDispatchIssueWakeup({ workMode: wake.workMode ?? null })) continue;
         await heartbeat.wakeup(wake.agentId, {
           source: "automation",
           triggerDetail: "system",

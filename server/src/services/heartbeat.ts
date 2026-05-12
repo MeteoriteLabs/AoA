@@ -89,8 +89,8 @@ import {
 } from "@armyofagents/adapter-utils";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
-const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
-const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
+export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
+export const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 // AoA canonical names. Existing rows still using the legacy paperclip-
 // names are read transparently via the helpers below; writes only emit
@@ -132,7 +132,7 @@ function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
 }
 
-function normalizeMaxConcurrentRuns(value: unknown) {
+export function normalizeMaxConcurrentRuns(value: unknown) {
   const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
   if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
@@ -1819,6 +1819,7 @@ export function heartbeatService(db: Db) {
             executionWorkspaceSettings: issues.executionWorkspaceSettings,
             assigneeAgentId: issues.assigneeAgentId,
             assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+            workMode: issues.workMode,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))

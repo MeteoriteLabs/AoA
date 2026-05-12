@@ -488,6 +488,7 @@ type AoaWakeIssue = {
   title: string | null;
   status: string | null;
   priority: string | null;
+  workMode: string | null;
 };
 
 type AoaWakeExecutionPrincipal = {
@@ -538,6 +539,7 @@ function normalizeAoaWakeIssue(value: unknown): AoaWakeIssue | null {
   const title = asString(issue.title, "").trim() || null;
   const status = asString(issue.status, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
+  const workMode = asString(issue.workMode, "standard").trim() || "standard";
   if (!id && !identifier && !title) return null;
   return {
     id,
@@ -545,6 +547,7 @@ function normalizeAoaWakeIssue(value: unknown): AoaWakeIssue | null {
     title,
     status,
     priority,
+    workMode,
   };
 }
 
