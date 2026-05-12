@@ -167,7 +167,7 @@ export function RoutineRevisionHistory({ routineId, onRestored }: Props) {
             rev={rev}
             prevDescription={prevDescription}
             onRestore={(revisionId) => restoreMutation.mutate(revisionId)}
-            isRestoring={restoreMutation.isPending}
+            isRestoring={restoreMutation.isPending && restoreMutation.variables === rev.id}
           />
         );
       })}

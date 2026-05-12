@@ -299,6 +299,7 @@ export function RoutineDetail() {
   const location = useLocation();
   const { pushToast } = useToast();
   const hydratedRoutineIdRef = useRef<string | null>(null);
+  const latestRevisionIdRef = useRef<string | null>(null);
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
@@ -400,6 +401,7 @@ export function RoutineDetail() {
     if (changedRoutine || !isEditDirty) {
       setEditDraft(routineDefaults);
       hydratedRoutineIdRef.current = routine.id;
+      latestRevisionIdRef.current = routine.latestRevisionId ?? null;
     }
   }, [routine, routineDefaults, isEditDirty, setBreadcrumbs]);
 
@@ -443,6 +445,7 @@ export function RoutineDetail() {
       return routinesApi.update(routineId!, {
         ...editDraft,
         description: editDraft.description.trim() || null,
+        baseRevisionId: latestRevisionIdRef.current ?? undefined,
       });
     },
     onSuccess: async () => {
