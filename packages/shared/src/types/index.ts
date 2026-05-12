@@ -59,6 +59,14 @@ export type {
   AgentEnvConfig,
   CompanySecret,
   SecretProviderDescriptor,
+  CompanySecretProviderConfig,
+  SecretProviderConfigHealthResponse,
+  CompanySecretBinding,
+  CompanySecretUsageBinding,
+  SecretAccessEvent,
+  RemoteSecretImportCandidate,
+  RemoteSecretImportPreviewResult,
+  RemoteSecretImportResult,
 } from "./secrets.js";
 export type { CostEvent, CostSummary, CostByAgent } from "./cost.js";
 export type {

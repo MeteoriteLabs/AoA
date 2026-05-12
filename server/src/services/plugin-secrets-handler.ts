@@ -33,12 +33,11 @@
  * @see services/secrets.ts — secretService used by agent env bindings
  */
 
-import { eq, and, desc } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { companySecrets, companySecretVersions, pluginConfig } from "@armyofagents/db";
-import type { SecretProvider } from "@armyofagents/shared";
-import { getSecretProvider } from "../secrets/provider-registry.js";
+import { companySecrets, pluginConfig } from "@armyofagents/db";
 import { pluginRegistryService } from "./plugin-registry.js";
+import { secretService } from "./secrets.js";
 
 // ---------------------------------------------------------------------------
 // Error helpers
@@ -51,12 +50,6 @@ import { pluginRegistryService } from "./plugin-registry.js";
 function secretNotFound(secretRef: string): Error {
   const err = new Error(`Secret not found: ${secretRef}`);
   err.name = "SecretNotFoundError";
-  return err;
-}
-
-function secretVersionNotFound(secretRef: string): Error {
-  const err = new Error(`No version found for secret: ${secretRef}`);
-  err.name = "SecretVersionNotFoundError";
   return err;
 }
 
@@ -249,6 +242,7 @@ export function createPluginSecretsHandler(
 ): PluginSecretsService {
   const { db, pluginId } = options;
   const registry = pluginRegistryService(db);
+  const secrets = secretService(db);
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
@@ -321,34 +315,13 @@ export function createPluginSecretsHandler(
         throw secretNotFound(trimmedRef);
       }
 
-      // ---------------------------------------------------------------
-      // 3. Fetch the latest version's material
-      // ---------------------------------------------------------------
-      const versionRow = await db
-        .select()
-        .from(companySecretVersions)
-        .where(
-          and(
-            eq(companySecretVersions.secretId, secret.id),
-            eq(companySecretVersions.version, secret.latestVersion),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
-
-      if (!versionRow) {
-        throw secretVersionNotFound(trimmedRef);
-      }
-
-      // ---------------------------------------------------------------
-      // 4. Resolve through the appropriate secret provider
-      // ---------------------------------------------------------------
-      const provider = getSecretProvider(secret.provider as SecretProvider);
-      const resolved = await provider.resolveVersion({
-        material: versionRow.material as Record<string, unknown>,
-        externalRef: secret.externalRef,
+      return secrets.resolveSecretValue(secret.companyId, secret.id, "latest", {
+        consumerType: "plugin",
+        consumerId: pluginId,
+        actorType: "plugin",
+        actorId: pluginId,
+        pluginId,
       });
-
-      return resolved;
     },
   };
 }

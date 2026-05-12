@@ -12,7 +12,7 @@ import {
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { assertRole } from "../middleware/rbac.js";
-import { projectService, logActivity, instanceSettingsService } from "../services/index.js";
+import { projectService, logActivity, instanceSettingsService, secretService } from "../services/index.js";
 import { conflict, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { gateProjectExecutionWorkspacePolicy, parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
@@ -36,6 +36,7 @@ export function sniffsShellCommandFields(policy: unknown): boolean {
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
+  const secretsSvc = secretService(db);
 
   async function resolveCompanyIdForProjectReference(req: Request) {
     const companyIdQuery = req.query.companyId;
@@ -376,6 +377,11 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
+    await secretsSvc.syncEnvBindingsForTarget(project.companyId, {
+      targetType: "project",
+      targetId: project.id,
+      pathPrefix: "env",
+    }, updated.env ?? {});
     res.json({ env: updated.env ?? null });
   });
 

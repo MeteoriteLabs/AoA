@@ -142,7 +142,12 @@ async function getGitHubPat(db: Db, companyId: string): Promise<string | null> {
     const svc = secretService(db);
     const secret = await svc.getByName(companyId, "github_pat");
     if (!secret) return null;
-    return await svc.resolveSecretValue(companyId, secret.id, "latest");
+    return await svc.resolveSecretValue(companyId, secret.id, "latest", {
+      consumerType: "system",
+      consumerId: "workspace-git",
+      actorType: "system",
+      configPath: "github.pat",
+    });
   } catch {
     return null;
   }

@@ -119,12 +119,24 @@ export const localEncryptedProvider: SecretProviderModule = {
     id: "local_encrypted",
     label: "Local encrypted (default)",
     requiresExternalRef: false,
+    supportsManagedValues: true,
+    supportsExternalReferences: false,
+    configured: true,
+    status: "ready",
   },
+  configured: true,
+  supportsManagedValues: true,
+  supportsExternalReferences: false,
   async createVersion(input) {
+    if (typeof input.value !== "string") {
+      throw badRequest("Local encrypted secrets require a value");
+    }
     const masterKey = loadOrCreateMasterKey();
+    const valueSha256 = sha256Hex(input.value);
     return {
       material: encryptValue(masterKey, input.value),
-      valueSha256: sha256Hex(input.value),
+      valueSha256,
+      fingerprintSha256: valueSha256,
       externalRef: null,
     };
   },

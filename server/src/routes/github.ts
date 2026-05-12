@@ -199,7 +199,13 @@ export function githubRoutes(db: Db) {
             const sSvc = secretService(db);
             const secret = await sSvc.getByName(issue.companyId, GITHUB_PAT_SECRET_NAME);
             const pat = secret
-              ? await sSvc.resolveSecretValue(issue.companyId, secret.id, "latest").catch(() => null)
+              ? await sSvc.resolveSecretValue(issue.companyId, secret.id, "latest", {
+                  consumerType: "system",
+                  consumerId: "github:auto-push",
+                  actorType: "system",
+                  issueId: issue.id,
+                  configPath: "github.pat",
+                }).catch(() => null)
               : null;
             await push(gitRoot, "origin", headBranch, pat ? { pat } : undefined);
           }

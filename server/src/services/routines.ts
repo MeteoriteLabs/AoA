@@ -575,7 +575,12 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .where(eq(companySecrets.id, trigger.secretId))
       .then((rows) => rows[0] ?? null);
     if (!secret || secret.companyId !== companyId) throw notFound("Routine trigger secret not found");
-    const value = await secretsSvc.resolveSecretValue(companyId, trigger.secretId, "latest");
+    const value = await secretsSvc.resolveSecretValue(companyId, trigger.secretId, "latest", {
+      consumerType: "routine",
+      consumerId: trigger.routineId,
+      actorType: "system",
+      configPath: "routine.triggerSecret",
+    });
     return value;
   }
 

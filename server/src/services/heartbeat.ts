@@ -801,7 +801,14 @@ export function heartbeatService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
 
   // Register the secret resolver so API adapters can resolve API keys
-  setSecretResolver((companyId, name) => secretsSvc.resolveByName(companyId, name));
+  setSecretResolver((companyId, name) =>
+    secretsSvc.resolveByName(companyId, name, {
+      consumerType: "system",
+      consumerId: `adapter-secret:${name}`,
+      actorType: "system",
+      configPath: `provider.${name}`,
+    }),
+  );
 
   async function getAgent(agentId: string) {
     return db
@@ -2366,6 +2373,14 @@ export function heartbeatService(db: Db) {
     const resolvedConfig = await secretsSvc.resolveAdapterConfigForRuntime(
       agent.companyId,
       mergedConfigWithEnvironmentTarget,
+      {
+        consumerType: "agent",
+        consumerId: agent.id,
+        actorType: "agent",
+        actorId: agent.id,
+        issueId: issueContext?.id ?? null,
+        heartbeatRunId: run.id,
+      },
     );
 
     // ── Issue ref for execution workspace ───────────────────────────

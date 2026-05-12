@@ -5,6 +5,7 @@ import {
   updateEnvironmentSchema,
 } from "@armyofagents/shared";
 import { environmentService, type EnvironmentService } from "../services/environments.js";
+import { secretService } from "../services/secrets.js";
 import { assertCompanyAccess } from "./authz.js";
 
 interface RoutesOptions {
@@ -16,6 +17,7 @@ interface RoutesOptions {
 export function environmentRoutes(opts: RoutesOptions) {
   const router = Router();
   const svc = opts.svc ?? environmentService(opts.db!);
+  const secretsSvc = opts.db ? secretService(opts.db) : null;
 
   // GET list
   router.get(
@@ -65,6 +67,13 @@ export function environmentRoutes(opts: RoutesOptions) {
           return;
         }
         const created = await svc.create(companyId, parsed.data);
+        if (secretsSvc) {
+          await secretsSvc.syncEnvBindingsForTarget(companyId, {
+            targetType: "environment",
+            targetId: created!.id,
+            pathPrefix: "env",
+          }, created?.envVars ?? {});
+        }
         res.status(201).json(created);
       } catch (err) {
         next(err);
@@ -89,6 +98,13 @@ export function environmentRoutes(opts: RoutesOptions) {
         if (!updated) {
           res.status(404).json({ error: "Environment not found" });
           return;
+        }
+        if (secretsSvc && parsed.data.envVars !== undefined) {
+          await secretsSvc.syncEnvBindingsForTarget(companyId, {
+            targetType: "environment",
+            targetId: updated.id,
+            pathPrefix: "env",
+          }, updated.envVars ?? {});
         }
         res.json(updated);
       } catch (err) {

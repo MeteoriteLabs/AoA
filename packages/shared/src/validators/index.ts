@@ -178,9 +178,20 @@ export {
   createSecretSchema,
   rotateSecretSchema,
   updateSecretSchema,
+  secretProviderConfigPayloadSchema,
+  createSecretProviderConfigSchema,
+  updateSecretProviderConfigSchema,
+  createSecretBindingSchema,
+  remoteSecretImportPreviewSchema,
+  remoteSecretImportCommitSchema,
   type CreateSecret,
   type RotateSecret,
   type UpdateSecret,
+  type CreateSecretProviderConfig,
+  type UpdateSecretProviderConfig,
+  type CreateSecretBinding,
+  type RemoteSecretImportPreview,
+  type RemoteSecretImportCommit,
 } from "./secret.js";
 
 export {

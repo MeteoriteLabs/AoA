@@ -39,7 +39,12 @@ export async function getProviderApiKey(
   const svc = secretService(db);
   for (const name of secretNames) {
     try {
-      return await svc.resolveByName(companyId, name);
+      return await svc.resolveByName(companyId, name, {
+        consumerType: "system",
+        consumerId: `llm-provider:${provider}`,
+        actorType: "system",
+        configPath: `provider.${provider}`,
+      });
     } catch {
       // Secret not found under this name — try next
     }

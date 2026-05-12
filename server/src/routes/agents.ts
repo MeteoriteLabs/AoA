@@ -268,7 +268,11 @@ export function agentRoutes(db: Db) {
     adapterConfig: Record<string, unknown>,
   ) {
     if (adapterType !== "opencode_local") return;
-    const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
+    const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig, {
+      consumerType: "system",
+      consumerId: `adapter-check:${adapterType ?? "unknown"}`,
+      actorType: "system",
+    });
     const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
     try {
       await ensureOpenCodeModelConfiguredAndAvailable({
@@ -435,6 +439,11 @@ export function agentRoutes(db: Db) {
       const runtimeAdapterConfig = await secretsSvc.resolveAdapterConfigForRuntime(
         companyId,
         normalizedAdapterConfig,
+        {
+          consumerType: "system",
+          consumerId: `adapter-test:${type}`,
+          actorType: "system",
+        },
       );
 
       const result = await adapter.testEnvironment({
@@ -792,6 +801,11 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
+    await secretsSvc.syncEnvBindingsForTarget(companyId, {
+      targetType: "agent",
+      targetId: createdAgent.id,
+      pathPrefix: "env",
+    }, normalizedAdapterConfig.env);
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
@@ -920,6 +934,11 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
+    await secretsSvc.syncEnvBindingsForTarget(companyId, {
+      targetType: "agent",
+      targetId: createdAgent.id,
+      pathPrefix: "env",
+    }, normalizedAdapterConfig.env);
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
 
     const actor = getActorInfo(req);
@@ -1026,6 +1045,13 @@ export function agentRoutes(db: Db) {
         },
       },
     );
+    if (agent) {
+      await secretsSvc.syncEnvBindingsForTarget(existing.companyId, {
+        targetType: "agent",
+        targetId: agent.id,
+        pathPrefix: "env",
+      }, normalizedAdapterConfig.env);
+    }
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -1129,6 +1155,13 @@ export function agentRoutes(db: Db) {
         source: "patch",
       },
     });
+    if (agent && patchData.adapterConfig) {
+      await secretsSvc.syncEnvBindingsForTarget(existing.companyId, {
+        targetType: "agent",
+        targetId: agent.id,
+        pathPrefix: "env",
+      }, (patchData.adapterConfig as Record<string, unknown>).env);
+    }
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -1448,7 +1481,12 @@ export function agentRoutes(db: Db) {
     }
 
     const config = asRecord(agent.adapterConfig) ?? {};
-    const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, config);
+    const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, config, {
+      consumerType: "agent",
+      consumerId: agent.id,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+    });
     const result = await runClaudeLogin({
       runId: `claude-login-${randomUUID()}`,
       agent: {
