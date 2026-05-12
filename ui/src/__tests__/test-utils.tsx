@@ -2,6 +2,7 @@ import React, { type ReactNode } from "react";
 import { render, type RenderOptions } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { vi } from "vitest";
 
 // --- Mock company context ---
 export const mockCompanyContext = {

@@ -98,6 +98,9 @@ export const queryKeys = {
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
+    providerConfigs: (companyId: string) => ["secret-provider-configs", companyId] as const,
+    bindings: (secretId: string) => ["secret-bindings", secretId] as const,
+    accessEvents: (secretId: string) => ["secret-access-events", secretId] as const,
   },
   github: {
     patStatus: (companyId: string) => ["github", "patStatus", companyId] as const,

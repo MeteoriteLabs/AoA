@@ -50,7 +50,7 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AOA_SECRETS_PROVIDER` | `local_encrypted` | Secret-storage backend. **Only `local_encrypted` is production-ready** — `aws_kms` / `vault` / `gcp_kms` are stub providers that throw `not configured in this deployment` (see `server/src/secrets/external-stub-providers.ts`) |
+| `AOA_SECRETS_PROVIDER` | `local_encrypted` | Default secret-storage backend. `local_encrypted` and `aws_secrets_manager` are supported; `gcp_secret_manager` and `vault` are coming-soon stubs |
 | `AOA_SECRETS_MASTER_KEY` | (from file) | 32-byte encryption key (base64/hex/raw). Use the file path variant in production |
 | `AOA_SECRETS_MASTER_KEY_FILE` | `~/.aoa/.../secrets/master.key` (with legacy `~/.paperclip/` fallback) | Path to key file. Auto-created by `pnpm aoa onboard` |
 | `AOA_SECRETS_STRICT_MODE` | `false` | When `true`, sensitive env keys (`*_API_KEY`, `*_TOKEN`, `*_SECRET`) must use secret references instead of inline plain values |
