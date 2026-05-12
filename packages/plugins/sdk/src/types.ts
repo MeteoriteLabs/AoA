@@ -898,13 +898,14 @@ export interface PluginIssuesClient {
     title: string;
     description?: string;
     priority?: Issue["priority"];
+    workMode?: Issue["workMode"];
     assigneeAgentId?: string;
   }): Promise<Issue>;
   update(
     issueId: string,
     patch: Partial<Pick<
       Issue,
-      "title" | "description" | "status" | "priority" | "assigneeAgentId"
+      "title" | "description" | "status" | "priority" | "workMode" | "assigneeAgentId"
     >>,
     companyId: string,
   ): Promise<Issue>;

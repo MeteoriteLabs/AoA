@@ -53,8 +53,8 @@ test.describe("planning mode dispatch gate", () => {
     await expect(modeButton).toBeVisible({ timeout: 5_000 });
     await modeButton.click();
 
-    // Click the "Planning" option from the dropdown.
-    const planningOption = page.getByRole("option", { name: /planning/i });
+    // Click the "Planning" button in the popover (PopoverContent renders <button>, not <option>).
+    const planningOption = page.getByRole("button", { name: /^planning$/i }).last();
     await expect(planningOption).toBeVisible({ timeout: 5_000 });
     await planningOption.click();
 
