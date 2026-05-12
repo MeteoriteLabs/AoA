@@ -38,6 +38,7 @@ function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     spentMonthlyCents: 1234,
     proactiveIntervalMinutes: 240,
     lastProactiveRunAt: null,
+    cheapModel: null,
     ...overrides,
   };
 }
@@ -556,7 +557,39 @@ describe("CommanderSection", () => {
     await waitFor(() => {
       expect(apiMock.updateConfig).toHaveBeenCalledWith("comp-1", {
         budgetMonthlyCents: 5000,
+        cheapModel: null,
       });
+    });
+  });
+
+  describe("cost-saver cheap model field", () => {
+    it("renders the cheap model input in the budget tab", async () => {
+      apiMock.getConfig.mockResolvedValue(
+        makeAgentConfig({ cheapModel: "claude-haiku-4-5" }),
+      );
+      const user = userEvent.setup();
+      renderWithProviders(<CommanderSection />);
+      await waitFor(() => {
+        expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
+      });
+      await user.click(screen.getByTestId("tab-budget"));
+      const input = await screen.findByTestId("cheap-model-input");
+      expect(input).toBeInTheDocument();
+      expect((input as HTMLInputElement).value).toBe("claude-haiku-4-5");
+    });
+
+    it("renders empty cheap model input when cheapModel is null", async () => {
+      apiMock.getConfig.mockResolvedValue(
+        makeAgentConfig({ cheapModel: null }),
+      );
+      const user = userEvent.setup();
+      renderWithProviders(<CommanderSection />);
+      await waitFor(() => {
+        expect(screen.getByTestId("tab-budget")).toBeInTheDocument();
+      });
+      await user.click(screen.getByTestId("tab-budget"));
+      const input = await screen.findByTestId("cheap-model-input");
+      expect((input as HTMLInputElement).value).toBe("");
     });
   });
 });
