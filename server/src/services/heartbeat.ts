@@ -2690,13 +2690,13 @@ export function heartbeatService(db: Db) {
           if (cheapModel) {
             runScopedConfig = { ...runScopedConfig, model: cheapModel };
             logger.info(
-              { agentId: agent.id, runId: run.id, cheapModel },
+              { companyId: agent.companyId, agentId: agent.id, runId: run.id, cheapModel },
               "[heartbeat] cost-saver fallback active — using cheap model",
             );
           }
         } catch (err) {
           logger.warn(
-            { agentId: agent.id, runId: run.id, err },
+            { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
             "[heartbeat] cheap-fallback check failed; continuing with original model",
           );
         }

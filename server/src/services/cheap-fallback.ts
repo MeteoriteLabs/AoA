@@ -27,6 +27,10 @@ export function decideCheapFallback(
  * DB-backed resolver called from heartbeat.ts pre-spawn.
  * Returns the cheap model string if the fallback should activate for this agent run,
  * or null if budget is unset, cheapModel is unset, or spend is below 80%.
+ *
+ * By design (D4), the cheapModel setting is company-wide: it is stored on
+ * `internalAgentConfig` (Commander settings) and applies to all regular agents
+ * when any individual agent's spend reaches the 80% threshold.
  */
 export async function resolveCheapFallbackModel(
   db: Db,
@@ -44,9 +48,8 @@ export async function resolveCheapFallbackModel(
   const cheapModel = configRow?.cheapModel ?? null;
   if (!cheapModel) return null;
 
-  const monthStart = new Date();
-  monthStart.setDate(1);
-  monthStart.setHours(0, 0, 0, 0);
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
   const [result] = await db
     .select({ total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)` })
