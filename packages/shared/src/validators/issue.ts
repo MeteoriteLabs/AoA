@@ -27,6 +27,7 @@ export const createIssueSchema = z.object({
   reviewerUserId: z.string().optional().nullable(),
   dueDate: z.string().datetime().optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
+  executionEnvironmentId: z.string().uuid().optional().nullable(),
 });
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
