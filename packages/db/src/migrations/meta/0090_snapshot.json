@@ -1,5 +1,5 @@
 {
-  "id": "381562c3-84c4-48cc-842b-ee4a865c98f7",
+  "id": "3f1b155c-1a8b-4e35-912c-d05a743e1f6e",
   "prevId": "139d10ee-68d2-4907-af43-6924f2801732",
   "version": "7",
   "dialect": "postgresql",
@@ -1490,12 +1490,6 @@
           "notNull": true,
           "default": 0
         },
-        "default_environment_id": {
-          "name": "default_environment_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "spent_monthly_cents": {
           "name": "spent_monthly_cents",
           "type": "integer",
@@ -1668,19 +1662,6 @@
           "tableTo": "agents",
           "columnsFrom": [
             "reports_to"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "agents_default_environment_id_environments_id_fk": {
-          "name": "agents_default_environment_id_environments_id_fk",
-          "tableFrom": "agents",
-          "tableTo": "environments",
-          "columnsFrom": [
-            "default_environment_id"
           ],
           "columnsTo": [
             "id"
@@ -6381,95 +6362,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.environments": {
-      "name": "environments",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "env_vars": {
-          "name": "env_vars",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "connection_target": {
-          "name": "connection_target",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "environments_company_idx": {
-          "name": "environments_company_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "environments_company_id_companies_id_fk": {
-          "name": "environments_company_id_companies_id_fk",
-          "tableFrom": "environments",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.execution_workspaces": {
       "name": "execution_workspaces",
       "schema": "",
@@ -9365,6 +9257,12 @@
           "notNull": false,
           "default": "'claude-sonnet-4-6'"
         },
+        "cheap_model": {
+          "name": "cheap_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "cli_tool": {
           "name": "cli_tool",
           "type": "text",
@@ -11450,12 +11348,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "execution_environment_id": {
-          "name": "execution_environment_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_by_agent_id": {
           "name": "created_by_agent_id",
           "type": "uuid",
@@ -11855,19 +11747,6 @@
           "tableTo": "execution_workspaces",
           "columnsFrom": [
             "execution_workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "issues_execution_environment_id_environments_id_fk": {
-          "name": "issues_execution_environment_id_environments_id_fk",
-          "tableFrom": "issues",
-          "tableTo": "environments",
-          "columnsFrom": [
-            "execution_environment_id"
           ],
           "columnsTo": [
             "id"

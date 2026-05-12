@@ -1,6 +1,6 @@
 {
-  "id": "3d73a6e9-0b1b-4069-bc28-f08b2f446745",
-  "prevId": "381562c3-84c4-48cc-842b-ee4a865c98f7",
+  "id": "73a86d57-3ecd-494f-ae36-a8dfd0c63536",
+  "prevId": "3f1b155c-1a8b-4e35-912c-d05a743e1f6e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -9385,6 +9385,12 @@
           "primaryKey": false,
           "notNull": false,
           "default": "'claude-sonnet-4-6'"
+        },
+        "cheap_model": {
+          "name": "cheap_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "cli_tool": {
           "name": "cli_tool",
