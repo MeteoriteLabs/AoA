@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, jsonb, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, jsonb, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 export const environments = pgTable(
@@ -15,5 +15,6 @@ export const environments = pgTable(
   },
   (table) => ({
     companyIdx: index("environments_company_idx").on(table.companyId),
+    companyNameUq: uniqueIndex("environments_company_name_uq").on(table.companyId, table.name),
   }),
 );

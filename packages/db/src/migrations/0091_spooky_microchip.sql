@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "environments_company_name_uq" ON "environments" USING btree ("company_id","name");
