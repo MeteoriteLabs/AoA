@@ -17,6 +17,7 @@ export const updateInternalAgentConfigSchema = z.object({
   contextTokenBudget: z.number().int().positive().optional(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().nullable(),
   proactiveIntervalMinutes: z.number().int().min(15).optional(),
+  cheapModel: z.string().optional().nullable(),
 });
 
 export type UpdateInternalAgentConfig = z.infer<typeof updateInternalAgentConfigSchema>;
