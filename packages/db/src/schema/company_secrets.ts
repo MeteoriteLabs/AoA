@@ -1,6 +1,7 @@
-import { pgTable, uuid, text, timestamp, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, index, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
+import { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
 
 export const companySecrets = pgTable(
   "company_secrets",
@@ -8,10 +9,18 @@ export const companySecrets = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    key: text("key"),
+    status: text("status").notNull().default("active"),
+    managedMode: text("managed_mode").notNull().default("aoa_managed"),
     provider: text("provider").notNull().default("local_encrypted"),
+    providerConfigId: uuid("provider_config_id").references(() => companySecretProviderConfigs.id, { onDelete: "set null" }),
+    providerMetadata: jsonb("provider_metadata").$type<Record<string, unknown>>(),
     externalRef: text("external_ref"),
     latestVersion: integer("latest_version").notNull().default(1),
     description: text("description"),
+    lastResolvedAt: timestamp("last_resolved_at", { withTimezone: true }),
+    lastRotatedAt: timestamp("last_rotated_at", { withTimezone: true }),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
