@@ -155,6 +155,7 @@ export function CommanderSection() {
     useState<NotificationPreference>("realtime");
   const [contextTokenBudget, setContextTokenBudget] = useState<number>(8000);
   const [budgetMonthlyCents, setBudgetMonthlyCents] = useState<number>(5000);
+  const [cheapModel, setCheapModel] = useState<string>("");
   const [proactiveIntervalMinutes, setProactiveIntervalMinutes] =
     useState<number>(240);
 
@@ -211,6 +212,7 @@ export function CommanderSection() {
     );
     setContextTokenBudget(config.contextTokenBudget);
     setBudgetMonthlyCents(config.budgetMonthlyCents ?? 5000);
+    setCheapModel(config.cheapModel ?? "");
     if (config.proactiveIntervalMinutes != null) {
       setProactiveIntervalMinutes(config.proactiveIntervalMinutes);
     }
@@ -253,7 +255,10 @@ export function CommanderSection() {
   }
 
   function saveBudget() {
-    saveMutation.mutate({ budgetMonthlyCents });
+    saveMutation.mutate({
+      budgetMonthlyCents,
+      cheapModel: cheapModel.trim() || null,
+    });
   }
 
   // --- Handlers ---
@@ -363,6 +368,8 @@ export function CommanderSection() {
           <BudgetTabContent
             budgetMonthlyCents={budgetMonthlyCents}
             setBudgetMonthlyCents={setBudgetMonthlyCents}
+            cheapModel={cheapModel}
+            setCheapModel={setCheapModel}
             spentCents={spentCents}
             utilization={utilization}
             progressColor={progressColor}
@@ -670,6 +677,8 @@ function CapabilitiesTabContent({
 interface BudgetTabContentProps {
   budgetMonthlyCents: number;
   setBudgetMonthlyCents: (v: number) => void;
+  cheapModel: string;
+  setCheapModel: (v: string) => void;
   spentCents: number;
   utilization: number;
   progressColor: string;
@@ -681,6 +690,8 @@ interface BudgetTabContentProps {
 function BudgetTabContent({
   budgetMonthlyCents,
   setBudgetMonthlyCents,
+  cheapModel,
+  setCheapModel,
   spentCents,
   utilization,
   progressColor,
@@ -740,6 +751,25 @@ function BudgetTabContent({
             Approaching budget limit
           </p>
         )}
+      </div>
+
+      {/* Cost-saver fallback model */}
+      <div className="space-y-2">
+        <label htmlFor="cheap-model-input" className="text-sm font-medium text-foreground">
+          Cost-saver fallback at 80%
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Model to use when monthly spend reaches 80% of budget. Leave blank to disable.
+        </p>
+        <input
+          id="cheap-model-input"
+          type="text"
+          data-testid="cheap-model-input"
+          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          placeholder="e.g. claude-haiku-4-5"
+          value={cheapModel}
+          onChange={(e) => setCheapModel(e.target.value)}
+        />
       </div>
 
       <TabSaveButton

@@ -34,6 +34,9 @@ export const internalAgentConfig = pgTable(
     // flag). Not read by the dispatch path.
     provider: text("provider").default("anthropic"), // 'anthropic' | 'openai' | 'google'
     model: text("model").default("claude-sonnet-4-6"),
+    // Cheap-model fallback (D4): if set and monthly spend ≥ 80% of budget,
+    // heartbeat swaps adapter model to this value for the rest of the month.
+    cheapModel: text("cheap_model"),
 
     // CLI mode settings
     cliTool: text("cli_tool"), // 'claude_cli' | 'codex' | 'opencode' | null

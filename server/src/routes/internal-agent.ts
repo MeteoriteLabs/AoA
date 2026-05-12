@@ -43,6 +43,7 @@ const updateConfigSchema = z.object({
   contextTokenBudget: z.number().int().min(2000).max(32000).optional(),
   budgetMonthlyCents: z.number().int().min(0).nullable().optional(),
   proactiveIntervalMinutes: z.number().int().min(30).max(1440).optional(),
+  cheapModel: z.string().nullable().optional(),
 });
 
 const cancelReminderSchema = z.object({

@@ -43,6 +43,7 @@ export interface AgentConfig {
   spentMonthlyCents: number;
   proactiveIntervalMinutes: number;
   lastProactiveRunAt: string | null;
+  cheapModel: string | null;
 }
 
 export interface AgentRunToolCall {

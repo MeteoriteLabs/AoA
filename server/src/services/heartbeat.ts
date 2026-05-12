@@ -87,6 +87,7 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@armyofagents/adapter-utils";
+import { resolveCheapFallbackModel } from "./cheap-fallback.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -2675,6 +2676,30 @@ export function heartbeatService(db: Db) {
           { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
           "Failed to resolve run-scoped mentioned skills; continuing without auto-enable",
         );
+      }
+
+      // ── Cheap-model fallback (D4) ─────────────────────────────────────
+      if (agent.budgetMonthlyCents > 0) {
+        try {
+          const cheapModel = await resolveCheapFallbackModel(
+            db,
+            agent.companyId,
+            agent.id,
+            agent.budgetMonthlyCents,
+          );
+          if (cheapModel) {
+            runScopedConfig = { ...runScopedConfig, model: cheapModel };
+            logger.info(
+              { companyId: agent.companyId, agentId: agent.id, runId: run.id, cheapModel },
+              "[heartbeat] cost-saver fallback active — using cheap model",
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
+            "[heartbeat] cheap-fallback check failed; continuing with original model",
+          );
+        }
       }
 
       // ── onSpawn: persist PID/PGID/startedAt immediately after fork ──────
