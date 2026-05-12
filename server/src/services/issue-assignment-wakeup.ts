@@ -1,3 +1,4 @@
+import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
 import { logger } from "../middleware/logger.js";
 
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
@@ -28,7 +29,7 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorId?: string | null;
   rethrowOnError?: boolean;
 }) {
-  if (!input.issue.assigneeAgentId || input.issue.status === "backlog" || input.issue.workMode === "planning") return;
+  if (!input.issue.assigneeAgentId || input.issue.status === "backlog" || !shouldDispatchIssueWakeup({ workMode: input.issue.workMode ?? null })) return;
 
   return input.heartbeat
     .wakeup(input.issue.assigneeAgentId, {
