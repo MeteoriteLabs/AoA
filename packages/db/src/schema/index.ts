@@ -80,7 +80,7 @@ export { providerQuotaWindows } from "./provider_quota_windows.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
 export { issueDocuments } from "./issue_documents.js";
-export { routines, routineTriggers, routineRuns } from "./routines.js";
+export { routines, routineTriggers, routineRuns, routineRevisions } from "./routines.js";
 export { instanceSettings } from "./instance_settings.js";
 export { boardApiKeys } from "./board_api_keys.js";
 export { cliAuthChallenges } from "./cli_auth_challenges.js";

@@ -337,11 +337,13 @@ export {
   updateRoutineTriggerSchema,
   runRoutineSchema,
   rotateRoutineTriggerSecretSchema,
+  restoreRoutineRevisionSchema,
   type CreateRoutine,
   type UpdateRoutine,
   type CreateRoutineTrigger,
   type UpdateRoutineTrigger,
   type RunRoutine,
+  type RestoreRoutineRevision,
 } from "./routine.js";
 
 export {

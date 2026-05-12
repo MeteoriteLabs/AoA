@@ -6,10 +6,10 @@ import {
   Braces,
   Clock3,
   Copy,
+  History,
   MoreHorizontal,
   Play,
   Plus,
-  RefreshCw,
   Repeat,
   Save,
   Trash2,
@@ -75,11 +75,12 @@ import { RoutineVariablesEditor } from "@/components/routines/RoutineVariablesEd
 import { RoutineRunDialog } from "@/components/routines/RoutineRunDialog";
 import { RoutineTitleWithVariables } from "@/components/routines/RoutineTitleWithVariables";
 import { AddTriggerDialog, type NewTriggerConfig } from "@/components/routines/AddTriggerDialog";
+import { RoutineRevisionHistory } from "@/components/routines/RoutineRevisionHistory";
 
 const triggerKinds = ["schedule", "webhook"];
 const signingModes = ["bearer", "hmac_sha256"];
 const HAS_VALID_VARIABLE_TOKEN_RE = new RegExp(`\\{\\{\\s*${ROUTINE_VARIABLE_NAME_PATTERN}\\s*\\}\\}`);
-const routineTabs = ["triggers", "runs", "variables", "activity"] as const;
+const routineTabs = ["triggers", "runs", "variables", "activity", "history"] as const;
 
 type RoutineTab = (typeof routineTabs)[number];
 
@@ -298,6 +299,7 @@ export function RoutineDetail() {
   const location = useLocation();
   const { pushToast } = useToast();
   const hydratedRoutineIdRef = useRef<string | null>(null);
+  const latestRevisionIdRef = useRef<string | null>(null);
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
@@ -399,6 +401,7 @@ export function RoutineDetail() {
     if (changedRoutine || !isEditDirty) {
       setEditDraft(routineDefaults);
       hydratedRoutineIdRef.current = routine.id;
+      latestRevisionIdRef.current = routine.latestRevisionId ?? null;
     }
   }, [routine, routineDefaults, isEditDirty, setBreadcrumbs]);
 
@@ -442,6 +445,7 @@ export function RoutineDetail() {
       return routinesApi.update(routineId!, {
         ...editDraft,
         description: editDraft.description.trim() || null,
+        baseRevisionId: latestRevisionIdRef.current ?? undefined,
       });
     },
     onSuccess: async () => {
@@ -1005,6 +1009,10 @@ export function RoutineDetail() {
               </span>
             )}
           </TabsTrigger>
+          <TabsTrigger value="history" className="gap-1.5">
+            <History className="h-3.5 w-3.5" />
+            History
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="triggers" className="space-y-5">
@@ -1136,6 +1144,15 @@ export function RoutineDetail() {
               ))}
             </div>
           )}
+        </TabsContent>
+
+        <TabsContent value="history">
+          <RoutineRevisionHistory
+            routineId={routineId!}
+            onRestored={() => {
+              queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) });
+            }}
+          />
         </TabsContent>
       </Tabs>
 

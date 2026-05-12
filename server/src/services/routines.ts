@@ -11,6 +11,7 @@ import {
   issueReadStates,
   projects,
   routineRuns,
+  routineRevisions,
   routines,
   routineTriggers,
 } from "@armyofagents/db";
@@ -20,7 +21,10 @@ import type {
   Routine,
   RoutineDetail,
   RoutineListItem,
+  RoutineRevision,
+  RoutineRevisionListItem,
   RoutineRunSummary,
+  RoutineSnapshot,
   RoutineTrigger,
   RoutineTriggerSecretMaterial,
   RunRoutine,
@@ -176,6 +180,7 @@ function toRoutine(row: typeof routines.$inferSelect): Routine {
     lastEnqueuedAt: toIsoOrNull(row.lastEnqueuedAt),
     createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt),
+    latestRevisionId: row.latestRevisionId,
   };
 }
 
@@ -832,6 +837,46 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     return run;
   }
 
+  function captureSnapshot(routine: typeof routines.$inferSelect): RoutineSnapshot {
+    return {
+      title: routine.title,
+      description: routine.description ?? null,
+      assigneeAgentId: routine.assigneeAgentId ?? null,
+      priority: routine.priority,
+      status: routine.status,
+      concurrencyPolicy: routine.concurrencyPolicy,
+      catchUpPolicy: routine.catchUpPolicy,
+      variables: routine.variables ?? [],
+      projectId: routine.projectId ?? null,
+      goalId: routine.goalId ?? null,
+      parentIssueId: routine.parentIssueId ?? null,
+    };
+  }
+
+  async function createRevisionInternal(routineId: string, actor: Actor): Promise<void> {
+    const routine = await getRoutineById(routineId);
+    if (!routine) return;
+    const snapshot = captureSnapshot(routine);
+    await db.transaction(async (tx) => {
+      const [rev] = await tx
+        .insert(routineRevisions)
+        .values({
+          companyId: routine.companyId,
+          routineId: routine.id,
+          snapshot,
+          createdByAgentId: actor.agentId ?? null,
+          createdByUserId: actor.userId ?? null,
+        })
+        .returning();
+      if (rev) {
+        await tx
+          .update(routines)
+          .set({ latestRevisionId: rev.id })
+          .where(eq(routines.id, routineId));
+      }
+    });
+  }
+
   return {
     get: getRoutineById,
     getTrigger: getTriggerById,
@@ -1019,12 +1064,18 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<Routine | null> => {
       const existing = await getRoutineById(id);
       if (!existing) return null;
+      // 409 conflict check: if caller provided baseRevisionId and it differs from current HEAD, reject
+      if (patch.baseRevisionId != null && patch.baseRevisionId !== (existing.latestRevisionId ?? null)) {
+        throw conflict("Routine has been modified since your last load. Reload and retry.");
+      }
       const nextProjectId = patch.projectId ?? existing.projectId;
       const nextAssigneeAgentId = patch.assigneeAgentId ?? existing.assigneeAgentId;
       if (patch.projectId) await assertProject(existing.companyId, patch.projectId);
       if (patch.assigneeAgentId) await assertAssignableAgent(existing.companyId, patch.assigneeAgentId);
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
+      // Snapshot current state before applying the update (after assertions so phantom revisions aren't created on validation failures)
+      await createRevisionInternal(id, actor);
       const [updated] = await db
         .update(routines)
         .set({
@@ -1438,6 +1489,154 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         });
       }
       return null;
+    },
+
+    createRevision: async (routineId: string, actor: Actor): Promise<void> => {
+      await createRevisionInternal(routineId, actor);
+    },
+
+    listRevisions: async (routineId: string, companyId: string): Promise<RoutineRevisionListItem[]> => {
+      const revs = await db
+        .select()
+        .from(routineRevisions)
+        .where(and(eq(routineRevisions.routineId, routineId), eq(routineRevisions.companyId, companyId)))
+        .orderBy(desc(routineRevisions.createdAt));
+
+      // Resolve author info
+      const agentIds = revs
+        .map((r) => r.createdByAgentId)
+        .filter((id): id is string => id != null);
+      const agentMap = new Map<string, { name: string; urlKey: string }>();
+      if (agentIds.length > 0) {
+        const agentRows = await db
+          .select({ id: agents.id, name: agents.name })
+          .from(agents)
+          .where(and(inArray(agents.id, agentIds), eq(agents.companyId, companyId)));
+        for (const a of agentRows) {
+          agentMap.set(a.id, { name: a.name, urlKey: normalizeAgentUrlKey(a.name) ?? a.id });
+        }
+      }
+
+      return revs.map((r): RoutineRevisionListItem => ({
+        id: r.id,
+        companyId: r.companyId,
+        routineId: r.routineId,
+        snapshot: r.snapshot as RoutineSnapshot,
+        createdByAgentId: r.createdByAgentId,
+        createdByUserId: r.createdByUserId,
+        createdAt: r.createdAt.toISOString(),
+        author: r.createdByAgentId
+          ? (() => {
+              const a = agentMap.get(r.createdByAgentId);
+              return a ? { type: "agent" as const, name: a.name, urlKey: a.urlKey } : null;
+            })()
+          : r.createdByUserId
+            ? { type: "user" as const, userId: r.createdByUserId }
+            : null,
+      }));
+    },
+
+    restoreRevision: async (
+      routineId: string,
+      revisionId: string,
+      actor: Actor,
+    ): Promise<Routine | null> => {
+      const [rev] = await db
+        .select()
+        .from(routineRevisions)
+        .where(and(eq(routineRevisions.id, revisionId), eq(routineRevisions.routineId, routineId)));
+      if (!rev) return null;
+
+      const snap = rev.snapshot as RoutineSnapshot;
+
+      const updated = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+
+        // Snapshot before overwriting (creates revision for the current state)
+        const preRoutine = await txDb.select().from(routines).where(eq(routines.id, routineId)).then((rows) => rows[0] ?? null);
+        if (preRoutine) {
+          const preSnap = captureSnapshot(preRoutine);
+          const [preRev] = await txDb
+            .insert(routineRevisions)
+            .values({
+              companyId: preRoutine.companyId,
+              routineId: preRoutine.id,
+              snapshot: preSnap,
+              createdByAgentId: actor.agentId ?? null,
+              createdByUserId: actor.userId ?? null,
+            })
+            .returning();
+          if (preRev) {
+            await txDb.update(routines).set({ latestRevisionId: preRev.id }).where(eq(routines.id, routineId));
+          }
+        }
+
+        // Apply the snapshot
+        const [applyUpdated] = await txDb
+          .update(routines)
+          .set({
+            title: snap.title,
+            description: snap.description,
+            assigneeAgentId: snap.assigneeAgentId,
+            priority: snap.priority,
+            status: snap.status,
+            concurrencyPolicy: snap.concurrencyPolicy,
+            catchUpPolicy: snap.catchUpPolicy,
+            variables: snap.variables,
+            projectId: snap.projectId,
+            goalId: snap.goalId,
+            parentIssueId: snap.parentIssueId,
+            updatedByAgentId: actor.agentId ?? null,
+            updatedByUserId: actor.userId ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(routines.id, routineId))
+          .returning();
+
+        if (!applyUpdated) return null;
+
+        // Snapshot the restored state as new HEAD revision
+        const postRoutine = await txDb.select().from(routines).where(eq(routines.id, routineId)).then((rows) => rows[0] ?? null);
+        if (postRoutine) {
+          const postSnap = captureSnapshot(postRoutine);
+          const [postRev] = await txDb
+            .insert(routineRevisions)
+            .values({
+              companyId: postRoutine.companyId,
+              routineId: postRoutine.id,
+              snapshot: postSnap,
+              createdByAgentId: actor.agentId ?? null,
+              createdByUserId: actor.userId ?? null,
+            })
+            .returning();
+          if (postRev) {
+            await txDb.update(routines).set({ latestRevisionId: postRev.id }).where(eq(routines.id, routineId));
+          }
+        }
+
+        return applyUpdated;
+      });
+
+      if (!updated) return null;
+
+      // Rotate webhook trigger secrets (security property)
+      const triggers = await db
+        .select()
+        .from(routineTriggers)
+        .where(and(eq(routineTriggers.routineId, routineId), eq(routineTriggers.kind, "webhook")));
+      for (const t of triggers) {
+        if (t.secretId) {
+          try {
+            const newSecretValue = crypto.randomBytes(24).toString("hex");
+            await secretsSvc.rotate(t.secretId, { value: newSecretValue }, actor);
+          } catch (err) {
+            logger.error({ err, triggerId: t.id }, "[aoa-revision] Failed to rotate webhook secret on restore");
+            throw err;
+          }
+        }
+      }
+
+      return toRoutine(updated);
     },
   };
 }

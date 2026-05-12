@@ -624,6 +624,13 @@
       "when": 1778539192900,
       "tag": "0088_confused_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1778571042610,
+      "tag": "0089_huge_sally_floyd",
+      "breakpoints": true
     }
   ]
 }
