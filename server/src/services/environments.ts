@@ -3,7 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { environments } from "@armyofagents/db";
 import type { CreateEnvironmentInput, UpdateEnvironmentInput } from "@armyofagents/shared";
 
-export function environmentsService(db: Db) {
+export function environmentService(db: Db) {
   return {
     list: async (companyId: string) => {
       return db.select().from(environments).where(eq(environments.companyId, companyId));
@@ -22,7 +22,7 @@ export function environmentsService(db: Db) {
         .insert(environments)
         .values({ companyId, ...input })
         .returning();
-      return env;
+      return env ?? null;
     },
 
     update: async (companyId: string, id: string, input: UpdateEnvironmentInput) => {
@@ -35,9 +35,11 @@ export function environmentsService(db: Db) {
     },
 
     delete: async (companyId: string, id: string) => {
-      await db
+      const [deleted] = await db
         .delete(environments)
-        .where(and(eq(environments.id, id), eq(environments.companyId, companyId)));
+        .where(and(eq(environments.id, id), eq(environments.companyId, companyId)))
+        .returning();
+      return deleted ?? null;
     },
   };
 }
