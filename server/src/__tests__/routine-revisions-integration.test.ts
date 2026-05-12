@@ -144,7 +144,7 @@ describe.skipIf(process.platform === "win32")(
 
       await svc.createRevision(routineId, actor);
 
-      const revs = await svc.listRevisions(routineId);
+      const revs = await svc.listRevisions(routineId, companyId);
       expect(revs).toHaveLength(1);
       expect(revs[0].snapshot.title).toBe("Initial Title");
 
@@ -158,7 +158,10 @@ describe.skipIf(process.platform === "win32")(
 
       await svc.update(routineId, { title: "New Title" }, actor);
 
-      const revs = await svc.listRevisions(routineId);
+      const updated = await svc.get(routineId);
+      expect(updated?.title).toBe("New Title");
+
+      const revs = await svc.listRevisions(routineId, companyId);
       // Should now have 2: one from createRevision above, one auto-created by update
       expect(revs).toHaveLength(2);
 
@@ -170,7 +173,7 @@ describe.skipIf(process.platform === "win32")(
     it("listRevisions: returns items in descending createdAt order", async () => {
       if (setupError) throw new Error(String(setupError));
 
-      const revs = await svc.listRevisions(routineId);
+      const revs = await svc.listRevisions(routineId, companyId);
       expect(revs.length).toBeGreaterThanOrEqual(2);
       // Verify descending order
       for (let i = 1; i < revs.length; i++) {
@@ -183,7 +186,7 @@ describe.skipIf(process.platform === "win32")(
     it("restoreRevision: restores snapshot and creates revision entries", async () => {
       if (setupError) throw new Error(String(setupError));
 
-      const revsBefore = await svc.listRevisions(routineId);
+      const revsBefore = await svc.listRevisions(routineId, companyId);
       const oldestRev = revsBefore[revsBefore.length - 1];
       expect(oldestRev.snapshot.title).toBe("Initial Title");
 
@@ -193,7 +196,7 @@ describe.skipIf(process.platform === "win32")(
       expect(restored?.title).toBe("Initial Title");
 
       // restoreRevision should create 2 new revisions (pre-restore + post-restore)
-      const revsAfter = await svc.listRevisions(routineId);
+      const revsAfter = await svc.listRevisions(routineId, companyId);
       expect(revsAfter.length).toBe(revsBefore.length + 2);
     });
   },

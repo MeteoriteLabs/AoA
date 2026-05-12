@@ -114,7 +114,7 @@ describe("GET /routines/:id/revisions", () => {
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].id).toBe(revisionId);
-    expect(mockRoutineService.listRevisions).toHaveBeenCalledWith(routineId);
+    expect(mockRoutineService.listRevisions).toHaveBeenCalledWith(routineId, companyId);
   });
 
   it("returns 404 when routine not found", async () => {

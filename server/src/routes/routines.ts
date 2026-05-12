@@ -138,7 +138,7 @@ export function routineRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, routine.companyId);
-    const revisions = await svc.listRevisions(routine.id);
+    const revisions = await svc.listRevisions(routine.id, routine.companyId);
     res.json(revisions);
   });
 

@@ -857,22 +857,24 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     const routine = await getRoutineById(routineId);
     if (!routine) return;
     const snapshot = captureSnapshot(routine);
-    const [rev] = await db
-      .insert(routineRevisions)
-      .values({
-        companyId: routine.companyId,
-        routineId: routine.id,
-        snapshot,
-        createdByAgentId: actor.agentId ?? null,
-        createdByUserId: actor.userId ?? null,
-      })
-      .returning();
-    if (rev) {
-      await db
-        .update(routines)
-        .set({ latestRevisionId: rev.id })
-        .where(eq(routines.id, routineId));
-    }
+    await db.transaction(async (tx) => {
+      const [rev] = await tx
+        .insert(routineRevisions)
+        .values({
+          companyId: routine.companyId,
+          routineId: routine.id,
+          snapshot,
+          createdByAgentId: actor.agentId ?? null,
+          createdByUserId: actor.userId ?? null,
+        })
+        .returning();
+      if (rev) {
+        await tx
+          .update(routines)
+          .set({ latestRevisionId: rev.id })
+          .where(eq(routines.id, routineId));
+      }
+    });
   }
 
   return {
@@ -1066,14 +1068,14 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (patch.baseRevisionId != null && patch.baseRevisionId !== (existing.latestRevisionId ?? null)) {
         throw conflict("Routine has been modified since your last load. Reload and retry.");
       }
-      // Always snapshot current state before applying the update
-      await createRevisionInternal(id, actor);
       const nextProjectId = patch.projectId ?? existing.projectId;
       const nextAssigneeAgentId = patch.assigneeAgentId ?? existing.assigneeAgentId;
       if (patch.projectId) await assertProject(existing.companyId, patch.projectId);
       if (patch.assigneeAgentId) await assertAssignableAgent(existing.companyId, patch.assigneeAgentId);
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
+      // Snapshot current state before applying the update (after assertions so phantom revisions aren't created on validation failures)
+      await createRevisionInternal(id, actor);
       const [updated] = await db
         .update(routines)
         .set({
@@ -1493,11 +1495,11 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       await createRevisionInternal(routineId, actor);
     },
 
-    listRevisions: async (routineId: string): Promise<RoutineRevisionListItem[]> => {
+    listRevisions: async (routineId: string, companyId: string): Promise<RoutineRevisionListItem[]> => {
       const revs = await db
         .select()
         .from(routineRevisions)
-        .where(eq(routineRevisions.routineId, routineId))
+        .where(and(eq(routineRevisions.routineId, routineId), eq(routineRevisions.companyId, companyId)))
         .orderBy(desc(routineRevisions.createdAt));
 
       // Resolve author info
@@ -1509,7 +1511,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         const agentRows = await db
           .select({ id: agents.id, name: agents.name })
           .from(agents)
-          .where(inArray(agents.id, agentIds));
+          .where(and(inArray(agents.id, agentIds), eq(agents.companyId, companyId)));
         for (const a of agentRows) {
           agentMap.set(a.id, { name: a.name, urlKey: normalizeAgentUrlKey(a.name) ?? a.id });
         }
@@ -1627,8 +1629,9 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           try {
             const newSecretValue = crypto.randomBytes(24).toString("hex");
             await secretsSvc.rotate(t.secretId, { value: newSecretValue }, actor);
-          } catch {
-            logger.warn({ triggerId: t.id }, "[aoa-revision] Failed to rotate webhook secret on restore");
+          } catch (err) {
+            logger.error({ err, triggerId: t.id }, "[aoa-revision] Failed to rotate webhook secret on restore");
+            throw err;
           }
         }
       }
