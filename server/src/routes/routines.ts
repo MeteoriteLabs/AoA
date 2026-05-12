@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import {
   createRoutineSchema,
   createRoutineTriggerSchema,
+  restoreRoutineRevisionSchema,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
   updateRoutineSchema,
@@ -126,6 +127,46 @@ export function routineRoutes(db: Db) {
       entityType: "routine",
       entityId: routine.id,
       details: { title: updated?.title ?? routine.title },
+    });
+    res.json(updated);
+  });
+
+  router.get("/routines/:id/revisions", async (req, res) => {
+    const routine = await svc.get(req.params.id as string);
+    if (!routine) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    assertCompanyAccess(req, routine.companyId);
+    const revisions = await svc.listRevisions(routine.id);
+    res.json(revisions);
+  });
+
+  router.post("/routines/:id/revisions/restore", validate(restoreRoutineRevisionSchema), async (req, res) => {
+    const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
+    if (!routine) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    const updated = await svc.restoreRevision(routine.id, req.body.revisionId as string, {
+      agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      userId: req.actor.type === "board" ? (req.actor.userId ?? "board") : null,
+    });
+    if (!updated) {
+      res.status(404).json({ error: "Revision not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: routine.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "routine.restored",
+      entityType: "routine",
+      entityId: routine.id,
+      details: { title: updated.title, revisionId: req.body.revisionId as string },
     });
     res.json(updated);
   });

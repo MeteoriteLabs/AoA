@@ -11,6 +11,20 @@ export interface RoutineVariable {
   options: string[];
 }
 
+export interface RoutineSnapshot {
+  title: string;
+  description: string | null;
+  assigneeAgentId: string | null;
+  priority: string;
+  status: string;
+  concurrencyPolicy: string;
+  catchUpPolicy: string;
+  variables: RoutineVariable[];
+  projectId: string | null;
+  goalId: string | null;
+  parentIssueId: string | null;
+}
+
 export interface Routine {
   id: string;
   companyId: string;
@@ -33,6 +47,7 @@ export interface Routine {
   lastEnqueuedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  latestRevisionId: string | null;
 }
 
 export interface RoutineTrigger {
@@ -95,6 +110,20 @@ export interface RoutineDetail extends Routine {
 export interface RoutineRunSummary extends RoutineRun {
   linkedIssue: { id: string; title: string; identifier: string; status: string } | null;
   trigger: { id: string; kind: RoutineTriggerKind; label: string | null } | null;
+}
+
+export interface RoutineRevision {
+  id: string;
+  companyId: string;
+  routineId: string;
+  snapshot: RoutineSnapshot;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
+}
+
+export interface RoutineRevisionListItem extends RoutineRevision {
+  author: { type: "agent"; name: string; urlKey: string } | { type: "user"; userId: string } | null;
 }
 
 export interface RoutineListItem extends Routine {

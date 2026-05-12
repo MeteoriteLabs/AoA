@@ -56,6 +56,7 @@ type RoutineRow = {
     required: boolean;
     options: string[];
   }>;
+  latestRevisionId: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -177,6 +178,7 @@ vi.mock("../services/routines.js", () => ({
         concurrencyPolicy: (input.concurrencyPolicy ?? "coalesce_if_active") as RoutineRow["concurrencyPolicy"],
         catchUpPolicy: (input.catchUpPolicy ?? "skip_missed") as RoutineRow["catchUpPolicy"],
         variables: input.variables ?? [],
+        latestRevisionId: null,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -262,6 +264,7 @@ function makeRoutine(overrides: Partial<RoutineRow> & { id: string; title: strin
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
     variables: [],
+    latestRevisionId: null,
     createdAt: "2026-04-20T00:00:00Z",
     updatedAt: "2026-04-20T00:00:00Z",
     ...overrides,

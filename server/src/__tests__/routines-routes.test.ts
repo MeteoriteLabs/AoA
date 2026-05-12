@@ -29,6 +29,7 @@ const routine = {
   updatedByUserId: null,
   lastTriggeredAt: null,
   lastEnqueuedAt: null,
+  latestRevisionId: null,
   createdAt: new Date("2026-03-20T00:00:00.000Z"),
   updatedAt: new Date("2026-03-20T00:00:00.000Z"),
 };

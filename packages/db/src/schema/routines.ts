@@ -15,7 +15,7 @@ import { companySecrets } from "./company_secrets.js";
 import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
-import type { RoutineVariable } from "@armyofagents/shared";
+import type { RoutineVariable, RoutineSnapshot } from "@armyofagents/shared";
 
 export const routines = pgTable(
   "routines",
@@ -25,6 +25,7 @@ export const routines = pgTable(
     projectId: uuid("project_id").references(() => projects.id),
     goalId: uuid("goal_id").references(() => goals.id, { onDelete: "set null" }),
     parentIssueId: uuid("parent_issue_id").references(() => issues.id, { onDelete: "set null" }),
+    latestRevisionId: uuid("latest_revision_id"),
     title: text("title").notNull(),
     description: text("description"),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
@@ -108,5 +109,22 @@ export const routineRuns = pgTable(
     triggerIdx: index("routine_runs_trigger_idx").on(table.triggerId, table.createdAt),
     linkedIssueIdx: index("routine_runs_linked_issue_idx").on(table.linkedIssueId),
     idempotencyIdx: index("routine_runs_trigger_idempotency_idx").on(table.triggerId, table.idempotencyKey),
+  }),
+);
+
+export const routineRevisions = pgTable(
+  "routine_revisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    routineId: uuid("routine_id").notNull().references(() => routines.id, { onDelete: "cascade" }),
+    snapshot: jsonb("snapshot").$type<RoutineSnapshot>().notNull(),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: text("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    routineCreatedAtIdx: index("routine_revisions_routine_created_at_idx").on(table.routineId, table.createdAt),
+    companyIdx: index("routine_revisions_company_idx").on(table.companyId),
   }),
 );
