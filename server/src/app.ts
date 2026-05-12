@@ -71,6 +71,7 @@ import { companySkillRoutes } from "./routes/company-skills.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { cliAuthRoutes } from "./routes/cli-auth.js";
 import { authProfileRoutes } from "./routes/auth-profile.js";
+import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { workspaceGitRoutes } from "./routes/workspace-git.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
@@ -291,6 +292,7 @@ export async function createApp(
   api.use(routineRoutes(db));
   api.use(instanceSettingsRoutes(db));
   api.use(cliAuthRoutes(db));
+  api.use(environmentRoutes({ db }));
   api.use(executionWorkspaceRoutes(db));
   api.use(workspaceGitRoutes(db));
   api.use(filesystemRoutes());

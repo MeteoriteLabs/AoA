@@ -3,6 +3,8 @@ import type { Db } from "@armyofagents/db";
 import { environments } from "@armyofagents/db";
 import type { CreateEnvironmentInput, UpdateEnvironmentInput } from "@armyofagents/shared";
 
+export type EnvironmentService = ReturnType<typeof environmentService>;
+
 export function environmentService(db: Db) {
   return {
     list: async (companyId: string) => {
