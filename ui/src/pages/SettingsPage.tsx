@@ -12,10 +12,11 @@ import { MarketplacePrefsSection } from "@/components/settings/sections/Marketpl
 import { CommanderSection } from "@/components/settings/sections/CommanderSection";
 import { GitHubSection } from "@/components/settings/sections/GitHubSection";
 import { ActivitySection } from "@/components/settings/sections/ActivitySection";
+import { EnvironmentsSectionWrapper } from "@/components/settings/sections/EnvironmentsSection";
 
 const VALID_SECTIONS: readonly SettingsSectionId[] = [
   "general", "commander", "llm", "budget", "mcp", "github", "plugins", "marketplace", "archive",
-  "activity",
+  "activity", "environments",
 ];
 
 function isValidSection(s: string | null): s is SettingsSectionId {
@@ -44,6 +45,8 @@ function renderActiveSection(id: SettingsSectionId) {
       return <ArchiveCompanySection />;
     case "activity":
       return <ActivitySection />;
+    case "environments":
+      return <EnvironmentsSectionWrapper />;
     default: {
       const exhaustive: never = id;
       return (

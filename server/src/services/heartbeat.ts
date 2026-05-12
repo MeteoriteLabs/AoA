@@ -10,6 +10,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   costEvents,
+  environments,
   issues,
   projectWorkspaces,
   memoryItems,
@@ -24,6 +25,7 @@ import {
   teamCoordinations,
   teams,
 } from "@armyofagents/db";
+import { resolveEnvironmentEnvVars } from "./environment-resolver.js";
 import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -1818,6 +1820,7 @@ export function heartbeatService(db: Db) {
             executionWorkspaceId: issues.executionWorkspaceId,
             executionWorkspacePreference: issues.executionWorkspacePreference,
             executionWorkspaceSettings: issues.executionWorkspaceSettings,
+            executionEnvironmentId: issues.executionEnvironmentId,
             assigneeAgentId: issues.assigneeAgentId,
             assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
             workMode: issues.workMode,
@@ -1934,17 +1937,37 @@ export function heartbeatService(db: Db) {
     const mergedConfig = issueAssigneeOverrides?.adapterConfig
       ? { ...workspaceManagedConfig, ...issueAssigneeOverrides.adapterConfig }
       : workspaceManagedConfig;
-    // ── Project env merge (system → instance → company → project → agent) ──
-    // projectEnv underlies the agent's own adapterConfig.env — agent overrides project.
+    // ── Environment envVars resolution ──────────────────────────────────────
+    // Priority: issue.executionEnvironmentId > agent.defaultEnvironmentId > none.
+    // Scoped by companyId to prevent cross-tenant leakage.
+    const environmentEnvVars = await resolveEnvironmentEnvVars(db, {
+      executionEnvironmentId: issueContext?.executionEnvironmentId ?? null,
+      defaultEnvironmentId: agent.defaultEnvironmentId ?? null,
+      companyId: agent.companyId,
+    });
+    // ── Env merge: project baseline → environment envVars → agent adapterConfig.env ──
+    // Merge order (lowest to highest priority):
+    //   1. projectEnv       (project/department baseline)
+    //   2. environmentEnvVars (named environment — NEW)
+    //   3. mergedConfig.env (agent adapterConfig.env — wins last)
     const mergedConfigWithProjectEnv = projectEnv
       ? {
           ...mergedConfig,
           env: {
             ...(projectEnv as Record<string, unknown>),
+            ...environmentEnvVars,
             ...parseObject(mergedConfig.env),
           },
         }
-      : mergedConfig;
+      : Object.keys(environmentEnvVars).length > 0
+        ? {
+            ...mergedConfig,
+            env: {
+              ...environmentEnvVars,
+              ...parseObject(mergedConfig.env),
+            },
+          }
+        : mergedConfig;
     const resolvedConfig = await secretsSvc.resolveAdapterConfigForRuntime(
       agent.companyId,
       mergedConfigWithProjectEnv,

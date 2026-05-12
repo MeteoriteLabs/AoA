@@ -85,6 +85,7 @@ export { instanceSettings } from "./instance_settings.js";
 export { boardApiKeys } from "./board_api_keys.js";
 export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
+export { environments } from "./environments.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { feedbackVotes } from "./feedback_votes.js";

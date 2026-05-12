@@ -270,6 +270,8 @@ export type {
   GitHubPrMetadata,
 } from "./github.js";
 
+export type { Environment } from "./environment.js";
+
 export type {
   JsonSchema,
   PluginJobDeclaration,

@@ -398,3 +398,10 @@ export {
   type InboxDismissal,
   type CreateInboxDismissal,
 } from "./inbox-dismissals.js";
+
+export {
+  createEnvironmentSchema,
+  updateEnvironmentSchema,
+  type CreateEnvironmentInput,
+  type UpdateEnvironmentInput,
+} from "./environment.js";

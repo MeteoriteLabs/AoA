@@ -9,6 +9,7 @@ import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
+import { useEnvironments } from "../api/environments";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { useTeamAccess } from "../hooks/useTeamAccess";
@@ -40,6 +41,7 @@ import {
   Paperclip,
   Hammer,
   ClipboardList,
+  Layers,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { pruneStaleId } from "../lib/issueDraft";
@@ -214,6 +216,8 @@ export function NewIssueDialog() {
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [workModeOpen, setWorkModeOpen] = useState(false);
   const [workMode, setWorkMode] = useState<"standard" | "planning">("standard");
+  const [envPickerOpen, setEnvPickerOpen] = useState(false);
+  const [executionEnvironmentId, setExecutionEnvironmentId] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -243,6 +247,8 @@ export function NewIssueDialog() {
     userId: currentUserId,
   });
   const { permissions } = useTeamAccess(effectiveCompanyId);
+
+  const { data: environments } = useEnvironments(effectiveCompanyId ?? "");
 
   const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === assigneeId)?.adapterType ?? null;
   const supportsAssigneeOverrides = Boolean(
@@ -461,6 +467,8 @@ export function NewIssueDialog() {
     setCompanyOpen(false);
     setFieldErrors({});
     setWorkMode("standard");
+    setExecutionEnvironmentId(null);
+    setEnvPickerOpen(false);
   }
 
   function handleCompanyChange(companyId: string) {
@@ -501,6 +509,7 @@ export function NewIssueDialog() {
       ...(assigneeId ? { assigneeAgentId: assigneeId } : {}),
       ...(projectId ? { projectId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
+      ...(executionEnvironmentId ? { executionEnvironmentId } : {}),
     });
   }
 
@@ -1036,6 +1045,56 @@ export function NewIssueDialog() {
                 <ClipboardList className="h-3 w-3 text-amber-600 dark:text-amber-400" />
                 Planning
               </button>
+            </PopoverContent>
+          </Popover>
+
+          {/* Environment chip */}
+          <Popover open={envPickerOpen} onOpenChange={setEnvPickerOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+                  executionEnvironmentId ? "text-foreground" : "text-muted-foreground"
+                )}
+              >
+                <Layers className="h-3 w-3" />
+                {executionEnvironmentId
+                  ? ((environments ?? []).find((e) => e.id === executionEnvironmentId)?.name ?? "Environment")
+                  : "Environment"}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-48 p-1" align="start">
+              <button
+                type="button"
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  executionEnvironmentId === null && "bg-accent"
+                )}
+                onClick={() => { setExecutionEnvironmentId(null); setEnvPickerOpen(false); }}
+              >
+                <Layers className="h-3 w-3 text-muted-foreground" />
+                None
+              </button>
+              {(environments ?? []).map((env) => (
+                <button
+                  key={env.id}
+                  type="button"
+                  className={cn(
+                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                    executionEnvironmentId === env.id && "bg-accent"
+                  )}
+                  onClick={() => { setExecutionEnvironmentId(env.id); setEnvPickerOpen(false); }}
+                >
+                  <Layers className="h-3 w-3 text-muted-foreground" />
+                  <span className="truncate">{env.name}</span>
+                </button>
+              ))}
+              {(environments ?? []).length === 0 && (
+                <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                  No environments configured.
+                </div>
+              )}
             </PopoverContent>
           </Popover>
 

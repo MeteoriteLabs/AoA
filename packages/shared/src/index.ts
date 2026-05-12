@@ -478,6 +478,7 @@ export type {
   PatchPluginConfig,
   SetPluginState,
   ListPluginState,
+  Environment,
 } from "./types/index.js";
 
 export {
@@ -789,6 +790,10 @@ export {
   createInboxDismissalSchema,
   type InboxDismissal,
   type CreateInboxDismissal,
+  createEnvironmentSchema,
+  updateEnvironmentSchema,
+  type CreateEnvironmentInput,
+  type UpdateEnvironmentInput,
 } from "./validators/index.js";
 
 export {

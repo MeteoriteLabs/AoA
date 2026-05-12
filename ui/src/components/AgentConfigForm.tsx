@@ -11,6 +11,7 @@ import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
+import { useEnvironments } from "../api/environments";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -180,6 +181,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
+
+  // Environments for Default Environment picker (edit mode only)
+  const { data: environments = [] } = useEnvironments(selectedCompanyId ?? "");
 
   // Org tree for ReportsToSelect (edit mode only)
   const { data: orgTree = [] } = useQuery<UnifiedOrgNode[]>({
@@ -500,6 +504,30 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               />
               <span className="text-xs text-muted-foreground mt-1">Dollars per month</span>
             </Field>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Default Environment</label>
+              <p className="text-xs text-muted-foreground">
+                Env vars applied to all tasks run by this agent (overridden by task-level environment)
+              </p>
+              <Select
+                value={eff("runtime", "defaultEnvironmentId", props.agent.defaultEnvironmentId) ?? "none"}
+                onValueChange={(val) =>
+                  mark("runtime", "defaultEnvironmentId", val === "none" ? null : val)
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="No default environment" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No default environment</SelectItem>
+                  {environments.map((env) => (
+                    <SelectItem key={env.id} value={env.id}>
+                      {env.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <Field label="Capabilities" hint={help.capabilities}>
               <MarkdownEditor
                 value={eff("identity", "capabilities", props.agent.capabilities ?? "")}

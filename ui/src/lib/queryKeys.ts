@@ -220,6 +220,10 @@ export const queryKeys = {
     runtimeServices: (id: string) =>
       ["executionWorkspaces", "detail", id, "runtime-services"] as const,
   },
+  environments: {
+    list: (companyId: string) => ["environments", companyId] as const,
+    detail: (companyId: string, id: string) => ["environments", companyId, id] as const,
+  },
   plugins: {
     all: ["plugins"] as const,
     list: ["plugins", "list"] as const,
