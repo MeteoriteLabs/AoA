@@ -214,7 +214,7 @@ export function secretService(db: Db) {
     companyId: string,
     secretId: string,
     version: number | "latest",
-    context: SecretConsumerContext = defaultConsumerContext(),
+    context: SecretConsumerContext,
   ): Promise<string> {
     let secret: typeof companySecrets.$inferSelect | null = null;
     let resolvedVersion: number | null = null;
@@ -324,7 +324,7 @@ export function secretService(db: Db) {
     getBindingById,
     getProviderConfigById,
 
-    async resolveByName(companyId: string, name: string, context: SecretConsumerContext = defaultConsumerContext(`secret.${name}`)): Promise<string> {
+    async resolveByName(companyId: string, name: string, context: SecretConsumerContext): Promise<string> {
       const secret = await getByName(companyId, name);
       if (!secret) throw notFound(`Secret not found: ${name}`);
       return resolveSecretValue(companyId, secret.id, "latest", context);
@@ -763,7 +763,7 @@ export function secretService(db: Db) {
     async resolveAdapterConfigForRuntime(
       companyId: string,
       adapterConfig: Record<string, unknown>,
-      context: Omit<SecretConsumerContext, "configPath"> = defaultConsumerContext(),
+      context: Omit<SecretConsumerContext, "configPath">,
     ) {
       const resolved = { ...adapterConfig };
       resolved.env = await this.resolveEnvBindings(companyId, adapterConfig.env, context);

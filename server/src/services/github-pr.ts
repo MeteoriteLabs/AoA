@@ -76,7 +76,12 @@ export async function createPullRequest(
 
   let pat: string;
   try {
-    pat = await svc.resolveSecretValue(args.companyId, secretRow.id, "latest");
+    pat = await svc.resolveSecretValue(args.companyId, secretRow.id, "latest", {
+      consumerType: "system",
+      consumerId: "github-pr",
+      configPath: "github.pat",
+      actorType: "system",
+    });
   } catch {
     throw new GitHubPrError("GitHub PAT could not be decrypted", 500);
   }

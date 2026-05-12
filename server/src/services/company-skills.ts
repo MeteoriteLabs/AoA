@@ -1444,6 +1444,12 @@ export function companySkillService(db: Db) {
             const runtimeConfig = await secrets.resolveAdapterConfigForRuntime(
               agent.companyId,
               (agent.adapterConfig ?? {}) as Record<string, unknown>,
+              {
+                consumerType: "agent",
+                consumerId: agent.id,
+                actorType: "system",
+                actorId: "company-skills",
+              },
             );
             const snapshot = await adapter.listSkills({
               agentId: agent.id,
