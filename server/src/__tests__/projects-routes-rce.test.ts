@@ -12,6 +12,10 @@ vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => ({
     getExperimental: vi.fn().mockResolvedValue({ enableIsolatedWorkspaces: true }),
   }),
+  secretService: () => ({
+    normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
+    syncEnvBindingsForTarget: vi.fn(),
+  }),
   logActivity: vi.fn(),
 }));
 

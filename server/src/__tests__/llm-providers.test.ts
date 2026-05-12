@@ -350,6 +350,12 @@ describe("getProviderApiKey", () => {
     expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith(
       "company-1",
       "llm:anthropic",
+      expect.objectContaining({
+        consumerType: "system",
+        consumerId: "llm-provider:anthropic",
+        configPath: "provider.anthropic",
+        actorType: "system",
+      }),
     );
   });
 
@@ -402,13 +408,25 @@ describe("getProviderApiKey", () => {
 
     try {
       await getProviderApiKey(mockDb, "c1", "anthropic");
-      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith("c1", "llm:anthropic");
+      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith(
+        "c1",
+        "llm:anthropic",
+        expect.objectContaining({ consumerId: "llm-provider:anthropic" }),
+      );
 
       await getProviderApiKey(mockDb, "c1", "openai");
-      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith("c1", "llm:openai");
+      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith(
+        "c1",
+        "llm:openai",
+        expect.objectContaining({ consumerId: "llm-provider:openai" }),
+      );
 
       await getProviderApiKey(mockDb, "c1", "google");
-      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith("c1", "llm:google");
+      expect(mockSecretServiceInstance.resolveByName).toHaveBeenCalledWith(
+        "c1",
+        "llm:google",
+        expect.objectContaining({ consumerId: "llm-provider:google" }),
+      );
     } finally {
       for (const [k, v] of Object.entries(savedKeys)) {
         if (v !== undefined) process.env[k] = v;
