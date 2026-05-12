@@ -18,6 +18,7 @@ import { heartbeatRuns } from "./heartbeat_runs.js";
 import { authUsers } from "./auth.js";
 import { artifacts } from "./artifacts.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
+import { environments } from "./environments.js";
 
 export const issues = pgTable(
   "issues",
@@ -42,6 +43,10 @@ export const issues = pgTable(
       .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
+    executionEnvironmentId: uuid("execution_environment_id").references(
+      () => environments.id,
+      { onDelete: "set null" },
+    ),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     issueNumber: integer("issue_number"),
