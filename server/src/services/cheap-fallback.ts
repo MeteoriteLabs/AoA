@@ -1,4 +1,4 @@
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { costEvents, internalAgentConfig } from "@armyofagents/db";
 
@@ -57,7 +57,7 @@ export async function resolveCheapFallbackModel(
     .where(
       and(
         eq(costEvents.agentId, agentId),
-        gt(costEvents.occurredAt, monthStart),
+        gte(costEvents.occurredAt, monthStart),
       ),
     );
 
