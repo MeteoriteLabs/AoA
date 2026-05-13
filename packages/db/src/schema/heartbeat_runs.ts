@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
@@ -40,6 +41,13 @@ export const heartbeatRuns = pgTable(
     lastOutputSeq: integer("last_output_seq").notNull().default(0),
     lastOutputStream: text("last_output_stream"),
     lastOutputBytes: bigint("last_output_bytes", { mode: "number" }),
+    retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, { onDelete: "set null" }),
+    scheduledRetryAt: timestamp("scheduled_retry_at", { withTimezone: true }),
+    scheduledRetryAttempt: integer("scheduled_retry_attempt").notNull().default(0),
+    scheduledRetryReason: text("scheduled_retry_reason"),
+    issueCommentStatus: text("issue_comment_status").notNull().default("not_applicable"),
+    issueCommentSatisfiedByCommentId: uuid("issue_comment_satisfied_by_comment_id"),
+    issueCommentRetryQueuedAt: timestamp("issue_comment_retry_queued_at", { withTimezone: true }),
     livenessState: text("liveness_state"),
     livenessReason: text("liveness_reason"),
     continuationAttempt: integer("continuation_attempt").notNull().default(0),
@@ -60,6 +68,12 @@ export const heartbeatRuns = pgTable(
     companyStatusProcessStartedIdx: index("heartbeat_runs_company_status_process_started_idx").on(
       table.companyId, table.status, table.processStartedAt,
     ),
+    companyScheduledRetryIdx: index("heartbeat_runs_company_scheduled_retry_idx").on(
+      table.companyId,
+      table.status,
+      table.scheduledRetryAt,
+    ),
+    retryOfRunIdx: index("heartbeat_runs_retry_of_run_idx").on(table.retryOfRunId),
     companyLivenessIdx: index("heartbeat_runs_company_liveness_idx").on(
       table.companyId, table.livenessState, table.createdAt,
     ),

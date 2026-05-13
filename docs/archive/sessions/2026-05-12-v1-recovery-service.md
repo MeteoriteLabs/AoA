@@ -211,10 +211,10 @@ In `packages/db/src/schema/agent_wakeup_requests.ts`, import `sql` and `uniqueIn
 ```ts
     companyIdempotencyKeyUq: uniqueIndex("agent_wakeup_requests_company_idempotency_key_uq")
       .on(table.companyId, table.idempotencyKey)
-      .where(sql`idempotency_key is not null`),
+      .where(sql`idempotency_key is not null and reason in ('max_turn_continuation_retry', 'issue_monitor_due', 'finish_successful_run_handoff')`),
 ```
 
-This makes scheduled retry and monitor wake creation safe under concurrent scheduler ticks.
+This makes recovery-owned scheduled retry, monitor, and handoff wake creation safe under concurrent scheduler ticks without requiring legacy non-recovery wake rows to have globally unique idempotency keys.
 
 - [ ] **Step 5: Export the table**
 
