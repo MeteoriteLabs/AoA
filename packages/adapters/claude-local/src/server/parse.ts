@@ -39,7 +39,9 @@ export function parseClaudeStreamJson(stdout: string) {
     }
 
     if (type === "result") {
-      finalResult = event;
+      finalResult = isClaudeMaxTurnsResult(event)
+        ? { ...event, stopReason: "max_turns_exhausted" }
+        : event;
       sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
     }
   }

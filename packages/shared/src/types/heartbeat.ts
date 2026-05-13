@@ -7,6 +7,7 @@ import type {
   WakeupRequestStatus,
   DetectedOutputStatus,
   DetectedOutputSource,
+  RunLivenessState,
 } from "../constants.js";
 
 export interface HeartbeatRun {
@@ -33,6 +34,18 @@ export interface HeartbeatRun {
   logCompressed: boolean;
   stdoutExcerpt: string | null;
   stderrExcerpt: string | null;
+  retryOfRunId: string | null;
+  scheduledRetryAt: Date | null;
+  scheduledRetryAttempt: number;
+  scheduledRetryReason: string | null;
+  issueCommentStatus: string | null;
+  issueCommentSatisfiedByCommentId: string | null;
+  issueCommentRetryQueuedAt: Date | null;
+  livenessState: RunLivenessState | null;
+  livenessReason: string | null;
+  continuationAttempt: number;
+  lastUsefulActionAt: Date | null;
+  nextAction: string | null;
   errorCode: string | null;
   externalRunId: string | null;
   contextSnapshot: Record<string, unknown> | null;

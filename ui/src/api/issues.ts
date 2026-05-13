@@ -49,13 +49,22 @@ export const issuesApi = {
     }),
   release: (id: string) => api.post<Issue>(`/issues/${id}/release`, {}),
   listComments: (id: string) => api.get<IssueComment[]>(`/issues/${id}/comments`),
-  addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean) =>
+  addComment: (
+    id: string,
+    body: string,
+    reopen?: boolean,
+    interrupt?: boolean,
+    structured?: Pick<IssueComment, "authorType" | "presentation" | "metadata">,
+  ) =>
     api.post<IssueComment>(
       `/issues/${id}/comments`,
       {
         body,
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
+        ...(structured?.authorType === undefined ? {} : { authorType: structured.authorType }),
+        ...(structured?.presentation === undefined ? {} : { presentation: structured.presentation }),
+        ...(structured?.metadata === undefined ? {} : { metadata: structured.metadata }),
       },
     ),
   listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),

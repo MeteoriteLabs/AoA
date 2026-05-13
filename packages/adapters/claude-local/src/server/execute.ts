@@ -511,7 +511,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorCode: clearSessionForMaxTurns
+        ? "max_turns_exhausted"
+        : loginMeta.requiresLogin
+          ? "claude_auth_required"
+          : null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,

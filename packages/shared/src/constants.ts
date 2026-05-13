@@ -191,6 +191,7 @@ export type WakeupTriggerDetail = (typeof WAKEUP_TRIGGER_DETAILS)[number];
 
 export const WAKEUP_REQUEST_STATUSES = [
   "queued",
+  "scheduled_retry",
   "deferred_issue_execution",
   "claimed",
   "coalesced",
@@ -203,6 +204,7 @@ export type WakeupRequestStatus = (typeof WAKEUP_REQUEST_STATUSES)[number];
 
 export const HEARTBEAT_RUN_STATUSES = [
   "queued",
+  "scheduled_retry",
   "running",
   "succeeded",
   "failed",
@@ -669,8 +671,36 @@ export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
 // ── Routines ──────────────────────────────────────────────────────────
 
-export const ISSUE_ORIGIN_KINDS = ["routine_execution"] as const;
+export const RUN_LIVENESS_STATES = ["unknown", "advanced", "completed", "blocked", "needs_followup", "stalled"] as const;
+export type RunLivenessState = (typeof RUN_LIVENESS_STATES)[number];
+
+export const ISSUE_MONITOR_STATUSES = ["scheduled", "triggered", "cleared", "cancelled"] as const;
+export type IssueMonitorStatus = (typeof ISSUE_MONITOR_STATUSES)[number];
+
+export const ISSUE_MONITOR_CLEAR_REASONS = [
+  "manual",
+  "done",
+  "cancelled",
+  "invalid_status",
+  "invalid_assignee",
+  "timeout_exceeded",
+  "max_attempts_exhausted",
+] as const;
+export type IssueMonitorClearReason = (typeof ISSUE_MONITOR_CLEAR_REASONS)[number];
+
+export const ISSUE_ORIGIN_KINDS = [
+  "routine_execution",
+  "issue_productivity_review",
+  "issue_continuation",
+  "successful_run_handoff",
+] as const;
 export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
+
+export const RECOVERY_ORIGIN_KINDS = {
+  issueProductivityReview: "issue_productivity_review",
+  issueContinuation: "issue_continuation",
+  successfulRunHandoff: "successful_run_handoff",
+} as const satisfies Record<string, IssueOriginKind>;
 
 export const ROUTINE_STATUSES = ["active", "paused", "archived"] as const;
 export type RoutineStatus = (typeof ROUTINE_STATUSES)[number];

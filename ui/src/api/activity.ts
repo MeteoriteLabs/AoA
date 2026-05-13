@@ -12,6 +12,11 @@ export interface RunForIssue {
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
   detectedOutputs: DetectedOutput[] | null;
+  retryOfRunId?: string | null;
+  scheduledRetryAt?: string | null;
+  scheduledRetryAttempt?: number | null;
+  scheduledRetryReason?: string | null;
+  errorCode?: string | null;
 }
 
 export interface IssueForRun {

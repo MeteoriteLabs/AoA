@@ -1,4 +1,9 @@
-import { pgTable, uuid, text, timestamp, index } from "drizzle-orm/pg-core";
+import type {
+  IssueCommentAuthorType,
+  IssueCommentMetadata,
+  IssueCommentPresentation,
+} from "@armyofagents/shared";
+import { pgTable, uuid, text, timestamp, index, jsonb } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { agents } from "./agents.js";
@@ -11,6 +16,9 @@ export const issueComments = pgTable(
     issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
     authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
     authorUserId: text("author_user_id"),
+    authorType: text("author_type").$type<IssueCommentAuthorType>(),
+    presentation: jsonb("presentation").$type<IssueCommentPresentation | null>(),
+    metadata: jsonb("metadata").$type<IssueCommentMetadata | null>(),
     body: text("body").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

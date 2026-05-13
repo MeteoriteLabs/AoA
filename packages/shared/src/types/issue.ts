@@ -1,4 +1,11 @@
-import type { IssuePriority, IssueSource, IssueStatus, IssueWorkMode } from "../constants.js";
+import type {
+  IssueMonitorClearReason,
+  IssueMonitorStatus,
+  IssuePriority,
+  IssueSource,
+  IssueStatus,
+  IssueWorkMode,
+} from "../constants.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 
@@ -107,7 +114,61 @@ export interface IssueComment {
   issueId: string;
   authorAgentId: string | null;
   authorUserId: string | null;
+  authorType: IssueCommentAuthorType | null;
+  presentation: IssueCommentPresentation | null;
+  metadata: IssueCommentMetadata | null;
   body: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type IssueCommentAuthorType = "user" | "agent" | "system";
+
+export type IssueCommentPresentation = {
+  kind: "plain" | "system_notice";
+  tone?: "info" | "success" | "warning" | "danger";
+  title?: string;
+  detailsDefaultOpen?: boolean;
+};
+
+export type IssueCommentMetadata = {
+  version: 1;
+  sections: Array<{
+    title: string;
+    rows: Array<Record<string, unknown>>;
+  }>;
+};
+
+export interface IssueMonitorPolicy {
+  kind: string;
+  nextCheckAt: string;
+  scheduledBy: "board" | "assignee";
+  notes?: string | null;
+  maxAttempts?: number | null;
+  timeoutAt?: string | null;
+  externalRef?: string | null;
+  recoveryPolicy?: Record<string, unknown> | null;
+}
+
+export interface IssueMonitor {
+  id: string;
+  companyId: string;
+  issueId: string;
+  agentId: string | null;
+  status: IssueMonitorStatus;
+  kind: string;
+  scheduledBy: "board" | "assignee" | string;
+  nextCheckAt: Date | null;
+  lastTriggeredAt: Date | null;
+  clearedAt: Date | null;
+  clearReason: IssueMonitorClearReason | string | null;
+  attemptCount: number;
+  maxAttempts: number | null;
+  timeoutAt: Date | null;
+  notes: string | null;
+  externalRef: string | null;
+  recoveryPolicy: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
 }
