@@ -114,6 +114,65 @@ describe("SecretsWorkspace", () => {
     expect(screen.getByText("Production AWS")).toBeInTheDocument();
   });
 
+  it("opens the add dialog from the empty-state Add first secret control", async () => {
+    const user = userEvent.setup();
+    vi.mocked(secretsApi.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await user.click(await screen.findByRole("button", { name: "Add first secret" }));
+
+    expect(screen.getByRole("dialog", { name: "Add secret" })).toBeInTheDocument();
+  });
+
+  it("disables the empty-state vault import control when no external vault is configured", async () => {
+    vi.mocked(secretsApi.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    const importButton = await screen.findByRole("button", { name: "Import from vault" });
+
+    expect(importButton).toBeDisabled();
+    expect(importButton).toHaveAttribute("title", "Configure an external vault provider before importing");
+  });
+
+  it("opens the import dialog from the empty-state vault import control when an external vault is configured", async () => {
+    const user = userEvent.setup();
+    vi.mocked(secretsApi.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([
+      {
+        id: "aws-1",
+        companyId: "company-1",
+        provider: "aws_secrets_manager",
+        displayName: "Production AWS",
+        status: "ready",
+        isDefault: true,
+        config: { region: "us-east-1", secretNamePrefix: "aoa/prod" },
+        healthStatus: "ready",
+        healthCheckedAt: null,
+        healthMessage: null,
+        healthDetails: null,
+        disabledAt: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        createdAt: new Date("2026-05-14T00:00:00Z"),
+        updatedAt: new Date("2026-05-14T00:00:00Z"),
+      },
+    ]);
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await user.click(await screen.findByRole("button", { name: "Import from vault" }));
+
+    expect(screen.getByRole("dialog", { name: "Import from vault" })).toBeInTheDocument();
+    expect(screen.getByText("Production AWS")).toBeInTheDocument();
+  });
+
   it("shows an error instead of the empty state when secrets fail to load", async () => {
     vi.mocked(secretsApi.list).mockRejectedValue(new Error("Network unavailable"));
     vi.mocked(secretsApi.providers).mockResolvedValue([]);
@@ -200,6 +259,50 @@ describe("SecretsWorkspace", () => {
     expect(screen.getByText("Descriptors unavailable")).toBeInTheDocument();
     expect(screen.getByText(/Failed to load configured vaults/)).toBeInTheDocument();
     expect(screen.getByText("Configs unavailable")).toBeInTheDocument();
+  });
+
+  it("disables vault Check while pending and enables it again after resolution", async () => {
+    const user = userEvent.setup();
+    let resolveCheck: () => void = () => {};
+    vi.mocked(secretsApi.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([
+      {
+        id: "aws-prod",
+        companyId: "company-1",
+        provider: "aws_secrets_manager",
+        displayName: "Production AWS",
+        status: "ready",
+        isDefault: true,
+        config: { region: "us-east-1", secretNamePrefix: "aoa/prod" },
+        healthStatus: "ready",
+        healthCheckedAt: null,
+        healthMessage: null,
+        healthDetails: null,
+        disabledAt: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        createdAt: new Date("2026-05-14T00:00:00Z"),
+        updatedAt: new Date("2026-05-14T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(secretsApi.providerConfigs.check).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCheck = () => resolve({ status: "ready", message: "Connected" });
+        }),
+    );
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await user.click(await screen.findByRole("tab", { name: "Vault providers" }));
+    const checkButton = await screen.findByRole("button", { name: "Check" });
+    await user.click(checkButton);
+
+    expect(checkButton).toBeDisabled();
+
+    resolveCheck();
+    await waitFor(() => expect(checkButton).toBeEnabled());
   });
 
   it("creates a local managed secret from the header dialog and selects it after success", async () => {

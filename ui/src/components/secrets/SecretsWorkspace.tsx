@@ -34,6 +34,7 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
   const [selectedSecretId, setSelectedSecretId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [checkingVaultId, setCheckingVaultId] = useState<string | null>(null);
   const [rotateTarget, setRotateTarget] = useState<CompanySecret | null>(null);
   const secretsQuery = useQuery({
     queryKey: queryKeys.secrets.list(companyId),
@@ -92,12 +93,18 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
 
   const checkProviderConfig = useMutation({
     mutationFn: (id: string) => secretsApi.providerConfigs.check(id),
+    onMutate: (id) => {
+      setCheckingVaultId(id);
+    },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.providerConfigs(companyId) });
       toast.success("Vault checked", { description: result.message ?? result.status });
     },
     onError: (err) => {
       toast.error("Vault check failed", { description: err instanceof Error ? err.message : undefined });
+    },
+    onSettled: () => {
+      setCheckingVaultId(null);
     },
   });
 
@@ -120,6 +127,11 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
   const rotateErrorMessage = rotateSecret.error instanceof Error ? rotateSecret.error.message : null;
   const createProviderErrorMessage =
     createProviderConfig.error instanceof Error ? createProviderConfig.error.message : null;
+
+  function openAddSecretDialog() {
+    createSecret.reset();
+    setAddOpen(true);
+  }
 
   function renderSelectedSecretRequiredTab(tab: Exclude<SecretsTab, "inventory" | "vaults">) {
     if (!selectedSecret) {
@@ -184,10 +196,7 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
             <Button
               type="button"
               size="sm"
-              onClick={() => {
-                createSecret.reset();
-                setAddOpen(true);
-              }}
+              onClick={openAddSecretDialog}
             >
               <Plus className="size-3.5" />
               Add secret
@@ -229,7 +238,12 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
             {errorMessage && <p className="mt-1 text-xs text-destructive/80">{errorMessage}</p>}
           </div>
         ) : activeTab === "inventory" && secrets.length === 0 ? (
-          <SecretEmptyState />
+          <SecretEmptyState
+            onAddSecret={openAddSecretDialog}
+            onImportFromVault={() => setImportOpen(true)}
+            canImportFromVault={canImportFromVault}
+            importDisabledReason="Configure an external vault provider before importing"
+          />
         ) : activeTab === "inventory" ? (
           <SecretInventoryTab
             secrets={secrets}
@@ -253,7 +267,7 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
             providerConfigsErrorMessage={
               providerConfigsQuery.error instanceof Error ? providerConfigsQuery.error.message : null
             }
-            checkingVaultId={checkProviderConfig.variables ?? null}
+            checkingVaultId={checkingVaultId}
             onAwsDialogOpenChange={() => createProviderConfig.reset()}
           />
         ) : activeTab === "audit" ? (

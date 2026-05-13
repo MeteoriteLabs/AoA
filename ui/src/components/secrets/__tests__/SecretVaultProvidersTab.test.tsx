@@ -2,6 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { CompanySecretProviderConfig } from "@armyofagents/shared";
+import { useState } from "react";
 import { SecretVaultProvidersTab } from "../SecretVaultProvidersTab";
 
 function makeProviderConfig(partial: Partial<CompanySecretProviderConfig> = {}): CompanySecretProviderConfig {
@@ -100,6 +101,47 @@ describe("SecretVaultProvidersTab", () => {
     await userEvent.click(screen.getByRole("button", { name: "Check" }));
 
     expect(onCheckVault).toHaveBeenCalledWith("aws-prod");
+  });
+
+  it("disables Check while pending and enables it again after resolution", async () => {
+    let resolveCheck: () => void = () => {};
+    const onCheckVault = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCheck = resolve;
+        }),
+    );
+
+    function Harness() {
+      const [checkingVaultId, setCheckingVaultId] = useState<string | null>(null);
+      return (
+        <SecretVaultProvidersTab
+          providerConfigs={[makeProviderConfig({ id: "aws-prod", displayName: "Production AWS" })]}
+          onCreateAwsVault={vi.fn()}
+          onCheckVault={async (id) => {
+            setCheckingVaultId(id);
+            try {
+              await onCheckVault(id);
+            } finally {
+              setCheckingVaultId(null);
+            }
+          }}
+          checkingVaultId={checkingVaultId}
+        />
+      );
+    }
+
+    render(<Harness />);
+
+    const checkButton = screen.getByRole("button", { name: "Check" });
+    await userEvent.click(checkButton);
+
+    expect(checkButton).toBeDisabled();
+
+    resolveCheck();
+    await screen.findByRole("button", { name: "Check" });
+
+    expect(checkButton).toBeEnabled();
   });
 
   it("styles error health as a failure state", () => {
