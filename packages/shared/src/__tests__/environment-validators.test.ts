@@ -33,6 +33,23 @@ describe("createEnvironmentSchema", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it("accepts execution target", () => {
+    const result = createEnvironmentSchema.safeParse({
+      name: "docker",
+      envVars: {},
+      target: { type: "sandbox-docker", image: "node:22-bookworm" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects invalid execution target", () => {
+    const result = createEnvironmentSchema.safeParse({
+      name: "bad-target",
+      target: { type: "sandbox-docker" },
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("updateEnvironmentSchema", () => {
@@ -55,6 +72,7 @@ describe("Environment type", () => {
       name: "production",
       envVars: { KEY: "val" },
       connectionTarget: null,
+      target: null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

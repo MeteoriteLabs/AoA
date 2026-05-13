@@ -25,7 +25,7 @@ import {
   teamCoordinations,
   teams,
 } from "@armyofagents/db";
-import { resolveEnvironmentEnvVars } from "./environment-resolver.js";
+import { resolveEnvironmentRuntimeConfig } from "./environment-resolver.js";
 import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -170,6 +170,18 @@ export function resolveAdapterExecutionContext(
   const executionTarget = resolveAdapterExecutionTarget(adapterConfigObject.executionTarget);
   const runtimeCommandSpec = adapter.getRuntimeCommandSpec?.(adapterConfigObject) ?? null;
   return { executionTarget, runtimeCommandSpec };
+}
+
+export function applyEnvironmentRuntimeTarget(
+  config: Record<string, unknown>,
+  environmentRuntime: { target: Record<string, unknown> | null },
+): Record<string, unknown> {
+  return environmentRuntime.target
+    ? {
+        ...config,
+        executionTarget: environmentRuntime.target,
+      }
+    : config;
 }
 
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
@@ -2317,11 +2329,12 @@ export function heartbeatService(db: Db) {
     // ── Environment envVars resolution ──────────────────────────────────────
     // Priority: issue.executionEnvironmentId > agent.defaultEnvironmentId > none.
     // Scoped by companyId to prevent cross-tenant leakage.
-    const environmentEnvVars = await resolveEnvironmentEnvVars(db, {
+    const environmentRuntime = await resolveEnvironmentRuntimeConfig(db, {
       executionEnvironmentId: issueContext?.executionEnvironmentId ?? null,
       defaultEnvironmentId: agent.defaultEnvironmentId ?? null,
       companyId: agent.companyId,
     });
+    const environmentEnvVars = environmentRuntime.envVars;
     // ── Env merge: project baseline → environment envVars → agent adapterConfig.env ──
     // Merge order (lowest to highest priority):
     //   1. projectEnv       (project/department baseline)
@@ -2345,9 +2358,14 @@ export function heartbeatService(db: Db) {
             },
           }
         : mergedConfig;
+    const mergedConfigWithEnvironmentTarget = applyEnvironmentRuntimeTarget(
+      mergedConfigWithProjectEnv,
+      environmentRuntime,
+    );
+
     const resolvedConfig = await secretsSvc.resolveAdapterConfigForRuntime(
       agent.companyId,
-      mergedConfigWithProjectEnv,
+      mergedConfigWithEnvironmentTarget,
     );
 
     // ── Issue ref for execution workspace ───────────────────────────

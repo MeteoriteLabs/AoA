@@ -87,6 +87,7 @@ function makeEnv(overrides: Partial<MockRow> = {}): MockRow {
     name: "production",
     envVars: {},
     connectionTarget: null,
+    target: null,
     createdAt: new Date("2026-01-01T00:00:00Z"),
     updatedAt: new Date("2026-01-01T00:00:00Z"),
     ...overrides,
@@ -157,6 +158,20 @@ describe("environmentService", () => {
       expect(result!.name).toBe("preview");
     });
 
+    it("inserts and returns a target-aware environment", async () => {
+      const target = { type: "sandbox-docker", image: "node:22-bookworm" };
+      const env = makeEnv({ name: "docker", target });
+      const db = createSequenceDb({ inserts: [[env]] });
+      const svc = environmentService(db);
+      const result = await svc.create(COMPANY, {
+        name: "docker",
+        envVars: {},
+        target,
+      });
+      expect(result).toEqual(env);
+      expect(result!.target).toEqual(target);
+    });
+
     it("returns null when insert returns empty (no row)", async () => {
       const db = createSequenceDb({ inserts: [[]] });
       const svc = environmentService(db);
@@ -173,6 +188,15 @@ describe("environmentService", () => {
       const result = await svc.update(COMPANY, "e1", { name: "prod-updated" });
       expect(result).toEqual(updated);
       expect(result!.name).toBe("prod-updated");
+    });
+
+    it("updates the execution target", async () => {
+      const target = { type: "local" };
+      const updated = makeEnv({ target });
+      const db = createSequenceDb({ updates: [[updated]] });
+      const svc = environmentService(db);
+      const result = await svc.update(COMPANY, "e1", { target });
+      expect(result!.target).toEqual(target);
     });
 
     it("returns null when environment not found", async () => {

@@ -8,8 +8,8 @@ export const environments = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     envVars: jsonb("env_vars").$type<Record<string, unknown>>().notNull().default({}),
-    // connectionTarget is stored for v2.0 target-aware upgrade; ignored at execution time in v1.x.
     connectionTarget: jsonb("connection_target").$type<Record<string, unknown>>(),
+    target: jsonb("target").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
