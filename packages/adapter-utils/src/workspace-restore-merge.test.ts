@@ -221,9 +221,13 @@ describe("mergeChangedWorkspaceFiles", () => {
     }
 
     const destinationRoot = await tempRoot();
+    await writeText(path.join(destinationRoot, "linked.txt"), "keep existing destination");
 
     await expect(mergeChangedWorkspaceFiles({ before, afterRoot, destinationRoot })).rejects.toThrow(
       "symlink target escapes root",
+    );
+    await expect(readFile(path.join(destinationRoot, "linked.txt"), "utf8")).resolves.toBe(
+      "keep existing destination",
     );
   });
 });

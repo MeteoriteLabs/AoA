@@ -154,17 +154,17 @@ async function copyEntry(
     return;
   }
 
-  await rm(destinationPath, { force: true, recursive: true });
-
   if (entry.kind === "symlink") {
     if (!entry.linkTarget) {
       throw new Error(`Cannot restore symlink without link target: ${destinationPath}`);
     }
     validateSymlinkTargetInsideRoot(destinationRoot, destinationPath, entry.linkTarget);
+    await rm(destinationPath, { force: true, recursive: true });
     await symlink(entry.linkTarget, destinationPath);
     return;
   }
 
+  await rm(destinationPath, { force: true, recursive: true });
   await copyFile(sourcePath, destinationPath);
   await applyMode(destinationPath, entry);
 }
