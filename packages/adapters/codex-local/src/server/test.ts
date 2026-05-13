@@ -13,9 +13,10 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@armyofagents/adapter-utils/server-utils";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
-import { prepareManagedCodexHome } from "./codex-home.js";
+import { prepareManagedCodexHome, resolveSharedCodexHomeDir } from "./codex-home.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -109,12 +110,22 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
     });
   } else {
-    checks.push({
-      code: "codex_openai_api_key_missing",
-      level: "warn",
-      message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
-      hint: "Set OPENAI_API_KEY in adapter env, shell environment, or Codex auth configuration.",
-    });
+    const sharedAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+    const sharedAuthReady = await fs.stat(sharedAuthPath).then((stat) => stat.isFile()).catch(() => false);
+    if (sharedAuthReady) {
+      checks.push({
+        code: "codex_auth_json_present",
+        level: "info",
+        message: "Codex auth.json is available for local authentication.",
+      });
+    } else {
+      checks.push({
+        code: "codex_openai_api_key_missing",
+        level: "warn",
+        message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
+        hint: "Set OPENAI_API_KEY in adapter env, shell environment, or Codex auth configuration.",
+      });
+    }
   }
 
   const canRunProbe =

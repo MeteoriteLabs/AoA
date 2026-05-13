@@ -397,9 +397,9 @@ describe("ProjectDetail — Workspaces tab", () => {
     // test budget under parallel-suite load when each waitFor consumes its
     // 5s ceiling sequentially.
     await screen.findByText("Workspaces", {}, { timeout: 5000 });
-    await screen.findByTestId("workspaces-loading", {}, { timeout: 5000 });
+    const loading = await screen.findByTestId("workspaces-loading", {}, { timeout: 5000 });
 
-    const skeletons = screen.getByTestId("workspaces-loading").querySelectorAll("[data-slot='skeleton']");
+    const skeletons = loading.querySelectorAll("[data-slot='skeleton']");
     expect(skeletons.length).toBeGreaterThanOrEqual(2);
   });
 });

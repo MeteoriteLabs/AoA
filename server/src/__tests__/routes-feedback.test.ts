@@ -15,6 +15,7 @@ const mockVotesService = vi.hoisted(() => ({
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByIdentifier: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -246,6 +247,27 @@ describe("feedback routes — GET /issues/:id/feedback-votes", () => {
     const res = await request(app).get(`/api/issues/${ISSUE_ID}/feedback-votes`);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toHaveLength(1);
+    expect(mockVotesService.listVotes).toHaveBeenCalledWith({
+      companyId: COMPANY_A,
+      issueId: ISSUE_ID,
+      authorUserId: USER_A,
+    });
+  });
+
+  it("resolves issue identifiers before listing the current user's votes", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValueOnce({
+      id: ISSUE_ID,
+      companyId: COMPANY_A,
+      identifier: "VQA-3",
+    });
+    mockIssueService.getById.mockResolvedValueOnce({ id: ISSUE_ID, companyId: COMPANY_A });
+    mockVotesService.listVotes.mockResolvedValueOnce([]);
+
+    const app = createApp(boardActor({ userId: USER_A, companyIds: [COMPANY_A] }));
+    const res = await request(app).get("/api/issues/VQA-3/feedback-votes");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("VQA-3");
     expect(mockVotesService.listVotes).toHaveBeenCalledWith({
       companyId: COMPANY_A,
       issueId: ISSUE_ID,

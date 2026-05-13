@@ -45,4 +45,23 @@ describe("codex-home", () => {
     const content = await fs.readFile(path.join(home, "auth.json"), "utf-8");
     expect(JSON.parse(content)).toEqual({ OPENAI_API_KEY: "sk-test" });
   });
+
+  it("prepareManagedCodexHome without apiKey copies shared Codex auth into the managed home", async () => {
+    await fs.writeFile(
+      path.join(tmpDir, "auth.json"),
+      JSON.stringify({ tokens: { id: "subscription-auth" } }),
+    );
+
+    const logs: string[] = [];
+    const home = await prepareManagedCodexHome(
+      { CODEX_HOME: tmpDir },
+      (msg) => logs.push(msg),
+      "company_test",
+      {},
+    );
+
+    const content = await fs.readFile(path.join(home, "auth.json"), "utf-8");
+    expect(JSON.parse(content)).toEqual({ tokens: { id: "subscription-auth" } });
+    expect(logs.some((msg) => msg.includes("Copied shared Codex auth.json"))).toBe(true);
+  });
 });

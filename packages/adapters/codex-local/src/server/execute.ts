@@ -73,6 +73,46 @@ function codexHomeDir(): string {
   return path.join(os.homedir(), ".codex");
 }
 
+export async function linkOrCopyCodexSkill({
+  source,
+  target,
+  entryName,
+  skillsHome,
+  onLog,
+  linkSkill = (linkSource, linkTarget, type) => fs.symlink(linkSource, linkTarget, type),
+  copySkill = (copySource, copyTarget, options) => fs.cp(copySource, copyTarget, options),
+}: {
+  source: string;
+  target: string;
+  entryName: string;
+  skillsHome: string;
+  onLog: AdapterExecutionContext["onLog"];
+  linkSkill?: (
+    source: string,
+    target: string,
+    type?: "dir" | "file" | "junction",
+  ) => Promise<void>;
+  copySkill?: (
+    source: string,
+    target: string,
+    options: { recursive: true },
+  ) => Promise<void>;
+}) {
+  try {
+    await linkSkill(source, target, process.platform === "win32" ? "junction" : undefined);
+    await onLog(
+      "stderr",
+      `[aoa] Injected Codex skill "${entryName}" into ${skillsHome}\n`,
+    );
+  } catch (err) {
+    await copySkill(source, target, { recursive: true });
+    await onLog(
+      "stderr",
+      `[aoa] Copied Codex skill "${entryName}" into ${skillsHome} after link failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+}
+
 async function resolvePaperclipSkillsDir(): Promise<string | null> {
   for (const candidate of AOA_SKILLS_CANDIDATES) {
     const isDir = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
@@ -95,18 +135,7 @@ async function ensureCodexSkillsInjected(onLog: AdapterExecutionContext["onLog"]
     const existing = await fs.lstat(target).catch(() => null);
     if (existing) continue;
 
-    try {
-      await fs.symlink(source, target);
-      await onLog(
-        "stderr",
-        `[aoa] Injected Codex skill "${entry.name}" into ${skillsHome}\n`,
-      );
-    } catch (err) {
-      await onLog(
-        "stderr",
-        `[aoa] Failed to inject Codex skill "${entry.name}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-    }
+    await linkOrCopyCodexSkill({ source, target, entryName: entry.name, skillsHome, onLog });
   }
 }
 

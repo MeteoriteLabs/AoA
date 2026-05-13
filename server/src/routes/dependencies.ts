@@ -4,6 +4,7 @@ import type { Db } from "@armyofagents/db";
 import { validate } from "../middleware/validate.js";
 import { dependencyService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
 
 const addDependencySchema = z.object({
   dependencyIssueId: z.string().uuid(),
@@ -12,6 +13,7 @@ const addDependencySchema = z.object({
 export function dependencyRoutes(db: Db) {
   const router = Router();
   const deps = dependencyService(db);
+  registerIssueParamNormalizer(router, db, ["issueId"]);
 
   // GET /companies/:companyId/issues/:issueId/dependencies
   router.get("/companies/:companyId/issues/:issueId/dependencies", async (req, res) => {

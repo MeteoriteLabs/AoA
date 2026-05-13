@@ -7,6 +7,7 @@ import type { DetectedOutput, DetectedOutputForUI } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { artifactService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -15,6 +16,7 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 export function outputDetectionRoutes(db: Db) {
   const router = Router();
   const artifactSvc = artifactService(db);
+  registerIssueParamNormalizer(router, db, ["issueId"]);
 
   // ── List detected outputs for a task (aggregated from all runs) ──────
   router.get("/issues/:issueId/detected-outputs", async (req, res) => {
