@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CloudDownload, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import type { CompanySecret } from "@armyofagents/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { secretsApi, type CreateSecretInput, type CreateSecretProviderConfigInput } from "@/api/secrets";
@@ -125,10 +125,21 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     }
 
     if (tab === "bindings") {
-      return <SecretBindingsTab bindings={bindingsQuery.data ?? []} secrets={secrets} />;
+      return (
+        <SecretBindingsTab
+          bindings={bindingsQuery.data ?? []}
+          secrets={secrets}
+          errorMessage={bindingsQuery.error instanceof Error ? bindingsQuery.error.message : null}
+        />
+      );
     }
 
-    return <SecretAuditTab events={accessEventsQuery.data ?? []} />;
+    return (
+      <SecretAuditTab
+        events={accessEventsQuery.data ?? []}
+        errorMessage={accessEventsQuery.error instanceof Error ? accessEventsQuery.error.message : null}
+      />
+    );
   }
 
   return (
@@ -147,10 +158,6 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <Button type="button" variant="outline" size="sm">
-              <CloudDownload className="size-3.5" />
-              Import
-            </Button>
             <Button
               type="button"
               size="sm"
@@ -219,7 +226,12 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
             onCreateAwsVault={(input) => createProviderConfig.mutateAsync(input)}
             onCheckVault={(id) => checkProviderConfig.mutateAsync(id)}
             createErrorMessage={createProviderErrorMessage}
+            providersErrorMessage={providersQuery.error instanceof Error ? providersQuery.error.message : null}
+            providerConfigsErrorMessage={
+              providerConfigsQuery.error instanceof Error ? providerConfigsQuery.error.message : null
+            }
             checkingVaultId={checkProviderConfig.variables ?? null}
+            onAwsDialogOpenChange={() => createProviderConfig.reset()}
           />
         ) : activeTab === "audit" ? (
           renderSelectedSecretRequiredTab("audit")

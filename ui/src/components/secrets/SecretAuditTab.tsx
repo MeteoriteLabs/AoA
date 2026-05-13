@@ -15,6 +15,7 @@ import { formatSecretDate, providerLabel } from "./secret-ui";
 
 interface SecretAuditTabProps {
   events: SecretAccessEvent[];
+  errorMessage?: string | null;
 }
 
 function outcomeClassName(outcome: SecretAccessEvent["outcome"]) {
@@ -36,12 +37,17 @@ function DetailRow({ label, value }: { label: string; value: string | number | n
   );
 }
 
-export function SecretAuditTab({ events }: SecretAuditTabProps) {
+export function SecretAuditTab({ events, errorMessage }: SecretAuditTabProps) {
   const [selectedEvent, setSelectedEvent] = useState<SecretAccessEvent | null>(null);
 
   return (
     <>
-      {events.length === 0 ? (
+      {errorMessage ? (
+        <section className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          <p>Failed to load audit events for this secret.</p>
+          <p className="mt-1 text-xs text-destructive/80">{errorMessage}</p>
+        </section>
+      ) : events.length === 0 ? (
         <section className="flex min-h-[280px] flex-col items-center justify-center rounded-md border border-border bg-card px-6 py-10 text-center">
           <Activity className="mb-3 size-8 text-muted-foreground/40" />
           <h3 className="text-sm font-semibold">No access events</h3>

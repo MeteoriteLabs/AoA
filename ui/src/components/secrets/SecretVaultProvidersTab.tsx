@@ -18,14 +18,20 @@ interface SecretVaultProvidersTabProps {
   onCreateAwsVault(input: CreateSecretProviderConfigInput): void | Promise<unknown>;
   onCheckVault(id: string): void | Promise<SecretProviderConfigHealthResponse | unknown>;
   createErrorMessage?: string | null;
+  providersErrorMessage?: string | null;
+  providerConfigsErrorMessage?: string | null;
   checkingVaultId?: string | null;
+  onAwsDialogOpenChange?(open: boolean): void;
 }
 
 function statusClassName(status: string | null | undefined) {
   if (status === "ready" || status === "success") {
     return "border-emerald-500/35 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
   }
-  if (status === "warning" || status === "failure") {
+  if (status === "error" || status === "failure") {
+    return "border-destructive/35 bg-destructive/10 text-destructive";
+  }
+  if (status === "warning") {
     return "border-amber-500/35 bg-amber-500/10 text-amber-600 dark:text-amber-400";
   }
   if (status === "disabled") return "border-muted-foreground/30 bg-muted text-muted-foreground";
@@ -43,7 +49,10 @@ export function SecretVaultProvidersTab({
   onCreateAwsVault,
   onCheckVault,
   createErrorMessage,
+  providersErrorMessage,
+  providerConfigsErrorMessage,
   checkingVaultId,
+  onAwsDialogOpenChange,
 }: SecretVaultProvidersTabProps) {
   const [awsOpen, setAwsOpen] = useState(false);
   const futureProviders = providers.filter(
@@ -53,8 +62,30 @@ export function SecretVaultProvidersTab({
       !providerConfigs.some((config) => config.provider === provider.id),
   );
 
+  function setAwsDialogOpen(open: boolean) {
+    setAwsOpen(open);
+    onAwsDialogOpenChange?.(open);
+  }
+
   return (
     <div className="space-y-4">
+      {(providersErrorMessage || providerConfigsErrorMessage) && (
+        <section className="space-y-2 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          {providersErrorMessage && (
+            <p>
+              Failed to load provider descriptors.
+              <span className="ml-1 text-xs text-destructive/80">{providersErrorMessage}</span>
+            </p>
+          )}
+          {providerConfigsErrorMessage && (
+            <p>
+              Failed to load configured vaults.
+              <span className="ml-1 text-xs text-destructive/80">{providerConfigsErrorMessage}</span>
+            </p>
+          )}
+        </section>
+      )}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="rounded-md border border-border bg-card p-4">
           <div className="flex items-start justify-between gap-3">
@@ -84,7 +115,7 @@ export function SecretVaultProvidersTab({
                 Store external references and import existing AWS secrets without saving raw values in AoA.
               </p>
             </div>
-            <Button type="button" size="sm" onClick={() => setAwsOpen(true)}>
+            <Button type="button" size="sm" onClick={() => setAwsDialogOpen(true)}>
               Configure AWS vault
             </Button>
           </div>
@@ -152,7 +183,7 @@ export function SecretVaultProvidersTab({
 
       <AwsVaultDialog
         open={awsOpen}
-        onOpenChange={setAwsOpen}
+        onOpenChange={setAwsDialogOpen}
         onSubmit={onCreateAwsVault}
         errorMessage={createErrorMessage}
       />

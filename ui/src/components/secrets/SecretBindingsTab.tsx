@@ -5,14 +5,24 @@ import { Badge } from "@/components/ui/badge";
 interface SecretBindingsTabProps {
   bindings: CompanySecretBinding[];
   secrets: CompanySecret[];
+  errorMessage?: string | null;
 }
 
 function targetLabel(targetType: CompanySecretBinding["targetType"]) {
   return targetType.replace(/_/g, " ");
 }
 
-export function SecretBindingsTab({ bindings, secrets }: SecretBindingsTabProps) {
+export function SecretBindingsTab({ bindings, secrets, errorMessage }: SecretBindingsTabProps) {
   const secretNameById = new Map(secrets.map((secret) => [secret.id, secret.name]));
+
+  if (errorMessage) {
+    return (
+      <section className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+        <p>Failed to load bindings for this secret.</p>
+        <p className="mt-1 text-xs text-destructive/80">{errorMessage}</p>
+      </section>
+    );
+  }
 
   if (bindings.length === 0) {
     return (

@@ -68,6 +68,7 @@ describe("SecretsWorkspace", () => {
       screen.getByText("Credentials and secret references used by agents, environments, departments, and integrations."),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add secret" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Import" })).toBeNull();
 
     expect(screen.getByRole("tab", { name: "Inventory" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Bindings" })).toBeTruthy();
@@ -109,6 +110,58 @@ describe("SecretsWorkspace", () => {
 
     expect(screen.queryByPlaceholderText("Search by name, key, department")).toBeNull();
     expect(await screen.findByText("No bindings for this secret")).toBeTruthy();
+  });
+
+  it("shows bindings query failures instead of the no-bindings empty state", async () => {
+    const user = userEvent.setup();
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.list).mockResolvedValue([
+      makeSecret({ id: "openai", name: "OpenAI API Key", key: "OPENAI_API_KEY" }),
+    ]);
+    vi.mocked(secretsApi.bindings.list).mockRejectedValue(new Error("Bindings unavailable"));
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await user.click(await screen.findByRole("tab", { name: "Bindings" }));
+
+    expect(await screen.findByText("Failed to load bindings for this secret.")).toBeInTheDocument();
+    expect(screen.getByText("Bindings unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("No bindings for this secret")).toBeNull();
+  });
+
+  it("shows audit query failures instead of the no-events empty state", async () => {
+    const user = userEvent.setup();
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.list).mockResolvedValue([
+      makeSecret({ id: "openai", name: "OpenAI API Key", key: "OPENAI_API_KEY" }),
+    ]);
+    vi.mocked(secretsApi.accessEvents).mockRejectedValue(new Error("Audit unavailable"));
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await user.click(await screen.findByRole("tab", { name: "Audit" }));
+
+    expect(await screen.findByText("Failed to load audit events for this secret.")).toBeInTheDocument();
+    expect(screen.getByText("Audit unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("No access events")).toBeNull();
+  });
+
+  it("shows vault provider query failures on the vault providers tab", async () => {
+    const user = userEvent.setup();
+    vi.mocked(secretsApi.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.providers).mockRejectedValue(new Error("Descriptors unavailable"));
+    vi.mocked(secretsApi.providerConfigs.list).mockRejectedValue(new Error("Configs unavailable"));
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await user.click(await screen.findByRole("tab", { name: "Vault providers" }));
+
+    expect(await screen.findByText(/Failed to load provider descriptors/)).toBeInTheDocument();
+    expect(screen.getByText("Descriptors unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/Failed to load configured vaults/)).toBeInTheDocument();
+    expect(screen.getByText("Configs unavailable")).toBeInTheDocument();
   });
 
   it("creates a local managed secret from the header dialog and selects it after success", async () => {
