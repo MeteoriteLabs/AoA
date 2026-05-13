@@ -96,6 +96,8 @@ import {
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
+import { productivityReviewService } from "./productivity-review.js";
+import { recoveryService } from "./recovery/service.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -1326,6 +1328,26 @@ export function heartbeatService(db: Db) {
 
     if (classifyScheduledRetryGate({ issue, agentId: sourceRun.agentId })) return null;
     if (await hasIncompleteDependencies(sourceRun.companyId, issueId)) return null;
+    if (
+      await productivityReviewService(db).isProductivityReviewContinuationHoldActive({
+        companyId: sourceRun.companyId,
+        issueId,
+        agentId: sourceRun.agentId,
+      })
+    ) {
+      await logActivity(db, {
+        companyId: sourceRun.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        action: "issue.recovery_continuation_exhausted",
+        entityType: "issue",
+        entityId: issueId,
+        agentId: sourceRun.agentId,
+        runId: sourceRun.id,
+        details: { reason: "productivity_review_hold" },
+      });
+      return null;
+    }
 
     const now = opts.now ?? new Date();
     const dueAt = new Date(now.getTime() + MAX_TURN_CONTINUATION_DELAY_MS);
@@ -3369,6 +3391,9 @@ export function heartbeatService(db: Db) {
           adapterResult,
           issueId: readNonEmptyString(context.issueId),
           detectedFiles,
+        });
+        await recoveryService(db).handleCompletedRun(finalizedRun.id).catch((err) => {
+          logger.warn({ err, runId: finalizedRun.id }, "recovery handleCompletedRun failed");
         });
       }
 

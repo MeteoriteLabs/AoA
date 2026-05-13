@@ -25,7 +25,15 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService, routineService, processFileImportQueue, resetStuckJobs, WORKER_INTERVAL_MS } from "./services/index.js";
+import {
+  heartbeatService,
+  issueMonitorSchedulerService,
+  productivityReviewService,
+  routineService,
+  processFileImportQueue,
+  resetStuckJobs,
+  WORKER_INTERVAL_MS,
+} from "./services/index.js";
 import { getDbCapabilities, probeDbCapabilities } from "./services/db-capabilities.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
@@ -526,6 +534,8 @@ setupLiveEventsWebSocketServer(server, db as any, {
 
 if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
+  const productivityReviews = productivityReviewService(db as any);
+  const monitorScheduler = issueMonitorSchedulerService(db as any);
 
   // Subscribe heartbeat's scope-cancellation to budget-exhausted signals so
   // hard-stop breaches interrupt in-flight work, not just preflight-block.
@@ -568,8 +578,10 @@ if (config.heartbeatSchedulerEnabled) {
   registerHeartbeatWatchdogSweeper(db as any);
 
   setInterval(() => {
+    const now = new Date();
+
     void heartbeat
-      .tickTimers(new Date())
+      .tickTimers(now)
       .then((result) => {
         if (result.enqueued > 0) {
           logger.info({ ...result }, "heartbeat timer tick enqueued runs");
@@ -586,11 +598,31 @@ if (config.heartbeatSchedulerEnabled) {
         logger.error({ err }, "periodic reap of orphaned heartbeat runs failed");
       });
 
+    // Promote max-turn continuations once their bounded retry delay has elapsed.
+    void heartbeat
+      .promoteDueScheduledRetries(now)
+      .catch((err) => {
+        logger.error({ err }, "heartbeat scheduled retry promotion failed");
+      });
+
     // Tick scheduled routine triggers
     void routineService(db as any)
-      .tickScheduledTriggers(new Date())
+      .tickScheduledTriggers(now)
       .catch((err) => {
         logger.error({ err }, "routine scheduled trigger tick failed");
+      });
+
+    void db
+      .select({ id: companies.id })
+      .from(companies)
+      .then((rows) =>
+        Promise.all([
+          ...rows.map((row) => monitorScheduler.triggerDueMonitors(row.id, { now })),
+          ...rows.map((row) => productivityReviews.reconcileCompany(row.id, { now })),
+        ]),
+      )
+      .catch((err) => {
+        logger.error({ err }, "recovery reconciliation tick failed");
       });
   }, config.heartbeatSchedulerIntervalMs);
 }
