@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react";
 import { CloudDownload, Plus } from "lucide-react";
 import type { CompanySecret } from "@armyofagents/shared";
-import { useQuery } from "@tanstack/react-query";
-import { secretsApi } from "@/api/secrets";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { secretsApi, type CreateSecretInput } from "@/api/secrets";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { AddSecretDialog } from "./AddSecretDialog";
+import { RotateSecretDialog } from "./RotateSecretDialog";
 import { SecretEmptyState } from "./SecretEmptyState";
 import { SecretInventoryTab } from "./SecretInventoryTab";
 
@@ -22,11 +24,36 @@ interface SecretsWorkspaceProps {
 }
 
 export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<SecretsTab>("inventory");
   const [selectedSecretId, setSelectedSecretId] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [rotateTarget, setRotateTarget] = useState<CompanySecret | null>(null);
   const secretsQuery = useQuery({
     queryKey: queryKeys.secrets.list(companyId),
     queryFn: () => secretsApi.list(companyId),
+  });
+  const rotateBindingsQuery = useQuery({
+    queryKey: rotateTarget ? queryKeys.secrets.bindings(rotateTarget.id) : ["secret-bindings", "__none__"],
+    queryFn: () => secretsApi.bindings.list(rotateTarget!.id),
+    enabled: Boolean(rotateTarget),
+  });
+
+  const createSecret = useMutation({
+    mutationFn: (input: CreateSecretInput) => secretsApi.create(companyId, input),
+    onSuccess: (created) => {
+      setSelectedSecretId(created.id);
+      setAddOpen(false);
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
+    },
+  });
+
+  const rotateSecret = useMutation({
+    mutationFn: ({ id, value }: { id: string; value: string }) => secretsApi.rotate(id, { value }),
+    onSuccess: () => {
+      setRotateTarget(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
+    },
   });
 
   const secrets = secretsQuery.data ?? [];
@@ -56,7 +83,7 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
               <CloudDownload className="size-3.5" />
               Import
             </Button>
-            <Button type="button" size="sm">
+            <Button type="button" size="sm" onClick={() => setAddOpen(true)}>
               <Plus className="size-3.5" />
               Add secret
             </Button>
@@ -103,6 +130,7 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
             secrets={secrets}
             selectedSecret={selectedSecret}
             onSelectSecret={setSelectedSecretId}
+            onRotate={setRotateTarget}
           />
         ) : (
           <section className="rounded-md border border-border bg-card p-4">
@@ -115,6 +143,24 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
           </section>
         )}
       </div>
+
+      <AddSecretDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        onSubmit={(input) => createSecret.mutateAsync(input)}
+      />
+      <RotateSecretDialog
+        open={Boolean(rotateTarget)}
+        onOpenChange={(open) => {
+          if (!open) setRotateTarget(null);
+        }}
+        secret={rotateTarget}
+        impactedBindingCount={rotateBindingsQuery.data?.length ?? 0}
+        onSubmit={({ value }) => {
+          if (!rotateTarget) return;
+          return rotateSecret.mutateAsync({ id: rotateTarget.id, value });
+        }}
+      />
     </div>
   );
 }

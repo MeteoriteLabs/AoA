@@ -16,6 +16,11 @@ import {
 vi.mock("@/api/secrets", () => ({
   secretsApi: {
     list: vi.fn(),
+    create: vi.fn(),
+    rotate: vi.fn(),
+    bindings: {
+      list: vi.fn(),
+    },
   },
 }));
 
@@ -82,7 +87,7 @@ describe("SecretsWorkspace", () => {
     expect(await screen.findByPlaceholderText("Search by name, key, department")).toBeTruthy();
     expect(screen.getAllByText("OpenAI API Key").length).toBeGreaterThan(0);
     expect(screen.getAllByText("HubSpot Private App").length).toBeGreaterThan(0);
-    expect(screen.queryByRole("button", { name: "Rotate" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Rotate" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
 
     await user.click(screen.getByRole("tab", { name: "Bindings" }));
