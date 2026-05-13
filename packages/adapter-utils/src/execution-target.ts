@@ -231,6 +231,7 @@ export async function runAdapterExecutionTargetProcess(
         graceSec: opts.graceSec,
         onLog: opts.onLog,
         onSpawn: opts.onSpawn,
+        shell: false,
       },
     );
   } finally {
@@ -242,13 +243,18 @@ export async function isDockerAvailable(
   run: ChildProcessRunner = runChildProcess,
 ): Promise<boolean> {
   try {
-    const result = await run("docker-availability-probe", "docker", ["info"], {
-      cwd: process.cwd(),
-      env: {},
-      timeoutSec: 10,
-      graceSec: 1,
-      onLog: async () => {},
-    });
+    const result = await run(
+      "docker-probe",
+      "docker",
+      ["version", "--format", "{{.Server.Version}}"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 10,
+        graceSec: 2,
+        onLog: async () => {},
+      },
+    );
     return !result.timedOut && result.exitCode === 0;
   } catch {
     return false;

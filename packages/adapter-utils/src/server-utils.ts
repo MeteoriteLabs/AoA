@@ -282,6 +282,7 @@ export async function runChildProcess(
      * database row so that an out-of-process watchdog can kill the group.
      */
     onSpawn?: (pid: number | null, pgid: number | null, startedAt: Date) => void;
+    shell?: boolean;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -293,7 +294,7 @@ export async function runChildProcess(
       env: mergedEnv,
       // Windows requires shell:true to execute .cmd wrappers for npm-installed CLIs.
       // The `command` value comes from trusted adapter configuration, not user input.
-      shell: process.platform === "win32",
+      shell: opts.shell ?? process.platform === "win32",
       // detached:true on POSIX puts the child in its own process group (pgid === pid),
       // so signalRunningProcess can address the whole group via process.kill(-pgid, signal)
       // and reap any subprocesses spawned by the child.

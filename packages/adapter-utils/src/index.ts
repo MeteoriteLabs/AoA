@@ -36,12 +36,22 @@ export type {
 export type { AdapterTargetProcessOptions } from "./execution-target.js";
 export type { SandboxCallbackBridgeServer } from "./sandbox-callback-bridge.js";
 export type {
+  WorkspaceEntrySnapshot,
+  WorkspaceSnapshot,
+  CaptureWorkspaceSnapshotOptions,
+  MergeChangedWorkspaceFilesOptions,
+} from "./workspace-restore-merge.js";
+export type {
   SessionCompactionPolicy,
   NativeContextManagement,
   AdapterSessionManagement,
   ResolvedSessionCompactionPolicy,
 } from "./session-compaction.js";
 export {
+  buildDockerRunArgs,
+  formatDockerBindSource,
+  isDockerAvailable,
+  prepareWorkspaceForExecutionTarget,
   resolveAdapterExecutionTarget,
   runAdapterExecutionTargetProcess,
   runLocalTargetProcess,
@@ -54,6 +64,10 @@ export {
   startSandboxCallbackBridgeServer,
   generateSandboxBridgeEntrypointInstallScript,
 } from "./sandbox-callback-bridge.js";
+export {
+  captureWorkspaceSnapshot,
+  mergeChangedWorkspaceFiles,
+} from "./workspace-restore-merge.js";
 export {
   ADAPTER_SESSION_MANAGEMENT,
   LEGACY_SESSIONED_ADAPTER_TYPES,
