@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PRODUCTIVITY_REVIEW_LIMITS,
   buildProductivityReviewIssueInput,
+  buildProductivityReviewWakePayload,
   shouldCreateProductivityReview,
   shouldHoldProductivityReviewContinuation,
 } from "../services/productivity-review.js";
@@ -111,10 +112,18 @@ describe("productivity review service helpers", () => {
       originId: "issue-1",
       requestDepth: 5,
     });
-    expect(input.wakePayload).toMatchObject({
-      issueId: "issue-1",
+    const wakePayload = buildProductivityReviewWakePayload({
+      reviewIssueId: "review-1",
+      sourceIssueId: "issue-1",
+      trigger: "high_churn",
+    });
+    expect(wakePayload).toMatchObject({
+      issueId: "review-1",
+      taskId: "review-1",
+      reviewIssueId: "review-1",
       sourceIssueId: "issue-1",
       wakeReason: "issue_productivity_review",
+      trigger: "high_churn",
       modelProfileHint: "cheap",
       recoveryModelProfile: "cheap",
     });

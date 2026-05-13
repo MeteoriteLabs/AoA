@@ -1,6 +1,6 @@
 import { and, asc, eq, lte } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { activityLog, agentWakeupRequests, issueMonitors } from "@armyofagents/db";
+import { activityLog, agentWakeupRequests, issueMonitors, issues } from "@armyofagents/db";
 
 import { withRecoveryModelProfileHint } from "./recovery/model-profile-hint.js";
 import { buildIssueMonitorClearedPatch, buildIssueMonitorTriggeredPatch } from "./issue-execution-policy.js";
@@ -44,6 +44,18 @@ export function shouldClearDueIssueMonitor(input: {
   return null;
 }
 
+export function issueMonitorIssueClearReason(input: {
+  issue: { status: string; assigneeAgentId: string | null } | null;
+  monitorAgentId: string | null;
+}) {
+  if (!input.issue) return "missing_issue";
+  if (input.issue.status === "done") return "done";
+  if (input.issue.status === "cancelled") return "cancelled";
+  if (!["in_progress", "in_review"].includes(input.issue.status)) return "invalid_status";
+  if (!input.monitorAgentId || input.issue.assigneeAgentId !== input.monitorAgentId) return "invalid_assignee";
+  return null;
+}
+
 export function issueMonitorSchedulerService(db: Db) {
   return {
     async triggerDueMonitors(companyId: string, opts: { now?: Date; limit?: number } = {}) {
@@ -80,6 +92,33 @@ export function issueMonitorSchedulerService(db: Db) {
             .then((rows) => rows[0] ?? null);
           if (!monitor) return "skipped" as const;
 
+          const issue = await tx
+            .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), eq(issues.id, monitor.issueId)))
+            .then((rows) => rows[0] ?? null);
+          const issueClearReason = issueMonitorIssueClearReason({
+            issue,
+            monitorAgentId: monitor.agentId,
+          });
+          if (issueClearReason) {
+            await tx
+              .update(issueMonitors)
+              .set(buildIssueMonitorClearedPatch({ now, clearReason: issueClearReason }))
+              .where(and(eq(issueMonitors.id, monitor.id), eq(issueMonitors.companyId, companyId)));
+            await tx.insert(activityLog).values({
+              companyId,
+              actorType: "system",
+              actorId: "system",
+              action: "issue.monitor_cleared",
+              entityType: "issue",
+              entityId: monitor.issueId,
+              agentId: monitor.agentId,
+              details: { monitorId: monitor.id, clearReason: issueClearReason },
+            });
+            return "cleared" as const;
+          }
+
           const clearReason = shouldClearDueIssueMonitor({
             attemptCount: monitor.attemptCount,
             maxAttempts: monitor.maxAttempts,
@@ -104,27 +143,10 @@ export function issueMonitorSchedulerService(db: Db) {
             return "cleared" as const;
           }
 
-          if (!monitor.agentId) {
-            await tx
-              .update(issueMonitors)
-              .set(buildIssueMonitorClearedPatch({ now, clearReason: "invalid_assignee" }))
-              .where(and(eq(issueMonitors.id, monitor.id), eq(issueMonitors.companyId, companyId)));
-            await tx.insert(activityLog).values({
-              companyId,
-              actorType: "system",
-              actorId: "system",
-              action: "issue.monitor_cleared",
-              entityType: "issue",
-              entityId: monitor.issueId,
-              details: { monitorId: monitor.id, clearReason: "invalid_assignee" },
-            });
-            return "cleared" as const;
-          }
-
           const nextAttempt = monitor.attemptCount + 1;
           const wake = buildIssueMonitorWake({
             companyId,
-            agentId: monitor.agentId,
+            agentId: monitor.agentId!,
             issueId: monitor.issueId,
             monitorId: monitor.id,
             nextAttempt,

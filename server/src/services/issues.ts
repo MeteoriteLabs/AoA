@@ -45,6 +45,24 @@ import {
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
+function monitorClearReasonForIssue(input: {
+  status: string;
+  assigneeAgentId: string | null;
+  previousAssigneeAgentId?: string | null;
+}) {
+  if (input.status === "done") return "done";
+  if (input.status === "cancelled") return "cancelled";
+  if (!["in_progress", "in_review"].includes(input.status)) return "invalid_status";
+  if (!input.assigneeAgentId) return "invalid_assignee";
+  if (
+    input.previousAssigneeAgentId !== undefined &&
+    input.assigneeAgentId !== input.previousAssigneeAgentId
+  ) {
+    return "invalid_assignee";
+  }
+  return null;
+}
+
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -911,6 +929,39 @@ export function issueService(db: Db) {
               entityType: "issue",
               entityId: updated.id,
               details: { kind: fields.kind, nextCheckAt: fields.nextCheckAt.toISOString() },
+            });
+          }
+        } else if (
+          issueData.status !== undefined ||
+          issueData.assigneeAgentId !== undefined ||
+          issueData.assigneeUserId !== undefined
+        ) {
+          const clearReason = monitorClearReasonForIssue({
+            status: updated.status,
+            assigneeAgentId: updated.assigneeAgentId,
+            previousAssigneeAgentId: existing.assigneeAgentId,
+          });
+          if (clearReason) {
+            const now = new Date();
+            await tx
+              .update(issueMonitors)
+              .set(buildIssueMonitorClearedPatch({ now, clearReason }))
+              .where(
+                and(
+                  eq(issueMonitors.companyId, existing.companyId),
+                  eq(issueMonitors.issueId, updated.id),
+                  inArray(issueMonitors.status, ["scheduled", "triggered"]),
+                ),
+              );
+            await tx.insert(activityLog).values({
+              companyId: existing.companyId,
+              actorType: "system",
+              actorId: "recovery",
+              action: "issue.monitor_cleared",
+              entityType: "issue",
+              entityId: updated.id,
+              agentId: existing.assigneeAgentId,
+              details: { reason: clearReason },
             });
           }
         }

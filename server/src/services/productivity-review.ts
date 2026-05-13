@@ -94,13 +94,22 @@ export function buildProductivityReviewIssueInput(input: {
       originId: input.sourceIssue.id,
       requestDepth: clampIssueRequestDepth((input.sourceIssue.requestDepth ?? 0) + 1),
     },
-    wakePayload: withRecoveryModelProfileHint({
-      issueId: input.sourceIssue.id,
-      sourceIssueId: input.sourceIssue.id,
-      wakeReason: RECOVERY_ORIGIN_KINDS.issueProductivityReview,
-      trigger: input.trigger,
-    }),
   };
+}
+
+export function buildProductivityReviewWakePayload(input: {
+  reviewIssueId: string;
+  sourceIssueId: string;
+  trigger: ProductivityReviewTrigger;
+}) {
+  return withRecoveryModelProfileHint({
+    issueId: input.reviewIssueId,
+    taskId: input.reviewIssueId,
+    reviewIssueId: input.reviewIssueId,
+    sourceIssueId: input.sourceIssueId,
+    wakeReason: RECOVERY_ORIGIN_KINDS.issueProductivityReview,
+    trigger: input.trigger,
+  });
 }
 
 export function productivityReviewService(db: Db) {
@@ -243,7 +252,11 @@ export function productivityReviewService(db: Db) {
           source: "automation",
           triggerDetail: "recovery.productivity_review",
           reason: RECOVERY_ORIGIN_KINDS.issueProductivityReview,
-          payload: { ...reviewInput.wakePayload, reviewIssueId: reviewIssue.id },
+          payload: buildProductivityReviewWakePayload({
+            reviewIssueId: reviewIssue.id,
+            sourceIssueId: issue.id,
+            trigger: decision.trigger,
+          }),
           status: "queued",
           idempotencyKey: `${RECOVERY_ORIGIN_KINDS.issueProductivityReview}:${issue.id}:${reviewIssue.id}`,
         });

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ISSUE_MONITOR_DUE_REASON,
   buildIssueMonitorWake,
+  issueMonitorIssueClearReason,
   shouldClearDueIssueMonitor,
 } from "../services/issue-monitor-scheduler.js";
 
@@ -57,6 +58,40 @@ describe("issue monitor scheduler helpers", () => {
         maxAttempts: 2,
         timeoutAt: new Date(now.getTime() + 1_000),
         now,
+      }),
+    ).toBeNull();
+  });
+
+  it("clears monitors for completed, invalid, or reassigned tasks before waking", () => {
+    expect(issueMonitorIssueClearReason({ issue: null, monitorAgentId: "agent-1" })).toBe("missing_issue");
+    expect(
+      issueMonitorIssueClearReason({
+        issue: { status: "done", assigneeAgentId: "agent-1" },
+        monitorAgentId: "agent-1",
+      }),
+    ).toBe("done");
+    expect(
+      issueMonitorIssueClearReason({
+        issue: { status: "cancelled", assigneeAgentId: "agent-1" },
+        monitorAgentId: "agent-1",
+      }),
+    ).toBe("cancelled");
+    expect(
+      issueMonitorIssueClearReason({
+        issue: { status: "blocked", assigneeAgentId: "agent-1" },
+        monitorAgentId: "agent-1",
+      }),
+    ).toBe("invalid_status");
+    expect(
+      issueMonitorIssueClearReason({
+        issue: { status: "in_progress", assigneeAgentId: "agent-2" },
+        monitorAgentId: "agent-1",
+      }),
+    ).toBe("invalid_assignee");
+    expect(
+      issueMonitorIssueClearReason({
+        issue: { status: "in_review", assigneeAgentId: "agent-1" },
+        monitorAgentId: "agent-1",
       }),
     ).toBeNull();
   });
