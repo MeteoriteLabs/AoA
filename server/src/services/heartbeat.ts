@@ -90,6 +90,7 @@ import {
   type SessionCompactionPolicy,
 } from "@armyofagents/adapter-utils";
 import { resolveCheapFallbackModel } from "./cheap-fallback.js";
+import { isCheapRecoveryWake, resolveRecoveryCheapModel } from "./recovery/model-profile-hint.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -2702,8 +2703,17 @@ export function heartbeatService(db: Db) {
       }
 
       // ── Cheap-model fallback (D4) ─────────────────────────────────────
-      if (agent.budgetMonthlyCents > 0) {
-        try {
+      try {
+        if (isCheapRecoveryWake(run.contextSnapshot as Record<string, unknown> | null)) {
+          const recoveryCheapModel = await resolveRecoveryCheapModel(db, agent.companyId);
+          if (recoveryCheapModel) {
+            runScopedConfig = { ...runScopedConfig, model: recoveryCheapModel };
+            logger.info(
+              { companyId: agent.companyId, agentId: agent.id, runId: run.id, cheapModel: recoveryCheapModel },
+              "[heartbeat] recovery cheap-profile active - using cheap model",
+            );
+          }
+        } else if (agent.budgetMonthlyCents > 0) {
           const cheapModel = await resolveCheapFallbackModel(
             db,
             agent.companyId,
@@ -2717,12 +2727,12 @@ export function heartbeatService(db: Db) {
               "[heartbeat] cost-saver fallback active — using cheap model",
             );
           }
-        } catch (err) {
-          logger.warn(
-            { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
-            "[heartbeat] cheap-fallback check failed; continuing with original model",
-          );
         }
+      } catch (err) {
+        logger.warn(
+          { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },
+          "[heartbeat] cheap-fallback check failed; continuing with original model",
+        );
       }
 
       // ── onSpawn: persist PID/PGID/startedAt immediately after fork ──────
