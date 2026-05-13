@@ -5,6 +5,7 @@ import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
   MAX_TURN_CONTINUATION_WAKE_REASON,
   buildMaxTurnContinuationRetryContext,
+  classifyCompletedRunLiveness,
   classifyScheduledRetryGate,
   nextMaxTurnContinuationAttempt,
 } from "../services/heartbeat.js";
@@ -65,5 +66,16 @@ describe("max-turn continuation retry scheduling helpers", () => {
         agentId: "agent-1",
       }),
     ).toBeNull();
+  });
+
+  it("classifies completed run liveness for recovery handoff gating", () => {
+    expect(classifyCompletedRunLiveness({ outcome: "succeeded" })).toEqual({
+      livenessState: "advanced",
+      livenessReason: "adapter_succeeded",
+    });
+    expect(classifyCompletedRunLiveness({ outcome: "failed" })).toEqual({
+      livenessState: "stalled",
+      livenessReason: "adapter_did_not_succeed",
+    });
   });
 });

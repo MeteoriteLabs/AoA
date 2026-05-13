@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { activityLog, agentWakeupRequests, heartbeatRuns, issueComments, issues } from "@armyofagents/db";
 import { RECOVERY_ORIGIN_KINDS } from "@armyofagents/shared";
@@ -75,6 +75,10 @@ export function shouldRefreshProductivityReview(input: {
 
 function clampIssueRequestDepth(value: number) {
   return Math.max(0, Math.min(value, 5));
+}
+
+export function isProductivityReviewSourceIssue(input: { originKind?: string | null }) {
+  return input.originKind !== RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 }
 
 export function buildProductivityReviewIssueInput(input: {
@@ -165,6 +169,7 @@ export function productivityReviewService(db: Db) {
             eq(issues.status, "in_progress"),
             isNull(issues.hiddenAt),
             sql`${issues.assigneeAgentId} is not null`,
+            or(isNull(issues.originKind), ne(issues.originKind, RECOVERY_ORIGIN_KINDS.issueProductivityReview)),
           ),
         )
         .limit(opts.limit ?? 50);

@@ -4,6 +4,7 @@ import {
   DEFAULT_PRODUCTIVITY_REVIEW_LIMITS,
   buildProductivityReviewIssueInput,
   buildProductivityReviewWakePayload,
+  isProductivityReviewSourceIssue,
   shouldCreateProductivityReview,
   shouldHoldProductivityReviewContinuation,
   shouldRefreshProductivityReview,
@@ -165,5 +166,11 @@ describe("productivity review service helpers", () => {
         now,
       }),
     ).toBe(false);
+  });
+
+  it("excludes productivity review tasks from review source scans", () => {
+    expect(isProductivityReviewSourceIssue({ originKind: null })).toBe(true);
+    expect(isProductivityReviewSourceIssue({ originKind: "agent_created" })).toBe(true);
+    expect(isProductivityReviewSourceIssue({ originKind: "issue_productivity_review" })).toBe(false);
   });
 });

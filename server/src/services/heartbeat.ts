@@ -120,6 +120,13 @@ const LEGACY_REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 // wake payload to suppress the redundant /issues/{id}/checkout agent call.
 const AOA_HARNESS_CHECKOUT_KEY = "aoaHarnessCheckedOut";
 
+export function classifyCompletedRunLiveness(input: { outcome: string }) {
+  if (input.outcome === "succeeded") {
+    return { livenessState: "advanced", livenessReason: "adapter_succeeded" };
+  }
+  return { livenessState: "stalled", livenessReason: "adapter_did_not_succeed" };
+}
+
 /**
  * True if `cwd` is the "repo-only / no-local-cwd" sentinel,
  * regardless of whether the row holds the legacy or new value.
@@ -3260,8 +3267,11 @@ export function heartbeatService(db: Db) {
         }),
       );
 
+      const liveness = classifyCompletedRunLiveness({ outcome });
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
+        livenessState: liveness.livenessState,
+        livenessReason: liveness.livenessReason,
         error: finalErrorMessage,
         errorCode: finalErrorCode,
         exitCode: adapterResult.exitCode,
