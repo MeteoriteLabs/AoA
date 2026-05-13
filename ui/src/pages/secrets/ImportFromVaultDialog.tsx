@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
   CompanySecretProviderConfig,
@@ -69,6 +69,7 @@ export function ImportFromVaultDialog({
   const [candidates, setCandidates] = useState<RemoteSecretImportCandidate[]>([]);
   const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
   const [result, setResult] = useState<RemoteSecretImportResult | null>(null);
+  const previewRequestIdRef = useRef(0);
 
   useEffect(() => {
     if (!providerConfigId && importableConfigs[0]) {
@@ -82,26 +83,37 @@ export function ImportFromVaultDialog({
   );
 
   const previewMutation = useMutation({
-    mutationFn: (token?: string | null) =>
+    mutationFn: ({
+      providerConfigId,
+      query,
+      token,
+    }: {
+      requestId: number;
+      providerConfigId: string;
+      query: string | null;
+      token: string | null;
+    }) =>
       secretsApi.remoteImport.preview(companyId, {
         providerConfigId,
-        query: query.trim() || null,
-        nextToken: token ?? null,
+        query,
+        nextToken: token,
         pageSize: 25,
       }),
-    onSuccess: (preview, token) => {
-      setCandidates((current) => (token ? [...current, ...preview.candidates] : preview.candidates));
+    onSuccess: (preview, variables) => {
+      if (variables.requestId !== previewRequestIdRef.current) return;
+      setCandidates((current) => (variables.token ? [...current, ...preview.candidates] : preview.candidates));
       setNextToken(preview.nextToken);
       setResult(null);
       setSelectedRefs((current) => {
         const valid = new Set(preview.candidates.map(candidateKey));
-        if (token) {
+        if (variables.token) {
           return current;
         }
         return new Set([...current].filter((ref) => valid.has(ref)));
       });
     },
-    onError: (err) => {
+    onError: (err, variables) => {
+      if (variables.requestId !== previewRequestIdRef.current) return;
       toast.error("Preview failed", {
         description: err instanceof Error ? err.message : "Could not list remote secrets.",
       });
@@ -135,12 +147,24 @@ export function ImportFromVaultDialog({
   });
 
   const resetPreviewState = () => {
+    previewRequestIdRef.current += 1;
     setNextToken(null);
     setCandidates([]);
     setSelectedRefs(new Set());
     setResult(null);
     previewMutation.reset();
     importMutation.reset();
+  };
+
+  const runPreview = (token: string | null) => {
+    const requestId = previewRequestIdRef.current + 1;
+    previewRequestIdRef.current = requestId;
+    previewMutation.mutate({
+      requestId,
+      providerConfigId,
+      query: query.trim() || null,
+      token,
+    });
   };
 
   const toggleCandidate = (candidate: RemoteSecretImportCandidate, checked: boolean) => {
@@ -206,13 +230,16 @@ export function ImportFromVaultDialog({
             </Select>
             <Input
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                resetPreviewState();
+              }}
               placeholder="Filter remote names"
             />
             <Button
               type="button"
               variant="secondary"
-              onClick={() => previewMutation.mutate(null)}
+              onClick={() => runPreview(null)}
               disabled={!providerConfigId || previewMutation.isPending}
             >
               <RefreshCw className="size-4" />
@@ -287,7 +314,7 @@ export function ImportFromVaultDialog({
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => previewMutation.mutate(nextToken)}
+              onClick={() => runPreview(nextToken)}
               disabled={previewMutation.isPending}
             >
               <ArrowRight className="size-3.5" />

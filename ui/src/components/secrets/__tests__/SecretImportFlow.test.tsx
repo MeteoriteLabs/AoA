@@ -49,6 +49,16 @@ const secondaryProviderConfig: CompanySecretProviderConfig = {
   config: { region: "us-west-2", secretNamePrefix: "aoa/staging" },
 };
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("ImportFromVaultDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -229,6 +239,57 @@ describe("ImportFromVaultDialog", () => {
     await user.click(await screen.findByText("Staging AWS"));
 
     expect(screen.queryByText("aoa/prod/openai")).not.toBeInTheDocument();
+    expect(screen.getByText("No preview loaded")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^import$/i })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /^import$/i }));
+    expect(secretsApi.remoteImport.commit).not.toHaveBeenCalled();
+  });
+
+  it("ignores an in-flight preview response after provider changes", async () => {
+    const user = userEvent.setup();
+    const providerAPreview = createDeferred<Awaited<ReturnType<typeof secretsApi.remoteImport.preview>>>();
+    vi.mocked(secretsApi.remoteImport.preview).mockReturnValue(providerAPreview.promise);
+
+    renderWithProviders(
+      <ImportFromVaultDialog
+        companyId="company-1"
+        open
+        onOpenChange={() => {}}
+        providerConfigs={[providerConfig, secondaryProviderConfig]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Preview remote secrets" }));
+    expect(secretsApi.remoteImport.preview).toHaveBeenCalledWith("company-1", {
+      providerConfigId: providerConfig.id,
+      query: null,
+      nextToken: null,
+      pageSize: 25,
+    });
+
+    await user.click(screen.getByRole("combobox", { name: "Provider vault" }));
+    await user.click(await screen.findByText("Staging AWS"));
+
+    providerAPreview.resolve({
+      providerConfigId: providerConfig.id,
+      nextToken: null,
+      candidates: [
+        {
+          externalRef: "arn:aws:secretsmanager:us-east-1:1:secret:aoa/prod/stale",
+          name: "aoa/prod/stale",
+          key: "STALE_API_KEY",
+          providerVersionRef: "v1",
+          description: "Stale",
+          status: "ready",
+          reason: null,
+          metadata: null,
+        },
+      ],
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("aoa/prod/stale")).not.toBeInTheDocument();
+    });
     expect(screen.getByText("No preview loaded")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^import$/i })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /^import$/i }));
