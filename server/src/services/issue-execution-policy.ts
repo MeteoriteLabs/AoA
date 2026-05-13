@@ -105,7 +105,6 @@ export function buildIssueMonitorTriggeredPatch(input: { now: Date; nextAttempt?
     status: "triggered" as const,
     attemptCount: attempt,
     lastTriggeredAt: input.now,
-    nextCheckAt: null,
     updatedAt: input.now,
   };
 }
