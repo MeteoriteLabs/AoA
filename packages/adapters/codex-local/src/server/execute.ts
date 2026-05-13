@@ -227,7 +227,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agent.companyId,
     { apiKey: configuredOpenAiApiKey },
   );
-  env.CODEX_HOME = managedCodexHome;
+  env.CODEX_HOME = executionTarget.type === "sandbox-docker"
+    ? "/tmp/aoa-codex-home"
+    : managedCodexHome;
 
   const billingType = resolveCodexBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });

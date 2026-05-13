@@ -389,10 +389,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model && !isBedrockAuth(env)) args.push("--model", model);
     if (effort) args.push("--effort", effort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-    if (effectiveInstructionsFilePath) {
+    if (effectiveInstructionsFilePath && executionTarget.type === "local") {
       args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
     }
-    args.push("--add-dir", skillsDir);
+    if (executionTarget.type === "local") {
+      args.push("--add-dir", skillsDir);
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };

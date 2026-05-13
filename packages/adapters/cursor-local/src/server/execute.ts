@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  prepareWorkspaceForExecutionTarget,
   runAdapterExecutionTargetProcess,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
@@ -380,7 +381,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const prompt = `${instructionsPrefix}${aoaEnvNote}${renderedPrompt}`;
 
   const buildArgs = (resumeSessionId: string | null) => {
-    const args = ["-p", "--output-format", "stream-json", "--workspace", cwd];
+    const executionWorkspace = prepareWorkspaceForExecutionTarget(executionTarget, cwd).executionCwd;
+    const args = ["-p", "--output-format", "stream-json", "--workspace", executionWorkspace];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (model) args.push("--model", model);
     if (mode) args.push("--mode", mode);
