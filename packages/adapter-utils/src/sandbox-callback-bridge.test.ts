@@ -47,6 +47,8 @@ describe("isAllowedAoaBridgeRequest", () => {
 
   it.each([
     ["GET", "/api/companies"],
+    ["GET", "/api/admin/companies/co_1"],
+    ["GET", "/api/companies/co_1/admin"],
     ["GET", "/api/admin"],
     ["GET", "/api/agents"],
     ["POST", "/api/issues/iss_1/checkout/again"],
@@ -195,6 +197,23 @@ describe("startSandboxCallbackBridgeServer", () => {
 
       expect(bridge.listenUrl).toContain("0.0.0.0");
       expect(bridge.containerUrl).toContain("host.docker.internal");
+    } finally {
+      await api.close();
+    }
+  });
+
+  it("binds non-Docker bridges to loopback", async () => {
+    const api = await startApiServer((_req, res) => res.end("ok"));
+    try {
+      const bridge = await startSandboxCallbackBridgeServer({
+        apiBaseUrl: api.url,
+        authToken: "server-token",
+        runId: "run_1",
+      });
+      bridges.push(bridge);
+
+      expect(bridge.listenUrl).toContain("127.0.0.1");
+      expect(bridge.containerUrl).toContain("127.0.0.1");
     } finally {
       await api.close();
     }

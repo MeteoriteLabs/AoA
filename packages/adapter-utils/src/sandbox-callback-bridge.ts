@@ -63,7 +63,9 @@ export async function startSandboxCallbackBridgeServer(input: {
 
   return {
     listenUrl: `http://${bindHost}:${address.port}`,
-    containerUrl: `http://host.docker.internal:${address.port}`,
+    containerUrl: input.exposeToDocker
+      ? `http://host.docker.internal:${address.port}`
+      : `http://${bindHost}:${address.port}`,
     close: () =>
       new Promise((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
