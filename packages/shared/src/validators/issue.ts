@@ -39,12 +39,26 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
+export const issueMonitorPolicySchema = z.object({
+  kind: z.string().trim().min(1).default("generic"),
+  nextCheckAt: z.string().datetime(),
+  scheduledBy: z.enum(["board", "assignee"]).default("board"),
+  notes: z.string().max(4000).optional().nullable(),
+  maxAttempts: z.number().int().positive().optional().nullable(),
+  timeoutAt: z.string().datetime().optional().nullable(),
+  externalRef: z.string().max(1000).optional().nullable(),
+  recoveryPolicy: z.record(z.unknown()).optional().nullable(),
+});
+
+export type IssueMonitorPolicyInput = z.infer<typeof issueMonitorPolicySchema>;
+
 export const updateIssueSchema = createIssueSchema.partial().extend({
   comment: z.string().min(1).optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
   executionWorkspaceId: z.string().uuid().nullable().optional(),
   executionWorkspacePreference: z.string().nullable().optional(),
   executionWorkspaceSettings: z.record(z.unknown()).nullable().optional(),
+  monitorPolicy: issueMonitorPolicySchema.nullable().optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
@@ -85,19 +99,6 @@ export const addIssueCommentSchema = z.object({
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
-
-export const issueMonitorPolicySchema = z.object({
-  kind: z.string().trim().min(1).default("generic"),
-  nextCheckAt: z.string().datetime(),
-  scheduledBy: z.enum(["board", "assignee"]).default("board"),
-  notes: z.string().max(4000).optional().nullable(),
-  maxAttempts: z.number().int().positive().optional().nullable(),
-  timeoutAt: z.string().datetime().optional().nullable(),
-  externalRef: z.string().max(1000).optional().nullable(),
-  recoveryPolicy: z.record(z.unknown()).optional().nullable(),
-});
-
-export type IssueMonitorPolicyInput = z.infer<typeof issueMonitorPolicySchema>;
 
 export const linkIssueApprovalSchema = z.object({
   approvalId: z.string().uuid(),

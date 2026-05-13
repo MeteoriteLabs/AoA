@@ -13,6 +13,7 @@ import {
   issueAttachments,
   issueLabels,
   issueComments,
+  issueMonitors,
   issueReadStates,
   issues,
   labels,
@@ -36,6 +37,11 @@ import { deriveIssueUserContext } from "./issue-user-context.js";
 import { issueExecutionWorkspaceModeForPersistedWorkspace } from "./execution-workspace-policy.js";
 import { notificationService } from "./notifications.js";
 import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
+import {
+  buildInitialIssueMonitorFields,
+  buildIssueMonitorClearedPatch,
+  normalizeIssueMonitorPolicy,
+} from "./issue-execution-policy.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -772,7 +778,10 @@ export function issueService(db: Db) {
       return outerTx ? run(outerTx) : db.transaction(run);
     },
 
-    update: async (id: string, data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] }) => {
+    update: async (
+      id: string,
+      data: Partial<typeof issues.$inferInsert> & { labelIds?: string[]; monitorPolicy?: unknown },
+    ) => {
       const existing = await db
         .select()
         .from(issues)
@@ -780,7 +789,8 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
 
-      const { labelIds: nextLabelIds, ...issueData } = data;
+      const { labelIds: nextLabelIds, monitorPolicy: rawMonitorPolicy, ...issueData } = data;
+      const monitorPolicy = rawMonitorPolicy === undefined ? undefined : normalizeIssueMonitorPolicy(rawMonitorPolicy);
 
       const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
@@ -843,6 +853,66 @@ export function issueService(db: Db) {
         if (!updated) return { result: null, tasksToWake: [] as { agentId: string; issueId: string; workMode: string | null }[] };
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
+        }
+        if (rawMonitorPolicy !== undefined) {
+          const now = new Date();
+          if (monitorPolicy === null) {
+            await tx
+              .update(issueMonitors)
+              .set(buildIssueMonitorClearedPatch({ now, clearReason: "manual_clear" }))
+              .where(and(eq(issueMonitors.companyId, existing.companyId), eq(issueMonitors.issueId, updated.id), inArray(issueMonitors.status, ["scheduled", "triggered"])));
+            await tx.insert(activityLog).values({
+              companyId: existing.companyId,
+              actorType: "system",
+              actorId: "recovery",
+              action: "issue.monitor_cleared",
+              entityType: "issue",
+              entityId: updated.id,
+              details: { reason: "manual_clear" },
+            });
+          } else {
+            const fields = buildInitialIssueMonitorFields({
+              companyId: existing.companyId,
+              issue: updated,
+              policy: monitorPolicy ?? null,
+            });
+            if (!fields) throw unprocessable("Monitor requires an agent-assigned in-progress or in-review issue");
+            const existingMonitor = await tx
+              .select()
+              .from(issueMonitors)
+              .where(
+                and(
+                  eq(issueMonitors.companyId, existing.companyId),
+                  eq(issueMonitors.issueId, updated.id),
+                  eq(issueMonitors.kind, fields.kind),
+                  inArray(issueMonitors.status, ["scheduled", "triggered"]),
+                ),
+              )
+              .then((rows) => rows[0] ?? null);
+            if (existingMonitor) {
+              await tx
+                .update(issueMonitors)
+                .set({
+                  ...fields,
+                  attemptCount: existingMonitor.attemptCount,
+                  clearedAt: null,
+                  clearReason: null,
+                  updatedAt: now,
+                })
+                .where(eq(issueMonitors.id, existingMonitor.id));
+            } else {
+              await tx.insert(issueMonitors).values(fields);
+            }
+            await tx.insert(activityLog).values({
+              companyId: existing.companyId,
+              actorType: "system",
+              actorId: "recovery",
+              action: "issue.monitor_scheduled",
+              entityType: "issue",
+              entityId: updated.id,
+              details: { kind: fields.kind, nextCheckAt: fields.nextCheckAt.toISOString() },
+            });
+          }
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
 
