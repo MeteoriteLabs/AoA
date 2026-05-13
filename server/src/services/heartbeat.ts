@@ -86,6 +86,7 @@ import {
 import { instanceSettingsService } from "./instance-settings.js";
 import {
   hasSessionCompactionThresholds,
+  resolveAdapterExecutionTarget,
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@armyofagents/adapter-utils";
@@ -98,6 +99,7 @@ import {
 } from "./heartbeat-stop-metadata.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { recoveryService } from "./recovery/service.js";
+import type { ServerAdapterModule } from "../adapters/types.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -158,6 +160,16 @@ export function normalizeMaxConcurrentRuns(value: unknown) {
   const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
   if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
+}
+
+export function resolveAdapterExecutionContext(
+  config: unknown,
+  adapter: Pick<ServerAdapterModule, "getRuntimeCommandSpec">,
+) {
+  const adapterConfigObject = parseObject(config);
+  const executionTarget = resolveAdapterExecutionTarget(adapterConfigObject.executionTarget);
+  const runtimeCommandSpec = adapter.getRuntimeCommandSpec?.(adapterConfigObject) ?? null;
+  return { executionTarget, runtimeCommandSpec };
 }
 
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
@@ -3137,12 +3149,19 @@ export function heartbeatService(db: Db) {
         await originalOnLog(stream, chunk);
       };
 
+      const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(
+        runScopedConfig,
+        adapter,
+      );
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
         runtime: runtimeForAdapter,
         config: runScopedConfig,
         context,
+        executionTarget,
+        runtimeCommandSpec,
         onLog: onLogWithOutput,
         onMeta: onAdapterMeta,
         authToken: authToken ?? undefined,
