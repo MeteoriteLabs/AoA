@@ -174,14 +174,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
-
-  await ensureOpenCodeModelConfiguredAndAvailable({
-    model,
-    command,
-    cwd,
-    env: runtimeEnv,
-  });
+  if (executionTarget.type === "local") {
+    await ensureCommandResolvable(command, cwd, runtimeEnv);
+    await ensureOpenCodeModelConfiguredAndAvailable({
+      model,
+      command,
+      cwd,
+      env: runtimeEnv,
+    });
+  } else if (!model) {
+    throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
+  }
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -287,10 +290,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       command,
       args,
       cwd,
-      env: runtimeEnv,
+      env,
       stdin: prompt,
-      authToken: authToken ?? null,
-      apiBaseUrl: process.env.AOA_API_URL ?? null,
+      authToken: env.AOA_API_KEY ?? authToken ?? null,
+      apiBaseUrl: env.AOA_API_URL ?? null,
       runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
       timeoutSec,
       graceSec,

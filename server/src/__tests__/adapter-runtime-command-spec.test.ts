@@ -13,7 +13,7 @@ describe("adapter runtime command specs", () => {
     expect(spec).toEqual({
       command,
       detectCommand: `command -v ${command}`,
-      installCommand: `npm install -g ${packageName}`,
+      installCommand: `if ! command -v ${command} >/dev/null 2>&1; then npm install -g ${packageName}; fi`,
     });
   });
 

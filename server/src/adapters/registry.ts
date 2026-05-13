@@ -81,7 +81,7 @@ function buildNpmRuntimeCommandSpec(
     command: resolved,
     detectCommand: `command -v ${resolved}`,
     installCommand: packageName && resolved === command
-      ? `npm install -g ${packageName}`
+      ? `if ! command -v ${resolved} >/dev/null 2>&1; then npm install -g ${packageName}; fi`
       : null,
   };
 }

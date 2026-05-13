@@ -298,7 +298,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const billingType = resolveCursorBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
+  if (executionTarget.type === "local") {
+    await ensureCommandResolvable(command, cwd, runtimeEnv);
+  }
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -435,8 +437,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
       stdin: prompt,
-      authToken: authToken ?? null,
-      apiBaseUrl: process.env.AOA_API_URL ?? null,
+      authToken: env.AOA_API_KEY ?? authToken ?? null,
+      apiBaseUrl: env.AOA_API_URL ?? null,
       runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
       onLog: async (stream, chunk) => {
         if (stream !== "stdout") {
