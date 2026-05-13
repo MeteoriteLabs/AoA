@@ -103,7 +103,6 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
             secrets={secrets}
             selectedSecret={selectedSecret}
             onSelectSecret={setSelectedSecretId}
-            onRotate={() => undefined}
           />
         ) : (
           <section className="rounded-md border border-border bg-card p-4">

@@ -1,4 +1,6 @@
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { CompanySecret } from "@armyofagents/shared";
 import { describe, expect, it, vi } from "vitest";
 import { SecretsWorkspace } from "@/components/secrets/SecretsWorkspace";
 import { renderWithProviders } from "@/__tests__/test-utils";
@@ -16,6 +18,30 @@ vi.mock("@/api/secrets", () => ({
     list: vi.fn(),
   },
 }));
+
+function makeSecret(partial: Partial<CompanySecret>): CompanySecret {
+  return {
+    id: partial.id ?? "secret-1",
+    companyId: "company-1",
+    name: partial.name ?? "OpenAI API Key",
+    key: partial.key ?? "OPENAI_API_KEY",
+    status: partial.status ?? "active",
+    managedMode: partial.managedMode ?? "aoa_managed",
+    provider: partial.provider ?? "local_encrypted",
+    providerConfigId: null,
+    providerMetadata: null,
+    externalRef: partial.externalRef ?? null,
+    latestVersion: partial.latestVersion ?? 1,
+    description: partial.description ?? "Used by QA",
+    lastResolvedAt: partial.lastResolvedAt ?? null,
+    lastRotatedAt: null,
+    deletedAt: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: new Date("2026-05-14T00:00:00Z"),
+    updatedAt: new Date("2026-05-14T00:00:00Z"),
+  };
+}
 
 describe("SecretsWorkspace", () => {
   it("renders the secrets settings shell", async () => {
@@ -42,6 +68,28 @@ describe("SecretsWorkspace", () => {
 
     expect(await screen.findByText("Failed to load secrets. Please refresh and try again.")).toBeTruthy();
     expect(screen.queryByText("No secrets yet")).toBeNull();
+  });
+
+  it("renders inventory for non-empty secrets and hides it on another tab", async () => {
+    const user = userEvent.setup();
+    vi.mocked(secretsApi.list).mockResolvedValue([
+      makeSecret({ id: "openai", name: "OpenAI API Key", key: "OPENAI_API_KEY" }),
+      makeSecret({ id: "hubspot", name: "HubSpot Private App", key: "HUBSPOT_TOKEN" }),
+    ]);
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    expect(await screen.findByPlaceholderText("Search by name, key, department")).toBeTruthy();
+    expect(screen.getAllByText("OpenAI API Key").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("HubSpot Private App").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Rotate" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
+
+    await user.click(screen.getByRole("tab", { name: "Bindings" }));
+
+    expect(screen.queryByPlaceholderText("Search by name, key, department")).toBeNull();
+    expect(screen.queryByText("OpenAI API Key")).toBeNull();
+    expect(screen.getByText("This settings tab will be wired in a later task. Inventory is available now.")).toBeTruthy();
   });
 });
 

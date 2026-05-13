@@ -87,6 +87,7 @@ export function SecretInventoryTab({
               <button
                 key={secret.id}
                 type="button"
+                aria-current={visibleSelectedSecret?.id === secret.id ? "true" : undefined}
                 onClick={() => onSelectSecret(secret.id)}
                 className={cn(
                   "block w-full px-4 py-3 text-left transition-colors hover:bg-accent/50",
@@ -137,16 +138,27 @@ export function SecretInventoryTab({
                   {statusLabel(visibleSelectedSecret.status)}
                 </Badge>
               </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button type="button" size="sm" variant="outline" onClick={() => onRotate?.(visibleSelectedSecret)}>
-                  <RefreshCw className="size-3.5" />
-                  Rotate
-                </Button>
-                <Button type="button" size="sm" variant="outline" onClick={() => onArchive?.(visibleSelectedSecret)}>
-                  <Archive className="size-3.5" />
-                  Archive
-                </Button>
-              </div>
+              {(onRotate || onArchive) && (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {onRotate && (
+                    <Button type="button" size="sm" variant="outline" onClick={() => onRotate(visibleSelectedSecret)}>
+                      <RefreshCw className="size-3.5" />
+                      Rotate
+                    </Button>
+                  )}
+                  {onArchive && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onArchive(visibleSelectedSecret)}
+                    >
+                      <Archive className="size-3.5" />
+                      Archive
+                    </Button>
+                  )}
+                </div>
+              )}
             </div>
 
             <dl className="grid gap-3 p-4 text-sm sm:grid-cols-2">

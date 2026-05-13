@@ -54,4 +54,47 @@ describe("SecretInventoryTab", () => {
     await user.click(screen.getByText("HubSpot Private App"));
     expect(onSelect).toHaveBeenCalledWith("hubspot");
   });
+
+  it("only shows action buttons when callbacks are provided", async () => {
+    const user = userEvent.setup();
+    const onRotate = vi.fn();
+    const onArchive = vi.fn();
+    const secret = makeSecret({ id: "hubspot", name: "HubSpot Private App", key: "HUBSPOT_TOKEN" });
+
+    const { rerender } = render(
+      <SecretInventoryTab secrets={[secret]} selectedSecret={secret} onSelectSecret={vi.fn()} />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Rotate" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+
+    rerender(
+      <SecretInventoryTab
+        secrets={[secret]}
+        selectedSecret={secret}
+        onSelectSecret={vi.fn()}
+        onRotate={onRotate}
+        onArchive={onArchive}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Rotate" }));
+    await user.click(screen.getByRole("button", { name: "Archive" }));
+
+    expect(onRotate).toHaveBeenCalledWith(secret);
+    expect(onArchive).toHaveBeenCalledWith(secret);
+  });
+
+  it("marks the selected row and shows an empty filtered state", async () => {
+    const user = userEvent.setup();
+    const secret = makeSecret({ id: "openai", name: "OpenAI API Key", key: "OPENAI_API_KEY" });
+
+    render(<SecretInventoryTab secrets={[secret]} selectedSecret={secret} onSelectSecret={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: /OpenAI API Key/i })).toHaveAttribute("aria-current", "true");
+
+    await user.type(screen.getByPlaceholderText("Search by name, key, department"), "stripe");
+    expect(screen.getByText("No secrets match your search")).toBeInTheDocument();
+    expect(screen.queryByText("OpenAI API Key")).not.toBeInTheDocument();
+  });
 });
