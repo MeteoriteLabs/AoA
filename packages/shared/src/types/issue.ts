@@ -114,10 +114,30 @@ export interface IssueComment {
   issueId: string;
   authorAgentId: string | null;
   authorUserId: string | null;
+  authorType: IssueCommentAuthorType | null;
+  presentation: IssueCommentPresentation | null;
+  metadata: IssueCommentMetadata | null;
   body: string;
   createdAt: Date;
   updatedAt: Date;
 }
+
+export type IssueCommentAuthorType = "user" | "agent" | "system";
+
+export type IssueCommentPresentation = {
+  kind: "plain" | "system_notice";
+  tone?: "info" | "success" | "warning" | "danger";
+  title?: string;
+  detailsDefaultOpen?: boolean;
+};
+
+export type IssueCommentMetadata = {
+  version: 1;
+  sections: Array<{
+    title: string;
+    rows: Array<Record<string, unknown>>;
+  }>;
+};
 
 export interface IssueMonitorPolicy {
   kind: string;

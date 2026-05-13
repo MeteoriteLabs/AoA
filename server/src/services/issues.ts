@@ -22,6 +22,11 @@ import {
   userRoles,
 } from "@armyofagents/db";
 import { extractProjectMentionIds } from "@armyofagents/shared";
+import type {
+  IssueCommentAuthorType,
+  IssueCommentMetadata,
+  IssueCommentPresentation,
+} from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { dependencyService } from "./dependencies.js";
@@ -1236,7 +1241,17 @@ export function issueService(db: Db) {
         .where(eq(issueComments.id, commentId))
         .then((rows) => rows[0] ?? null),
 
-    addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
+    addComment: async (
+      issueId: string,
+      body: string,
+      actor: {
+        agentId?: string;
+        userId?: string;
+        authorType?: IssueCommentAuthorType;
+        presentation?: IssueCommentPresentation | null;
+        metadata?: IssueCommentMetadata | null;
+      },
+    ) => {
       const issue = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -1252,6 +1267,9 @@ export function issueService(db: Db) {
           issueId,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
+          authorType: actor.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
+          presentation: actor.presentation ?? null,
+          metadata: actor.metadata ?? null,
           body,
         })
         .returning();

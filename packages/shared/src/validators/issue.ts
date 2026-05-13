@@ -60,6 +60,28 @@ export const addIssueCommentSchema = z.object({
   body: z.string().min(1),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  authorType: z.enum(["user", "agent", "system"]).optional(),
+  presentation: z
+    .object({
+      kind: z.enum(["plain", "system_notice"]),
+      tone: z.enum(["info", "success", "warning", "danger"]).optional(),
+      title: z.string().optional(),
+      detailsDefaultOpen: z.boolean().optional(),
+    })
+    .optional()
+    .nullable(),
+  metadata: z
+    .object({
+      version: z.literal(1),
+      sections: z.array(
+        z.object({
+          title: z.string(),
+          rows: z.array(z.record(z.unknown())),
+        }),
+      ),
+    })
+    .optional()
+    .nullable(),
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
