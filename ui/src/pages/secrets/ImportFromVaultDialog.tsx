@@ -122,6 +122,7 @@ export function ImportFromVaultDialog({
       }),
     onSuccess: (importResult) => {
       setResult(importResult);
+      setSelectedRefs(new Set());
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
       onImportCommitted?.();
       toast.success("Secrets imported");
@@ -132,6 +133,15 @@ export function ImportFromVaultDialog({
       });
     },
   });
+
+  const resetPreviewState = () => {
+    setNextToken(null);
+    setCandidates([]);
+    setSelectedRefs(new Set());
+    setResult(null);
+    previewMutation.reset();
+    importMutation.reset();
+  };
 
   const toggleCandidate = (candidate: RemoteSecretImportCandidate, checked: boolean) => {
     const key = candidateKey(candidate);
@@ -176,7 +186,13 @@ export function ImportFromVaultDialog({
             Imports create external references by default. AoA stores the remote reference, not the secret value.
           </p>
           <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-            <Select value={providerConfigId} onValueChange={setProviderConfigId}>
+            <Select
+              value={providerConfigId}
+              onValueChange={(value) => {
+                setProviderConfigId(value);
+                resetPreviewState();
+              }}
+            >
               <SelectTrigger aria-label="Provider vault">
                 <SelectValue placeholder="Provider vault" />
               </SelectTrigger>

@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 export interface SecretRunPreviewItem {
   key: string;
   source: "plain" | "secret";
-  displayValue: string;
+  safeDisplayValue: string;
   status: "ok" | "missing" | "disabled";
   required?: boolean;
 }
@@ -31,7 +31,7 @@ export function SecretRunPreviewCard({ items }: { items: SecretRunPreviewItem[] 
           <div key={item.key} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
             <div className="min-w-0">
               <div className="truncate font-mono text-xs">{item.key}</div>
-              <div className="truncate text-xs text-muted-foreground">{item.displayValue}</div>
+              <div className="truncate text-xs text-muted-foreground">{item.safeDisplayValue}</div>
             </div>
             {item.status === "ok" ? (
               <CheckCircle2 className="size-4 text-emerald-400" aria-label={`${item.key} ready`} />

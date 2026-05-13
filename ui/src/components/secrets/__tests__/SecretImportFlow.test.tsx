@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { CompanySecretProviderConfig } from "@armyofagents/shared";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "@/__tests__/test-utils";
 import { secretsApi } from "@/api/secrets";
 import { ImportFromVaultDialog } from "@/pages/secrets/ImportFromVaultDialog";
@@ -42,7 +42,30 @@ const providerConfig: CompanySecretProviderConfig = {
   updatedAt: new Date("2026-05-14T00:00:00Z"),
 };
 
+const secondaryProviderConfig: CompanySecretProviderConfig = {
+  ...providerConfig,
+  id: "aws-2",
+  displayName: "Staging AWS",
+  config: { region: "us-west-2", secretNamePrefix: "aoa/staging" },
+};
+
 describe("ImportFromVaultDialog", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    if (!Element.prototype.hasPointerCapture) {
+      Element.prototype.hasPointerCapture = () => false;
+    }
+    if (!Element.prototype.setPointerCapture) {
+      Element.prototype.setPointerCapture = () => {};
+    }
+    if (!Element.prototype.releasePointerCapture) {
+      Element.prototype.releasePointerCapture = () => {};
+    }
+    if (!HTMLElement.prototype.scrollIntoView) {
+      HTMLElement.prototype.scrollIntoView = () => {};
+    }
+  });
+
   it("previews remote AWS secrets as external references before import", async () => {
     const user = userEvent.setup();
     vi.mocked(secretsApi.remoteImport.preview).mockResolvedValue({
@@ -166,6 +189,50 @@ describe("ImportFromVaultDialog", () => {
     expect(await screen.findByText("1 imported")).toBeInTheDocument();
     expect(screen.getByText("1 skipped")).toBeInTheDocument();
     expect(screen.getByText("1 error")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^import$/i })).toBeDisabled();
+  });
+
+  it("clears stale preview selections when provider changes", async () => {
+    const user = userEvent.setup();
+    vi.mocked(secretsApi.remoteImport.preview).mockResolvedValue({
+      providerConfigId: providerConfig.id,
+      nextToken: null,
+      candidates: [
+        {
+          externalRef: "arn:aws:secretsmanager:us-east-1:1:secret:aoa/prod/openai",
+          name: "aoa/prod/openai",
+          key: "OPENAI_API_KEY",
+          providerVersionRef: "v1",
+          description: "OpenAI",
+          status: "ready",
+          reason: null,
+          metadata: null,
+        },
+      ],
+    });
+
+    renderWithProviders(
+      <ImportFromVaultDialog
+        companyId="company-1"
+        open
+        onOpenChange={() => {}}
+        providerConfigs={[providerConfig, secondaryProviderConfig]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Preview remote secrets" }));
+    const previewedRow = await screen.findByText("aoa/prod/openai");
+    await user.click(within(previewedRow.closest("tr")!).getByRole("checkbox"));
+    expect(screen.getByRole("button", { name: /^import$/i })).toBeEnabled();
+
+    await user.click(screen.getByRole("combobox", { name: "Provider vault" }));
+    await user.click(await screen.findByText("Staging AWS"));
+
+    expect(screen.queryByText("aoa/prod/openai")).not.toBeInTheDocument();
+    expect(screen.getByText("No preview loaded")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^import$/i })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /^import$/i }));
+    expect(secretsApi.remoteImport.commit).not.toHaveBeenCalled();
   });
 });
 
@@ -177,14 +244,14 @@ describe("SecretRunPreviewCard", () => {
           {
             key: "OPENAI_API_KEY",
             source: "secret",
-            displayValue: "Secret: OpenAI API Key",
+            safeDisplayValue: "Secret: OpenAI API Key",
             status: "ok",
             required: true,
           },
           {
             key: "HUBSPOT_TOKEN",
             source: "secret",
-            displayValue: "Missing secret",
+            safeDisplayValue: "Missing secret",
             status: "missing",
             required: true,
           },
