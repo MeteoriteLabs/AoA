@@ -35,6 +35,7 @@ export interface ImportFromVaultDialogProps {
   open: boolean;
   onOpenChange(open: boolean): void;
   providerConfigs: CompanySecretProviderConfig[];
+  onImportCommitted?(): void;
 }
 
 function candidateKey(candidate: RemoteSecretImportCandidate) {
@@ -47,11 +48,16 @@ function statusVariant(status: RemoteSecretImportCandidate["status"]) {
   return "archived";
 }
 
+function canImportCandidate(candidate: RemoteSecretImportCandidate) {
+  return candidate.status === "ready" || candidate.status === "conflict";
+}
+
 export function ImportFromVaultDialog({
   companyId,
   open,
   onOpenChange,
   providerConfigs,
+  onImportCommitted,
 }: ImportFromVaultDialogProps) {
   const queryClient = useQueryClient();
   const importableConfigs = providerConfigs.filter(
@@ -117,6 +123,7 @@ export function ImportFromVaultDialog({
     onSuccess: (importResult) => {
       setResult(importResult);
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
+      onImportCommitted?.();
       toast.success("Secrets imported");
     },
     onError: (err) => {
@@ -144,6 +151,17 @@ export function ImportFromVaultDialog({
     }
   };
 
+  const resultCounts = useMemo(() => {
+    if (!result) return null;
+    return result.results.reduce(
+      (counts, row) => {
+        counts[row.status] += 1;
+        return counts;
+      },
+      { imported: 0, skipped: 0, error: 0 },
+    );
+  }, [result]);
+
   return (
     <Dialog open={open} onOpenChange={resetAndClose}>
       <DialogContent className="max-w-3xl" aria-describedby={undefined}>
@@ -154,6 +172,9 @@ export function ImportFromVaultDialog({
           </DialogTitle>
         </DialogHeader>
         <DialogBody className="space-y-3">
+          <p className="rounded-md border border-border bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
+            Imports create external references by default. AoA stores the remote reference, not the secret value.
+          </p>
           <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
             <Select value={providerConfigId} onValueChange={setProviderConfigId}>
               <SelectTrigger aria-label="Provider vault">
@@ -179,7 +200,7 @@ export function ImportFromVaultDialog({
               disabled={!providerConfigId || previewMutation.isPending}
             >
               <RefreshCw className="size-4" />
-              Preview
+              Preview remote secrets
             </Button>
           </div>
 
@@ -189,7 +210,7 @@ export function ImportFromVaultDialog({
                 <tr>
                   <th className="w-10 px-3 py-2" />
                   <th className="px-3 py-2 font-medium">Name</th>
-                  <th className="px-3 py-2 font-medium">External ref</th>
+                  <th className="px-3 py-2 font-medium">External reference</th>
                   <th className="px-3 py-2 font-medium">Version</th>
                   <th className="px-3 py-2 font-medium">Status</th>
                 </tr>
@@ -203,7 +224,7 @@ export function ImportFromVaultDialog({
                   </tr>
                 ) : (
                   candidates.map((candidate) => {
-                    const disabled = candidate.status !== "ready";
+                    const disabled = !canImportCandidate(candidate);
                     const key = candidateKey(candidate);
                     return (
                       <tr key={key} className="border-t border-border">
@@ -228,7 +249,14 @@ export function ImportFromVaultDialog({
                           {candidate.providerVersionRef ?? "latest"}
                         </td>
                         <td className="px-3 py-2">
-                          <Badge variant={statusVariant(candidate.status)}>{candidate.status}</Badge>
+                          <div className="flex flex-col gap-1">
+                            <Badge variant={statusVariant(candidate.status)}>{candidate.status}</Badge>
+                            {candidate.reason && (
+                              <span className="max-w-[160px] text-xs text-muted-foreground">
+                                {candidate.reason}
+                              </span>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -253,6 +281,13 @@ export function ImportFromVaultDialog({
 
           {result && (
             <div className="rounded-md border border-border">
+              {resultCounts && (
+                <div className="flex flex-wrap gap-2 border-b border-border bg-accent/20 px-3 py-2 text-xs text-muted-foreground">
+                  <span>{resultCounts.imported} imported</span>
+                  <span>{resultCounts.skipped} skipped</span>
+                  <span>{resultCounts.error} error</span>
+                </div>
+              )}
               {result.results.map((row) => (
                 <div
                   key={row.externalRef}

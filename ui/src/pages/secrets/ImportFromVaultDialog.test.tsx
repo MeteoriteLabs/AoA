@@ -40,7 +40,7 @@ const providerConfig = {
 };
 
 describe("ImportFromVaultDialog", () => {
-  it("previews, disables conflicts, and imports selected candidates", async () => {
+  it("previews and imports selected ready or conflict candidates", async () => {
     vi.mocked(secretsApi.remoteImport.preview).mockResolvedValue({
       providerConfigId: providerConfig.id,
       nextToken: "next",
@@ -85,14 +85,15 @@ describe("ImportFromVaultDialog", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview remote secrets" }));
     await screen.findAllByText("CONFLICTING_KEY");
     const readyRow = screen.getAllByText("OPENAI_API_KEY")[0];
     const conflictRow = screen.getAllByText("CONFLICTING_KEY")[0].closest("tr")!;
     expect(conflictRow).toBeTruthy();
-    expect(within(conflictRow).getByRole("checkbox").getAttribute("disabled")).not.toBeNull();
+    expect(within(conflictRow).getByRole("checkbox").getAttribute("disabled")).toBeNull();
 
     fireEvent.click(within(readyRow.closest("tr")!).getByRole("checkbox"));
+    fireEvent.click(within(conflictRow).getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: /^import$/i }));
 
     await waitFor(() => {
@@ -106,10 +107,18 @@ describe("ImportFromVaultDialog", () => {
             providerVersionRef: "v1",
             description: null,
           },
+          {
+            externalRef: "arn:aws:secretsmanager:us-east-1:1:secret:aoa/prod/conflict",
+            name: "CONFLICTING_KEY",
+            key: "CONFLICTING_KEY",
+            providerVersionRef: null,
+            description: null,
+          },
         ],
       });
     });
     expect(await screen.findByText("imported")).toBeTruthy();
+    expect(screen.getByText("1 imported")).toBeTruthy();
     expect(screen.getByRole("button", { name: /more/i })).toBeTruthy();
   });
 });

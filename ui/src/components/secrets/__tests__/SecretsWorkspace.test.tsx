@@ -24,6 +24,10 @@ vi.mock("@/api/secrets", () => ({
       create: vi.fn(),
       check: vi.fn(),
     },
+    remoteImport: {
+      preview: vi.fn(),
+      commit: vi.fn(),
+    },
     bindings: {
       list: vi.fn(),
     },
@@ -68,12 +72,46 @@ describe("SecretsWorkspace", () => {
       screen.getByText("Credentials and secret references used by agents, environments, departments, and integrations."),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add secret" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Import" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
 
     expect(screen.getByRole("tab", { name: "Inventory" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Bindings" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Vault providers" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Audit" })).toBeTruthy();
+  });
+
+  it("opens import dialog when an external vault provider is configured", async () => {
+    const user = userEvent.setup();
+    vi.mocked(secretsApi.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([
+      {
+        id: "aws-1",
+        companyId: "company-1",
+        provider: "aws_secrets_manager",
+        displayName: "Production AWS",
+        status: "ready",
+        isDefault: true,
+        config: { region: "us-east-1", secretNamePrefix: "aoa/prod" },
+        healthStatus: "ready",
+        healthCheckedAt: null,
+        healthMessage: null,
+        healthDetails: null,
+        disabledAt: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        createdAt: new Date("2026-05-14T00:00:00Z"),
+        updatedAt: new Date("2026-05-14T00:00:00Z"),
+      },
+    ]);
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Import" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Import" }));
+
+    expect(screen.getByRole("dialog", { name: "Import from vault" })).toBeInTheDocument();
+    expect(screen.getByText("Production AWS")).toBeInTheDocument();
   });
 
   it("shows an error instead of the empty state when secrets fail to load", async () => {

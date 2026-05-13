@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { CloudDownload, Plus } from "lucide-react";
 import type { CompanySecret } from "@armyofagents/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { secretsApi, type CreateSecretInput, type CreateSecretProviderConfigInput } from "@/api/secrets";
 import { Button } from "@/components/ui/button";
+import { ImportFromVaultDialog } from "@/pages/secrets/ImportFromVaultDialog";
 import { queryKeys } from "@/lib/queryKeys";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -32,6 +33,7 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
   const [activeTab, setActiveTab] = useState<SecretsTab>("inventory");
   const [selectedSecretId, setSelectedSecretId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [rotateTarget, setRotateTarget] = useState<CompanySecret | null>(null);
   const secretsQuery = useQuery({
     queryKey: queryKeys.secrets.list(companyId),
@@ -109,6 +111,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
 
   const secrets = secretsQuery.data ?? [];
   const providerConfigs = providerConfigsQuery.data ?? [];
+  const importableProviderConfigs = providerConfigs.filter(
+    (config) => config.provider === "aws_secrets_manager" && config.status !== "disabled",
+  );
+  const canImportFromVault = importableProviderConfigs.length > 0;
   const errorMessage = secretsQuery.error instanceof Error ? secretsQuery.error.message : null;
   const createErrorMessage = createSecret.error instanceof Error ? createSecret.error.message : null;
   const rotateErrorMessage = rotateSecret.error instanceof Error ? rotateSecret.error.message : null;
@@ -158,6 +164,23 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!canImportFromVault}
+              title={
+                canImportFromVault
+                  ? "Import external references from a configured vault"
+                  : "Configure an external vault provider before importing"
+              }
+              onClick={() => {
+                if (canImportFromVault) setImportOpen(true);
+              }}
+            >
+              <CloudDownload className="size-3.5" />
+              Import
+            </Button>
             <Button
               type="button"
               size="sm"
@@ -261,6 +284,15 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
         onSubmit={({ value }) => {
           if (!rotateTarget) return;
           return rotateSecret.mutateAsync({ id: rotateTarget.id, value });
+        }}
+      />
+      <ImportFromVaultDialog
+        companyId={companyId}
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        providerConfigs={providerConfigs}
+        onImportCommitted={() => {
+          queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
         }}
       />
     </div>
