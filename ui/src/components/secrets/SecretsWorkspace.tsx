@@ -1,0 +1,112 @@
+import { useMemo, useState } from "react";
+import { CloudDownload, Plus } from "lucide-react";
+import type { CompanySecret } from "@armyofagents/shared";
+import { useQuery } from "@tanstack/react-query";
+import { secretsApi } from "@/api/secrets";
+import { Button } from "@/components/ui/button";
+import { queryKeys } from "@/lib/queryKeys";
+import { cn } from "@/lib/utils";
+import { SecretEmptyState } from "./SecretEmptyState";
+import { formatSecretDate, modeLabel, providerLabel } from "./secret-ui";
+
+const TABS = ["Inventory", "Bindings", "Vault providers", "Audit"] as const;
+type SecretsTab = (typeof TABS)[number];
+
+interface SecretsWorkspaceProps {
+  companyId: string;
+}
+
+export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
+  const [activeTab, setActiveTab] = useState<SecretsTab>("Inventory");
+  const { data, isLoading } = useQuery({
+    queryKey: queryKeys.secrets.list(companyId),
+    queryFn: () => secretsApi.list(companyId),
+  });
+
+  const secrets = data ?? [];
+  const selectedSecret = useMemo<CompanySecret | null>(() => secrets[0] ?? null, [secrets]);
+
+  return (
+    <div>
+      <div className="border-b border-border px-8 pb-3 pt-6">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+          Settings · Operations
+        </div>
+        <div className="mt-1 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0">
+            <h2 className="text-[1.4rem] font-bold tracking-tight">
+              Secrets<span className="text-brand">.</span>
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Credentials and secret references used by agents, environments, departments, and integrations.
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button type="button" variant="outline" size="sm">
+              <CloudDownload className="size-3.5" />
+              Import
+            </Button>
+            <Button type="button" size="sm">
+              <Plus className="size-3.5" />
+              Add secret
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4 p-8">
+        <div
+          role="tablist"
+          aria-label="Secrets sections"
+          className="inline-flex max-w-full flex-wrap gap-1 rounded-md border border-border bg-card p-1"
+        >
+          {TABS.map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab}
+              className={cn(
+                "h-[26px] rounded-[5px] px-2.5 text-xs font-semibold text-muted-foreground transition-colors",
+                activeTab === tab && "bg-accent text-foreground",
+              )}
+              onClick={() => setActiveTab(tab)}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+
+        {isLoading ? (
+          <div className="rounded-md border border-border bg-card px-4 py-8 text-center text-sm text-muted-foreground">
+            Loading secrets...
+          </div>
+        ) : secrets.length === 0 ? (
+          <SecretEmptyState />
+        ) : (
+          <section className="rounded-md border border-border bg-card p-4">
+            <div className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              {activeTab}
+            </div>
+            <div className="mt-2 grid gap-3 sm:grid-cols-3">
+              <div>
+                <div className="text-xs text-muted-foreground">Secrets</div>
+                <div className="text-lg font-semibold">{secrets.length}</div>
+              </div>
+              <div className="min-w-0 sm:col-span-2">
+                <div className="text-xs text-muted-foreground">Selected</div>
+                <div className="truncate text-sm font-medium">{selectedSecret?.name ?? "None"}</div>
+                {selectedSecret && (
+                  <div className="mt-1 truncate text-xs text-muted-foreground">
+                    {providerLabel(selectedSecret.provider)} · {modeLabel(selectedSecret.managedMode)} · Last read{" "}
+                    {formatSecretDate(selectedSecret.lastResolvedAt)}
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+      </div>
+    </div>
+  );
+}
