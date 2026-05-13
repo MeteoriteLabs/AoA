@@ -6,6 +6,7 @@ import {
   buildProductivityReviewWakePayload,
   shouldCreateProductivityReview,
   shouldHoldProductivityReviewContinuation,
+  shouldRefreshProductivityReview,
 } from "../services/productivity-review.js";
 
 describe("productivity review service helpers", () => {
@@ -42,8 +43,8 @@ describe("productivity review service helpers", () => {
       shouldCreateProductivityReview({
         noCommentRunStreak: 0,
         activeSince: null,
-        churnLastHour: DEFAULT_PRODUCTIVITY_REVIEW_LIMITS.highChurnHourly,
-        churnLastSixHours: 0,
+        churnLastHour: 0,
+        churnLastSixHours: DEFAULT_PRODUCTIVITY_REVIEW_LIMITS.highChurnSixHours,
         openReviewIssue: null,
         recentResolvedReviewAt: null,
         creationsInWindow: 0,
@@ -132,5 +133,37 @@ describe("productivity review service helpers", () => {
   it("holds continuations for soft-stop productivity review triggers", () => {
     expect(shouldHoldProductivityReviewContinuation({ openReviewIssueId: "review-1" })).toBe(true);
     expect(shouldHoldProductivityReviewContinuation({ openReviewIssueId: null })).toBe(false);
+  });
+
+  it("bounds open productivity review refresh comments", () => {
+    const now = new Date(Date.UTC(2026, 4, 13, 12));
+    expect(
+      shouldRefreshProductivityReview({
+        lastRefreshedAt: null,
+        refreshCount: 0,
+        now,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRefreshProductivityReview({
+        lastRefreshedAt: new Date(now.getTime() - DEFAULT_PRODUCTIVITY_REVIEW_LIMITS.refreshIntervalMs - 1),
+        refreshCount: 2,
+        now,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRefreshProductivityReview({
+        lastRefreshedAt: new Date(now.getTime() - 1_000),
+        refreshCount: 2,
+        now,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRefreshProductivityReview({
+        lastRefreshedAt: new Date(now.getTime() - DEFAULT_PRODUCTIVITY_REVIEW_LIMITS.refreshIntervalMs - 1),
+        refreshCount: DEFAULT_PRODUCTIVITY_REVIEW_LIMITS.maxRefreshComments,
+        now,
+      }),
+    ).toBe(false);
   });
 });

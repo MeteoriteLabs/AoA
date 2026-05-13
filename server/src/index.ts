@@ -536,6 +536,24 @@ if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
   const productivityReviews = productivityReviewService(db as any);
   const monitorScheduler = issueMonitorSchedulerService(db as any);
+  const PRODUCTIVITY_REVIEW_RECONCILIATION_INTERVAL_MS = 60 * 60 * 1000;
+  let monitorTickInFlight = false;
+  let productivityReviewTickInFlight = false;
+
+  const runProductivityReviewReconciliation = (now = new Date()) => {
+    if (productivityReviewTickInFlight) return;
+    productivityReviewTickInFlight = true;
+    void db
+      .select({ id: companies.id })
+      .from(companies)
+      .then((rows) => Promise.all(rows.map((row) => productivityReviews.reconcileCompany(row.id, { now }))))
+      .catch((err) => {
+        logger.error({ err }, "productivity review reconciliation tick failed");
+      })
+      .finally(() => {
+        productivityReviewTickInFlight = false;
+      });
+  };
 
   // Subscribe heartbeat's scope-cancellation to budget-exhausted signals so
   // hard-stop breaches interrupt in-flight work, not just preflight-block.
@@ -612,19 +630,23 @@ if (config.heartbeatSchedulerEnabled) {
         logger.error({ err }, "routine scheduled trigger tick failed");
       });
 
-    void db
-      .select({ id: companies.id })
-      .from(companies)
-      .then((rows) =>
-        Promise.all([
-          ...rows.map((row) => monitorScheduler.triggerDueMonitors(row.id, { now })),
-          ...rows.map((row) => productivityReviews.reconcileCompany(row.id, { now })),
-        ]),
-      )
-      .catch((err) => {
-        logger.error({ err }, "recovery reconciliation tick failed");
-      });
+    if (!monitorTickInFlight) {
+      monitorTickInFlight = true;
+      void db
+        .select({ id: companies.id })
+        .from(companies)
+        .then((rows) => Promise.all(rows.map((row) => monitorScheduler.triggerDueMonitors(row.id, { now }))))
+        .catch((err) => {
+          logger.error({ err }, "issue monitor scheduler tick failed");
+        })
+        .finally(() => {
+          monitorTickInFlight = false;
+        });
+    }
   }, config.heartbeatSchedulerIntervalMs);
+
+  runProductivityReviewReconciliation();
+  setInterval(runProductivityReviewReconciliation, PRODUCTIVITY_REVIEW_RECONCILIATION_INTERVAL_MS);
 }
 
 // File import queue worker

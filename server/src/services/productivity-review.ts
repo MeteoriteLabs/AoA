@@ -61,6 +61,18 @@ export function shouldHoldProductivityReviewContinuation(input: { openReviewIssu
   return Boolean(input.openReviewIssueId);
 }
 
+export function shouldRefreshProductivityReview(input: {
+  lastRefreshedAt: Date | null;
+  refreshCount: number;
+  now: Date;
+  limits?: typeof DEFAULT_PRODUCTIVITY_REVIEW_LIMITS;
+}) {
+  const limits = input.limits ?? DEFAULT_PRODUCTIVITY_REVIEW_LIMITS;
+  if (input.refreshCount >= limits.maxRefreshComments) return false;
+  if (!input.lastRefreshedAt) return true;
+  return input.now.getTime() - input.lastRefreshedAt.getTime() >= limits.refreshIntervalMs;
+}
+
 function clampIssueRequestDepth(value: number) {
   return Math.max(0, Math.min(value, 5));
 }
@@ -158,6 +170,7 @@ export function productivityReviewService(db: Db) {
         .limit(opts.limit ?? 50);
 
       let created = 0;
+      let refreshed = 0;
       for (const issue of activeIssues) {
         const creationWindowStart = new Date(now.getTime() - limits.creationWindowMs);
         const [creationCount] = await db
@@ -216,21 +229,99 @@ export function productivityReviewService(db: Db) {
             ),
           )
           .then((rows) => Number(rows[0]?.count ?? 0));
+        const churnLastSixHours = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.companyId, companyId),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.entityId, issue.id),
+              gte(activityLog.createdAt, new Date(now.getTime() - 6 * 60 * 60 * 1000)),
+            ),
+          )
+          .then((rows) => Number(rows[0]?.count ?? 0));
+
+        const refreshStats = openReviewIssue
+          ? await db
+              .select({ createdAt: activityLog.createdAt })
+              .from(activityLog)
+              .where(
+                and(
+                  eq(activityLog.companyId, companyId),
+                  eq(activityLog.action, "issue.productivity_review_refreshed"),
+                  eq(activityLog.entityType, "issue"),
+                  eq(activityLog.entityId, openReviewIssue.id),
+                ),
+              )
+              .orderBy(desc(activityLog.createdAt))
+          : [];
 
         const decision = shouldCreateProductivityReview({
           noCommentRunStreak: commentsSinceStart === 0 ? runCount : 0,
           activeSince: issue.startedAt,
           churnLastHour,
-          churnLastSixHours: churnLastHour,
+          churnLastSixHours,
           openReviewIssue: openReviewIssue
-            ? { id: openReviewIssue.id, lastRefreshedAt: openReviewIssue.updatedAt, refreshCount: 0 }
+            ? {
+                id: openReviewIssue.id,
+                lastRefreshedAt: refreshStats[0]?.createdAt ?? openReviewIssue.updatedAt,
+                refreshCount: refreshStats.length,
+              }
             : null,
           recentResolvedReviewAt: recentResolvedAt,
           creationsInWindow: Number(creationCount?.count ?? 0),
           now,
         });
 
-        if (!decision.create) continue;
+        if (!decision.create) {
+          if (
+            decision.reason === "open_review_exists" &&
+            openReviewIssue &&
+            shouldRefreshProductivityReview({
+              lastRefreshedAt: refreshStats[0]?.createdAt ?? openReviewIssue.updatedAt,
+              refreshCount: refreshStats.length,
+              now,
+            })
+          ) {
+            await db.insert(issueComments).values({
+              companyId,
+              issueId: openReviewIssue.id,
+              authorType: "system",
+              body: [
+                "This productivity review is still open.",
+                `Source task: ${issue.id}`,
+                `Trigger: ${decision.trigger}`,
+              ].join("\n"),
+              presentation: {
+                kind: "system_notice",
+                tone: "warning",
+                title: "Productivity review refresh",
+              },
+              metadata: {
+                version: 1,
+                sections: [
+                  {
+                    title: "Recovery review",
+                    rows: [{ sourceIssueId: issue.id, trigger: decision.trigger }],
+                  },
+                ],
+              },
+            });
+            await db.insert(activityLog).values({
+              companyId,
+              actorType: "system",
+              actorId: "system",
+              action: "issue.productivity_review_refreshed",
+              entityType: "issue",
+              entityId: openReviewIssue.id,
+              agentId: openReviewIssue.assigneeAgentId,
+              details: { sourceIssueId: issue.id, trigger: decision.trigger, refreshCount: refreshStats.length + 1 },
+            });
+            refreshed += 1;
+          }
+          continue;
+        }
 
         const reviewInput = buildProductivityReviewIssueInput({ sourceIssue: issue, trigger: decision.trigger });
         const reviewIssue = await issueService(db).create(companyId, reviewInput.issue);
@@ -262,7 +353,7 @@ export function productivityReviewService(db: Db) {
         });
       }
 
-      return { checked: activeIssues.length, created };
+      return { checked: activeIssues.length, created, refreshed };
     },
   };
 }
