@@ -24,7 +24,6 @@ import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Inbox } from "./pages/Inbox";
 import { SettingsPage } from "./pages/SettingsPage";
-import { Secrets } from "./pages/Secrets";
 import { VisionMission } from "./pages/VisionMission";
 import { Objectives } from "./pages/Objectives";
 import { Commander } from "./pages/Commander";
@@ -128,7 +127,7 @@ function boardRoutes() {
       <Route path="objectives" element={<Objectives />} />
       <Route path="commander" element={<Commander />} />
       <Route path="settings" element={<SettingsPage />} />
-      <Route path="secrets" element={<Secrets />} />
+      <Route path="secrets" element={<Navigate to="../settings?tab=secrets" replace />} />
       <Route path="settings/commander" element={<Navigate to="../settings?tab=commander" replace />} />
       <Route path="settings/internal-agent" element={<Navigate to="../settings?tab=commander" replace />} />
       <Route path="company/settings" element={<Navigate to="../settings" replace />} />

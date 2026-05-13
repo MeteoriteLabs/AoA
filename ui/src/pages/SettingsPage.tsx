@@ -13,10 +13,11 @@ import { CommanderSection } from "@/components/settings/sections/CommanderSectio
 import { GitHubSection } from "@/components/settings/sections/GitHubSection";
 import { ActivitySection } from "@/components/settings/sections/ActivitySection";
 import { EnvironmentsSectionWrapper } from "@/components/settings/sections/EnvironmentsSection";
+import { SecretsSectionWrapper } from "@/components/settings/sections/SecretsSection";
 
 const VALID_SECTIONS: readonly SettingsSectionId[] = [
   "general", "commander", "llm", "budget", "mcp", "github", "plugins", "marketplace", "archive",
-  "activity", "environments",
+  "activity", "environments", "secrets",
 ];
 
 function isValidSection(s: string | null): s is SettingsSectionId {
@@ -47,6 +48,8 @@ function renderActiveSection(id: SettingsSectionId) {
       return <ActivitySection />;
     case "environments":
       return <EnvironmentsSectionWrapper />;
+    case "secrets":
+      return <SecretsSectionWrapper />;
     default: {
       const exhaustive: never = id;
       return (

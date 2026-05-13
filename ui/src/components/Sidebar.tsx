@@ -13,7 +13,6 @@ import {
   Shield,
   Puzzle,
   FolderGit2,
-  KeyRound,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
@@ -154,7 +153,6 @@ export function Sidebar() {
             <SidebarNavItem to="/memory" label="Memory" icon={Brain} collapsed={collapsed} />
             <SidebarNavItem to="/team" label="Team" icon={Users} collapsed={collapsed} />
             <SidebarNavItem to="/skills" label="Skills" icon={Boxes} collapsed={collapsed} />
-            <SidebarNavItem to="/secrets" label="Secrets" icon={KeyRound} collapsed={collapsed} />
             <SidebarNavItem to="/settings" label="Settings" icon={Settings} collapsed={collapsed} />
             <BudgetSidebarMarker collapsed={collapsed} />
           </SidebarSection>

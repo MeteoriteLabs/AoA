@@ -11,7 +11,7 @@ const SECONDARY_COLLAPSED_KEY = "aoa.settings-secondary-collapsed";
 export type SettingsSectionId =
   | "general" | "commander" | "llm" | "budget" | "mcp" | "github"
   | "plugins" | "marketplace" | "archive"
-  | "activity" | "environments";
+  | "activity" | "environments" | "secrets";
 
 interface SettingsItem {
   id: SettingsSectionId;
@@ -36,6 +36,7 @@ export const SETTINGS_SECTIONS: readonly SettingsGroup[] = [
     { id: "budget",       label: "Budget & caps",      icon: DollarSign },
     { id: "mcp",          label: "MCP API keys",       icon: Plug },
     { id: "environments", label: "Environments",       icon: Layers },
+    { id: "secrets",      label: "Secrets",            icon: KeyRound },
     { id: "github",       label: "GitHub",             icon: Github, tone: "transitional" },
   ]},
   { group: "Extensions", items: [
