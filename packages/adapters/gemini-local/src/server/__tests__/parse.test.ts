@@ -174,6 +174,21 @@ describe("isGeminiTurnLimitResult", () => {
     expect(isGeminiTurnLimitResult({ status: "max_turns" }, 0)).toBe(true);
   });
 
+  it("marks parsed turn-limit result payloads with canonical stop reason", () => {
+    const result = parseGeminiJsonl(
+      JSON.stringify({
+        type: "result",
+        status: "turn_limit",
+        error: "Reached the turn limit",
+      }),
+    );
+
+    expect(result.resultEvent).toMatchObject({
+      status: "turn_limit",
+      stopReason: "max_turns_exhausted",
+    });
+  });
+
   it("returns false for normal result", () => {
     expect(isGeminiTurnLimitResult({ status: "success" }, 0)).toBe(false);
   });

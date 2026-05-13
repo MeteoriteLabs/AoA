@@ -133,7 +133,9 @@ export function parseGeminiJsonl(stdout: string) {
     }
 
     if (type === "result") {
-      resultEvent = event;
+      resultEvent = isGeminiTurnLimitResult(event)
+        ? { ...event, stopReason: "max_turns_exhausted" }
+        : event;
       accumulateUsage(usage, event.usage ?? event.usageMetadata ?? event.stats);
       const resultText =
         asString(event.result, "").trim() ||
