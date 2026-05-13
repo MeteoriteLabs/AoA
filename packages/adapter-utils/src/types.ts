@@ -40,6 +40,33 @@ export type AdapterBillingType =
   | "fixed"
   | "unknown";
 
+export type AdapterExecutionTargetType = "local" | "sandbox-docker";
+
+export interface AdapterLocalExecutionTarget {
+  type: "local";
+}
+
+export interface AdapterDockerExecutionTarget {
+  type: "sandbox-docker";
+  image: string;
+  workdir?: string | null;
+  shell?: "sh" | "bash" | null;
+  network?: "bridge" | "host" | "none" | null;
+  remove?: boolean;
+  env?: Record<string, string>;
+  installCommand?: string | null;
+}
+
+export type AdapterExecutionTarget =
+  | AdapterLocalExecutionTarget
+  | AdapterDockerExecutionTarget;
+
+export interface AdapterRuntimeCommandSpec {
+  command: string;
+  detectCommand?: string | null;
+  installCommand?: string | null;
+}
+
 export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
@@ -114,6 +141,8 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  executionTarget?: AdapterExecutionTarget;
+  runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   authToken?: string;
@@ -244,6 +273,7 @@ export interface ServerAdapterModule {
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
+  getRuntimeCommandSpec?: (config: Record<string, unknown>) => AdapterRuntimeCommandSpec | null;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).

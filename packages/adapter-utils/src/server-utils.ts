@@ -282,6 +282,7 @@ export async function runChildProcess(
      * database row so that an out-of-process watchdog can kill the group.
      */
     onSpawn?: (pid: number | null, pgid: number | null, startedAt: Date) => void;
+    shell?: boolean;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -293,7 +294,7 @@ export async function runChildProcess(
       env: mergedEnv,
       // Windows requires shell:true to execute .cmd wrappers for npm-installed CLIs.
       // The `command` value comes from trusted adapter configuration, not user input.
-      shell: process.platform === "win32",
+      shell: opts.shell ?? process.platform === "win32",
       // detached:true on POSIX puts the child in its own process group (pgid === pid),
       // so signalRunningProcess can address the whole group via process.kill(-pgid, signal)
       // and reap any subprocesses spawned by the child.
@@ -1284,4 +1285,44 @@ export function applyAoaWorkspaceEnv(
     if (typeof value === "string" && value.length > 0) env[key] = value;
   }
   return env;
+}
+
+export function shapeAoaWorkspaceEnvForExecution(input: {
+  env: Record<string, string>;
+  targetType: "local" | "sandbox-docker";
+  localCwd: string;
+  executionCwd: string;
+}): Record<string, string> {
+  if (input.targetType === "local") return { ...input.env };
+
+  const next = { ...input.env };
+  if (next.AOA_WORKSPACE_CWD === input.localCwd) {
+    next.AOA_WORKSPACE_CWD = input.executionCwd;
+  }
+  if (next.AOA_WORKSPACE_WORKTREE_PATH === input.localCwd) {
+    delete next.AOA_WORKSPACE_WORKTREE_PATH;
+  }
+
+  if (next.AOA_WORKSPACES_JSON) {
+    try {
+      const parsed = JSON.parse(next.AOA_WORKSPACES_JSON) as unknown;
+      if (!Array.isArray(parsed)) {
+        delete next.AOA_WORKSPACES_JSON;
+      } else {
+        next.AOA_WORKSPACES_JSON = JSON.stringify(
+          parsed.map((item) => {
+            if (typeof item !== "object" || item === null || Array.isArray(item)) return item;
+            const workspace = item as Record<string, unknown>;
+            if (workspace.cwd === input.localCwd) return { ...workspace, cwd: input.executionCwd };
+            const { cwd: _cwd, ...rest } = workspace;
+            return rest;
+          }),
+        );
+      }
+    } catch {
+      delete next.AOA_WORKSPACES_JSON;
+    }
+  }
+
+  return next;
 }

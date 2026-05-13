@@ -1,4 +1,5 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
+import { runAdapterExecutionTargetProcess } from "@armyofagents/adapter-utils";
 import {
   asString,
   asNumber,
@@ -6,11 +7,11 @@ import {
   parseObject,
   buildAoaEnv,
   redactEnvForLogs,
-  runChildProcess,
 } from "../utils.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, config, onLog, onMeta, onSpawn } = ctx;
+  const { runId, agent, config, onLog, onMeta, authToken, onSpawn } = ctx;
+  const executionTarget = ctx.executionTarget ?? { type: "local" as const };
   const command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");
 
@@ -31,13 +32,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       command,
       cwd,
       commandArgs: args,
+      commandNotes: [`Execution target: ${executionTarget.type}`],
       env: redactEnvForLogs(env),
     });
   }
 
-  const proc = await runChildProcess(runId, command, args, {
+  const proc = await runAdapterExecutionTargetProcess(executionTarget, {
+    runId,
+    command,
+    args,
     cwd,
     env,
+    authToken: env.AOA_API_KEY ?? authToken ?? null,
+    apiBaseUrl: env.AOA_API_URL ?? null,
+    runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
     timeoutSec,
     graceSec,
     onLog,

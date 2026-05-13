@@ -2,7 +2,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterBillingType, AdapterExecutionContext, AdapterExecutionResult } from "@armyofagents/adapter-utils";
+import {
+  runAdapterExecutionTargetProcess,
+  type AdapterBillingType,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@armyofagents/adapter-utils";
 import type { RunProcessResult } from "@armyofagents/adapter-utils/server-utils";
 import {
   asString,
@@ -92,6 +97,7 @@ interface ClaudeExecutionInput {
   config: Record<string, unknown>;
   context: Record<string, unknown>;
   authToken?: string;
+  executionTarget?: AdapterExecutionContext["executionTarget"];
 }
 
 interface ClaudeRuntimeConfig {
@@ -139,6 +145,7 @@ export function resolveClaudeBillingType(env: Record<string, string>): AdapterBi
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
   const { runId, agent, config, context, authToken } = input;
+  const executionTarget = input.executionTarget ?? { type: "local" as const };
 
   const command = asString(config.command, "claude");
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -230,7 +237,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
 
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
+  if (executionTarget.type === "local") {
+    await ensureCommandResolvable(command, cwd, runtimeEnv);
+  }
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -292,6 +301,7 @@ export async function runClaudeLogin(input: {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
+  const executionTarget = ctx.executionTarget ?? { type: "local" as const };
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -304,11 +314,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-  const commandNotes = instructionsFilePath
-    ? [
-        `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
-      ]
-    : [];
+  const commandNotes = [
+    ...(instructionsFilePath
+      ? [
+          `Configured agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended for local target)`,
+        ]
+      : []),
+    `Execution target: ${executionTarget.type}`,
+  ];
 
   const runtimeConfig = await buildClaudeRuntimeConfig({
     runId,
@@ -316,6 +329,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config,
     context,
     authToken,
+    executionTarget,
   });
   const {
     command,
@@ -330,6 +344,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } = runtimeConfig;
   const billingType = resolveClaudeBillingType(env);
   const dbSkills = (context.skills as Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }> | undefined) ?? [];
+  if (executionTarget.type !== "local" && (instructionsFilePath || dbSkills.length > 0)) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage:
+        "Claude sandbox-docker target does not yet support host-local instruction files or DB-backed skills. Remove instructionsFilePath/context skills or use target local.",
+      errorCode: "unsupported_execution_target_config",
+      resultJson: {
+        executionTarget: executionTarget.type,
+        unsupported: {
+          instructionsFilePath: Boolean(instructionsFilePath),
+          dbSkills: dbSkills.length,
+        },
+      },
+    };
+  }
   const skillsDir = await buildSkillsDir(dbSkills.length > 0 ? dbSkills : undefined);
 
   // When instructionsFilePath is configured, create a combined temp file that
@@ -375,10 +406,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model && !isBedrockAuth(env)) args.push("--model", model);
     if (effort) args.push("--effort", effort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-    if (effectiveInstructionsFilePath) {
+    if (effectiveInstructionsFilePath && executionTarget.type === "local") {
       args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
     }
-    args.push("--add-dir", skillsDir);
+    if (executionTarget.type === "local") {
+      args.push("--add-dir", skillsDir);
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
@@ -414,10 +447,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const proc = await runChildProcess(runId, command, args, {
+    const proc = await runAdapterExecutionTargetProcess(executionTarget, {
+      runId,
+      command,
+      args,
       cwd,
       env,
       stdin: prompt,
+      authToken: env.AOA_API_KEY ?? authToken ?? null,
+      apiBaseUrl: env.AOA_API_URL ?? null,
+      runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
       timeoutSec,
       graceSec,
       onLog,

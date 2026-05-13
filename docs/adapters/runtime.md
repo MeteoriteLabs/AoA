@@ -66,7 +66,18 @@ For local adapters, set:
 - optional env vars and extra CLI args
 - use **Test environment** in agent configuration to run adapter-specific diagnostics before saving
 
-## 3.4 Prompt templates
+## 3.4 Execution targets
+
+AoA v2.0a supports two execution target values in `agent.adapterConfig.executionTarget`:
+
+- `{"type":"local"}`: default. Runs the adapter command as a local child process.
+- `{"type":"sandbox-docker","image":"node:22-bookworm","workdir":"/workspace"}`: runs the adapter command through Docker CLI with the workspace bind-mounted at `/workspace`. The container calls back through `host.docker.internal` and a run-scoped bridge.
+
+`remote-ssh`, `sandbox-e2b`, and `sandbox-daytona` are reserved for post-v2.0. Do not configure them yet.
+
+Execution target configuration stays in the existing `adapterConfig` JSONB field until the v2.0c schema pass. This release does not add a migration.
+
+## 3.5 Prompt templates
 
 You can set:
 

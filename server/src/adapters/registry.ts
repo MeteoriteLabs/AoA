@@ -71,6 +71,21 @@ import { httpAdapter } from "./http/index.js";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { getDisabledAdapterTypes, isAdapterDisabled } from "../services/adapter-plugin-store.js";
 
+function buildNpmRuntimeCommandSpec(
+  command: string,
+  packageName: string | null,
+  configuredCommand: unknown,
+) {
+  const resolved = asString(configuredCommand, command).trim() || command;
+  return {
+    command: resolved,
+    detectCommand: `command -v ${resolved}`,
+    installCommand: packageName && resolved === command
+      ? `if ! command -v ${resolved} >/dev/null 2>&1; then npm install -g ${packageName}; fi`
+      : null,
+  };
+}
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
   execute: claudeExecute,
@@ -84,6 +99,8 @@ const claudeLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: claudeAgentConfigurationDoc,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec("claude", "@anthropic-ai/claude-code", config.command),
 };
 
 const codexLocalAdapter: ServerAdapterModule = {
@@ -100,6 +117,8 @@ const codexLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: codexAgentConfigurationDoc,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec("codex", "@openai/codex", config.command),
 };
 
 const cursorLocalAdapter: ServerAdapterModule = {
@@ -116,6 +135,8 @@ const cursorLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
   agentConfigurationDoc: cursorAgentConfigurationDoc,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec("agent", null, config.command),
 };
 
 const openclawAdapter: ServerAdapterModule = {
@@ -126,6 +147,8 @@ const openclawAdapter: ServerAdapterModule = {
   models: openclawModels,
   supportsLocalAgentJwt: false,
   agentConfigurationDoc: openclawAgentConfigurationDoc,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec("openclaw", null, config.command),
 };
 
 const openCodeLocalAdapter: ServerAdapterModule = {
@@ -142,6 +165,8 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec("opencode", "opencode-ai", config.command),
 };
 
 const geminiLocalAdapter: ServerAdapterModule = {
@@ -157,6 +182,8 @@ const geminiLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
   agentConfigurationDoc: geminiAgentConfigurationDoc,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec("gemini", "@google/gemini-cli", config.command),
 };
 
 const hermesLocalAdapter: ServerAdapterModule = {
