@@ -18,13 +18,14 @@ interface SecretsWorkspaceProps {
 
 export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
   const [activeTab, setActiveTab] = useState<SecretsTab>("Inventory");
-  const { data, isLoading } = useQuery({
+  const secretsQuery = useQuery({
     queryKey: queryKeys.secrets.list(companyId),
     queryFn: () => secretsApi.list(companyId),
   });
 
-  const secrets = data ?? [];
+  const secrets = secretsQuery.data ?? [];
   const selectedSecret = useMemo<CompanySecret | null>(() => secrets[0] ?? null, [secrets]);
+  const errorMessage = secretsQuery.error instanceof Error ? secretsQuery.error.message : null;
 
   return (
     <div>
@@ -77,9 +78,14 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
           ))}
         </div>
 
-        {isLoading ? (
+        {secretsQuery.isLoading ? (
           <div className="rounded-md border border-border bg-card px-4 py-8 text-center text-sm text-muted-foreground">
             Loading secrets...
+          </div>
+        ) : secretsQuery.isError ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+            <p>Failed to load secrets. Please refresh and try again.</p>
+            {errorMessage && <p className="mt-1 text-xs text-destructive/80">{errorMessage}</p>}
           </div>
         ) : secrets.length === 0 ? (
           <SecretEmptyState />

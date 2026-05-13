@@ -34,6 +34,15 @@ describe("SecretsWorkspace", () => {
     expect(screen.getByRole("tab", { name: "Vault providers" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Audit" })).toBeTruthy();
   });
+
+  it("shows an error instead of the empty state when secrets fail to load", async () => {
+    vi.mocked(secretsApi.list).mockRejectedValue(new Error("Network unavailable"));
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    expect(await screen.findByText("Failed to load secrets. Please refresh and try again.")).toBeTruthy();
+    expect(screen.queryByText("No secrets yet")).toBeNull();
+  });
 });
 
 describe("secret-ui helpers", () => {
