@@ -2,14 +2,18 @@ import { useMemo, useState } from "react";
 import { CloudDownload, Plus } from "lucide-react";
 import type { CompanySecret } from "@armyofagents/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { secretsApi, type CreateSecretInput } from "@/api/secrets";
+import { secretsApi, type CreateSecretInput, type CreateSecretProviderConfigInput } from "@/api/secrets";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { AddSecretDialog } from "./AddSecretDialog";
 import { RotateSecretDialog } from "./RotateSecretDialog";
+import { SecretAuditTab } from "./SecretAuditTab";
+import { SecretBindingsTab } from "./SecretBindingsTab";
 import { SecretEmptyState } from "./SecretEmptyState";
 import { SecretInventoryTab } from "./SecretInventoryTab";
+import { SecretVaultProvidersTab } from "./SecretVaultProvidersTab";
 
 const TABS = [
   { id: "inventory", label: "Inventory" },
@@ -33,6 +37,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     queryKey: queryKeys.secrets.list(companyId),
     queryFn: () => secretsApi.list(companyId),
   });
+  const providersQuery = useQuery({
+    queryKey: queryKeys.secrets.providers(companyId),
+    queryFn: () => secretsApi.providers(companyId),
+  });
   const providerConfigsQuery = useQuery({
     queryKey: queryKeys.secrets.providerConfigs(companyId),
     queryFn: () => secretsApi.providerConfigs.list(companyId),
@@ -43,12 +51,51 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     enabled: Boolean(rotateTarget),
   });
 
+  const selectedSecret = useMemo<CompanySecret | null>(() => {
+    const secrets = secretsQuery.data ?? [];
+    return secrets.find((secret) => secret.id === selectedSecretId) ?? secrets[0] ?? null;
+  }, [secretsQuery.data, selectedSecretId]);
+
+  const bindingsQuery = useQuery({
+    queryKey: selectedSecret ? queryKeys.secrets.bindings(selectedSecret.id) : ["secret-bindings", "__none__"],
+    queryFn: () => secretsApi.bindings.list(selectedSecret!.id),
+    enabled: Boolean(selectedSecret && activeTab === "bindings"),
+  });
+  const accessEventsQuery = useQuery({
+    queryKey: selectedSecret ? queryKeys.secrets.accessEvents(selectedSecret.id) : ["secret-access-events", "__none__"],
+    queryFn: () => secretsApi.accessEvents(selectedSecret!.id),
+    enabled: Boolean(selectedSecret && activeTab === "audit"),
+  });
+
   const createSecret = useMutation({
     mutationFn: (input: CreateSecretInput) => secretsApi.create(companyId, input),
     onSuccess: (created) => {
       setSelectedSecretId(created.id);
       setAddOpen(false);
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
+    },
+  });
+
+  const createProviderConfig = useMutation({
+    mutationFn: (input: CreateSecretProviderConfigInput) => secretsApi.providerConfigs.create(companyId, input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.providerConfigs(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.providers(companyId) });
+      toast.success("Vault saved");
+    },
+    onError: (err) => {
+      toast.error("Vault save failed", { description: err instanceof Error ? err.message : undefined });
+    },
+  });
+
+  const checkProviderConfig = useMutation({
+    mutationFn: (id: string) => secretsApi.providerConfigs.check(id),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.providerConfigs(companyId) });
+      toast.success("Vault checked", { description: result.message ?? result.status });
+    },
+    onError: (err) => {
+      toast.error("Vault check failed", { description: err instanceof Error ? err.message : undefined });
     },
   });
 
@@ -62,13 +109,27 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
 
   const secrets = secretsQuery.data ?? [];
   const providerConfigs = providerConfigsQuery.data ?? [];
-  const selectedSecret = useMemo<CompanySecret | null>(
-    () => secrets.find((secret) => secret.id === selectedSecretId) ?? secrets[0] ?? null,
-    [secrets, selectedSecretId],
-  );
   const errorMessage = secretsQuery.error instanceof Error ? secretsQuery.error.message : null;
   const createErrorMessage = createSecret.error instanceof Error ? createSecret.error.message : null;
   const rotateErrorMessage = rotateSecret.error instanceof Error ? rotateSecret.error.message : null;
+  const createProviderErrorMessage =
+    createProviderConfig.error instanceof Error ? createProviderConfig.error.message : null;
+
+  function renderSelectedSecretRequiredTab(tab: Exclude<SecretsTab, "inventory" | "vaults">) {
+    if (!selectedSecret) {
+      return (
+        <section className="rounded-md border border-border bg-card px-4 py-8 text-center text-sm text-muted-foreground">
+          Select a secret to view {tab === "bindings" ? "bindings" : "audit events"}.
+        </section>
+      );
+    }
+
+    if (tab === "bindings") {
+      return <SecretBindingsTab bindings={bindingsQuery.data ?? []} secrets={secrets} />;
+    }
+
+    return <SecretAuditTab events={accessEventsQuery.data ?? []} />;
+  }
 
   return (
     <div>
@@ -137,7 +198,7 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
             <p>Failed to load secrets. Please refresh and try again.</p>
             {errorMessage && <p className="mt-1 text-xs text-destructive/80">{errorMessage}</p>}
           </div>
-        ) : secrets.length === 0 ? (
+        ) : activeTab === "inventory" && secrets.length === 0 ? (
           <SecretEmptyState />
         ) : activeTab === "inventory" ? (
           <SecretInventoryTab
@@ -149,15 +210,21 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
               setRotateTarget(secret);
             }}
           />
+        ) : activeTab === "bindings" ? (
+          renderSelectedSecretRequiredTab("bindings")
+        ) : activeTab === "vaults" ? (
+          <SecretVaultProvidersTab
+            providers={providersQuery.data ?? []}
+            providerConfigs={providerConfigs}
+            onCreateAwsVault={(input) => createProviderConfig.mutateAsync(input)}
+            onCheckVault={(id) => checkProviderConfig.mutateAsync(id)}
+            createErrorMessage={createProviderErrorMessage}
+            checkingVaultId={checkProviderConfig.variables ?? null}
+          />
+        ) : activeTab === "audit" ? (
+          renderSelectedSecretRequiredTab("audit")
         ) : (
-          <section className="rounded-md border border-border bg-card p-4">
-            <div className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              {TABS.find((tab) => tab.id === activeTab)?.label}
-            </div>
-            <p className="mt-2 text-sm text-muted-foreground">
-              This settings tab will be wired in a later task. Inventory is available now.
-            </p>
-          </section>
+          null
         )}
       </div>
 

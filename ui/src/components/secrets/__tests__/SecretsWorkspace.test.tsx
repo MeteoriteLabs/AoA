@@ -16,14 +16,18 @@ import {
 vi.mock("@/api/secrets", () => ({
   secretsApi: {
     list: vi.fn(),
+    providers: vi.fn(),
     create: vi.fn(),
     rotate: vi.fn(),
     providerConfigs: {
       list: vi.fn(),
+      create: vi.fn(),
+      check: vi.fn(),
     },
     bindings: {
       list: vi.fn(),
     },
+    accessEvents: vi.fn(),
   },
 }));
 
@@ -54,6 +58,7 @@ function makeSecret(partial: Partial<CompanySecret>): CompanySecret {
 describe("SecretsWorkspace", () => {
   it("renders the secrets settings shell", async () => {
     vi.mocked(secretsApi.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
     vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
 
     renderWithProviders(<SecretsWorkspace companyId="company-1" />);
@@ -72,6 +77,7 @@ describe("SecretsWorkspace", () => {
 
   it("shows an error instead of the empty state when secrets fail to load", async () => {
     vi.mocked(secretsApi.list).mockRejectedValue(new Error("Network unavailable"));
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
     vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
 
     renderWithProviders(<SecretsWorkspace companyId="company-1" />);
@@ -82,7 +88,10 @@ describe("SecretsWorkspace", () => {
 
   it("renders inventory for non-empty secrets and hides it on another tab", async () => {
     const user = userEvent.setup();
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
     vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.bindings.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.accessEvents).mockResolvedValue([]);
     vi.mocked(secretsApi.list).mockResolvedValue([
       makeSecret({ id: "openai", name: "OpenAI API Key", key: "OPENAI_API_KEY" }),
       makeSecret({ id: "hubspot", name: "HubSpot Private App", key: "HUBSPOT_TOKEN" }),
@@ -99,14 +108,15 @@ describe("SecretsWorkspace", () => {
     await user.click(screen.getByRole("tab", { name: "Bindings" }));
 
     expect(screen.queryByPlaceholderText("Search by name, key, department")).toBeNull();
-    expect(screen.queryByText("OpenAI API Key")).toBeNull();
-    expect(screen.getByText("This settings tab will be wired in a later task. Inventory is available now.")).toBeTruthy();
+    expect(await screen.findByText("No bindings for this secret")).toBeTruthy();
   });
 
   it("creates a local managed secret from the header dialog and selects it after success", async () => {
     const user = userEvent.setup();
     const created = makeSecret({ id: "stripe", name: "Stripe API Key", key: "STRIPE_API_KEY" });
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
     vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.accessEvents).mockResolvedValue([]);
     vi.mocked(secretsApi.list).mockResolvedValueOnce([]).mockResolvedValue([created]);
     vi.mocked(secretsApi.create).mockResolvedValue(created);
 
@@ -136,7 +146,9 @@ describe("SecretsWorkspace", () => {
 
   it("keeps add dialog open and shows create failures", async () => {
     const user = userEvent.setup();
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
     vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.accessEvents).mockResolvedValue([]);
     vi.mocked(secretsApi.list).mockResolvedValue([]);
     vi.mocked(secretsApi.create).mockRejectedValue(new Error("Create failed"));
 
@@ -155,9 +167,11 @@ describe("SecretsWorkspace", () => {
   it("rotates an AoA-managed inventory secret and closes the dialog after success", async () => {
     const user = userEvent.setup();
     const secret = makeSecret({ id: "openai", name: "OpenAI API Key", key: "OPENAI_API_KEY", latestVersion: 3 });
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
     vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
     vi.mocked(secretsApi.list).mockResolvedValue([secret]);
     vi.mocked(secretsApi.bindings.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.accessEvents).mockResolvedValue([]);
     vi.mocked(secretsApi.rotate).mockResolvedValue(makeSecret({ ...secret, latestVersion: 4 }));
 
     renderWithProviders(<SecretsWorkspace companyId="company-1" />);
@@ -174,9 +188,11 @@ describe("SecretsWorkspace", () => {
   it("keeps rotate dialog open and shows rotate failures", async () => {
     const user = userEvent.setup();
     const secret = makeSecret({ id: "openai", name: "OpenAI API Key", key: "OPENAI_API_KEY", latestVersion: 3 });
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
     vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
     vi.mocked(secretsApi.list).mockResolvedValue([secret]);
     vi.mocked(secretsApi.bindings.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.accessEvents).mockResolvedValue([]);
     vi.mocked(secretsApi.rotate).mockRejectedValue(new Error("Rotate failed"));
 
     renderWithProviders(<SecretsWorkspace companyId="company-1" />);
