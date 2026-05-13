@@ -374,6 +374,10 @@ export function classifyScheduledRetryGate(input: {
   return null;
 }
 
+function isCancellableIssueExecutionStatus(status: string) {
+  return status === "queued" || status === "scheduled_retry";
+}
+
 function isSameTaskScope(left: string | null, right: string | null) {
   return (left ?? null) === (right ?? null);
 }
@@ -3691,6 +3695,8 @@ export function heartbeatService(db: Db) {
           .select({
             id: issues.id,
             companyId: issues.companyId,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
           })
@@ -3723,7 +3729,12 @@ export function heartbeatService(db: Db) {
             .then((rows) => rows[0] ?? null)
           : null;
 
-        if (activeExecutionRun && activeExecutionRun.status !== "queued" && activeExecutionRun.status !== "running") {
+        if (
+          activeExecutionRun &&
+          activeExecutionRun.status !== "queued" &&
+          activeExecutionRun.status !== "running" &&
+          activeExecutionRun.status !== "scheduled_retry"
+        ) {
           activeExecutionRun = null;
         }
 
@@ -3746,7 +3757,7 @@ export function heartbeatService(db: Db) {
             .where(
               and(
                 eq(heartbeatRuns.companyId, issue.companyId),
-                inArray(heartbeatRuns.status, ["queued", "running"]),
+                inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
                 sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
               ),
             )
@@ -3773,6 +3784,49 @@ export function heartbeatService(db: Db) {
                 updatedAt: new Date(),
               })
               .where(eq(issues.id, issue.id));
+          }
+        }
+
+        if (activeExecutionRun) {
+          const staleReason = classifyScheduledRetryGate({
+            issue,
+            agentId: activeExecutionRun.agentId,
+          });
+          if (staleReason && isCancellableIssueExecutionStatus(activeExecutionRun.status)) {
+            const now = new Date();
+            await tx
+              .update(heartbeatRuns)
+              .set({
+                status: "cancelled",
+                finishedAt: now,
+                errorCode: staleReason,
+                error: "Queued issue execution cancelled because the issue is no longer eligible",
+                updatedAt: now,
+              })
+              .where(eq(heartbeatRuns.id, activeExecutionRun.id));
+            if (activeExecutionRun.wakeupRequestId) {
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "cancelled",
+                  finishedAt: now,
+                  error: "Queued issue execution cancelled because the issue is no longer eligible",
+                  updatedAt: now,
+                })
+                .where(eq(agentWakeupRequests.id, activeExecutionRun.wakeupRequestId));
+            }
+            if (issue.executionRunId === activeExecutionRun.id) {
+              await tx
+                .update(issues)
+                .set({
+                  executionRunId: null,
+                  executionAgentNameKey: null,
+                  executionLockedAt: null,
+                  updatedAt: now,
+                })
+                .where(eq(issues.id, issue.id));
+            }
+            activeExecutionRun = null;
           }
         }
 
