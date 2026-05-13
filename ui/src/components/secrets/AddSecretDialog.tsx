@@ -31,6 +31,7 @@ interface AddSecretDialogProps {
   onOpenChange(open: boolean): void;
   onSubmit(input: CreateSecretInput): void | Promise<unknown>;
   providerConfigs?: CompanySecretProviderConfig[];
+  errorMessage?: string | null;
 }
 
 const LOCAL_PROVIDER: SecretProvider = "local_encrypted";
@@ -40,6 +41,7 @@ export function AddSecretDialog({
   onOpenChange,
   onSubmit,
   providerConfigs = [],
+  errorMessage,
 }: AddSecretDialogProps) {
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
@@ -51,6 +53,10 @@ export function AddSecretDialog({
   const [selectedProviderConfigId, setSelectedProviderConfigId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const externalProviderConfigs = useMemo(
+    () => providerConfigs.filter((config) => config.provider !== LOCAL_PROVIDER),
+    [providerConfigs],
+  );
   const providerOptions = useMemo(() => {
     const providers = new Set<SecretProvider>([LOCAL_PROVIDER]);
     providerConfigs.forEach((config) => providers.add(config.provider));
@@ -70,13 +76,48 @@ export function AddSecretDialog({
     setIsSubmitting(false);
   }, [open]);
 
+  useEffect(() => {
+    if (managedMode !== "external_reference") return;
+    const currentConfig = externalProviderConfigs.find((config) => config.id === selectedProviderConfigId);
+    if (currentConfig) {
+      if (selectedProvider !== currentConfig.provider) setSelectedProvider(currentConfig.provider);
+      return;
+    }
+
+    const defaultConfig = externalProviderConfigs[0] ?? null;
+    setSelectedProvider(defaultConfig?.provider ?? LOCAL_PROVIDER);
+    setSelectedProviderConfigId(defaultConfig?.id ?? null);
+  }, [externalProviderConfigs, managedMode, selectedProvider, selectedProviderConfigId]);
+
   const availableProviderConfigs = providerConfigs.filter((config) => config.provider === selectedProvider);
   const isExternalReference = managedMode === "external_reference";
+  const effectiveExternalProviderConfig = isExternalReference
+    ? externalProviderConfigs.find((config) => config.id === selectedProviderConfigId) ?? externalProviderConfigs[0] ?? null
+    : null;
+  const submitProvider = effectiveExternalProviderConfig?.provider ?? selectedProvider;
+  const submitProviderConfigId = effectiveExternalProviderConfig?.id ?? selectedProviderConfigId;
+  const missingExternalProvider = isExternalReference && externalProviderConfigs.length === 0;
   const sensitiveKey = looksSensitiveKey(key);
-  const canSubmit = name.trim().length > 0 && (isExternalReference ? externalRef.trim().length > 0 : value.length > 0);
+  const canSubmit =
+    name.trim().length > 0 &&
+    (isExternalReference
+      ? externalRef.trim().length > 0 && submitProvider !== LOCAL_PROVIDER && Boolean(submitProviderConfigId)
+      : value.length > 0);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  function selectManagedMode(next: ManagedMode) {
+    setManagedMode(next);
+    if (next === "external_reference") {
+      const defaultConfig = externalProviderConfigs[0] ?? null;
+      setSelectedProvider(defaultConfig?.provider ?? LOCAL_PROVIDER);
+      setSelectedProviderConfigId(defaultConfig?.id ?? null);
+      return;
+    }
+
+    setSelectedProvider(LOCAL_PROVIDER);
+    setSelectedProviderConfigId(null);
+  }
+
+  async function submitSecret() {
     if (!canSubmit || isSubmitting) return;
 
     setIsSubmitting(true);
@@ -85,16 +126,23 @@ export function AddSecretDialog({
         name: name.trim(),
         key: key.trim() || null,
         value: managedMode === "aoa_managed" ? value : null,
-        provider: selectedProvider,
-        providerConfigId: selectedProviderConfigId,
+        provider: submitProvider,
+        providerConfigId: submitProviderConfigId,
         managedMode,
         description: description.trim() || null,
         externalRef: managedMode === "external_reference" ? externalRef.trim() : null,
       });
       setValue("");
+    } catch {
+      // Parent mutation state renders the visible error; keep the dialog open.
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void submitSecret();
   }
 
   return (
@@ -138,24 +186,43 @@ export function AddSecretDialog({
               <Label>Managed mode</Label>
               <RadioGroup
                 value={managedMode}
-                onValueChange={(next) => setManagedMode(next as ManagedMode)}
+                onValueChange={(next) => selectManagedMode(next as ManagedMode)}
                 className="grid gap-2 sm:grid-cols-2"
               >
-                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-card/40 p-3 text-sm">
-                  <RadioGroupItem value="aoa_managed" aria-label="AoA managed" />
+                <label
+                  className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-card/40 p-3 text-sm"
+                  onClick={() => selectManagedMode("aoa_managed")}
+                >
+                  <RadioGroupItem
+                    value="aoa_managed"
+                    aria-label="AoA managed"
+                    onClick={() => selectManagedMode("aoa_managed")}
+                  />
                   <span>
                     <span className="block font-medium">AoA managed</span>
                     <span className="block text-xs text-muted-foreground">Encrypted locally by AoA.</span>
                   </span>
                 </label>
-                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-card/40 p-3 text-sm">
-                  <RadioGroupItem value="external_reference" aria-label="External reference" />
+                <label
+                  className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-card/40 p-3 text-sm"
+                  onClick={() => selectManagedMode("external_reference")}
+                >
+                  <RadioGroupItem
+                    value="external_reference"
+                    aria-label="External reference"
+                    onClick={() => selectManagedMode("external_reference")}
+                  />
                   <span>
                     <span className="block font-medium">External reference</span>
                     <span className="block text-xs text-muted-foreground">Store only the vault reference.</span>
                   </span>
                 </label>
               </RadioGroup>
+              {missingExternalProvider && (
+                <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                  Configure an external vault provider before adding external references.
+                </p>
+              )}
             </div>
 
             <div className="grid gap-2 sm:grid-cols-2">
@@ -183,7 +250,7 @@ export function AddSecretDialog({
               <div className="grid gap-2">
                 <Label htmlFor="secret-provider-config">Provider config</Label>
                 <Select
-                  value={selectedProviderConfigId ?? "none"}
+                  value={(isExternalReference ? effectiveExternalProviderConfig?.id : selectedProviderConfigId) ?? "none"}
                   onValueChange={(next) => setSelectedProviderConfigId(next === "none" ? null : next)}
                   disabled={availableProviderConfigs.length === 0}
                 >
@@ -235,12 +302,17 @@ export function AddSecretDialog({
                 rows={3}
               />
             </div>
+            {errorMessage && (
+              <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                {errorMessage}
+              </p>
+            )}
           </DialogBody>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={!canSubmit || isSubmitting}>
+            <Button type="button" disabled={!canSubmit || isSubmitting} onClick={() => void submitSecret()}>
               Add secret
             </Button>
           </DialogFooter>

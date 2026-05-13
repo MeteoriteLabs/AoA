@@ -55,10 +55,9 @@ describe("SecretInventoryTab", () => {
     expect(onSelect).toHaveBeenCalledWith("hubspot");
   });
 
-  it("only shows action buttons when callbacks are provided", async () => {
+  it("only shows rotate for AoA-managed secrets when callback is provided", async () => {
     const user = userEvent.setup();
     const onRotate = vi.fn();
-    const onArchive = vi.fn();
     const secret = makeSecret({ id: "hubspot", name: "HubSpot Private App", key: "HUBSPOT_TOKEN" });
 
     const { rerender } = render(
@@ -66,7 +65,6 @@ describe("SecretInventoryTab", () => {
     );
 
     expect(screen.queryByRole("button", { name: "Rotate" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
 
     rerender(
       <SecretInventoryTab
@@ -74,15 +72,35 @@ describe("SecretInventoryTab", () => {
         selectedSecret={secret}
         onSelectSecret={vi.fn()}
         onRotate={onRotate}
-        onArchive={onArchive}
       />,
     );
 
     await user.click(screen.getByRole("button", { name: "Rotate" }));
-    await user.click(screen.getByRole("button", { name: "Archive" }));
 
     expect(onRotate).toHaveBeenCalledWith(secret);
-    expect(onArchive).toHaveBeenCalledWith(secret);
+  });
+
+  it("hides rotate for external reference secrets even when callback is provided", () => {
+    const onRotate = vi.fn();
+    const secret = makeSecret({
+      id: "stripe",
+      name: "Stripe webhook",
+      key: "STRIPE_WEBHOOK_SECRET",
+      managedMode: "external_reference",
+      provider: "aws_secrets_manager",
+      externalRef: "arn:aws:secretsmanager:us-east-1:1:secret:stripe",
+    });
+
+    render(
+      <SecretInventoryTab
+        secrets={[secret]}
+        selectedSecret={secret}
+        onSelectSecret={vi.fn()}
+        onRotate={onRotate}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Rotate" })).not.toBeInTheDocument();
   });
 
   it("marks the selected row and shows an empty filtered state", async () => {

@@ -33,6 +33,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     queryKey: queryKeys.secrets.list(companyId),
     queryFn: () => secretsApi.list(companyId),
   });
+  const providerConfigsQuery = useQuery({
+    queryKey: queryKeys.secrets.providerConfigs(companyId),
+    queryFn: () => secretsApi.providerConfigs.list(companyId),
+  });
   const rotateBindingsQuery = useQuery({
     queryKey: rotateTarget ? queryKeys.secrets.bindings(rotateTarget.id) : ["secret-bindings", "__none__"],
     queryFn: () => secretsApi.bindings.list(rotateTarget!.id),
@@ -57,11 +61,14 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
   });
 
   const secrets = secretsQuery.data ?? [];
+  const providerConfigs = providerConfigsQuery.data ?? [];
   const selectedSecret = useMemo<CompanySecret | null>(
     () => secrets.find((secret) => secret.id === selectedSecretId) ?? secrets[0] ?? null,
     [secrets, selectedSecretId],
   );
   const errorMessage = secretsQuery.error instanceof Error ? secretsQuery.error.message : null;
+  const createErrorMessage = createSecret.error instanceof Error ? createSecret.error.message : null;
+  const rotateErrorMessage = rotateSecret.error instanceof Error ? rotateSecret.error.message : null;
 
   return (
     <div>
@@ -83,7 +90,14 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
               <CloudDownload className="size-3.5" />
               Import
             </Button>
-            <Button type="button" size="sm" onClick={() => setAddOpen(true)}>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => {
+                createSecret.reset();
+                setAddOpen(true);
+              }}
+            >
               <Plus className="size-3.5" />
               Add secret
             </Button>
@@ -130,7 +144,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
             secrets={secrets}
             selectedSecret={selectedSecret}
             onSelectSecret={setSelectedSecretId}
-            onRotate={setRotateTarget}
+            onRotate={(secret) => {
+              rotateSecret.reset();
+              setRotateTarget(secret);
+            }}
           />
         ) : (
           <section className="rounded-md border border-border bg-card p-4">
@@ -146,7 +163,12 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
 
       <AddSecretDialog
         open={addOpen}
-        onOpenChange={setAddOpen}
+        onOpenChange={(open) => {
+          if (!open) createSecret.reset();
+          setAddOpen(open);
+        }}
+        providerConfigs={providerConfigs}
+        errorMessage={createErrorMessage}
         onSubmit={(input) => createSecret.mutateAsync(input)}
       />
       <RotateSecretDialog
@@ -156,6 +178,7 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
         }}
         secret={rotateTarget}
         impactedBindingCount={rotateBindingsQuery.data?.length ?? 0}
+        errorMessage={rotateErrorMessage}
         onSubmit={({ value }) => {
           if (!rotateTarget) return;
           return rotateSecret.mutateAsync({ id: rotateTarget.id, value });

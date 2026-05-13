@@ -19,6 +19,7 @@ interface RotateSecretDialogProps {
   secret: CompanySecret | null;
   impactedBindingCount: number;
   onSubmit(input: { value: string }): void | Promise<unknown>;
+  errorMessage?: string | null;
 }
 
 export function RotateSecretDialog({
@@ -27,6 +28,7 @@ export function RotateSecretDialog({
   secret,
   impactedBindingCount,
   onSubmit,
+  errorMessage,
 }: RotateSecretDialogProps) {
   const [value, setValue] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -50,6 +52,8 @@ export function RotateSecretDialog({
     try {
       await onSubmit({ value });
       setValue("");
+    } catch {
+      // Parent mutation state renders the visible error; keep the dialog open.
     } finally {
       setIsSubmitting(false);
     }
@@ -82,6 +86,11 @@ export function RotateSecretDialog({
                 autoComplete="new-password"
               />
             </div>
+            {errorMessage && (
+              <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                {errorMessage}
+              </p>
+            )}
           </DialogBody>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

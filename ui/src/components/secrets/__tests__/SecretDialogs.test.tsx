@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { CompanySecret } from "@armyofagents/shared";
+import type { CompanySecret, CompanySecretProviderConfig } from "@armyofagents/shared";
 import { describe, expect, it, vi } from "vitest";
 import { AddSecretDialog } from "@/components/secrets/AddSecretDialog";
 import { RotateSecretDialog } from "@/components/secrets/RotateSecretDialog";
@@ -29,6 +29,27 @@ function makeSecret(partial: Partial<CompanySecret> = {}): CompanySecret {
   };
 }
 
+function makeProviderConfig(partial: Partial<CompanySecretProviderConfig> = {}): CompanySecretProviderConfig {
+  return {
+    id: partial.id ?? "aws-config-1",
+    companyId: partial.companyId ?? "company-1",
+    provider: partial.provider ?? "aws_secrets_manager",
+    displayName: partial.displayName ?? "Production AWS",
+    status: partial.status ?? "ready",
+    isDefault: partial.isDefault ?? true,
+    config: partial.config ?? { region: "us-east-1", secretNamePrefix: "aoa/prod" },
+    healthStatus: partial.healthStatus ?? null,
+    healthCheckedAt: partial.healthCheckedAt ?? null,
+    healthMessage: partial.healthMessage ?? null,
+    healthDetails: partial.healthDetails ?? null,
+    disabledAt: partial.disabledAt ?? null,
+    createdByAgentId: partial.createdByAgentId ?? null,
+    createdByUserId: partial.createdByUserId ?? null,
+    createdAt: partial.createdAt ?? new Date("2026-05-14T00:00:00Z"),
+    updatedAt: partial.updatedAt ?? new Date("2026-05-14T00:00:00Z"),
+  };
+}
+
 describe("AddSecretDialog", () => {
   it("submits a local managed secret payload", async () => {
     const user = userEvent.setup();
@@ -40,6 +61,7 @@ describe("AddSecretDialog", () => {
     await user.type(screen.getByLabelText("Key"), " OPENAI_API_KEY ");
     await user.type(screen.getByLabelText("Secret value"), "sk-live");
     await user.type(screen.getByLabelText("Description"), " Used by QA ");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Add secret" }));
 
     expect(onSubmit).toHaveBeenCalledWith({
@@ -68,7 +90,14 @@ describe("AddSecretDialog", () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
 
-    render(<AddSecretDialog open onOpenChange={vi.fn()} onSubmit={onSubmit} />);
+    render(
+      <AddSecretDialog
+        open
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+        providerConfigs={[makeProviderConfig({ id: "aws-config-1" })]}
+      />,
+    );
 
     await user.click(screen.getByRole("radio", { name: /external reference/i }));
     await user.type(screen.getByLabelText("Name"), " Stripe webhook ");
@@ -81,18 +110,51 @@ describe("AddSecretDialog", () => {
     const value = screen.getByLabelText("Secret value");
     expect(value).toBeDisabled();
 
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Add secret" }));
 
     expect(onSubmit).toHaveBeenCalledWith({
       name: "Stripe webhook",
       key: "STRIPE_WEBHOOK_SECRET",
       value: null,
-      provider: "local_encrypted",
-      providerConfigId: null,
+      provider: "aws_secrets_manager",
+      providerConfigId: "aws-config-1",
       managedMode: "external_reference",
       description: null,
       externalRef: "arn:aws:secretsmanager:us-east-1:1:secret:stripe",
     });
+  });
+
+  it("disables external reference submit until an external vault provider is configured", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+
+    render(<AddSecretDialog open onOpenChange={vi.fn()} onSubmit={onSubmit} />);
+
+    await user.click(screen.getByRole("radio", { name: /external reference/i }));
+    await user.type(screen.getByLabelText("Name"), "Stripe webhook");
+    await user.type(
+      screen.getByLabelText("External reference", { selector: "input" }),
+      "arn:aws:secretsmanager:us-east-1:1:secret:stripe",
+    );
+
+    expect(screen.getByText("Configure an external vault provider before adding external references.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add secret" })).toBeDisabled();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("shows create errors without clearing the dialog", async () => {
+    render(
+      <AddSecretDialog
+        open
+        onOpenChange={vi.fn()}
+        onSubmit={vi.fn()}
+        errorMessage="Create failed"
+      />,
+    );
+
+    expect(screen.getByText("Create failed")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Add secret" })).toBeInTheDocument();
   });
 });
 
@@ -123,5 +185,21 @@ describe("RotateSecretDialog", () => {
     await user.click(submit);
 
     expect(onSubmit).toHaveBeenCalledWith({ value: "sk-new" });
+  });
+
+  it("shows rotate errors without clearing the dialog", () => {
+    render(
+      <RotateSecretDialog
+        open
+        onOpenChange={vi.fn()}
+        secret={makeSecret({ latestVersion: 3 })}
+        impactedBindingCount={0}
+        onSubmit={vi.fn()}
+        errorMessage="Rotate failed"
+      />,
+    );
+
+    expect(screen.getByText("Rotate failed")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Rotate secret" })).toBeInTheDocument();
   });
 });

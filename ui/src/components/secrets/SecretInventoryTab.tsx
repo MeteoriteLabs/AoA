@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Archive, EyeOff, KeyRound, RefreshCw } from "lucide-react";
+import { EyeOff, KeyRound, RefreshCw } from "lucide-react";
 import type { CompanySecret } from "@armyofagents/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,6 @@ interface SecretInventoryTabProps {
   selectedSecret: CompanySecret | null;
   onSelectSecret(id: string): void;
   onRotate?(secret: CompanySecret): void;
-  onArchive?(secret: CompanySecret): void;
 }
 
 function statusLabel(status: CompanySecret["status"]): string {
@@ -49,7 +48,6 @@ export function SecretInventoryTab({
   selectedSecret,
   onSelectSecret,
   onRotate,
-  onArchive,
 }: SecretInventoryTabProps) {
   const [search, setSearch] = useState("");
   const normalizedSearch = search.trim().toLowerCase();
@@ -59,6 +57,8 @@ export function SecretInventoryTab({
   );
   const visibleSelectedSecret =
     selectedSecret && filteredSecrets.some((secret) => secret.id === selectedSecret.id) ? selectedSecret : null;
+  const canRotateSelectedSecret =
+    Boolean(onRotate) && visibleSelectedSecret?.managedMode === "aoa_managed";
 
   return (
     <div className="grid min-h-[420px] gap-4 lg:grid-cols-[minmax(0,0.95fr)_minmax(320px,1.05fr)]">
@@ -138,25 +138,12 @@ export function SecretInventoryTab({
                   {statusLabel(visibleSelectedSecret.status)}
                 </Badge>
               </div>
-              {(onRotate || onArchive) && (
+              {canRotateSelectedSecret && (
                 <div className="mt-4 flex flex-wrap gap-2">
-                  {onRotate && (
-                    <Button type="button" size="sm" variant="outline" onClick={() => onRotate(visibleSelectedSecret)}>
-                      <RefreshCw className="size-3.5" />
-                      Rotate
-                    </Button>
-                  )}
-                  {onArchive && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => onArchive(visibleSelectedSecret)}
-                    >
-                      <Archive className="size-3.5" />
-                      Archive
-                    </Button>
-                  )}
+                  <Button type="button" size="sm" variant="outline" onClick={() => onRotate?.(visibleSelectedSecret)}>
+                    <RefreshCw className="size-3.5" />
+                    Rotate
+                  </Button>
                 </div>
               )}
             </div>
