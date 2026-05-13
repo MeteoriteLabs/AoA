@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   agents,
@@ -94,11 +94,16 @@ import { isCheapRecoveryWake, resolveRecoveryCheapModel } from "./recovery/model
 import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
+  normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turn_continuation";
+export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turn_continuation_retry";
+export const MAX_TURN_CONTINUATION_MAX_ATTEMPTS = 2;
+export const MAX_TURN_CONTINUATION_DELAY_MS = 1_000;
 const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 // AoA canonical names. Existing rows still using the legacy paperclip-
 // names are read transparently via the helpers below; writes only emit
@@ -316,6 +321,57 @@ function mergeCoalescedContextSnapshot(
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
   return deriveTaskKey(run.contextSnapshot as Record<string, unknown> | null, null);
+}
+
+function readNonNegativeInteger(value: unknown, fallback = 0) {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : fallback;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.floor(parsed));
+}
+
+export function nextMaxTurnContinuationAttempt(run: {
+  scheduledRetryAttempt?: number | null;
+  continuationAttempt?: number | null;
+  contextSnapshot?: unknown;
+}) {
+  const context = parseObject(run.contextSnapshot);
+  const current = Math.max(
+    readNonNegativeInteger(run.scheduledRetryAttempt),
+    readNonNegativeInteger(run.continuationAttempt),
+    readNonNegativeInteger(context.scheduledRetryAttempt),
+    readNonNegativeInteger(context.continuationAttempt),
+  );
+  return current + 1;
+}
+
+export function buildMaxTurnContinuationRetryContext(input: {
+  sourceRunId: string;
+  issueId: string;
+  attempt: number;
+  contextSnapshot?: unknown;
+}) {
+  return {
+    ...parseObject(input.contextSnapshot),
+    retryOfRunId: input.sourceRunId,
+    retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+    scheduledRetryAttempt: input.attempt,
+    continuationAttempt: input.attempt,
+    wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+    issueId: input.issueId,
+    taskId: input.issueId,
+    resumeIntent: true,
+  };
+}
+
+export function classifyScheduledRetryGate(input: {
+  issue: { status: string; assigneeAgentId?: string | null } | null;
+  agentId: string;
+}): "issue_cancelled" | "issue_reassigned" | "issue_not_in_progress" | null {
+  if (!input.issue) return "issue_not_in_progress";
+  if (input.issue.status === "cancelled") return "issue_cancelled";
+  if (input.issue.assigneeAgentId !== input.agentId) return "issue_reassigned";
+  if (input.issue.status !== "in_progress") return "issue_not_in_progress";
+  return null;
 }
 
 function isSameTaskScope(left: string | null, right: string | null) {
@@ -1212,6 +1268,277 @@ export function heartbeatService(db: Db) {
       .update(agentWakeupRequests)
       .set({ status, ...patch, updatedAt: new Date() })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
+  }
+
+  async function hasIncompleteDependencies(companyId: string, issueId: string) {
+    const blocked = await db
+      .select({ id: taskDependencies.dependencyIssueId })
+      .from(taskDependencies)
+      .innerJoin(issues, eq(issues.id, taskDependencies.dependencyIssueId))
+      .where(
+        and(
+          eq(taskDependencies.companyId, companyId),
+          eq(taskDependencies.dependentIssueId, issueId),
+          ne(issues.status, "done"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(blocked);
+  }
+
+  async function scheduleBoundedRetryForRun(
+    sourceRun: typeof heartbeatRuns.$inferSelect,
+    opts: { now?: Date } = {},
+  ) {
+    const contextSnapshot = parseObject(sourceRun.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId) ?? readNonEmptyString(contextSnapshot.taskId);
+    if (!issueId) return null;
+
+    const attempt = nextMaxTurnContinuationAttempt(sourceRun);
+    if (attempt > MAX_TURN_CONTINUATION_MAX_ATTEMPTS) return null;
+
+    const agent = await getAgent(sourceRun.agentId);
+    if (
+      !agent ||
+      agent.companyId !== sourceRun.companyId ||
+      agent.status === "paused" ||
+      agent.status === "terminated" ||
+      agent.status === "pending_approval"
+    ) {
+      return null;
+    }
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, sourceRun.companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    if (classifyScheduledRetryGate({ issue, agentId: sourceRun.agentId })) return null;
+    if (await hasIncompleteDependencies(sourceRun.companyId, issueId)) return null;
+
+    const now = opts.now ?? new Date();
+    const dueAt = new Date(now.getTime() + MAX_TURN_CONTINUATION_DELAY_MS);
+    const retryContext = buildMaxTurnContinuationRetryContext({
+      sourceRunId: sourceRun.id,
+      issueId,
+      attempt,
+      contextSnapshot,
+    });
+    const idempotencyKey = [
+      MAX_TURN_CONTINUATION_WAKE_REASON,
+      issueId,
+      sourceRun.id,
+      String(attempt),
+    ].join(":");
+    const existingStatuses = ["scheduled_retry", "queued", "deferred_issue_execution", "claimed", "completed"];
+
+    const readExistingWakeRun = async () => {
+      const existingWake = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, sourceRun.companyId),
+            eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+            inArray(agentWakeupRequests.status, existingStatuses),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (!existingWake?.runId) return null;
+      return getRun(existingWake.runId);
+    };
+
+    try {
+      return await db.transaction(async (tx) => {
+        const existingWake = await tx
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, sourceRun.companyId),
+              eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+              inArray(agentWakeupRequests.status, existingStatuses),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+
+        if (existingWake?.runId) {
+          return tx
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, existingWake.runId))
+            .then((rows) => rows[0] ?? null);
+        }
+
+        const wakeupRequest = existingWake ?? await tx
+          .insert(agentWakeupRequests)
+          .values({
+            companyId: sourceRun.companyId,
+            agentId: sourceRun.agentId,
+            source: "on_demand",
+            triggerDetail: "recovery.max_turn_continuation",
+            reason: MAX_TURN_CONTINUATION_WAKE_REASON,
+            payload: retryContext,
+            status: "scheduled_retry",
+            idempotencyKey,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+
+        const sessionBefore = await resolveSessionBeforeForWakeup(agent, runTaskKey(sourceRun));
+        const scheduledRun = await tx
+          .insert(heartbeatRuns)
+          .values({
+            companyId: sourceRun.companyId,
+            agentId: sourceRun.agentId,
+            invocationSource: "on_demand",
+            triggerDetail: "recovery.max_turn_continuation",
+            status: "scheduled_retry",
+            wakeupRequestId: wakeupRequest.id,
+            contextSnapshot: retryContext,
+            sessionIdBefore: sessionBefore,
+            retryOfRunId: sourceRun.id,
+            scheduledRetryAt: dueAt,
+            scheduledRetryAttempt: attempt,
+            scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+            continuationAttempt: attempt,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            runId: scheduledRun.id,
+            payload: retryContext,
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: scheduledRun.id,
+            executionAgentNameKey: normalizeAgentNameKey(agent.name),
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, sourceRun.companyId)));
+
+        return scheduledRun;
+      });
+    } catch (err) {
+      const existingRun = await readExistingWakeRun();
+      if (existingRun) return existingRun;
+      throw err;
+    }
+  }
+
+  async function promoteDueScheduledRetries(now = new Date()) {
+    const dueRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.status, "scheduled_retry"), lte(heartbeatRuns.scheduledRetryAt, now)))
+      .orderBy(asc(heartbeatRuns.scheduledRetryAt), asc(heartbeatRuns.createdAt));
+
+    let promoted = 0;
+    let cancelled = 0;
+
+    for (const dueRun of dueRuns) {
+      const contextSnapshot = parseObject(dueRun.contextSnapshot);
+      const issueId = readNonEmptyString(contextSnapshot.issueId) ?? readNonEmptyString(contextSnapshot.taskId);
+      const issue = issueId
+        ? await db
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, dueRun.companyId)))
+          .then((rows) => rows[0] ?? null)
+        : null;
+      const invalidation = classifyScheduledRetryGate({ issue, agentId: dueRun.agentId });
+
+      if (invalidation || !issueId) {
+        await db.transaction(async (tx) => {
+          await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              errorCode: invalidation ?? "issue_not_in_progress",
+              error: "Scheduled retry cancelled because the issue is no longer eligible",
+              updatedAt: now,
+            })
+            .where(and(eq(heartbeatRuns.id, dueRun.id), eq(heartbeatRuns.status, "scheduled_retry")));
+
+          if (dueRun.wakeupRequestId) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                finishedAt: now,
+                error: "Scheduled retry cancelled because the issue is no longer eligible",
+                updatedAt: now,
+              })
+              .where(eq(agentWakeupRequests.id, dueRun.wakeupRequestId));
+          }
+
+          if (issue?.executionRunId === dueRun.id) {
+            await tx
+              .update(issues)
+              .set({
+                executionRunId: null,
+                executionAgentNameKey: null,
+                executionLockedAt: null,
+                updatedAt: now,
+              })
+              .where(eq(issues.id, issue.id));
+          }
+        });
+        cancelled += 1;
+        continue;
+      }
+
+      await db.transaction(async (tx) => {
+        await tx
+          .update(heartbeatRuns)
+          .set({ status: "queued", updatedAt: now })
+          .where(and(eq(heartbeatRuns.id, dueRun.id), eq(heartbeatRuns.status, "scheduled_retry")));
+        if (dueRun.wakeupRequestId) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({ status: "queued", updatedAt: now })
+            .where(eq(agentWakeupRequests.id, dueRun.wakeupRequestId));
+        }
+      });
+      promoted += 1;
+
+      publishLiveEvent({
+        companyId: dueRun.companyId,
+        type: "heartbeat.run.queued",
+        payload: {
+          runId: dueRun.id,
+          agentId: dueRun.agentId,
+          invocationSource: dueRun.invocationSource,
+          triggerDetail: dueRun.triggerDetail,
+          wakeupRequestId: dueRun.wakeupRequestId,
+        },
+      });
+      await startNextQueuedRunForAgent(dueRun.agentId);
+    }
+
+    return { checked: dueRuns.length, promoted, cancelled };
   }
 
   async function appendRunEvent(
@@ -2940,6 +3267,28 @@ export function heartbeatService(db: Db) {
             exitCode: adapterResult.exitCode,
           },
         });
+        if (normalizeMaxTurnStopReason(finalizedRun.errorCode) || normalizeMaxTurnStopReason(parseObject(finalizedRun.resultJson).stopReason)) {
+          const scheduledRetry = await scheduleBoundedRetryForRun(finalizedRun).catch((err) => {
+            logger.warn(
+              { err, runId: finalizedRun.id, agentId: finalizedRun.agentId, companyId: finalizedRun.companyId },
+              "failed to schedule max-turn continuation retry",
+            );
+            return null;
+          });
+          if (scheduledRetry) {
+            await appendRunEvent(finalizedRun, seq++, {
+              eventType: "recovery.retry_scheduled",
+              stream: "system",
+              level: "info",
+              message: "scheduled max-turn continuation retry",
+              payload: {
+                retryRunId: scheduledRetry.id,
+                attempt: scheduledRetry.scheduledRetryAttempt,
+                scheduledRetryAt: scheduledRetry.scheduledRetryAt?.toISOString() ?? null,
+              },
+            });
+          }
+        }
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
@@ -3748,6 +4097,10 @@ export function heartbeatService(db: Db) {
     },
 
     getRun,
+
+    scheduleBoundedRetryForRun,
+
+    promoteDueScheduledRetries,
 
     getRuntimeState: async (agentId: string) => {
       const state = await getRuntimeState(agentId);
