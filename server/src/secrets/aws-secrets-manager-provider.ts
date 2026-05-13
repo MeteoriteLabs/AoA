@@ -81,6 +81,53 @@ class AwsSdkSecretsManagerGateway implements AwsSecretsManagerGateway {
   }
 }
 
+class FakeAwsSecretsManagerGateway implements AwsSecretsManagerGateway {
+  private readonly secrets = new Map<string, { value: string; versionId: string; description?: string }>([
+    [
+      "arn:aws:secretsmanager:us-east-1:111111111111:secret:OPENAI_API_KEY",
+      { value: "fake-openai-key", versionId: "v1", description: "E2E OpenAI API key" },
+    ],
+  ]);
+
+  async createSecret(input: Parameters<AwsSecretsManagerGateway["createSecret"]>[0]) {
+    const arn = `arn:aws:secretsmanager:us-east-1:111111111111:secret:${input.Name}`;
+    this.secrets.set(arn, { value: input.SecretString, versionId: "v1", description: input.Description });
+    return { ARN: arn, VersionId: "v1" };
+  }
+
+  async putSecretValue(input: Parameters<AwsSecretsManagerGateway["putSecretValue"]>[0]) {
+    const existing = this.secrets.get(input.SecretId);
+    const version = existing ? `v${Number(existing.versionId.replace(/^v/, "")) + 1}` : "v1";
+    this.secrets.set(input.SecretId, { value: input.SecretString, versionId: version, description: existing?.description });
+    return { ARN: input.SecretId, VersionId: version };
+  }
+
+  async getSecretValue(input: Parameters<AwsSecretsManagerGateway["getSecretValue"]>[0]) {
+    const row = this.secrets.get(input.SecretId);
+    if (!row) throw unprocessable("Fake AWS secret not found");
+    return { SecretString: row.value, VersionId: row.versionId };
+  }
+
+  async listSecrets(input: Parameters<AwsSecretsManagerGateway["listSecrets"]>[0]): ReturnType<AwsSecretsManagerGateway["listSecrets"]> {
+    const query = input.Filters?.find((filter) => filter.Key === FilterNameStringType.name)?.Values?.[0]?.toLowerCase();
+    const SecretList = [...this.secrets.entries()]
+      .filter(([arn]) => !query || arn.toLowerCase().includes(query))
+      .slice(0, input.MaxResults ?? 100)
+      .map(([arn, row]) => ({
+        ARN: arn,
+        Name: arn.split(":secret:")[1] ?? arn,
+        Description: row.description,
+      }) satisfies SecretListEntry);
+    return { SecretList };
+  }
+
+  async deleteSecret() {
+    return {};
+  }
+}
+
+const fakeAwsSecretsManagerGateway = new FakeAwsSecretsManagerGateway();
+
 function sha256Hex(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -136,7 +183,10 @@ export function createAwsSecretsManagerProvider(opts?: {
   gatewayFactory?: (config: SecretProviderVaultRuntimeConfig) => AwsSecretsManagerGateway;
 }): SecretProviderModule {
   const gatewayFor = (providerConfig: SecretProviderVaultRuntimeConfig) =>
-    opts?.gatewayFactory?.(providerConfig) ?? new AwsSdkSecretsManagerGateway(configRecord(providerConfig).region);
+    opts?.gatewayFactory?.(providerConfig) ??
+    (process.env.AOA_E2E_FAKE_AWS_SECRETS_MANAGER === "1"
+      ? fakeAwsSecretsManagerGateway
+      : new AwsSdkSecretsManagerGateway(configRecord(providerConfig).region));
 
   return {
     id: "aws_secrets_manager",

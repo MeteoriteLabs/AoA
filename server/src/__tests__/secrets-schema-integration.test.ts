@@ -95,7 +95,7 @@ describe.skipIf(process.platform === "win32")("secrets schema — real DB integr
 
     const providerConfigInserted = await db.execute<{ id: string; company_id: string }>(sql`
       INSERT INTO company_secret_provider_configs (id, company_id, provider, display_name, is_default, config)
-      VALUES (gen_random_uuid(), ${companyId}, 'openai', 'OpenAI Vault', true, '{"region":"us"}')
+      VALUES (gen_random_uuid(), ${companyId}, 'aws_secrets_manager', 'AWS Vault', true, '{"region":"us-east-1"}')
       RETURNING id, company_id
     `);
     const providerConfigId = firstId(providerConfigInserted);
@@ -108,7 +108,7 @@ describe.skipIf(process.platform === "win32")("secrets schema — real DB integr
 
     const secretInserted = await db.execute<{ id: string }>(sql`
       INSERT INTO company_secrets (id, company_id, name, key, provider, provider_config_id)
-      VALUES (gen_random_uuid(), ${companyId}, 'OpenAI API Key', 'OPENAI_API_KEY', 'openai', ${providerConfigId})
+      VALUES (gen_random_uuid(), ${companyId}, 'OpenAI API Key', 'OPENAI_API_KEY', 'aws_secrets_manager', ${providerConfigId})
       RETURNING id
     `);
     const secretId = firstId(secretInserted);
@@ -149,10 +149,10 @@ describe.skipIf(process.platform === "win32")("secrets schema — real DB integr
         ${companyId},
         ${secretId},
         1,
-        'openai',
+        'aws_secrets_manager',
         'agent',
         'agent-1',
-        'heartbeat',
+        'agent',
         'run-1',
         'env.OPENAI_API_KEY',
         'success'

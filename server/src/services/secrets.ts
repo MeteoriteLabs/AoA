@@ -30,6 +30,7 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const REDACTED_SENTINEL = "***REDACTED***";
+const STUB_EXTERNAL_PROVIDERS = new Set<SecretProvider>(["gcp_secret_manager", "vault"]);
 
 type CanonicalEnvBinding =
   | { type: "plain"; value: string }
@@ -93,6 +94,30 @@ function defaultConsumerContext(configPath?: string | null): SecretConsumerConte
     actorType: "system",
     configPath,
   };
+}
+
+export function shouldEnforceSecretBinding(context: SecretConsumerContext) {
+  if (!context.configPath) return false;
+
+  // Legacy/system-owned secret consumers predate binding rows. Keep them audited
+  // with their config path while avoiding synthetic bootstrap bindings for
+  // provider API keys, GitHub PATs, and routine trigger secrets.
+  if (context.consumerType === "system") return false;
+  if (context.consumerType === "routine" && context.actorType === "system") return false;
+
+  // Plugin secrets are authorized by plugin config-schema allowlisting in
+  // plugin-secrets-handler; the config path is still captured for audit.
+  if (context.consumerType === "plugin") return false;
+
+  return true;
+}
+
+export function normalizeProviderConfigStatus(
+  provider: SecretProvider,
+  requestedStatus?: string | null,
+) {
+  if (STUB_EXTERNAL_PROVIDERS.has(provider)) return "coming_soon";
+  return requestedStatus ?? "ready";
 }
 
 export function secretService(db: Db) {
@@ -193,7 +218,9 @@ export function secretService(db: Db) {
   }
 
   async function assertBinding(secret: typeof companySecrets.$inferSelect, context: SecretConsumerContext) {
-    if (!context.configPath) return;
+    if (!shouldEnforceSecretBinding(context)) return;
+    const configPath = context.configPath;
+    if (!configPath) return;
     const binding = await db
       .select()
       .from(companySecretBindings)
@@ -203,7 +230,7 @@ export function secretService(db: Db) {
           eq(companySecretBindings.secretId, secret.id),
           eq(companySecretBindings.targetType, context.consumerType),
           eq(companySecretBindings.targetId, context.consumerId),
-          eq(companySecretBindings.configPath, context.configPath),
+          eq(companySecretBindings.configPath, configPath),
         ),
       )
       .then((rows) => rows[0] ?? null);
@@ -345,8 +372,7 @@ export function secretService(db: Db) {
         provider: parsed.provider,
         config: parsed.config ?? {},
       });
-      const status =
-        parsed.status ?? (parsed.provider === "gcp_secret_manager" || parsed.provider === "vault" ? "coming_soon" : "ready");
+      const status = normalizeProviderConfigStatus(parsed.provider, parsed.status);
       if (parsed.isDefault && status === "coming_soon") throw unprocessable("Coming-soon providers cannot be default");
       return db.transaction(async (tx) => {
         if (parsed.isDefault) {
@@ -377,7 +403,7 @@ export function secretService(db: Db) {
       const existing = await getProviderConfigById(id);
       if (!existing) throw notFound("Provider vault not found");
       const parsed = updateSecretProviderConfigSchema.parse(patch);
-      const nextStatus = parsed.status ?? existing.status;
+      const nextStatus = normalizeProviderConfigStatus(existing.provider as SecretProvider, parsed.status ?? existing.status);
       if (parsed.isDefault && nextStatus === "coming_soon") throw unprocessable("Coming-soon providers cannot be default");
       const nextConfig =
         parsed.config === undefined
@@ -774,6 +800,7 @@ export function secretService(db: Db) {
       const parsed = remoteSecretImportPreviewSchema.parse(input);
       const config = await getProviderConfigById(parsed.providerConfigId);
       if (!config || config.companyId !== companyId) throw notFound("Provider vault not found");
+      await assertProviderConfig(companyId, config.provider as SecretProvider, config.id);
       const provider = getSecretProvider(config.provider as SecretProvider);
       if (!provider.listRemoteSecrets || !provider.linkExternalSecret) throw unprocessable("Provider does not support remote import");
       const runtimeConfig = {
@@ -819,6 +846,7 @@ export function secretService(db: Db) {
       const parsed = remoteSecretImportCommitSchema.parse(input);
       const config = await getProviderConfigById(parsed.providerConfigId);
       if (!config || config.companyId !== companyId) throw notFound("Provider vault not found");
+      await assertProviderConfig(companyId, config.provider as SecretProvider, config.id);
       const results = [];
       for (const row of parsed.secrets) {
         try {

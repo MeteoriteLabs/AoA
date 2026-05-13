@@ -70,6 +70,7 @@ export default defineConfig({
           AOA_BIND: "loopback",
           AOA_DEPLOYMENT_MODE: "local_trusted",
           AOA_DEPLOYMENT_EXPOSURE: "private",
+          AOA_E2E_FAKE_AWS_SECRETS_MANAGER: "1",
         },
       },
   outputDir: "./test-results",

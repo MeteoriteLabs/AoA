@@ -116,7 +116,14 @@ export function extractSecretRefsFromConfig(
   configJson: unknown,
   schema?: Record<string, unknown> | null,
 ): Set<string> {
-  const refs = new Set<string>();
+  return new Set(extractSecretRefPathsFromConfig(configJson, schema).keys());
+}
+
+export function extractSecretRefPathsFromConfig(
+  configJson: unknown,
+  schema?: Record<string, unknown> | null,
+): Map<string, string> {
+  const refs = new Map<string, string>();
   if (configJson == null || typeof configJson !== "object") return refs;
 
   const secretPaths = collectSecretRefPaths(schema);
@@ -131,7 +138,7 @@ export function extractSecretRefsFromConfig(
         current = (current as Record<string, unknown>)[k];
       }
       if (typeof current === "string" && isUuid(current)) {
-        refs.add(current);
+        refs.set(current, dotPath);
       }
     }
     return refs;
@@ -140,17 +147,19 @@ export function extractSecretRefsFromConfig(
   // Fallback: no schema or no secret-ref annotations — collect all UUIDs.
   // This preserves backwards compatibility for plugins that omit
   // instanceConfigSchema.
-  function walkAll(value: unknown): void {
+  function walkAll(value: unknown, path: string): void {
     if (typeof value === "string") {
-      if (isUuid(value)) refs.add(value);
+      if (isUuid(value)) refs.set(value, path || "config");
     } else if (Array.isArray(value)) {
-      for (const item of value) walkAll(item);
+      for (const [index, item] of value.entries()) walkAll(item, path ? `${path}.${index}` : String(index));
     } else if (value !== null && typeof value === "object") {
-      for (const v of Object.values(value as Record<string, unknown>)) walkAll(v);
+      for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+        walkAll(v, path ? `${path}.${key}` : key);
+      }
     }
   }
 
-  walkAll(configJson);
+  walkAll(configJson, "");
   return refs;
 }
 
@@ -247,7 +256,7 @@ export function createPluginSecretsHandler(
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
 
-  let cachedAllowedRefs: Set<string> | null = null;
+  let cachedAllowedRefs: Map<string, string> | null = null;
   let cachedAllowedRefsExpiry = 0;
   const CONFIG_CACHE_TTL_MS = 30_000; // 30 seconds, matches event bus TTL
 
@@ -293,7 +302,7 @@ export function createPluginSecretsHandler(
 
         const schema = (plugin?.manifestJson as unknown as Record<string, unknown> | null)
           ?.instanceConfigSchema as Record<string, unknown> | undefined;
-        cachedAllowedRefs = extractSecretRefsFromConfig(configRow?.configJson, schema);
+        cachedAllowedRefs = extractSecretRefPathsFromConfig(configRow?.configJson, schema);
         cachedAllowedRefsExpiry = now + CONFIG_CACHE_TTL_MS;
       }
 
@@ -321,6 +330,7 @@ export function createPluginSecretsHandler(
         actorType: "plugin",
         actorId: pluginId,
         pluginId,
+        configPath: `plugin.config.${cachedAllowedRefs.get(trimmedRef) ?? "config"}`,
       });
     },
   };
