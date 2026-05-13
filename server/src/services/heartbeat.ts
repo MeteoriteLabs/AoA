@@ -91,6 +91,10 @@ import {
 } from "@armyofagents/adapter-utils";
 import { resolveCheapFallbackModel } from "./cheap-fallback.js";
 import { isCheapRecoveryWake, resolveRecoveryCheapModel } from "./recovery/model-profile-hint.js";
+import {
+  buildHeartbeatRunStopMetadata,
+  mergeHeartbeatRunStopMetadata,
+} from "./heartbeat-stop-metadata.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -2880,24 +2884,37 @@ export function heartbeatService(db: Db) {
             } as Record<string, unknown>)
           : null;
 
+      const finalErrorCode =
+        outcome === "timed_out"
+          ? "timeout"
+          : outcome === "cancelled"
+            ? "cancelled"
+            : outcome === "failed"
+              ? (adapterResult.errorCode ?? "adapter_failed")
+              : null;
+      const finalErrorMessage =
+        outcome === "succeeded"
+          ? null
+          : sanitizeForDb(adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"));
+      const resultJsonWithStopMetadata = mergeHeartbeatRunStopMetadata(
+        adapterResult.resultJson ? parseObject(adapterResult.resultJson) : null,
+        buildHeartbeatRunStopMetadata({
+          adapterType: agent.adapterType,
+          adapterConfig: runScopedConfig,
+          outcome,
+          errorCode: finalErrorCode,
+          errorMessage: finalErrorMessage,
+        }),
+      );
+
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
-        error:
-          outcome === "succeeded"
-            ? null
-            : sanitizeForDb(adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed")),
-        errorCode:
-          outcome === "timed_out"
-            ? "timeout"
-            : outcome === "cancelled"
-              ? "cancelled"
-              : outcome === "failed"
-                ? (adapterResult.errorCode ?? "adapter_failed")
-                : null,
+        error: finalErrorMessage,
+        errorCode: finalErrorCode,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
-        resultJson: adapterResult.resultJson ?? null,
+        resultJson: resultJsonWithStopMetadata,
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
         stdoutExcerpt: sanitizeForDb(stdoutExcerpt),
         stderrExcerpt: sanitizeForDb(stderrExcerpt),
