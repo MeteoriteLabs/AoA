@@ -75,8 +75,10 @@ export function normalizeIssueMonitorPolicy(input: unknown): IssueMonitorPolicy 
 export function buildInitialIssueMonitorFields(input: {
   companyId: string;
   issue: MonitorEligibleIssue;
-  policy: IssueMonitorPolicy;
+  policy: IssueMonitorPolicy | null;
+  now?: Date;
 }): IssueMonitorInsert | null {
+  if (!input.policy) return null;
   if (!input.issue.assigneeAgentId) return null;
   if (input.issue.status !== "in_progress" && input.issue.status !== "in_review") return null;
 
@@ -97,21 +99,44 @@ export function buildInitialIssueMonitorFields(input: {
   };
 }
 
-export function buildIssueMonitorTriggeredPatch(input: { now: Date; nextAttempt: number }) {
+export function buildIssueMonitorTriggeredPatch(input: { now: Date; nextAttempt?: number; attemptCount?: number }) {
+  const attempt = input.nextAttempt ?? ((input.attemptCount ?? 0) + 1);
   return {
     status: "triggered" as const,
-    attemptCount: input.nextAttempt,
+    attemptCount: attempt,
     lastTriggeredAt: input.now,
     nextCheckAt: null,
     updatedAt: input.now,
   };
 }
 
-export function buildIssueMonitorClearedPatch(input: { now: Date; clearReason: string }) {
+export function buildIssueMonitorClearedPatch(input: {
+  now: Date;
+  clearReason?: string;
+  monitor?: { maxAttempts?: number | null; attemptCount?: number | null; timeoutAt?: Date | string | null; agentId?: string | null };
+  issue?: { status?: string | null; assigneeAgentId?: string | null } | null;
+}) {
+  const timeoutAt = input.monitor?.timeoutAt ? new Date(input.monitor.timeoutAt) : null;
+  const clearReason =
+    input.clearReason ??
+    (timeoutAt && timeoutAt.getTime() <= input.now.getTime()
+      ? "timeout_exceeded"
+      : input.monitor?.maxAttempts != null && (input.monitor.attemptCount ?? 0) >= input.monitor.maxAttempts
+        ? "max_attempts_exhausted"
+        : input.issue?.status === "done"
+          ? "done"
+          : input.issue?.status === "cancelled"
+            ? "cancelled"
+            : !input.issue?.assigneeAgentId || (input.monitor?.agentId && input.monitor.agentId !== input.issue.assigneeAgentId)
+              ? "invalid_assignee"
+              : input.issue?.status && input.issue.status !== "in_progress" && input.issue.status !== "in_review"
+                ? "invalid_status"
+                : "manual_clear");
+
   return {
     status: "cleared" as const,
     clearedAt: input.now,
-    clearReason: input.clearReason,
+    clearReason,
     updatedAt: input.now,
   };
 }
