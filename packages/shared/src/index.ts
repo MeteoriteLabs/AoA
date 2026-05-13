@@ -259,6 +259,8 @@ export type {
   IssueCommentAuthorType,
   IssueCommentMetadata,
   IssueCommentPresentation,
+  IssueMonitor,
+  IssueMonitorPolicy,
   IssueAttachment,
   IssueLabel,
   IssueDocumentSummary,
