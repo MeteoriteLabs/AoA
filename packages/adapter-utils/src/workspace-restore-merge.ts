@@ -54,14 +54,19 @@ export async function mergeChangedWorkspaceFiles({
   const after = await captureWorkspaceSnapshot(afterRoot);
   const afterRootPath = path.resolve(afterRoot);
   const destinationRootPath = path.resolve(destinationRoot);
+  const ignoreNames = new Set(DEFAULT_IGNORE_DIRS);
   const allPaths = new Set([...before.keys(), ...after.keys()]);
   const deletedPaths: string[] = [];
   const copiedPaths: string[] = [];
 
   for (const rawRelativePath of allPaths) {
     const relativePath = normalizeSnapshotKey(rawRelativePath);
-    const beforeEntry = before.get(rawRelativePath);
-    const afterEntry = after.get(rawRelativePath);
+    if (isIgnoredSnapshotPath(relativePath, ignoreNames)) {
+      continue;
+    }
+
+    const beforeEntry = before.get(rawRelativePath) ?? before.get(relativePath);
+    const afterEntry = after.get(rawRelativePath) ?? after.get(relativePath);
 
     if (entriesEqual(beforeEntry, afterEntry)) {
       continue;
@@ -88,7 +93,7 @@ export async function mergeChangedWorkspaceFiles({
 
     const sourcePath = resolveInsideRoot(afterRootPath, relativePath);
     const destinationPath = resolveInsideRoot(destinationRootPath, relativePath);
-    await copyEntry(sourcePath, destinationPath, afterEntry);
+    await copyEntry(sourcePath, destinationPath, afterEntry, destinationRootPath);
   }
 }
 
@@ -101,7 +106,7 @@ async function captureDirectory(
   const entries = await readdir(path.join(root, relativeDirectory), { withFileTypes: true });
 
   for (const entry of entries) {
-    if (entry.isDirectory() && ignoreDirs.has(entry.name)) {
+    if (ignoreDirs.has(entry.name)) {
       continue;
     }
 
@@ -134,7 +139,12 @@ async function captureDirectory(
   }
 }
 
-async function copyEntry(sourcePath: string, destinationPath: string, entry: WorkspaceEntrySnapshot) {
+async function copyEntry(
+  sourcePath: string,
+  destinationPath: string,
+  entry: WorkspaceEntrySnapshot,
+  destinationRoot: string,
+) {
   await mkdir(path.dirname(destinationPath), { recursive: true });
 
   if (entry.kind === "directory") {
@@ -150,6 +160,7 @@ async function copyEntry(sourcePath: string, destinationPath: string, entry: Wor
     if (!entry.linkTarget) {
       throw new Error(`Cannot restore symlink without link target: ${destinationPath}`);
     }
+    validateSymlinkTargetInsideRoot(destinationRoot, destinationPath, entry.linkTarget);
     await symlink(entry.linkTarget, destinationPath);
     return;
   }
@@ -207,6 +218,20 @@ function resolveInsideRoot(root: string, relativePath: string) {
   return resolved;
 }
 
+function validateSymlinkTargetInsideRoot(destinationRoot: string, linkPath: string, linkTarget: string) {
+  if (path.isAbsolute(linkTarget)) {
+    throw new Error(`Workspace symlink target escapes root: ${linkTarget}`);
+  }
+
+  const linkDirectory = path.dirname(linkPath);
+  const resolvedTarget = path.resolve(linkDirectory, linkTarget);
+  const relative = path.relative(destinationRoot, resolvedTarget);
+
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Workspace symlink target escapes root: ${linkTarget}`);
+  }
+}
+
 function normalizeSnapshotKey(relativePath: string) {
   if (!relativePath || path.isAbsolute(relativePath) || relativePath.includes("\0")) {
     throw new Error(`Invalid workspace snapshot path: ${relativePath}`);
@@ -224,6 +249,10 @@ function normalizeSnapshotKey(relativePath: string) {
   }
 
   return normalized;
+}
+
+function isIgnoredSnapshotPath(relativePath: string, ignoreNames: Set<string>) {
+  return relativePath.split("/").some((part) => ignoreNames.has(part));
 }
 
 function sortDeepestFirst(left: string, right: string) {

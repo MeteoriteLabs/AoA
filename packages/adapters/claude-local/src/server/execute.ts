@@ -317,7 +317,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const commandNotes = [
     ...(instructionsFilePath
       ? [
-          `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
+          `Configured agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended for local target)`,
         ]
       : []),
     `Execution target: ${executionTarget.type}`,
@@ -344,6 +344,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } = runtimeConfig;
   const billingType = resolveClaudeBillingType(env);
   const dbSkills = (context.skills as Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }> | undefined) ?? [];
+  if (executionTarget.type !== "local" && (instructionsFilePath || dbSkills.length > 0)) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage:
+        "Claude sandbox-docker target does not yet support host-local instruction files or DB-backed skills. Remove instructionsFilePath/context skills or use target local.",
+      errorCode: "unsupported_execution_target_config",
+      resultJson: {
+        executionTarget: executionTarget.type,
+        unsupported: {
+          instructionsFilePath: Boolean(instructionsFilePath),
+          dbSkills: dbSkills.length,
+        },
+      },
+    };
+  }
   const skillsDir = await buildSkillsDir(dbSkills.length > 0 ? dbSkills : undefined);
 
   // When instructionsFilePath is configured, create a combined temp file that

@@ -64,6 +64,24 @@ describe("captureWorkspaceSnapshot", () => {
     expect(snapshot.has("src/index.ts")).toBe(true);
   });
 
+  it("ignores protected names even when they are files or symlinks", async () => {
+    const root = await tempRoot();
+    await writeText(path.join(root, ".git"), "not a directory");
+    await writeText(path.join(root, "node_modules"), "not a directory");
+    await mkdir(path.join(root, "nested"), { recursive: true });
+    const created = await tryCreateSymlink("target", path.join(root, "nested", ".git"));
+    await writeText(path.join(root, "src", "index.ts"), "source");
+
+    const snapshot = await captureWorkspaceSnapshot(root);
+
+    expect(snapshot.has(".git")).toBe(false);
+    expect(snapshot.has("node_modules")).toBe(false);
+    if (created) {
+      expect(snapshot.has("nested/.git")).toBe(false);
+    }
+    expect(snapshot.has("src/index.ts")).toBe(true);
+  });
+
   it("records symlink targets when the filesystem supports them", async () => {
     const root = await tempRoot();
     const created = await tryCreateSymlink("target.txt", path.join(root, "linked.txt"));
@@ -166,6 +184,46 @@ describe("mergeChangedWorkspaceFiles", () => {
 
     await expect(mergeChangedWorkspaceFiles({ before, afterRoot, destinationRoot })).rejects.toThrow(
       "escapes root",
+    );
+  });
+
+  it("does not let ignored paths from stale snapshots replace protected destination paths", async () => {
+    const afterRoot = await tempRoot();
+    await writeText(path.join(afterRoot, ".git"), "malicious replacement");
+    await writeText(path.join(afterRoot, "node_modules"), "malicious replacement");
+
+    const destinationRoot = await tempRoot();
+    await writeText(path.join(destinationRoot, ".git", "config"), "real git config");
+    await writeText(path.join(destinationRoot, "node_modules", "dep.js"), "real dependency");
+    const before = new Map([
+      [".git", { kind: "directory" as const }],
+      ["node_modules", { kind: "directory" as const }],
+    ]);
+
+    await mergeChangedWorkspaceFiles({ before, afterRoot, destinationRoot });
+
+    await expect(readFile(path.join(destinationRoot, ".git", "config"), "utf8")).resolves.toBe(
+      "real git config",
+    );
+    await expect(readFile(path.join(destinationRoot, "node_modules", "dep.js"), "utf8")).resolves.toBe(
+      "real dependency",
+    );
+  });
+
+  it("rejects symlink targets that escape the destination workspace", async () => {
+    const beforeRoot = await tempRoot();
+    const before = await captureWorkspaceSnapshot(beforeRoot);
+
+    const afterRoot = await tempRoot();
+    const created = await tryCreateSymlink("../outside.txt", path.join(afterRoot, "linked.txt"));
+    if (!created) {
+      return;
+    }
+
+    const destinationRoot = await tempRoot();
+
+    await expect(mergeChangedWorkspaceFiles({ before, afterRoot, destinationRoot })).rejects.toThrow(
+      "symlink target escapes root",
     );
   });
 });

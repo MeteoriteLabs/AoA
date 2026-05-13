@@ -129,4 +129,50 @@ describe("claude execute target", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects sandbox-docker when host-local instructions would be silently dropped", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-docker-instructions-"));
+    const workspace = path.join(root, "workspace");
+    const instructionsPath = path.join(root, "instructions.md");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(instructionsPath, "Follow the configured instructions.", "utf8");
+
+    try {
+      const result = await execute({
+        runId: "run-claude-docker-instructions",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "claude",
+          cwd: workspace,
+          instructionsFilePath: instructionsPath,
+        },
+        context: {},
+        executionTarget: { type: "sandbox-docker", image: "node:22-bookworm", workdir: "/workspace" },
+        authToken: "secret-run-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("unsupported_execution_target_config");
+      expect(result.errorMessage).toContain("does not yet support host-local instruction files");
+      expect(result.resultJson?.unsupported).toMatchObject({
+        instructionsFilePath: true,
+        dbSkills: 0,
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
