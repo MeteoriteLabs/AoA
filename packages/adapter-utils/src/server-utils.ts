@@ -1285,3 +1285,43 @@ export function applyAoaWorkspaceEnv(
   }
   return env;
 }
+
+export function shapeAoaWorkspaceEnvForExecution(input: {
+  env: Record<string, string>;
+  targetType: "local" | "sandbox-docker";
+  localCwd: string;
+  executionCwd: string;
+}): Record<string, string> {
+  if (input.targetType === "local") return { ...input.env };
+
+  const next = { ...input.env };
+  if (next.AOA_WORKSPACE_CWD === input.localCwd) {
+    next.AOA_WORKSPACE_CWD = input.executionCwd;
+  }
+  if (next.AOA_WORKSPACE_WORKTREE_PATH === input.localCwd) {
+    delete next.AOA_WORKSPACE_WORKTREE_PATH;
+  }
+
+  if (next.AOA_WORKSPACES_JSON) {
+    try {
+      const parsed = JSON.parse(next.AOA_WORKSPACES_JSON) as unknown;
+      if (!Array.isArray(parsed)) {
+        delete next.AOA_WORKSPACES_JSON;
+      } else {
+        next.AOA_WORKSPACES_JSON = JSON.stringify(
+          parsed.map((item) => {
+            if (typeof item !== "object" || item === null || Array.isArray(item)) return item;
+            const workspace = item as Record<string, unknown>;
+            if (workspace.cwd === input.localCwd) return { ...workspace, cwd: input.executionCwd };
+            const { cwd: _cwd, ...rest } = workspace;
+            return rest;
+          }),
+        );
+      }
+    } catch {
+      delete next.AOA_WORKSPACES_JSON;
+    }
+  }
+
+  return next;
+}
