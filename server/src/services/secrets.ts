@@ -120,6 +120,11 @@ export function normalizeProviderConfigStatus(
   return requestedStatus ?? "ready";
 }
 
+export function normalizeProviderConfigDefault(status: string, requested?: boolean, existing = false) {
+  if (status === "coming_soon") return false;
+  return requested ?? existing;
+}
+
 export function secretService(db: Db) {
   async function getById(id: string) {
     return db.select().from(companySecrets).where(eq(companySecrets.id, id)).then((rows) => rows[0] ?? null);
@@ -373,9 +378,10 @@ export function secretService(db: Db) {
         config: parsed.config ?? {},
       });
       const status = normalizeProviderConfigStatus(parsed.provider, parsed.status);
+      const isDefault = normalizeProviderConfigDefault(status, parsed.isDefault);
       if (parsed.isDefault && status === "coming_soon") throw unprocessable("Coming-soon providers cannot be default");
       return db.transaction(async (tx) => {
-        if (parsed.isDefault) {
+        if (isDefault) {
           await tx
             .update(companySecretProviderConfigs)
             .set({ isDefault: false, updatedAt: new Date() })
@@ -388,7 +394,7 @@ export function secretService(db: Db) {
             provider: parsed.provider,
             displayName: parsed.displayName,
             status,
-            isDefault: parsed.isDefault ?? false,
+            isDefault,
             config: payload.config,
             disabledAt: status === "disabled" ? new Date() : null,
             createdByAgentId: actor?.agentId ?? null,
@@ -404,13 +410,14 @@ export function secretService(db: Db) {
       if (!existing) throw notFound("Provider vault not found");
       const parsed = updateSecretProviderConfigSchema.parse(patch);
       const nextStatus = normalizeProviderConfigStatus(existing.provider as SecretProvider, parsed.status ?? existing.status);
+      const nextIsDefault = normalizeProviderConfigDefault(nextStatus, parsed.isDefault, existing.isDefault);
       if (parsed.isDefault && nextStatus === "coming_soon") throw unprocessable("Coming-soon providers cannot be default");
       const nextConfig =
         parsed.config === undefined
           ? existing.config
           : secretProviderConfigPayloadSchema.parse({ provider: existing.provider as SecretProvider, config: parsed.config }).config;
       return db.transaction(async (tx) => {
-        if (parsed.isDefault) {
+        if (nextIsDefault) {
           await tx
             .update(companySecretProviderConfigs)
             .set({ isDefault: false, updatedAt: new Date() })
@@ -421,7 +428,7 @@ export function secretService(db: Db) {
           .set({
             displayName: parsed.displayName ?? existing.displayName,
             status: nextStatus,
-            isDefault: parsed.isDefault ?? existing.isDefault,
+            isDefault: nextIsDefault,
             config: nextConfig,
             disabledAt: nextStatus === "disabled" ? existing.disabledAt ?? new Date() : null,
             updatedAt: new Date(),

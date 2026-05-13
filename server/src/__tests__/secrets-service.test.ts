@@ -1,9 +1,86 @@
 import { describe, expect, it } from "vitest";
+import { companySecretBindings, companySecretProviderConfigs, companySecrets, companySecretVersions, secretAccessEvents } from "@armyofagents/db";
 import {
+  normalizeProviderConfigDefault,
   normalizeProviderConfigStatus,
   secretService,
   shouldEnforceSecretBinding,
 } from "../services/secrets.js";
+import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
+
+function makeThenable<T>(rows: T[]) {
+  return {
+    then<TResult1 = T[], TResult2 = never>(
+      onfulfilled?: ((value: T[]) => TResult1 | PromiseLike<TResult1>) | null,
+      _onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+    ) {
+      return Promise.resolve(rows).then(onfulfilled ?? ((value) => value as TResult1));
+    },
+    orderBy() {
+      return this;
+    },
+  };
+}
+
+function makeFakeDb(input: {
+  bindings?: unknown[];
+  providerConfigs?: unknown[];
+  secret: any;
+  version: any;
+}) {
+  const inserted: Array<{ table: unknown; values: unknown }> = [];
+  const updates: Array<{ table: unknown; values: unknown }> = [];
+  const db = {
+    inserted,
+    updates,
+    select() {
+      return {
+        from(table: unknown) {
+          const rows =
+            table === companySecrets
+              ? [input.secret]
+              : table === companySecretVersions
+                ? [input.version]
+                : table === companySecretBindings
+                  ? (input.bindings ?? [])
+                  : table === companySecretProviderConfigs
+                    ? (input.providerConfigs ?? [])
+                    : [];
+          return {
+            where() {
+              return makeThenable(rows);
+            },
+            orderBy() {
+              return makeThenable(rows);
+            },
+            then: makeThenable(rows).then,
+          };
+        },
+      };
+    },
+    insert(table: unknown) {
+      return {
+        values(values: unknown) {
+          inserted.push({ table, values });
+          return Promise.resolve();
+        },
+      };
+    },
+    update(table: unknown) {
+      return {
+        set(values: unknown) {
+          updates.push({ table, values });
+          return {
+            where() {
+              return Promise.resolve();
+            },
+          };
+        },
+      };
+    },
+  };
+  return db;
+}
 
 describe("secretService", () => {
   it("exposes vault, binding, import, and audited resolve APIs", () => {
@@ -54,5 +131,125 @@ describe("secretService", () => {
     expect(normalizeProviderConfigStatus("vault", "disabled")).toBe("coming_soon");
     expect(normalizeProviderConfigStatus("aws_secrets_manager", undefined)).toBe("ready");
     expect(normalizeProviderConfigStatus("aws_secrets_manager", "warning")).toBe("warning");
+    expect(normalizeProviderConfigDefault("coming_soon", undefined, true)).toBe(false);
+    expect(normalizeProviderConfigDefault("ready", undefined, true)).toBe(true);
+  });
+
+  it("audits system reads without requiring legacy binding rows", async () => {
+    process.env.AOA_SECRETS_MASTER_KEY = "12345678901234567890123456789012";
+    const prepared = await localEncryptedProvider.createVersion({
+      value: "sk-test",
+      externalRef: null,
+      context: {
+        companyId: "company-1",
+        secretId: "secret-1",
+        secretKey: "OPENAI_API_KEY",
+        secretName: "OpenAI",
+        version: 1,
+      },
+    });
+    const db = makeFakeDb({
+      secret: {
+        id: "secret-1",
+        companyId: "company-1",
+        provider: "local_encrypted",
+        providerConfigId: null,
+        externalRef: null,
+        latestVersion: 1,
+        status: "active",
+      },
+      version: { secretId: "secret-1", version: 1, material: prepared.material },
+      bindings: [],
+    });
+
+    await expect(secretService(db as any).resolveSecretValue("company-1", "secret-1", "latest", {
+      consumerType: "system",
+      consumerId: "llm-provider:openai",
+      actorType: "system",
+      configPath: "provider.openai",
+    })).resolves.toBe("sk-test");
+
+    expect(db.inserted).toEqual([
+      expect.objectContaining({
+        table: secretAccessEvents,
+        values: expect.objectContaining({
+          companyId: "company-1",
+          secretId: "secret-1",
+          consumerType: "system",
+          configPath: "provider.openai",
+          outcome: "success",
+        }),
+      }),
+    ]);
+  });
+
+  it("rejects unbound agent env reads and audits the failure", async () => {
+    process.env.AOA_SECRETS_MASTER_KEY = "12345678901234567890123456789012";
+    const prepared = await localEncryptedProvider.createVersion({
+      value: "sk-test",
+      externalRef: null,
+      context: {
+        companyId: "company-1",
+        secretId: "secret-1",
+        secretKey: "OPENAI_API_KEY",
+        secretName: "OpenAI",
+        version: 1,
+      },
+    });
+    const db = makeFakeDb({
+      secret: {
+        id: "secret-1",
+        companyId: "company-1",
+        provider: "local_encrypted",
+        providerConfigId: null,
+        externalRef: null,
+        latestVersion: 1,
+        status: "active",
+      },
+      version: { secretId: "secret-1", version: 1, material: prepared.material },
+      bindings: [],
+    });
+
+    await expect(secretService(db as any).resolveSecretValue("company-1", "secret-1", "latest", {
+      consumerType: "agent",
+      consumerId: "agent-1",
+      actorType: "agent",
+      actorId: "agent-1",
+      configPath: "env.OPENAI_API_KEY",
+    })).rejects.toThrow("Secret is not bound");
+
+    expect(db.inserted).toEqual([
+      expect.objectContaining({
+        table: secretAccessEvents,
+        values: expect.objectContaining({
+          companyId: "company-1",
+          secretId: "secret-1",
+          consumerType: "agent",
+          consumerId: "agent-1",
+          configPath: "env.OPENAI_API_KEY",
+          outcome: "failure",
+        }),
+      }),
+    ]);
+  });
+
+  it("rejects remote import preview for disabled provider configs before provider calls", async () => {
+    const db = makeFakeDb({
+      secret: null,
+      version: null,
+      providerConfigs: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        companyId: "company-1",
+        provider: "aws_secrets_manager",
+        status: "disabled",
+        disabledAt: new Date(),
+        config: { region: "us-east-1" },
+      }],
+    });
+
+    await expect(secretService(db as any).previewRemoteImport("company-1", {
+      providerConfigId: "11111111-1111-4111-8111-111111111111",
+      query: "OPENAI",
+    })).rejects.toThrow("Provider vault is disabled");
   });
 });
