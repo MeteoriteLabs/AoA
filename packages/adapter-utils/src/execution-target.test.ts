@@ -100,7 +100,7 @@ describe("ensureAdapterExecutionTargetRuntimeCommandInstalled", () => {
     expect(runShellCommand).not.toHaveBeenCalled();
   });
 
-  it("runs Docker install commands", async () => {
+  it("runs Docker runtime command install commands", async () => {
     const runShellCommand = vi.fn().mockResolvedValue(okResult);
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       target: { type: "sandbox-docker", image: "node:22" },
@@ -108,6 +108,21 @@ describe("ensureAdapterExecutionTargetRuntimeCommandInstalled", () => {
       runShellCommand,
     });
     expect(runShellCommand).toHaveBeenCalledWith("npm install -g @openai/codex");
+  });
+
+  it("runs Docker target install commands before runtime command installs", async () => {
+    const runShellCommand = vi.fn().mockResolvedValue(okResult);
+    await ensureAdapterExecutionTargetRuntimeCommandInstalled({
+      target: {
+        type: "sandbox-docker",
+        image: "node:22",
+        installCommand: "corepack enable",
+      },
+      runtimeCommandSpec: { command: "codex", installCommand: "npm install -g @openai/codex" },
+      runShellCommand,
+    });
+    expect(runShellCommand).toHaveBeenNthCalledWith(1, "corepack enable");
+    expect(runShellCommand).toHaveBeenNthCalledWith(2, "npm install -g @openai/codex");
   });
 
   it("throws when Docker install fails", async () => {

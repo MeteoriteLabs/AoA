@@ -78,8 +78,8 @@ async function handleBridgeRequest(
 ): Promise<void> {
   const method = req.method ?? "GET";
   const requestUrl = new URL(req.url ?? "/", "http://sandbox-bridge.local");
-  if (!hasBearerAuth(req.headers)) {
-    sendBridgeText(res, 401, "Missing bearer authorization");
+  if (!hasExpectedBearerAuth(req.headers, input.authToken)) {
+    sendBridgeText(res, 401, "Missing or invalid bearer authorization");
     return;
   }
   if (!isAllowedAoaBridgeRequest(method, requestUrl.pathname)) {
@@ -129,9 +129,11 @@ function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
   return out;
 }
 
-function hasBearerAuth(headers: IncomingHttpHeaders): boolean {
+function hasExpectedBearerAuth(headers: IncomingHttpHeaders, expectedToken: string): boolean {
   const value = headers.authorization;
-  return typeof value === "string" && /^Bearer\s+\S+/i.test(value);
+  if (typeof value !== "string") return false;
+  const match = /^Bearer\s+(.+)$/i.exec(value.trim());
+  return match?.[1] === expectedToken;
 }
 
 function buildForwardHeaders(

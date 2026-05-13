@@ -86,7 +86,7 @@ describe("startSandboxCallbackBridgeServer", () => {
       const response = await fetch(`${bridge.listenUrl}/api/issues/iss_1/comments`, {
         method: "POST",
         headers: {
-          authorization: "Bearer container-token",
+          authorization: "Bearer server-token",
           "content-type": "application/json",
         },
         body: JSON.stringify({ body: "hello" }),
@@ -123,6 +123,25 @@ describe("startSandboxCallbackBridgeServer", () => {
     }
   });
 
+  it("rejects requests with the wrong inbound bearer auth", async () => {
+    const api = await startApiServer((_req, res) => res.end("ok"));
+    try {
+      const bridge = await startSandboxCallbackBridgeServer({
+        apiBaseUrl: api.url,
+        authToken: "server-token",
+        runId: "run_1",
+      });
+      bridges.push(bridge);
+
+      const response = await fetch(`${bridge.listenUrl}/api/agents/me`, {
+        headers: { authorization: "Bearer anything" },
+      });
+      expect(response.status).toBe(401);
+    } finally {
+      await api.close();
+    }
+  });
+
   it("rejects disallowed paths", async () => {
     const api = await startApiServer((_req, res) => res.end("ok"));
     try {
@@ -134,7 +153,7 @@ describe("startSandboxCallbackBridgeServer", () => {
       bridges.push(bridge);
 
       const response = await fetch(`${bridge.listenUrl}/api/admin`, {
-        headers: { authorization: "Bearer container-token" },
+        headers: { authorization: "Bearer server-token" },
       });
       expect(response.status).toBe(403);
     } finally {
@@ -154,7 +173,7 @@ describe("startSandboxCallbackBridgeServer", () => {
 
       const response = await fetch(`${bridge.listenUrl}/api/issues/iss_1/comments`, {
         method: "POST",
-        headers: { authorization: "Bearer container-token" },
+        headers: { authorization: "Bearer server-token" },
         body: "x".repeat(2 * 1024 * 1024 + 1),
       });
       expect(response.status).toBe(413);

@@ -84,13 +84,19 @@ export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input:
   runShellCommand: (command: string) => Promise<RunProcessResult>;
 }): Promise<void> {
   if (input.target.type !== "sandbox-docker") return;
-  const installCommand = input.runtimeCommandSpec?.installCommand?.trim();
-  if (!installCommand) return;
+  const installCommands = [
+    input.target.installCommand,
+    input.runtimeCommandSpec?.installCommand,
+  ]
+    .map((command) => command?.trim() ?? "")
+    .filter(Boolean);
 
-  const result = await input.runShellCommand(installCommand);
-  if (result.timedOut || (result.exitCode ?? 0) !== 0) {
-    throw new Error(
-      `Failed to install runtime command: ${result.stderr || result.stdout || "unknown error"}`,
-    );
+  for (const installCommand of installCommands) {
+    const result = await input.runShellCommand(installCommand);
+    if (result.timedOut || (result.exitCode ?? 0) !== 0) {
+      throw new Error(
+        `Failed to install runtime command: ${result.stderr || result.stdout || "unknown error"}`,
+      );
+    }
   }
 }
