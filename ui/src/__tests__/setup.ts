@@ -1,5 +1,24 @@
 import "@testing-library/jest-dom/vitest";
 
+vi.mock("@mdxeditor/editor", () => ({
+  CodeMirrorEditor: {},
+  MDXEditor: () => null,
+  headingsPlugin: () => ({}),
+  listsPlugin: () => ({}),
+  quotePlugin: () => ({}),
+  thematicBreakPlugin: () => ({}),
+  markdownShortcutPlugin: () => ({}),
+  toolbarPlugin: () => ({}),
+  BoldItalicUnderlineToggles: () => null,
+  ListsToggle: () => null,
+  BlockTypeSelect: () => null,
+  CreateLink: () => null,
+  linkPlugin: () => ({}),
+  linkDialogPlugin: () => ({}),
+  codeBlockPlugin: () => ({}),
+  codeMirrorPlugin: () => ({}),
+}));
+
 // Stub window.matchMedia for jsdom (used by Radix UI, responsive components)
 Object.defineProperty(window, "matchMedia", {
   writable: true,

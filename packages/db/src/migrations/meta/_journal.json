@@ -673,6 +673,13 @@
       "when": 1778681147199,
       "tag": "0095_cooing_risque",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1778682040372,
+      "tag": "0096_simple_scourge",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, ne, notInArray } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   companySecretBindings,
@@ -748,6 +748,7 @@ export function secretService(db: Db) {
         eq(companySecretBindings.companyId, companyId),
         eq(companySecretBindings.targetType, target.targetType),
         eq(companySecretBindings.targetId, target.targetId),
+        sql`${companySecretBindings.configPath} LIKE ${(target.pathPrefix ?? "env") + ".%"}`,
       );
       if (seenPaths.length === 0) {
         await db.delete(companySecretBindings).where(base);

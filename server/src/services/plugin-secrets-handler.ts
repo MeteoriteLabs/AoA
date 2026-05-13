@@ -258,6 +258,7 @@ export function createPluginSecretsHandler(
 
   let cachedAllowedRefs: Map<string, string> | null = null;
   let cachedAllowedRefsExpiry = 0;
+  let cachedPluginCompanyId: string | null = null;
   const CONFIG_CACHE_TTL_MS = 30_000; // 30 seconds, matches event bus TTL
 
   return {
@@ -303,10 +304,11 @@ export function createPluginSecretsHandler(
         const schema = (plugin?.manifestJson as unknown as Record<string, unknown> | null)
           ?.instanceConfigSchema as Record<string, unknown> | undefined;
         cachedAllowedRefs = extractSecretRefPathsFromConfig(configRow?.configJson, schema);
+        cachedPluginCompanyId = plugin?.companyId ?? null;
         cachedAllowedRefsExpiry = now + CONFIG_CACHE_TTL_MS;
       }
 
-      if (!cachedAllowedRefs.has(trimmedRef)) {
+      if (!cachedAllowedRefs.has(trimmedRef) || !cachedPluginCompanyId) {
         // Return "not found" to avoid leaking whether the secret exists
         throw secretNotFound(trimmedRef);
       }
@@ -320,11 +322,11 @@ export function createPluginSecretsHandler(
         .where(eq(companySecrets.id, trimmedRef))
         .then((rows) => rows[0] ?? null);
 
-      if (!secret) {
+      if (!secret || secret.companyId !== cachedPluginCompanyId) {
         throw secretNotFound(trimmedRef);
       }
 
-      return secrets.resolveSecretValue(secret.companyId, secret.id, "latest", {
+      return secrets.resolveSecretValue(cachedPluginCompanyId, secret.id, "latest", {
         consumerType: "plugin",
         consumerId: pluginId,
         actorType: "plugin",

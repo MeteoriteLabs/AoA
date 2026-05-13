@@ -132,7 +132,9 @@ export async function runGit(
       throw new Error(`git ${args[0]} timed out after ${timeout}ms`);
     }
     const message = (err.stderr ?? err.stdout ?? "").trim();
-    throw new Error(message || `git ${args.join(" ")} failed with exit code ${err.code ?? -1}`);
+    const gitError = new Error(message || `git ${args.join(" ")} failed with exit code ${err.code ?? -1}`);
+    (gitError as Error & { code?: number | string }).code = err.code;
+    throw gitError;
   }
 }
 

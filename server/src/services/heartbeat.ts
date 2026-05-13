@@ -2370,18 +2370,57 @@ export function heartbeatService(db: Db) {
       environmentRuntime,
     );
 
-    const resolvedConfig = await secretsSvc.resolveAdapterConfigForRuntime(
-      agent.companyId,
-      mergedConfigWithEnvironmentTarget,
-      {
+    const secretActorContext = {
+      actorType: "agent" as const,
+      actorId: agent.id,
+      issueId: issueContext?.id ?? null,
+      heartbeatRunId: run.id,
+    };
+    const projectEnvRecord = projectEnv ? parseObject(projectEnv) : null;
+    const agentEnvRecord = parseObject(mergedConfig.env);
+    const envSourceRecords = {
+      project: {} as Record<string, unknown>,
+      environment: {} as Record<string, unknown>,
+      agent: {} as Record<string, unknown>,
+    };
+    const winningEnvSource = new Map<string, keyof typeof envSourceRecords>();
+    for (const [source, values] of [
+      ["project", projectEnvRecord],
+      ["environment", environmentEnvVars],
+      ["agent", agentEnvRecord],
+    ] as const) {
+      for (const [key, value] of Object.entries(values ?? {})) {
+        const previousSource = winningEnvSource.get(key);
+        if (previousSource) delete envSourceRecords[previousSource][key];
+        winningEnvSource.set(key, source);
+        envSourceRecords[source][key] = value;
+      }
+    }
+    const resolvedEnv = {
+      ...(executionProjectId
+        ? await secretsSvc.resolveEnvBindings(agent.companyId, envSourceRecords.project, {
+            consumerType: "project",
+            consumerId: executionProjectId,
+            ...secretActorContext,
+          })
+        : {}),
+      ...(environmentRuntime.environmentId
+        ? await secretsSvc.resolveEnvBindings(agent.companyId, envSourceRecords.environment, {
+            consumerType: "environment",
+            consumerId: environmentRuntime.environmentId,
+            ...secretActorContext,
+          })
+        : {}),
+      ...(await secretsSvc.resolveEnvBindings(agent.companyId, envSourceRecords.agent, {
         consumerType: "agent",
         consumerId: agent.id,
-        actorType: "agent",
-        actorId: agent.id,
-        issueId: issueContext?.id ?? null,
-        heartbeatRunId: run.id,
-      },
-    );
+        ...secretActorContext,
+      })),
+    };
+    const resolvedConfig = {
+      ...mergedConfigWithEnvironmentTarget,
+      env: resolvedEnv,
+    } as Record<string, unknown>;
 
     // ── Issue ref for execution workspace ───────────────────────────
     const issueRef = issueContext

@@ -4,21 +4,46 @@ import postgres from "postgres";
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
+import net from "node:net";
 import { runDatabaseBackup, runDatabaseRestore } from "../backup-lib.js";
+
+async function allocatePort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close((err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        if (!address || typeof address === "string") {
+          reject(new Error("Failed to allocate test port"));
+          return;
+        }
+        resolve(address.port);
+      });
+    });
+    server.on("error", reject);
+  });
+}
 
 describe("backup-lib non-system schemas", () => {
   let pg: EmbeddedPostgres;
   let backupDir: string;
   let connectionString: string;
+  let pgStarted = false;
 
   beforeAll(async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-backup-test-"));
     backupDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-backup-files-"));
-    pg = new EmbeddedPostgres({ databaseDir: dataDir, port: 39101, password: "postgres" });
+    const port = await allocatePort();
+    pg = new EmbeddedPostgres({ databaseDir: dataDir, port, password: "postgres" });
     await pg.initialise();
     await pg.start();
+    pgStarted = true;
     await pg.createDatabase("aoa_test");
-    connectionString = "postgresql://postgres:postgres@127.0.0.1:39101/aoa_test";
+    connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/aoa_test`;
     const sql = postgres(connectionString);
     await sql`CREATE SCHEMA drizzle`;
     await sql`CREATE TABLE drizzle.__drizzle_migrations (id serial PRIMARY KEY, hash text, created_at bigint)`;
@@ -29,7 +54,7 @@ describe("backup-lib non-system schemas", () => {
   });
 
   afterAll(async () => {
-    await pg.stop();
+    if (pgStarted) await pg.stop();
   });
 
   it("backs up and restores the drizzle migration journal", async () => {

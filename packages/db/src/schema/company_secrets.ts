@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, integer, index, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -29,6 +30,8 @@ export const companySecrets = pgTable(
   (table) => ({
     companyIdx: index("company_secrets_company_idx").on(table.companyId),
     companyProviderIdx: index("company_secrets_company_provider_idx").on(table.companyId, table.provider),
-    companyNameUq: uniqueIndex("company_secrets_company_name_uq").on(table.companyId, table.name),
+    companyNameUq: uniqueIndex("company_secrets_company_name_uq")
+      .on(table.companyId, table.name)
+      .where(sql`${table.deletedAt} IS NULL`),
   }),
 );

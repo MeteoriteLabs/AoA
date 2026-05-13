@@ -102,6 +102,22 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function shellInvocation(command: string): { command: string; args: string[] } {
+  const configuredShell = process.env.SHELL?.trim();
+  if (process.platform === "win32") {
+    const shellName = configuredShell ? path.basename(configuredShell).toLowerCase() : "";
+    if (configuredShell && (shellName.includes("bash") || shellName === "sh.exe")) {
+      return { command: configuredShell, args: ["-lc", command] };
+    }
+    return {
+      command: configuredShell || "powershell.exe",
+      args: ["-NoProfile", "-NonInteractive", "-Command", command],
+    };
+  }
+
+  return { command: configuredShell || "/bin/sh", args: ["-lc", command] };
+}
+
 export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
@@ -569,10 +585,10 @@ async function recordWorkspaceCommandOperation(
     cwd: input.cwd,
     metadata: input.metadata ?? null,
     run: async () => {
-      const shell = process.env.SHELL?.trim() || "/bin/sh";
+      const shell = shellInvocation(input.command);
       const result = await executeProcess({
-        command: shell,
-        args: ["-c", input.command],
+        command: shell.command,
+        args: shell.args,
         cwd: input.cwd,
         env: input.env,
       });
@@ -1450,8 +1466,8 @@ async function startLocalRuntimeService(input: {
     const portEnvKey = asString(portConfig.envKey, "PORT");
     env[portEnvKey] = String(port);
   }
-  const shell = process.env.SHELL?.trim() || (process.platform === "win32" ? "bash" : "/bin/sh");
-  const child = spawn(shell, ["-lc", command], {
+  const shell = shellInvocation(command);
+  const child = spawn(shell.command, shell.args, {
     cwd: serviceCwd,
     env,
     detached: process.platform !== "win32",
