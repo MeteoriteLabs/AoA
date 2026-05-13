@@ -75,7 +75,7 @@ export function normalizeIssueMonitorPolicy(input: unknown): IssueMonitorPolicy 
 export function buildInitialIssueMonitorFields(input: {
   companyId: string;
   issue: MonitorEligibleIssue;
-  policy: IssueMonitorPolicy | null;
+  policy: IssueMonitorPolicy | null | undefined;
   now?: Date;
 }): IssueMonitorInsert | null {
   if (!input.policy) return null;
