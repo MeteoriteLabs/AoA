@@ -4,6 +4,7 @@ export interface Environment {
   name: string;
   envVars: Record<string, unknown>;
   connectionTarget: Record<string, unknown> | null;
+  target: Record<string, unknown> | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -68,6 +68,43 @@ function formatDate(iso: string): string {
   }
 }
 
+type EnvTargetType = "local" | "sandbox-docker";
+type EnvTargetShell = "sh" | "bash";
+type EnvTargetNetwork = "bridge" | "host" | "none";
+
+function readTarget(raw: Record<string, unknown> | null | undefined) {
+  if (raw?.type !== "sandbox-docker") {
+    return {
+      targetType: "local" as EnvTargetType,
+      targetImage: "",
+      targetWorkdir: "/workspace",
+      targetShell: "sh" as EnvTargetShell,
+      targetNetwork: "bridge" as EnvTargetNetwork,
+      targetRemove: true,
+      targetInstallCommand: "",
+    };
+  }
+  return {
+    targetType: "sandbox-docker" as EnvTargetType,
+    targetImage: typeof raw.image === "string" ? raw.image : "",
+    targetWorkdir: typeof raw.workdir === "string" ? raw.workdir : "/workspace",
+    targetShell: raw.shell === "bash" ? "bash" as EnvTargetShell : "sh" as EnvTargetShell,
+    targetNetwork: raw.network === "host" || raw.network === "none" ? raw.network : "bridge" as EnvTargetNetwork,
+    targetRemove: raw.remove !== false,
+    targetInstallCommand: typeof raw.installCommand === "string" ? raw.installCommand : "",
+  };
+}
+
+function formatTargetSummary(env: Environment): string {
+  if (env.target?.type === "sandbox-docker") {
+    const image = typeof env.target.image === "string" && env.target.image.trim()
+      ? env.target.image
+      : "image missing";
+    return `sandbox-docker: ${image}`;
+  }
+  return "local target";
+}
+
 // ---------------------------------------------------------------------------
 // Environment form dialog
 // ---------------------------------------------------------------------------
@@ -76,6 +113,13 @@ interface EnvFormState {
   name: string;
   envVarsRaw: string;
   connectionTargetRaw: string;
+  targetType: EnvTargetType;
+  targetImage: string;
+  targetWorkdir: string;
+  targetShell: EnvTargetShell;
+  targetNetwork: EnvTargetNetwork;
+  targetRemove: boolean;
+  targetInstallCommand: string;
 }
 
 interface EnvironmentDialogProps {
@@ -99,6 +143,7 @@ function EnvironmentDialog({
     name: initial?.name ?? "",
     envVarsRaw: safeStringify(initial?.envVars),
     connectionTargetRaw: safeStringify(initial?.connectionTarget ?? undefined),
+    ...readTarget(initial?.target),
   }));
 
   const [envVarsError, setEnvVarsError] = useState<string | null>(null);
@@ -113,6 +158,7 @@ function EnvironmentDialog({
         name: initial?.name ?? "",
         envVarsRaw: safeStringify(initial?.envVars),
         connectionTargetRaw: safeStringify(initial?.connectionTarget ?? undefined),
+        ...readTarget(initial?.target),
       });
       setEnvVarsError(null);
       setConnectionTargetError(null);
@@ -132,14 +178,32 @@ function EnvironmentDialog({
       setConnectionTargetError(ctResult.error);
       return;
     }
+    if (form.targetType === "sandbox-docker" && !form.targetImage.trim()) {
+      setConnectionTargetError("Docker image is required for sandbox-docker.");
+      return;
+    }
     setEnvVarsError(null);
     setConnectionTargetError(null);
 
     const trimmedCt = form.connectionTargetRaw.trim();
+    const target: CreateEnvironmentInput["target"] = form.targetType === "sandbox-docker"
+      ? {
+          type: "sandbox-docker" as const,
+          image: form.targetImage.trim(),
+          workdir: form.targetWorkdir.trim() || "/workspace",
+          shell: form.targetShell,
+          network: form.targetNetwork,
+          remove: form.targetRemove,
+          ...(form.targetInstallCommand.trim()
+            ? { installCommand: form.targetInstallCommand.trim() }
+            : {}),
+        }
+      : { type: "local" as const };
     onSubmit({
       name: form.name.trim(),
       envVars: evResult.value,
       connectionTarget: trimmedCt ? ctResult.value : null,
+      target,
     });
   }
 
@@ -192,6 +256,104 @@ function EnvironmentDialog({
               <p className="text-xs text-destructive">{envVarsError}</p>
             )}
           </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Execution Target
+            </label>
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              value={form.targetType}
+              onChange={(e) =>
+                setForm((f) => ({
+                  ...f,
+                  targetType: e.target.value === "sandbox-docker" ? "sandbox-docker" : "local",
+                }))
+              }
+              data-testid="environment-target-select"
+            >
+              <option value="local">Local</option>
+              <option value="sandbox-docker">Sandbox Docker</option>
+            </select>
+          </div>
+
+          {form.targetType === "sandbox-docker" && (
+            <div className="grid gap-3 rounded-md border border-border p-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Docker Image <span className="text-destructive">*</span>
+                </label>
+                <Input
+                  required
+                  placeholder="node:22-bookworm"
+                  value={form.targetImage}
+                  onChange={(e) => setForm((f) => ({ ...f, targetImage: e.target.value }))}
+                  data-testid="environment-target-image-input"
+                />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Workdir
+                  </label>
+                  <Input
+                    placeholder="/workspace"
+                    value={form.targetWorkdir}
+                    onChange={(e) => setForm((f) => ({ ...f, targetWorkdir: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Shell
+                  </label>
+                  <select
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    value={form.targetShell}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, targetShell: e.target.value === "bash" ? "bash" : "sh" }))
+                    }
+                  >
+                    <option value="sh">sh</option>
+                    <option value="bash">bash</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Network
+                  </label>
+                  <select
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    value={form.targetNetwork}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setForm((f) => ({
+                        ...f,
+                        targetNetwork: value === "host" || value === "none" ? value : "bridge",
+                      }));
+                    }}
+                  >
+                    <option value="bridge">bridge</option>
+                    <option value="host">host</option>
+                    <option value="none">none</option>
+                  </select>
+                </div>
+              </div>
+              <Input
+                placeholder="Optional install command"
+                value={form.targetInstallCommand}
+                onChange={(e) => setForm((f) => ({ ...f, targetInstallCommand: e.target.value }))}
+              />
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={form.targetRemove}
+                  onChange={(e) => setForm((f) => ({ ...f, targetRemove: e.target.checked }))}
+                  className="h-4 w-4 rounded border-input"
+                />
+                Remove container after run
+              </label>
+            </div>
+          )}
 
           {/* Connection target */}
           <div className="space-y-1.5">
@@ -373,6 +535,8 @@ export function EnvironmentsSection({ companyId }: { companyId: string }) {
                     {env.connectionTarget
                       ? " · connection target set"
                       : ""}
+                    {" · "}
+                    {formatTargetSummary(env)}
                     {" · "}
                     Created {formatDate(env.createdAt)}
                   </div>

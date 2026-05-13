@@ -55,7 +55,7 @@ vi.mock("../services/output-detection.js", () => ({ outputDetectionService: vi.f
 vi.mock("../services/run-summary.js", () => ({ formatRunSummary: vi.fn() }));
 vi.mock("../middleware/logger.js", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }), info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
-import { resolveAdapterExecutionContext } from "../services/heartbeat.js";
+import { applyEnvironmentRuntimeTarget, resolveAdapterExecutionContext } from "../services/heartbeat.js";
 
 describe("heartbeat adapter execution target context", () => {
   it("defaults missing adapter config target to local context", () => {
@@ -121,5 +121,27 @@ describe("heartbeat adapter execution target context", () => {
       ),
     ).toThrow('executionTarget.image is required for target "sandbox-docker"');
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("applies an environment target over adapter config target", () => {
+    const result = applyEnvironmentRuntimeTarget(
+      {
+        executionTarget: { type: "sandbox-docker", image: "node:20-bookworm" },
+        env: { AGENT_ONLY: "1" },
+      },
+      { target: { type: "local" } },
+    );
+
+    expect(result.executionTarget).toEqual({ type: "local" });
+    expect(result.env).toEqual({ AGENT_ONLY: "1" });
+  });
+
+  it("preserves adapter config target when environment target is absent", () => {
+    const config = {
+      executionTarget: { type: "sandbox-docker", image: "node:20-bookworm" },
+      env: { AGENT_ONLY: "1" },
+    };
+
+    expect(applyEnvironmentRuntimeTarget(config, { target: null })).toBe(config);
   });
 });

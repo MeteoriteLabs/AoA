@@ -30,6 +30,7 @@ function makeEnvironment(overrides: Partial<Environment> = {}): Environment {
     name: "production",
     envVars: { NODE_ENV: "production", PORT: "3000" },
     connectionTarget: null,
+    target: null,
     createdAt: "2026-01-15T10:00:00Z",
     updatedAt: "2026-01-15T10:00:00Z",
     ...overrides,
@@ -198,6 +199,48 @@ describe("EnvironmentsSection", () => {
           input: expect.objectContaining({
             name: "testing",
             envVars: expect.objectContaining({ TEST_KEY: "hello" }),
+            target: { type: "local" },
+          }),
+        }),
+        expect.any(Object),
+      );
+    });
+  });
+
+  it("submits create form with sandbox-docker target", async () => {
+    const user = userEvent.setup();
+    const captureMutate = vi.fn((_vars: unknown, opts: Record<string, unknown>) => {
+      (opts?.onSuccess as (data: unknown, vars: unknown, ctx: unknown) => void)?.(
+        makeEnvironment(),
+        _vars,
+        undefined,
+      );
+    });
+
+    useCreateEnvironmentMock.mockReturnValue({
+      ...idleMutation(),
+      mutate: captureMutate,
+    });
+
+    renderSection();
+
+    await user.click(screen.getByRole("button", { name: /new environment/i }));
+    await user.type(screen.getByPlaceholderText(/e\.g\. production/i), "docker");
+    await user.selectOptions(screen.getByTestId("environment-target-select"), "sandbox-docker");
+    await user.type(screen.getByTestId("environment-target-image-input"), "node:22-bookworm");
+    await user.click(screen.getByRole("button", { name: /^create$/i }));
+
+    await waitFor(() => {
+      expect(captureMutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          companyId: "comp-1",
+          input: expect.objectContaining({
+            name: "docker",
+            target: expect.objectContaining({
+              type: "sandbox-docker",
+              image: "node:22-bookworm",
+              workdir: "/workspace",
+            }),
           }),
         }),
         expect.any(Object),
@@ -345,5 +388,21 @@ describe("EnvironmentsSection", () => {
     renderSection();
 
     expect(screen.getByText(/No variables/)).toBeInTheDocument();
+  });
+
+  it("shows sandbox-docker target summary for target-aware environments", () => {
+    useEnvironmentsMock.mockReturnValue({
+      data: [
+        makeEnvironment({
+          target: { type: "sandbox-docker", image: "node:22-bookworm" },
+        }),
+      ],
+      isLoading: false,
+      isError: false,
+    });
+
+    renderSection();
+
+    expect(screen.getByText(/sandbox-docker: node:22-bookworm/)).toBeInTheDocument();
   });
 });

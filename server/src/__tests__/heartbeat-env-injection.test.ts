@@ -29,7 +29,7 @@ vi.mock("@armyofagents/db", () => {
 
 // ── Import after mocks ────────────────────────────────────────────────────────
 
-import { resolveEnvironmentEnvVars } from "../services/environment-resolver.js";
+import { resolveEnvironmentEnvVars, resolveEnvironmentRuntimeConfig } from "../services/environment-resolver.js";
 
 // ── Mock DB helpers ──────────────────────────────────────────────────────────
 
@@ -121,6 +121,57 @@ describe("heartbeat environment resolution", () => {
     expect(result).toEqual({});
   });
 
+  it("returns target from the issue-selected environment", async () => {
+    const target = {
+      type: "sandbox-docker",
+      image: "node:22-bookworm",
+      workdir: "/workspace",
+    };
+    const db = createSequenceDb({
+      selects: [[{ envVars: { NODE_ENV: "test" }, target }]],
+    });
+
+    const result = await resolveEnvironmentRuntimeConfig(db as never, {
+      executionEnvironmentId: envId1,
+      defaultEnvironmentId: envId2,
+      companyId,
+    });
+
+    expect(result).toEqual({
+      environmentId: envId1,
+      envVars: { NODE_ENV: "test" },
+      target,
+    });
+  });
+
+  it("falls back to the agent default environment target", async () => {
+    const target = { type: "local" };
+    const db = createSequenceDb({
+      selects: [[{ envVars: {}, target }]],
+    });
+
+    const result = await resolveEnvironmentRuntimeConfig(db as never, {
+      executionEnvironmentId: null,
+      defaultEnvironmentId: envId2,
+      companyId,
+    });
+
+    expect(result.target).toEqual(target);
+    expect(result.environmentId).toBe(envId2);
+  });
+
+  it("returns no target when no environment resolves", async () => {
+    const db = createSequenceDb({ selects: [] });
+
+    const result = await resolveEnvironmentRuntimeConfig(db as never, {
+      executionEnvironmentId: null,
+      defaultEnvironmentId: null,
+      companyId,
+    });
+
+    expect(result).toEqual({ environmentId: null, envVars: {}, target: null });
+  });
+
   it("environment envVars slot between project env and agent adapterConfig.env", () => {
     // This test verifies the merge logic applied in heartbeat.ts directly.
     // Priority: projectEnv < environmentEnvVars < agentEnv (agent wins last)
@@ -158,5 +209,36 @@ describe("heartbeat environment resolution", () => {
     expect(merged["SHARED_KEY"]).toBe("from-agent");
     expect(merged["ENV_ONLY"]).toBe("env-value");
     expect(merged["PROJECT_ONLY"]).toBe("project-value");
+  });
+
+  it("environment target overrides adapter config target when set", () => {
+    const adapterConfig = {
+      executionTarget: { type: "local" },
+      env: { AGENT_ONLY: "1" },
+    };
+    const environmentTarget = {
+      type: "sandbox-docker",
+      image: "node:22-bookworm",
+    };
+
+    const merged = environmentTarget
+      ? { ...adapterConfig, executionTarget: environmentTarget }
+      : adapterConfig;
+
+    expect(merged.executionTarget).toEqual(environmentTarget);
+  });
+
+  it("preserves adapter config target when environment has no target", () => {
+    const adapterConfig = {
+      executionTarget: { type: "sandbox-docker", image: "node:20-bookworm" },
+      env: { AGENT_ONLY: "1" },
+    };
+    const environmentTarget = null;
+
+    const merged = environmentTarget
+      ? { ...adapterConfig, executionTarget: environmentTarget }
+      : adapterConfig;
+
+    expect(merged.executionTarget).toEqual(adapterConfig.executionTarget);
   });
 });

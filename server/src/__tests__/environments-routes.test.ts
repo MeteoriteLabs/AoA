@@ -23,6 +23,7 @@ const mockEnv = {
   name: "Production",
   envVars: { API_URL: "https://api.example.com" },
   connectionTarget: null,
+  target: null,
   createdAt: new Date("2026-01-01T00:00:00.000Z"),
   updatedAt: new Date("2026-01-01T00:00:00.000Z"),
 };
@@ -92,6 +93,23 @@ describe("environments routes", () => {
     );
   });
 
+  it("POST /companies/:cid/environments accepts a sandbox-docker target", async () => {
+    const target = { type: "sandbox-docker", image: "node:22-bookworm" };
+    const svc = {
+      create: vi.fn(async () => ({ ...mockEnv, target })),
+    };
+    const app = buildApp(svc);
+    const res = await request(app)
+      .post(`/companies/${companyId}/environments`)
+      .send({ name: "Docker", envVars: {}, target });
+    expect(res.status).toBe(201);
+    expect(res.body.target).toEqual(target);
+    expect(svc.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ target }),
+    );
+  });
+
   // POST create — invalid body (missing name)
   it("POST /companies/:cid/environments returns 400 on invalid body", async () => {
     const svc = {
@@ -101,6 +119,18 @@ describe("environments routes", () => {
     const res = await request(app)
       .post(`/companies/${companyId}/environments`)
       .send({}); // missing required `name`
+    expect(res.status).toBe(400);
+    expect(svc.create).not.toHaveBeenCalled();
+  });
+
+  it("POST /companies/:cid/environments returns 400 on invalid target", async () => {
+    const svc = {
+      create: vi.fn(),
+    };
+    const app = buildApp(svc);
+    const res = await request(app)
+      .post(`/companies/${companyId}/environments`)
+      .send({ name: "Broken", target: { type: "sandbox-docker" } });
     expect(res.status).toBe(400);
     expect(svc.create).not.toHaveBeenCalled();
   });
@@ -121,6 +151,23 @@ describe("environments routes", () => {
       companyId,
       envId,
       expect.objectContaining({ name: "Staging" }),
+    );
+  });
+
+  it("PATCH /companies/:cid/environments/:id accepts clearing target", async () => {
+    const svc = {
+      update: vi.fn(async () => ({ ...mockEnv, target: null })),
+    };
+    const app = buildApp(svc);
+    const res = await request(app)
+      .patch(`/companies/${companyId}/environments/${envId}`)
+      .send({ target: null });
+    expect(res.status).toBe(200);
+    expect(res.body.target).toBeNull();
+    expect(svc.update).toHaveBeenCalledWith(
+      companyId,
+      envId,
+      expect.objectContaining({ target: null }),
     );
   });
 
