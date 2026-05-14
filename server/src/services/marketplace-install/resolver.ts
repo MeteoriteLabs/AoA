@@ -1,17 +1,24 @@
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { plugins, agents, companySkills, teams } from "@armyofagents/db";
+import { AGENT_ROLES } from "@armyofagents/shared";
 import type {
   CatalogItem,
   MarketplaceCatalogFile,
 } from "@armyofagents/shared";
-import type { InstallPlan, InstallPlanStep, ConflictWarning } from "./types.js";
+import type { AgentInstallPreview, InstallPlan, InstallPlanStep, ConflictWarning } from "./types.js";
+import { fetchCatalogResource } from "./fetch-resource.js";
+import {
+  normalizeMarketplaceAgentTemplate,
+  parseMarketplaceAgentTemplate,
+} from "./agent-runtime.js";
 
 interface ResolveOpts {
   catalogItemId: string;
   catalog: MarketplaceCatalogFile;
   db: Db;
   companyId: string;
+  availableAdapterTypes?: string[];
 }
 
 /**
@@ -74,7 +81,49 @@ export async function resolveInstallPlan(opts: ResolveOpts): Promise<InstallPlan
   const conflicts: ConflictWarning[] = [];
   // (V1: name-collision conflicts surface during install via auto-suffix; resolver doesn't pre-check names)
 
+  const agentInstall = root.type === "agent"
+    ? await resolveAgentInstallPreview({
+      root,
+      availableAdapterTypes: opts.availableAdapterTypes ?? [],
+    })
+    : undefined;
+
+  if (agentInstall) {
+    return { rootItem: root, steps, conflicts, agentInstall };
+  }
   return { rootItem: root, steps, conflicts };
+}
+
+async function resolveAgentInstallPreview(opts: {
+  root: CatalogItem;
+  availableAdapterTypes: string[];
+}): Promise<AgentInstallPreview> {
+  const bodyText = await fetchCatalogResource(opts.root, "agent template");
+  const parsed = parseMarketplaceAgentTemplate(bodyText, opts.root);
+  const normalized = normalizeMarketplaceAgentTemplate({
+    parsed,
+    catalogItem: opts.root,
+    availableAdapterTypes: opts.availableAdapterTypes,
+  });
+
+  const runtime = parsed.kind === "agent.v1" ? parsed.runtime : undefined;
+  const supportedAdapterTypes =
+    runtime?.aoa?.adapterCompatibility?.supported ??
+    (normalized.adapterType ? [normalized.adapterType] : []);
+
+  return {
+    suggestedRole:
+      normalized.role === "cxo" || normalized.role === "lead" || normalized.role === "general"
+        ? normalized.role
+        : "general",
+    supportedRoles: [...AGENT_ROLES],
+    suggestedAdapterType: normalized.adapterType,
+    supportedAdapterTypes,
+    availableAdapterTypes: opts.availableAdapterTypes,
+    setupRequired: normalized.setupRequired,
+    setupRequirements: normalized.setupRequirements,
+    warnings: normalized.warnings,
+  };
 }
 
 interface ClassifyResult {

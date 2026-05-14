@@ -9,6 +9,8 @@ export interface InstallRequest {
   catalogItemId: string;
   targetDepartmentId?: string;     // required for snapshot installs, ignored for plugins
   idempotencyKey?: string;         // optional retry-safety token (24h app-enforced window)
+  role?: AgentRole;                // optional agent install override
+  adapterType?: string;            // optional agent install override
 }
 
 export interface PackageInstallRequest {
@@ -32,6 +34,18 @@ export interface InstallPlan {
   rootItem: CatalogItem;
   steps: InstallPlanStep[];
   conflicts: ConflictWarning[];
+  agentInstall?: AgentInstallPreview;
+}
+
+export interface AgentInstallPreview {
+  suggestedRole: AgentRole;
+  supportedRoles: AgentRole[];
+  suggestedAdapterType: string;
+  supportedAdapterTypes: string[];
+  availableAdapterTypes: string[];
+  setupRequired: boolean;
+  setupRequirements: AgentSetupRequirement[];
+  warnings: string[];
 }
 
 export interface InstallPlanStep {

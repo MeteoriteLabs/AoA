@@ -32,7 +32,7 @@ import {
   updateOperation as defaultUpdateOperation,
   type OperationRow,
 } from "./operation-store.js";
-import type { InstallRequest, PackageInstallRequest } from "./types.js";
+import type { AgentInstallOverrides, InstallRequest, PackageInstallRequest } from "./types.js";
 import { installSkill as defaultInstallSkill } from "./skill-installer.js";
 import type { InstallSkillOpts, InstallSkillResult } from "./skill-installer.js";
 import type { InstallAgentOpts, InstallAgentResult } from "./agent-installer.js";
@@ -116,6 +116,7 @@ export interface DispatchInstallOpts {
   catalog: MarketplaceCatalogFile;
   db: Db;
   installers: Installers;
+  installOverrides?: AgentInstallOverrides;
   /**
    * Override hook for tests. Production callers omit this and the orchestrator
    * uses `defaultUpdateOperation(db, ...)` from operation-store.
@@ -224,7 +225,11 @@ export async function dispatchInstall(opts: DispatchInstallOpts): Promise<void> 
         desiredName: catalogItem.name,
       });
       const r = await installers.installAgent({
-        catalogItem, companyId: operation.companyId, db, desiredName: resolvedName,
+        catalogItem,
+        companyId: operation.companyId,
+        db,
+        desiredName: resolvedName,
+        overrides: opts.installOverrides,
       });
       resultEntityId = r.agentId;
       cascadeResults.push({

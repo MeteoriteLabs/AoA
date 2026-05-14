@@ -28,6 +28,8 @@ export interface SingleInstallRequest {
   catalogItemId: string;
   targetDepartmentId?: string;
   idempotencyKey?: string;
+  role?: "cxo" | "lead" | "general";
+  adapterType?: string;
 }
 
 export interface PackageInstallRequest {
@@ -71,6 +73,23 @@ export interface InstallPlan {
     detail: string;
     resolution: "auto-suffix" | "fail-fast" | "warn-and-proceed";
   }>;
+  agentInstall?: {
+    suggestedRole: "cxo" | "lead" | "general";
+    supportedRoles: Array<"cxo" | "lead" | "general">;
+    suggestedAdapterType: string;
+    supportedAdapterTypes: string[];
+    availableAdapterTypes: string[];
+    setupRequired: boolean;
+    setupRequirements: Array<{
+      kind: "secret" | "plugin_config";
+      key: string;
+      label?: string;
+      required: boolean;
+      reason: string;
+      usedBy?: string;
+    }>;
+    warnings: string[];
+  };
 }
 
 export const marketplaceApi = {

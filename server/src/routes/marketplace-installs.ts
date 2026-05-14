@@ -33,6 +33,7 @@ import {
   findOperationById,
   updateOperation,
   type Installers,
+  type DispatchInstallOpts,
 } from "../services/marketplace-install/index.js";
 import { derivePackages } from "../services/derivePackages.js";
 import type { PluginLoaderLike } from "../services/marketplace-install/plugin-installer.js";
@@ -42,6 +43,8 @@ import { permissionService } from "../services/permissions.js";
 import { marketplaceSettingsService } from "../services/marketplace-settings.js";
 import { marketplaceNotifications } from "../services/marketplace-notifications.js";
 import { logger } from "../middleware/logger.js";
+import { agentInstructionsService } from "../services/agent-instructions.js";
+import { listServerAdapters } from "../adapters/index.js";
 
 /**
  * Check if a user role can install a given catalog item type.
@@ -90,6 +93,8 @@ const SingleInstallRequestSchema = z.object({
   catalogItemId: z.string().min(1),
   targetDepartmentId: z.string().uuid().optional(),
   idempotencyKey: z.string().min(1).max(100).optional(),
+  role: z.enum(["cxo", "lead", "general"]).optional(),
+  adapterType: z.string().min(1).max(100).optional(),
 });
 const PackageInstallRequestSchema = z.object({
   packageId: z.string().min(1),
@@ -132,7 +137,10 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
     try {
       const plan = await resolveInstallPlan({
         catalogItemId: req.params.catalogItemId,
-        catalog, db, companyId,
+        catalog,
+        db,
+        companyId,
+        availableAdapterTypes: listServerAdapters().map((adapter) => adapter.type),
       });
       res.json(plan);
     } catch (err) {
@@ -313,7 +321,12 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
 
     const installers: Installers = {
       installSkill,
-      installAgent,
+      installAgent: (opts) =>
+        installAgent({
+          ...opts,
+          availableAdapterTypes: listServerAdapters().map((adapter) => adapter.type),
+          instructionsService: agentInstructionsService(),
+        }),
       installTeam: (opts) =>
         installTeam({
           ...opts,
@@ -330,7 +343,27 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       installPlugin: (opts) => installMarketplacePlugin({ ...opts, pluginLoader }),
     };
 
-    void dispatchInstall({ operation, catalogItem, catalog, db, installers, publishLiveEvent });
+    const installOverrides =
+      catalogItem.type === "agent" && (request.role || request.adapterType)
+        ? {
+          ...(request.role ? { role: request.role } : {}),
+          ...(request.adapterType ? { adapterType: request.adapterType } : {}),
+        }
+        : undefined;
+
+    const dispatchOpts: DispatchInstallOpts = {
+      operation,
+      catalogItem,
+      catalog,
+      db,
+      installers,
+      publishLiveEvent,
+    };
+    if (installOverrides) {
+      dispatchOpts.installOverrides = installOverrides;
+    }
+
+    void dispatchInstall(dispatchOpts);
 
     res.status(202).json({ operationId: operation.id, status: operation.status });
   });
