@@ -229,4 +229,17 @@ describe("GET /api/companies/:companyId/marketplace/resolve/:catalogItemId", () 
     expect(res.status).toBe(422);
     expect(res.body.error).toMatch(/failed to parse agent template json/i);
   });
+
+  it("returns 502 when agent template preview fetch rejects before an HTTP response", async () => {
+    global.fetch = vi.fn(async () => {
+      throw new Error("fetch failed");
+    }) as any;
+
+    const res = await request(buildApp({ ...CATALOG, items: [AGENT] }))
+      .get(`/api/companies/${C_ID}/marketplace/resolve/${encodeURIComponent(AGENT.id)}`);
+
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/failed to fetch agent template/i);
+    expect(res.body.error).toMatch(/fetch failed/i);
+  });
 });

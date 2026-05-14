@@ -52,6 +52,7 @@ describe("installAgent", () => {
         };
       },
     }),
+    transaction: async (cb: any) => cb(mockDb),
   };
 
   beforeEach(() => { insertedRow = null; });
@@ -176,6 +177,7 @@ describe("installAgent", () => {
           return { where: () => Promise.resolve() };
         },
       }),
+      transaction: async (cb: any) => cb(db),
     };
 
     global.fetch = vi.fn(async (url: string) => {
@@ -239,5 +241,61 @@ describe("installAgent", () => {
     expect(insertedRow.status).toBe("paused");
     expect(insertedRow.metadata.marketplaceSetupRequired).toBe(true);
     expect(updates[0].adapterConfig.instructionsBundleMode).toBe("managed");
+  });
+
+  it("does not commit an agent row when instruction materialization fails", async () => {
+    const committedRows: any[] = [];
+    const materializeManagedBundle = vi.fn(async () => {
+      throw new Error("bundle write failed");
+    });
+    const db = {
+      transaction: async (cb: any) => {
+        const pendingRows: any[] = [];
+        const tx = {
+          insert: () => ({
+            values: (row: any) => ({
+              returning: () => {
+                pendingRows.push(row);
+                return Promise.resolve([{ ...row, id: "agent-uuid-1" }]);
+              },
+            }),
+          }),
+          update: () => ({
+            set: () => ({ where: () => Promise.resolve() }),
+          }),
+        };
+        const result = await cb(tx);
+        committedRows.push(...pendingRows);
+        return result;
+      },
+    };
+
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        schemaVersion: "agent.v1",
+        id: "failing-agent",
+        name: "Failing Agent",
+        description: "Fails while writing instructions",
+        instructions: {
+          type: "inline",
+          content: "Use the managed bundle.",
+        },
+      }),
+    })) as any;
+
+    await expect(
+      installAgent({
+        catalogItem: AGENT_TEMPLATE,
+        companyId: "c1",
+        db: db as any,
+        desiredName: "Failing Agent",
+        instructionsService: { materializeManagedBundle } as any,
+      }),
+    ).rejects.toThrow(/bundle write failed/);
+
+    expect(materializeManagedBundle).toHaveBeenCalledTimes(1);
+    expect(committedRows).toEqual([]);
   });
 });
