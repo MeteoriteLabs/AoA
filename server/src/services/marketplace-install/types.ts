@@ -1,4 +1,4 @@
-import type { CatalogItem } from "@armyofagents/shared";
+import type { AgentRole, AgentStatus, CatalogItem } from "@armyofagents/shared";
 import type { CascadeStepResult } from "@armyofagents/db";
 
 /**
@@ -18,6 +18,11 @@ export interface PackageInstallRequest {
 }
 
 export type MarketplaceInstallRequest = InstallRequest | PackageInstallRequest;
+
+export interface AgentInstallOverrides {
+  role?: AgentRole;
+  adapterType?: string;
+}
 
 /**
  * Result of resolving a catalog item to its install plan.
@@ -70,6 +75,38 @@ export interface AgentTemplateBody {
   skillKeys?: string[];
   capabilities?: string;
   budgetMonthlyCents?: number;
+}
+
+export interface AgentSetupRequirement {
+  kind: "secret" | "plugin_config";
+  key: string;
+  label?: string;
+  required: boolean;
+  reason: string;
+  usedBy?: string;
+}
+
+export interface NormalizedMarketplaceAgentTemplate {
+  name: string;
+  role: AgentRole;
+  title?: string | null;
+  icon?: string | null;
+  status: AgentStatus;
+  capabilities?: string | null;
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+  runtimeConfig: Record<string, unknown>;
+  permissions: Record<string, unknown>;
+  budgetMonthlyCents: number;
+  skillKeys: string[];
+  instructions:
+    | { type: "inline"; files: Record<string, string>; entryFile: string }
+    | { type: "file"; path: string; entryFile: string }
+    | { type: "bundle"; files: string[]; entryFile: string };
+  setupRequirements: AgentSetupRequirement[];
+  setupRequired: boolean;
+  metadata: Record<string, unknown>;
+  warnings: string[];
 }
 
 export type { CascadeStepResult };
