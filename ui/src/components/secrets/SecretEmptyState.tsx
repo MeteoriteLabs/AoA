@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 interface SecretEmptyStateProps {
   onAddSecret?: () => void;
   onImportFromVault?: () => void;
+  onConfigureVault?: () => void;
   canImportFromVault?: boolean;
   importDisabledReason?: string;
 }
@@ -11,9 +12,12 @@ interface SecretEmptyStateProps {
 export function SecretEmptyState({
   onAddSecret,
   onImportFromVault,
+  onConfigureVault,
   canImportFromVault = false,
   importDisabledReason,
 }: SecretEmptyStateProps) {
+  const canUseVaultAction = canImportFromVault || Boolean(onConfigureVault);
+
   return (
     <div className="rounded-md border border-border bg-card px-5 py-8 text-center">
       <KeyRound className="mx-auto mb-3 size-7 text-muted-foreground/40" />
@@ -30,14 +34,18 @@ export function SecretEmptyState({
           type="button"
           size="sm"
           variant="outline"
-          disabled={!canImportFromVault}
+          disabled={!canUseVaultAction}
           title={canImportFromVault ? "Import external references from a configured vault" : importDisabledReason}
           onClick={() => {
-            if (canImportFromVault) onImportFromVault?.();
+            if (canImportFromVault) {
+              onImportFromVault?.();
+            } else {
+              onConfigureVault?.();
+            }
           }}
         >
           <CloudDownload className="size-3.5" />
-          Import from vault
+          {canImportFromVault ? "Import from vault" : "Configure vault"}
         </Button>
       </div>
     </div>
