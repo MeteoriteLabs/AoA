@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   secretsApi,
   type CreateSecretInput,
+  type CreateSecretBindingInput,
   type CreateSecretProviderConfigInput,
   type UpdateSecretInput,
 } from "@/api/secrets";
@@ -158,6 +159,34 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     },
   });
 
+  const createBinding = useMutation({
+    mutationFn: ({ secretId, input }: { secretId: string; input: CreateSecretBindingInput }) =>
+      secretsApi.bindings.create(secretId, input),
+    onSuccess: (_created, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.bindings(variables.secretId) });
+      toast.success("Binding created");
+    },
+    onError: (err) => {
+      toast.error("Create binding failed", { description: err instanceof Error ? err.message : undefined });
+    },
+  });
+
+  const removeBinding = useMutation({
+    mutationFn: ({ bindingId }: { bindingId: string; secretId: string }) => secretsApi.bindings.remove(bindingId),
+    onSuccess: (_removed, variables) => {
+      queryClient.setQueryData(queryKeys.secrets.bindings(variables.secretId), (current: unknown) =>
+        Array.isArray(current)
+          ? current.filter((binding) => binding?.id !== variables.bindingId)
+          : current,
+        );
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.bindings(variables.secretId) });
+      toast.success("Binding removed");
+    },
+    onError: (err) => {
+      toast.error("Remove binding failed", { description: err instanceof Error ? err.message : undefined });
+    },
+  });
+
   const secrets = secretsQuery.data ?? [];
   const providerConfigs = providerConfigsQuery.data ?? [];
   const importableProviderConfigs = providerConfigs.filter(
@@ -169,6 +198,12 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
   const createErrorMessage = createSecret.error instanceof Error ? createSecret.error.message : null;
   const rotateErrorMessage = rotateSecret.error instanceof Error ? rotateSecret.error.message : null;
   const updateErrorMessage = updateSecret.error instanceof Error ? updateSecret.error.message : null;
+  const bindingActionErrorMessage =
+    createBinding.error instanceof Error
+      ? createBinding.error.message
+      : removeBinding.error instanceof Error
+        ? removeBinding.error.message
+        : null;
   const createProviderErrorMessage =
     createProviderConfig.error instanceof Error ? createProviderConfig.error.message : null;
   const statusUpdateSecretId =
@@ -199,6 +234,17 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
           bindings={bindingsQuery.data ?? []}
           secrets={secrets}
           errorMessage={bindingsQuery.error instanceof Error ? bindingsQuery.error.message : null}
+          actionErrorMessage={bindingActionErrorMessage}
+          isCreatingBinding={createBinding.isPending}
+          removingBindingId={removeBinding.isPending ? removeBinding.variables?.bindingId ?? null : null}
+          onCreateBinding={(input) => {
+            createBinding.reset();
+            return createBinding.mutateAsync({ secretId: selectedSecret.id, input });
+          }}
+          onRemoveBinding={(binding) => {
+            removeBinding.reset();
+            return removeBinding.mutateAsync({ bindingId: binding.id, secretId: binding.secretId });
+          }}
         />
       );
     }

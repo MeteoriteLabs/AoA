@@ -73,6 +73,12 @@ function codexHomeDir(): string {
   return path.join(os.homedir(), ".codex");
 }
 
+function isAlreadyExistsError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = "code" in err ? String((err as NodeJS.ErrnoException).code) : "";
+  return code === "EEXIST" || code === "ERR_FS_CP_EEXIST" || /\bEEXIST\b|already exists/i.test(err.message);
+}
+
 export async function linkOrCopyCodexSkill({
   source,
   target,
@@ -105,11 +111,29 @@ export async function linkOrCopyCodexSkill({
       `[aoa] Injected Codex skill "${entryName}" into ${skillsHome}\n`,
     );
   } catch (err) {
-    await copySkill(source, target, { recursive: true });
-    await onLog(
-      "stderr",
-      `[aoa] Copied Codex skill "${entryName}" into ${skillsHome} after link failed: ${err instanceof Error ? err.message : String(err)}\n`,
-    );
+    if (isAlreadyExistsError(err)) {
+      await onLog(
+        "stderr",
+        `[aoa] Codex skill "${entryName}" already exists in ${skillsHome}; skipping injection\n`,
+      );
+      return;
+    }
+    try {
+      await copySkill(source, target, { recursive: true });
+      await onLog(
+        "stderr",
+        `[aoa] Copied Codex skill "${entryName}" into ${skillsHome} after link failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    } catch (copyErr) {
+      if (isAlreadyExistsError(copyErr)) {
+        await onLog(
+          "stderr",
+          `[aoa] Codex skill "${entryName}" already exists in ${skillsHome}; skipping injection\n`,
+        );
+        return;
+      }
+      throw copyErr;
+    }
   }
 }
 
