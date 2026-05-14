@@ -88,7 +88,7 @@ export interface AgentSetupRequirement {
 
 export interface NormalizedMarketplaceAgentTemplate {
   name: string;
-  role: AgentRole;
+  role: AgentRole | string;
   title?: string | null;
   icon?: string | null;
   status: AgentStatus;

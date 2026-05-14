@@ -228,7 +228,7 @@ export function normalizeMarketplaceAgentTemplate(opts: {
   const installedAt = new Date().toISOString();
 
   if (parsed.kind === "legacy") {
-    const role = overrides?.role ?? normalizeRole(parsed.template.role, warnings);
+    const role = overrides?.role ?? parsed.template.role ?? "general";
     const adapterType = overrides?.adapterType ?? parsed.template.adapterType ?? "process";
     const icon = normalizeIcon(parsed.template.icon, warnings);
 
