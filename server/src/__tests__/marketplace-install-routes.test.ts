@@ -80,7 +80,7 @@ const CATALOG = {
   items: [SKILL, SKILL_B, AGENT, MIXED_SKILL, MIXED_TEAM],
 };
 
-function buildApp() {
+function buildApp(catalog = CATALOG) {
   const app = express();
   app.use(express.json());
 
@@ -101,8 +101,8 @@ function buildApp() {
       transaction: async (cb: any) => cb({ insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "skill-1" }]) }) }) }),
     } as any,
     catalogService: {
-      readCache: async () => CATALOG,
-      sync: async () => CATALOG,
+      readCache: async () => catalog,
+      sync: async () => catalog,
       getStatus: async () => null,
       startSyncLoop: () => {}, stopSyncLoop: () => {},
     } as any,
@@ -208,5 +208,25 @@ describe("GET /api/companies/:companyId/marketplace/resolve/:catalogItemId", () 
     expect(res.status).toBe(200);
     expect(res.body.rootItem.id).toBe(SKILL.id);
     expect(res.body.steps).toBeInstanceOf(Array);
+  });
+
+  it("returns 404 only when the requested catalog item is missing", async () => {
+    const res = await request(buildApp())
+      .get(`/api/companies/${C_ID}/marketplace/resolve/${encodeURIComponent("skill:missing")}`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/catalog item not found/i);
+  });
+
+  it("returns non-404 when agent preview resolution fails after the item is found", async () => {
+    const badAgent = {
+      ...AGENT,
+      resourceUrl: "data:application/json,%7Bnot-json",
+    };
+    const res = await request(buildApp({ ...CATALOG, items: [badAgent] }))
+      .get(`/api/companies/${C_ID}/marketplace/resolve/${encodeURIComponent(AGENT.id)}`);
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/failed to parse agent template json/i);
   });
 });

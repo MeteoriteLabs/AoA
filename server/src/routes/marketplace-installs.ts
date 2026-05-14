@@ -109,6 +109,25 @@ function isPackageInstallRequest(
   return "packageId" in request;
 }
 
+function resolveInstallPlanErrorStatus(err: unknown): number {
+  if (err instanceof z.ZodError) return 422;
+  const message = err instanceof Error ? err.message : String(err);
+
+  if (message.startsWith("Catalog item not found:")) return 404;
+  if (message.startsWith("Failed to fetch ")) return 502;
+  if (
+    message.startsWith("Required catalog item not found:") ||
+    message.startsWith("Catalog defect:") ||
+    message.startsWith("Failed to parse agent template JSON") ||
+    message.includes(" has no resourceUrl") ||
+    message.includes(" resourceUrl must end with ")
+  ) {
+    return 422;
+  }
+
+  return 500;
+}
+
 export interface MarketplaceInstallRoutesDeps {
   db: Db;
   catalogService: MarketplaceCatalogService;
@@ -145,7 +164,11 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       res.json(plan);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      res.status(404).json({ error: message });
+      const status = resolveInstallPlanErrorStatus(err);
+      if (status >= 500) {
+        logger.error({ err, catalogItemId: req.params.catalogItemId }, "marketplace resolve failed");
+      }
+      res.status(status).json({ error: message });
     }
   });
 
