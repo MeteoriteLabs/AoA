@@ -214,4 +214,31 @@ describe("SnapshotInstallModal - agent", () => {
       adapterType: "codex",
     });
   });
+
+  it("blocks install when the resolved plan has a dependency version mismatch", async () => {
+    vi.mocked(marketplaceApi.resolvePlan).mockResolvedValueOnce({
+      rootItem: { id: ENGINEER_AGENT.id, name: "Engineer", type: "agent", version: "1.0.0" },
+      steps: [
+        { catalogItemId: "plugin:aoa-curated/github", itemType: "plugin", name: "GitHub Issues", version: "1.0.0", action: "fail-version-mismatch", reason: "Installed version 0.9.0 differs from catalog 1.0.0" },
+        { catalogItemId: ENGINEER_AGENT.id, itemType: "agent", name: "Engineer", version: "1.0.0", action: "install-new" },
+      ],
+      conflicts: [],
+      agentInstall: {
+        suggestedRole: "lead",
+        supportedRoles: ["cxo", "lead", "general"],
+        suggestedAdapterType: "codex",
+        supportedAdapterTypes: ["codex"],
+        availableAdapterTypes: ["codex"],
+        setupRequired: false,
+        setupRequirements: [],
+        warnings: [],
+      },
+    });
+
+    wrap(<SnapshotInstallModal item={ENGINEER_AGENT} open onOpenChange={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText("Version mismatch")).toBeInTheDocument());
+    expect(screen.getByText(/Resolve version mismatches before installing/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Install$/ })).toBeDisabled();
+  });
 });

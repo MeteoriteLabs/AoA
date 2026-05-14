@@ -78,10 +78,12 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
   }, [isAgent, plan]);
 
   const needsDept = item.type === "agent" || item.type === "team";
+  const hasVersionMismatch = plan?.steps.some((step) => step.action === "fail-version-mismatch") ?? false;
   const canInstall =
     !!companyId &&
     (!needsDept || !!deptId) &&
-    (!isAgent || (!!plan?.agentInstall && !!agentRole && !!agentAdapterType));
+    (!isAgent || (!!plan?.agentInstall && !!agentRole && !!agentAdapterType)) &&
+    !hasVersionMismatch;
 
   const handleInstall = async () => {
     if (!canInstall || !companyId) return;
@@ -155,6 +157,12 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
 
           {shouldResolvePlan && plan && plan.steps.length > 1 && (
             <CascadeTreePreview plan={plan} subject={item.type} />
+          )}
+
+          {hasVersionMismatch && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              Resolve version mismatches before installing.
+            </div>
           )}
         </DialogBody>
 
