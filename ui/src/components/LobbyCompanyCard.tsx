@@ -1,3 +1,4 @@
+import { Bell } from "lucide-react";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -23,13 +24,16 @@ interface LobbyCompanyCardProps {
  * layout never jumps when pills appear/disappear:
  *  - `live` (brand-red, pulsing): currently-running agents — backend signal TBD
  *  - `N pending` (warn): pendingApprovalCount > 0
+ *  - `N unread` (default): unreadNotificationCount > 0
  *  - `N failed` (error): failed tasks in last 24h — backend signal TBD
  *
  * No top color stripe per locked design. Whole card is the click target.
  */
 export function LobbyCompanyCard({ company, stats, statsLoading, onClick }: LobbyCompanyCardProps) {
   const pendingCount = stats?.pendingApprovalCount ?? 0;
+  const unreadCount = stats?.unreadNotificationCount ?? 0;
   const showPending = pendingCount > 0;
+  const showUnread = unreadCount > 0;
   // Live + failed signals not yet exposed by stats; render conditional space-holders
   // so the design hooks are in place when the backend lands those fields.
   const showLive = false;
@@ -95,6 +99,15 @@ export function LobbyCompanyCard({ company, stats, statsLoading, onClick }: Lobb
           {showPending && (
             <span className="inline-flex h-[22px] items-center rounded-full border border-warning/30 bg-gradient-to-b from-warning/[0.18] to-warning/[0.10] px-2 text-[0.62rem] font-semibold uppercase tracking-[0.04em] text-[hsl(45_80%_75%)]">
               {pendingCount} pending
+            </span>
+          )}
+          {showUnread && (
+            <span
+              aria-label={`${unreadCount} unread notifications`}
+              className="inline-flex h-[22px] items-center gap-1 rounded-full border border-border-strong bg-card-2 px-2 text-[0.62rem] font-semibold uppercase tracking-[0.04em] text-dim"
+            >
+              <Bell className="size-3" />
+              {unreadCount} unread
             </span>
           )}
           {showFailed && (
