@@ -7,6 +7,7 @@ vi.mock("@armyofagents/db", () => {
   return {
     marketplacePendingUpdates: tableProxy,
     companySkills: tableProxy,
+    plugins: tableProxy,
   };
 });
 vi.mock("drizzle-orm", () => ({
@@ -176,5 +177,223 @@ describe("POST /updates/:id/merge — sets customized = true", () => {
     // Transaction must contain both writes: the skill update and the pending-update status
     expect(txSets.some((s: any) => "markdown" in s)).toBe(true);   // skill update
     expect(txSets.some((s: any) => s.status === "applied")).toBe(true); // pending update
+  });
+});
+
+describe("POST /updates/:id/apply plugin updates", () => {
+  function buildPluginApplyApp({
+    updateRow,
+    pluginRows,
+    catalogItems = [],
+    upgrade = vi.fn(async () => ({ version: "1.0.0", status: "ready" })),
+    pluginLoader,
+    pluginRollback,
+    lifecycleLoad,
+    capturedSets = [],
+  }: {
+    updateRow: any;
+    pluginRows: any[][];
+    catalogItems?: any[];
+    upgrade?: any;
+    pluginLoader?: any;
+    pluginRollback?: any;
+    lifecycleLoad?: any;
+    capturedSets?: any[];
+  }) {
+    let selectCall = 0;
+    const db = {
+      select: () => {
+        selectCall += 1;
+        const rows = selectCall === 1 ? [updateRow] : (pluginRows[selectCall - 2] ?? []);
+        return {
+          from: () => ({
+            where: () => ({
+              limit: () => Promise.resolve(rows),
+              then: (resolve: any) => resolve(rows),
+            }),
+            limit: () => Promise.resolve(rows),
+            then: (resolve: any) => resolve(rows),
+          }),
+        };
+      },
+      update: () => ({
+        set: (values: any) => ({
+          where: () => {
+            capturedSets.push(values);
+            return Promise.resolve();
+          },
+        }),
+      }),
+    };
+
+    const app = express();
+    app.use(express.json());
+    app.use((req: any, _res: any, next: any) => {
+      req.actor = { type: "board", source: "local_implicit", userId: "u1", companyId: "c1" };
+      next();
+    });
+    app.use(
+      "/api/companies/:companyId/marketplace",
+      createMarketplaceCompanyRouter({
+        db: db as any,
+        catalogService: {
+          readCache: async () => ({
+            schemaVersion: "1.0.0",
+            generatedAt: "2026-05-15T00:00:00.000Z",
+            itemCount: catalogItems.length,
+            items: catalogItems,
+          }),
+        },
+        pluginLifecycle: { upgrade, load: lifecycleLoad ?? vi.fn() } as any,
+        pluginLoader,
+        pluginRollback,
+      }),
+    );
+
+    return { app, upgrade, capturedSets };
+  }
+
+  const baseUpdateRow = {
+    id: "upd-plugin-1",
+    companyId: "c1",
+    catalogItemId: "plugin:aoa-curated/aoa-plugin-github-issues",
+    catalogItemName: "GitHub Issues",
+    itemType: "plugin",
+    currentVersion: "0.1.1",
+    latestVersion: "1.0.0",
+    status: "pending",
+  };
+
+  const basePluginRow = {
+    id: "plugin-1",
+    companyId: "c1",
+    catalogItemId: "plugin:aoa-curated/aoa-plugin-github-issues",
+    version: "0.1.1",
+  };
+
+  it("upgrades the installed plugin and marks the pending update applied", async () => {
+    const capturedSets: any[] = [];
+    const upgrade = vi.fn(async () => ({ version: "1.0.0", status: "ready" }));
+    const { app } = buildPluginApplyApp({
+      updateRow: baseUpdateRow,
+      pluginRows: [[basePluginRow]],
+      upgrade,
+      capturedSets,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/c1/marketplace/updates/upd-plugin-1/apply")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(upgrade).toHaveBeenCalledWith("plugin-1", "1.0.0");
+    expect(capturedSets.some((set) => set.status === "applied")).toBe(true);
+  });
+
+  it("rejects stale plugin update rows without upgrading", async () => {
+    const upgrade = vi.fn(async () => ({ version: "1.0.0", status: "ready" }));
+    const { app } = buildPluginApplyApp({
+      updateRow: { ...baseUpdateRow, status: "applied" },
+      pluginRows: [[basePluginRow]],
+      upgrade,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/c1/marketplace/updates/upd-plugin-1/apply")
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(upgrade).not.toHaveBeenCalled();
+  });
+
+  it("returns capability delta and does not mark the update applied when approval is pending", async () => {
+    const capturedSets: any[] = [];
+    const upgrade = vi.fn(async () => ({
+      version: "1.0.0",
+      status: "upgrade_pending",
+      delta: ["storage.write"],
+    }));
+    const { app } = buildPluginApplyApp({
+      updateRow: baseUpdateRow,
+      pluginRows: [[basePluginRow]],
+      upgrade,
+      capturedSets,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/c1/marketplace/updates/upd-plugin-1/apply")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "upgrade_pending",
+      delta: ["storage.write"],
+      pluginId: "plugin-1",
+    });
+    expect(capturedSets.some((set) => set.status === "applied")).toBe(false);
+  });
+
+  it("rolls back the plugin package when lifecycle upgrade fails", async () => {
+    const upgrade = vi.fn(async () => {
+      throw new Error("upgrade failed");
+    });
+    const installPlugin = vi.fn(async () => ({}));
+    const lifecycleLoad = vi.fn(async () => ({}));
+    const getRollbackTarget = vi.fn(async () => ({
+      packageName: "@aoa/github-issues",
+      version: "0.1.1",
+    }));
+    const { app } = buildPluginApplyApp({
+      updateRow: baseUpdateRow,
+      pluginRows: [[{ ...basePluginRow, packageName: "@aoa/github-issues" }]],
+      upgrade,
+      lifecycleLoad,
+      pluginLoader: { installPlugin },
+      pluginRollback: { getRollbackTarget },
+    });
+
+    const res = await request(app)
+      .post("/api/companies/c1/marketplace/updates/upd-plugin-1/apply")
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(installPlugin).toHaveBeenCalledWith({
+      packageName: "@aoa/github-issues",
+      version: "0.1.1",
+      companyId: "c1",
+    });
+    expect(lifecycleLoad).toHaveBeenCalledWith("plugin-1");
+  });
+
+  it("falls back to catalog npm package name when installed plugin has no catalog item id", async () => {
+    const upgrade = vi.fn(async () => ({ version: "1.0.0", status: "ready" }));
+    const { app } = buildPluginApplyApp({
+      updateRow: baseUpdateRow,
+      pluginRows: [[], [{ ...basePluginRow, catalogItemId: null, packageName: "@aoa/github-issues" }]],
+      upgrade,
+      catalogItems: [
+        {
+          id: baseUpdateRow.catalogItemId,
+          type: "plugin",
+          name: "GitHub Issues",
+          description: "Sync GitHub issues",
+          version: "1.0.0",
+          source: { adapter: "aoa-curated", url: "...", locator: "..." },
+          npm: { packageName: "@aoa/github-issues", version: "1.0.0" },
+          trust: { tier: "verified", source: "aoa-curated" },
+          status: "active",
+          addedAt: "2026-05-15T00:00:00.000Z",
+          category: "integrations",
+          tags: [],
+        },
+      ],
+    });
+
+    const res = await request(app)
+      .post("/api/companies/c1/marketplace/updates/upd-plugin-1/apply")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(upgrade).toHaveBeenCalledWith("plugin-1", "1.0.0");
   });
 });

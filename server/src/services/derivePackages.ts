@@ -1,4 +1,4 @@
-import type { MarketplaceCatalogItem, MarketplacePackage } from "@armyofagents/shared";
+import type { MarketplaceCatalogItem, MarketplacePackage, MarketplaceProviderRef } from "@armyofagents/shared";
 
 const SYNTHESIS_THRESHOLD = 2;
 
@@ -12,6 +12,35 @@ function repoRootFromUrl(url: string): string | null {
   const owner = m[1]!;
   const repo = m[2]!.replace(/\.git$/i, "");
   return `${owner}/${repo}`;
+}
+
+function githubOwnerFromUrl(url: string): string | null {
+  return repoRootFromUrl(url)?.split("/")[0] ?? null;
+}
+
+function humanizeGithubOwner(owner: string): string {
+  return owner
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function initialsFromName(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  const chars = words.length > 1 ? words.slice(0, 2).map((word) => word[0]) : [name[0]];
+  return chars.filter(Boolean).join("").toUpperCase() || "?";
+}
+
+function providerFromGithubOwner(owner: string): MarketplaceProviderRef {
+  const name = humanizeGithubOwner(owner);
+  return {
+    id: owner,
+    name,
+    homepageUrl: `https://github.com/${owner}`,
+    logoUrl: `https://github.com/${owner}.png`,
+    fallbackInitials: initialsFromName(name),
+  };
 }
 
 /**
@@ -88,6 +117,9 @@ function buildPackage(
 ): MarketplacePackage {
   const memberItemIds = members.map((m) => m.id).sort((a, b) => a.localeCompare(b));
   const verified = members.every((m) => m.trust.tier === "verified");
+  const memberProvider = [...members].sort((a, b) => a.id.localeCompare(b.id)).find((m) => m.provider)?.provider;
+  const githubOwner = githubOwnerFromUrl(sourceUrl);
+  const provider = memberProvider ?? (githubOwner ? providerFromGithubOwner(githubOwner) : undefined);
   return {
     id,
     name,
@@ -96,5 +128,6 @@ function buildPackage(
     count: memberItemIds.length,
     verified,
     explicit,
+    ...(provider ? { provider } : {}),
   };
 }

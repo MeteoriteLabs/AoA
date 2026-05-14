@@ -1,6 +1,4 @@
-import { useState, useEffect } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { queryKeys } from "@/lib/queryKeys";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogBody,
@@ -12,37 +10,45 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertTriangle } from "lucide-react";
 import type { CatalogItem } from "@armyofagents/shared";
+import type { InstallPlan, SingleInstallRequest } from "@/api/marketplace";
 import { TrustBadge } from "../TrustBadge";
 import { CompanyPicker } from "./CompanyPicker";
 import { DepartmentPicker } from "./DepartmentPicker";
 import { CascadeTreePreview } from "./CascadeTreePreview";
 import { useCompany } from "@/context/CompanyContext";
 import { useInstallOperation } from "@/hooks/useInstallOperation";
-import { useOperationStatus } from "@/hooks/useOperationStatus";
 import { useResolvePlan } from "@/hooks/useResolvePlan";
 import { useInstallToast } from "../toast/useInstallToast";
 import { renderRuntimeRequires } from "@/lib/marketplace-constants";
 
+type AgentRole = NonNullable<SingleInstallRequest["role"]>;
+
+const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
+  cxo: "CXO",
+  lead: "Lead",
+  general: "General",
+};
+
 export interface SnapshotInstallModalProps {
-  item: CatalogItem; // type='skill' | 'agent' | 'team'
+  item: CatalogItem;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
 /**
- * Modal for snapshot installs (skill/agent/team) — requires company + dept picker.
- * For team type, additionally fetches + renders the cascade tree preview.
+ * Modal for snapshot installs (skill/agent/team). The global install toast
+ * provider owns operation polling so the toast can resolve after route changes.
  */
 export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInstallModalProps) {
   const { selectedCompanyId, companies } = useCompany();
   const [companyId, setCompanyId] = useState<string | null>(selectedCompanyId);
   const [deptId, setDeptId] = useState<string | null>(null);
-  const [pendingOpId, setPendingOpId] = useState<string | null>(null);
-  const [pendingToastId, setPendingToastId] = useState<number | null>(null);
+  const [agentRole, setAgentRole] = useState<AgentRole | null>(null);
+  const [agentAdapterType, setAgentAdapterType] = useState<string | null>(null);
 
-  // Auto-pick when only 1 active company exists
   useEffect(() => {
     if (!companyId) {
       const active = companies.filter((c) => c.status !== "archived");
@@ -50,84 +56,72 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
     }
   }, [companyId, companies]);
 
-  // Reset dept when company changes
   useEffect(() => {
     setDeptId(null);
   }, [companyId]);
 
-  const queryClient = useQueryClient();
   const installMutation = useInstallOperation({ companyId: companyId ?? "" });
-  const { show, update } = useInstallToast();
+  const { show, update, trackOperation } = useInstallToast();
 
-  // For team: fetch resolve plan to show cascade
   const isTeam = item.type === "team";
+  const isAgent = item.type === "agent";
+  const shouldResolvePlan = isTeam || isAgent;
   const { data: plan } = useResolvePlan({
-    companyId: isTeam ? companyId : null,
-    catalogItemId: isTeam ? item.id : null,
-  });
-
-  const { data: opStatus } = useOperationStatus({
-    companyId,
-    operationId: pendingOpId,
+    companyId: shouldResolvePlan ? companyId : null,
+    catalogItemId: shouldResolvePlan ? item.id : null,
   });
 
   useEffect(() => {
-    if (!opStatus || pendingToastId === null || pendingToastId < 1) return;
-    if (opStatus.status === "success") {
-      update(pendingToastId, { status: "success", message: `Installed ${item.name}` });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
-      setPendingOpId(null);
-      setPendingToastId(null);
-    } else if (opStatus.status === "requested") {
-      update(pendingToastId, { status: "success", message: `Request submitted — a founder will review ${item.name}` });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
-      setPendingOpId(null);
-      setPendingToastId(null);
-    } else if (opStatus.status === "failure") {
-      update(pendingToastId, {
-        status: "failure",
-        message: `Failed to install ${item.name}`,
-        detail: opStatus.errorMessage ?? "Unknown error",
-      });
-      setPendingOpId(null);
-      setPendingToastId(null);
-    }
-  }, [opStatus, pendingToastId, update, item.name, queryClient]);
+    if (!isAgent || !plan?.agentInstall) return;
+    setAgentRole((current) => current ?? plan.agentInstall!.suggestedRole);
+    setAgentAdapterType((current) => current ?? plan.agentInstall!.suggestedAdapterType);
+  }, [isAgent, plan]);
 
-  // Skills don't require a department — only agent/team installs do.
   const needsDept = item.type === "agent" || item.type === "team";
-  const canInstall = !!companyId && (!needsDept || !!deptId);
+  const hasVersionMismatch = plan?.steps.some((step) => step.action === "fail-version-mismatch") ?? false;
+  const canInstall =
+    !!companyId &&
+    (!needsDept || !!deptId) &&
+    (!isAgent || (!!plan?.agentInstall && !!agentRole && !!agentAdapterType)) &&
+    !hasVersionMismatch;
 
   const handleInstall = async () => {
     if (!canInstall || !companyId) return;
-    const toastId = show({ status: "installing", message: `Installing ${item.name}…` });
-    setPendingToastId(toastId);
+    const toastId = show({ status: "installing", message: `Installing ${item.name}...` });
     onOpenChange(false);
     try {
       const result = await installMutation.mutateAsync({
         catalogItemId: item.id,
         ...(needsDept && deptId ? { targetDepartmentId: deptId } : {}),
+        ...(isAgent && agentRole ? { role: agentRole } : {}),
+        ...(isAgent && agentAdapterType ? { adapterType: agentAdapterType } : {}),
       });
-      setPendingOpId(result.operationId);
+      trackOperation({
+        toastId,
+        companyId,
+        operationId: result.operationId,
+        itemName: item.name,
+        requestedMessage: `Request submitted - a founder will review ${item.name}`,
+        invalidate: item.type === "skill" ? "companySkills" : undefined,
+      });
     } catch (err) {
       update(toastId, {
         status: "failure",
-        message: `Failed to start install`,
+        message: "Failed to start install",
         detail: err instanceof Error ? err.message : String(err),
       });
-      setPendingToastId(null);
     }
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto,minmax(0,1fr),auto] overflow-hidden sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Install {item.name}</DialogTitle>
           <DialogDescription>{item.description}</DialogDescription>
         </DialogHeader>
 
-        <DialogBody className="space-y-4">
+        <DialogBody className="space-y-4 overflow-y-auto">
           <div className="flex items-center gap-2">
             <TrustBadge tier={item.trust.tier} />
             <Badge variant="outline" className="text-xs">v{item.version}</Badge>
@@ -151,16 +145,131 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
           <CompanyPicker value={companyId} onChange={setCompanyId} />
           {needsDept && <DepartmentPicker companyId={companyId} value={deptId} onChange={setDeptId} />}
 
-          {isTeam && plan && plan.steps.length > 1 && <CascadeTreePreview plan={plan} />}
+          {isAgent && plan?.agentInstall && (
+            <AgentInstallSettings
+              role={agentRole}
+              adapterType={agentAdapterType}
+              plan={plan}
+              onRoleChange={setAgentRole}
+              onAdapterTypeChange={setAgentAdapterType}
+            />
+          )}
+
+          {shouldResolvePlan && plan && plan.steps.length > 1 && (
+            <CascadeTreePreview plan={plan} subject={item.type} />
+          )}
+
+          {hasVersionMismatch && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              Resolve version mismatches before installing.
+            </div>
+          )}
         </DialogBody>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button onClick={handleInstall} disabled={!canInstall || installMutation.isPending}>
-            {installMutation.isPending ? "Starting install…" : "Install"}
+            {installMutation.isPending ? "Starting install..." : "Install"}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function AgentInstallSettings({
+  role,
+  adapterType,
+  plan,
+  onRoleChange,
+  onAdapterTypeChange,
+}: {
+  role: AgentRole | null;
+  adapterType: string | null;
+  plan: InstallPlan;
+  onRoleChange: (role: AgentRole) => void;
+  onAdapterTypeChange: (adapterType: string) => void;
+}) {
+  const agentInstall = plan.agentInstall;
+  if (!agentInstall) return null;
+
+  const availableAdapters = new Set(agentInstall.availableAdapterTypes);
+  const adapterOptions = agentInstall.supportedAdapterTypes.length > 0
+    ? agentInstall.supportedAdapterTypes
+    : agentInstall.availableAdapterTypes;
+
+  return (
+    <div className="space-y-3 rounded-md border border-border bg-card-2 p-3">
+      <div>
+        <h4 className="text-sm font-medium">Agent settings</h4>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <label htmlFor="agent-role" className="mb-1 block text-sm font-medium">
+            Role
+          </label>
+          <Select value={role ?? agentInstall.suggestedRole} onValueChange={(next) => onRoleChange(next as AgentRole)}>
+            <SelectTrigger id="agent-role">
+              <SelectValue placeholder="Select role" />
+            </SelectTrigger>
+            <SelectContent>
+              {agentInstall.supportedRoles.map((supportedRole) => (
+                <SelectItem key={supportedRole} value={supportedRole}>
+                  {AGENT_ROLE_LABELS[supportedRole]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div>
+          <label htmlFor="agent-adapter" className="mb-1 block text-sm font-medium">
+            Adapter
+          </label>
+          <Select value={adapterType ?? agentInstall.suggestedAdapterType} onValueChange={onAdapterTypeChange}>
+            <SelectTrigger id="agent-adapter">
+              <SelectValue placeholder="Select adapter" />
+            </SelectTrigger>
+            <SelectContent>
+              {adapterOptions.map((option) => (
+                <SelectItem
+                  key={option}
+                  value={option}
+                  disabled={availableAdapters.size > 0 && !availableAdapters.has(option)}
+                >
+                  {option}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {agentInstall.setupRequired && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <div className="space-y-1">
+              <p className="font-medium">Setup required after install</p>
+              <ul className="list-disc space-y-1 pl-4">
+                {agentInstall.setupRequirements.map((requirement) => (
+                  <li key={`${requirement.kind}:${requirement.key}`}>
+                    <span className="font-medium">{requirement.label ?? requirement.key}</span>
+                    <span> - {requirement.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {agentInstall.warnings.length > 0 && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {agentInstall.warnings.join(" ")}
+        </div>
+      )}
+    </div>
   );
 }

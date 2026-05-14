@@ -9,6 +9,18 @@ vi.mock("drizzle-orm", () => ({
   and: () => Symbol("op:and"),
 }));
 
+const materializerMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/marketplace-install/skill-bundle-materializer.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/marketplace-install/skill-bundle-materializer.js")>(
+    "../services/marketplace-install/skill-bundle-materializer.js",
+  );
+  return {
+    ...actual,
+    materializeSkillBundle: materializerMock,
+  };
+});
+
 import { installSkill } from "../services/marketplace-install/skill-installer.js";
 import type { CatalogItem } from "@armyofagents/shared";
 
@@ -36,6 +48,28 @@ const SKILL_FETCH: CatalogItem = {
   resourceUrl: "https://raw.githubusercontent.com/.../abc123/content/skills/web-search/SKILL.md",
 };
 
+const SKILL_BUNDLE: CatalogItem = {
+  ...SKILL_INLINE,
+  id: "skill:github-skills/example/repo/bundle-skill",
+  name: "Bundle Skill",
+  skill: {
+    bundle: {
+      type: "github-directory",
+      repo: "example/repo",
+      commitSha: "abc123",
+      path: "skills/bundle-skill",
+      treeUrl: "https://github.com/example/repo/tree/abc123/skills/bundle-skill",
+    },
+    frontmatter: { name: "bundle-skill", raw: {} },
+  },
+  provider: {
+    id: "example",
+    name: "Example",
+    logoUrl: "https://example.com/logo.png",
+    fallbackInitials: "EX",
+  },
+};
+
 describe("installSkill", () => {
   let insertedRow: any = null;
 
@@ -58,7 +92,10 @@ describe("installSkill", () => {
     }),
   };
 
-  beforeEach(() => { insertedRow = null; });
+  beforeEach(() => {
+    insertedRow = null;
+    materializerMock.mockReset();
+  });
 
   it("uses inline content when present (no HTTP fetch)", async () => {
     const fetchMock = vi.fn();
@@ -128,6 +165,72 @@ describe("installSkill", () => {
     await installSkill({ catalogItem: COMMUNITY_SKILL, companyId: "c1", db: mockDb as any });
     expect(insertedRow.trustLevel).toBe("markdown_only");
     expect(insertedRow.metadata.catalogTrustTier).toBe("community");
+  });
+
+  it("materializes bundle-backed skills and stores inventory metadata", async () => {
+    materializerMock.mockResolvedValue({
+      destination: "C:\\repo\\.aoa\\marketplace-skills\\c1\\skill_github-skills_example_repo_bundle-skill\\1.0.0",
+      markdown: "# Bundle Skill\n\nUse the whole package.",
+      fileInventory: [
+        { path: "SKILL.md", kind: "skill" },
+        { path: "references/guide.md", kind: "reference" },
+        { path: "scripts/run.js", kind: "script" },
+        { path: "assets/logo.png", kind: "asset" },
+      ],
+      fileCount: 4,
+      byteCount: 72,
+    });
+    global.fetch = vi.fn() as any;
+
+    await installSkill({
+      catalogItem: SKILL_BUNDLE,
+      companyId: "c1",
+      db: mockDb as any,
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(materializerMock).toHaveBeenCalledWith(
+      SKILL_BUNDLE.skill?.bundle,
+      expect.objectContaining({ overwrite: true }),
+    );
+    expect(insertedRow.markdown).toContain("# Bundle Skill");
+    expect(insertedRow.trustLevel).toBe("scripts_executables");
+    expect(insertedRow.fileInventory).toEqual([
+      { path: "SKILL.md", kind: "skill" },
+      { path: "references/guide.md", kind: "reference" },
+      { path: "scripts/run.js", kind: "script" },
+      { path: "assets/logo.png", kind: "asset" },
+    ]);
+    expect(insertedRow.metadata.catalogProvider).toEqual(SKILL_BUNDLE.provider);
+    expect(insertedRow.metadata.catalogSkillBundle.path).toBe("skills/bundle-skill");
+    expect(insertedRow.metadata.catalogBundleInstallPath).toContain(".aoa");
+  });
+
+  it("stores package metadata when installed through a marketplace package", async () => {
+    global.fetch = vi.fn() as any;
+
+    await installSkill({
+      catalogItem: SKILL_INLINE,
+      companyId: "c1",
+      db: mockDb as any,
+      packageContext: {
+        packageId: "anthropic/skills",
+        packageName: "skills",
+        sourceUrl: "https://github.com/anthropic/skills",
+        provider: {
+          id: "anthropic",
+          name: "Anthropic",
+          logoUrl: "https://github.com/anthropics.png",
+          fallbackInitials: "A",
+        },
+      },
+    });
+
+    expect(insertedRow.metadata.packageId).toBe("anthropic/skills");
+    expect(insertedRow.metadata.catalogPackageId).toBe("anthropic/skills");
+    expect(insertedRow.metadata.catalogPackageName).toBe("skills");
+    expect(insertedRow.metadata.catalogPackageSourceUrl).toBe("https://github.com/anthropic/skills");
+    expect(insertedRow.metadata.catalogProvider.name).toBe("Anthropic");
   });
 });
 

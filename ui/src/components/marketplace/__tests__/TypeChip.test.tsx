@@ -13,6 +13,15 @@ describe("TypeChip", () => {
     expect(screen.getByText("PLUGIN")).toBeInTheDocument();
   });
 
+  it("renders plugin as a blue badge", () => {
+    const { container } = render(<TypeChip type="plugin" />);
+    const el = container.firstElementChild as HTMLElement;
+    expect(el.className).toContain("rounded-full");
+    expect(el.className).toContain("bg-blue-500/10");
+    expect(el.className).toContain("border-blue-500/25");
+    expect(el.className).toContain("text-blue-400");
+  });
+
   it("renders AGENT for type='agent'", () => {
     render(<TypeChip type="agent" />);
     expect(screen.getByText("AGENT")).toBeInTheDocument();

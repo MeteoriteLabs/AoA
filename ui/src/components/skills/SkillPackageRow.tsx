@@ -1,11 +1,14 @@
 import { Link } from "@/lib/router";
 import { ChevronDown, ChevronRight, Sparkles } from "lucide-react";
+import type { MarketplaceProviderRef } from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
+import { ProviderLogo } from "@/components/marketplace/ProviderLogo";
 
 interface Props {
   packageId: string;
   name: string;
   count: number;
+  provider?: MarketplaceProviderRef | null;
   expanded: boolean;
   hasUpdate: boolean;
   active: boolean;
@@ -16,6 +19,7 @@ export function SkillPackageRow({
   packageId,
   name,
   count,
+  provider,
   expanded,
   hasUpdate,
   active,
@@ -41,7 +45,11 @@ export function SkillPackageRow({
       >
         <Chevron data-icon={chevronName} className="size-3.5" />
       </button>
-      <Sparkles className="size-3.5 shrink-0 text-amber-500" aria-hidden />
+      {provider ? (
+        <ProviderLogo provider={provider} className="size-5 shrink-0 rounded-md" />
+      ) : (
+        <Sparkles className="size-3.5 shrink-0 text-amber-500" aria-hidden />
+      )}
       <Link
         to={`/skills/package/${packageId}`}
         className="min-w-0 flex-1 truncate font-medium no-underline text-current hover:text-text"

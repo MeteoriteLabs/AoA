@@ -45,7 +45,7 @@ export function DepartmentPicker({ companyId, value, onChange }: DepartmentPicke
       <label htmlFor="install-department" className="text-sm font-medium block mb-1">
         Install to department
       </label>
-      <Select value={value ?? undefined} onValueChange={onChange}>
+      <Select value={value ?? ""} onValueChange={onChange}>
         <SelectTrigger id="install-department">
           <SelectValue placeholder="Select a department" />
         </SelectTrigger>

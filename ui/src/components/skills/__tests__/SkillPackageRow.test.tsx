@@ -12,6 +12,7 @@ const baseProps = {
   packageId: "garrytan/gstack",
   name: "gstack",
   count: 28,
+  provider: null,
   expanded: false,
   hasUpdate: false,
   active: false,
@@ -36,6 +37,18 @@ describe("SkillPackageRow", () => {
   it("shows update chip when hasUpdate=true", () => {
     const { getByTitle } = renderRow({ hasUpdate: true });
     expect(getByTitle(/update available/i)).toBeInTheDocument();
+  });
+
+  it("shows provider logo when package metadata includes one", () => {
+    const { getByRole } = renderRow({
+      provider: {
+        id: "angular",
+        name: "Angular",
+        logoUrl: "https://github.com/angular.png",
+        fallbackInitials: "NG",
+      },
+    });
+    expect(getByRole("img", { name: "Angular logo" })).toBeInTheDocument();
   });
 
   it("hides update chip when hasUpdate=false", () => {

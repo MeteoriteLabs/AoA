@@ -11,6 +11,11 @@ import type { Db } from "@armyofagents/db";
 import { companySkills, marketplacePendingUpdates } from "@armyofagents/db";
 import type { CatalogItem, MarketplaceSettings } from "@armyofagents/shared";
 import { loadSkillContent } from "./fetch-resource.js";
+import {
+  deriveBundleTrustLevel,
+  managedCatalogSkillDir,
+  materializeSkillBundle,
+} from "./skill-bundle-materializer.js";
 import { marketplaceNotifications } from "../marketplace-notifications.js";
 import { logger } from "../../middleware/logger.js";
 
@@ -76,12 +81,12 @@ export async function applySkillUpdate(args: {
   const { db, catalogItemId, catalogItemName, companyId, catalogItem } = args;
 
   // Step 1: fetch content outside transaction (network call — don't hold tx open)
-  const newMarkdown = await loadSkillContent(catalogItem);
+  const payload = await resolveSkillUpdatePayload(catalogItem, companyId);
 
   // Step 2: transaction — re-read customized, update skill, mark pending applied
   await db.transaction(async (tx) => {
     const [skillRow] = await tx
-      .select({ id: companySkills.id, customized: companySkills.customized })
+      .select({ id: companySkills.id, customized: companySkills.customized, metadata: companySkills.metadata })
       .from(companySkills)
       .where(
         and(
@@ -106,7 +111,18 @@ export async function applySkillUpdate(args: {
     // round-trip here.
     const updatedRows = await tx
       .update(companySkills)
-      .set({ markdown: newMarkdown, sourceRef: catalogItem.version, updatedAt: new Date() })
+      .set({
+        markdown: payload.markdown,
+        sourceRef: catalogItem.version,
+        ...(payload.trustLevel ? { trustLevel: payload.trustLevel } : {}),
+        ...(payload.fileInventory
+          ? { fileInventory: payload.fileInventory as unknown as Record<string, unknown>[] }
+          : {}),
+        ...(payload.metadataPatch
+          ? { metadata: { ...asRecord(skillRow.metadata), ...payload.metadataPatch } }
+          : {}),
+        updatedAt: new Date(),
+      })
       .where(and(
         eq(companySkills.id, skillRow.id),
         eq(companySkills.customized, false),
@@ -138,4 +154,38 @@ export async function applySkillUpdate(args: {
   } catch (err) {
     logger.error({ err, companyId, catalogItemId }, "marketplace: updateCompleted notification failed after auto-apply");
   }
+}
+
+async function resolveSkillUpdatePayload(catalogItem: CatalogItem, companyId: string) {
+  if (!catalogItem.skill?.bundle) {
+    return {
+      markdown: await loadSkillContent(catalogItem),
+      trustLevel: undefined,
+      fileInventory: undefined,
+      metadataPatch: undefined,
+    };
+  }
+
+  const managedDir = managedCatalogSkillDir(companyId, catalogItem.id, catalogItem.version);
+  const materialized = await materializeSkillBundle(catalogItem.skill.bundle, {
+    destination: managedDir,
+    overwrite: true,
+  });
+
+  return {
+    markdown: materialized.markdown,
+    trustLevel: deriveBundleTrustLevel(materialized.fileInventory),
+    fileInventory: materialized.fileInventory,
+    metadataPatch: {
+      catalogProvider: catalogItem.provider ?? null,
+      catalogSkillBundle: catalogItem.skill.bundle,
+      catalogBundleInstallPath: managedDir,
+    },
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }

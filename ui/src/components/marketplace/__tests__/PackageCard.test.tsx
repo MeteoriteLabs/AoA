@@ -21,19 +21,19 @@ function makePkg(overrides: Partial<MarketplacePackage> = {}): MarketplacePackag
   };
 }
 
-function renderCard(pkg: MarketplacePackage) {
+function renderCard(pkg: MarketplacePackage, onInstallAll?: (pkg: MarketplacePackage) => void) {
   return render(
     <MemoryRouter>
-      <PackageCard pkg={pkg} />
+      <PackageCard pkg={pkg} onInstallAll={onInstallAll} />
     </MemoryRouter>
   );
 }
 
 describe("PackageCard", () => {
-  it("renders the package name and item count pill", () => {
+  it("renders the package name and numeric item count", () => {
     renderCard(makePkg({ name: "gstack", count: 50 }));
     expect(screen.getByText("gstack")).toBeInTheDocument();
-    expect(screen.getByText(/50 items/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/50 items/i)).toHaveTextContent("50");
   });
 
   it("renders the PACKAGE type chip in the corner", () => {
@@ -41,9 +41,36 @@ describe("PackageCard", () => {
     expect(screen.getByText("PACKAGE")).toBeInTheDocument();
   });
 
+  it("groups the package label and item count in the corner badge", () => {
+    const { container } = renderCard(makePkg({ name: "very-long-package-name", count: 50 }));
+    const badge = container.querySelector('[data-testid="package-type-badge"]');
+    const titleRow = container.querySelector('[data-testid="package-title-row"]');
+
+    expect(badge).toHaveTextContent(/PACKAGE/i);
+    expect(badge).toHaveTextContent("50");
+    expect(titleRow).toHaveTextContent("very-long-package-name");
+    expect(titleRow).not.toHaveTextContent("50");
+  });
+
   it("uses StackedIcon with amber tone (3 layers)", () => {
     const { container } = renderCard(makePkg());
     expect(container.querySelectorAll('[data-stacked-layer]').length).toBe(3);
+  });
+
+  it("shows the provider logo instead of the stacked package icon when provider metadata exists", () => {
+    const { container } = renderCard(makePkg({
+      provider: {
+        id: "gstack",
+        name: "Garry Tan",
+        logoUrl: "https://github.com/garrytan.png",
+        fallbackInitials: "GT",
+      },
+    }));
+
+    expect(screen.getByRole("img", { name: "Garry Tan logo" })).toHaveClass("size-12");
+    expect(screen.queryByTestId("package-stacked-avatar")).not.toBeInTheDocument();
+    expect(container.querySelectorAll('[data-stacked-layer]').length).toBe(0);
+    expect(screen.getByText(/by Garry Tan/)).toBeInTheDocument();
   });
 
   it("shows the verified-blue checkmark when pkg.verified is true", () => {
@@ -86,5 +113,16 @@ describe("PackageCard", () => {
     await user.click(screen.getByRole("button", { name: /install all/i }));
     const lastCall = linkClickSpy.mock.calls.at(-1);
     expect(lastCall?.[0]?.defaultPrevented).toBe(true);
+  });
+
+  it("calls onInstallAll when Install all is clicked", async () => {
+    const user = userEvent.setup();
+    const pkg = makePkg();
+    const onInstallAll = vi.fn();
+    renderCard(pkg, onInstallAll);
+
+    await user.click(screen.getByRole("button", { name: /install all/i }));
+
+    expect(onInstallAll).toHaveBeenCalledWith(pkg);
   });
 });

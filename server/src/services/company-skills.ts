@@ -2202,6 +2202,11 @@ export function companySkillService(db: Db) {
         const ancillary = await readAncillarySkillFiles(skill.sourceLocator);
         if (ancillary.length > 0) entry.files = ancillary;
       }
+      const catalogBundleInstallPath = asString(skill.metadata?.catalogBundleInstallPath);
+      if (skill.sourceType === "catalog" && catalogBundleInstallPath) {
+        const ancillary = await readAncillarySkillFiles(catalogBundleInstallPath);
+        if (ancillary.length > 0) entry.files = ancillary;
+      }
       entries.push(entry);
     }
     return entries;
@@ -2364,6 +2369,19 @@ export function companySkillService(db: Db) {
       }
     }
     if (skill.sourceType === "local_path") return "Local";
+    if (skill.sourceType === "catalog") {
+      const metadata = skill.metadata;
+      if (metadata && typeof metadata === "object") {
+        const provider = (metadata as Record<string, unknown>).catalogProvider;
+        if (provider && typeof provider === "object") {
+          const name = (provider as Record<string, unknown>).name;
+          if (typeof name === "string" && name.length > 0) return name;
+        }
+        const packageId = asString((metadata as Record<string, unknown>).catalogPackageId);
+        if (packageId) return packageId;
+      }
+      return "Catalog";
+    }
     return null;
   }
 

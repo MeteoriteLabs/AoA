@@ -11,6 +11,13 @@ vi.mock("drizzle-orm", () => ({
 vi.mock("../services/marketplace-install/fetch-resource.js", () => ({
   loadSkillContent: vi.fn(),
 }));
+const materializerMock = vi.hoisted(() => vi.fn());
+vi.mock("../services/marketplace-install/skill-bundle-materializer.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/marketplace-install/skill-bundle-materializer.js")>(
+    "../services/marketplace-install/skill-bundle-materializer.js",
+  );
+  return { ...actual, materializeSkillBundle: materializerMock };
+});
 vi.mock("../services/marketplace-notifications.js", () => ({
   marketplaceNotifications: { updateCompleted: vi.fn() },
 }));
@@ -145,6 +152,7 @@ describe("applySkillUpdate", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    materializerMock.mockReset();
     vi.mocked(loadSkillContent).mockResolvedValue("# Code Review v1.1.0");
     vi.mocked(marketplaceNotifications.updateCompleted).mockResolvedValue(undefined as any);
   });
@@ -161,6 +169,54 @@ describe("applySkillUpdate", () => {
     });
     expect(tx._updatedPendingValues[0]).toMatchObject({ status: "applied" });
     expect(marketplaceNotifications.updateCompleted).toHaveBeenCalledWith(db, "c1", "Code Review");
+  });
+
+  it("materializes bundle updates and refreshes inventory metadata", async () => {
+    const bundleItem: CatalogItem = {
+      ...SKILL_ITEM,
+      version: "1.2.0",
+      provider: { id: "example", name: "Example", logoUrl: "https://example.com/logo.png", fallbackInitials: "EX" },
+      skill: {
+        bundle: {
+          type: "github-directory",
+          repo: "example/repo",
+          commitSha: "newsha123",
+          path: "skills/code-review",
+          treeUrl: "https://github.com/example/repo/tree/newsha123/skills/code-review",
+        },
+        frontmatter: { name: "code-review", raw: {} },
+      },
+    };
+    materializerMock.mockResolvedValue({
+      destination: "C:\\repo\\.aoa\\marketplace-skills\\c1\\skill_aoa-curated_code-review\\1.2.0",
+      markdown: "# New Bundle Skill",
+      fileInventory: [
+        { path: "SKILL.md", kind: "skill" },
+        { path: "assets/logo.png", kind: "asset" },
+      ],
+      fileCount: 2,
+      byteCount: 32,
+    });
+    const tx = buildTx();
+    const db = buildDb(tx);
+
+    await applySkillUpdate({ db: db as any, ...APPLY_ARGS, catalogItem: bundleItem });
+
+    expect(loadSkillContent).not.toHaveBeenCalled();
+    expect(tx._updatedSkillValues[0]).toMatchObject({
+      markdown: "# New Bundle Skill",
+      sourceRef: "1.2.0",
+      trustLevel: "assets",
+      fileInventory: [
+        { path: "SKILL.md", kind: "skill" },
+        { path: "assets/logo.png", kind: "asset" },
+      ],
+    });
+    expect(tx._updatedSkillValues[0].metadata).toMatchObject({
+      catalogProvider: bundleItem.provider,
+      catalogSkillBundle: expect.objectContaining({ commitSha: "newsha123" }),
+      catalogBundleInstallPath: expect.stringContaining(".aoa"),
+    });
   });
 
   it("throws SkillCustomizedError and makes no DB writes when customized=true inside tx", async () => {

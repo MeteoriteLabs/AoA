@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   Dialog,
   DialogBody,
@@ -17,9 +16,7 @@ import { TrustBadge } from "../TrustBadge";
 import { CapabilityConsentStep } from "./CapabilityConsentStep.js";
 import { useCompany } from "@/context/CompanyContext";
 import { useInstallOperation } from "@/hooks/useInstallOperation";
-import { useOperationStatus } from "@/hooks/useOperationStatus";
 import { useInstallToast } from "../toast/useInstallToast";
-import { queryKeys } from "@/lib/queryKeys";
 
 export interface PluginInstallModalProps {
   item: CatalogItem;
@@ -28,96 +25,63 @@ export interface PluginInstallModalProps {
 }
 
 /**
- * Modal for plugin install — instance-scoped, no company picker.
+ * Modal for plugin install, instance-scoped, no company picker.
  * Shows capabilities for review.
  *
- * Flow on Install click (per spec §6.6 + M3b.D8):
+ * Flow on Install click:
  *   1. Modal closes immediately
- *   2. Toast shows "Installing {name}…" with spinner
- *   3. Polling tracks operation status
- *   4. On success: toast updates to "Installed", auto-dismiss 3s
- *   5. On failure: toast updates with error message, auto-dismiss 3s
+ *   2. Toast shows install progress with spinner
+ *   3. Global toast provider tracks operation status
+ *   4. On terminal status, toast updates and auto-dismisses
  *
- * Plugins are instance-scoped per M.2.D8 — installing under any company URL
- * produces an identical instance-wide plugin row.
+ * Plugins are instance-scoped; installing under any company URL produces an
+ * identical instance-wide plugin row.
  */
 export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallModalProps) {
   const { selectedCompanyId, companies } = useCompany();
-  // Plugin install needs a companyId for the route URL even though it's instance-scoped.
-  // Use selectedCompanyId or fallback to first non-archived company.
   const installCompanyId =
     selectedCompanyId ?? companies.find((c) => c.status !== "archived")?.id ?? null;
 
-  const queryClient = useQueryClient();
   const installMutation = useInstallOperation({ companyId: installCompanyId ?? "" });
-  const { show, update } = useInstallToast();
-  const [pendingOpId, setPendingOpId] = useState<string | null>(null);
-  const [pendingToastId, setPendingToastId] = useState<number | null>(null);
+  const { show, update, trackOperation } = useInstallToast();
 
-  // Derive PluginCapability[] from the catalog item's capability objects
   const capabilities = (item.capabilities ?? [])
     .map((c) => c.id)
     .filter((id): id is PluginCapability =>
-      (PLUGIN_CAPABILITIES as readonly string[]).includes(id)
+      (PLUGIN_CAPABILITIES as readonly string[]).includes(id),
     );
   const [capabilitiesAgreed, setCapabilitiesAgreed] = useState(capabilities.length === 0);
 
-  // Reset consent whenever the user switches to a different plugin (modal stays mounted)
   useEffect(() => {
     setCapabilitiesAgreed(capabilities.length === 0);
-  }, [item.id]); // capabilities is derived from item so safe here
+  }, [item.id, capabilities.length]);
 
-  // Capture the timestamp when this modal instance opened.
   const openedAt = useRef<Date>(new Date());
   useEffect(() => {
     if (open) openedAt.current = new Date();
   }, [open]);
 
-  const { data: opStatus } = useOperationStatus({
-    companyId: installCompanyId,
-    operationId: pendingOpId,
-    startedAfter: openedAt.current,
-  });
-
-  // React to terminal status — update toast and clear tracking state
-  useEffect(() => {
-    if (!opStatus || pendingToastId === null || pendingToastId < 1) return;
-    if (opStatus.status === "success") {
-      update(pendingToastId, { status: "success", message: `Installed ${item.name}` });
-      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
-      setPendingOpId(null);
-      setPendingToastId(null);
-    } else if (opStatus.status === "requested") {
-      update(pendingToastId, { status: "success", message: `Request submitted — a founder will review ${item.name}` });
-      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
-      setPendingOpId(null);
-      setPendingToastId(null);
-    } else if (opStatus.status === "failure") {
-      update(pendingToastId, {
-        status: "failure",
-        message: `Failed to install ${item.name}`,
-        detail: opStatus.errorMessage ?? "Unknown error",
-      });
-      setPendingOpId(null);
-      setPendingToastId(null);
-    }
-  }, [opStatus, pendingToastId, update, item.name, queryClient]);
-
   const handleInstall = async () => {
     if (!installCompanyId) return;
-    const toastId = show({ status: "installing", message: `Installing ${item.name}…` });
-    setPendingToastId(toastId);
-    onOpenChange(false); // close modal immediately
+    const toastId = show({ status: "installing", message: `Installing ${item.name}...` });
+    onOpenChange(false);
     try {
       const result = await installMutation.mutateAsync({ catalogItemId: item.id });
-      setPendingOpId(result.operationId);
+      trackOperation({
+        toastId,
+        companyId: installCompanyId,
+        operationId: result.operationId,
+        itemName: item.name,
+        requestedMessage: `Request submitted - a founder will review ${item.name}`,
+        invalidate: "plugins",
+        startedAfter: openedAt.current,
+      });
     } catch (err) {
       update(toastId, {
         status: "failure",
-        message: `Failed to start install`,
+        message: "Failed to start install",
         detail: err instanceof Error ? err.message : String(err),
       });
-      setPendingToastId(null);
     }
   };
 
@@ -160,7 +124,7 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
             onClick={handleInstall}
             disabled={installMutation.isPending || !installCompanyId || !capabilitiesAgreed}
           >
-            {installMutation.isPending ? "Starting install…" : "Install"}
+            {installMutation.isPending ? "Starting install..." : "Install"}
           </Button>
         </DialogFooter>
       </DialogContent>

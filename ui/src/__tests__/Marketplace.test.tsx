@@ -3,7 +3,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders, mockCompanyContext, mockDialogContext } from "./test-utils";
 import Marketplace from "../pages/Marketplace";
-import type { CatalogItem, MarketplaceCatalogFile } from "@armyofagents/shared";
+import type { CatalogItem, MarketplaceCatalogFile, MarketplacePackage } from "@armyofagents/shared";
 import { usePackages } from "@/hooks/usePackages";
 import { useCatalog } from "@/hooks/useCatalog";
 
@@ -176,6 +176,30 @@ describe("Marketplace (hub)", () => {
     expect(screen.getByText("gstack")).toBeInTheDocument();
   });
 
+  it("shows Packages as the first top-level overview section on All", () => {
+    renderWithProviders(<Marketplace />);
+    const headers = screen.getAllByRole("heading", { level: 2 });
+    expect(headers[0]).toHaveTextContent(/packages/i);
+    expect(headers[1]).toHaveTextContent(/skills/i);
+  });
+
+  it("renders packages in the overview shelf on All", () => {
+    renderWithProviders(<Marketplace />);
+    const shelf = screen.getByTestId("marketplace-packages-overview");
+    expect(shelf).toHaveTextContent("gstack");
+    expect(shelf).toHaveClass("auto-cols-[calc(100vw-2rem)]");
+    expect(shelf).toHaveClass("sm:auto-cols-[minmax(20rem,32rem)]");
+  });
+
+  it("hides the native overview shelf scrollbar and renders chevron controls", () => {
+    renderWithProviders(<Marketplace />);
+    const shelf = screen.getByTestId("marketplace-packages-overview-scroll");
+    expect(shelf).toHaveClass("[&::-webkit-scrollbar]:hidden");
+    expect(shelf).toHaveClass("[scrollbar-width:none]");
+    expect(screen.getByRole("button", { name: /scroll packages left/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /scroll packages right/i })).toBeInTheDocument();
+  });
+
   it("hides the Packages strip when a non-Skills chip is active", async () => {
     const user = userEvent.setup();
     renderWithProviders(<Marketplace />);
@@ -184,13 +208,37 @@ describe("Marketplace (hub)", () => {
     expect(screen.queryByText("gstack")).not.toBeInTheDocument();
   });
 
-  it("keeps the Packages strip visible when the Skills chip is active", async () => {
+  it("shows skill packages as an expandable grid before the skills grid when the Skills chip is active", async () => {
     const user = userEvent.setup();
+    const manyPackages: MarketplacePackage[] = Array.from({ length: 7 }, (_, index) => ({
+      id: `owner/package-${index + 1}`,
+      name: `package-${index + 1}`,
+      sourceUrl: `https://github.com/owner/package-${index + 1}`,
+      memberItemIds: ["skill:office-hours"],
+      count: index + 1,
+      verified: true,
+      explicit: false,
+    }));
+    vi.mocked(usePackages).mockReturnValue({
+      data: manyPackages,
+      isLoading: false,
+      error: null,
+    } as any);
     renderWithProviders(<Marketplace />);
     // Chip's accessible name is "Skills{count}" (e.g. "Skills1"); start-anchored partial match.
     await user.click(screen.getByRole("button", { name: /^skills/i }));
-    expect(screen.getByText(/^packages$/i)).toBeInTheDocument();
-    expect(screen.getByText("gstack")).toBeInTheDocument();
+    const headers = screen.getAllByRole("heading", { level: 2 });
+    expect(headers[0]).toHaveTextContent(/skill packages/i);
+    expect(headers[1]).toHaveTextContent(/^skills/i);
+    const section = screen.getByTestId("marketplace-skills-packages-grid");
+    expect(section).toHaveTextContent("package-1");
+    expect(section).not.toHaveTextContent("package-7");
+    expect(screen.queryByRole("button", { name: /scroll skill packages/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /view more/i }));
+
+    expect(section).toHaveTextContent("package-7");
+    expect(screen.getByRole("button", { name: /show less/i })).toBeInTheDocument();
   });
 });
 

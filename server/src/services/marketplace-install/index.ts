@@ -2,6 +2,8 @@ export * from "./types.js";
 export { resolveInstallPlan } from "./resolver.js";
 export { installSkill } from "./skill-installer.js";
 export type { InstallSkillOpts, InstallSkillResult } from "./skill-installer.js";
+export { installSkillPackage, PackageInstallError } from "./package-installer.js";
+export type { InstallSkillPackageOpts, InstallSkillPackageResult } from "./package-installer.js";
 export { installAgent } from "./agent-installer.js";
 export type { InstallAgentOpts, InstallAgentResult } from "./agent-installer.js";
 export { installTeam } from "./team-installer.js";
@@ -16,7 +18,14 @@ export { fetchCatalogResource, loadSkillContent, FETCH_TIMEOUT_MS } from "./fetc
 export { isWithinUpdateWindow, applySkillUpdate, SkillCustomizedError, SkillDeletedError } from "./skill-auto-updater.js";
 export type { UpdateWindow } from "./skill-auto-updater.js";
 export * from "./operation-store.js";
-export { startInstallOperation, dispatchInstall } from "./orchestrator.js";
-export type { Installers, PublishLiveEventFn, StartInstallOpts, DispatchInstallOpts } from "./orchestrator.js";
+export { startInstallOperation, startPackageInstallOperation, dispatchInstall, dispatchPackageInstall } from "./orchestrator.js";
+export type {
+  Installers,
+  PublishLiveEventFn,
+  StartInstallOpts,
+  StartPackageInstallOpts,
+  DispatchInstallOpts,
+  DispatchPackageInstallOpts,
+} from "./orchestrator.js";
 export { resolveAgentNameConflict, resolveTeamSlugConflict } from "./conflict-resolver.js";
 export type { ResolveAgentNameOpts, ResolveTeamSlugOpts } from "./conflict-resolver.js";

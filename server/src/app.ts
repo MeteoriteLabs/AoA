@@ -84,6 +84,7 @@ import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js
 import { createMarketplaceCompanyRouter } from "./routes/marketplace-company.js";
 import { MarketplaceCatalogService } from "./services/aoa-marketplace.js";
 import { pluginLoader } from "./services/plugin-loader.js";
+import { pluginRollbackService } from "./services/plugin-rollback.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
@@ -452,6 +453,13 @@ export async function createApp(
     createMarketplaceCompanyRouter({
       db,
       catalogService: marketplaceCatalogService,
+      pluginLifecycle: lifecycleMgr,
+      pluginLoader: {
+        installPlugin: async (opts) => {
+          await loaderInst.installPlugin(opts);
+        },
+      },
+      pluginRollback: pluginRollbackService(db),
     }),
   );
 

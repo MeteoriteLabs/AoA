@@ -14,16 +14,28 @@
 import { Router } from "express";
 import { z } from "zod";
 import { and, eq, ne } from "drizzle-orm";
-import { type Db, marketplacePendingUpdates, companySkills } from "@armyofagents/db";
+import { type Db, marketplacePendingUpdates, companySkills, plugins } from "@armyofagents/db";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { marketplaceSettingsService } from "../services/marketplace-settings.js";
 import { computeSectionDiff, applyMergeDecisions } from "../services/marketplace-merge.js";
 import { marketplaceNotifications } from "../services/marketplace-notifications.js";
 import type { MarketplaceCatalogFile } from "@armyofagents/shared";
+import type { PluginLifecycleManager } from "../services/plugin-lifecycle.js";
 
 export interface MarketplaceCompanyRoutesDeps {
   db: Db;
   catalogService: { readCache(): Promise<MarketplaceCatalogFile | null> };
+  pluginLifecycle?: PluginLifecycleManager;
+  pluginLoader?: {
+    installPlugin(options: {
+      packageName: string;
+      version: string;
+      companyId: string;
+    }): Promise<unknown>;
+  };
+  pluginRollback?: {
+    getRollbackTarget(pluginId: string): Promise<{ packageName: string; version: string } | null>;
+  };
 }
 
 const MarketplaceSettingsPatchSchema = z.object({
@@ -134,12 +146,94 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
+    if (update.status !== "pending" && update.status !== "conflict") {
+      res.status(409).json({ error: `Update is not pending (current: ${update.status})` });
+      return;
+    }
+
     if (update.itemType === "plugin") {
-      // Plugin updates handled via POST /api/plugins/:pluginId/upgrade
-      // Return redirect hint for the UI
-      res.status(303).json({
-        redirect: `/api/plugins/${update.catalogItemId}/upgrade`,
-        message: "Use POST /api/plugins/:pluginId/upgrade to apply plugin updates",
+      if (!deps.pluginLifecycle) {
+        res.status(501).json({ error: "Plugin update apply is not configured on this server" });
+        return;
+      }
+
+      let [plugin] = await db
+        .select()
+        .from(plugins)
+        .where(
+          and(
+            eq(plugins.companyId, companyId),
+            eq(plugins.catalogItemId, update.catalogItemId),
+          ),
+        )
+        .limit(1);
+
+      if (!plugin) {
+        const catalog = await deps.catalogService.readCache();
+        const catalogItem = catalog?.items.find((item) => item.id === update.catalogItemId);
+        const packageName = catalogItem?.npm?.packageName;
+        if (packageName) {
+          [plugin] = await db
+            .select()
+            .from(plugins)
+            .where(
+              and(
+                eq(plugins.companyId, companyId),
+                eq(plugins.packageName, packageName),
+              ),
+            )
+            .limit(1);
+        }
+      }
+
+      if (!plugin) {
+        res.status(404).json({ error: "Installed plugin not found for this marketplace update" });
+        return;
+      }
+
+      let result: Awaited<ReturnType<PluginLifecycleManager["upgrade"]>>;
+      try {
+        result = await deps.pluginLifecycle.upgrade(plugin.id, update.latestVersion);
+      } catch (err) {
+        const rollbackTarget = await deps.pluginRollback
+          ?.getRollbackTarget(plugin.id)
+          .catch(() => null);
+        if (rollbackTarget && deps.pluginLoader) {
+          try {
+            await deps.pluginLoader.installPlugin({
+              packageName: rollbackTarget.packageName,
+              version: rollbackTarget.version,
+              companyId,
+            });
+            await deps.pluginLifecycle.load(plugin.id);
+          } catch (rollbackErr) {
+            console.error("Marketplace plugin update rollback failed", rollbackErr);
+          }
+        }
+        res.status(400).json({
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+
+      if (result.status === "ready") {
+        await db
+          .update(marketplacePendingUpdates)
+          .set({ status: "applied", updatedAt: new Date() })
+          .where(
+            and(
+              eq(marketplacePendingUpdates.id, id),
+              eq(marketplacePendingUpdates.companyId, companyId),
+            ),
+          );
+      }
+
+      res.json({
+        ok: true,
+        pluginId: plugin.id,
+        version: result.version,
+        status: result.status,
+        delta: result.delta,
       });
       return;
     }
