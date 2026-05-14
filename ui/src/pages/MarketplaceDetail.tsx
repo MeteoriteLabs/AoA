@@ -15,14 +15,16 @@ import { queryKeys } from "@/lib/queryKeys";
 import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
 import { useDialog } from "@/context/DialogContext";
 import { TrustBadge } from "@/components/marketplace/TrustBadge";
+import { TypeChip } from "@/components/marketplace/TypeChip";
 import { ReadmeRender } from "@/components/marketplace/ReadmeRender";
+import { ProviderLogo } from "@/components/marketplace/ProviderLogo";
 import { PluginInstallModal } from "@/components/marketplace/install/PluginInstallModal";
 import { SnapshotInstallModal } from "@/components/marketplace/install/SnapshotInstallModal";
 import {
   TYPE_ICONS,
-  TYPE_LABELS,
   TYPE_LABELS_PLURAL,
   pathToItemType,
+  shortSource,
 } from "@/lib/marketplace-constants";
 import type { MarketplaceItemType, PluginRecord } from "@armyofagents/shared";
 
@@ -100,6 +102,10 @@ export default function MarketplaceDetail() {
   const caps = item?.capabilities ?? [];
   const visibleCaps = showAllCaps ? caps : caps.slice(0, CAP_PREVIEW);
   const hiddenCapsCount = caps.length - CAP_PREVIEW;
+  const heroDescription =
+    item && item.description.trim() && item.description.trim() !== ">"
+      ? item.description
+      : null;
 
   return (
     <LobbyShell activeItem="marketplace" onCreateCompany={() => openOnboarding()}>
@@ -165,34 +171,46 @@ export default function MarketplaceDetail() {
         <div className="max-w-4xl mx-auto space-y-8">
 
         {/* ── Hero ───────────────────────────────────────────────────────────── */}
-        <div className="flex flex-col lg:flex-row gap-8">
+        <div
+          data-testid="marketplace-detail-hero-card"
+          className="relative overflow-hidden rounded-2xl border border-border-strong bg-card p-6"
+        >
+          <span
+            aria-hidden
+            className={cn(
+              "absolute left-0 top-6 bottom-6 w-[3px] rounded-r",
+              item.type === "skill" && "bg-teal-500",
+              item.type === "plugin" && "bg-blue-500",
+              item.type === "agent" && "bg-blue-500",
+              item.type === "team" && "bg-amber-500",
+            )}
+          />
+          <TypeChip
+            type={item.type}
+            data-testid="marketplace-detail-type-badge"
+            className={cn(
+              "absolute right-5 top-5 inline-flex rounded-full border px-2 py-1",
+              item.type === "skill" && "border-teal-500/25 bg-teal-500/10 text-teal-400",
+              item.type === "agent" && "border-blue-500/25 bg-blue-500/10 text-blue-400",
+              item.type === "team" && "border-amber-500/25 bg-amber-500/10 text-amber-400",
+            )}
+          />
+          <div className="flex flex-col gap-5 pl-2 sm:pr-24">
 
           {/* Left: avatar + info */}
           <div className="flex-1 min-w-0">
             <div className="flex items-start gap-4 mb-4">
-              <div className={cn(
-                "w-16 h-16 rounded-2xl flex items-center justify-center text-2xl font-bold shrink-0",
-                TYPE_AVATAR_BG[item.type],
-              )}>
-                {item.name.charAt(0).toUpperCase()}
-              </div>
-              <div className="min-w-0 pt-1">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
-                  <Icon className="h-4 w-4 shrink-0" />
-                  <span>{TYPE_LABELS[item.type]}</span>
-                  <span>·</span>
-                  <Badge variant="outline" className="text-xs">v{item.version}</Badge>
+              {item.provider ? (
+                <ProviderLogo provider={item.provider} className="size-16 shrink-0 rounded-2xl" />
+              ) : (
+                <div className={cn(
+                  "w-16 h-16 rounded-2xl flex items-center justify-center text-2xl font-bold shrink-0",
+                  TYPE_AVATAR_BG[item.type],
+                )}>
+                  {item.name.charAt(0).toUpperCase()}
                 </div>
-                {parentPackage && (
-                  <Link
-                    to={packageDetailUrl(parentPackage)}
-                    className="inline-flex items-center gap-1.5 mb-2 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/25 text-[11px] font-medium text-amber-400 hover:bg-amber-500/20 transition-colors w-fit"
-                  >
-                    <Layers className="size-3" />
-                    Part of {parentPackage.name}
-                    <ChevronRight className="size-3" />
-                  </Link>
-                )}
+              )}
+              <div className="min-w-0 pt-1">
                 <div className="flex items-center gap-2">
                   <h1 className="text-2xl font-bold leading-tight">{item.name}</h1>
                   {item.trust.tier === "verified" && (
@@ -203,20 +221,39 @@ export default function MarketplaceDetail() {
                     />
                   )}
                 </div>
+                {item.provider && (
+                  <div className="mt-1 text-[12.5px] text-dim">by {item.provider.name}</div>
+                )}
+                <div data-testid="marketplace-detail-badges" className="mt-3 flex flex-wrap items-center gap-2">
+                  {parentPackage && (
+                    <Link
+                      to={packageDetailUrl(parentPackage)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/25 text-[11px] font-medium text-amber-400 hover:bg-amber-500/20 transition-colors w-fit"
+                    >
+                      <Layers className="size-3" />
+                      Part of {parentPackage.name}
+                      <ChevronRight className="size-3" />
+                    </Link>
+                  )}
+                  <TrustBadge tier={item.trust.tier} />
+                </div>
               </div>
             </div>
-            <p className="text-muted-foreground mb-4">{item.description}</p>
+            {heroDescription && (
+              <p className="text-muted-foreground mb-4">{heroDescription}</p>
+            )}
             <div className="flex items-center gap-2 flex-wrap">
-              <TrustBadge tier={item.trust.tier} />
               {item.tags.map((tag) => (
                 <Badge key={tag} variant="secondary" className="text-xs">{tag}</Badge>
               ))}
             </div>
           </div>
 
-          {/* Right: install card */}
-          <div className="lg:w-60 shrink-0">
-            <div className="border rounded-xl p-5 bg-card space-y-4">
+          {/* Details + install */}
+            <div
+              data-testid="marketplace-detail-metadata"
+              className="grid grid-cols-1 gap-3 border-t border-border pt-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end"
+            >
               <div>
                 <p className="text-[10px] font-semibold tracking-widest uppercase text-muted-foreground mb-1">
                   Version
@@ -234,7 +271,7 @@ export default function MarketplaceDetail() {
                     rel="noopener noreferrer"
                     className="text-sm text-primary hover:underline inline-flex items-center gap-1"
                   >
-                    View on GitHub <ExternalLink className="h-3 w-3" />
+                    {shortSource(item.source.url, item.source.locator)} <ExternalLink className="h-3 w-3" />
                   </a>
                 </div>
               )}
@@ -254,7 +291,7 @@ export default function MarketplaceDetail() {
                 </Button>
               )}
             </div>
-          </div>
+        </div>
         </div>
 
         <Separator />

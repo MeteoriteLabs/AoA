@@ -101,6 +101,58 @@ describe("derivePackagesForLibrary", () => {
     expect(packages[0]?.id).toBe("myorg/curated");
   });
 
+  it("groups catalog skills with explicit package metadata and provider logo", () => {
+    const skills = [
+      makeSkill({
+        id: "cat-a",
+        sourceType: "catalog",
+        sourceBadge: "catalog",
+        metadata: {
+          packageId: "anthropic/skills",
+          catalogPackageName: "skills",
+          catalogPackageSourceUrl: "https://github.com/anthropic/skills",
+          catalogProvider: {
+            id: "anthropic",
+            name: "Anthropic",
+            fallbackInitials: "A",
+            logoUrl: "https://github.com/anthropics.png",
+          },
+        },
+      }),
+      makeSkill({
+        id: "cat-b",
+        sourceType: "catalog",
+        sourceBadge: "catalog",
+        metadata: {
+          packageId: "anthropic/skills",
+          catalogPackageName: "skills",
+          catalogPackageSourceUrl: "https://github.com/anthropic/skills",
+          catalogProvider: {
+            id: "anthropic",
+            name: "Anthropic",
+            fallbackInitials: "A",
+            logoUrl: "https://github.com/anthropics.png",
+          },
+        },
+      }),
+    ];
+
+    const { packages, standalones } = derivePackagesForLibrary(skills);
+
+    expect(standalones).toEqual([]);
+    expect(packages[0]).toMatchObject({
+      id: "anthropic/skills",
+      name: "skills",
+      sourceUrl: "https://github.com/anthropic/skills",
+      provider: {
+        id: "anthropic",
+        name: "Anthropic",
+        fallbackInitials: "A",
+        logoUrl: "https://github.com/anthropics.png",
+      },
+    });
+  });
+
   it("explicit packageId beats github synthesis on collision", () => {
     const skills = [
       makeSkill({ id: "a", metadata: { owner: "x", repo: "y", packageId: "x/y" } }),

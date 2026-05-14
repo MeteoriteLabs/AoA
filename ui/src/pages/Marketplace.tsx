@@ -1,6 +1,6 @@
-import { useState, useMemo, useRef, useEffect, type ComponentType } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback, type ComponentType, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Bot, Puzzle, Search, Sparkles } from "lucide-react";
+import { Bot, ChevronLeft, ChevronRight, Layers, Puzzle, Search, Sparkles } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCompany } from "@/context/CompanyContext";
@@ -9,6 +9,7 @@ import { useCatalog } from "@/hooks/useCatalog";
 import { usePackages } from "@/hooks/usePackages";
 import { CatalogCard } from "@/components/marketplace/CatalogCard";
 import { PackageCard } from "@/components/marketplace/PackageCard";
+import { PackageInstallModal } from "@/components/marketplace/install/PackageInstallModal";
 import { MarketplaceFilterChips } from "@/components/marketplace/MarketplaceFilterChips";
 import { MarketplaceSubfilterChips } from "@/components/marketplace/MarketplaceSubfilterChips";
 import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
@@ -19,6 +20,7 @@ import { cn } from "@/lib/utils";
 import type {
   MarketplaceItemType,
   MarketplaceCatalogItem,
+  MarketplacePackage,
   PluginRecord,
 } from "@armyofagents/shared";
 
@@ -75,6 +77,7 @@ const SECTION_LABELS: Record<MarketplaceItemType, string> = {
 };
 
 const SECTION_ORDER: ReadonlyArray<MarketplaceItemType> = ["skill", "plugin", "agent", "team"];
+const SKILL_PACKAGE_PREVIEW_COUNT = 6;
 
 interface SectionHeaderProps {
   type: MarketplaceItemType;
@@ -108,6 +111,127 @@ function SectionHeader({ type, total, showSeeAll, onSeeAll }: SectionHeaderProps
   );
 }
 
+function PackagesHeader({
+  total,
+  onSeeAll,
+  title = "Packages",
+}: {
+  total: number;
+  onSeeAll?: () => void;
+  title?: string;
+}) {
+  return (
+    <div className="mb-3 flex items-center justify-between">
+      <h2 className="flex items-center gap-2 text-[0.7rem] font-semibold uppercase tracking-[0.1em] text-dim">
+        <span className="inline-flex size-5 items-center justify-center rounded-md border bg-amber-500/15 border-amber-500/30 text-amber-500">
+          <Layers className="size-3" />
+        </span>
+        {title}
+        <span className="text-very-dim font-normal normal-case tracking-normal">· {total}</span>
+      </h2>
+      {onSeeAll && (
+        <button
+          type="button"
+          onClick={onSeeAll}
+          className="text-[12px] text-dim hover:text-foreground"
+        >
+          See all →
+        </button>
+      )}
+    </div>
+  );
+}
+
+function OverviewShelf({
+  testId,
+  scrollTestId,
+  label,
+  children,
+}: {
+  testId?: string;
+  scrollTestId?: string;
+  label: string;
+  children: ReactNode;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const updateScrollState = useCallback(() => {
+    const node = scrollRef.current;
+    if (!node) return;
+    const maxScrollLeft = node.scrollWidth - node.clientWidth;
+    setCanScrollLeft(node.scrollLeft > 1);
+    setCanScrollRight(node.scrollLeft < maxScrollLeft - 1);
+  }, []);
+
+  useEffect(() => {
+    updateScrollState();
+    const node = scrollRef.current;
+    if (!node) return;
+    node.addEventListener("scroll", updateScrollState, { passive: true });
+    window.addEventListener("resize", updateScrollState);
+    return () => {
+      node.removeEventListener("scroll", updateScrollState);
+      window.removeEventListener("resize", updateScrollState);
+    };
+  }, [updateScrollState, children]);
+
+  const scrollShelf = (direction: "left" | "right") => {
+    const node = scrollRef.current;
+    if (!node) return;
+    node.scrollBy({
+      left: direction === "left" ? -node.clientWidth * 0.9 : node.clientWidth * 0.9,
+      behavior: "smooth",
+    });
+  };
+
+  return (
+    <div className="group/shelf relative -mx-4 sm:-mx-6 md:-mx-10">
+      <button
+        type="button"
+        aria-label={`Scroll ${label} left`}
+        disabled={!canScrollLeft}
+        onClick={() => scrollShelf("left")}
+        className={cn(
+          "absolute left-2 top-1/2 z-10 hidden size-8 -translate-y-1/2 items-center justify-center rounded-full border border-border-strong bg-card/95 text-dim shadow-lg shadow-black/20 transition-all hover:bg-card-2 hover:text-foreground md:flex",
+          !canScrollLeft && "pointer-events-none opacity-0",
+        )}
+      >
+        <ChevronLeft className="size-4" />
+      </button>
+      <button
+        type="button"
+        aria-label={`Scroll ${label} right`}
+        disabled={!canScrollRight}
+        onClick={() => scrollShelf("right")}
+        className={cn(
+          "absolute right-2 top-1/2 z-10 hidden size-8 -translate-y-1/2 items-center justify-center rounded-full border border-border-strong bg-card/95 text-dim shadow-lg shadow-black/20 transition-all hover:bg-card-2 hover:text-foreground md:flex",
+          !canScrollRight && "pointer-events-none opacity-0",
+        )}
+      >
+        <ChevronRight className="size-4" />
+      </button>
+      <div
+        aria-hidden
+        className="pointer-events-none absolute bottom-2 right-0 top-0 z-[1] w-12 bg-gradient-to-l from-bg to-transparent"
+      />
+      <div
+        ref={scrollRef}
+        data-testid={scrollTestId}
+        className="overflow-x-auto px-4 pb-2 sm:px-6 md:px-10 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
+      >
+        <div
+          data-testid={testId}
+          className="grid grid-flow-col grid-rows-2 auto-cols-[calc(100vw-2rem)] gap-3.5 sm:auto-cols-[minmax(20rem,32rem)]"
+        >
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Marketplace() {
   const { data: catalog, isLoading, error } = useCatalog();
   const { data: packages } = usePackages();
@@ -129,7 +253,9 @@ export default function Marketplace() {
     return t === "plugin" || t === "skill" || t === "agent" || t === "team" ? t : null;
   });
   const [sortMode, setSortMode] = useState<SortMode>("all");
+  const [showAllSkillPackages, setShowAllSkillPackages] = useState(false);
   const [search, setSearch] = useState("");
+  const [packageToInstall, setPackageToInstall] = useState<MarketplacePackage | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   // Cmd/Ctrl+K to focus search.
@@ -145,6 +271,11 @@ export default function Marketplace() {
   }, []);
 
   const items = useMemo(() => catalog?.items ?? [], [catalog]);
+  const packageInstallMembers = useMemo<MarketplaceCatalogItem[]>(() => {
+    if (!packageToInstall) return [];
+    const idSet = new Set(packageToInstall.memberItemIds);
+    return items.filter((item) => idSet.has(item.id));
+  }, [items, packageToInstall]);
 
   const typeCounts = useMemo<Partial<Record<MarketplaceItemType, number>>>(
     () => ({
@@ -178,11 +309,67 @@ export default function Marketplace() {
     return out;
   }, [visible]);
 
+  function renderPackageOverview() {
+    if (!packages?.length) return null;
+    return (
+      <section className="mb-7">
+        <PackagesHeader total={packages.length} onSeeAll={() => setSelectedType("skill")} />
+        <OverviewShelf
+          label="packages"
+          testId="marketplace-packages-overview"
+          scrollTestId="marketplace-packages-overview-scroll"
+        >
+          {packages.map((pkg) => (
+            <PackageCard key={pkg.id} pkg={pkg} onInstallAll={setPackageToInstall} />
+          ))}
+        </OverviewShelf>
+      </section>
+    );
+  }
+
+  function renderSkillPackageSection() {
+    if (!packages?.length) return null;
+    const hasMore = packages.length > SKILL_PACKAGE_PREVIEW_COUNT;
+    const visiblePackages = showAllSkillPackages
+      ? packages
+      : packages.slice(0, SKILL_PACKAGE_PREVIEW_COUNT);
+    return (
+      <section className="mb-7">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-[0.7rem] font-semibold uppercase tracking-[0.1em] text-dim">
+            <span className="inline-flex size-5 items-center justify-center rounded-md border bg-amber-500/15 border-amber-500/30 text-amber-500">
+              <Layers className="size-3" />
+            </span>
+            Skill packages
+            <span className="text-very-dim font-normal normal-case tracking-normal">· {packages.length}</span>
+          </h2>
+          {hasMore && (
+            <button
+              type="button"
+              onClick={() => setShowAllSkillPackages((current) => !current)}
+              className="text-[12px] text-dim hover:text-foreground"
+            >
+              {showAllSkillPackages ? "Show less" : "View more"}
+            </button>
+          )}
+        </div>
+        <div
+          data-testid="marketplace-skills-packages-grid"
+          className="grid grid-cols-1 gap-3.5 sm:grid-cols-2"
+        >
+          {visiblePackages.map((pkg) => (
+            <PackageCard key={pkg.id} pkg={pkg} onInstallAll={setPackageToInstall} />
+          ))}
+        </div>
+      </section>
+    );
+  }
+
   // Render a single section block. `capped` is the visible-after-cap slice;
   // `total` is the full count used in the header + cap decision.
   function renderSection(type: MarketplaceItemType, capped: MarketplaceCatalogItem[], total: number) {
     if (total === 0) return null;
-    const isPackagesHost = type === "skill" && (packages?.length ?? 0) > 0;
+    const isOverview = selectedType === null;
     return (
       <section key={type} className="mb-7">
         <SectionHeader
@@ -191,27 +378,27 @@ export default function Marketplace() {
           showSeeAll={selectedType === null && total > SECTION_CAP}
           onSeeAll={() => setSelectedType(type)}
         />
-        {isPackagesHost && (
-          <div className="mb-4">
-            <h3 className="mb-3 text-[0.7rem] font-semibold uppercase tracking-[0.1em] text-dim">
-              Packages <span className="text-very-dim font-normal">· {packages!.length}</span>
-            </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              {packages!.map((pkg) => (
-                <PackageCard key={pkg.id} pkg={pkg} />
-              ))}
-            </div>
+        {isOverview ? (
+          <OverviewShelf label="section">
+            {capped.map((item) => (
+              <CatalogCard
+                key={item.id}
+                item={item}
+                installedByPackageName={installedByPackageName}
+              />
+            ))}
+          </OverviewShelf>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            {capped.map((item) => (
+              <CatalogCard
+                key={item.id}
+                item={item}
+                installedByPackageName={installedByPackageName}
+              />
+            ))}
           </div>
         )}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-          {capped.map((item) => (
-            <CatalogCard
-              key={item.id}
-              item={item}
-              installedByPackageName={installedByPackageName}
-            />
-          ))}
-        </div>
       </section>
     );
   }
@@ -274,15 +461,33 @@ export default function Marketplace() {
           </div>
         ) : selectedType !== null ? (
           // Single-section view: cap removed, "See all" hidden.
-          renderSection(selectedType, grouped[selectedType], grouped[selectedType].length)
+          selectedType === "skill" ? (
+            <>
+              {renderSkillPackageSection()}
+              {renderSection(selectedType, grouped[selectedType], grouped[selectedType].length)}
+            </>
+          ) : (
+            renderSection(selectedType, grouped[selectedType], grouped[selectedType].length)
+          )
         ) : (
-          // All-view: four sections, capped, with "See all" when overflowing.
-          SECTION_ORDER.map((type) => {
-            const items = grouped[type];
-            return renderSection(type, items.slice(0, SECTION_CAP), items.length);
-          })
+          // All-view: overview shelves, capped, with packages promoted first.
+          <>
+            {renderPackageOverview()}
+            {SECTION_ORDER.map((type) => {
+              const items = grouped[type];
+              return renderSection(type, items.slice(0, SECTION_CAP), items.length);
+            })}
+          </>
         )}
       </div>
+      <PackageInstallModal
+        pkg={packageToInstall}
+        memberItems={packageInstallMembers}
+        open={packageToInstall !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setPackageToInstall(null);
+        }}
+      />
     </LobbyShell>
   );
 }

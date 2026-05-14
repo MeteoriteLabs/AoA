@@ -74,6 +74,21 @@ describe("SkillPackageOverview", () => {
     expect(getByText(/3 skills/)).toBeInTheDocument();
   });
 
+  it("renders provider logo when package metadata includes one", () => {
+    const { getByRole } = renderOverview({
+      pkg: {
+        ...pkg,
+        provider: {
+          id: "angular",
+          name: "Angular",
+          logoUrl: "https://github.com/angular.png",
+          fallbackInitials: "NG",
+        },
+      },
+    });
+    expect(getByRole("img", { name: "Angular logo" })).toBeInTheDocument();
+  });
+
   it("renders one card per member", () => {
     const { getAllByText } = renderOverview();
     expect(getAllByText(/^\/[abc]$/).length).toBe(3);

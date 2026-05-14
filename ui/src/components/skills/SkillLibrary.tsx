@@ -111,6 +111,7 @@ export function SkillLibrary({
                   packageId={pkg.id}
                   name={pkg.name}
                   count={pkg.count}
+                  provider={pkg.provider}
                   expanded={expanded}
                   hasUpdate={packagesWithUpdate.has(pkg.id)}
                   active={selectedPackageId === pkg.id}

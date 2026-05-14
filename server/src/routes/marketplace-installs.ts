@@ -22,8 +22,11 @@ import type { MarketplaceCatalogService } from "../services/aoa-marketplace.js";
 import { resolveInstallPlan } from "../services/marketplace-install/resolver.js";
 import {
   startInstallOperation,
+  startPackageInstallOperation,
   dispatchInstall,
+  dispatchPackageInstall,
   installSkill,
+  installSkillPackage,
   installAgent,
   installTeam,
   installMarketplacePlugin,
@@ -31,6 +34,7 @@ import {
   updateOperation,
   type Installers,
 } from "../services/marketplace-install/index.js";
+import { derivePackages } from "../services/derivePackages.js";
 import type { PluginLoaderLike } from "../services/marketplace-install/plugin-installer.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
@@ -82,11 +86,23 @@ export function resolveInstallDecision(
   return "deny";
 }
 
-const InstallRequestSchema = z.object({
+const SingleInstallRequestSchema = z.object({
   catalogItemId: z.string().min(1),
   targetDepartmentId: z.string().uuid().optional(),
   idempotencyKey: z.string().min(1).max(100).optional(),
 });
+const PackageInstallRequestSchema = z.object({
+  packageId: z.string().min(1),
+  catalogItemIds: z.array(z.string().min(1)).min(1),
+  idempotencyKey: z.string().min(1).max(100).optional(),
+});
+const InstallRequestSchema = z.union([SingleInstallRequestSchema, PackageInstallRequestSchema]);
+
+function isPackageInstallRequest(
+  request: z.infer<typeof InstallRequestSchema>,
+): request is z.infer<typeof PackageInstallRequestSchema> {
+  return "packageId" in request;
+}
 
 export interface MarketplaceInstallRoutesDeps {
   db: Db;
@@ -145,6 +161,90 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
     const catalog = await catalogService.readCache();
     if (!catalog) {
       res.status(503).json({ error: "Catalog not yet synced" });
+      return;
+    }
+
+    if (isPackageInstallRequest(request)) {
+      const packages = derivePackages(catalog.items);
+      const pkg = packages.find((candidate) => candidate.id === request.packageId);
+      if (!pkg) {
+        res.status(404).json({ error: `Package not found: ${request.packageId}` });
+        return;
+      }
+
+      const expected = [...pkg.memberItemIds].sort();
+      const requested = [...request.catalogItemIds].sort();
+      if (expected.join("\n") !== requested.join("\n")) {
+        res.status(400).json({ error: `Package member mismatch for ${request.packageId}` });
+        return;
+      }
+
+      const memberItems = catalog.items.filter((item) => pkg.memberItemIds.includes(item.id));
+      if (memberItems.length !== pkg.memberItemIds.length) {
+        res.status(400).json({ error: `Package member mismatch for ${request.packageId}` });
+        return;
+      }
+      if (memberItems.some((item) => item.type !== "skill")) {
+        res.status(400).json({ error: "Install all supports skill-only packages in this version" });
+        return;
+      }
+
+      if (
+        req.actor.type === "board" &&
+        req.actor.source !== "local_implicit" &&
+        !req.actor.isInstanceAdmin
+      ) {
+        const effectiveRole = await permissionService(db).getEffectiveRole(companyId, userId);
+        const settings = await marketplaceSettingsService(db).get(companyId);
+
+        const decision = resolveInstallDecision(effectiveRole, "skill", settings);
+        if (decision === "request") {
+          let requestedOp;
+          try {
+            requestedOp = await startPackageInstallOperation({
+              request, companyId, requestedByUserId: userId, db,
+            });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            res.status(500).json({ error: `Failed to queue install request: ${message}` });
+            return;
+          }
+          void updateOperation(db, requestedOp.id, {
+            status: "requested",
+            completedAt: new Date(),
+          }).catch((err) => logger.error({ err }, "marketplace: failed to set package status=requested"));
+
+          void marketplaceNotifications
+            .installRequested(db, companyId, pkg.name, userId, requestedOp.id)
+            .catch((err) => logger.error({ err }, "marketplace package installRequested notification failed"));
+          res.status(202).json({
+            queued: true,
+            operationId: requestedOp.id,
+            status: "requested",
+            message: "Install request submitted. A founder will review it.",
+          });
+          return;
+        }
+        if (decision === "deny") {
+          res.status(403).json({ error: "Insufficient permissions to install package" });
+          return;
+        }
+      }
+
+      const operation = await startPackageInstallOperation({
+        request, companyId, requestedByUserId: userId, db,
+      });
+
+      void dispatchPackageInstall({
+        operation,
+        pkg,
+        memberItems,
+        db,
+        installSkillPackage,
+        publishLiveEvent,
+      });
+
+      res.status(202).json({ operationId: operation.id, status: operation.status });
       return;
     }
 

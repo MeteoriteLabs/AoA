@@ -9,6 +9,7 @@ import { PluginInstallModal } from "@/components/marketplace/install/PluginInsta
 import { SnapshotInstallModal } from "@/components/marketplace/install/SnapshotInstallModal";
 import { TypeChip } from "./TypeChip";
 import { StackedIcon } from "./StackedIcon";
+import { ProviderLogo } from "./ProviderLogo";
 import { cn } from "@/lib/utils";
 
 export interface CatalogCardProps {
@@ -30,7 +31,7 @@ export function CatalogCard({ item, installedByPackageName }: CatalogCardProps) 
 
   const isVerified = item.trust.tier === "verified";
   const Icon = TYPE_ICONS[item.type];
-  const author = authorFromSource(item.source.url);
+  const author = item.provider?.name ?? authorFromSource(item.source.url);
   const repoShort = shortSource(item.source.url, item.source.locator);
 
   return (
@@ -45,10 +46,15 @@ export function CatalogCard({ item, installedByPackageName }: CatalogCardProps) 
 
           {/* Header: hero icon + name + author */}
           <div className="flex items-start gap-3 pr-16 sm:pr-20">
-            {item.type === "team" ? (
+            {item.provider ? (
+              <ProviderLogo provider={item.provider} className="size-12 shrink-0 rounded-2xl" />
+            ) : item.type === "team" ? (
               <StackedIcon icon={Bot} tone="teal" className="size-12 shrink-0" />
             ) : (
-              <div className={cn("size-12 shrink-0 rounded-2xl border flex items-center justify-center", SINGLE_ICON_TONES[item.type])}>
+              <div
+                data-testid="catalog-type-avatar"
+                className={cn("size-12 shrink-0 rounded-2xl border flex items-center justify-center", SINGLE_ICON_TONES[item.type])}
+              >
                 <Icon className="size-5" />
               </div>
             )}

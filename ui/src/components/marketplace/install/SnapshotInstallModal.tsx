@@ -1,6 +1,4 @@
-import { useState, useEffect } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { queryKeys } from "@/lib/queryKeys";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogBody,
@@ -20,29 +18,25 @@ import { DepartmentPicker } from "./DepartmentPicker";
 import { CascadeTreePreview } from "./CascadeTreePreview";
 import { useCompany } from "@/context/CompanyContext";
 import { useInstallOperation } from "@/hooks/useInstallOperation";
-import { useOperationStatus } from "@/hooks/useOperationStatus";
 import { useResolvePlan } from "@/hooks/useResolvePlan";
 import { useInstallToast } from "../toast/useInstallToast";
 import { renderRuntimeRequires } from "@/lib/marketplace-constants";
 
 export interface SnapshotInstallModalProps {
-  item: CatalogItem; // type='skill' | 'agent' | 'team'
+  item: CatalogItem;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
 /**
- * Modal for snapshot installs (skill/agent/team) — requires company + dept picker.
- * For team type, additionally fetches + renders the cascade tree preview.
+ * Modal for snapshot installs (skill/agent/team). The global install toast
+ * provider owns operation polling so the toast can resolve after route changes.
  */
 export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInstallModalProps) {
   const { selectedCompanyId, companies } = useCompany();
   const [companyId, setCompanyId] = useState<string | null>(selectedCompanyId);
   const [deptId, setDeptId] = useState<string | null>(null);
-  const [pendingOpId, setPendingOpId] = useState<string | null>(null);
-  const [pendingToastId, setPendingToastId] = useState<number | null>(null);
 
-  // Auto-pick when only 1 active company exists
   useEffect(() => {
     if (!companyId) {
       const active = companies.filter((c) => c.status !== "archived");
@@ -50,72 +44,45 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
     }
   }, [companyId, companies]);
 
-  // Reset dept when company changes
   useEffect(() => {
     setDeptId(null);
   }, [companyId]);
 
-  const queryClient = useQueryClient();
   const installMutation = useInstallOperation({ companyId: companyId ?? "" });
-  const { show, update } = useInstallToast();
+  const { show, update, trackOperation } = useInstallToast();
 
-  // For team: fetch resolve plan to show cascade
   const isTeam = item.type === "team";
   const { data: plan } = useResolvePlan({
     companyId: isTeam ? companyId : null,
     catalogItemId: isTeam ? item.id : null,
   });
 
-  const { data: opStatus } = useOperationStatus({
-    companyId,
-    operationId: pendingOpId,
-  });
-
-  useEffect(() => {
-    if (!opStatus || pendingToastId === null || pendingToastId < 1) return;
-    if (opStatus.status === "success") {
-      update(pendingToastId, { status: "success", message: `Installed ${item.name}` });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
-      setPendingOpId(null);
-      setPendingToastId(null);
-    } else if (opStatus.status === "requested") {
-      update(pendingToastId, { status: "success", message: `Request submitted — a founder will review ${item.name}` });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
-      setPendingOpId(null);
-      setPendingToastId(null);
-    } else if (opStatus.status === "failure") {
-      update(pendingToastId, {
-        status: "failure",
-        message: `Failed to install ${item.name}`,
-        detail: opStatus.errorMessage ?? "Unknown error",
-      });
-      setPendingOpId(null);
-      setPendingToastId(null);
-    }
-  }, [opStatus, pendingToastId, update, item.name, queryClient]);
-
-  // Skills don't require a department — only agent/team installs do.
   const needsDept = item.type === "agent" || item.type === "team";
   const canInstall = !!companyId && (!needsDept || !!deptId);
 
   const handleInstall = async () => {
     if (!canInstall || !companyId) return;
-    const toastId = show({ status: "installing", message: `Installing ${item.name}…` });
-    setPendingToastId(toastId);
+    const toastId = show({ status: "installing", message: `Installing ${item.name}...` });
     onOpenChange(false);
     try {
       const result = await installMutation.mutateAsync({
         catalogItemId: item.id,
         ...(needsDept && deptId ? { targetDepartmentId: deptId } : {}),
       });
-      setPendingOpId(result.operationId);
+      trackOperation({
+        toastId,
+        companyId,
+        operationId: result.operationId,
+        itemName: item.name,
+        requestedMessage: `Request submitted - a founder will review ${item.name}`,
+        invalidate: item.type === "skill" ? "companySkills" : undefined,
+      });
     } catch (err) {
       update(toastId, {
         status: "failure",
-        message: `Failed to start install`,
+        message: "Failed to start install",
         detail: err instanceof Error ? err.message : String(err),
       });
-      setPendingToastId(null);
     }
   };
 
@@ -157,7 +124,7 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button onClick={handleInstall} disabled={!canInstall || installMutation.isPending}>
-            {installMutation.isPending ? "Starting install…" : "Install"}
+            {installMutation.isPending ? "Starting install..." : "Install"}
           </Button>
         </DialogFooter>
       </DialogContent>

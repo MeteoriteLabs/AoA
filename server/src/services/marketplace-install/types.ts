@@ -11,6 +11,14 @@ export interface InstallRequest {
   idempotencyKey?: string;         // optional retry-safety token (24h app-enforced window)
 }
 
+export interface PackageInstallRequest {
+  packageId: string;
+  catalogItemIds: string[];
+  idempotencyKey?: string;
+}
+
+export type MarketplaceInstallRequest = InstallRequest | PackageInstallRequest;
+
 /**
  * Result of resolving a catalog item to its install plan.
  * Returned by GET /api/marketplace/resolve/:catalogItemId for UI confirmation.

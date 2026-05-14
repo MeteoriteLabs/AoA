@@ -10,7 +10,7 @@ vi.mock("drizzle-orm", () => ({
   gt: () => Symbol("gt"),
 }));
 
-import { createOperation } from "../services/marketplace-install/operation-store.js";
+import { createOperation, createPackageOperation } from "../services/marketplace-install/operation-store.js";
 import type { CreateOperationInput } from "../services/marketplace-install/operation-store.js";
 import type { CatalogItem } from "@armyofagents/shared";
 
@@ -140,5 +140,47 @@ describe("createOperation — conflict handling", () => {
     const result = await createOperation(db as any, inputNoKey);
     expect(result.id).toBe("new-op-no-key");
     expect(selectCalled).toBe(false);
+  });
+});
+
+describe("createPackageOperation", () => {
+  it("creates package operation rows with itemType package", async () => {
+    let insertValues: Record<string, unknown> | null = null;
+    const PACKAGE_ROW = {
+      ...EXISTING_ROW,
+      id: "package-op-uuid",
+      catalogItemId: "anthropic/skills",
+      itemType: "package" as const,
+      resultEntityId: null,
+      status: "pending" as const,
+    };
+    const db = {
+      insert: () => ({
+        values: (values: Record<string, unknown>) => {
+          insertValues = values;
+          return {
+            onConflictDoNothing: () => ({
+              returning: () => Promise.resolve([PACKAGE_ROW]),
+            }),
+          };
+        },
+      }),
+    };
+
+    const row = await createPackageOperation(db as any, {
+      companyId: "c1",
+      packageId: "anthropic/skills",
+      requestedByUserId: "user-1",
+      idempotencyKey: "pkg-key-1",
+    });
+
+    expect(insertValues).toMatchObject({
+      companyId: "c1",
+      catalogItemId: "anthropic/skills",
+      itemType: "package",
+      status: "pending",
+      requestedByUserId: "user-1",
+    });
+    expect(row.itemType).toBe("package");
   });
 });

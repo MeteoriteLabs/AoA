@@ -42,6 +42,49 @@ describe("derivePackages", () => {
     expect(sp.memberItemIds.sort()).toEqual(["skill:sp/brainstorming", "skill:sp/code-review"]);
   });
 
+  it("carries provider metadata from package members", () => {
+    const packages = derivePackages([
+      makeItem({
+        id: "skill:gstack/qa",
+        source: { adapter: "github-skills", url: "https://github.com/garrytan/gstack/tree/abc/qa", locator: "qa" },
+        provider: { id: "gstack", name: "Garry Tan", logoUrl: "https://github.com/garrytan.png", fallbackInitials: "GT" },
+      }),
+      makeItem({
+        id: "skill:gstack/scrape",
+        source: { adapter: "github-skills", url: "https://github.com/garrytan/gstack/tree/abc/scrape", locator: "scrape" },
+        provider: { id: "gstack", name: "Garry Tan", logoUrl: "https://github.com/garrytan.png", fallbackInitials: "GT" },
+      }),
+    ]);
+
+    expect(packages[0]?.provider).toEqual({
+      id: "gstack",
+      name: "Garry Tan",
+      logoUrl: "https://github.com/garrytan.png",
+      fallbackInitials: "GT",
+    });
+  });
+
+  it("synthesizes provider logo metadata from github owner when members omit provider metadata", () => {
+    const packages = derivePackages([
+      makeItem({
+        id: "skill:angular/a",
+        source: { adapter: "github-skills", url: "https://github.com/angular/skills/tree/abc/a", locator: "a" },
+      }),
+      makeItem({
+        id: "skill:angular/b",
+        source: { adapter: "github-skills", url: "https://github.com/angular/skills/tree/abc/b", locator: "b" },
+      }),
+    ]);
+
+    expect(packages[0]?.provider).toEqual({
+      id: "angular",
+      name: "Angular",
+      homepageUrl: "https://github.com/angular",
+      logoUrl: "https://github.com/angular.png",
+      fallbackInitials: "A",
+    });
+  });
+
   it("strips a trailing .git suffix from the repo name", () => {
     const items = [
       makeItem({ id: "a", source: { adapter: "g", url: "https://github.com/owner/repo.git", locator: "x" } }),

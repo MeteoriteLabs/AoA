@@ -3,6 +3,7 @@ import { ExternalLink, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import type { CompanySkillListItem } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { StackedIcon } from "@/components/marketplace/StackedIcon";
+import { ProviderLogo } from "@/components/marketplace/ProviderLogo";
 import { cn } from "@/lib/utils";
 import type { SkillPackage } from "@/lib/skillPackages";
 import { SkillPackageMemberCard } from "./SkillPackageMemberCard";
@@ -34,7 +35,11 @@ export function SkillPackageOverview({
       <div className="border-b border-border px-6 py-5">
         <div className="flex items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-4">
-            <StackedIcon icon={Sparkles} tone="amber" className="size-12 shrink-0" />
+            {pkg.provider ? (
+              <ProviderLogo provider={pkg.provider} className="size-12 shrink-0 rounded-xl" />
+            ) : (
+              <StackedIcon icon={Sparkles} tone="amber" className="size-12 shrink-0" />
+            )}
             <div className="min-w-0">
               <div className="text-[10px] uppercase tracking-[0.1em] text-dim">
                 Package

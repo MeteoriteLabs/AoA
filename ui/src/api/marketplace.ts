@@ -24,17 +24,25 @@ import { api } from "./client";
 
 // M.3b: Install flow types — wired to backend endpoints from M.2.
 
-export interface InstallRequest {
+export interface SingleInstallRequest {
   catalogItemId: string;
   targetDepartmentId?: string;
   idempotencyKey?: string;
 }
 
+export interface PackageInstallRequest {
+  packageId: string;
+  catalogItemIds: string[];
+  idempotencyKey?: string;
+}
+
+export type InstallRequest = SingleInstallRequest | PackageInstallRequest;
+
 export interface InstallOperation {
   id: string;
   companyId: string;
   catalogItemId: string;
-  itemType: "plugin" | "skill" | "agent" | "team";
+  itemType: "plugin" | "skill" | "agent" | "team" | "package";
   targetDepartmentId: string | null;
   status: "pending" | "running" | "success" | "failure" | "requested";
   resultEntityId: string | null;

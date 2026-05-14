@@ -47,6 +47,43 @@ export const MarketplaceItemTypeSchema = z.enum([
 ]);
 export type MarketplaceItemType = z.infer<typeof MarketplaceItemTypeSchema>;
 
+export const MarketplaceProviderRefSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  homepageUrl: z.string().url().optional(),
+  logoUrl: z.string().url().optional(),
+  fallbackInitials: z.string(),
+});
+export type MarketplaceProviderRef = z.infer<typeof MarketplaceProviderRefSchema>;
+
+export const MarketplaceSkillBundleSchema = z.object({
+  type: z.literal("github-directory"),
+  repo: z.string(),
+  commitSha: z.string(),
+  path: z.string(),
+  treeUrl: z.string().url(),
+});
+export type MarketplaceSkillBundle = z.infer<typeof MarketplaceSkillBundleSchema>;
+
+export const MarketplaceSkillFrontmatterSchema = z.object({
+  name: z.string().optional(),
+  description: z.string().optional(),
+  license: z.string().optional(),
+  compatibility: z.string().optional(),
+  metadata: z.record(z.string()).optional(),
+  allowedTools: z.string().optional(),
+  userInvocable: z.boolean().optional(),
+  disableModelInvocation: z.boolean().optional(),
+  raw: z.record(z.unknown()).default({}),
+});
+export type MarketplaceSkillFrontmatter = z.infer<typeof MarketplaceSkillFrontmatterSchema>;
+
+export const MarketplaceSkillMetadataSchema = z.object({
+  bundle: MarketplaceSkillBundleSchema,
+  frontmatter: MarketplaceSkillFrontmatterSchema,
+});
+export type MarketplaceSkillMetadata = z.infer<typeof MarketplaceSkillMetadataSchema>;
+
 export const MarketplaceCatalogItemSchema = z.object({
   id: z.string(),
   type: MarketplaceItemTypeSchema,
@@ -82,6 +119,7 @@ export const MarketplaceCatalogItemSchema = z.object({
     .optional(),
   // Only present on snapshot items (skill/agent/team), commit-pinned URL to fetchable file
   resourceUrl: z.string().optional(),
+  provider: MarketplaceProviderRefSchema.optional(),
   trust: z.object({
     tier: MarketplaceTrustTierSchema,
     source: z.string(),
@@ -119,6 +157,7 @@ export const MarketplaceCatalogItemSchema = z.object({
   tags: z.array(MarketplaceTagSchema),
   featured: z.boolean().optional(),
   runtimeRequires: z.array(z.string()).optional(),
+  skill: MarketplaceSkillMetadataSchema.optional(),
 });
 export type MarketplaceCatalogItem = z.infer<typeof MarketplaceCatalogItemSchema>;
 
@@ -157,6 +196,8 @@ export const MarketplacePackageSchema = z.object({
   verified: z.boolean(),
   /** Whether this package was created via an explicit `packageId` override. False = synthesized. */
   explicit: z.boolean(),
+  /** Provider identity/logo chosen deterministically from package members. */
+  provider: MarketplaceProviderRefSchema.optional(),
 });
 export type MarketplacePackage = z.infer<typeof MarketplacePackageSchema>;
 

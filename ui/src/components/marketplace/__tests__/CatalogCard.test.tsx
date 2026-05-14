@@ -83,6 +83,21 @@ describe("CatalogCard (v3 chrome)", () => {
     expect(screen.getByText("garrytan/gstack")).toBeInTheDocument();
   });
 
+  it("shows the provider logo instead of the large type icon when provider metadata exists", () => {
+    renderCard(makeItem({
+      provider: {
+        id: "gstack",
+        name: "Garry Tan",
+        logoUrl: "https://github.com/garrytan.png",
+        fallbackInitials: "GT",
+      },
+    }));
+
+    expect(screen.getByRole("img", { name: "Garry Tan logo" })).toHaveClass("size-12");
+    expect(screen.queryByTestId("catalog-type-avatar")).not.toBeInTheDocument();
+    expect(screen.getByText(/by Garry Tan/)).toBeInTheDocument();
+  });
+
   it("renders an Install button when not yet installed", () => {
     renderCard(makeItem({ type: "plugin", npm: { packageName: "@a/b", version: "1.0.0" } }));
     expect(screen.getByRole("button", { name: /install/i })).toBeInTheDocument();

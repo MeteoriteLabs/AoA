@@ -36,11 +36,17 @@ import { createMarketplaceInstallRouter } from "../routes/marketplace-installs.j
 
 const SKILL = {
   id: "skill:aoa-curated/code-review", type: "skill", name: "Code Review", description: "...", version: "1.0.0",
-  source: { adapter: "aoa-curated", url: "...", locator: "...", commitSha: "abc" },
+  source: { adapter: "aoa-curated", url: "https://github.com/aoa-curated/package", locator: "...", commitSha: "abc" },
   resourceUrl: "https://.../SKILL.md",
   content: { inline: "# Code Review" },
   trust: { tier: "verified", source: "aoa-curated" }, status: "active",
   addedAt: "2026-04-30T00:00:00Z", category: "engineering", tags: [],
+};
+
+const SKILL_B = {
+  ...SKILL,
+  id: "skill:aoa-curated/code-review-b",
+  name: "Code Review B",
 };
 
 // Agent items require a targetDepartmentId; skills do not.
@@ -53,7 +59,26 @@ const AGENT = {
   addedAt: "2026-04-30T00:00:00Z", category: "engineering", tags: [],
 };
 
-const CATALOG = { schemaVersion: "1.0.0", generatedAt: "2026-04-30T00:00:00Z", itemCount: 2, items: [SKILL, AGENT] };
+const MIXED_SKILL = {
+  ...SKILL,
+  id: "skill:aoa-curated/mixed-skill",
+  packageId: "mixed/package",
+};
+
+const MIXED_TEAM = {
+  ...SKILL,
+  id: "team:aoa-curated/mixed-team",
+  type: "team",
+  name: "Mixed Team",
+  packageId: "mixed/package",
+};
+
+const CATALOG = {
+  schemaVersion: "1.0.0",
+  generatedAt: "2026-04-30T00:00:00Z",
+  itemCount: 5,
+  items: [SKILL, SKILL_B, AGENT, MIXED_SKILL, MIXED_TEAM],
+};
 
 function buildApp() {
   const app = express();
@@ -137,6 +162,42 @@ describe("POST /api/companies/:companyId/marketplace/install", () => {
       .send({});
     expect(res.status).toBe(400);
     expect(res.body.details).toBeDefined();
+  });
+
+  it("returns 202 for package install requests", async () => {
+    const res = await request(buildApp())
+      .post(`/api/companies/${C_ID}/marketplace/install`)
+      .send({
+        packageId: "aoa-curated/package",
+        catalogItemIds: [SKILL.id, SKILL_B.id],
+      });
+
+    expect(res.status).toBe(202);
+    expect(res.body.operationId).toBe("op-1");
+  });
+
+  it("returns 400 when requested package members do not match", async () => {
+    const res = await request(buildApp())
+      .post(`/api/companies/${C_ID}/marketplace/install`)
+      .send({
+        packageId: "aoa-curated/package",
+        catalogItemIds: [SKILL.id],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/package member mismatch/i);
+  });
+
+  it("returns 400 for mixed packages in v1", async () => {
+    const res = await request(buildApp())
+      .post(`/api/companies/${C_ID}/marketplace/install`)
+      .send({
+        packageId: "mixed/package",
+        catalogItemIds: [MIXED_SKILL.id, MIXED_TEAM.id],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/skill-only packages/i);
   });
 });
 

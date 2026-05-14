@@ -1,13 +1,14 @@
 import { Link } from "react-router-dom";
-import { BadgeCheck, Github, Layers, Sparkles } from "lucide-react";
+import { BadgeCheck, Github, Sparkles } from "lucide-react";
 import type { MarketplacePackage } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { shortSource, authorFromSource } from "@/lib/marketplace-constants";
 import { StackedIcon } from "./StackedIcon";
-import { cn } from "@/lib/utils";
+import { ProviderLogo } from "./ProviderLogo";
 
 export interface PackageCardProps {
   pkg: MarketplacePackage;
+  onInstallAll?: (pkg: MarketplacePackage) => void;
 }
 
 /**
@@ -19,9 +20,9 @@ export function packageDetailUrl(pkg: MarketplacePackage): string {
   return `/marketplace/package/${pkg.id}`;
 }
 
-export function PackageCard({ pkg }: PackageCardProps) {
+export function PackageCard({ pkg, onInstallAll }: PackageCardProps) {
   const repoShort = shortSource(pkg.sourceUrl, pkg.id);
-  const author = authorFromSource(pkg.sourceUrl);
+  const author = pkg.provider?.name ?? authorFromSource(pkg.sourceUrl);
 
   return (
     <div className="relative">
@@ -29,22 +30,31 @@ export function PackageCard({ pkg }: PackageCardProps) {
         to={packageDetailUrl(pkg)}
         className="block hover:no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-xl"
       >
-        <div className="relative card-hover rounded-xl border border-border-strong bg-card overflow-hidden p-4 pl-5">
-          {/* Left-edge amber accent rule */}
-          <span aria-hidden className="absolute left-0 top-3 bottom-3 w-[3px] rounded-r bg-amber-500" />
-
-          {/* Type chip — top-right, with Layers icon */}
-          <span className="absolute right-3 top-3 inline-flex items-center gap-1 uppercase text-[10px] tracking-[0.1em] font-semibold text-very-dim leading-none">
-            <Layers className="size-3" />
-            PACKAGE
+        <div className="relative card-hover rounded-xl border border-border-strong bg-card overflow-hidden p-4">
+          <span
+            data-testid="package-type-badge"
+            className="absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full border border-amber-500/25 bg-amber-500/10 px-2 py-1 uppercase text-[10px] tracking-[0.1em] font-semibold text-amber-400 leading-none"
+          >
+            <span>PACKAGE</span>
+            <span className="h-3 w-px bg-amber-500/30" aria-hidden />
+            <span className="tracking-normal" aria-label={`${pkg.count} items`}>
+              {pkg.count}
+            </span>
           </span>
 
-          {/* Header: stacked icon + name + author */}
-          <div className="flex items-start gap-3 pr-20 sm:pr-24">
-            <StackedIcon icon={Sparkles} tone="amber" className="size-12 shrink-0" />
+          <div className="flex items-start gap-3 pr-28 sm:pr-36">
+            {pkg.provider ? (
+              <ProviderLogo provider={pkg.provider} className="size-12 shrink-0 rounded-2xl" />
+            ) : (
+              <div data-testid="package-stacked-avatar" className="size-12 shrink-0">
+                <StackedIcon icon={Sparkles} tone="amber" className="size-12" />
+              </div>
+            )}
             <div className="min-w-0 flex-1 mt-0.5">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <h3 className="text-[1.05rem] font-semibold tracking-tight truncate">{pkg.name}</h3>
+              <div data-testid="package-title-row" className="flex min-w-0 items-center gap-1.5">
+                <h3 className="min-w-0 truncate text-[1.05rem] font-semibold tracking-tight">
+                  {pkg.name}
+                </h3>
                 {pkg.verified && (
                   <BadgeCheck
                     data-testid="package-verified"
@@ -52,20 +62,11 @@ export function PackageCard({ pkg }: PackageCardProps) {
                     aria-label="Verified"
                   />
                 )}
-                <span
-                  className={cn(
-                    "inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold",
-                    "bg-amber-500/10 border border-amber-500/25 text-amber-400",
-                  )}
-                >
-                  {pkg.count} items
-                </span>
               </div>
               <div className="mt-0.5 text-[12px] text-very-dim truncate">by {author}</div>
             </div>
           </div>
 
-          {/* Footer: github source + install all */}
           <div className="mt-4 flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5 min-w-0 text-[11.5px] text-very-dim">
               <Github className="size-3 shrink-0" />
@@ -77,8 +78,7 @@ export function PackageCard({ pkg }: PackageCardProps) {
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                // Phase C MVP: "Install all" is a placeholder. Bulk install
-                // wiring is deferred to Phase D / future iteration.
+                onInstallAll?.(pkg);
               }}
             >
               Install all
