@@ -127,6 +127,61 @@ export interface DispatchInstallOpts {
   publishLiveEvent: PublishLiveEventFn;
 }
 
+async function installDependenciesForItem(opts: {
+  root: CatalogItem;
+  catalog: MarketplaceCatalogFile;
+  companyId: string;
+  db: Db;
+  installers: Installers;
+}): Promise<CascadeStepResult[]> {
+  const itemsById = new Map(opts.catalog.items.map((item) => [item.id, item]));
+  const results: CascadeStepResult[] = [];
+
+  for (const requirement of opts.root.requires ?? []) {
+    const item = itemsById.get(requirement.id);
+    if (!item) {
+      throw new Error(`Required catalog item not found: ${requirement.id}`);
+    }
+
+    const started = Date.now();
+    if (item.type === "skill") {
+      const result = await opts.installers.installSkill({
+        catalogItem: item,
+        companyId: opts.companyId,
+        db: opts.db,
+      });
+      results.push({
+        step: "skill-install",
+        itemId: item.id,
+        status: result.alreadyInstalled ? "skipped" : "success",
+        resultEntityId: result.skillId,
+        durationMs: Date.now() - started,
+      });
+      continue;
+    }
+
+    if (item.type === "plugin") {
+      const result = await opts.installers.installPlugin({
+        catalogItem: item,
+        companyId: opts.companyId,
+        db: opts.db,
+      });
+      results.push({
+        step: "plugin-precondition",
+        itemId: item.id,
+        status: result.alreadyInstalled ? "skipped" : "success",
+        resultEntityId: result.pluginId,
+        durationMs: Date.now() - started,
+      });
+      continue;
+    }
+
+    throw new Error(`Direct agent dependency ${item.id} has unsupported type ${item.type}`);
+  }
+
+  return results;
+}
+
 /**
  * Execute the install for an operation. Updates the operation row and fires
  * per-company live-events (started -> completed/failed).
@@ -156,6 +211,13 @@ export async function dispatchInstall(opts: DispatchInstallOpts): Promise<void> 
       const r = await installers.installSkill({ catalogItem, companyId: operation.companyId, db });
       resultEntityId = r.skillId;
     } else if (catalogItem.type === "agent") {
+      cascadeResults = await installDependenciesForItem({
+        root: catalogItem,
+        catalog,
+        companyId: operation.companyId,
+        db,
+        installers,
+      });
       const resolvedName = await resolveAgentNameConflict({
         db,
         companyId: operation.companyId,
@@ -165,6 +227,13 @@ export async function dispatchInstall(opts: DispatchInstallOpts): Promise<void> 
         catalogItem, companyId: operation.companyId, db, desiredName: resolvedName,
       });
       resultEntityId = r.agentId;
+      cascadeResults.push({
+        step: "agent-install",
+        itemId: catalogItem.id,
+        status: "success",
+        resultEntityId: r.agentId,
+        durationMs: 0,
+      });
     } else if (catalogItem.type === "team") {
       if (!operation.targetDepartmentId) {
         throw new Error("Team install requires targetDepartmentId");

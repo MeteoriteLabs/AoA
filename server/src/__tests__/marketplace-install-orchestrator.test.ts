@@ -12,6 +12,7 @@ vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
   and: () => Symbol("op:and"),
   gt: () => Symbol("op:gt"),
+  like: () => Symbol("op:like"),
 }));
 
 import {
@@ -213,6 +214,87 @@ describe("dispatchInstall", () => {
     expect(installSkillMock).toHaveBeenCalled();
     expect(updateOp).toHaveBeenCalledWith("op-uuid-1", expect.objectContaining({ status: "success", resultEntityId: "skill-uuid-1" }));
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "marketplace.install.completed" }));
+  });
+
+  it("installs direct agent dependencies before creating the agent", async () => {
+    const PLUGIN: CatalogItem = {
+      id: "plugin:aoa-curated/aoa-plugin-github-issues",
+      type: "plugin",
+      name: "GitHub Issues",
+      description: "...",
+      version: "1.0.0",
+      source: { adapter: "aoa-curated", url: "...", locator: "...", commitSha: "abc" },
+      npm: { packageName: "aoa-plugin-github-issues", version: "1.0.0" },
+      trust: { tier: "verified", source: "aoa-curated" },
+      status: "active",
+      addedAt: "2026-04-30T00:00:00Z",
+      category: "integrations",
+      tags: [],
+    };
+    const AGENT: CatalogItem = {
+      ...SKILL,
+      id: "agent:aoa-curated/github-issue-triager",
+      type: "agent",
+      name: "GitHub Issue Triager",
+      requires: [
+        { type: "skill", id: SKILL.id },
+        { type: "plugin", id: PLUGIN.id },
+      ],
+    };
+    const callOrder: string[] = [];
+    const updateOp = vi.fn(async () => {});
+
+    await dispatchInstall({
+      operation: {
+        id: "op-1",
+        catalogItemId: AGENT.id,
+        itemType: "agent",
+        companyId: "c1",
+        targetDepartmentId: "dept-1",
+      } as any,
+      catalogItem: AGENT,
+      catalog: {
+        schemaVersion: "1.0.0",
+        generatedAt: "2026-05-14T00:00:00Z",
+        itemCount: 3,
+        items: [AGENT, SKILL, PLUGIN],
+      },
+      db: {
+        select: () => ({
+          from: () => ({
+            where: () => Promise.resolve([]),
+          }),
+        }),
+      } as any,
+      installers: {
+        installSkill: vi.fn(async () => {
+          callOrder.push("skill");
+          return { skillId: "skill-row" };
+        }),
+        installPlugin: vi.fn(async () => {
+          callOrder.push("plugin");
+          return { pluginId: "plugin-row", alreadyInstalled: false };
+        }),
+        installAgent: vi.fn(async () => {
+          callOrder.push("agent");
+          return { agentId: "agent-row" };
+        }),
+        installTeam: vi.fn(),
+      },
+      updateOperation: updateOp,
+      publishLiveEvent: vi.fn(),
+    });
+
+    expect(callOrder).toEqual(["skill", "plugin", "agent"]);
+    expect(updateOp).toHaveBeenLastCalledWith("op-1", expect.objectContaining({
+      status: "success",
+      resultEntityId: "agent-row",
+      cascadeResults: expect.arrayContaining([
+        expect.objectContaining({ step: "skill-install", itemId: SKILL.id }),
+        expect.objectContaining({ step: "plugin-precondition", itemId: PLUGIN.id }),
+        expect.objectContaining({ step: "agent-install", itemId: AGENT.id }),
+      ]),
+    }));
   });
 
   it("on installer error, updates operation to failure + publishes failed event", async () => {

@@ -98,7 +98,12 @@ export async function classifyAction(opts: {
     const existing = await db
       .select()
       .from(plugins)
-      .where(eq(plugins.packageName, item.npm.packageName))
+      .where(
+        and(
+          eq(plugins.companyId, companyId),
+          eq(plugins.packageName, item.npm.packageName),
+        ),
+      )
       .limit(1);
     if (existing.length === 0) return { action: "install-new" };
     if (existing[0].version === item.npm.version) {
