@@ -62,49 +62,51 @@ export async function createMarketplaceAgent(opts: {
 }): Promise<{ agentId: string }> {
   const { catalogItem, companyId, db, desiredName, template, instructionsService } = opts;
 
-  const inserted = await db
-    .insert(agents)
-    .values({
-      companyId,
-      name: desiredName,
-      role: template.role,
-      title: template.title,
-      icon: template.icon,
-      status: template.status,
-      capabilities: template.capabilities,
-      adapterType: template.adapterType,
-      adapterConfig: template.adapterConfig,
-      runtimeConfig: template.runtimeConfig,
-      permissions: template.permissions,
-      budgetMonthlyCents: template.budgetMonthlyCents,
-      skillKeys: template.skillKeys,
-      templateOrigin: catalogItem.id,
-      templateVersion: catalogItem.version,
-      metadata: template.metadata,
-    })
-    .returning();
-
-  const agent = inserted[0];
   const instructions = instructionsService
     ? await loadMarketplaceInstructionFiles(catalogItem, template)
     : null;
 
-  if (instructions && instructionsService) {
-    const materialized = await instructionsService.materializeManagedBundle(
-      agent,
-      instructions.files,
-      {
-        entryFile: instructions.entryFile,
-        replaceExisting: true,
-        clearLegacyPromptTemplate: true,
-      },
-    );
+  return db.transaction(async (tx) => {
+    const inserted = await tx
+      .insert(agents)
+      .values({
+        companyId,
+        name: desiredName,
+        role: template.role,
+        title: template.title,
+        icon: template.icon,
+        status: template.status,
+        capabilities: template.capabilities,
+        adapterType: template.adapterType,
+        adapterConfig: template.adapterConfig,
+        runtimeConfig: template.runtimeConfig,
+        permissions: template.permissions,
+        budgetMonthlyCents: template.budgetMonthlyCents,
+        skillKeys: template.skillKeys,
+        templateOrigin: catalogItem.id,
+        templateVersion: catalogItem.version,
+        metadata: template.metadata,
+      })
+      .returning();
 
-    await db
-      .update(agents)
-      .set({ adapterConfig: materialized.adapterConfig, updatedAt: new Date() })
-      .where(eq(agents.id, agent.id));
-  }
+    const agent = inserted[0];
+    if (instructions && instructionsService) {
+      const materialized = await instructionsService.materializeManagedBundle(
+        agent,
+        instructions.files,
+        {
+          entryFile: instructions.entryFile,
+          replaceExisting: true,
+          clearLegacyPromptTemplate: true,
+        },
+      );
 
-  return { agentId: agent.id };
+      await tx
+        .update(agents)
+        .set({ adapterConfig: materialized.adapterConfig, updatedAt: new Date() })
+        .where(eq(agents.id, agent.id));
+    }
+
+    return { agentId: agent.id };
+  });
 }
