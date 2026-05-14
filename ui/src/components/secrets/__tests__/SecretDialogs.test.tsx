@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import type { CompanySecret, CompanySecretProviderConfig } from "@armyofagents/shared";
 import { describe, expect, it, vi } from "vitest";
 import { AddSecretDialog } from "@/components/secrets/AddSecretDialog";
+import { EditSecretDialog } from "@/components/secrets/EditSecretDialog";
 import { RotateSecretDialog } from "@/components/secrets/RotateSecretDialog";
 
 function makeSecret(partial: Partial<CompanySecret> = {}): CompanySecret {
@@ -155,6 +156,83 @@ describe("AddSecretDialog", () => {
 
     expect(screen.getByText("Create failed")).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Add secret" })).toBeInTheDocument();
+  });
+});
+
+describe("EditSecretDialog", () => {
+  it("submits trimmed metadata updates without exposing a value field", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+
+    render(<EditSecretDialog open onOpenChange={vi.fn()} secret={makeSecret()} onSubmit={onSubmit} />);
+
+    expect(screen.getByRole("dialog", { name: "Edit secret" })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/secret value/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/use rotate value/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Provider")).toBeDisabled();
+    expect(screen.getByLabelText("Managed mode")).toBeDisabled();
+
+    await user.clear(screen.getByLabelText("Name"));
+    await user.type(screen.getByLabelText("Name"), " OpenAI prod ");
+    await user.clear(screen.getByLabelText("Key"));
+    await user.type(screen.getByLabelText("Key"), " OPENAI_PROD_KEY ");
+    await user.clear(screen.getByLabelText("Description"));
+    await user.type(screen.getByLabelText("Description"), " Updated description ");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      name: "OpenAI prod",
+      key: "OPENAI_PROD_KEY",
+      description: "Updated description",
+    });
+  });
+
+  it("edits external refs only for external-reference secrets and converts blank optionals to null", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+
+    render(
+      <EditSecretDialog
+        open
+        onOpenChange={vi.fn()}
+        secret={makeSecret({
+          key: "AWS_REMOTE_SECRET",
+          managedMode: "external_reference",
+          provider: "aws_secrets_manager",
+          externalRef: "arn:old",
+          description: "Existing description",
+        })}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await user.clear(screen.getByLabelText("Key"));
+    await user.clear(screen.getByLabelText("Description"));
+    await user.clear(screen.getByLabelText("External reference"));
+    await user.type(screen.getByLabelText("External reference"), " arn:new ");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      name: "OpenAI API Key",
+      key: null,
+      description: null,
+      externalRef: "arn:new",
+    });
+  });
+
+  it("shows edit errors without clearing the dialog", () => {
+    render(
+      <EditSecretDialog
+        open
+        onOpenChange={vi.fn()}
+        secret={makeSecret()}
+        onSubmit={vi.fn()}
+        errorMessage="Edit failed"
+      />,
+    );
+
+    expect(screen.getByText("Edit failed")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Edit secret" })).toBeInTheDocument();
   });
 });
 

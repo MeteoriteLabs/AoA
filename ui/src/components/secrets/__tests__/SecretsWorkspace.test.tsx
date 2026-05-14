@@ -19,6 +19,8 @@ vi.mock("@/api/secrets", () => ({
     providers: vi.fn(),
     create: vi.fn(),
     rotate: vi.fn(),
+    update: vi.fn(),
+    remove: vi.fn(),
     providerConfigs: {
       list: vi.fn(),
       create: vi.fn(),
@@ -72,7 +74,7 @@ describe("SecretsWorkspace", () => {
       screen.getByText("Credentials and secret references used by agents, environments, departments, and integrations."),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add secret" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: "Configure vault" })[0]).toBeEnabled();
 
     expect(screen.getByRole("tab", { name: "Inventory" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Bindings" })).toBeTruthy();
@@ -127,17 +129,22 @@ describe("SecretsWorkspace", () => {
     expect(screen.getByRole("dialog", { name: "Add secret" })).toBeInTheDocument();
   });
 
-  it("disables the empty-state vault import control when no external vault is configured", async () => {
+  it("sends the user to vault setup when no external vault is configured", async () => {
+    const user = userEvent.setup();
     vi.mocked(secretsApi.list).mockResolvedValue([]);
     vi.mocked(secretsApi.providers).mockResolvedValue([]);
     vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
 
     renderWithProviders(<SecretsWorkspace companyId="company-1" />);
 
-    const importButton = await screen.findByRole("button", { name: "Import from vault" });
+    const configureButton = (await screen.findAllByRole("button", { name: "Configure vault" }))[0];
 
-    expect(importButton).toBeDisabled();
-    expect(importButton).toHaveAttribute("title", "Configure an external vault provider before importing");
+    expect(configureButton).toBeEnabled();
+    expect(configureButton).toHaveAttribute("title", "Configure an external vault provider before importing");
+
+    await user.click(configureButton);
+
+    expect(await screen.findByText("Configured vaults")).toBeInTheDocument();
   });
 
   it("opens the import dialog from the empty-state vault import control when an external vault is configured", async () => {
@@ -200,7 +207,7 @@ describe("SecretsWorkspace", () => {
     expect(await screen.findByPlaceholderText("Search by name, key, department")).toBeTruthy();
     expect(screen.getAllByText("OpenAI API Key").length).toBeGreaterThan(0);
     expect(screen.getAllByText("HubSpot Private App").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "Rotate" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Rotate value" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
 
     await user.click(screen.getByRole("tab", { name: "Bindings" }));
@@ -370,7 +377,7 @@ describe("SecretsWorkspace", () => {
 
     renderWithProviders(<SecretsWorkspace companyId="company-1" />);
 
-    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    await user.click(await screen.findByRole("button", { name: "Rotate value" }));
     const dialog = screen.getByRole("dialog", { name: "Rotate secret" });
     await user.type(within(dialog).getByLabelText("New value"), "sk-new");
     await user.click(within(dialog).getByRole("button", { name: "Create v4" }));
@@ -391,13 +398,131 @@ describe("SecretsWorkspace", () => {
 
     renderWithProviders(<SecretsWorkspace companyId="company-1" />);
 
-    await user.click(await screen.findByRole("button", { name: "Rotate" }));
+    await user.click(await screen.findByRole("button", { name: "Rotate value" }));
     const dialog = screen.getByRole("dialog", { name: "Rotate secret" });
     await user.type(within(dialog).getByLabelText("New value"), "sk-new");
     await user.click(within(dialog).getByRole("button", { name: "Create v4" }));
 
     expect(await within(dialog).findByText("Rotate failed")).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Rotate secret" })).toBeInTheDocument();
+  });
+
+  it("updates secret metadata from the drawer edit action", async () => {
+    const user = userEvent.setup();
+    const initial = makeSecret({ id: "openai", name: "OpenAI production key", key: "OPENAI_API_KEY" });
+    const updated = makeSecret({ id: "openai", name: "OpenAI prod", key: "OPENAI_API_KEY" });
+    vi.mocked(secretsApi.list).mockResolvedValue([initial]);
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.update).mockResolvedValue(updated);
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await user.click(await screen.findByRole("button", { name: "More actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Edit metadata" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit secret" });
+    await user.clear(within(dialog).getByLabelText(/^name$/i));
+    await user.type(within(dialog).getByLabelText(/^name$/i), "OpenAI prod");
+    await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    expect(secretsApi.update).toHaveBeenCalledWith(
+      "openai",
+      expect.objectContaining({ name: "OpenAI prod" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit secret" })).not.toBeInTheDocument());
+  });
+
+  it("disables an active secret from the drawer", async () => {
+    const user = userEvent.setup();
+    let resolveUpdate: (secret: CompanySecret) => void = () => {};
+    vi.mocked(secretsApi.list)
+      .mockResolvedValueOnce([makeSecret({ id: "openai", status: "active" })])
+      .mockResolvedValue([makeSecret({ id: "openai", status: "disabled" })]);
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.update).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveUpdate = resolve;
+        }),
+    );
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await user.click(await screen.findByRole("button", { name: "More actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Disable" }));
+
+    expect(secretsApi.update).toHaveBeenCalledWith("openai", { status: "disabled" });
+    expect(await screen.findByText("Disabling secret...")).toBeInTheDocument();
+
+    resolveUpdate(makeSecret({ id: "openai", status: "disabled" }));
+
+    await waitFor(() => expect(screen.queryByText("Disabling secret...")).not.toBeInTheDocument());
+    expect(screen.getAllByText("Disabled").length).toBeGreaterThan(0);
+  });
+
+  it("enables a disabled secret from the preview", async () => {
+    const user = userEvent.setup();
+    vi.mocked(secretsApi.list)
+      .mockResolvedValueOnce([makeSecret({ id: "openai", status: "disabled" })])
+      .mockResolvedValue([makeSecret({ id: "openai", status: "active" })]);
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.update).mockResolvedValue(makeSecret({ id: "openai", status: "active" }));
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await user.click(await screen.findByRole("button", { name: "Enable" }));
+
+    expect(secretsApi.update).toHaveBeenCalledWith("openai", { status: "active" });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Enable" })).not.toBeInTheDocument());
+    expect(screen.getAllByText("Active").length).toBeGreaterThan(0);
+  });
+
+  it("requires typing the secret key before deleting a secret", async () => {
+    const user = userEvent.setup();
+    vi.mocked(secretsApi.list)
+      .mockResolvedValueOnce([makeSecret({ id: "openai", key: "OPENAI_API_KEY" })])
+      .mockResolvedValue([]);
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.remove).mockResolvedValue({ ok: true });
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await user.click(await screen.findByRole("button", { name: "More actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete secret" });
+    const deleteButton = within(dialog).getByRole("button", { name: "Delete secret" });
+
+    expect(deleteButton).toBeDisabled();
+
+    await user.type(within(dialog).getByLabelText("Type OPENAI_API_KEY to confirm"), "OPENAI_API_KEY");
+    expect(deleteButton).toBeEnabled();
+
+    await user.click(deleteButton);
+
+    expect(secretsApi.remove).toHaveBeenCalledWith("openai");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Delete secret" })).not.toBeInTheDocument());
+    expect(await screen.findByText("No secrets yet")).toBeInTheDocument();
+  });
+
+  it("keeps edit dialog open and shows update failures", async () => {
+    const user = userEvent.setup();
+    vi.mocked(secretsApi.list).mockResolvedValue([makeSecret({ id: "openai" })]);
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.update).mockRejectedValue(new Error("Update failed"));
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await user.click(await screen.findByRole("button", { name: "More actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Edit metadata" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit secret" });
+    await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    expect(await within(dialog).findByText("Update failed")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Edit secret" })).toBeInTheDocument();
   });
 });
 

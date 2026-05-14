@@ -2,13 +2,20 @@ import { useMemo, useState } from "react";
 import { CloudDownload, Plus } from "lucide-react";
 import type { CompanySecret } from "@armyofagents/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { secretsApi, type CreateSecretInput, type CreateSecretProviderConfigInput } from "@/api/secrets";
+import {
+  secretsApi,
+  type CreateSecretInput,
+  type CreateSecretProviderConfigInput,
+  type UpdateSecretInput,
+} from "@/api/secrets";
 import { Button } from "@/components/ui/button";
 import { ImportFromVaultDialog } from "@/pages/secrets/ImportFromVaultDialog";
 import { queryKeys } from "@/lib/queryKeys";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { AddSecretDialog } from "./AddSecretDialog";
+import { DeleteSecretDialog } from "./DeleteSecretDialog";
+import { EditSecretDialog } from "./EditSecretDialog";
 import { RotateSecretDialog } from "./RotateSecretDialog";
 import { SecretAuditTab } from "./SecretAuditTab";
 import { SecretBindingsTab } from "./SecretBindingsTab";
@@ -36,6 +43,8 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
   const [importOpen, setImportOpen] = useState(false);
   const [checkingVaultId, setCheckingVaultId] = useState<string | null>(null);
   const [rotateTarget, setRotateTarget] = useState<CompanySecret | null>(null);
+  const [editTarget, setEditTarget] = useState<CompanySecret | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<CompanySecret | null>(null);
   const secretsQuery = useQuery({
     queryKey: queryKeys.secrets.list(companyId),
     queryFn: () => secretsApi.list(companyId),
@@ -116,17 +125,59 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     },
   });
 
+  function patchSecretInCache(updated: CompanySecret) {
+    queryClient.setQueryData<CompanySecret[]>(queryKeys.secrets.list(companyId), (current) =>
+      current?.map((secret) => (secret.id === updated.id ? updated : secret)) ?? current,
+    );
+  }
+
+  function removeSecretFromCache(secretId: string) {
+    queryClient.setQueryData<CompanySecret[]>(queryKeys.secrets.list(companyId), (current) =>
+      current?.filter((secret) => secret.id !== secretId) ?? current,
+    );
+  }
+
+  const updateSecret = useMutation({
+    mutationFn: ({ id, input }: { id: string; input: UpdateSecretInput }) => secretsApi.update(id, input),
+    onSuccess: (updated) => {
+      patchSecretInCache(updated);
+      setSelectedSecretId(updated.id);
+      setEditTarget(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
+    },
+  });
+
+  const deleteSecret = useMutation({
+    mutationFn: (id: string) => secretsApi.remove(id),
+    onSuccess: (_result, id) => {
+      removeSecretFromCache(id);
+      setDeleteTarget(null);
+      setSelectedSecretId(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
+      toast.success("Secret deleted");
+    },
+  });
+
   const secrets = secretsQuery.data ?? [];
   const providerConfigs = providerConfigsQuery.data ?? [];
   const importableProviderConfigs = providerConfigs.filter(
     (config) => config.provider === "aws_secrets_manager" && config.status !== "disabled",
   );
   const canImportFromVault = importableProviderConfigs.length > 0;
+  const importButtonLabel = canImportFromVault ? "Import" : "Configure vault";
   const errorMessage = secretsQuery.error instanceof Error ? secretsQuery.error.message : null;
   const createErrorMessage = createSecret.error instanceof Error ? createSecret.error.message : null;
   const rotateErrorMessage = rotateSecret.error instanceof Error ? rotateSecret.error.message : null;
+  const updateErrorMessage = updateSecret.error instanceof Error ? updateSecret.error.message : null;
   const createProviderErrorMessage =
     createProviderConfig.error instanceof Error ? createProviderConfig.error.message : null;
+  const statusUpdateSecretId =
+    updateSecret.isPending &&
+    (updateSecret.variables?.input.status === "active" || updateSecret.variables?.input.status === "disabled")
+      ? updateSecret.variables.id
+      : null;
+  const disablingSecretId = updateSecret.variables?.input.status === "disabled" ? statusUpdateSecretId : null;
+  const enablingSecretId = updateSecret.variables?.input.status === "active" ? statusUpdateSecretId : null;
 
   function openAddSecretDialog() {
     createSecret.reset();
@@ -180,18 +231,21 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
               type="button"
               variant="outline"
               size="sm"
-              disabled={!canImportFromVault}
               title={
                 canImportFromVault
                   ? "Import external references from a configured vault"
                   : "Configure an external vault provider before importing"
               }
               onClick={() => {
-                if (canImportFromVault) setImportOpen(true);
+                if (canImportFromVault) {
+                  setImportOpen(true);
+                } else {
+                  setActiveTab("vaults");
+                }
               }}
             >
               <CloudDownload className="size-3.5" />
-              Import
+              {importButtonLabel}
             </Button>
             <Button
               type="button"
@@ -241,6 +295,7 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
           <SecretEmptyState
             onAddSecret={openAddSecretDialog}
             onImportFromVault={() => setImportOpen(true)}
+            onConfigureVault={() => setActiveTab("vaults")}
             canImportFromVault={canImportFromVault}
             importDisabledReason="Configure an external vault provider before importing"
           />
@@ -249,10 +304,52 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
             secrets={secrets}
             selectedSecret={selectedSecret}
             onSelectSecret={setSelectedSecretId}
+            onEdit={(secret) => {
+              updateSecret.reset();
+              setEditTarget(secret);
+            }}
             onRotate={(secret) => {
               rotateSecret.reset();
               setRotateTarget(secret);
             }}
+            onDisable={(secret) => {
+              updateSecret.reset();
+              updateSecret.mutate(
+                { id: secret.id, input: { status: "disabled" } },
+                {
+                  onSuccess: () => {
+                    toast.success("Secret disabled");
+                  },
+                  onError: (err) => {
+                    toast.error("Disable failed", {
+                      description: err instanceof Error ? err.message : undefined,
+                    });
+                  },
+                },
+              );
+            }}
+            onEnable={(secret) => {
+              updateSecret.reset();
+              updateSecret.mutate(
+                { id: secret.id, input: { status: "active" } },
+                {
+                  onSuccess: () => {
+                    toast.success("Secret enabled");
+                  },
+                  onError: (err) => {
+                    toast.error("Enable failed", {
+                      description: err instanceof Error ? err.message : undefined,
+                    });
+                  },
+                },
+              );
+            }}
+            onDelete={(secret) => {
+              deleteSecret.reset();
+              setDeleteTarget(secret);
+            }}
+            disablingSecretId={disablingSecretId}
+            enablingSecretId={enablingSecretId}
           />
         ) : activeTab === "bindings" ? (
           renderSelectedSecretRequiredTab("bindings")
@@ -287,6 +384,18 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
         errorMessage={createErrorMessage}
         onSubmit={(input) => createSecret.mutateAsync(input)}
       />
+      <EditSecretDialog
+        open={Boolean(editTarget)}
+        onOpenChange={(open) => {
+          if (!open) setEditTarget(null);
+        }}
+        secret={editTarget}
+        errorMessage={updateErrorMessage}
+        onSubmit={(input) => {
+          if (!editTarget) return;
+          return updateSecret.mutateAsync({ id: editTarget.id, input });
+        }}
+      />
       <RotateSecretDialog
         open={Boolean(rotateTarget)}
         onOpenChange={(open) => {
@@ -298,6 +407,21 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
         onSubmit={({ value }) => {
           if (!rotateTarget) return;
           return rotateSecret.mutateAsync({ id: rotateTarget.id, value });
+        }}
+      />
+      <DeleteSecretDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            deleteSecret.reset();
+            setDeleteTarget(null);
+          }
+        }}
+        secret={deleteTarget}
+        errorMessage={deleteSecret.error instanceof Error ? deleteSecret.error.message : null}
+        isDeleting={deleteSecret.isPending}
+        onConfirm={async (secret) => {
+          await deleteSecret.mutateAsync(secret.id);
         }}
       />
       <ImportFromVaultDialog
