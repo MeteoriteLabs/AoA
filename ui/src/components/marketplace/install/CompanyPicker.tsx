@@ -24,7 +24,7 @@ export function CompanyPicker({ value, onChange, forceHidden }: CompanyPickerPro
       <label htmlFor="install-company" className="text-sm font-medium block mb-1">
         Install to company
       </label>
-      <Select value={value ?? undefined} onValueChange={onChange}>
+      <Select value={value ?? ""} onValueChange={onChange}>
         <SelectTrigger id="install-company">
           <SelectValue placeholder="Select a company" />
         </SelectTrigger>

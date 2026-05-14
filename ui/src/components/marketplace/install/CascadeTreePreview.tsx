@@ -5,6 +5,7 @@ import { TYPE_ICONS } from "@/lib/marketplace-constants";
 
 export interface CascadeTreePreviewProps {
   plan: InstallPlan;
+  subject?: string;
 }
 
 /**
@@ -15,10 +16,10 @@ export interface CascadeTreePreviewProps {
  * The resolver returns steps in dependency order (deps first, root last).
  * We render that order as-is.
  */
-export function CascadeTreePreview({ plan }: CascadeTreePreviewProps) {
+export function CascadeTreePreview({ plan, subject = "team" }: CascadeTreePreviewProps) {
   return (
     <div>
-      <h4 className="text-sm font-medium mb-2">Installing this team will also install:</h4>
+      <h4 className="text-sm font-medium mb-2">Installing this {subject} will also install:</h4>
       <ul className="space-y-1 max-h-60 overflow-y-auto border rounded-md p-2">
         {plan.steps.map((step) => (
           <CascadeStepRow key={step.catalogItemId} step={step} />

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
@@ -9,11 +10,22 @@ import { ToastProvider } from "@/components/marketplace/toast/ToastProvider";
 import { InstallToastSlot } from "@/components/marketplace/toast/InstallToastSlot";
 import {
   CODE_REVIEW_SKILL,
+  ENGINEER_AGENT,
   ENGINEERING_TEAM,
   GSTACK_BROWSE_SKILL,
 } from "@/__tests__/__fixtures__/marketplace-catalog";
 import { marketplaceApi } from "@/api/marketplace";
 import { projectsApi } from "@/api/projects";
+
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+}
+if (!Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = () => {};
+}
+if (!HTMLElement.prototype.scrollIntoView) {
+  HTMLElement.prototype.scrollIntoView = () => {};
+}
 
 vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>("@/api/marketplace");
@@ -126,5 +138,80 @@ describe("SnapshotInstallModal — team", () => {
     // Cascade tree shows the steps
     expect(screen.getByText("Code Review")).toBeInTheDocument();
     expect(screen.getByText("Engineer")).toBeInTheDocument();
+  });
+});
+
+describe("SnapshotInstallModal - agent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(projectsApi.list).mockResolvedValue([
+      { id: "d1", name: "Engineering", type: "department" },
+    ] as any);
+    vi.mocked(marketplaceApi.resolvePlan).mockResolvedValue({
+      rootItem: { id: ENGINEER_AGENT.id, name: "Engineer", type: "agent", version: "1.0.0" },
+      steps: [
+        { catalogItemId: "skill:aoa-curated/code-review", itemType: "skill", name: "Code Review", version: "1.0.0", action: "install-new" },
+        { catalogItemId: ENGINEER_AGENT.id, itemType: "agent", name: "Engineer", version: "1.0.0", action: "install-new" },
+      ],
+      conflicts: [],
+      agentInstall: {
+        suggestedRole: "lead",
+        supportedRoles: ["cxo", "lead", "general"],
+        suggestedAdapterType: "codex",
+        supportedAdapterTypes: ["codex", "claude"],
+        availableAdapterTypes: ["codex"],
+        setupRequired: true,
+        setupRequirements: [{
+          kind: "secret",
+          key: "GITHUB_TOKEN",
+          label: "GitHub token",
+          required: true,
+          reason: "Needed to inspect private repositories.",
+          usedBy: "github",
+        }],
+        warnings: [],
+      },
+    });
+    vi.mocked(marketplaceApi.install).mockResolvedValue({
+      operationId: "op-agent-1",
+      status: "pending",
+    });
+    vi.mocked(marketplaceApi.getOperation).mockResolvedValue({
+      id: "op-agent-1",
+      companyId: "c1",
+      catalogItemId: ENGINEER_AGENT.id,
+      itemType: "agent",
+      targetDepartmentId: "d1",
+      status: "running",
+      resultEntityId: null,
+      errorMessage: null,
+      cascadeResults: null,
+      startedAt: "2026-05-14T00:00:00.000Z",
+      completedAt: null,
+      createdAt: "2026-05-14T00:00:00.000Z",
+    });
+  });
+
+  it("shows agent defaults, setup warning, dependencies, and submits selected settings", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    wrap(<SnapshotInstallModal item={ENGINEER_AGENT} open onOpenChange={onOpenChange} />);
+
+    await waitFor(() => expect(screen.getByText("Agent settings")).toBeInTheDocument());
+    expect(screen.getByText("Setup required after install")).toBeInTheDocument();
+    expect(screen.getByText("GitHub token")).toBeInTheDocument();
+    expect(screen.getByText(/Installing this agent will also install/)).toBeInTheDocument();
+    expect(screen.getByText("Code Review")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: /install to department/i }));
+    await user.click(screen.getByText("Engineering"));
+    await user.click(screen.getByRole("button", { name: /^Install$/ }));
+
+    expect(marketplaceApi.install).toHaveBeenCalledWith("c1", {
+      catalogItemId: ENGINEER_AGENT.id,
+      targetDepartmentId: "d1",
+      role: "lead",
+      adapterType: "codex",
+    });
   });
 });
