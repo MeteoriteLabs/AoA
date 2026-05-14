@@ -50,6 +50,7 @@ pnpm exec playwright test --config=tests/e2e/playwright.config.ts --list
 | ---------------------- | ------- | -------------------------------------------------------------------- |
 | `AOA_E2E_PORT`         | `3199`  | Dedicated port for the throwaway e2e server (avoids clobbering dev). |
 | `AOA_E2E_SKIP_LLM`     | `true`  | Skip LLM-dependent assertions (onboarding only).                     |
+| `DATABASE_URL`         | —       | Optional external Postgres URL. Required to run e2e on Windows.      |
 | `ANTHROPIC_API_KEY`    | —       | Required only when `AOA_E2E_SKIP_LLM=false`.                         |
 
 > Note: `tests/e2e/playwright.config.ts` reads `AOA_E2E_*` env vars
@@ -75,6 +76,10 @@ that test invocation only.
 - **Database:** the throwaway home auto-runs migrations. If migrations
   are broken on `main`, e2e will fail at `webServer` start with a 120s
   timeout. Run `pnpm typecheck && pnpm test` locally first.
+- **Windows:** embedded Postgres cannot start under the administrative
+  `runneradmin` user used by Windows CI. Windows e2e is skipped unless
+  `DATABASE_URL` points to an external Postgres instance. When skipped,
+  Playwright exits cleanly instead of failing with "No tests found".
 - **Adapter CLIs:** the onboarding spec stops at step 2 (workspace
   root) by default — the full flow requires `claude` (or a local
   adapter CLI) on PATH for the step-3 adapter environment check. A
