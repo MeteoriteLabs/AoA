@@ -83,6 +83,7 @@ export function SettingsPage() {
       next.set("tab", id);
       // Drop sub-tab param when switching sections
       next.delete("sub");
+      next.delete("section");
       return next;
     });
   };

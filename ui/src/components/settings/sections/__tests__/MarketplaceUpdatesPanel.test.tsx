@@ -1,0 +1,160 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { marketplaceApi, type PendingUpdate } from "@/api/marketplace";
+import { MarketplaceUpdatesPanel } from "../MarketplaceUpdatesPanel";
+
+const mutateAsync = vi.fn();
+let pendingUpdates: PendingUpdate[] = [];
+
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({
+    selectedCompany: { id: "company-1", name: "Company" },
+  }),
+}));
+
+vi.mock("@/context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn() }),
+}));
+
+vi.mock("@/hooks/usePendingUpdates", () => ({
+  usePendingUpdates: () => ({ data: pendingUpdates, isLoading: false }),
+  useDismissUpdate: () => ({ mutateAsync }),
+}));
+
+vi.mock("@/api/marketplace", async () => {
+  const actual = await vi.importActual<typeof import("@/api/marketplace")>(
+    "@/api/marketplace",
+  );
+  return {
+    ...actual,
+    marketplaceApi: {
+      ...actual.marketplaceApi,
+      applyUpdate: vi.fn().mockResolvedValue(undefined),
+    },
+  };
+});
+
+vi.mock("@/components/marketplace/SnapshotUpdateModal", () => ({
+  SnapshotUpdateModal: ({ itemName }: { itemName: string }) => (
+    <div role="dialog">Reviewing {itemName}</div>
+  ),
+}));
+
+vi.mock("@/components/settings/CapabilityDeltaModal", () => ({
+  CapabilityDeltaModal: ({ pluginName, delta }: { pluginName: string; delta: string[] }) => (
+    <div role="dialog">
+      New permissions required for {pluginName}: {delta.join(", ")}
+    </div>
+  ),
+}));
+
+function update(overrides: Partial<PendingUpdate>): PendingUpdate {
+  return {
+    id: "update-1",
+    companyId: "company-1",
+    catalogItemId: "plugin:test/github",
+    catalogItemName: "GitHub Issues",
+    itemType: "plugin",
+    currentVersion: "1.0.0",
+    latestVersion: "1.1.0",
+    status: "pending",
+    detectedAt: "2026-05-15T00:00:00.000Z",
+    updatedAt: "2026-05-15T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function renderPanel() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <MarketplaceUpdatesPanel />
+    </QueryClientProvider>,
+  );
+  return { ...view, queryClient };
+}
+
+describe("MarketplaceUpdatesPanel", () => {
+  beforeEach(() => {
+    pendingUpdates = [];
+    mutateAsync.mockReset();
+    vi.mocked(marketplaceApi.applyUpdate).mockClear();
+  });
+
+  it("renders the empty state when no updates are pending", () => {
+    renderPanel();
+
+    expect(screen.getByText("All marketplace items are up to date")).toBeInTheDocument();
+  });
+
+  it("applies plugin updates directly", async () => {
+    pendingUpdates = [update({})];
+
+    renderPanel();
+
+    expect(screen.getByText("GitHub Issues")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Update GitHub Issues" }));
+
+    await waitFor(() =>
+      expect(marketplaceApi.applyUpdate).toHaveBeenCalledWith("company-1", "update-1"),
+    );
+  });
+
+  it("opens snapshot review for non-plugin updates", async () => {
+    pendingUpdates = [
+      update({
+        id: "agent-update-1",
+        catalogItemId: "agent:test/senior-engineer",
+        catalogItemName: "Senior Engineer",
+        itemType: "agent",
+      }),
+    ];
+
+    renderPanel();
+
+    await userEvent.click(screen.getByRole("button", { name: "Review Senior Engineer" }));
+
+    expect(screen.getByRole("dialog")).toHaveTextContent("Reviewing Senior Engineer");
+  });
+
+  it("shows capability approval when a plugin update introduces new permissions", async () => {
+    pendingUpdates = [update({})];
+    vi.mocked(marketplaceApi.applyUpdate).mockResolvedValueOnce({
+      ok: true,
+      pluginId: "plugin-1",
+      version: "1.1.0",
+      status: "upgrade_pending",
+      delta: ["storage.write"],
+    } as any);
+
+    renderPanel();
+
+    await userEvent.click(screen.getByRole("button", { name: "Update GitHub Issues" }));
+
+    expect(await screen.findByRole("dialog")).toHaveTextContent(
+      "New permissions required for GitHub Issues: storage.write",
+    );
+  });
+
+  it("invalidates the plugin update cache after dismissing an update", async () => {
+    pendingUpdates = [update({})];
+    mutateAsync.mockResolvedValueOnce(undefined);
+    const { queryClient } = renderPanel();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Dismiss GitHub Issues update" }),
+    );
+
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["marketplace-updates", "company-1"],
+      }),
+    );
+  });
+});

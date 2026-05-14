@@ -115,13 +115,13 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto,minmax(0,1fr),auto] overflow-hidden sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Install {item.name}</DialogTitle>
           <DialogDescription>{item.description}</DialogDescription>
         </DialogHeader>
 
-        <DialogBody className="space-y-4">
+        <DialogBody className="space-y-4 overflow-y-auto">
           <div className="flex items-center gap-2">
             <TrustBadge tier={item.trust.tier} />
             <Badge variant="outline" className="text-xs">v{item.version}</Badge>

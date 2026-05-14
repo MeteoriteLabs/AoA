@@ -1,9 +1,12 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Puzzle } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useCompany } from "../../context/CompanyContext.js";
+import { useToast } from "../../context/ToastContext.js";
 import * as pluginsApi from "../../api/plugins.js";
 import { marketplaceApi } from "../../api/marketplace.js";
+import { CapabilityDeltaModal } from "./CapabilityDeltaModal.js";
 import { PluginDetailSlideOver } from "./PluginDetailSlideOver.js";
 import type { InstalledPlugin } from "../../api/plugins.js";
 import type { PendingUpdate } from "../../api/marketplace.js";
@@ -42,11 +45,15 @@ function PluginCard({
   pendingUpdate,
   selected,
   onSelect,
+  onApplyUpdate,
+  isUpdating,
 }: {
   plugin: InstalledPlugin;
   pendingUpdate: PendingUpdate | undefined;
   selected: boolean;
   onSelect: () => void;
+  onApplyUpdate?: () => void;
+  isUpdating?: boolean;
 }) {
   const hasUpdate = !!pendingUpdate;
   const primaryCategory = plugin.categories[0] ?? "integrations";
@@ -54,9 +61,7 @@ function PluginCard({
   const emoji = CATEGORY_EMOJI[primaryCategory] ?? "🔌";
 
   return (
-    <button
-      type="button"
-      onClick={onSelect}
+    <div
       className={cn(
         "relative flex flex-col gap-3 p-4 rounded-xl border text-left transition-all duration-150",
         selected
@@ -108,13 +113,43 @@ function PluginCard({
           {hasUpdate ? "Manage →" : "Configure →"}
         </span>
       </div>
-    </button>
+      <div className="flex items-center gap-2">
+        {hasUpdate && onApplyUpdate && (
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label={`Update ${plugin.manifest.displayName}`}
+            disabled={isUpdating}
+            onClick={onApplyUpdate}
+          >
+            {isUpdating ? "Updating..." : "Update"}
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="ghost"
+          aria-label={`${hasUpdate ? "Manage" : "Configure"} ${plugin.manifest.displayName}`}
+          onClick={onSelect}
+        >
+          {hasUpdate ? "Manage" : "Configure"}
+        </Button>
+      </div>
+    </div>
   );
 }
 
 export function PluginsSection() {
   const { selectedCompanyId } = useCompany();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [permissionUpdate, setPermissionUpdate] = useState<{
+    plugin: InstalledPlugin;
+    update: PendingUpdate;
+    version: string;
+    delta: string[];
+  } | null>(null);
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   const { data: installedPlugins, isLoading } = useQuery({
     queryKey: ["company-plugins", selectedCompanyId],
@@ -129,6 +164,48 @@ export function PluginsSection() {
   });
 
   const selectedPlugin = installedPlugins?.find((p) => p.id === selectedId) ?? null;
+
+  const applyPluginUpdate = async (plugin: InstalledPlugin, update: PendingUpdate) => {
+    if (!selectedCompanyId) return;
+    setUpdatingId(update.id);
+    try {
+      const result = await marketplaceApi.applyUpdate(selectedCompanyId, update.id);
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["marketplace", "updates", selectedCompanyId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["marketplace-updates", selectedCompanyId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["company-plugins", selectedCompanyId],
+        }),
+      ]);
+      if (result.status === "upgrade_pending" && result.delta?.length) {
+        setPermissionUpdate({
+          plugin,
+          update,
+          version: result.version ?? update.latestVersion,
+          delta: result.delta,
+        });
+        pushToast({
+          title: "Plugin permissions need approval",
+          body: `${plugin.manifest.displayName} added new capabilities.`,
+          tone: "info",
+        });
+        return;
+      }
+      pushToast({ title: `Updated ${plugin.manifest.displayName}`, tone: "success" });
+    } catch (err) {
+      pushToast({
+        title: "Failed to apply update",
+        body: err instanceof Error ? err.message : undefined,
+        tone: "error",
+      });
+    } finally {
+      setUpdatingId(null);
+    }
+  };
 
   if (isLoading) {
     return <div className="text-sm text-zinc-500 py-4">Loading plugins…</div>;
@@ -149,22 +226,45 @@ export function PluginsSection() {
     );
   }
 
+  const invalidatePluginUpdateState = () => {
+    if (!selectedCompanyId) return;
+    void queryClient.invalidateQueries({
+      queryKey: ["company-plugins", selectedCompanyId],
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["marketplace-updates", selectedCompanyId],
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["marketplace", "updates", selectedCompanyId],
+    });
+  };
+
   return (
+    <>
     <div className="flex gap-4">
       <div className="flex-1 space-y-3">
         <SectionHeader count={installedPlugins.length} />
         <div className="grid grid-cols-2 gap-3">
-          {installedPlugins.map((plugin) => (
-            <PluginCard
-              key={plugin.id}
-              plugin={plugin}
-              pendingUpdate={pendingUpdates?.find(
-                (u) => u.catalogItemId === plugin.catalogItemId,
-              )}
-              selected={plugin.id === selectedId}
-              onSelect={() => setSelectedId(plugin.id === selectedId ? null : plugin.id)}
-            />
-          ))}
+          {installedPlugins.map((plugin) => {
+            const pendingUpdate = pendingUpdates?.find(
+              (u) => u.catalogItemId === plugin.catalogItemId,
+            );
+            return (
+              <PluginCard
+                key={plugin.id}
+                plugin={plugin}
+                pendingUpdate={pendingUpdate}
+                selected={plugin.id === selectedId}
+                onSelect={() => setSelectedId(plugin.id === selectedId ? null : plugin.id)}
+                onApplyUpdate={
+                  pendingUpdate
+                    ? () => applyPluginUpdate(plugin, pendingUpdate)
+                    : undefined
+                }
+                isUpdating={updatingId === pendingUpdate?.id}
+              />
+            );
+          })}
         </div>
       </div>
 
@@ -179,6 +279,25 @@ export function PluginsSection() {
         />
       )}
     </div>
+    {permissionUpdate && selectedCompanyId && (
+      <CapabilityDeltaModal
+        companyId={selectedCompanyId}
+        pluginId={permissionUpdate.plugin.id}
+        pluginName={permissionUpdate.plugin.manifest.displayName}
+        fromVersion={permissionUpdate.update.currentVersion}
+        toVersion={permissionUpdate.version}
+        delta={permissionUpdate.delta}
+        onApproved={() => {
+          setPermissionUpdate(null);
+          invalidatePluginUpdateState();
+        }}
+        onCancelled={() => {
+          setPermissionUpdate(null);
+          invalidatePluginUpdateState();
+        }}
+      />
+    )}
+    </>
   );
 }
 

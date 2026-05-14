@@ -355,12 +355,23 @@ describe("SettingsPage redesign — Phase F shell", () => {
   it("Marketplace prefs section: renders Updates / Access / Catalog Refresh + updateWindow Select", async () => {
     renderSettings("/P4/settings?tab=marketplace");
     expect(await screen.findByText(/^Updates$/)).toBeInTheDocument();
+    expect(await screen.findByText(/Plugin update policy/i)).toBeInTheDocument();
     expect(screen.getByText(/^Access$/)).toBeInTheDocument();
     // "Catalog Refresh" appears in both the sub-section header and the field label.
     const catalogMatches = screen.getAllByText(/Catalog Refresh/i);
     expect(catalogMatches.length).toBeGreaterThan(0);
     // Ghost setting — updateWindow
     expect(screen.getByText(/Update window/i)).toBeInTheDocument();
+  });
+
+  it("clears marketplace section state when switching to another settings section", async () => {
+    const user = userEvent.setup();
+    renderSettings("/P4/settings?tab=marketplace&section=updates");
+
+    await user.click((await screen.findAllByRole("button", { name: /^General$/ }))[0]!);
+    await user.click((await screen.findAllByRole("button", { name: /^Marketplace prefs$/ }))[0]!);
+
+    expect(await screen.findByText("Plugin update policy")).toBeInTheDocument();
   });
 
   it("LLM providers section: renders Anthropic, OpenAI, Google", async () => {

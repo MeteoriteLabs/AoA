@@ -55,6 +55,14 @@ export interface InstallOperation {
   createdAt: string;
 }
 
+export interface ApplyUpdateResult {
+  ok: boolean;
+  pluginId?: string;
+  version?: string;
+  status?: "ready" | "upgrade_pending";
+  delta?: string[];
+}
+
 export interface InstallPlanStep {
   catalogItemId: string;
   itemType: "plugin" | "skill" | "agent" | "team";
@@ -171,8 +179,8 @@ export const marketplaceApi = {
     );
   },
 
-  async applyUpdate(companyId: string, updateId: string): Promise<void> {
-    await api.post<{ error: string }>(
+  async applyUpdate(companyId: string, updateId: string): Promise<ApplyUpdateResult> {
+    return api.post<ApplyUpdateResult>(
       `/companies/${companyId}/marketplace/updates/${updateId}/apply`,
       {},
     );
