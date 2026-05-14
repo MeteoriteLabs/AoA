@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertTriangle } from "lucide-react";
 import type { CatalogItem } from "@armyofagents/shared";
-import type { InstallPlan, InstallRequest } from "@/api/marketplace";
+import type { InstallPlan, SingleInstallRequest } from "@/api/marketplace";
 import { TrustBadge } from "../TrustBadge";
 import { CompanyPicker } from "./CompanyPicker";
 import { DepartmentPicker } from "./DepartmentPicker";
@@ -24,7 +24,7 @@ import { useResolvePlan } from "@/hooks/useResolvePlan";
 import { useInstallToast } from "../toast/useInstallToast";
 import { renderRuntimeRequires } from "@/lib/marketplace-constants";
 
-type AgentRole = NonNullable<InstallRequest["role"]>;
+type AgentRole = NonNullable<SingleInstallRequest["role"]>;
 
 const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   cxo: "CXO",
