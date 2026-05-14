@@ -118,7 +118,7 @@ export const marketplaceApi = {
     catalogItemId: string,
   ): Promise<InstallPlan> {
     return api.get<InstallPlan>(
-      `/companies/${companyId}/marketplace/resolve/${catalogItemId}`,
+      `/companies/${companyId}/marketplace/resolve/${encodeURIComponent(catalogItemId)}`,
     );
   },
 
