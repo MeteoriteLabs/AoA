@@ -1,10 +1,13 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { CompanySecret } from "@armyofagents/shared";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
+import type { CompanySecret, CompanySecretBinding } from "@armyofagents/shared";
 import { describe, expect, it, vi } from "vitest";
 import { SecretsWorkspace } from "@/components/secrets/SecretsWorkspace";
 import { renderWithProviders } from "@/__tests__/test-utils";
 import { secretsApi } from "@/api/secrets";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   formatSecretDate,
   looksSensitiveKey,
@@ -32,6 +35,8 @@ vi.mock("@/api/secrets", () => ({
     },
     bindings: {
       list: vi.fn(),
+      create: vi.fn(),
+      remove: vi.fn(),
     },
     accessEvents: vi.fn(),
   },
@@ -56,6 +61,22 @@ function makeSecret(partial: Partial<CompanySecret>): CompanySecret {
     deletedAt: null,
     createdByAgentId: null,
     createdByUserId: null,
+    createdAt: new Date("2026-05-14T00:00:00Z"),
+    updatedAt: new Date("2026-05-14T00:00:00Z"),
+  };
+}
+
+function makeBinding(partial: Partial<CompanySecretBinding>): CompanySecretBinding {
+  return {
+    id: partial.id ?? "binding-1",
+    companyId: "company-1",
+    secretId: partial.secretId ?? "openai",
+    targetType: partial.targetType ?? "agent",
+    targetId: partial.targetId ?? "agent-1",
+    configPath: partial.configPath ?? "env.OPENAI_API_KEY",
+    versionSelector: partial.versionSelector ?? "latest",
+    required: partial.required ?? true,
+    label: partial.label ?? null,
     createdAt: new Date("2026-05-14T00:00:00Z"),
     updatedAt: new Date("2026-05-14T00:00:00Z"),
   };
@@ -232,6 +253,102 @@ describe("SecretsWorkspace", () => {
     expect(await screen.findByText("Failed to load bindings for this secret.")).toBeInTheDocument();
     expect(screen.getByText("Bindings unavailable")).toBeInTheDocument();
     expect(screen.queryByText("No bindings for this secret")).toBeNull();
+  });
+
+  it("creates and removes bindings from the bindings tab", async () => {
+    const user = userEvent.setup();
+    const secret = makeSecret({ id: "openai", name: "OpenAI API Key", key: "OPENAI_API_KEY" });
+    const createdBinding = makeBinding({
+      id: "binding-created",
+      secretId: "openai",
+      targetType: "environment",
+      targetId: "env-prod",
+      configPath: "env.OPENAI_API_KEY",
+      required: false,
+      label: "Production env",
+    });
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.list).mockResolvedValue([secret]);
+    vi.mocked(secretsApi.bindings.list)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([createdBinding])
+      .mockResolvedValue([]);
+    vi.mocked(secretsApi.bindings.create).mockResolvedValue(createdBinding);
+    vi.mocked(secretsApi.bindings.remove).mockResolvedValue({ ok: true });
+
+    renderWithProviders(<SecretsWorkspace companyId="company-1" />);
+
+    await user.click(await screen.findByRole("tab", { name: "Bindings" }));
+    await user.click(await screen.findByRole("button", { name: "Add binding" }));
+    await user.selectOptions(screen.getByLabelText("Target type"), "environment");
+    await user.type(screen.getByLabelText("Target id"), "env-prod");
+    await user.type(screen.getByLabelText("Config path"), "env.OPENAI_API_KEY");
+    await user.type(screen.getByLabelText("Label"), "Production env");
+    await user.click(screen.getByLabelText("Required binding"));
+    await user.click(screen.getByRole("button", { name: "Create binding" }));
+
+    expect(secretsApi.bindings.create).toHaveBeenCalledWith("openai", {
+      targetType: "environment",
+      targetId: "env-prod",
+      configPath: "env.OPENAI_API_KEY",
+      versionSelector: "latest",
+      required: false,
+      label: "Production env",
+    });
+    expect(await screen.findByText("env-prod")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Remove binding env-prod" }));
+
+    expect(secretsApi.bindings.remove).toHaveBeenCalledWith("binding-created");
+    await waitFor(() => expect(screen.queryByText("env-prod")).not.toBeInTheDocument());
+  });
+
+  it("invalidates the removed binding secret even if another secret is selected before removal finishes", async () => {
+    const user = userEvent.setup();
+    let resolveRemove: (value: { ok: true }) => void = () => {};
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const openai = makeSecret({ id: "openai", name: "OpenAI API Key", key: "OPENAI_API_KEY" });
+    const hubspot = makeSecret({ id: "hubspot", name: "HubSpot Private App", key: "HUBSPOT_TOKEN" });
+    const openaiBinding = makeBinding({ id: "binding-openai", secretId: "openai", targetId: "agent-openai" });
+    const hubspotBinding = makeBinding({ id: "binding-hubspot", secretId: "hubspot", targetId: "agent-hubspot" });
+    vi.mocked(secretsApi.providers).mockResolvedValue([]);
+    vi.mocked(secretsApi.providerConfigs.list).mockResolvedValue([]);
+    vi.mocked(secretsApi.list).mockResolvedValue([openai, hubspot]);
+    vi.mocked(secretsApi.bindings.list).mockImplementation((secretId) =>
+      Promise.resolve(secretId === "openai" ? [openaiBinding] : [hubspotBinding]),
+    );
+    vi.mocked(secretsApi.bindings.remove).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRemove = resolve;
+        }),
+    );
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SecretsWorkspace companyId="company-1" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Bindings" }));
+    await user.click(await screen.findByRole("button", { name: "Remove binding agent-openai" }));
+    await user.click(screen.getByRole("tab", { name: "Inventory" }));
+    await user.click(await screen.findByRole("button", { name: /hubspot private app/i }));
+
+    resolveRemove({ ok: true });
+
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.secrets.bindings("openai") }),
+    );
   });
 
   it("shows audit query failures instead of the no-events empty state", async () => {

@@ -31,4 +31,30 @@ describe("codex skill injection", () => {
     );
     expect(logs.join("\n")).toContain("Copied Codex skill \"aoa\"");
   });
+
+  it("does not fail when another run creates the skill target first", async () => {
+    const logs: string[] = [];
+    const linkSkill = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("EEXIST: file already exists"), { code: "EEXIST" }));
+    const copySkill = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("EEXIST: file already exists"), { code: "EEXIST" }));
+
+    await expect(
+      linkOrCopyCodexSkill({
+        source: "C:/repo/skills/aoa",
+        target: "C:/Users/TK/.codex/skills/aoa",
+        entryName: "aoa",
+        skillsHome: "C:/Users/TK/.codex/skills",
+        onLog: async (_stream, message) => {
+          logs.push(message);
+        },
+        linkSkill,
+        copySkill,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(logs.join("\n")).toContain("already exists");
+  });
 });
