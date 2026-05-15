@@ -56,10 +56,48 @@ export const MarketplaceProviderRefSchema = z.object({
 });
 export type MarketplaceProviderRef = z.infer<typeof MarketplaceProviderRefSchema>;
 
+const GITHUB_REPO_OWNER_PATTERN = "[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?";
+const GITHUB_REPO_NAME_PATTERN = "[A-Za-z0-9._-]+";
+const GITHUB_OWNER_REPO_REGEX = new RegExp(
+  `^${GITHUB_REPO_OWNER_PATTERN}/${GITHUB_REPO_NAME_PATTERN}$`,
+);
+const MARKETPLACE_GITHUB_REPO_MESSAGE =
+  "Skill bundle repo must be a GitHub owner/repo or HTTPS github.com owner/repo URL";
+const MARKETPLACE_COMMIT_SHA_MESSAGE =
+  "Skill bundle commitSha must be a full 40-character hex commit SHA";
+const MARKETPLACE_COMMIT_SHA_REGEX = /^[0-9a-f]{40}$/i;
+
+export function isMarketplaceGitHubRepo(repo: string): boolean {
+  if (!repo || repo.trim() !== repo) return false;
+
+  if (GITHUB_OWNER_REPO_REGEX.test(repo)) return true;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(repo);
+  } catch {
+    return false;
+  }
+
+  if (parsed.protocol !== "https:" || parsed.hostname.toLowerCase() !== "github.com") {
+    return false;
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) return false;
+
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length !== 2) return false;
+  const [owner, nameWithSuffix] = segments;
+  const repoName = nameWithSuffix.endsWith(".git")
+    ? nameWithSuffix.slice(0, -".git".length)
+    : nameWithSuffix;
+
+  return GITHUB_OWNER_REPO_REGEX.test(`${owner}/${repoName}`);
+}
+
 export const MarketplaceSkillBundleSchema = z.object({
   type: z.literal("github-directory"),
-  repo: z.string(),
-  commitSha: z.string(),
+  repo: z.string().refine(isMarketplaceGitHubRepo, MARKETPLACE_GITHUB_REPO_MESSAGE),
+  commitSha: z.string().regex(MARKETPLACE_COMMIT_SHA_REGEX, MARKETPLACE_COMMIT_SHA_MESSAGE),
   path: z.string(),
   treeUrl: z.string().url(),
 });
