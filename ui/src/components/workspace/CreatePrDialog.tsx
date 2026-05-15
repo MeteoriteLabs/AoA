@@ -405,7 +405,14 @@ export function CreatePrDialog({
                     className="mt-0.5 h-4 w-4 shrink-0 text-destructive"
                     aria-hidden="true"
                   />
-                  <span>Failed to create PR: {error.message}</span>
+                  <div className="flex-1 space-y-1">
+                    <div>Failed to create PR: {error.message}</div>
+                    {errorHint && (
+                      <p className="whitespace-pre-line text-xs text-muted-foreground">
+                        {errorHint}
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
 

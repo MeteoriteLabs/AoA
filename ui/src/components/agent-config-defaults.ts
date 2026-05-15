@@ -1,7 +1,7 @@
 import type { CreateConfigValues } from "@armyofagents/adapter-utils";
 
 export const defaultCreateValues: CreateConfigValues = {
-  adapterType: "claude_local",
+  adapterType: "codex_local",
   cwd: "",
   instructionsFilePath: "",
   promptTemplate: "",

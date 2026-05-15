@@ -200,6 +200,24 @@ describe("secretService", () => {
     ]);
   });
 
+  it("preserves local encrypted external references for display metadata", async () => {
+    process.env.AOA_SECRETS_MASTER_KEY = "12345678901234567890123456789012";
+
+    const prepared = await localEncryptedProvider.createVersion({
+      value: "ghp_test",
+      externalRef: "octocat",
+      context: {
+        companyId: "company-1",
+        secretId: "secret-1",
+        secretKey: "GITHUB_PAT",
+        secretName: "GitHub PAT",
+        version: 1,
+      },
+    });
+
+    expect(prepared.externalRef).toBe("octocat");
+  });
+
   it("rejects unbound agent env reads and audits the failure", async () => {
     process.env.AOA_SECRETS_MASTER_KEY = "12345678901234567890123456789012";
     const prepared = await localEncryptedProvider.createVersion({

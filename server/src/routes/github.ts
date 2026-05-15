@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Octokit } from "@octokit/rest";
-import type { Db } from "@armyofagents/db";
+import { activityLog, type Db } from "@armyofagents/db";
+import { and, desc, eq } from "drizzle-orm";
 import {
   GITHUB_PAT_ACTIVITY_KINDS,
   GITHUB_PAT_SECRET_NAME,
@@ -23,6 +24,33 @@ const createPrBodySchema = z.object({
   /** Explicit head branch — used when workspace.branchName is null (local_fs). */
   head: z.string().min(1).optional(),
 });
+
+async function resolveGithubUserFromConnectActivity(
+  db: Db,
+  companyId: string,
+  secretId: string,
+): Promise<string | null> {
+  try {
+    const rows = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, GITHUB_PAT_ACTIVITY_KINDS.CONNECTED),
+          eq(activityLog.entityId, secretId),
+        ),
+      )
+      .orderBy(desc(activityLog.createdAt))
+      .limit(1);
+    const githubUser = rows[0]?.details?.githubUser;
+    return typeof githubUser === "string" && githubUser.trim().length > 0
+      ? githubUser
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 export function githubRoutes(db: Db) {
   const router = Router();
@@ -114,13 +142,16 @@ export function githubRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
 
     const row = await svc.getByName(companyId, GITHUB_PAT_SECRET_NAME);
-    if (!row) {
+    if (!row || row.status !== "active") {
       res.json({ configured: false });
       return;
     }
+    const githubUser =
+      row.externalRef ??
+      (await resolveGithubUserFromConnectActivity(db, companyId, row.id));
     res.json({
       configured: true,
-      githubUser: row.externalRef ?? null,
+      githubUser,
       createdAt: row.createdAt,
     });
   });
@@ -187,6 +218,12 @@ export function githubRoutes(db: Db) {
       try {
         const gitRoot = await resolveGitRoot(ws.cwd);
         if (gitRoot) {
+          try {
+            await runGit(["remote", "get-url", "origin"], gitRoot, { timeout: 5_000 });
+          } catch {
+            await runGit(["remote", "add", "origin", ws.repoUrl], gitRoot, { timeout: 5_000 });
+          }
+
           // Check if the branch has an upstream. If not, push it.
           try {
             await runGit(

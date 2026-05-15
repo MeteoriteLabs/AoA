@@ -248,6 +248,29 @@ describe("CreatePrDialog", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders backend hint text for generic PR creation failures", async () => {
+    mockGetIssue.mockResolvedValue({ id: "issue-1", title: "T", description: "" });
+    mockCreatePR.mockRejectedValue(
+      new ApiError("Failed to push branch \"feature/x\" to remote before creating PR", 400, {
+        error: "Failed to push branch \"feature/x\" to remote before creating PR",
+        hint: "remote: Write access to repository not granted.",
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderDialog();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("pr-title-input")).toHaveValue("T"),
+    );
+    await user.click(screen.getByTestId("pr-submit"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("pr-error-generic")).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/write access to repository not granted/i)).toBeInTheDocument();
+  });
+
   it("does NOT render DialogContent when open=false (conditional mount)", () => {
     mockGetIssue.mockResolvedValue({ id: "issue-1", title: "T", description: "" });
     renderDialog({ open: false });

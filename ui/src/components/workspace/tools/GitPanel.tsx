@@ -631,7 +631,7 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
       )}
 
       {/* Push button */}
-      {gitAvailable && !detachedHead && remote && (ahead ?? 0) > 0 && (
+      {gitAvailable && !detachedHead && remote && (ahead == null || ahead > 0) && (
         <Button
           size="sm"
           variant="outline"
@@ -645,11 +645,13 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
           ) : (
             <Upload className="h-3.5 w-3.5 mr-1.5" />
           )}
-          Push {ahead} commit{ahead === 1 ? "" : "s"}
+          {ahead == null
+            ? "Push branch"
+            : `Push ${ahead} commit${ahead === 1 ? "" : "s"}`}
         </Button>
       )}
 
-      {gitAvailable && !detachedHead && remote && (ahead ?? 0) === 0 && (
+      {gitAvailable && !detachedHead && remote && ahead === 0 && (
         <div className="text-xs text-muted-foreground flex items-center gap-1.5">
           <Check className="h-3 w-3 text-green-400" />
           Pushed

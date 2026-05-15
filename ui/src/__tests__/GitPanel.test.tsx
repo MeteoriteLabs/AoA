@@ -343,6 +343,24 @@ describe("GitPanel", () => {
     expect(await screen.findByTestId("push-btn")).toHaveTextContent("Push 2 commits");
   });
 
+  it("does not show pushed when remote exists but upstream tracking is unknown", async () => {
+    mockGetGitStatus.mockResolvedValue({
+      gitAvailable: true,
+      branch: "ENG-99-fix-auth",
+      detachedHead: false,
+      remote: { name: "origin", fetchUrl: "git@example.com:acme/repo.git", pushUrl: "git@example.com:acme/repo.git" },
+      ahead: null,
+      behind: null,
+      files: [],
+      clean: true,
+    });
+
+    renderPanel();
+
+    expect(await screen.findByTestId("push-btn")).toHaveTextContent("Push branch");
+    expect(screen.queryByText("Pushed")).not.toBeInTheDocument();
+  });
+
   it("shows pushed state when the remote is up to date", async () => {
     mockGetGitStatus.mockResolvedValue({
       gitAvailable: true,

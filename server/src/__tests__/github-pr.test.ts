@@ -48,6 +48,15 @@ vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => mockWsSvc,
 }));
 
+const mockResolveGitRoot = vi.hoisted(() => vi.fn());
+const mockRunGit = vi.hoisted(() => vi.fn());
+const mockPush = vi.hoisted(() => vi.fn());
+vi.mock("../services/git.js", () => ({
+  resolveGitRoot: mockResolveGitRoot,
+  runGit: mockRunGit,
+  push: mockPush,
+}));
+
 import { errorHandler } from "../middleware/index.js";
 import { GITHUB_PAT_ACTIVITY_KINDS, GITHUB_PAT_SECRET_NAME } from "@armyofagents/shared";
 import { githubRoutes } from "../routes/github.js";
@@ -135,6 +144,9 @@ describe("parseGitHubRepoUrl", () => {
 describe("createPullRequest service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockResolveGitRoot.mockResolvedValue(null);
+    mockRunGit.mockResolvedValue("");
+    mockPush.mockResolvedValue({ pushed: true, remote: "origin", branch: "feature/x" });
   });
 
   const baseArgs = {
@@ -250,6 +262,9 @@ describe("createPullRequest service", () => {
 describe("POST /issues/:issueId/github-pr", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockResolveGitRoot.mockResolvedValue(null);
+    mockRunGit.mockResolvedValue("");
+    mockPush.mockResolvedValue({ pushed: true, remote: "origin", branch: "feature/x" });
   });
 
   const happyIssue = {
@@ -410,6 +425,45 @@ describe("POST /issues/:issueId/github-pr", () => {
     // Verify Octokit was called with the client-provided head
     expect(mockOctokit.pulls.create).toHaveBeenCalledWith(
       expect.objectContaining({ head: "feature/from-client" }),
+    );
+  });
+
+  it("adds origin from workspace repoUrl before auto-pushing when local worktree has no remote", async () => {
+    mockHappyPath();
+    mockWsSvc.getById.mockResolvedValue({
+      ...happyWs,
+      cwd: "C:\\repo",
+    });
+    mockResolveGitRoot.mockResolvedValue("C:\\repo");
+    mockRunGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "remote" && args[1] === "get-url") {
+        throw new Error("No such remote 'origin'");
+      }
+      if (args[0] === "remote" && args[1] === "add") {
+        return "";
+      }
+      if (args[0] === "rev-parse") {
+        throw new Error("no upstream configured");
+      }
+      return "";
+    });
+
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/issues/issue-1/github-pr")
+      .send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockRunGit).toHaveBeenCalledWith(
+      ["remote", "add", "origin", "https://github.com/acme/repo"],
+      "C:\\repo",
+      { timeout: 5_000 },
+    );
+    expect(mockPush).toHaveBeenCalledWith(
+      "C:\\repo",
+      "origin",
+      "feature/x",
+      { pat: "ghp_valid" },
     );
   });
 
