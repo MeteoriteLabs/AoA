@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { EnvironmentsSection } from "../components/settings/sections/EnvironmentsSection";
@@ -248,6 +248,33 @@ describe("EnvironmentsSection", () => {
     });
   });
 
+  it("keeps create dialog open and shows API validation errors when create rejects", async () => {
+    const user = userEvent.setup();
+    const validationError = new Error("Invalid environment variable name: 1BAD");
+    const rejectMutate = vi.fn();
+
+    useCreateEnvironmentMock.mockReturnValue({
+      ...idleMutation(),
+      mutate: rejectMutate,
+      isError: true,
+      error: validationError,
+    });
+
+    renderSection();
+
+    await user.click(screen.getByRole("button", { name: /new environment/i }));
+    await user.type(screen.getByPlaceholderText(/e\.g\. production/i), "broken");
+    fireEvent.change(screen.getByPlaceholderText(/\{"KEY": "value"\}/i), {
+      target: { value: '{"1BAD": "value"}' },
+    });
+    await user.click(screen.getByRole("button", { name: /^create$/i }));
+
+    expect(rejectMutate).toHaveBeenCalled();
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: /new environment/i })).toBeInTheDocument();
+    expect(within(dialog).getByText(/invalid environment variable name: 1bad/i)).toBeInTheDocument();
+  });
+
   it("opens Edit dialog pre-filled with existing environment data", async () => {
     const user = userEvent.setup();
     const env = makeEnvironment({
@@ -280,6 +307,35 @@ describe("EnvironmentsSection", () => {
     // Env vars textarea should contain the JSON
     const textarea = screen.getByPlaceholderText(/\{"KEY": "value"\}/i);
     expect((textarea as HTMLTextAreaElement).value).toContain("NODE_ENV");
+  });
+
+  it("keeps edit dialog open and shows API validation errors when update rejects", async () => {
+    const user = userEvent.setup();
+    const env = makeEnvironment({ id: "env-1", name: "production" });
+    const validationError = new Error("Invalid environment binding for key: API_URL");
+    const rejectMutate = vi.fn();
+
+    useEnvironmentsMock.mockReturnValue({
+      data: [env],
+      isLoading: false,
+      isError: false,
+    });
+    useUpdateEnvironmentMock.mockReturnValue({
+      ...idleMutation(),
+      mutate: rejectMutate,
+      isError: true,
+      error: validationError,
+    });
+
+    renderSection();
+
+    await user.click(screen.getByTitle("Edit environment"));
+    await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+    expect(rejectMutate).toHaveBeenCalled();
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: /edit environment/i })).toBeInTheDocument();
+    expect(within(dialog).getByText(/invalid environment binding for key: api_url/i)).toBeInTheDocument();
   });
 
   it("shows delete confirmation dialog when trash icon clicked", async () => {

@@ -6,7 +6,7 @@ import {
 } from "@armyofagents/shared";
 import { environmentService, type EnvironmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
-import { assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess } from "./authz.js";
 
 interface RoutesOptions {
   // Test seam: callers can inject a pre-built service. Production uses `db`.
@@ -25,6 +25,7 @@ export function environmentRoutes(opts: RoutesOptions) {
     async (req: Request, res: Response, next) => {
       try {
         const companyId = req.params.companyId as string;
+        assertBoard(req);
         assertCompanyAccess(req, companyId);
         const list = await svc.list(companyId);
         res.json(list);
@@ -41,6 +42,7 @@ export function environmentRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
+        assertBoard(req);
         assertCompanyAccess(req, companyId);
         const env = await svc.get(companyId, id);
         if (!env) {
@@ -60,19 +62,24 @@ export function environmentRoutes(opts: RoutesOptions) {
     async (req: Request, res: Response, next) => {
       try {
         const companyId = req.params.companyId as string;
+        assertBoard(req);
         assertCompanyAccess(req, companyId);
         const parsed = createEnvironmentSchema.safeParse(req.body);
         if (!parsed.success) {
           res.status(400).json({ error: parsed.error.flatten() });
           return;
         }
-        const created = await svc.create(companyId, parsed.data);
+        const normalizedEnvVars = secretsSvc
+          ? await secretsSvc.normalizeEnvConfigForPersistence(companyId, parsed.data.envVars, { strictMode: true })
+          : parsed.data.envVars;
+        const input = { ...parsed.data, envVars: normalizedEnvVars };
+        const created = await svc.create(companyId, input);
         if (secretsSvc) {
           await secretsSvc.syncEnvBindingsForTarget(companyId, {
             targetType: "environment",
             targetId: created!.id,
             pathPrefix: "env",
-          }, created?.envVars ?? {});
+          }, normalizedEnvVars ?? {});
         }
         res.status(201).json(created);
       } catch (err) {
@@ -88,13 +95,20 @@ export function environmentRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
+        assertBoard(req);
         assertCompanyAccess(req, companyId);
         const parsed = updateEnvironmentSchema.safeParse(req.body);
         if (!parsed.success) {
           res.status(400).json({ error: parsed.error.flatten() });
           return;
         }
-        const updated = await svc.update(companyId, id, parsed.data);
+        const normalizedEnvVars = secretsSvc && parsed.data.envVars !== undefined
+          ? await secretsSvc.normalizeEnvConfigForPersistence(companyId, parsed.data.envVars, { strictMode: true })
+          : parsed.data.envVars;
+        const input = parsed.data.envVars === undefined
+          ? parsed.data
+          : { ...parsed.data, envVars: normalizedEnvVars };
+        const updated = await svc.update(companyId, id, input);
         if (!updated) {
           res.status(404).json({ error: "Environment not found" });
           return;
@@ -104,7 +118,7 @@ export function environmentRoutes(opts: RoutesOptions) {
             targetType: "environment",
             targetId: updated.id,
             pathPrefix: "env",
-          }, updated.envVars ?? {});
+          }, normalizedEnvVars ?? {});
         }
         res.json(updated);
       } catch (err) {
@@ -120,11 +134,19 @@ export function environmentRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
+        assertBoard(req);
         assertCompanyAccess(req, companyId);
         const deleted = await svc.delete(companyId, id);
         if (!deleted) {
           res.status(404).json({ error: "Environment not found" });
           return;
+        }
+        if (secretsSvc) {
+          await secretsSvc.syncEnvBindingsForTarget(companyId, {
+            targetType: "environment",
+            targetId: id,
+            pathPrefix: "env",
+          }, {});
         }
         res.status(204).end();
       } catch (err) {

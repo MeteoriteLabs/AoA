@@ -14,6 +14,14 @@ describe("createEnvironmentSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("keeps envVars permissive so route normalization can return useful errors", () => {
+    const result = createEnvironmentSchema.safeParse({
+      name: "needs-normalization",
+      envVars: { API_URL: { type: "secret_ref", secretId: "not-a-uuid" } },
+    });
+    expect(result.success).toBe(true);
+  });
+
   it("rejects missing name", () => {
     const result = createEnvironmentSchema.safeParse({ envVars: {} });
     expect(result.success).toBe(false);
@@ -55,6 +63,13 @@ describe("createEnvironmentSchema", () => {
 describe("updateEnvironmentSchema", () => {
   it("accepts partial update", () => {
     const result = updateEnvironmentSchema.safeParse({ name: "renamed" });
+    expect(result.success).toBe(true);
+  });
+
+  it("keeps update envVars permissive so route normalization can return useful errors", () => {
+    const result = updateEnvironmentSchema.safeParse({
+      envVars: { API_URL: { type: "secret_ref", secretId: "not-a-uuid" } },
+    });
     expect(result.success).toBe(true);
   });
 

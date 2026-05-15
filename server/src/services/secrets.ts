@@ -757,6 +757,12 @@ export function secretService(db: Db) {
       }
     },
 
+    normalizeEnvConfigForPersistence: async (
+      companyId: string,
+      envValue: unknown,
+      opts?: { strictMode?: boolean },
+    ) => normalizeEnvConfig(companyId, envValue, opts),
+
     normalizeAdapterConfigForPersistence: async (
       companyId: string,
       adapterConfig: Record<string, unknown>,
