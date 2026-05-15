@@ -12,7 +12,7 @@
  * workspace lookup, access check, git root resolution, and null handling.
  */
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
 import { heartbeatRuns, issues } from "@armyofagents/db";
@@ -103,30 +103,8 @@ async function resolveWorkspaceGit(
 
 async function hasActiveRunForWorkspace(db: Db, workspaceId: string): Promise<boolean> {
   try {
-    // Find issues linked to this workspace, then check for active runs on their assigned agents
-    const linkedIssues = await db
-      .select({ assigneeAgentId: issues.assigneeAgentId })
-      .from(issues)
-      .where(eq(issues.executionWorkspaceId, workspaceId));
-
-    const agentIds = linkedIssues
-      .map((i) => i.assigneeAgentId)
-      .filter((id): id is string => id !== null);
-
-    if (agentIds.length === 0) return false;
-
-    const activeRuns = await db
-      .select({ id: heartbeatRuns.id })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          inArray(heartbeatRuns.agentId, agentIds),
-          inArray(heartbeatRuns.status, ["queued", "running"]),
-        ),
-      )
-      .limit(1);
-
-    return activeRuns.length > 0;
+    const safety = await getWorkspaceMutationSafety(db, workspaceId);
+    return safety.activeRun !== null;
   } catch {
     return false; // Fail open — don't block git operations if the check fails
   }
@@ -136,10 +114,13 @@ async function getWorkspaceMutationSafety(db: Db, workspaceId: string) {
   const linkedIssues = await db
     .select({
       id: issues.id,
+      companyId: issues.companyId,
       title: issues.title,
       status: issues.status,
       identifier: issues.identifier,
       assigneeAgentId: issues.assigneeAgentId,
+      checkoutRunId: issues.checkoutRunId,
+      executionRunId: issues.executionRunId,
     })
     .from(issues)
     .where(eq(issues.executionWorkspaceId, workspaceId))
@@ -149,8 +130,17 @@ async function getWorkspaceMutationSafety(db: Db, workspaceId: string) {
   const agentIds = linkedIssues
     .map((i) => i.assigneeAgentId)
     .filter((id): id is string => id !== null);
+  const runIds = [
+    issue?.checkoutRunId,
+    issue?.executionRunId,
+  ].filter((id): id is string => id !== null && id !== undefined);
+  const activeRunPredicates = [
+    ...(agentIds.length > 0 ? [inArray(heartbeatRuns.agentId, agentIds)] : []),
+    ...(runIds.length > 0 ? [inArray(heartbeatRuns.id, runIds)] : []),
+    ...(issue ? [sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`] : []),
+  ];
 
-  const activeRuns = agentIds.length > 0
+  const activeRuns = issue && activeRunPredicates.length > 0
     ? await db
       .select({
         id: heartbeatRuns.id,
@@ -160,8 +150,9 @@ async function getWorkspaceMutationSafety(db: Db, workspaceId: string) {
       .from(heartbeatRuns)
       .where(
         and(
-          inArray(heartbeatRuns.agentId, agentIds),
+          eq(heartbeatRuns.companyId, issue.companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
+          or(...activeRunPredicates),
         ),
       )
       .limit(1)

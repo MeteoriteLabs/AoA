@@ -19,6 +19,24 @@ export function environmentRoutes(opts: RoutesOptions) {
   const svc = opts.svc ?? environmentService(opts.db!);
   const secretsSvc = opts.db ? secretService(opts.db) : null;
 
+  async function runEnvironmentMutation<T>(
+    operation: (services: {
+      envSvc: EnvironmentService;
+      secretsSvc: ReturnType<typeof secretService> | null;
+    }) => Promise<T>,
+  ): Promise<T> {
+    if (opts.db && !opts.svc && typeof opts.db.transaction === "function") {
+      return opts.db.transaction(async (tx) =>
+        operation({
+          envSvc: environmentService(tx as unknown as Db),
+          secretsSvc: secretService(tx as unknown as Db),
+        }),
+      );
+    }
+
+    return operation({ envSvc: svc, secretsSvc });
+  }
+
   // GET list
   router.get(
     "/companies/:companyId/environments",
@@ -73,14 +91,17 @@ export function environmentRoutes(opts: RoutesOptions) {
           ? await secretsSvc.normalizeEnvConfigForPersistence(companyId, parsed.data.envVars, { strictMode: true })
           : parsed.data.envVars;
         const input = { ...parsed.data, envVars: normalizedEnvVars };
-        const created = await svc.create(companyId, input);
-        if (secretsSvc) {
-          await secretsSvc.syncEnvBindingsForTarget(companyId, {
-            targetType: "environment",
-            targetId: created!.id,
-            pathPrefix: "env",
-          }, normalizedEnvVars ?? {});
-        }
+        const created = await runEnvironmentMutation(async ({ envSvc, secretsSvc: txSecretsSvc }) => {
+          const env = await envSvc.create(companyId, input);
+          if (txSecretsSvc) {
+            await txSecretsSvc.syncEnvBindingsForTarget(companyId, {
+              targetType: "environment",
+              targetId: env!.id,
+              pathPrefix: "env",
+            }, normalizedEnvVars ?? {});
+          }
+          return env;
+        });
         res.status(201).json(created);
       } catch (err) {
         next(err);
@@ -108,17 +129,20 @@ export function environmentRoutes(opts: RoutesOptions) {
         const input = parsed.data.envVars === undefined
           ? parsed.data
           : { ...parsed.data, envVars: normalizedEnvVars };
-        const updated = await svc.update(companyId, id, input);
+        const updated = await runEnvironmentMutation(async ({ envSvc, secretsSvc: txSecretsSvc }) => {
+          const env = await envSvc.update(companyId, id, input);
+          if (env && txSecretsSvc && parsed.data.envVars !== undefined) {
+            await txSecretsSvc.syncEnvBindingsForTarget(companyId, {
+              targetType: "environment",
+              targetId: env.id,
+              pathPrefix: "env",
+            }, normalizedEnvVars ?? {});
+          }
+          return env;
+        });
         if (!updated) {
           res.status(404).json({ error: "Environment not found" });
           return;
-        }
-        if (secretsSvc && parsed.data.envVars !== undefined) {
-          await secretsSvc.syncEnvBindingsForTarget(companyId, {
-            targetType: "environment",
-            targetId: updated.id,
-            pathPrefix: "env",
-          }, normalizedEnvVars ?? {});
         }
         res.json(updated);
       } catch (err) {
@@ -136,17 +160,20 @@ export function environmentRoutes(opts: RoutesOptions) {
         const id = req.params.id as string;
         assertBoard(req);
         assertCompanyAccess(req, companyId);
-        const deleted = await svc.delete(companyId, id);
+        const deleted = await runEnvironmentMutation(async ({ envSvc, secretsSvc: txSecretsSvc }) => {
+          const env = await envSvc.delete(companyId, id);
+          if (env && txSecretsSvc) {
+            await txSecretsSvc.syncEnvBindingsForTarget(companyId, {
+              targetType: "environment",
+              targetId: id,
+              pathPrefix: "env",
+            }, {});
+          }
+          return env;
+        });
         if (!deleted) {
           res.status(404).json({ error: "Environment not found" });
           return;
-        }
-        if (secretsSvc) {
-          await secretsSvc.syncEnvBindingsForTarget(companyId, {
-            targetType: "environment",
-            targetId: id,
-            pathPrefix: "env",
-          }, {});
         }
         res.status(204).end();
       } catch (err) {

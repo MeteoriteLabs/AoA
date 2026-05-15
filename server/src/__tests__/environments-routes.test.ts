@@ -5,6 +5,7 @@ import request from "supertest";
 const mocks = vi.hoisted(() => ({
   assertBoard: vi.fn(),
   assertCompanyAccess: vi.fn(),
+  environmentService: vi.fn(() => ({})),
   normalizeEnvConfigForPersistence: vi.fn(async (_companyId: string, value: unknown) => value),
   syncEnvBindingsForTarget: vi.fn(),
 }));
@@ -17,7 +18,7 @@ vi.mock("../routes/authz.js", () => ({
 
 // Stub the service module to break the drizzle-orm ESM cycle
 vi.mock("../services/environments.js", () => ({
-  environmentService: vi.fn(() => ({})),
+  environmentService: mocks.environmentService,
 }));
 
 vi.mock("../services/secrets.js", () => ({
@@ -43,10 +44,10 @@ const mockEnv = {
   updatedAt: new Date("2026-01-01T00:00:00.000Z"),
 };
 
-function buildApp(mockSvc: unknown, opts: { withDb?: boolean } = {}) {
+function buildApp(mockSvc: unknown, opts: { withDb?: boolean; db?: unknown } = {}) {
   const app = express();
   app.use(express.json());
-  app.use(environmentRoutes({ svc: mockSvc as never, db: opts.withDb ? ({} as never) : undefined }));
+  app.use(environmentRoutes({ svc: mockSvc as never, db: opts.db as never ?? (opts.withDb ? ({} as never) : undefined) }));
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const status = typeof err === "object" && err && "status" in err ? Number((err as { status: unknown }).status) : 500;
     const message = err instanceof Error ? err.message : "Internal server error";
@@ -60,6 +61,7 @@ describe("environments routes", () => {
     vi.clearAllMocks();
     mocks.assertBoard.mockReturnValue(undefined);
     mocks.assertCompanyAccess.mockReturnValue(undefined);
+    mocks.environmentService.mockReturnValue({});
     mocks.normalizeEnvConfigForPersistence.mockImplementation(async (_companyId: string, value: unknown) => value);
   });
 
@@ -154,6 +156,55 @@ describe("environments routes", () => {
       { targetType: "environment", targetId: envId, pathPrefix: "env" },
       normalizedEnv,
     );
+  });
+
+  it("POST /companies/:cid/environments creates env and syncs bindings in one transaction", async () => {
+    const tx = { tx: true };
+    const txSvc = { create: vi.fn(async () => mockEnv) };
+    const db = {
+      transaction: vi.fn(async (callback: (innerTx: unknown) => Promise<unknown>) => callback(tx)),
+    };
+    const normalizedEnv = { API_KEY: { type: "secret_ref", secretId: "33333333-3333-4333-8333-333333333333", version: "latest" } };
+    mocks.normalizeEnvConfigForPersistence.mockResolvedValueOnce(normalizedEnv);
+    mocks.environmentService.mockImplementation((serviceDb: unknown) => (serviceDb === tx ? txSvc : {}));
+    const txApp = buildApp(undefined, { db });
+
+    const res = await request(txApp)
+      .post(`/companies/${companyId}/environments`)
+      .send({ name: "Production", envVars: { API_KEY: normalizedEnv.API_KEY } });
+
+    expect(res.status).toBe(201);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(mocks.environmentService).toHaveBeenCalledWith(tx);
+    expect(txSvc.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ name: "Production", envVars: normalizedEnv }),
+    );
+    expect(mocks.syncEnvBindingsForTarget).toHaveBeenCalledWith(
+      companyId,
+      { targetType: "environment", targetId: envId, pathPrefix: "env" },
+      normalizedEnv,
+    );
+  });
+
+  it("POST /companies/:cid/environments rolls back create when binding sync fails", async () => {
+    const tx = { tx: true };
+    const txSvc = { create: vi.fn(async () => mockEnv) };
+    const db = {
+      transaction: vi.fn(async (callback: (innerTx: unknown) => Promise<unknown>) => callback(tx)),
+    };
+    mocks.environmentService.mockImplementation((serviceDb: unknown) => (serviceDb === tx ? txSvc : {}));
+    mocks.syncEnvBindingsForTarget.mockRejectedValueOnce(Object.assign(new Error("Binding sync failed"), { status: 422 }));
+    const txApp = buildApp(undefined, { db });
+
+    const res = await request(txApp)
+      .post(`/companies/${companyId}/environments`)
+      .send({ name: "Production", envVars: { API_URL: "https://api.example.com" } });
+
+    expect(res.status).toBe(422);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(txSvc.create).toHaveBeenCalled();
+    expect(mocks.syncEnvBindingsForTarget).toHaveBeenCalled();
   });
 
   it("POST /companies/:cid/environments accepts a sandbox-docker target", async () => {

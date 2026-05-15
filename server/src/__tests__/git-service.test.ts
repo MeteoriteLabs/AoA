@@ -363,6 +363,17 @@ describe("commit", () => {
     await expect(commit(repo, "traversal", ["../../../etc/passwd"])).rejects.toThrow("escapes");
   });
 
+  it("rejects repository-root pathspecs so selected-file commits cannot become commit-all", async () => {
+    const repo = await setup();
+    await fs.writeFile(path.join(repo, "safe.txt"), "ok\n", "utf8");
+    await fs.writeFile(path.join(repo, ".env"), "SECRET=bad\n", "utf8");
+
+    await expect(commit(repo, "Root pathspec", ["."])).rejects.toThrow("repository root");
+
+    const committedFiles = await runGit(["show", "--name-only", "--format=", "HEAD"], repo);
+    expect(committedFiles.split(/\r?\n/).filter(Boolean)).toEqual(["README.md"]);
+  });
+
   it("throws in detached HEAD state", async () => {
     const repo = await setup();
     const hash = await runGit(["rev-parse", "HEAD"], repo);

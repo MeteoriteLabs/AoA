@@ -368,7 +368,10 @@ export async function commit(
 
   for (const file of files) {
     const resolved = path.resolve(resolvedGitRoot, file);
-    if (!resolved.startsWith(resolvedGitRoot + path.sep) && resolved !== resolvedGitRoot) {
+    if (resolved === resolvedGitRoot) {
+      throw new Error(`Invalid file path: "${file}" targets the repository root`);
+    }
+    if (!resolved.startsWith(resolvedGitRoot + path.sep)) {
       throw new Error(`Invalid file path: "${file}" escapes the repository root`);
     }
 

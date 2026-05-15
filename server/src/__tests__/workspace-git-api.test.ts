@@ -380,7 +380,7 @@ describe("POST /execution-workspaces/:id/git/push", () => {
 describe("GET /execution-workspaces/:id/git/safety", () => {
   it("returns the planned safety shape with linked task, active run, and action confirmations", async () => {
     const db = createSequenceDb([
-      [{ id: "issue-1", title: "Fix auth bug", status: "in_progress", identifier: "ENG-99", assigneeAgentId: "agent-1" }],
+      [{ id: "issue-1", companyId: "company-1", title: "Fix auth bug", status: "in_progress", identifier: "ENG-99", assigneeAgentId: "agent-1", checkoutRunId: null, executionRunId: null }],
       [{ id: "run-1", status: "running", agentId: "agent-1", startedAt: "2026-05-15T10:00:00.000Z", createdAt: "2026-05-15T09:59:00.000Z" }],
     ]);
 
@@ -418,7 +418,7 @@ describe("GET /execution-workspaces/:id/git/safety", () => {
 
   it("does not warn when the linked task is done and no run is active", async () => {
     const db = createSequenceDb([
-      [{ id: "issue-1", title: "Done task", status: "done", identifier: "ENG-99", assigneeAgentId: "agent-1" }],
+      [{ id: "issue-1", companyId: "company-1", title: "Done task", status: "done", identifier: "ENG-99", assigneeAgentId: "agent-1", checkoutRunId: null, executionRunId: null }],
       [],
     ]);
 
@@ -437,7 +437,7 @@ describe("GET /execution-workspaces/:id/git/safety", () => {
 
   it("requires PR confirmation for an incomplete task even when no run is active", async () => {
     const db = createSequenceDb([
-      [{ id: "issue-1", title: "Review me", status: "in_review", identifier: "ENG-99", assigneeAgentId: "agent-1" }],
+      [{ id: "issue-1", companyId: "company-1", title: "Review me", status: "in_review", identifier: "ENG-99", assigneeAgentId: "agent-1", checkoutRunId: null, executionRunId: null }],
       [],
     ]);
 
@@ -449,6 +449,24 @@ describe("GET /execution-workspaces/:id/git/safety", () => {
     expect(res.body.requiresConfirmation).toEqual({
       commit: false,
       push: false,
+      createPr: true,
+    });
+  });
+
+  it("requires confirmation when a linked task has an active execution run but no current assignee", async () => {
+    const db = createSequenceDb([
+      [{ id: "issue-1", companyId: "company-1", title: "Running without assignee", status: "in_progress", identifier: "ENG-100", assigneeAgentId: null, checkoutRunId: null, executionRunId: "run-2" }],
+      [{ id: "run-2", status: "running", agentId: "agent-old", startedAt: "2026-05-15T11:00:00.000Z", createdAt: "2026-05-15T10:59:00.000Z" }],
+    ]);
+
+    const app = createApp(boardActor, db);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/git/safety");
+
+    expect(res.status).toBe(200);
+    expect(res.body.activeRun).toMatchObject({ id: "run-2", status: "running" });
+    expect(res.body.requiresConfirmation).toEqual({
+      commit: true,
+      push: true,
       createPr: true,
     });
   });
