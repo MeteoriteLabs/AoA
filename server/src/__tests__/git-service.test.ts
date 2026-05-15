@@ -291,6 +291,36 @@ describe("commit", () => {
     expect(result.filesCommitted).not.toContain(".env");
   });
 
+  it("commits only selected files and leaves unrelated pre-staged files out of the commit", async () => {
+    const repo = await setup();
+    await fs.writeFile(path.join(repo, "selected.txt"), "selected\n", "utf8");
+    await fs.writeFile(path.join(repo, "unrelated.txt"), "unrelated\n", "utf8");
+    await git(repo, ["add", "unrelated.txt"]);
+
+    await commit(repo, "Selected only", ["selected.txt"]);
+
+    const committedFiles = await runGit(["show", "--name-only", "--format=", "HEAD"], repo);
+    expect(committedFiles.split(/\r?\n/).filter(Boolean)).toEqual(["selected.txt"]);
+
+    const stagedFiles = await runGit(["diff", "--cached", "--name-only"], repo);
+    expect(stagedFiles.split(/\r?\n/).filter(Boolean)).toEqual(["unrelated.txt"]);
+  });
+
+  it("commits only selected files and leaves a pre-staged denied file out of the commit", async () => {
+    const repo = await setup();
+    await fs.writeFile(path.join(repo, "selected.txt"), "selected\n", "utf8");
+    await fs.writeFile(path.join(repo, ".env"), "SECRET=bad\n", "utf8");
+    await git(repo, ["add", ".env"]);
+
+    await commit(repo, "Selected safe file", ["selected.txt"]);
+
+    const committedFiles = await runGit(["show", "--name-only", "--format=", "HEAD"], repo);
+    expect(committedFiles.split(/\r?\n/).filter(Boolean)).toEqual(["selected.txt"]);
+
+    const stagedFiles = await runGit(["diff", "--cached", "--name-only"], repo);
+    expect(stagedFiles.split(/\r?\n/).filter(Boolean)).toEqual([".env"]);
+  });
+
   it("skips .env.local but allows .env.example", async () => {
     const repo = await setup();
     await fs.writeFile(path.join(repo, ".env.local"), "SECRET=bad\n", "utf8");
@@ -357,6 +387,71 @@ describe("push", () => {
     expect(result.pushed).toBe(true);
     expect(result.remote).toBe("origin");
     expect(result.branch).toBe("main");
+  });
+
+  it("pushes to a safe configured remote by exact name", async () => {
+    const { repo } = await setupWithRemote();
+    const backupBare = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-git-backup-bare-"));
+    tempDirs.push(backupBare);
+    await git(backupBare, ["init", "--bare"]);
+    await git(repo, ["remote", "add", "backup", backupBare]);
+    await fs.writeFile(path.join(repo, "backup-pushed.txt"), "data\n", "utf8");
+    await git(repo, ["add", "backup-pushed.txt"]);
+    await git(repo, ["commit", "-m", "Backup push test"]);
+
+    const result = await push(repo, "backup", "main");
+
+    expect(result.pushed).toBe(true);
+    expect(result.remote).toBe("backup");
+    expect(result.branch).toBe("main");
+  });
+
+  it("rejects raw HTTPS remote URLs even when git URL rewriting would make them reachable", async () => {
+    const { repo, bare } = await setupWithRemote();
+    await git(repo, [
+      "config",
+      `url.${bare.replace(/\\/g, "/")}.insteadOf`,
+      "https://attacker.example/repo.git",
+    ]);
+    await fs.writeFile(path.join(repo, "raw-https.txt"), "data\n", "utf8");
+    await git(repo, ["add", "raw-https.txt"]);
+    await git(repo, ["commit", "-m", "Raw HTTPS should not push"]);
+
+    await expect(push(repo, "https://attacker.example/repo.git", "main")).rejects.toThrow("remote");
+  });
+
+  it("rejects raw file URLs as push remotes", async () => {
+    const { repo } = await setupWithRemote();
+    const rawBare = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-git-raw-file-bare-"));
+    tempDirs.push(rawBare);
+    await git(rawBare, ["init", "--bare"]);
+
+    await expect(push(repo, `file://${rawBare.replace(/\\/g, "/")}`, "main")).rejects.toThrow("remote");
+  });
+
+  it("rejects Windows paths as push remotes", async () => {
+    const { repo } = await setupWithRemote();
+    await expect(push(repo, "C:\\tmp\\repo.git", "main")).rejects.toThrow("remote");
+  });
+
+  it("rejects configured remote names containing slashes before push", async () => {
+    const { repo } = await setupWithRemote();
+    const slashBare = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-git-slash-bare-"));
+    tempDirs.push(slashBare);
+    await git(slashBare, ["init", "--bare"]);
+    await git(repo, ["remote", "add", "foo/bar", slashBare]);
+
+    await expect(push(repo, "foo/bar", "main")).rejects.toThrow("remote");
+  });
+
+  it("rejects unknown configured remote names before push", async () => {
+    const { repo } = await setupWithRemote();
+    await expect(push(repo, "missing", "main")).rejects.toThrow("Unknown remote");
+  });
+
+  it("rejects unsafe branch names before push", async () => {
+    const { repo } = await setupWithRemote();
+    await expect(push(repo, "origin", "main;touch-owned")).rejects.toThrow("Invalid branch");
   });
 
   it("throws when no remote configured", async () => {

@@ -255,7 +255,13 @@ export function workspaceGitRoutes(db: Db) {
       res.json(result);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Push failed";
-      if (msg.includes("detached HEAD") || msg.includes("No remote configured")) {
+      if (
+        msg.includes("detached HEAD") ||
+        msg.includes("No remote configured") ||
+        msg.includes("Invalid remote") ||
+        msg.includes("Unknown remote") ||
+        msg.includes("Invalid branch")
+      ) {
         res.status(400).json({ error: msg });
         return;
       }

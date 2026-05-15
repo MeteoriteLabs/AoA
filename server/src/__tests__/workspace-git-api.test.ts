@@ -330,4 +330,28 @@ describe("POST /execution-workspaces/:id/git/push", () => {
 
     expect(res.status).toBe(400);
   });
+
+  it("returns 400 for invalid push remote", async () => {
+    mockPush.mockRejectedValue(new Error("Invalid remote: remote must be a configured remote name"));
+
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/git/push")
+      .send({ remote: "https://attacker.example/repo.git" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/remote/i);
+  });
+
+  it("returns 400 for invalid push branch", async () => {
+    mockPush.mockRejectedValue(new Error("Invalid branch name: main;touch-owned"));
+
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/git/push")
+      .send({ branch: "main;touch-owned" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/branch/i);
+  });
 });
