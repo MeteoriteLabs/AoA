@@ -231,6 +231,12 @@ export function normalizeMarketplaceAgentTemplate(opts: {
     const role = overrides?.role ?? parsed.template.role ?? "general";
     const adapterType = overrides?.adapterType ?? parsed.template.adapterType ?? "process";
     const icon = normalizeIcon(parsed.template.icon, warnings);
+    const adapterConfig = parsed.template.adapterConfig ?? {};
+    const promptTemplate = adapterConfig.promptTemplate;
+    const legacyPrompt = typeof promptTemplate === "string" ? promptTemplate.trim() : "";
+    if (!legacyPrompt) {
+      throw new Error("Legacy marketplace agent is missing non-empty adapterConfig.promptTemplate instructions.");
+    }
 
     return {
       name: catalogItem.name,
@@ -240,12 +246,12 @@ export function normalizeMarketplaceAgentTemplate(opts: {
       status: "idle",
       capabilities: parsed.template.capabilities ?? null,
       adapterType,
-      adapterConfig: parsed.template.adapterConfig ?? {},
+      adapterConfig,
       runtimeConfig: parsed.template.runtimeConfig ?? {},
       permissions: parsed.template.permissions ?? {},
       budgetMonthlyCents: parsed.template.budgetMonthlyCents ?? 0,
       skillKeys: parsed.template.skillKeys ?? [],
-      instructions: { type: "inline", entryFile: "AGENTS.md", files: { "AGENTS.md": "" } },
+      instructions: { type: "inline", entryFile: "AGENTS.md", files: { "AGENTS.md": legacyPrompt } },
       setupRequirements: [],
       setupRequired: false,
       metadata: {

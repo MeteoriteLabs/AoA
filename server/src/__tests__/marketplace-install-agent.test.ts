@@ -35,7 +35,7 @@ const AGENT_JSON_BODY = JSON.stringify({
   title: "Senior Engineer",
   icon: "wrench",
   adapterType: "claude_local",
-  adapterConfig: { model: "claude-sonnet-4" },
+  adapterConfig: { model: "claude-sonnet-4", promptTemplate: "Build carefully." },
   runtimeConfig: { contextMode: "standard" },
   permissions: { canCommit: true },
   skillKeys: ["skill:aoa-curated/code-review"],
@@ -105,7 +105,10 @@ describe("installAgent", () => {
   it("uses schema defaults when agent.json fields are missing", async () => {
     global.fetch = vi.fn(async () => ({
       ok: true, status: 200,
-      text: async () => JSON.stringify({ title: "Minimal Agent" }),  // only title set
+      text: async () => JSON.stringify({
+        title: "Minimal Agent",
+        adapterConfig: { promptTemplate: "Act as a minimal agent." },
+      }),
     })) as any;
 
     await installAgent({
@@ -118,7 +121,7 @@ describe("installAgent", () => {
     expect(insertedRow.role).toBe("general");
     expect(insertedRow.adapterType).toBe("process");
     expect(insertedRow.skillKeys).toEqual([]);
-    expect(insertedRow.adapterConfig).toEqual({});
+    expect(insertedRow.adapterConfig).toEqual({ promptTemplate: "Act as a minimal agent." });
     expect(insertedRow.runtimeConfig).toEqual({});
     expect(insertedRow.permissions).toEqual({});
     expect(insertedRow.budgetMonthlyCents).toBe(0);
@@ -241,6 +244,230 @@ describe("installAgent", () => {
     expect(insertedRow.status).toBe("paused");
     expect(insertedRow.metadata.marketplaceSetupRequired).toBe(true);
     expect(updates[0].adapterConfig.instructionsBundleMode).toBe("managed");
+  });
+
+  it("prefers agent.v1 bundle instructions over adapterConfig.promptTemplate during install", async () => {
+    const materializeManagedBundle = vi.fn(async (_agent, _files, options) => ({
+      adapterConfig: {
+        promptTemplate: "Legacy prompt should remain adapter config only.",
+        instructionsBundleMode: "managed",
+        instructionsEntryFile: options.entryFile,
+      },
+    }));
+    const updates: any[] = [];
+    const db = {
+      insert: () => ({
+        values: (row: any) => {
+          insertedRow = row;
+          return {
+            returning: () => Promise.resolve([{ ...row, id: "agent-uuid-1" }]),
+          };
+        },
+      }),
+      update: () => ({
+        set: (patch: any) => {
+          updates.push(patch);
+          return { where: () => Promise.resolve() };
+        },
+      }),
+      transaction: async (cb: any) => cb(db),
+    };
+
+    global.fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/agent.json")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            schemaVersion: "agent.v1",
+            id: "bundle-agent",
+            name: "Bundle Agent",
+            description: "Uses bundle instructions",
+            instructions: {
+              type: "bundle",
+              entry: "AGENTS.md",
+              files: ["AGENTS.md", "SOUL.md"],
+            },
+            aoa: {
+              adapterType: "codex_local",
+              adapterConfig: {
+                promptTemplate: "Legacy prompt should not be materialized.",
+              },
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `# ${url.split("/").pop()}\n`,
+      };
+    }) as any;
+
+    await installAgent({
+      catalogItem: AGENT_TEMPLATE,
+      companyId: "c1",
+      db: db as any,
+      desiredName: "Bundle Agent",
+      instructionsService: { materializeManagedBundle } as any,
+    });
+
+    expect(materializeManagedBundle).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        "AGENTS.md": "# AGENTS.md\n",
+        "SOUL.md": "# SOUL.md\n",
+      },
+      expect.objectContaining({ entryFile: "AGENTS.md" }),
+    );
+    expect(materializeManagedBundle).not.toHaveBeenCalledWith(
+      expect.anything(),
+      { "AGENTS.md": "Legacy prompt should not be materialized." },
+      expect.anything(),
+    );
+    expect(updates[0].adapterConfig.instructionsEntryFile).toBe("AGENTS.md");
+  });
+
+  it("materializes legacy promptTemplate as AGENTS.md and clears it after success", async () => {
+    let agentConfigDuringMaterialize: unknown = null;
+    const materializeManagedBundle = vi.fn(async (agent, _files, options) => {
+      agentConfigDuringMaterialize = agent.adapterConfig;
+      return {
+        adapterConfig: {
+          model: "claude-sonnet-4",
+          instructionsBundleMode: "managed",
+          instructionsEntryFile: options.entryFile,
+        },
+      };
+    });
+
+    const updates: any[] = [];
+    const db = {
+      insert: () => ({
+        values: (row: any) => {
+          insertedRow = row;
+          return {
+            returning: () => Promise.resolve([{ ...row, id: "agent-uuid-1" }]),
+          };
+        },
+      }),
+      update: () => ({
+        set: (patch: any) => {
+          updates.push(patch);
+          return { where: () => Promise.resolve() };
+        },
+      }),
+      transaction: async (cb: any) => cb(db),
+    };
+
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        role: "engineer",
+        title: "Legacy Engineer",
+        adapterType: "claude_local",
+        adapterConfig: {
+          model: "claude-sonnet-4",
+          promptTemplate: "  Build carefully.\n  ",
+        },
+      }),
+    })) as any;
+
+    await installAgent({
+      catalogItem: AGENT_TEMPLATE,
+      companyId: "c1",
+      db: db as any,
+      desiredName: "Legacy Engineer",
+      instructionsService: { materializeManagedBundle } as any,
+    });
+
+    expect(insertedRow.adapterConfig).toEqual({
+      model: "claude-sonnet-4",
+      promptTemplate: "  Build carefully.\n  ",
+    });
+    expect(materializeManagedBundle).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "agent-uuid-1" }),
+      { "AGENTS.md": "Build carefully." },
+      expect.objectContaining({
+        entryFile: "AGENTS.md",
+        replaceExisting: true,
+        clearLegacyPromptTemplate: true,
+      }),
+    );
+    expect(agentConfigDuringMaterialize).toEqual({
+      model: "claude-sonnet-4",
+      promptTemplate: "  Build carefully.\n  ",
+    });
+    expect(updates[0].adapterConfig).toEqual({
+      model: "claude-sonnet-4",
+      instructionsBundleMode: "managed",
+      instructionsEntryFile: "AGENTS.md",
+    });
+    expect(updates[0].adapterConfig).not.toHaveProperty("promptTemplate");
+  });
+
+  it("does not clear legacy promptTemplate when materialization fails", async () => {
+    let agentConfigDuringMaterialize: unknown = null;
+    const committedRows: any[] = [];
+    const updates: any[] = [];
+    const materializeManagedBundle = vi.fn(async (agent) => {
+      agentConfigDuringMaterialize = agent.adapterConfig;
+      throw new Error("bundle write failed");
+    });
+    const db = {
+      transaction: async (cb: any) => {
+        const pendingRows: any[] = [];
+        const tx = {
+          insert: () => ({
+            values: (row: any) => ({
+              returning: () => {
+                pendingRows.push(row);
+                return Promise.resolve([{ ...row, id: "agent-uuid-1" }]);
+              },
+            }),
+          }),
+          update: () => ({
+            set: (patch: any) => {
+              updates.push(patch);
+              return { where: () => Promise.resolve() };
+            },
+          }),
+        };
+        const result = await cb(tx);
+        committedRows.push(...pendingRows);
+        return result;
+      },
+    };
+
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        role: "engineer",
+        adapterConfig: {
+          model: "claude-sonnet-4",
+          promptTemplate: "Build carefully.",
+        },
+      }),
+    })) as any;
+
+    await expect(
+      installAgent({
+        catalogItem: AGENT_TEMPLATE,
+        companyId: "c1",
+        db: db as any,
+        desiredName: "Legacy Engineer",
+        instructionsService: { materializeManagedBundle } as any,
+      }),
+    ).rejects.toThrow(/bundle write failed/);
+
+    expect(agentConfigDuringMaterialize).toEqual({
+      model: "claude-sonnet-4",
+      promptTemplate: "Build carefully.",
+    });
+    expect(committedRows).toEqual([]);
+    expect(updates).toEqual([]);
   });
 
   it("does not commit an agent row when instruction materialization fails", async () => {

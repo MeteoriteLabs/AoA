@@ -157,6 +157,86 @@ describe("marketplace agent runtime parser", () => {
     expect(normalized.metadata.marketplaceSetupRequired).toBe(true);
   });
 
+  it("converts legacy adapterConfig.promptTemplate to inline managed AGENTS.md instructions", () => {
+    const parsed = parseMarketplaceAgentTemplate(
+      JSON.stringify({
+        role: "engineer",
+        adapterConfig: {
+          model: "claude-sonnet-4",
+          promptTemplate: "  Build carefully.\n  ",
+        },
+      }),
+      AGENT_ITEM,
+    );
+
+    const normalized = normalizeMarketplaceAgentTemplate({
+      parsed,
+      catalogItem: AGENT_ITEM,
+      availableAdapterTypes: [],
+    });
+
+    expect(normalized.instructions).toEqual({
+      type: "inline",
+      entryFile: "AGENTS.md",
+      files: { "AGENTS.md": "Build carefully." },
+    });
+    expect(normalized.adapterConfig).toEqual({
+      model: "claude-sonnet-4",
+      promptTemplate: "  Build carefully.\n  ",
+    });
+  });
+
+  it("rejects legacy marketplace agents without instructions or promptTemplate", () => {
+    const parsed = parseMarketplaceAgentTemplate(
+      JSON.stringify({
+        role: "engineer",
+        adapterConfig: { model: "claude-sonnet-4" },
+      }),
+      AGENT_ITEM,
+    );
+
+    expect(() =>
+      normalizeMarketplaceAgentTemplate({
+        parsed,
+        catalogItem: AGENT_ITEM,
+        availableAdapterTypes: [],
+      }),
+    ).toThrow(/promptTemplate|instructions/i);
+  });
+
+  it("prefers agent.v1 instructions over legacy adapterConfig.promptTemplate", () => {
+    const parsed = parseMarketplaceAgentTemplate(
+      JSON.stringify({
+        schemaVersion: "agent.v1",
+        id: "modern-agent",
+        name: "Modern Agent",
+        description: "Uses first-class instructions",
+        instructions: { type: "inline", content: "Use modern instructions." },
+        aoa: {
+          adapterConfig: {
+            promptTemplate: "Use legacy instructions.",
+          },
+        },
+      }),
+      AGENT_ITEM,
+    );
+
+    const normalized = normalizeMarketplaceAgentTemplate({
+      parsed,
+      catalogItem: AGENT_ITEM,
+      availableAdapterTypes: [],
+    });
+
+    expect(normalized.instructions).toEqual({
+      type: "inline",
+      entryFile: "AGENTS.md",
+      files: { "AGENTS.md": "Use modern instructions." },
+    });
+    expect(normalized.adapterConfig).toEqual({
+      promptTemplate: "Use legacy instructions.",
+    });
+  });
+
   it("derives sibling bundle URLs from agent.json resourceUrl", () => {
     expect(deriveSiblingResourceUrl(AGENT_ITEM, "AGENTS.md")).toBe(
       "https://raw.githubusercontent.com/MeteoriteLabs/aoa-marketplace/abc123/content/agents/senior-engineer/AGENTS.md",
