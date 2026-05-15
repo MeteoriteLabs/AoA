@@ -10,6 +10,9 @@ const mockGetIssue = vi.fn();
 const mockCreatePR = vi.fn();
 const mockPushToast = vi.fn();
 const mockGetGitStatus = vi.fn();
+const mockSafety = vi.fn();
+const mockGitCommit = vi.fn();
+const mockGitPush = vi.fn();
 
 vi.mock("../api/issues", () => ({
   issuesApi: { get: (...args: unknown[]) => mockGetIssue(...args) },
@@ -25,8 +28,9 @@ vi.mock("../api/execution-workspaces", () => ({
   executionWorkspacesApi: {
     getGitStatus: (...args: unknown[]) => mockGetGitStatus(...args),
     getGitLog: vi.fn().mockResolvedValue({ gitAvailable: true, entries: [] }),
-    gitCommit: vi.fn().mockResolvedValue({ hash: "abc", message: "", filesCommitted: [], skippedFiles: [] }),
-    gitPush: vi.fn().mockResolvedValue({ pushed: true, remote: "origin", branch: "main" }),
+    safety: (...args: unknown[]) => mockSafety(...args),
+    gitCommit: (...args: unknown[]) => mockGitCommit(...args),
+    gitPush: (...args: unknown[]) => mockGitPush(...args),
   },
 }));
 
@@ -115,6 +119,14 @@ describe("GitPanel", () => {
       files: [],
       clean: true,
     });
+    mockSafety.mockResolvedValue({
+      task: null,
+      activeRun: null,
+      requiresConfirmation: { commit: false, push: false, createPr: false },
+      warnings: [],
+    });
+    mockGitCommit.mockResolvedValue({ hash: "abc", message: "", filesCommitted: [], skippedFiles: [] });
+    mockGitPush.mockResolvedValue({ pushed: true, remote: "origin", branch: "main" });
   });
 
   it("renders branch name, base ref, and repo URL", async () => {
@@ -234,5 +246,118 @@ describe("GitPanel", () => {
     await waitFor(() =>
       expect(screen.getByTestId("create-pr-dialog")).toBeInTheDocument(),
     );
+  });
+
+  it("asks for confirmation before committing when a run is active", async () => {
+    mockGetGitStatus.mockResolvedValue({
+      gitAvailable: true,
+      branch: "ENG-99-fix-auth",
+      detachedHead: false,
+      remote: { name: "origin", fetchUrl: "git@example.com:acme/repo.git", pushUrl: "git@example.com:acme/repo.git" },
+      ahead: 0,
+      behind: 0,
+      files: [{ path: "src/auth.ts", status: "modified", staged: false }],
+      clean: false,
+    });
+    mockSafety.mockResolvedValue({
+      task: { id: "issue-1", title: "Fix auth bug", status: "in_progress", identifier: "ENG-99" },
+      activeRun: { id: "run-1", status: "running", startedAt: "2026-05-15T10:00:00Z" },
+      requiresConfirmation: { commit: true, push: true, createPr: true },
+      warnings: ["An agent run is currently active."],
+    });
+
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByText("Commit..."));
+    await user.type(screen.getByTestId("commit-message-input"), "Fix auth");
+    expect(screen.getByTestId("commit-btn")).toHaveTextContent("Commit 1 file");
+
+    await user.click(screen.getByTestId("commit-btn"));
+
+    expect(mockSafety).toHaveBeenCalledWith("ws-1");
+    expect(mockGitCommit).not.toHaveBeenCalled();
+    expect(await screen.findByText(/workspace safety check/i)).toBeInTheDocument();
+    expect(screen.getByText(/Fix auth bug/i)).toBeInTheDocument();
+    expect(screen.getByText(/running/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /continue anyway/i }));
+
+    await waitFor(() => expect(mockGitCommit).toHaveBeenCalledWith("ws-1", {
+      message: "Fix auth",
+      files: ["src/auth.ts"],
+    }));
+  });
+
+  it("asks for confirmation before pushing when a run is active, cancel prevents push, and continue performs it", async () => {
+    mockGetGitStatus.mockResolvedValue({
+      gitAvailable: true,
+      branch: "ENG-99-fix-auth",
+      detachedHead: false,
+      remote: { name: "origin", fetchUrl: "git@example.com:acme/repo.git", pushUrl: "git@example.com:acme/repo.git" },
+      ahead: 2,
+      behind: 0,
+      files: [],
+      clean: true,
+    });
+    mockSafety.mockResolvedValue({
+      task: { id: "issue-1", title: "Fix auth bug", status: "in_progress", identifier: "ENG-99" },
+      activeRun: { id: "run-1", status: "running", startedAt: "2026-05-15T10:00:00Z", agentName: "Builder" },
+      requiresConfirmation: { commit: true, push: true, createPr: true },
+      warnings: ["An agent run is currently active."],
+    });
+
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByTestId("push-btn"));
+
+    expect(mockSafety).toHaveBeenCalledWith("ws-1");
+    expect(mockGitPush).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("workspace-safety-dialog")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /cancel/i }));
+    await waitFor(() => expect(screen.queryByTestId("workspace-safety-dialog")).not.toBeInTheDocument());
+    expect(mockGitPush).not.toHaveBeenCalled();
+
+    await user.click(screen.getByTestId("push-btn"));
+    await user.click(await screen.findByRole("button", { name: /continue anyway/i }));
+
+    await waitFor(() => expect(mockGitPush).toHaveBeenCalledWith("ws-1"));
+  });
+
+  it("labels push with the number of commits ahead", async () => {
+    mockGetGitStatus.mockResolvedValue({
+      gitAvailable: true,
+      branch: "ENG-99-fix-auth",
+      detachedHead: false,
+      remote: { name: "origin", fetchUrl: "git@example.com:acme/repo.git", pushUrl: "git@example.com:acme/repo.git" },
+      ahead: 2,
+      behind: 0,
+      files: [],
+      clean: true,
+    });
+
+    renderPanel();
+
+    expect(await screen.findByTestId("push-btn")).toHaveTextContent("Push 2 commits");
+  });
+
+  it("shows pushed state when the remote is up to date", async () => {
+    mockGetGitStatus.mockResolvedValue({
+      gitAvailable: true,
+      branch: "ENG-99-fix-auth",
+      detachedHead: false,
+      remote: { name: "origin", fetchUrl: "git@example.com:acme/repo.git", pushUrl: "git@example.com:acme/repo.git" },
+      ahead: 0,
+      behind: 0,
+      files: [],
+      clean: true,
+    });
+
+    renderPanel();
+
+    expect(await screen.findByText("Pushed")).toBeInTheDocument();
+    expect(screen.queryByTestId("push-btn")).not.toBeInTheDocument();
   });
 });

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
@@ -10,6 +10,7 @@ import { ApiError } from "../api/client";
 const mockGetIssue = vi.fn();
 const mockCreatePR = vi.fn();
 const mockPushToast = vi.fn();
+const mockSafety = vi.fn();
 
 vi.mock("../api/issues", () => ({
   issuesApi: { get: (...args: unknown[]) => mockGetIssue(...args) },
@@ -18,6 +19,12 @@ vi.mock("../api/issues", () => ({
 vi.mock("../api/github-integration", () => ({
   githubIntegrationApi: {
     createPR: (...args: unknown[]) => mockCreatePR(...args),
+  },
+}));
+
+vi.mock("../api/execution-workspaces", () => ({
+  executionWorkspacesApi: {
+    safety: (...args: unknown[]) => mockSafety(...args),
   },
 }));
 
@@ -94,6 +101,12 @@ function renderDialog(props: Partial<React.ComponentProps<typeof CreatePrDialog>
 describe("CreatePrDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSafety.mockResolvedValue({
+      task: null,
+      activeRun: null,
+      requiresConfirmation: { commit: false, push: false, createPr: false },
+      warnings: [],
+    });
   });
 
   it("prefills title/body from the linked task + base from workspace.baseRef", async () => {
@@ -303,5 +316,76 @@ describe("CreatePrDialog", () => {
     expect(invalidatedKeys).toContainEqual(["executionWorkspaces", "detail", "ws-1"]);
     // Workspace list for the company (new in Task 15 — prevents stale /workspaces page)
     expect(invalidatedKeys).toContainEqual(["executionWorkspaces", "co-1"]);
+  });
+
+  it("warns before creating a PR when task is not complete and an agent run is active", async () => {
+    mockGetIssue.mockResolvedValue({ id: "issue-1", title: "T", description: "B" });
+    mockSafety.mockResolvedValue({
+      task: { id: "issue-1", title: "Build checkout", status: "in_review", identifier: "ENG-99" },
+      activeRun: { id: "run-1", status: "running", startedAt: "2026-05-15T10:00:00Z" },
+      requiresConfirmation: { commit: true, push: true, createPr: true },
+      warnings: ["Task is not complete.", "An agent run is currently active."],
+    });
+    mockCreatePR.mockResolvedValue({
+      url: "https://github.com/acme/repo/pull/42",
+      number: 42,
+      state: "open",
+      draft: false,
+    });
+
+    const user = userEvent.setup();
+    renderDialog();
+
+    await waitFor(() => expect(screen.getByTestId("pr-title-input")).toHaveValue("T"));
+    await user.click(screen.getByTestId("pr-submit"));
+
+    expect(mockSafety).toHaveBeenCalledWith("ws-1");
+    expect(mockCreatePR).not.toHaveBeenCalled();
+    expect(await screen.findByText(/workspace safety check/i)).toBeInTheDocument();
+    expect(screen.getByText(/Build checkout/i)).toBeInTheDocument();
+    expect(screen.getByText(/in_review/i)).toBeInTheDocument();
+    expect(screen.getByText(/running/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /continue anyway/i }));
+
+    await waitFor(() => expect(mockCreatePR).toHaveBeenCalledWith("issue-1", {
+      workspaceId: "ws-1",
+      title: "T",
+      body: "B",
+      base: "main",
+      draft: false,
+      head: "feature/x",
+    }));
+  });
+
+  it("uses checking copy while only the safety preflight is running", async () => {
+    mockGetIssue.mockResolvedValue({ id: "issue-1", title: "T", description: "B" });
+    mockCreatePR.mockResolvedValue({
+      url: "https://github.com/acme/repo/pull/42",
+      number: 42,
+      state: "open",
+      draft: false,
+    });
+    let resolveSafety: (value: unknown) => void = () => {};
+    mockSafety.mockReturnValue(new Promise((resolve) => {
+      resolveSafety = resolve;
+    }));
+
+    const user = userEvent.setup();
+    renderDialog();
+
+    await waitFor(() => expect(screen.getByTestId("pr-title-input")).toHaveValue("T"));
+    await user.click(screen.getByTestId("pr-submit"));
+
+    expect(screen.getByTestId("pr-submit")).toHaveTextContent(/checking/i);
+    expect(screen.getByTestId("pr-submit")).not.toHaveTextContent(/creating/i);
+
+    await act(async () => resolveSafety({
+      task: null,
+      activeRun: null,
+      requiresConfirmation: { commit: false, push: false, createPr: false },
+      warnings: [],
+    }));
+    await waitFor(() => expect(mockCreatePR).toHaveBeenCalled());
   });
 });

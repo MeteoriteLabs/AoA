@@ -20,6 +20,15 @@ import type { ExecutionWorkspace, GitHubPrMetadata } from "@armyofagents/shared"
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { OpenInIdeButton } from "../OpenInIdeButton";
 import { CreatePrDialog } from "../CreatePrDialog";
 import { useToast } from "../../../context/ToastContext";
@@ -28,6 +37,7 @@ import {
   type GitFileEntry,
   type GitStatusResponse,
   type GitLogEntry,
+  type WorkspaceMutationSafety,
 } from "@/api/execution-workspaces";
 
 // ---------------------------------------------------------------------------
@@ -167,6 +177,64 @@ function CommitLogSection({ workspaceId, isExpanded }: { workspaceId: string; is
   );
 }
 
+function SafetyConfirmationDialog({
+  safety,
+  onCancel,
+  onContinue,
+}: {
+  safety: WorkspaceMutationSafety | null;
+  onCancel: () => void;
+  onContinue: () => void;
+}) {
+  return (
+    <Dialog open={!!safety} onOpenChange={(open) => { if (!open) onCancel(); }}>
+      {safety && (
+        <DialogContent data-testid="workspace-safety-dialog" className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-500" aria-hidden="true" />
+              Workspace safety check
+            </DialogTitle>
+            <DialogDescription>
+              This workspace may still have agent work in flight. Review the current state before continuing.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="space-y-3 text-sm">
+            {safety.task && (
+              <div className="rounded-md border border-border px-3 py-2">
+                <div className="text-xs text-muted-foreground">Task</div>
+                <div className="font-medium">
+                  {safety.task.identifier ? `${safety.task.identifier} · ` : ""}
+                  {safety.task.title}
+                </div>
+                <div className="text-xs text-muted-foreground">Status: {safety.task.status}</div>
+              </div>
+            )}
+            {safety.activeRun && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                <div className="text-xs text-muted-foreground">Active run</div>
+                <div className="font-medium">Run {safety.activeRun.id}</div>
+                <div className="text-xs text-muted-foreground">Status: {safety.activeRun.status}</div>
+              </div>
+            )}
+            {safety.warnings.length > 0 && (
+              <ul className="list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+                {safety.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
+            <Button type="button" onClick={onContinue}>Continue anyway</Button>
+          </DialogFooter>
+        </DialogContent>
+      )}
+    </Dialog>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main Component
 // ---------------------------------------------------------------------------
@@ -181,6 +249,11 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
   const [commitMessage, setCommitMessage] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [showCommitForm, setShowCommitForm] = useState(false);
+  const [safetyConfirmation, setSafetyConfirmation] = useState<{
+    safety: WorkspaceMutationSafety;
+    onContinue: () => void;
+  } | null>(null);
+  const [checkingSafetyFor, setCheckingSafetyFor] = useState<"commit" | "push" | null>(null);
 
   // ── Live git status query ──
   const {
@@ -311,13 +384,30 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
     }
   };
 
+  const runWithSafety = async (kind: "commit" | "push", onContinue: () => void) => {
+    setCheckingSafetyFor(kind);
+    try {
+      const safety = await executionWorkspacesApi.safety(workspace.id);
+      if (safety.requiresConfirmation[kind]) {
+        setSafetyConfirmation({ safety, onContinue });
+        return;
+      }
+      onContinue();
+    } catch {
+      onContinue();
+    } finally {
+      setCheckingSafetyFor(null);
+    }
+  };
+
   // ── Commit handler ──
   const handleCommit = () => {
     if (!commitMessage.trim() || selectedFiles.size === 0) return;
-    commitMutation.mutate({
+    const payload = {
       message: commitMessage.trim(),
       files: Array.from(selectedFiles),
-    });
+    };
+    void runWithSafety("commit", () => commitMutation.mutate(payload));
   };
 
   // ── PR availability ──
@@ -514,12 +604,13 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
                 disabled={
                   !commitMessage.trim() ||
                   selectedFiles.size === 0 ||
-                  commitMutation.isPending
+                  commitMutation.isPending ||
+                  checkingSafetyFor === "commit"
                 }
                 onClick={handleCommit}
                 data-testid="commit-btn"
               >
-                {commitMutation.isPending ? (
+                {commitMutation.isPending || checkingSafetyFor === "commit" ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
                 ) : (
                   <GitCommit className="h-3.5 w-3.5 mr-1.5" />
@@ -545,17 +636,24 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
           size="sm"
           variant="outline"
           className="w-full"
-          disabled={pushMutation.isPending}
-          onClick={() => pushMutation.mutate()}
+          disabled={pushMutation.isPending || checkingSafetyFor === "push"}
+          onClick={() => void runWithSafety("push", () => pushMutation.mutate())}
           data-testid="push-btn"
         >
-          {pushMutation.isPending ? (
+          {pushMutation.isPending || checkingSafetyFor === "push" ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
           ) : (
             <Upload className="h-3.5 w-3.5 mr-1.5" />
           )}
-          Push to {remote.name}
+          Push {ahead} commit{ahead === 1 ? "" : "s"}
         </Button>
+      )}
+
+      {gitAvailable && !detachedHead && remote && (ahead ?? 0) === 0 && (
+        <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+          <Check className="h-3 w-3 text-green-400" />
+          Pushed
+        </div>
       )}
 
       {/* Recent commits (collapsible) */}
@@ -634,6 +732,16 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
           liveBranch={liveBranch}
         />
       )}
+
+      <SafetyConfirmationDialog
+        safety={safetyConfirmation?.safety ?? null}
+        onCancel={() => setSafetyConfirmation(null)}
+        onContinue={() => {
+          const action = safetyConfirmation?.onContinue;
+          setSafetyConfirmation(null);
+          action?.();
+        }}
+      />
     </div>
   );
 }

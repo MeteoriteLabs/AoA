@@ -23,6 +23,10 @@ import type {
 } from "@armyofagents/shared";
 import { issuesApi } from "../../api/issues";
 import { githubIntegrationApi } from "../../api/github-integration";
+import {
+  executionWorkspacesApi,
+  type WorkspaceMutationSafety,
+} from "../../api/execution-workspaces";
 import { ApiError } from "../../api/client";
 import { useToast } from "../../context/ToastContext";
 import { queryKeys } from "../../lib/queryKeys";
@@ -35,6 +39,64 @@ interface Props {
   onCreated?: (pr: GitHubPrCreateResponse) => void;
   /** Live branch from git status API — used when workspace.branchName is null (local_fs workspaces). */
   liveBranch?: string | null;
+}
+
+function SafetyConfirmationDialog({
+  safety,
+  onCancel,
+  onContinue,
+}: {
+  safety: WorkspaceMutationSafety | null;
+  onCancel: () => void;
+  onContinue: () => void;
+}) {
+  return (
+    <Dialog open={!!safety} onOpenChange={(open) => { if (!open) onCancel(); }}>
+      {safety && (
+        <DialogContent data-testid="workspace-safety-dialog" className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertCircle className="h-4 w-4 text-amber-500" aria-hidden="true" />
+              Workspace safety check
+            </DialogTitle>
+            <DialogDescription>
+              This workspace may still have agent work in flight. Review the current state before continuing.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="space-y-3 text-sm">
+            {safety.task && (
+              <div className="rounded-md border border-border px-3 py-2">
+                <div className="text-xs text-muted-foreground">Task</div>
+                <div className="font-medium">
+                  {safety.task.identifier ? `${safety.task.identifier} · ` : ""}
+                  {safety.task.title}
+                </div>
+                <div className="text-xs text-muted-foreground">Status: {safety.task.status}</div>
+              </div>
+            )}
+            {safety.activeRun && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                <div className="text-xs text-muted-foreground">Active run</div>
+                <div className="font-medium">Run {safety.activeRun.id}</div>
+                <div className="text-xs text-muted-foreground">Status: {safety.activeRun.status}</div>
+              </div>
+            )}
+            {safety.warnings.length > 0 && (
+              <ul className="list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+                {safety.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
+            <Button type="button" onClick={onContinue}>Continue anyway</Button>
+          </DialogFooter>
+        </DialogContent>
+      )}
+    </Dialog>
+  );
 }
 
 /**
@@ -70,6 +132,8 @@ export function CreatePrDialog({
   const [body, setBody] = useState("");
   const [base, setBase] = useState(workspace.baseRef ?? "main");
   const [draft, setDraft] = useState(false);
+  const [checkingSafety, setCheckingSafety] = useState(false);
+  const [safetyConfirmation, setSafetyConfirmation] = useState<WorkspaceMutationSafety | null>(null);
 
   const issueQuery = useQuery({
     queryKey: queryKeys.issues.detail(issueId),
@@ -127,15 +191,32 @@ export function CreatePrDialog({
       : null;
 
   const canSubmit =
-    title.trim().length > 0 && base.trim().length > 0 && !!headBranch && !mutation.isPending && !existingPr;
+    title.trim().length > 0 && base.trim().length > 0 && !!headBranch && !mutation.isPending && !checkingSafety && !existingPr;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
-    mutation.mutate();
+    void submitWithSafety();
+  }
+
+  async function submitWithSafety() {
+    setCheckingSafety(true);
+    try {
+      const safety = await executionWorkspacesApi.safety(workspace.id);
+      if (safety.requiresConfirmation.createPr) {
+        setSafetyConfirmation(safety);
+        return;
+      }
+      mutation.mutate();
+    } catch {
+      mutation.mutate();
+    } finally {
+      setCheckingSafety(false);
+    }
   }
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       {open && (
         <DialogContent data-testid="create-pr-dialog" className="sm:max-w-lg">
@@ -198,7 +279,7 @@ export function CreatePrDialog({
                 id="pr-title"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                disabled={mutation.isPending}
+                disabled={mutation.isPending || checkingSafety}
                 data-testid="pr-title-input"
               />
             </div>
@@ -213,7 +294,7 @@ export function CreatePrDialog({
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
                 rows={6}
-                disabled={mutation.isPending}
+                disabled={mutation.isPending || checkingSafety}
                 data-testid="pr-body-input"
               />
               <p className="text-xs text-muted-foreground">
@@ -231,7 +312,7 @@ export function CreatePrDialog({
                   id="pr-base"
                   value={base}
                   onChange={(e) => setBase(e.target.value)}
-                  disabled={mutation.isPending}
+                  disabled={mutation.isPending || checkingSafety}
                   data-testid="pr-base-input"
                 />
                 <p className="text-xs text-muted-foreground">
@@ -259,7 +340,7 @@ export function CreatePrDialog({
                 id="pr-draft"
                 checked={draft}
                 onCheckedChange={(checked) => setDraft(checked === true)}
-                disabled={mutation.isPending}
+                disabled={mutation.isPending || checkingSafety}
                 data-testid="pr-draft-checkbox"
               />
               <Label htmlFor="pr-draft" className="text-sm">
@@ -333,15 +414,15 @@ export function CreatePrDialog({
                 type="button"
                 variant="outline"
                 onClick={() => onOpenChange(false)}
-                disabled={mutation.isPending}
+                disabled={mutation.isPending || checkingSafety}
               >
                 Cancel
               </Button>
               <Button type="submit" disabled={!canSubmit} data-testid="pr-submit">
-                {mutation.isPending ? (
+                {mutation.isPending || checkingSafety ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" aria-hidden="true" />
-                    Creating…
+                    {checkingSafety && !mutation.isPending ? "Checking..." : "Creating…"}
                   </>
                 ) : (
                   "Create PR"
@@ -354,5 +435,14 @@ export function CreatePrDialog({
         </DialogContent>
       )}
     </Dialog>
+    <SafetyConfirmationDialog
+      safety={safetyConfirmation}
+      onCancel={() => setSafetyConfirmation(null)}
+      onContinue={() => {
+        setSafetyConfirmation(null);
+        mutation.mutate();
+      }}
+    />
+    </>
   );
 }

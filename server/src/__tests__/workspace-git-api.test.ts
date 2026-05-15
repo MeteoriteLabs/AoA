@@ -59,14 +59,14 @@ import { workspaceGitRoutes } from "../routes/workspace-git.js";
 // Test app factory
 // ---------------------------------------------------------------------------
 
-function createApp(actor: unknown = boardActor) {
+function createApp(actor: unknown = boardActor, db: unknown = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", workspaceGitRoutes({} as any));
+  app.use("/api", workspaceGitRoutes(db as any));
   app.use(errorHandler);
   return app;
 }
@@ -91,6 +91,23 @@ const mockWorkspace = {
   status: "active",
   metadata: {},
 };
+
+function createSequenceDb(rows: unknown[][]) {
+  const select = vi.fn(() => {
+    const result = rows.shift() ?? [];
+    const chain = {
+      from: vi.fn(() => chain),
+      where: vi.fn(() => chain),
+      limit: vi.fn(() => Promise.resolve(result)),
+      orderBy: vi.fn(() => chain),
+      leftJoin: vi.fn(() => chain),
+      then: (resolve: (value: unknown[]) => void, reject?: (reason: unknown) => void) =>
+        Promise.resolve(result).then(resolve, reject),
+    };
+    return chain;
+  });
+  return { select };
+}
 
 // ---------------------------------------------------------------------------
 // Test setup
@@ -353,5 +370,86 @@ describe("POST /execution-workspaces/:id/git/push", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/branch/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /execution-workspaces/:id/git/safety
+// ---------------------------------------------------------------------------
+
+describe("GET /execution-workspaces/:id/git/safety", () => {
+  it("returns the planned safety shape with linked task, active run, and action confirmations", async () => {
+    const db = createSequenceDb([
+      [{ id: "issue-1", title: "Fix auth bug", status: "in_progress", identifier: "ENG-99", assigneeAgentId: "agent-1" }],
+      [{ id: "run-1", status: "running", agentId: "agent-1", startedAt: "2026-05-15T10:00:00.000Z", createdAt: "2026-05-15T09:59:00.000Z" }],
+    ]);
+
+    const app = createApp(boardActor, db);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/git/safety");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      task: {
+        id: "issue-1",
+        title: "Fix auth bug",
+        status: "in_progress",
+        identifier: "ENG-99",
+      },
+      activeRun: {
+        id: "run-1",
+        status: "running",
+        startedAt: "2026-05-15T10:00:00.000Z",
+      },
+      requiresConfirmation: {
+        commit: true,
+        push: true,
+        createPr: true,
+      },
+    });
+    expect(res.body).not.toHaveProperty("issue");
+    expect(res.body).not.toHaveProperty("shouldWarn");
+    expect(res.body.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/task is not complete/i),
+        expect.stringMatching(/agent run/i),
+      ]),
+    );
+  });
+
+  it("does not warn when the linked task is done and no run is active", async () => {
+    const db = createSequenceDb([
+      [{ id: "issue-1", title: "Done task", status: "done", identifier: "ENG-99", assigneeAgentId: "agent-1" }],
+      [],
+    ]);
+
+    const app = createApp(boardActor, db);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/git/safety");
+
+    expect(res.status).toBe(200);
+    expect(res.body.requiresConfirmation).toEqual({
+      commit: false,
+      push: false,
+      createPr: false,
+    });
+    expect(res.body.activeRun).toBeNull();
+    expect(res.body.task.status).toBe("done");
+  });
+
+  it("requires PR confirmation for an incomplete task even when no run is active", async () => {
+    const db = createSequenceDb([
+      [{ id: "issue-1", title: "Review me", status: "in_review", identifier: "ENG-99", assigneeAgentId: "agent-1" }],
+      [],
+    ]);
+
+    const app = createApp(boardActor, db);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/git/safety");
+
+    expect(res.status).toBe(200);
+    expect(res.body.activeRun).toBeNull();
+    expect(res.body.requiresConfirmation).toEqual({
+      commit: false,
+      push: false,
+      createPr: true,
+    });
   });
 });

@@ -1,8 +1,9 @@
 /**
  * Git operations routes for execution workspaces.
  *
- * Exposes 4 endpoints:
+ * Exposes 5 endpoints:
  *   GET  /execution-workspaces/:id/git/status
+ *   GET  /execution-workspaces/:id/git/safety
  *   GET  /execution-workspaces/:id/git/log
  *   POST /execution-workspaces/:id/git/commit
  *   POST /execution-workspaces/:id/git/push
@@ -131,6 +132,72 @@ async function hasActiveRunForWorkspace(db: Db, workspaceId: string): Promise<bo
   }
 }
 
+async function getWorkspaceMutationSafety(db: Db, workspaceId: string) {
+  const linkedIssues = await db
+    .select({
+      id: issues.id,
+      title: issues.title,
+      status: issues.status,
+      identifier: issues.identifier,
+      assigneeAgentId: issues.assigneeAgentId,
+    })
+    .from(issues)
+    .where(eq(issues.executionWorkspaceId, workspaceId))
+    .limit(1);
+
+  const issue = linkedIssues[0] ?? null;
+  const agentIds = linkedIssues
+    .map((i) => i.assigneeAgentId)
+    .filter((id): id is string => id !== null);
+
+  const activeRuns = agentIds.length > 0
+    ? await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          inArray(heartbeatRuns.agentId, agentIds),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+        ),
+      )
+      .limit(1)
+    : [];
+
+  const activeRun = activeRuns[0] ?? null;
+  const hasActiveRun = activeRun !== null;
+  const taskIsIncomplete = issue !== null && !["done", "cancelled"].includes(issue.status);
+  const warnings: string[] = [];
+
+  if (taskIsIncomplete) {
+    warnings.push("Task is not complete.");
+  }
+  if (hasActiveRun) {
+    warnings.push("An agent run is currently active.");
+  }
+
+  return {
+    task: issue
+      ? {
+        id: issue.id,
+        title: issue.title,
+        status: issue.status,
+        identifier: issue.identifier,
+      }
+      : null,
+    activeRun,
+    requiresConfirmation: {
+      commit: hasActiveRun,
+      push: hasActiveRun,
+      createPr: hasActiveRun || taskIsIncomplete,
+    },
+    warnings,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Secret retrieval for push auth
 // ---------------------------------------------------------------------------
@@ -175,6 +242,22 @@ export function workspaceGitRoutes(db: Db) {
     const status = await getStatus(ctx.gitRoot);
     setCachedStatus(ctx.workspace.id, status);
     res.json({ gitAvailable: true, ...status });
+  });
+
+  // GET /execution-workspaces/:id/git/safety
+  router.get("/execution-workspaces/:id/git/safety", async (req, res) => {
+    const svc = executionWorkspaceService(db);
+    const workspace = await svc.getById(req.params.id);
+
+    if (!workspace) {
+      res.status(404).json({ error: "Execution workspace not found" });
+      return;
+    }
+
+    assertCompanyAccess(req, workspace.companyId);
+
+    const safety = await getWorkspaceMutationSafety(db, workspace.id);
+    res.json(safety);
   });
 
   // GET /execution-workspaces/:id/git/log
