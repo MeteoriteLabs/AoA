@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { CheckCircle } from "lucide-react";
 
+import { ApiError } from "@/api/client";
 import { marketplaceApi, type PendingUpdate } from "@/api/marketplace";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { SnapshotUpdateModal } from "@/components/marketplace/SnapshotUpdateModal";
@@ -88,6 +89,14 @@ export function MarketplaceUpdatesPanel() {
       }
       pushToast({ title: `Updated ${update.catalogItemName}`, tone: "success" });
     } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        pushToast({
+          title: "Only instance admins can update plugins",
+          body: `Ask an instance admin to apply the ${update.catalogItemName} plugin update.`,
+          tone: "error",
+        });
+        return;
+      }
       pushToast({
         title: "Failed to apply update",
         body: err instanceof Error ? err.message : undefined,

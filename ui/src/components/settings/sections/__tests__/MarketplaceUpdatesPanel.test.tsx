@@ -3,11 +3,16 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/api/client";
 import { marketplaceApi, type PendingUpdate } from "@/api/marketplace";
 import { MarketplaceUpdatesPanel } from "../MarketplaceUpdatesPanel";
 
 const mutateAsync = vi.fn();
 let pendingUpdates: PendingUpdate[] = [];
+
+const toastMocks = vi.hoisted(() => ({
+  pushToast: vi.fn(),
+}));
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
@@ -16,7 +21,7 @@ vi.mock("@/context/CompanyContext", () => ({
 }));
 
 vi.mock("@/context/ToastContext", () => ({
-  useToast: () => ({ pushToast: vi.fn() }),
+  useToast: () => ({ pushToast: toastMocks.pushToast }),
 }));
 
 vi.mock("@/hooks/usePendingUpdates", () => ({
@@ -83,6 +88,7 @@ describe("MarketplaceUpdatesPanel", () => {
   beforeEach(() => {
     pendingUpdates = [];
     mutateAsync.mockReset();
+    toastMocks.pushToast.mockReset();
     vi.mocked(marketplaceApi.applyUpdate).mockClear();
   });
 
@@ -138,6 +144,27 @@ describe("MarketplaceUpdatesPanel", () => {
 
     expect(await screen.findByRole("dialog")).toHaveTextContent(
       "New permissions required for GitHub Issues: storage.write",
+    );
+  });
+
+  it("shows instance-admin requirement copy when applying a plugin update returns 403", async () => {
+    pendingUpdates = [update({})];
+    vi.mocked(marketplaceApi.applyUpdate).mockRejectedValueOnce(
+      new ApiError("Instance admin access required", 403, {
+        error: "Instance admin access required",
+      }),
+    );
+
+    renderPanel();
+
+    await userEvent.click(screen.getByRole("button", { name: "Update GitHub Issues" }));
+
+    await waitFor(() =>
+      expect(toastMocks.pushToast).toHaveBeenCalledWith({
+        title: "Only instance admins can update plugins",
+        body: "Ask an instance admin to apply the GitHub Issues plugin update.",
+        tone: "error",
+      }),
     );
   });
 
