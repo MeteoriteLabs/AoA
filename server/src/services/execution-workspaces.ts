@@ -340,6 +340,7 @@ function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeServ
     stoppedAt: row.stoppedAt ?? null,
     stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
     healthStatus: row.healthStatus as WorkspaceRuntimeService["healthStatus"],
+    healthCheckedAt: row.healthCheckedAt ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

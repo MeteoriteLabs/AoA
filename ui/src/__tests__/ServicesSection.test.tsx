@@ -55,6 +55,13 @@ const unavailablePreviewService = {
   stoppedAt: new Date().toISOString(),
 };
 
+const unhealthyRunningPreviewService = {
+  ...previewOnlyService,
+  id: "svc-preview-unhealthy",
+  status: "running",
+  healthStatus: "unhealthy",
+};
+
 const stoppedService = {
   ...runningService,
   id: "svc-2",
@@ -222,6 +229,18 @@ describe("ServicesSection", () => {
     expect(screen.queryByTestId("service-stop-svc-preview-stopped")).not.toBeInTheDocument();
     expect(screen.queryByTestId("service-restart-svc-preview-stopped")).not.toBeInTheDocument();
     expect(screen.queryByTestId("service-start-svc-preview-stopped")).not.toBeInTheDocument();
+  });
+
+  it("unhealthy running preview-only service does not offer Open", async () => {
+    const onOpenBrowser = vi.fn();
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([unhealthyRunningPreviewService]);
+
+    renderSection({ onOpenBrowser });
+
+    const row = await screen.findByTestId("service-row-svc-preview-unhealthy");
+    expect(row).toHaveTextContent("Preview");
+    expect(row).toHaveTextContent("Unavailable");
+    expect(screen.queryByTestId("service-open-svc-preview-unhealthy")).not.toBeInTheDocument();
   });
 
   it("stopped service shows Start button only (not Stop/Restart)", async () => {

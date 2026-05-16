@@ -188,7 +188,7 @@ export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionPro
               <div className="flex items-center gap-1 shrink-0 ml-auto">
                 {isRunning && (
                   <>
-                    {service.url && (
+                    {service.url && !unavailablePreview && (
                       <Button
                         type="button"
                         variant="ghost"

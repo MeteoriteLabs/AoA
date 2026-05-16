@@ -107,6 +107,7 @@ export interface WorkspaceRuntimeService {
   stoppedAt: string | null;
   stopPolicy?: Record<string, unknown> | null;
   healthStatus?: string | null;
+  healthCheckedAt?: string | null;
 }
 
 export const executionWorkspacesApi = {

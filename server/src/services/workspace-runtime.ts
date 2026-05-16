@@ -1460,8 +1460,13 @@ type PreviewRuntimeServiceUpdate = {
   status: string;
   healthStatus: string;
   stoppedAt: Date | null;
+  healthCheckedAt: Date;
   updatedAt: Date;
 };
+
+const DEFAULT_PREVIEW_HEALTH_CHECK_TTL_MS = 30_000;
+const DEFAULT_PREVIEW_HEALTH_CHECK_CONCURRENCY = 5;
+const previewProbeInFlight = new Map<string, Promise<boolean>>();
 
 function isAdapterManagedPreviewRuntimeServiceRow(row: WorkspaceRuntimeServiceRow): boolean {
   return row.provider === "adapter_managed" && !row.command && !row.providerRef && Boolean(row.url);
@@ -1474,27 +1479,82 @@ function dateTime(value: Date | string | null | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function isPreviewHealthCheckStale(
+  row: WorkspaceRuntimeServiceRow,
+  now: Date,
+  ttlMs: number,
+): boolean {
+  const checkedAt = dateTime(row.healthCheckedAt);
+  if (checkedAt === null) return true;
+  return now.getTime() - checkedAt >= ttlMs;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await fn(items[currentIndex]!, currentIndex);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function probePreviewUrlDeduped(input: {
+  key: string;
+  url: string;
+  probeUrl: (url: string) => Promise<boolean>;
+}): Promise<boolean> {
+  const existing = previewProbeInFlight.get(input.key);
+  if (existing) return existing;
+  const promise = input.probeUrl(input.url).finally(() => {
+    previewProbeInFlight.delete(input.key);
+  });
+  previewProbeInFlight.set(input.key, promise);
+  return promise;
+}
+
 export async function refreshAdapterManagedPreviewRuntimeServiceRows(input: {
   rows: WorkspaceRuntimeServiceRow[];
   now?: Date;
+  ttlMs?: number;
+  maxConcurrency?: number;
   probeUrl?: (url: string) => Promise<boolean>;
 }): Promise<{ rows: WorkspaceRuntimeServiceRow[]; updates: PreviewRuntimeServiceUpdate[] }> {
   const now = input.now ?? new Date();
+  const ttlMs = input.ttlMs ?? DEFAULT_PREVIEW_HEALTH_CHECK_TTL_MS;
+  const maxConcurrency = input.maxConcurrency ?? DEFAULT_PREVIEW_HEALTH_CHECK_CONCURRENCY;
   const probeUrl = input.probeUrl ?? ((url: string) => probePreviewUrl(url, { timeoutMs: 750 }));
   const updates: PreviewRuntimeServiceUpdate[] = [];
 
-  const rows = await Promise.all(
-    input.rows.map(async (row) => {
+  const rows = await mapWithConcurrency(
+    input.rows,
+    maxConcurrency,
+    async (row) => {
       if (!isAdapterManagedPreviewRuntimeServiceRow(row) || !row.url) return row;
+      if (!isPreviewHealthCheckStale(row, now, ttlMs)) return row;
 
-      const reachable = await probeUrl(row.url);
+      const reachable = await probePreviewUrlDeduped({
+        key: row.id,
+        url: row.url,
+        probeUrl,
+      });
       const nextStatus = reachable ? "running" : "stopped";
       const nextHealthStatus = reachable ? "healthy" : "unhealthy";
       const nextStoppedAt = reachable ? null : now;
       const changed =
         row.status !== nextStatus ||
         row.healthStatus !== nextHealthStatus ||
-        dateTime(row.stoppedAt) !== dateTime(nextStoppedAt);
+        dateTime(row.stoppedAt) !== dateTime(nextStoppedAt) ||
+        dateTime(row.healthCheckedAt) !== dateTime(now);
 
       if (!changed) return row;
 
@@ -1503,6 +1563,7 @@ export async function refreshAdapterManagedPreviewRuntimeServiceRows(input: {
         status: nextStatus,
         healthStatus: nextHealthStatus,
         stoppedAt: nextStoppedAt,
+        healthCheckedAt: now,
         updatedAt: now,
       };
       updates.push(update);
@@ -1511,9 +1572,10 @@ export async function refreshAdapterManagedPreviewRuntimeServiceRows(input: {
         status: update.status,
         healthStatus: update.healthStatus,
         stoppedAt: update.stoppedAt,
+        healthCheckedAt: update.healthCheckedAt,
         updatedAt: update.updatedAt,
       };
-    }),
+    },
   );
 
   return { rows, updates };
@@ -1531,6 +1593,7 @@ export async function refreshPersistedAdapterManagedPreviewRuntimeServices(input
         status: update.status,
         healthStatus: update.healthStatus,
         stoppedAt: update.stoppedAt,
+        healthCheckedAt: update.healthCheckedAt,
         updatedAt: update.updatedAt,
       })
       .where(eq(workspaceRuntimeServices.id, update.id));

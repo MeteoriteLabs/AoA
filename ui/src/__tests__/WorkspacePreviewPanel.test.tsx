@@ -332,6 +332,80 @@ describe("WorkspacePreviewPanel tab deck", () => {
     );
   });
 
+  it("lists multiple running preview services in Viewer Home and opens the selected one", async () => {
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([
+      {
+        ...mockRunningService[0],
+        id: "svc-1",
+        serviceName: "web",
+        url: "http://localhost:3000",
+        healthStatus: "healthy",
+      },
+      {
+        ...mockRunningService[0],
+        id: "svc-2",
+        serviceName: "docs",
+        url: "http://localhost:4173",
+        healthStatus: "healthy",
+      },
+    ]);
+    artifactsApiMock.getByIssueId.mockResolvedValue(null);
+    outputDetectionApiMock.listForIssue.mockResolvedValue([]);
+    activityApiMock.runsForIssue.mockResolvedValue([]);
+    const onOpenResolvedTab = vi.fn();
+
+    render(
+      <WorkspacePreviewPanel
+        companyId="comp-1"
+        tabs={[{ id: "home:issue-1", kind: "home", title: "Viewer", issueId: "issue-1" }]}
+        activeTabId="home:issue-1"
+        onSelectTab={() => {}}
+        onCloseTab={() => {}}
+        onOpenResolvedTab={onOpenResolvedTab}
+        functionType="software_development"
+        workspaceId="ws-1"
+      />,
+      { wrapper },
+    );
+
+    await waitFor(() => expect(screen.getByTestId("viewer-home-service-svc-2")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("viewer-home-service-svc-2"));
+    expect(onOpenResolvedTab).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "browser", id: "browser:svc-2", url: "http://localhost:4173" }),
+    );
+  });
+
+  it("does not offer unhealthy preview services from Viewer Home", async () => {
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([
+      {
+        ...mockRunningService[0],
+        id: "svc-unhealthy",
+        serviceName: "broken-preview",
+        url: "http://localhost:5173",
+        healthStatus: "unhealthy",
+      },
+    ]);
+    artifactsApiMock.getByIssueId.mockResolvedValue(null);
+    outputDetectionApiMock.listForIssue.mockResolvedValue([]);
+    activityApiMock.runsForIssue.mockResolvedValue([]);
+
+    render(
+      <WorkspacePreviewPanel
+        companyId="comp-1"
+        tabs={[{ id: "home:issue-1", kind: "home", title: "Viewer", issueId: "issue-1" }]}
+        activeTabId="home:issue-1"
+        onSelectTab={() => {}}
+        onCloseTab={() => {}}
+        functionType="software_development"
+        workspaceId="ws-1"
+      />,
+      { wrapper },
+    );
+
+    await waitFor(() => expect(screen.getByText("No running browser services")).toBeInTheDocument());
+    expect(screen.queryByTestId("viewer-home-service-svc-unhealthy")).not.toBeInTheDocument();
+  });
+
   it("opens captured output candidates from Viewer Home as preview tabs", async () => {
     artifactsApiMock.getByIssueId.mockResolvedValue(null);
     outputDetectionApiMock.listForIssue.mockResolvedValue([

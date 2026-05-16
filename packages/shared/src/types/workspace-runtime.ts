@@ -208,6 +208,7 @@ export interface WorkspaceRuntimeService {
   stoppedAt: Date | null;
   stopPolicy: Record<string, unknown> | null;
   healthStatus: "unknown" | "healthy" | "unhealthy";
+  healthCheckedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

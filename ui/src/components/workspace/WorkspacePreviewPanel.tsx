@@ -395,7 +395,9 @@ function BrowserTabView({
     staleTime: 2500,
   });
 
-  const runningServices = (services ?? []).filter((service) => service.status === "running" && service.url);
+  const runningServices = (services ?? []).filter(
+    (service) => service.status === "running" && service.healthStatus !== "unhealthy" && service.url,
+  );
 
   function normalizeUrl(value: string) {
     const trimmed = value.trim();
@@ -535,7 +537,9 @@ function ViewerHome({
     enabled: !!issueId,
   });
 
-  const runningServices = (services ?? []).filter((service) => service.status === "running" && service.url);
+  const runningServices = (services ?? []).filter(
+    (service) => service.status === "running" && service.healthStatus !== "unhealthy" && service.url,
+  );
   const candidates = (detectedOutputs ?? []).filter((output) => output.status === "pending");
   const latestVersion = artifact?.versions[0] ?? null;
 
