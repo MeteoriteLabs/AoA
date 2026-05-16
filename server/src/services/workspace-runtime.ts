@@ -19,6 +19,7 @@ import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import type { ExecutionWorkspace } from "@armyofagents/shared";
 import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { probePreviewUrl } from "./runtime-service-preview-detection.js";
 
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
@@ -135,14 +136,20 @@ function stableRuntimeServiceId(input: {
   scopeType: RuntimeServiceRef["scopeType"];
   scopeId: string | null;
   serviceName: string;
+  urlKey: string | null;
   reportId: string | null;
   providerRef: string | null;
   reuseKey: string | null;
 }) {
   if (input.reportId) return input.reportId;
-  const digest = createHash("sha256")
-    .update(
-      stableStringify({
+  const identity = input.urlKey
+    ? {
+        adapterType: input.adapterType,
+        scopeType: input.scopeType,
+        scopeId: input.scopeId,
+        urlKey: input.urlKey,
+      }
+    : {
         adapterType: input.adapterType,
         runId: input.runId,
         scopeType: input.scopeType,
@@ -150,11 +157,28 @@ function stableRuntimeServiceId(input: {
         serviceName: input.serviceName,
         providerRef: input.providerRef,
         reuseKey: input.reuseKey,
-      }),
-    )
+      };
+  const digest = createHash("sha256")
+    .update(stableStringify(identity))
     .digest("hex")
     .slice(0, 32);
-  return `${input.adapterType}-${digest}`;
+  return [
+    digest.slice(0, 8),
+    digest.slice(8, 12),
+    digest.slice(12, 16),
+    digest.slice(16, 20),
+    digest.slice(20, 32),
+  ].join("-");
+}
+
+function normalizeRuntimeServiceUrlKey(value: string | null | undefined): string | null {
+  if (!value?.trim()) return null;
+  try {
+    const url = new URL(value);
+    return url.toString();
+  } catch {
+    return value.trim().replace(/\/+$/, "");
+  }
 }
 
 function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<RuntimeServiceRef>): RuntimeServiceRef {
@@ -1365,7 +1389,7 @@ export function normalizeAdapterManagedRuntimeServices(input: {
   now?: Date;
 }): RuntimeServiceRef[] {
   const nowIso = (input.now ?? new Date()).toISOString();
-  return input.reports.map((report) => {
+  const refs: RuntimeServiceRef[] = input.reports.map((report) => {
     const scopeType = report.scopeType ?? "run";
     const scopeId =
       report.scopeId ??
@@ -1380,6 +1404,10 @@ export function normalizeAdapterManagedRuntimeServices(input: {
     const serviceName = asString(report.serviceName, "").trim() || "service";
     const status = report.status ?? "running";
     const lifecycle = report.lifecycle ?? "ephemeral";
+    const previewUrlKey =
+      scopeType === "execution_workspace" && !report.command && !report.providerRef
+        ? normalizeRuntimeServiceUrlKey(report.url ?? null)
+        : null;
     const healthStatus =
       report.healthStatus ??
       (status === "running" ? "healthy" : status === "failed" ? "unhealthy" : "unknown");
@@ -1390,6 +1418,7 @@ export function normalizeAdapterManagedRuntimeServices(input: {
         scopeType,
         scopeId,
         serviceName,
+        urlKey: previewUrlKey,
         reportId: report.id ?? null,
         providerRef: report.providerRef ?? null,
         reuseKey: report.reuseKey ?? null,
@@ -1421,6 +1450,92 @@ export function normalizeAdapterManagedRuntimeServices(input: {
       reused: false,
     };
   });
+  return Array.from(new Map(refs.map((ref) => [ref.id, ref])).values());
+}
+
+type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
+
+type PreviewRuntimeServiceUpdate = {
+  id: string;
+  status: string;
+  healthStatus: string;
+  stoppedAt: Date | null;
+  updatedAt: Date;
+};
+
+function isAdapterManagedPreviewRuntimeServiceRow(row: WorkspaceRuntimeServiceRow): boolean {
+  return row.provider === "adapter_managed" && !row.command && !row.providerRef && Boolean(row.url);
+}
+
+function dateTime(value: Date | string | null | undefined): number | null {
+  if (!value) return null;
+  if (value instanceof Date) return value.getTime();
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export async function refreshAdapterManagedPreviewRuntimeServiceRows(input: {
+  rows: WorkspaceRuntimeServiceRow[];
+  now?: Date;
+  probeUrl?: (url: string) => Promise<boolean>;
+}): Promise<{ rows: WorkspaceRuntimeServiceRow[]; updates: PreviewRuntimeServiceUpdate[] }> {
+  const now = input.now ?? new Date();
+  const probeUrl = input.probeUrl ?? ((url: string) => probePreviewUrl(url, { timeoutMs: 750 }));
+  const updates: PreviewRuntimeServiceUpdate[] = [];
+
+  const rows = await Promise.all(
+    input.rows.map(async (row) => {
+      if (!isAdapterManagedPreviewRuntimeServiceRow(row) || !row.url) return row;
+
+      const reachable = await probeUrl(row.url);
+      const nextStatus = reachable ? "running" : "stopped";
+      const nextHealthStatus = reachable ? "healthy" : "unhealthy";
+      const nextStoppedAt = reachable ? null : now;
+      const changed =
+        row.status !== nextStatus ||
+        row.healthStatus !== nextHealthStatus ||
+        dateTime(row.stoppedAt) !== dateTime(nextStoppedAt);
+
+      if (!changed) return row;
+
+      const update = {
+        id: row.id,
+        status: nextStatus,
+        healthStatus: nextHealthStatus,
+        stoppedAt: nextStoppedAt,
+        updatedAt: now,
+      };
+      updates.push(update);
+      return {
+        ...row,
+        status: update.status,
+        healthStatus: update.healthStatus,
+        stoppedAt: update.stoppedAt,
+        updatedAt: update.updatedAt,
+      };
+    }),
+  );
+
+  return { rows, updates };
+}
+
+export async function refreshPersistedAdapterManagedPreviewRuntimeServices(input: {
+  db: Db;
+  rows: WorkspaceRuntimeServiceRow[];
+}): Promise<WorkspaceRuntimeServiceRow[]> {
+  const refreshed = await refreshAdapterManagedPreviewRuntimeServiceRows({ rows: input.rows });
+  for (const update of refreshed.updates) {
+    await input.db
+      .update(workspaceRuntimeServices)
+      .set({
+        status: update.status,
+        healthStatus: update.healthStatus,
+        stoppedAt: update.stoppedAt,
+        updatedAt: update.updatedAt,
+      })
+      .where(eq(workspaceRuntimeServices.id, update.id));
+  }
+  return refreshed.rows;
 }
 
 async function startLocalRuntimeService(input: {

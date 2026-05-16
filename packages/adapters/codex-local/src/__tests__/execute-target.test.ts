@@ -127,4 +127,61 @@ describe("codex execute target", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("includes the current task brief in the default Codex prompt", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-task-prompt-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    const commandPath = await writeFakeCodexCommand(commandBase);
+
+    try {
+      const result = await execute({
+        runId: "run-codex-task",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            AOA_TEST_CAPTURE_PATH: capturePath,
+          },
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        context: {
+          currentTaskMarkdown:
+            "## Current Task\n- Identifier: MAN-1\n- Title: Start preview\n\n### Description\nStart a localhost preview app.",
+        },
+        executionTarget: { type: "local" },
+        runtimeCommandSpec: null,
+        authToken: "secret-run-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        prompt: string;
+      };
+      expect(capture.prompt).toContain("You are agent agent-1 (Codex Coder). Continue your AoA work.");
+      expect(capture.prompt).toContain("## Current Task");
+      expect(capture.prompt).toContain("- Identifier: MAN-1");
+      expect(capture.prompt).toContain("Start a localhost preview app.");
+      expect(capture.prompt).not.toContain("AOA_PREVIEW_URL=<full localhost URL>");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

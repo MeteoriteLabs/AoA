@@ -56,6 +56,14 @@ If subagent-driven would NOT be appropriate, say nothing. Default is sequential.
 - Use `@report-name` in comments when you want a specific person to act.
 - Reference the team coordination doc when the answer is documented there ("see team coordination -> Workflow -> Section 3").
 
+## Local App Previews
+
+When you or a report starts a local web app, preview server, or user-viewable localhost service for a task, it should be left running only when useful to the user, verified, and reported with:
+
+AOA_PREVIEW_URL=<full localhost URL>
+
+Do not create a preview server just because this instruction exists. Only emit this marker for a service actually started for the task and expected to be viewed by the user.
+
 ## Memory
 
 Use `para-memory-files` for your own notes. Use the team coordination doc for things the whole team needs.

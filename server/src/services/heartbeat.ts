@@ -48,6 +48,7 @@ import {
   writeAoaSkillSyncPreference,
   signalRunningProcess,
 } from "@armyofagents/adapter-utils/server-utils";
+import type { AdapterRuntimeServiceReport } from "@armyofagents/adapter-utils";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 
 /** Strip non-Latin1 characters that crash WIN1252-encoded embedded Postgres on Windows. */
@@ -73,6 +74,12 @@ import {
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
 } from "./workspace-runtime.js";
+import {
+  buildPreviewDetectionText,
+  detectPreviewRuntimeServiceReports,
+  extractLoopbackPreviewUrls,
+  shouldDetectAoaAppPreviews,
+} from "./runtime-service-preview-detection.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import {
@@ -219,6 +226,49 @@ interface ParsedIssueAssigneeAdapterOverrides {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+export function resolveAdapterManagedRuntimeExecutionWorkspaceId(input: {
+  persistedExecutionWorkspace: { id?: unknown } | null | undefined;
+  issue: { executionWorkspaceId?: unknown } | null | undefined;
+}): string | null {
+  return readNonEmptyString(input.persistedExecutionWorkspace?.id)
+    ?? readNonEmptyString(input.issue?.executionWorkspaceId)
+    ?? null;
+}
+
+function normalizeRuntimeServiceUrlKey(value: unknown): string | null {
+  const raw = readNonEmptyString(value);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if ((url.pathname === "" || url.pathname === "/") && !url.search && !url.hash) {
+      url.pathname = "/";
+      return url.toString();
+    }
+    return url.toString();
+  } catch {
+    return raw.replace(/\/+$/, "");
+  }
+}
+
+export function mergeAdapterRuntimeServiceReports(input: {
+  adapterReports: AdapterRuntimeServiceReport[];
+  detectedReports: AdapterRuntimeServiceReport[];
+}): AdapterRuntimeServiceReport[] {
+  const reports = [...input.adapterReports];
+  const knownUrls = new Set(
+    reports
+      .map((service) => normalizeRuntimeServiceUrlKey(service.url))
+      .filter((url): url is string => Boolean(url)),
+  );
+  for (const service of input.detectedReports) {
+    const url = normalizeRuntimeServiceUrlKey(service.url);
+    if (url && knownUrls.has(url)) continue;
+    if (url) knownUrls.add(url);
+    reports.push(service);
+  }
+  return reports;
 }
 
 function parseIssueAssigneeAdapterOverrides(
@@ -2212,6 +2262,9 @@ export function heartbeatService(db: Db) {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            description: issues.description,
+            status: issues.status,
+            priority: issues.priority,
             projectId: issues.projectId,
             executionWorkspaceId: issues.executionWorkspaceId,
             executionWorkspacePreference: issues.executionWorkspacePreference,
@@ -2225,6 +2278,28 @@ export function heartbeatService(db: Db) {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    if (issueContext) {
+      const currentTaskMarkdown = [
+        "## Current Task",
+        `- Identifier: ${issueContext.identifier ?? issueContext.id}`,
+        `- Title: ${issueContext.title}`,
+        `- Status: ${issueContext.status}`,
+        `- Priority: ${issueContext.priority}`,
+        issueContext.description ? "" : null,
+        issueContext.description ? "### Description" : null,
+        issueContext.description ?? null,
+      ].filter((line): line is string => line !== null).join("\n");
+      context.currentTask = {
+        id: issueContext.id,
+        identifier: issueContext.identifier,
+        title: issueContext.title,
+        description: issueContext.description,
+        status: issueContext.status,
+        priority: issueContext.priority,
+        workMode: issueContext.workMode,
+      };
+      context.currentTaskMarkdown = currentTaskMarkdown;
+    }
     // ── Auto-checkout for scoped wakes (T22 / PR #3538 upstream) ────────────
     // When the wake is scoped to an issue and the wake reason is comment-driven,
     // pre-claim the issue server-side before the adapter runs so the agent
@@ -3208,9 +3283,11 @@ export function heartbeatService(db: Db) {
       // ── Debounced lastOutputAt: update at most once per second ───────────
       let outputSeq = 0;
       let lastOutputDbMs = 0;
+      let appPreviewOutputBuffer = "";
       const originalOnLog = onLog;
       const onLogWithOutput = async (stream: "stdout" | "stderr", chunk: string) => {
         outputSeq += 1;
+        appPreviewOutputBuffer = (appPreviewOutputBuffer + chunk).slice(-64_000);
         const now = Date.now();
         if (now - lastOutputDbMs > 1000) {
           lastOutputDbMs = now;
@@ -3250,7 +3327,41 @@ export function heartbeatService(db: Db) {
       });
 
       // ── Persist adapter-managed runtime services (gated) ───────────
-      if (isolatedWorkspacesEnabled && realizedWorkspace && adapterResult.runtimeServices) {
+      const previewDetectionText = buildPreviewDetectionText({
+        streamedText: appPreviewOutputBuffer,
+        adapterResult,
+      });
+      const previewExcludedOrigins = [
+        process.env.AOA_API_URL ?? "",
+        `http://localhost:${process.env.PORT ?? "3100"}`,
+        `http://127.0.0.1:${process.env.PORT ?? "3100"}`,
+      ];
+      const previewCandidateUrls =
+        isolatedWorkspacesEnabled && realizedWorkspace && shouldDetectAoaAppPreviews(parseObject(agent.runtimeConfig))
+          ? extractLoopbackPreviewUrls(previewDetectionText, {
+              excludedOrigins: previewExcludedOrigins,
+            })
+          : [];
+      const detectedRuntimeServices =
+        previewCandidateUrls.length > 0 && realizedWorkspace
+          ? await detectPreviewRuntimeServiceReports({
+              text: previewDetectionText,
+              cwd: realizedWorkspace.cwd,
+              excludedOrigins: previewExcludedOrigins,
+            })
+          : [];
+      if (previewCandidateUrls.length > 0) {
+        await onLog(
+          "stderr",
+          `[aoa] App preview detection found ${previewCandidateUrls.length} candidate URL(s), ${detectedRuntimeServices.length} reachable service(s)\n`,
+        );
+      }
+      const runtimeServiceReports = mergeAdapterRuntimeServiceReports({
+        adapterReports: adapterResult.runtimeServices ?? [],
+        detectedReports: detectedRuntimeServices,
+      });
+
+      if (isolatedWorkspacesEnabled && realizedWorkspace && runtimeServiceReports.length > 0) {
         const adapterManagedRuntimeServices = await persistAdapterManagedRuntimeServices({
           db,
           adapterType: agent.adapterType,
@@ -3262,7 +3373,11 @@ export function heartbeatService(db: Db) {
           },
           issue: issueRef,
           workspace: realizedWorkspace,
-          reports: adapterResult.runtimeServices,
+          executionWorkspaceId: resolveAdapterManagedRuntimeExecutionWorkspaceId({
+            persistedExecutionWorkspace,
+            issue: issueRef,
+          }),
+          reports: runtimeServiceReports,
         });
         if (adapterManagedRuntimeServices.length > 0) {
           const combinedRuntimeServices = [

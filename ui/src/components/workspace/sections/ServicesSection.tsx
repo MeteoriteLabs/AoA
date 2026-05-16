@@ -44,6 +44,18 @@ function statusLabel(status: string): string {
   }
 }
 
+function isPreviewOnlyService(service: WorkspaceRuntimeService): boolean {
+  return service.provider === "adapter_managed" && !service.command && !service.providerRef;
+}
+
+function canControlService(service: WorkspaceRuntimeService): boolean {
+  return service.provider === "local_process";
+}
+
+function isUnavailablePreviewService(service: WorkspaceRuntimeService): boolean {
+  return isPreviewOnlyService(service) && (service.status !== "running" || service.healthStatus === "unhealthy");
+}
+
 export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionProps) {
   const queryClient = useQueryClient();
   const [pendingByService, setPendingByService] = useState<Record<string, ServiceAction | null>>({});
@@ -122,9 +134,9 @@ export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionPro
       >
         <Server className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
         <div className="min-w-0 space-y-0.5 overflow-hidden">
-          <p className="truncate font-medium text-foreground">No services configured</p>
+          <p className="truncate font-medium text-foreground">No app previews</p>
           <p className="text-[11px] leading-4 text-muted-foreground">
-            Configure dev servers in workspace settings.
+            Agent-created localhost apps will appear here.
           </p>
         </div>
       </div>
@@ -139,6 +151,9 @@ export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionPro
         const isPending = pendingAction !== null;
         const isRunning = service.status === "running";
         const isStarting = service.status === "starting";
+        const previewOnly = isPreviewOnlyService(service);
+        const unavailablePreview = isUnavailablePreviewService(service);
+        const controllable = canControlService(service);
 
         return (
           <div
@@ -155,6 +170,16 @@ export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionPro
               <span className="text-xs font-medium text-foreground truncate flex-1 min-w-0">
                 {service.serviceName}
               </span>
+              {previewOnly && (
+                <span className="shrink-0 rounded border border-brand/[0.25] bg-brand/[0.08] px-1.5 py-0.5 text-[10px] font-medium leading-none text-[hsl(15_60%_75%)]">
+                  Preview
+                </span>
+              )}
+              {unavailablePreview && (
+                <span className="shrink-0 rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+                  Unavailable
+                </span>
+              )}
               {service.port !== null && (
                 <span className="text-[10px] text-muted-foreground font-mono shrink-0">
                   :{service.port}
@@ -177,33 +202,37 @@ export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionPro
                         Open
                       </Button>
                     )}
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={() => handleAction(service.id, "stop")}
-                      disabled={isPending}
-                      title="Stop service"
-                      aria-label={`Stop ${service.serviceName}`}
-                      data-testid={`service-stop-${service.id}`}
-                    >
-                      <Square className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={() => handleAction(service.id, "restart")}
-                      disabled={isPending}
-                      title="Restart service"
-                      aria-label={`Restart ${service.serviceName}`}
-                      data-testid={`service-restart-${service.id}`}
-                    >
-                      <RotateCw className="h-3 w-3" />
-                    </Button>
+                    {controllable && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        onClick={() => handleAction(service.id, "stop")}
+                        disabled={isPending}
+                        title="Stop service"
+                        aria-label={`Stop ${service.serviceName}`}
+                        data-testid={`service-stop-${service.id}`}
+                      >
+                        <Square className="h-3 w-3" />
+                      </Button>
+                    )}
+                    {controllable && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        onClick={() => handleAction(service.id, "restart")}
+                        disabled={isPending}
+                        title="Restart service"
+                        aria-label={`Restart ${service.serviceName}`}
+                        data-testid={`service-restart-${service.id}`}
+                      >
+                        <RotateCw className="h-3 w-3" />
+                      </Button>
+                    )}
                   </>
                 )}
-                {isStarting && (
+                {isStarting && controllable && (
                   <Button
                     type="button"
                     variant="ghost"
@@ -217,7 +246,7 @@ export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionPro
                     <Square className="h-3 w-3" />
                   </Button>
                 )}
-                {!isRunning && !isStarting && (
+                {!isRunning && !isStarting && controllable && (
                   <Button
                     type="button"
                     variant="ghost"

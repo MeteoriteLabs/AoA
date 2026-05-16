@@ -17,6 +17,7 @@ import {
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries,
+  refreshPersistedAdapterManagedPreviewRuntimeServices,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
@@ -247,7 +248,11 @@ export function executionWorkspaceRoutes(db: Db) {
           eq(workspaceRuntimeServices.executionWorkspaceId, id),
         ),
       );
-    res.json(services);
+    const refreshedServices = await refreshPersistedAdapterManagedPreviewRuntimeServices({
+      db,
+      rows: services,
+    });
+    res.json(refreshedServices);
   });
 
   router.get("/execution-workspaces/:id/close-readiness", async (req, res) => {

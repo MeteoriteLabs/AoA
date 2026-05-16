@@ -98,9 +98,15 @@ export interface WorkspaceRuntimeService {
   command: string | null;
   cwd: string | null;
   provider: string;
+  providerRef?: string | null;
+  ownerAgentId?: string | null;
+  startedByRunId?: string | null;
+  scopeType?: string | null;
   lifecycle: string;
   startedAt: string | null;
   stoppedAt: string | null;
+  stopPolicy?: Record<string, unknown> | null;
+  healthStatus?: string | null;
 }
 
 export const executionWorkspacesApi = {

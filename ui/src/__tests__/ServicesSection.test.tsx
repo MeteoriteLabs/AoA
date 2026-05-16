@@ -34,6 +34,27 @@ const runningService = {
   stoppedAt: null,
 };
 
+const previewOnlyService = {
+  ...runningService,
+  id: "svc-preview",
+  serviceName: "localhost:4173",
+  port: 4173,
+  url: "http://127.0.0.1:4173/",
+  command: null,
+  provider: "adapter_managed",
+  providerRef: null,
+  lifecycle: "ephemeral",
+  healthStatus: "healthy",
+};
+
+const unavailablePreviewService = {
+  ...previewOnlyService,
+  id: "svc-preview-stopped",
+  status: "stopped",
+  healthStatus: "unhealthy",
+  stoppedAt: new Date().toISOString(),
+};
+
 const stoppedService = {
   ...runningService,
   id: "svc-2",
@@ -91,7 +112,7 @@ const mockWorkspace = {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function renderSection() {
+function renderSection(options: { onOpenBrowser?: (service: any) => void } = {}) {
   const qc = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
@@ -103,7 +124,7 @@ function renderSection() {
     ...render(
       <QueryClientProvider client={qc}>
         {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-        <ServicesSection workspace={mockWorkspace as any} />
+        <ServicesSection workspace={mockWorkspace as any} onOpenBrowser={options.onOpenBrowser} />
       </QueryClientProvider>,
     ),
     queryClient: qc,
@@ -135,10 +156,10 @@ describe("ServicesSection", () => {
     renderSection();
 
     await waitFor(() => {
-      expect(screen.getByText("No services configured")).toBeInTheDocument();
+      expect(screen.getByText("No app previews")).toBeInTheDocument();
     });
     expect(
-      screen.getByText("Configure dev servers in workspace settings."),
+      screen.getByText("Agent-created localhost apps will appear here."),
     ).toBeInTheDocument();
     expect(screen.getByTestId("section-services-body").className).toContain("py-2");
   });
@@ -168,6 +189,39 @@ describe("ServicesSection", () => {
     });
     expect(screen.getByTestId("service-restart-svc-1")).toBeInTheDocument();
     expect(screen.queryByTestId("service-start-svc-1")).not.toBeInTheDocument();
+  });
+
+  it("preview-only adapter-managed service shows Open but no process controls", async () => {
+    const user = userEvent.setup();
+    const onOpenBrowser = vi.fn();
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([previewOnlyService]);
+
+    renderSection({ onOpenBrowser });
+
+    const row = await screen.findByTestId("service-row-svc-preview");
+    expect(row).toHaveTextContent("Preview");
+    expect(screen.getByTestId("service-open-svc-preview")).toBeInTheDocument();
+    expect(screen.queryByTestId("service-stop-svc-preview")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-restart-svc-preview")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-start-svc-preview")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("service-open-svc-preview"));
+    expect(onOpenBrowser).toHaveBeenCalledWith(previewOnlyService);
+  });
+
+  it("unavailable preview-only service shows status without Open or process controls", async () => {
+    const onOpenBrowser = vi.fn();
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([unavailablePreviewService]);
+
+    renderSection({ onOpenBrowser });
+
+    const row = await screen.findByTestId("service-row-svc-preview-stopped");
+    expect(row).toHaveTextContent("Preview");
+    expect(row).toHaveTextContent("Unavailable");
+    expect(screen.queryByTestId("service-open-svc-preview-stopped")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-stop-svc-preview-stopped")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-restart-svc-preview-stopped")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-start-svc-preview-stopped")).not.toBeInTheDocument();
   });
 
   it("stopped service shows Start button only (not Stop/Restart)", async () => {

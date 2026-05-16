@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type APIResponse, type Page, type TestInfo } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
@@ -13,7 +14,14 @@ type MemoryItem = { id: string; title: string };
 type RunForIssue = { runId: string; status: string; detectedOutputs?: unknown };
 type ExecutionWorkspace = { id: string; cwd: string | null; name: string; branchName?: string | null };
 type MemoryRetrieval = { itemId: string | null; itemTitle: string | null; triggeredBy: string };
-type RuntimeService = { id: string; serviceName: string; status: string; url: string | null };
+type RuntimeService = {
+  id: string;
+  serviceName: string;
+  status: string;
+  url: string | null;
+  provider?: string | null;
+  command?: string | null;
+};
 type DetectedOutput = {
   runId: string;
   outputIndex: number;
@@ -128,6 +136,40 @@ test.describe("software department product workspace journey", () => {
       status.gitAvailable && status.clean,
     );
     expect(pushedStatus.clean).toBe(true);
+  });
+
+  test("detects a real agent-created localhost app as an open-only workspace preview", async ({
+    page,
+    request,
+  }, testInfo) => {
+    const repo = await createTemporaryRepo(testInfo);
+    const company = await seedCompany(request, `E2E-Test-Software-Product-${Date.now()}`);
+    const unique = Date.now();
+    const previewPort = await allocateLoopbackPort();
+    const previewToken = `AOA_APP_PREVIEW_E2E_${unique}`;
+
+    const project = await createSoftwareDepartment(request, company, repo.worktreeRoot);
+    const agent = await hireProcessPreviewAgent(request, company.id, previewPort, previewToken);
+    await assignAgentToProject(request, company.id, project.id, agent.id);
+    const issue = await createPreviewIssue(request, company.id, project.id, agent.id, previewToken);
+
+    const wakeRun = await wakeAgentForIssue(request, company.id, agent.id, issue.id);
+    expect(wakeRun.runId || wakeRun.id).toBeTruthy();
+
+    const completedRun = await waitForCompletedRun(request, issue.id);
+    expect(["completed", "succeeded"]).toContain(completedRun.status);
+
+    const workspace = await waitForExecutionWorkspace(request, company.id, issue.id);
+    const previewUrl = `http://127.0.0.1:${previewPort}/`;
+    const service = await waitForRuntimeService(request, workspace.id, (candidate) =>
+      candidate.url === previewUrl && candidate.provider === "adapter_managed",
+    );
+    expect(service.command).toBeNull();
+
+    const response = await page.request.get(previewUrl);
+    expect(await response.text()).toContain(previewToken);
+
+    await assertPreviewOnlyServiceOpensBrowser(page, company, workspace, service, previewUrl);
   });
 });
 
@@ -263,6 +305,55 @@ async function hireProcessAgent(request: APIRequestContext, companyId: string, o
   return body.agent;
 }
 
+async function hireProcessPreviewAgent(
+  request: APIRequestContext,
+  companyId: string,
+  previewPort: number,
+  previewToken: string,
+) {
+  const childCode =
+    "http=require('http');" +
+    "port=Number(process.env.AOA_PREVIEW_PORT);" +
+    "token=process.env.AOA_PREVIEW_TOKEN;" +
+    "server=http.createServer((_req,res)=>{res.writeHead(200,{'content-type':'text/plain'});res.end(token);});" +
+    "server.listen(port,'127.0.0.1',()=>console.log('http://127.0.0.1:'+port+'/'));" +
+    "setTimeout(()=>server.close(()=>process.exit(0)),120000);";
+  const parentCode =
+    "cp=require('child_process');http=require('http');" +
+    "port=Number(process.env.AOA_PREVIEW_PORT);url='http://127.0.0.1:'+port+'/';" +
+    "child=cp.spawn(process.execPath,['-e',process.env.AOA_PREVIEW_CHILD_CODE],{detached:true,stdio:'ignore',env:process.env});" +
+    "child.unref();" +
+    "deadline=Date.now()+5000;" +
+    "function probe(){req=http.get(url,res=>{res.resume();console.log('AOA_PREVIEW_URL='+url);process.exit(0);});" +
+    "req.on('error',()=>Date.now()<deadline?setTimeout(probe,100):process.exit(1));req.setTimeout(500,()=>req.destroy());}" +
+    "probe();";
+
+  const res = await request.post(`/api/companies/${companyId}/agent-hires`, {
+    data: {
+      name: "E2E Process Preview Agent",
+      role: "general",
+      title: "E2E Process Preview Agent",
+      adapterType: "process",
+      runtimeConfig: {
+        aoaAppPreviews: true,
+        autoRunSummary: true,
+      },
+      adapterConfig: {
+        command: "node",
+        args: ["-e", parentCode],
+        env: {
+          AOA_PREVIEW_CHILD_CODE: childCode,
+          AOA_PREVIEW_PORT: String(previewPort),
+          AOA_PREVIEW_TOKEN: previewToken,
+        },
+        timeoutSec: 20,
+      },
+    },
+  });
+  const body = await jsonOrThrow<{ agent: Agent }>(res, "hire process preview agent");
+  return body.agent;
+}
+
 async function assignAgentToProject(
   request: APIRequestContext,
   companyId: string,
@@ -297,6 +388,27 @@ async function createSoftwareIssue(
     },
   });
   return jsonOrThrow<Issue>(res, "create software issue");
+}
+
+async function createPreviewIssue(
+  request: APIRequestContext,
+  companyId: string,
+  projectId: string,
+  agentId: string,
+  previewToken: string,
+) {
+  const res = await request.post(`/api/companies/${companyId}/issues`, {
+    data: {
+      projectId,
+      title: "Run software app preview E2E task",
+      description: `Start a localhost preview app that serves ${previewToken}.`,
+      status: "backlog",
+      priority: "medium",
+      workMode: "standard",
+      assigneeAgentId: agentId,
+    },
+  });
+  return jsonOrThrow<Issue>(res, "create app preview issue");
 }
 
 async function wakeAgentForIssue(
@@ -382,17 +494,45 @@ async function confirmDetectedOutput(request: APIRequestContext, output: Detecte
   return jsonOrThrow<{ artifactId: string; versionId: string; status: string }>(res, "confirm detected output");
 }
 
-async function waitForRuntimeService(request: APIRequestContext, workspaceId: string) {
+async function waitForRuntimeService(
+  request: APIRequestContext,
+  workspaceId: string,
+  predicate: (service: RuntimeService) => boolean = (service) => service.status === "running" && Boolean(service.url),
+) {
   return poll(
     async () => {
       const res = await request.get(`/api/execution-workspaces/${workspaceId}/runtime-services`);
       const services = await jsonOrThrow<RuntimeService[]>(res, "list workspace runtime services");
-      return services.find((service) => service.status === "running" && service.url) ?? null;
+      return services.find((service) => service.status === "running" && Boolean(service.url) && predicate(service)) ?? null;
     },
     (service): service is RuntimeService => Boolean(service),
     "running workspace runtime service",
     60_000,
   );
+}
+
+async function assertPreviewOnlyServiceOpensBrowser(
+  page: Page,
+  company: Company,
+  workspace: ExecutionWorkspace,
+  service: RuntimeService,
+  previewUrl: string,
+) {
+  await page.goto(`/${company.issuePrefix}/workspaces/${workspace.id}`);
+  await expandSection(page, "services");
+  const row = page.getByTestId(`service-row-${service.id}`);
+  await expect(row).toBeVisible();
+  await expect(row).toContainText("Preview");
+  await expect(row).toContainText(`:${new URL(previewUrl).port}`);
+  await expect(page.getByTestId(`service-open-${service.id}`)).toBeVisible();
+  await expect(page.getByTestId(`service-stop-${service.id}`)).toHaveCount(0);
+  await expect(page.getByTestId(`service-restart-${service.id}`)).toHaveCount(0);
+  await expect(page.getByTestId(`service-start-${service.id}`)).toHaveCount(0);
+
+  await page.getByTestId(`service-open-${service.id}`).click();
+  await expect(page.getByTestId("workspace-preview-tabs")).toBeVisible();
+  await expect(page.getByTestId("preview-browser-url-input")).toHaveValue(previewUrl);
+  await expect(page.getByTestId("preview-browser-iframe")).toHaveAttribute("src", previewUrl);
 }
 
 async function waitForGitStatus(
@@ -521,6 +661,15 @@ async function expandSection(page: Page, id: string) {
 async function expectFileContains(cwd: string, relativePath: string, token: string) {
   const content = await fs.readFile(path.join(cwd, relativePath), "utf8");
   expect(content).toContain(token);
+}
+
+async function allocateLoopbackPort() {
+  const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  if (!address || typeof address === "string") throw new Error("Failed to allocate loopback port");
+  return address.port;
 }
 
 async function jsonOrThrow<T = unknown>(res: APIResponse, label: string): Promise<T> {

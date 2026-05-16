@@ -55,7 +55,12 @@ vi.mock("../services/output-detection.js", () => ({ outputDetectionService: vi.f
 vi.mock("../services/run-summary.js", () => ({ formatRunSummary: vi.fn() }));
 vi.mock("../middleware/logger.js", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }), info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
-import { applyEnvironmentRuntimeTarget, resolveAdapterExecutionContext } from "../services/heartbeat.js";
+import {
+  applyEnvironmentRuntimeTarget,
+  mergeAdapterRuntimeServiceReports,
+  resolveAdapterExecutionContext,
+  resolveAdapterManagedRuntimeExecutionWorkspaceId,
+} from "../services/heartbeat.js";
 
 describe("heartbeat adapter execution target context", () => {
   it("defaults missing adapter config target to local context", () => {
@@ -143,5 +148,50 @@ describe("heartbeat adapter execution target context", () => {
     };
 
     expect(applyEnvironmentRuntimeTarget(config, { target: null })).toBe(config);
+  });
+
+  it("uses the persisted execution workspace id for adapter-managed runtime services", () => {
+    expect(
+      resolveAdapterManagedRuntimeExecutionWorkspaceId({
+        persistedExecutionWorkspace: { id: "execution-workspace-live" },
+        issue: { executionWorkspaceId: "execution-workspace-from-issue" },
+      }),
+    ).toBe("execution-workspace-live");
+
+    expect(
+      resolveAdapterManagedRuntimeExecutionWorkspaceId({
+        persistedExecutionWorkspace: null,
+        issue: { executionWorkspaceId: "execution-workspace-from-issue" },
+      }),
+    ).toBe("execution-workspace-from-issue");
+  });
+
+  it("preserves adapter-provided runtime service metadata when detection sees the same URL", () => {
+    const reports = mergeAdapterRuntimeServiceReports({
+      adapterReports: [
+        {
+          serviceName: "localhost:5173",
+          scopeType: "execution_workspace",
+          url: "http://127.0.0.1:5173",
+          command: "pnpm dev",
+          stopPolicy: "manual",
+        },
+      ],
+      detectedReports: [
+        {
+          serviceName: "localhost:5173",
+          scopeType: "execution_workspace",
+          url: "http://127.0.0.1:5173/",
+          command: null,
+        },
+      ],
+    });
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({
+      url: "http://127.0.0.1:5173",
+      command: "pnpm dev",
+      stopPolicy: "manual",
+    });
   });
 });
