@@ -1,21 +1,21 @@
-import { useState, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ExecutionWorkspace } from "@armyofagents/shared";
 import type { Project } from "@armyofagents/shared";
-import type { ArtifactWithVersions, ArtifactVersion } from "@armyofagents/shared";
+import type { ArtifactWithVersions, ArtifactVersion, DetectedOutputForUI } from "@armyofagents/shared";
 import { WorkspaceTaskNav } from "./WorkspaceTaskNav";
 import { DependencyChain } from "./DependencyChain";
 import { WorkspaceTimeline } from "./WorkspaceTimeline";
-import { WorkspacePreviewPanel, PreviewModeToolbar, type PreviewMode } from "./WorkspacePreviewPanel";
+import { WorkspacePreviewPanel, type PreviewMode, type PreviewTabKind, type WorkspacePreviewTab } from "./WorkspacePreviewPanel";
 import { WorkspaceRightPanel } from "./WorkspaceRightPanel";
 import { ExecutionWorkspaceCloseDialog } from "./ExecutionWorkspaceCloseDialog";
 import { WorkspaceSettingsSheet } from "./WorkspaceSettingsSheet";
 import { useSidebar } from "../../context/SidebarContext";
 import { useSidebarCollapsed } from "./useSidebarCollapsed";
-import { executionWorkspacesApi } from "../../api/execution-workspaces";
+import { executionWorkspacesApi, type WorkspaceRuntimeService } from "../../api/execution-workspaces";
 import { queryKeys } from "../../lib/queryKeys";
-import { ListTodo, MessageSquare, Eye, Layers, AlertTriangle } from "lucide-react";
+import { ListTodo, MessageSquare, Eye, Layers, AlertTriangle, PanelRight, PanelRightClose } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -64,12 +64,22 @@ export function WorkspaceLayout({
     panelIds: ["center-left", "center-right"],
   });
 
-  const [previewMode, setPreviewMode] = useState<PreviewMode | null>(null);
-  const [previewArtifact, setPreviewArtifact] = useState<{
-    artifact: ArtifactWithVersions;
-    version: ArtifactVersion;
-  } | null>(null);
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [previewTabs, setPreviewTabs] = useState<WorkspacePreviewTab[]>([]);
+  const [activePreviewTabId, setActivePreviewTabId] = useState<string | null>(null);
+  const [previewVisible, setPreviewVisible] = useState(false);
+  const activePreviewTab = useMemo(
+    () => previewTabs.find((tab) => tab.id === activePreviewTabId) ?? previewTabs[0] ?? null,
+    [activePreviewTabId, previewTabs],
+  );
+  const previewMode: PreviewMode | null =
+    !previewVisible
+      ? null
+      : activePreviewTab?.kind === "changes" || activePreviewTab?.kind === "logs"
+      ? activePreviewTab.kind
+      : activePreviewTab?.kind === "artifact" || activePreviewTab?.kind === "browser"
+        ? "preview"
+        : null;
+  const selectedFile = activePreviewTab?.kind === "file" ? activePreviewTab.path : null;
 
   // Workspace actions are triggered from the cockpit header and rendered here.
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -120,29 +130,132 @@ export function WorkspaceLayout({
     [setRightCollapsed],
   );
 
-  const handlePreviewArtifact = useCallback(
-    (artifact: ArtifactWithVersions, version: ArtifactVersion) => {
-      setPreviewArtifact({ artifact, version });
-      setPreviewMode("preview");
-    },
-    [],
-  );
-
-  const handleModeChange = useCallback((mode: PreviewMode | null) => {
-    setPreviewMode(mode);
-    if (!mode) {
-      setPreviewArtifact(null);
-      setSelectedFile(null);
-    }
+  const openPreviewTab = useCallback((tab: WorkspacePreviewTab) => {
+    setPreviewTabs((current) => {
+      if (current.some((existing) => existing.id === tab.id)) {
+        return current;
+      }
+      return [...current, tab];
+    });
+    setActivePreviewTabId(tab.id);
+    setPreviewVisible(true);
   }, []);
 
+  const handlePreviewArtifact = useCallback(
+    (artifact: ArtifactWithVersions, version: ArtifactVersion) => {
+      openPreviewTab({
+        id: `artifact:${artifact.id}:${version.id}`,
+        kind: "artifact",
+        title: artifact.title,
+        artifact,
+        version,
+      });
+    },
+    [openPreviewTab],
+  );
+
+  const handlePreviewOutput = useCallback(
+    (output: DetectedOutputForUI) => {
+      openPreviewTab({
+        id: `output:${output.runId}:${output.outputIndex}`,
+        kind: "output",
+        title: output.filename,
+        output,
+      });
+    },
+    [openPreviewTab],
+  );
+
   const handleSelectFile = useCallback((path: string) => {
-    setSelectedFile(path);
-    // Auto-open changes panel if not already open
-    if (previewMode !== "changes") {
-      setPreviewMode("changes");
+    if (!selectedIssueId) return;
+    openPreviewTab({
+      id: `file:${selectedIssueId}:${path}`,
+      kind: "file",
+      title: path.split("/").pop() ?? path,
+      issueId: selectedIssueId,
+      path,
+    });
+  }, [openPreviewTab, selectedIssueId]);
+
+  const handleOpenBrowser = useCallback((service: WorkspaceRuntimeService) => {
+    if (!service.url) return;
+    openPreviewTab({
+      id: `browser:${service.id}`,
+      kind: "browser",
+      title: service.serviceName || "Browser",
+      url: service.url,
+      serviceId: service.id,
+    });
+  }, [openPreviewTab]);
+
+  const handleOpenGenericTab = useCallback((kind: PreviewTabKind) => {
+    if (!selectedIssueId) return;
+    if (kind === "home") {
+      openPreviewTab({
+        id: `home:${selectedIssueId}`,
+        kind: "home",
+        title: "Viewer",
+        issueId: selectedIssueId,
+      });
+    } else if (kind === "logs") {
+      openPreviewTab({
+        id: `logs:${selectedIssueId}`,
+        kind: "logs",
+        title: "Logs",
+        issueId: selectedIssueId,
+      });
+    } else if (kind === "browser") {
+      openPreviewTab({
+        id: `browser:manual:${workspace.id}`,
+        kind: "browser",
+        title: "Browser",
+        url: "about:blank",
+      });
     }
-  }, [previewMode]);
+  }, [openPreviewTab, selectedIssueId, workspace.id]);
+
+  const handleClosePreviewTab = useCallback((tabId: string) => {
+    setPreviewTabs((current) => {
+      const next = current.filter((tab) => tab.id !== tabId);
+      if (next.length === 0) {
+        setPreviewVisible(false);
+      }
+      setActivePreviewTabId((activeId) => {
+        if (activeId !== tabId) return activeId;
+        const closingIndex = current.findIndex((tab) => tab.id === tabId);
+        return next[Math.max(0, closingIndex - 1)]?.id ?? next[0]?.id ?? null;
+      });
+      return next;
+    });
+  }, []);
+
+  const handleTogglePreviewPanel = useCallback(() => {
+    if (previewVisible) {
+      setPreviewVisible(false);
+      return;
+    }
+    if (previewTabs.length > 0) {
+      setPreviewVisible(true);
+      if (!activePreviewTabId) setActivePreviewTabId(previewTabs[0].id);
+      return;
+    }
+    handleOpenGenericTab("home");
+  }, [activePreviewTabId, handleOpenGenericTab, previewTabs, previewVisible]);
+
+  useEffect(() => {
+    setPreviewTabs((current) => {
+      const next = current.filter((tab) => !("issueId" in tab) || tab.issueId === selectedIssueId);
+      if (next.length === 0) setPreviewVisible(false);
+      return next;
+    });
+    setActivePreviewTabId((activeId) => {
+      const tab = previewTabs.find((candidate) => candidate.id === activeId);
+      if (tab && "issueId" in tab && tab.issueId !== selectedIssueId) return null;
+      return activeId;
+    });
+  // previewTabs is intentionally omitted so task changes perform one cleanup pass.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIssueId]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden" data-testid="workspace-layout">
@@ -240,15 +353,23 @@ export function WorkspaceLayout({
 
             <div className={cn("absolute inset-0 overflow-hidden", mobileTab !== "preview" && "hidden")} data-testid="mobile-panel-preview">
               {selectedIssueId ? (
-                <WorkspacePreviewPanel
-                  issueId={selectedIssueId}
-                  companyId={companyId}
-                  activeMode={previewMode ?? "changes"}
-                  onModeChange={handleModeChange}
-                  previewArtifact={previewArtifact}
-                  functionType={project?.functionType ?? null}
-                  workspaceId={workspace.id}
-                />
+                previewTabs.length > 0 ? (
+                  <WorkspacePreviewPanel
+                    companyId={companyId}
+                    tabs={previewTabs}
+                    activeTabId={activePreviewTab?.id ?? null}
+                    onSelectTab={setActivePreviewTabId}
+                    onCloseTab={handleClosePreviewTab}
+                    onOpenTab={handleOpenGenericTab}
+                    onOpenResolvedTab={openPreviewTab}
+                    functionType={project?.functionType ?? null}
+                    workspaceId={workspace.id}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+                    Open a service, artifact, file, or log tab to preview it
+                  </div>
+                )
               ) : (
                 <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
                   Select a task to preview
@@ -268,6 +389,8 @@ export function WorkspaceLayout({
                   selectedFile={selectedFile}
                   onSelectFile={handleSelectFile}
                   onPreviewArtifact={handlePreviewArtifact}
+                  onPreviewOutput={handlePreviewOutput}
+                  onOpenBrowser={handleOpenBrowser}
                   selectedIssueIdentifier={selectedIssueIdentifier}
                   onOpenSettings={() => setSettingsOpen(true)}
                   onOpenArchive={() => setArchiveOpen(true)}
@@ -322,14 +445,21 @@ export function WorkspaceLayout({
               data-testid="workspace-center-panel"
             >
               {selectedIssueId && (
-                <div className="flex items-center justify-between px-3 py-1.5 border-b border-border shrink-0">
-                  <DependencyChain
-                    issueId={selectedIssueId}
-                    companyId={companyId}
-                    selectedIssueId={selectedIssueId}
-                    onSelectIssue={onSelectIssue}
-                  />
-                  <PreviewModeToolbar activeMode={previewMode} onModeChange={handleModeChange} />
+                <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border shrink-0">
+                  <div className="min-w-0 flex-1">
+                    <DependencyChain
+                      issueId={selectedIssueId}
+                      companyId={companyId}
+                      selectedIssueId={selectedIssueId}
+                      onSelectIssue={onSelectIssue}
+                    />
+                  </div>
+                  <div className="ml-auto shrink-0">
+                    <PreviewPanelToggle
+                      open={previewVisible && previewTabs.length > 0}
+                      onToggle={handleTogglePreviewPanel}
+                    />
+                  </div>
                 </div>
               )}
 
@@ -342,7 +472,7 @@ export function WorkspaceLayout({
               )}
             </Panel>
 
-            {previewMode && (
+            {previewVisible && previewTabs.length > 0 && (
               <>
                 <Separator
                   id="center-separator"
@@ -357,14 +487,15 @@ export function WorkspaceLayout({
                 >
                   {selectedIssueId && (
                     <WorkspacePreviewPanel
-                      issueId={selectedIssueId}
                       companyId={companyId}
-                      activeMode={previewMode}
-                      onModeChange={handleModeChange}
-                      previewArtifact={previewArtifact}
+                      tabs={previewTabs}
+                      activeTabId={activePreviewTab?.id ?? null}
+                      onSelectTab={setActivePreviewTabId}
+                      onCloseTab={handleClosePreviewTab}
+                      onOpenTab={handleOpenGenericTab}
+                      onOpenResolvedTab={openPreviewTab}
                       functionType={project?.functionType ?? null}
                       workspaceId={workspace.id}
-                      selectedFile={selectedFile}
                     />
                   )}
                 </Panel>
@@ -392,6 +523,8 @@ export function WorkspaceLayout({
                 selectedFile={selectedFile}
                 onSelectFile={handleSelectFile}
                 onPreviewArtifact={handlePreviewArtifact}
+                onPreviewOutput={handlePreviewOutput}
+                onOpenBrowser={handleOpenBrowser}
                 collapsed={rightCollapsed}
                 onToggleCollapse={() => setRightCollapsed(!rightCollapsed)}
                 onExpandAndShowSection={handleExpandAndShowSection}
@@ -487,5 +620,26 @@ export function WorkspaceLayout({
         />
       )}
     </div>
+  );
+}
+
+function PreviewPanelToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const Icon = open ? PanelRightClose : PanelRight;
+  const label = open ? "Close preview" : "Open preview";
+
+  return (
+    <Button
+      type="button"
+      variant={open ? "secondary" : "ghost"}
+      size="icon"
+      className="h-7 w-7 shrink-0"
+      title={label}
+      aria-label={label}
+      aria-pressed={open}
+      data-testid="workspace-preview-toggle"
+      onClick={onToggle}
+    >
+      <Icon className="h-3.5 w-3.5" />
+    </Button>
   );
 }

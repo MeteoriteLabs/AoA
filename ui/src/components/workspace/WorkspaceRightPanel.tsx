@@ -27,7 +27,7 @@ import { agentsApi } from "../../api/agents";
 import { activityApi } from "../../api/activity";
 import { artifactsApi } from "../../api/artifacts";
 import { dependenciesApi } from "../../api/dependencies";
-import { executionWorkspacesApi, type GitFileEntry } from "../../api/execution-workspaces";
+import { executionWorkspacesApi, type GitFileEntry, type WorkspaceRuntimeService } from "../../api/execution-workspaces";
 import { heartbeatsApi } from "../../api/heartbeats";
 import { issuesApi } from "../../api/issues";
 import { memoryRetrievalsApi } from "../../api/memoryRetrievals";
@@ -40,7 +40,7 @@ import { ServicesSection } from "./sections/ServicesSection";
 import { GitPanel } from "./tools/GitPanel";
 import { CockpitSection } from "./cockpit/CockpitSection";
 import type { PreviewMode } from "./WorkspacePreviewPanel";
-import type { Agent, ArtifactWithVersions, ArtifactVersion, ExecutionWorkspace } from "@armyofagents/shared";
+import type { Agent, ArtifactWithVersions, ArtifactVersion, ExecutionWorkspace, DetectedOutputForUI } from "@armyofagents/shared";
 
 function sectionKey(name: string) {
   return `aoa:workspace:cockpit:section:${name}`;
@@ -72,6 +72,8 @@ interface WorkspaceRightPanelProps {
   selectedFile?: string | null;
   onSelectFile?: (path: string) => void;
   onPreviewArtifact?: (artifact: ArtifactWithVersions, version: ArtifactVersion) => void;
+  onPreviewOutput?: (output: DetectedOutputForUI) => void;
+  onOpenBrowser?: (service: WorkspaceRuntimeService) => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
   onExpandAndShowSection?: (sectionName: string) => void;
@@ -262,6 +264,8 @@ export function WorkspaceRightPanel({
   workspace,
   functionType,
   onPreviewArtifact,
+  onPreviewOutput,
+  onOpenBrowser,
   collapsed = false,
   onToggleCollapse,
   onExpandAndShowSection,
@@ -390,12 +394,12 @@ export function WorkspaceRightPanel({
                 )}
                 {section.id === "context" && <ContextCockpitSection workspace={workspace} />}
                 {section.id === "artifacts" && (
-                  <ArtifactsSection issueId={issueId} onPreviewArtifact={onPreviewArtifact} />
+                  <ArtifactsSection issueId={issueId} onPreviewArtifact={onPreviewArtifact} onPreviewOutput={onPreviewOutput} />
                 )}
                 {section.id === "git" && (
                   <GitPanel workspace={workspace} issueId={issueId} isExpanded />
                 )}
-                {section.id === "services" && <ServicesSection workspace={workspace} />}
+                {section.id === "services" && <ServicesSection workspace={workspace} onOpenBrowser={onOpenBrowser} />}
                 {section.id === "memory" && (
                   <MemorySection issueId={issueId} companyId={companyId} companyPrefix={companyPrefix} />
                 )}

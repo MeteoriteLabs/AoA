@@ -13,6 +13,7 @@ type MemoryItem = { id: string; title: string };
 type RunForIssue = { runId: string; status: string; detectedOutputs?: unknown };
 type ExecutionWorkspace = { id: string; cwd: string | null; name: string; branchName?: string | null };
 type MemoryRetrieval = { itemId: string | null; itemTitle: string | null; triggeredBy: string };
+type RuntimeService = { id: string; serviceName: string; status: string; url: string | null };
 type DetectedOutput = {
   runId: string;
   outputIndex: number;
@@ -75,6 +76,12 @@ test.describe("software department product workspace journey", () => {
     expect(summaryOutput?.status).toBe("pending");
     expect(summaryOutput?.assetId).toBeTruthy();
 
+    const confirmedArtifact = await confirmDetectedOutput(request, summaryOutput!);
+    expect(confirmedArtifact.artifactId).toBeTruthy();
+
+    const service = await waitForRuntimeService(request, workspace.id);
+    expect(service.url).toBeTruthy();
+
     const dirtyStatus = await waitForGitStatus(request, workspace.id, (status) =>
       status.gitAvailable &&
       !status.clean &&
@@ -87,7 +94,18 @@ test.describe("software department product workspace journey", () => {
       agentName: agent.name,
       memoryTitle: memory.title,
       outputFilename: "workspace-summary.md",
+      serviceName: service.serviceName,
     });
+    await assertWorkspaceViewers(page, company, workspace, {
+      artifactTitle: "workspace-summary.md",
+      serviceName: service.serviceName,
+      serviceUrl: service.url!,
+    });
+
+    const stopServiceRes = await request.post(`/api/execution-workspaces/${workspace.id}/runtime-services/stop`, {
+      data: { runtimeServiceId: service.id },
+    });
+    await jsonOrThrow(stopServiceRes, "stop e2e runtime service");
 
     const commitRes = await request.post(`/api/execution-workspaces/${workspace.id}/git/commit`, {
       data: {
@@ -128,6 +146,10 @@ async function createTemporaryRepo(testInfo: TestInfo) {
   );
   await fs.writeFile(path.join(worktreeRoot, "README.md"), "# AoA Software Product E2E\n");
   await fs.writeFile(path.join(worktreeRoot, "src", "app.ts"), "export const appName = 'AoA E2E';\n");
+  await fs.writeFile(
+    path.join(worktreeRoot, "service-server.js"),
+    "require('http').createServer((_req,res)=>res.end('AoA software e2e service')).listen(process.env.PORT);\n",
+  );
   git(worktreeRoot, ["add", "."]);
   git(worktreeRoot, ["commit", "-m", "initial software e2e repo"]);
   execFileSync("git", ["init", "--bare", remoteRoot], { stdio: "pipe" });
@@ -209,6 +231,25 @@ async function hireProcessAgent(request: APIRequestContext, companyId: string, o
         injectCompanyContext: true,
         contextMode: "standard",
         autoRunSummary: true,
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command: "node service-server.js",
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+              port: { type: "auto", envKey: "PORT" },
+              expose: { urlTemplate: "http://127.0.0.1:{{port}}" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 250,
+              },
+              stopPolicy: { type: "manual" },
+            },
+          ],
+        },
       },
       adapterConfig: {
         command: "node",
@@ -330,6 +371,30 @@ async function waitForDetectedOutput(request: APIRequestContext, issueId: string
   );
 }
 
+async function confirmDetectedOutput(request: APIRequestContext, output: DetectedOutput) {
+  const res = await request.post(`/api/heartbeat-runs/${output.runId}/detected-outputs/${output.outputIndex}/confirm`, {
+    data: {
+      title: output.filename,
+      type: "document",
+      changelog: "Confirmed by software product e2e viewer test",
+    },
+  });
+  return jsonOrThrow<{ artifactId: string; versionId: string; status: string }>(res, "confirm detected output");
+}
+
+async function waitForRuntimeService(request: APIRequestContext, workspaceId: string) {
+  return poll(
+    async () => {
+      const res = await request.get(`/api/execution-workspaces/${workspaceId}/runtime-services`);
+      const services = await jsonOrThrow<RuntimeService[]>(res, "list workspace runtime services");
+      return services.find((service) => service.status === "running" && service.url) ?? null;
+    },
+    (service): service is RuntimeService => Boolean(service),
+    "running workspace runtime service",
+    60_000,
+  );
+}
+
 async function waitForGitStatus(
   request: APIRequestContext,
   workspaceId: string,
@@ -350,7 +415,7 @@ async function assertWorkspaceSidebar(
   page: Page,
   company: Company,
   workspace: ExecutionWorkspace,
-  expected: { agentName: string; memoryTitle: string; outputFilename: string },
+  expected: { agentName: string; memoryTitle: string; outputFilename: string; serviceName: string },
 ) {
   await page.addInitScript(() => localStorage.clear());
   await page.goto(`/${company.issuePrefix}/workspaces/${workspace.id}`);
@@ -369,10 +434,11 @@ async function assertWorkspaceSidebar(
 
   await expandSection(page, "services");
   await expect(page.getByTestId("section-services-body")).toBeVisible();
+  await expect(page.getByTestId("section-services-body")).toContainText(expected.serviceName);
 
   await expandSection(page, "artifacts");
   await expect(page.getByTestId("artifacts-list")).toContainText(expected.outputFilename);
-  await expect(page.getByTestId("artifact-candidate-row").filter({ hasText: expected.outputFilename })).toBeVisible();
+  await expect(page.getByTestId("artifact-row").filter({ hasText: expected.outputFilename })).toBeVisible();
 
   await expandSection(page, "memory");
   await expect(page.getByTestId("memory-section")).toContainText(expected.memoryTitle);
@@ -406,6 +472,36 @@ async function assertWorkspaceSidebar(
   for (const entry of [overflow.panel, overflow.viewport, overflow.sections, ...overflow.cards]) {
     expect(entry!.scrollWidth, `${entry === overflow.panel ? "panel" : entry === overflow.viewport ? "viewport" : entry === overflow.sections ? "sections" : entry!.id} overflows`).toBeLessThanOrEqual(entry!.clientWidth + 1);
   }
+}
+
+async function assertWorkspaceViewers(
+  page: Page,
+  company: Company,
+  workspace: ExecutionWorkspace,
+  expected: { artifactTitle: string; serviceName: string; serviceUrl: string },
+) {
+  await page.goto(`/${company.issuePrefix}/workspaces/${workspace.id}`);
+  await page.getByTestId("workspace-preview-toggle").click();
+  await expect(page.getByTestId("workspace-preview-tabs")).toBeVisible();
+  await expect(page.getByTestId("viewer-home")).toBeVisible();
+
+  const serviceRow = page.locator('[data-testid^="viewer-home-service-"]').filter({ hasText: expected.serviceName });
+  await expect(serviceRow).toBeVisible();
+  await serviceRow.click();
+  await expect(page.getByTestId("preview-browser-url-input")).toHaveValue(expected.serviceUrl);
+  await expect(page.getByTestId("preview-browser-iframe")).toHaveAttribute("src", expected.serviceUrl);
+
+  await page.getByRole("tab", { name: "Viewer" }).click();
+  const artifactRow = page.locator('[data-testid^="viewer-home-artifact-"]').filter({ hasText: expected.artifactTitle });
+  await expect(artifactRow).toBeVisible();
+  await artifactRow.click();
+  await expect(page.getByRole("tab", { name: expected.artifactTitle })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("preview-download")).toContainText(expected.artifactTitle);
+
+  await page.getByRole("tab", { name: "Viewer" }).click();
+  await page.getByTestId("viewer-home-logs").click();
+  await expect(page.getByRole("tab", { name: "Logs" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("logs-view")).toContainText("AOA_OUTPUT_PRODUCT_E2E_");
 }
 
 async function expectSidebarSections(page: Page, expectedIds: string[]) {

@@ -5,7 +5,7 @@ import { queryKeys } from "../../../lib/queryKeys";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FileCode, FileText, Image, File, Package } from "lucide-react";
-import type { ArtifactWithVersions, ArtifactVersion, ArtifactType } from "@armyofagents/shared";
+import type { ArtifactWithVersions, ArtifactVersion, ArtifactType, DetectedOutputForUI } from "@armyofagents/shared";
 
 function typeIcon(type: ArtifactType) {
   switch (type) {
@@ -32,9 +32,10 @@ function retentionLabel(output: { assetId: string | null; status?: string | null
 interface ArtifactsSectionProps {
   issueId: string;
   onPreviewArtifact?: (artifact: ArtifactWithVersions, version: ArtifactVersion) => void;
+  onPreviewOutput?: (output: DetectedOutputForUI) => void;
 }
 
-export function ArtifactsSection({ issueId, onPreviewArtifact }: ArtifactsSectionProps) {
+export function ArtifactsSection({ issueId, onPreviewArtifact, onPreviewOutput }: ArtifactsSectionProps) {
   const { data: artifact, isLoading } = useQuery({
     queryKey: queryKeys.artifacts.byIssue(issueId),
     queryFn: () => artifactsApi.getByIssueId(issueId),
@@ -97,10 +98,15 @@ export function ArtifactsSection({ issueId, onPreviewArtifact }: ArtifactsSectio
           </div>
         </button>
       )}
-      {candidates.map((output) => (
-        <div
+      {candidates.map((output) => {
+        const canPreview = Boolean(output.assetId && onPreviewOutput);
+        const RowTag = canPreview ? "button" : "div";
+        return (
+        <RowTag
           key={`${output.runId}:${output.outputIndex}`}
-          className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-md px-1 py-2"
+          type={canPreview ? "button" : undefined}
+          className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-md px-1 py-2 text-left transition-colors hover:bg-accent/50 disabled:hover:bg-transparent"
+          onClick={canPreview ? () => onPreviewOutput?.(output) : undefined}
           data-testid="artifact-candidate-row"
         >
           <File className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -118,8 +124,9 @@ export function ArtifactsSection({ issueId, onPreviewArtifact }: ArtifactsSectio
               </span>
             </div>
           </div>
-        </div>
-      ))}
+        </RowTag>
+      );
+      })}
     </div>
   );
 }

@@ -534,7 +534,8 @@ describe("WorkspaceRightPanel cockpit contract", () => {
     expect(screen.getByText("v3")).toBeInTheDocument();
   });
 
-  it("shows pending detected outputs as read-only sidebar rows", async () => {
+  it("opens captured pending detected outputs from the sidebar artifacts section", async () => {
+    const onPreviewOutput = vi.fn();
     artifactsApiMock.getByIssueId.mockResolvedValueOnce(null);
     outputDetectionApiMock.listForIssue.mockResolvedValueOnce([
       {
@@ -569,7 +570,7 @@ describe("WorkspaceRightPanel cockpit contract", () => {
       },
     ]);
 
-    renderRightPanel();
+    renderRightPanel({ onPreviewOutput });
     fireEvent.click(await screen.findByTestId("cockpit-section-trigger-artifacts"));
 
     expect(await screen.findByText("session-debug-report.html")).toBeInTheDocument();
@@ -577,6 +578,8 @@ describe("WorkspaceRightPanel cockpit contract", () => {
     expect(screen.getAllByText("candidate")).toHaveLength(2);
     expect(screen.getByText("captured")).toBeInTheDocument();
     expect(screen.getByText("live")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByTestId("artifact-candidate-row")[0]);
+    expect(onPreviewOutput).toHaveBeenCalledWith(expect.objectContaining({ filename: "session-debug-report.html", assetId: "asset-1" }));
     expect(screen.queryByRole("button", { name: /^Publish$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Confirm artifact" })).not.toBeInTheDocument();
     expect(outputDetectionApiMock.confirm).not.toHaveBeenCalled();
