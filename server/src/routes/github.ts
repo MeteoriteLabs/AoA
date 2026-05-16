@@ -7,14 +7,16 @@ import {
   GITHUB_PAT_ACTIVITY_KINDS,
   GITHUB_PAT_SECRET_NAME,
   type GitHubPrMetadata,
+  type GitHubPrSyncResponse,
 } from "@armyofagents/shared";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { issueService } from "../services/issues.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
-import { createPullRequest, GitHubPrError } from "../services/github-pr.js";
+import { createPullRequest, findPullRequestForBranch, GitHubPrError } from "../services/github-pr.js";
 import { resolveGitRoot, runGit, push } from "../services/git.js";
 const setPatSchema = z.object({ pat: z.string().min(1) });
+const syncPrBodySchema = z.object({ force: z.boolean().optional().default(false) });
 const createPrBodySchema = z.object({
   workspaceId: z.string().uuid(),
   title: z.string().min(1),
@@ -50,6 +52,32 @@ async function resolveGithubUserFromConnectActivity(
   } catch {
     return null;
   }
+}
+
+function isRecentGithubSync(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && Date.now() - time < 60_000;
+}
+
+function readGitHubPrMetadata(value: unknown): GitHubPrMetadata | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<GitHubPrMetadata>;
+  if (
+    typeof candidate.url !== "string" ||
+    typeof candidate.number !== "number" ||
+    (candidate.state !== "open" && candidate.state !== "closed" && candidate.state !== "merged") ||
+    typeof candidate.createdAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    url: candidate.url,
+    number: candidate.number,
+    state: candidate.state,
+    createdAt: candidate.createdAt,
+    draft: candidate.draft ?? false,
+  };
 }
 
 export function githubRoutes(db: Db) {
@@ -154,6 +182,112 @@ export function githubRoutes(db: Db) {
       githubUser,
       createdAt: row.createdAt,
     });
+  });
+
+  /**
+   * Reconcile a workspace branch against GitHub PRs. This is used by the
+   * workspace Git panel to show real PR state even when the PR was created
+   * outside this app or before metadata was persisted locally.
+   */
+  router.post("/execution-workspaces/:id/github-pr/sync", async (req, res) => {
+    assertBoard(req);
+
+    const parsed = syncPrBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid body", details: parsed.error.format() });
+      return;
+    }
+
+    const wsSvc = executionWorkspaceService(db);
+    const ws = await wsSvc.getById(req.params.id);
+    if (!ws) {
+      res.status(404).json({ error: "Workspace not found" });
+      return;
+    }
+    assertCompanyAccess(req, ws.companyId);
+
+    if (!ws.repoUrl) {
+      res.status(400).json({ error: "Workspace missing repoUrl - cannot sync PR" });
+      return;
+    }
+    if (!ws.branchName) {
+      res.status(400).json({ error: "Workspace missing branchName - cannot sync PR" });
+      return;
+    }
+
+    const existingMeta = (ws.metadata as Record<string, unknown> | null) ?? {};
+    if (!parsed.data.force && isRecentGithubSync(existingMeta.githubLastSyncedAt)) {
+      const response: GitHubPrSyncResponse = {
+        workspaceId: ws.id,
+        repoUrl: ws.repoUrl,
+        branchName: ws.branchName,
+        baseRef: ws.baseRef ?? null,
+        pr: readGitHubPrMetadata(existingMeta.pr),
+        githubLastSyncedAt: existingMeta.githubLastSyncedAt,
+        githubSyncError:
+          typeof existingMeta.githubSyncError === "string" ? existingMeta.githubSyncError : null,
+        cached: true,
+      };
+      res.json(response);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    try {
+      const result = await findPullRequestForBranch(db, {
+        companyId: ws.companyId,
+        repoUrl: ws.repoUrl,
+        branchName: ws.branchName,
+      });
+      const nextBaseRef = ws.baseRef ?? result.baseRef ?? null;
+      const nextMetadata: Record<string, unknown> = {
+        ...existingMeta,
+        githubLastSyncedAt: now,
+        githubSyncError: null,
+        noPrFound: result.pr ? false : true,
+      };
+      if (result.pr) {
+        nextMetadata.pr = result.pr;
+      } else {
+        delete nextMetadata.pr;
+      }
+
+      const update: {
+        baseRef?: string;
+        metadata: Record<string, unknown>;
+      } = { metadata: nextMetadata };
+      if (nextBaseRef && nextBaseRef !== ws.baseRef) {
+        update.baseRef = nextBaseRef;
+      }
+      await wsSvc.update(ws.id, update);
+
+      const response: GitHubPrSyncResponse = {
+        workspaceId: ws.id,
+        repoUrl: ws.repoUrl,
+        branchName: ws.branchName,
+        baseRef: nextBaseRef,
+        pr: result.pr,
+        githubLastSyncedAt: now,
+        githubSyncError: null,
+        cached: false,
+      };
+      res.json(response);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "GitHub sync failed";
+      await wsSvc.update(ws.id, {
+        metadata: {
+          ...existingMeta,
+          githubLastSyncedAt: now,
+          githubSyncError: message,
+        },
+      });
+
+      if (err instanceof GitHubPrError) {
+        res.status(err.status).json({ error: err.message, hint: err.scopeHint });
+        return;
+      }
+      res.status(502).json({ error: "GitHub sync failed", hint: message });
+    }
   });
 
   /**
@@ -268,21 +402,32 @@ export function githubRoutes(db: Db) {
         draft: parsed.data.draft,
       });
 
+      const now = new Date().toISOString();
       const prMetadata: GitHubPrMetadata = {
         url: pr.url,
         number: pr.number,
         state: pr.state,
-        createdAt: new Date().toISOString(),
+        createdAt: now,
         draft: pr.draft,
       };
 
       const existingMeta = (ws.metadata as Record<string, unknown> | null) ?? {};
-      await wsSvc.update(ws.id, {
+      const update: {
+        baseRef?: string;
+        metadata: Record<string, unknown>;
+      } = {
         metadata: {
           ...existingMeta,
           pr: prMetadata,
+          githubLastSyncedAt: now,
+          githubSyncError: null,
+          noPrFound: false,
         },
-      });
+      };
+      if (!ws.baseRef) {
+        update.baseRef = parsed.data.base;
+      }
+      await wsSvc.update(ws.id, update);
 
       await issueSvcInstance.addComment(
         issue.id,

@@ -9,6 +9,7 @@ import { ApiError } from "../api/client";
 
 const mockGetIssue = vi.fn();
 const mockCreatePR = vi.fn();
+const mockSyncWorkspacePR = vi.fn();
 const mockPushToast = vi.fn();
 const mockSafety = vi.fn();
 
@@ -19,6 +20,7 @@ vi.mock("../api/issues", () => ({
 vi.mock("../api/github-integration", () => ({
   githubIntegrationApi: {
     createPR: (...args: unknown[]) => mockCreatePR(...args),
+    syncWorkspacePR: (...args: unknown[]) => mockSyncWorkspacePR(...args),
   },
 }));
 
@@ -107,6 +109,16 @@ describe("CreatePrDialog", () => {
       requiresConfirmation: { commit: false, push: false, createPr: false },
       warnings: [],
     });
+    mockSyncWorkspacePR.mockResolvedValue({
+      workspaceId: "ws-1",
+      repoUrl: "https://github.com/acme/repo",
+      branchName: "feature/x",
+      baseRef: "main",
+      pr: null,
+      githubLastSyncedAt: "2026-05-16T00:00:00.000Z",
+      githubSyncError: null,
+      cached: false,
+    });
   });
 
   it("prefills title/body from the linked task + base from workspace.baseRef", async () => {
@@ -182,6 +194,7 @@ describe("CreatePrDialog", () => {
         head: "feature/x",
       });
     });
+    expect(mockSyncWorkspacePR).toHaveBeenCalledWith("ws-1", { force: true });
     await waitFor(() => {
       expect(mockPushToast).toHaveBeenCalledWith(
         expect.objectContaining({

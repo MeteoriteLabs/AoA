@@ -485,6 +485,8 @@ export type {
   GitHubPrCreateRequest,
   GitHubPrCreateResponse,
   GitHubPrMetadata,
+  GitHubPrSyncMetadata,
+  GitHubPrSyncResponse,
   // Plugin system
   JsonSchema,
   PluginJobDeclaration,

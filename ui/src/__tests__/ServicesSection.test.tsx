@@ -140,6 +140,7 @@ describe("ServicesSection", () => {
     expect(
       screen.getByText("Configure dev servers in workspace settings."),
     ).toBeInTheDocument();
+    expect(screen.getByTestId("section-services-body").className).toContain("py-2");
   });
 
   it("renders a running service row with name, port, and URL link", async () => {

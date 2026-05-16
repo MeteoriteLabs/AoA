@@ -304,7 +304,7 @@ function LayoutStub() {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function renderWorkspaceView(workspaceId = "ws-abc") {
+function renderWorkspaceView(workspaceId = "ws-abc", search = "") {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
@@ -314,7 +314,7 @@ function renderWorkspaceView(workspaceId = "ws-abc") {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/TC/workspaces/${workspaceId}`]}>
+      <MemoryRouter initialEntries={[`/TC/workspaces/${workspaceId}${search}`]}>
         <Routes>
           <Route path=":companyPrefix" element={<LayoutStub />}>
             <Route path="workspaces/:workspaceId" element={<WorkspaceView />} />
@@ -471,6 +471,52 @@ describe("WorkspaceView — left panel task navigator", () => {
     });
   });
 
+  it("navigates to a task's workspace when selecting a task from another workspace", async () => {
+    function LocationDisplay() {
+      const location = useLocation();
+      return <div data-testid="location">{location.pathname}{location.search}</div>;
+    }
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/TC/workspaces/ws-abc"]}>
+          <Routes>
+            <Route path=":companyPrefix" element={<LayoutStub />}>
+              <Route path="workspaces/:workspaceId" element={<WorkspaceView />} />
+            </Route>
+          </Routes>
+          <LocationDisplay />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-task-row-issue-2")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("workspace-task-row-issue-2"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("location")).toHaveTextContent("/TC/workspaces/ws-def?issue=issue-2");
+    });
+  });
+
+  it("honors the selected issue query param on workspace load", async () => {
+    renderWorkspaceView("ws-abc", "?issue=issue-2");
+
+    await waitFor(() => {
+      const row2 = screen.getByTestId("workspace-task-row-issue-2");
+      expect(row2.className).toMatch(/bg-accent/);
+    });
+  });
+
   it("filters tasks by search input", async () => {
     renderWorkspaceView();
 
@@ -522,7 +568,7 @@ describe("WorkspaceView — navigation", () => {
     });
   });
 
-  it("'Back to Department' navigates to project page", async () => {
+  it("uses the department name as the back label and navigates to project page", async () => {
     // We'll render with a LocationDisplay helper to verify the navigate call
     function LocationDisplay() {
       const location = useLocation();
@@ -554,11 +600,44 @@ describe("WorkspaceView — navigation", () => {
       expect(screen.getByTestId("workspace-layout")).toBeInTheDocument();
     });
 
-    const backButton = screen.getByText("Back to Department");
+    const backButton = screen.getByTestId("workspace-back-btn");
+    expect(backButton).toHaveTextContent("Engineering");
+    expect(screen.queryByText("Back to Department")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("workspace-department-label")).not.toBeInTheDocument();
     fireEvent.click(backButton);
 
     await waitFor(() => {
       expect(screen.getByTestId("location")).toHaveTextContent("/TC/projects/proj-1");
     });
+  });
+
+  it("centers icons in the collapsed left task rail", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/TC/workspaces/ws-abc"]}>
+          <Routes>
+            <Route path=":companyPrefix" element={<LayoutStub />}>
+              <Route path="workspaces/:workspaceId" element={<WorkspaceView />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-layout")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("workspace-task-nav-collapse"));
+    const collapsedRail = screen.getByTestId("workspace-task-nav-collapsed");
+    expect(collapsedRail.className).toContain("items-center");
+    expect(collapsedRail.className).not.toContain("items-start");
   });
 });

@@ -2441,8 +2441,17 @@ export function heartbeatService(db: Db) {
     let realizedWorkspace: Awaited<ReturnType<typeof realizeExecutionWorkspace>> | null = null;
 
     if (isolatedWorkspacesEnabled) {
+      const issueScopedExecutionWorkspace =
+        issueRef?.id && !issueRef.executionWorkspaceId
+          ? (await executionWorkspacesSvc.list(agent.companyId, {
+              issueId: issueRef.id,
+              reuseEligible: true,
+            }))[0] ?? null
+          : null;
       const existingExecutionWorkspace =
-        issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
+        issueRef?.executionWorkspaceId
+          ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId)
+          : issueScopedExecutionWorkspace;
       const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
         companyId: agent.companyId,
         heartbeatRunId: run.id,
@@ -2451,7 +2460,7 @@ export function heartbeatService(db: Db) {
       // Short-circuit: if issue prefers reusing an existing workspace, build the
       // realized descriptor from the persisted row instead of re-provisioning.
       const shouldReuseExisting =
-        issueRef?.executionWorkspacePreference === "reuse_existing" &&
+        (issueRef?.executionWorkspacePreference === "reuse_existing" || Boolean(issueScopedExecutionWorkspace)) &&
         existingExecutionWorkspace &&
         existingExecutionWorkspace.status !== "archived";
       const realizeBase = {

@@ -171,6 +171,10 @@ export function CreatePrDialog({
         title: `PR #${pr.number} created`,
         tone: "success",
       });
+      void githubIntegrationApi.syncWorkspacePR(workspace.id, { force: true }).catch(() => {
+        // The create route already persisted the PR; sync is a best-effort
+        // follow-up to refresh GitHub-derived state such as base branch.
+      });
       qc.invalidateQueries({
         queryKey: queryKeys.executionWorkspaces.detail(workspace.id),
       });

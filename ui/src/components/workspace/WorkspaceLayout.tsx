@@ -11,12 +11,11 @@ import { WorkspacePreviewPanel, PreviewModeToolbar, type PreviewMode } from "./W
 import { WorkspaceRightPanel } from "./WorkspaceRightPanel";
 import { ExecutionWorkspaceCloseDialog } from "./ExecutionWorkspaceCloseDialog";
 import { WorkspaceSettingsSheet } from "./WorkspaceSettingsSheet";
-import { OpenInIdeButton } from "./OpenInIdeButton";
 import { useSidebar } from "../../context/SidebarContext";
 import { useSidebarCollapsed } from "./useSidebarCollapsed";
 import { executionWorkspacesApi } from "../../api/execution-workspaces";
 import { queryKeys } from "../../lib/queryKeys";
-import { ListTodo, MessageSquare, Eye, Layers, AlertTriangle, MoreHorizontal, Archive, Settings } from "lucide-react";
+import { ListTodo, MessageSquare, Eye, Layers, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -27,13 +26,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
 
 const MOBILE_TABS = [
   { key: "tasks" as const, label: "Tasks", icon: ListTodo },
@@ -46,10 +38,11 @@ interface WorkspaceLayoutProps {
   workspace: ExecutionWorkspace;
   project: Project | null;
   selectedIssueId: string | null;
-  onSelectIssue: (issueId: string) => void;
+  onSelectIssue: (issueId: string, executionWorkspaceId?: string | null) => void;
   companyId: string;
   companyPrefix: string;
   onBack: () => void;
+  selectedIssueIdentifier?: string | null;
 }
 
 export function WorkspaceLayout({
@@ -60,6 +53,7 @@ export function WorkspaceLayout({
   companyId,
   companyPrefix,
   onBack,
+  selectedIssueIdentifier,
 }: WorkspaceLayoutProps) {
   const { isMobile } = useSidebar();
   const [mobileTab, setMobileTab] = useState<"tasks" | "timeline" | "preview" | "context">("timeline");
@@ -77,11 +71,10 @@ export function WorkspaceLayout({
   } | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
-  // Header action state — Settings, Archive, and close report wire up the kebab actions.
+  // Workspace actions are triggered from the cockpit header and rendered here.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [closeReportOpen, setCloseReportOpen] = useState(false);
-  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
 
   const queryClient = useQueryClient();
 
@@ -186,61 +179,6 @@ export function WorkspaceLayout({
       )}
 
       {/* Header chrome — workspace title + actions kebab. Menu items are disabled pending later Phase I tasks. */}
-      <header
-        className="flex items-center justify-between gap-2 border-b border-border bg-background px-4 py-2 shrink-0"
-        data-testid="workspace-header"
-      >
-        <div className="flex items-center gap-2 min-w-0">
-          <h1 className="text-sm font-medium truncate" data-testid="workspace-header-name">
-            {workspace.name}
-          </h1>
-          {workspace.branchName && (
-            <span
-              className="text-xs text-muted-foreground truncate"
-              data-testid="workspace-header-branch"
-            >
-              on {workspace.branchName}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          {workspace.cwd && <OpenInIdeButton cwd={workspace.cwd} />}
-          <DropdownMenu open={headerMenuOpen} onOpenChange={setHeaderMenuOpen}>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Workspace actions"
-                data-testid="workspace-header-menu-trigger"
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            {headerMenuOpen && (
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={() => setSettingsOpen(true)}
-                  data-testid="workspace-header-menu-settings"
-                >
-                  <Settings className="h-4 w-4 mr-2" />
-                  Settings
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => setArchiveOpen(true)}
-                  variant="destructive"
-                  disabled={workspace.status === "archived"}
-                  data-testid="workspace-header-menu-archive"
-                >
-                  <Archive className="h-4 w-4 mr-2" />
-                  Archive
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            )}
-          </DropdownMenu>
-        </div>
-      </header>
-
       {isMobile ? (
         <>
           {/* Mobile tab bar */}
@@ -330,6 +268,9 @@ export function WorkspaceLayout({
                   selectedFile={selectedFile}
                   onSelectFile={handleSelectFile}
                   onPreviewArtifact={handlePreviewArtifact}
+                  selectedIssueIdentifier={selectedIssueIdentifier}
+                  onOpenSettings={() => setSettingsOpen(true)}
+                  onOpenArchive={() => setArchiveOpen(true)}
                 />
               ) : (
                 <div className="flex items-center justify-center h-full text-sm text-muted-foreground p-4 text-center">
@@ -455,6 +396,9 @@ export function WorkspaceLayout({
                 onToggleCollapse={() => setRightCollapsed(!rightCollapsed)}
                 onExpandAndShowSection={handleExpandAndShowSection}
                 openSection={openSectionRequest}
+                selectedIssueIdentifier={selectedIssueIdentifier}
+                onOpenSettings={() => setSettingsOpen(true)}
+                onOpenArchive={() => setArchiveOpen(true)}
               />
             ) : (
               <div className="flex items-center justify-center h-full text-sm text-muted-foreground p-4 text-center">

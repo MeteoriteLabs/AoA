@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { agentsApi } from "../../../api/agents";
 import { activityApi } from "../../../api/activity";
@@ -8,18 +8,26 @@ import { dependenciesApi } from "../../../api/dependencies";
 import { artifactsApi } from "../../../api/artifacts";
 import { queryKeys } from "../../../lib/queryKeys";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Bot, ExternalLink, AlertTriangle, ArrowDown } from "lucide-react";
+import { Bot, ExternalLink, AlertTriangle, ArrowDown, Play } from "lucide-react";
 import type { Agent, Issue } from "@armyofagents/shared";
 
 interface ProcessSectionProps {
   issueId: string;
   companyId: string;
   companyPrefix: string;
+  onOpenLogs?: (runId: string) => void;
 }
 
-export function ProcessSection({ issueId, companyId, companyPrefix }: ProcessSectionProps) {
+export function ProcessSection({
+  issueId,
+  companyId,
+  companyPrefix,
+  onOpenLogs,
+}: ProcessSectionProps) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const { data: issue, isLoading: issueLoading } = useQuery({
     queryKey: queryKeys.issues.detail(issueId),
@@ -51,6 +59,7 @@ export function ProcessSection({ issueId, companyId, companyPrefix }: ProcessSec
   const isRunning = !!activeRun;
   const totalRuns = runs?.length ?? 0;
   const isBlocked = issue?.status === "blocked";
+  const latestRunId = activeRun?.id ?? runs?.[0]?.runId ?? null;
 
   const blockingTasks = isBlocked
     ? (deps?.upstream ?? []).filter((d) => d.status !== "done" && d.status !== "completed")
@@ -59,6 +68,24 @@ export function ProcessSection({ issueId, companyId, companyPrefix }: ProcessSec
   const completedUpstream = (deps?.upstream ?? []).filter(
     (d) => d.status === "done" || d.status === "completed",
   );
+
+  const wakeAgent = useMutation({
+    mutationFn: (agentId: string) =>
+      agentsApi.wakeup(
+        agentId,
+        {
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "workspace_process_wake",
+          payload: { issueId },
+        },
+        companyId,
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId) });
+    },
+  });
 
   if (issueLoading) {
     return (
@@ -70,12 +97,12 @@ export function ProcessSection({ issueId, companyId, companyPrefix }: ProcessSec
   }
 
   return (
-    <div className="space-y-2 px-3" data-testid="process-section">
+    <div className="min-w-0 max-w-full space-y-2 overflow-hidden px-1" data-testid="process-section">
       {/* Agent info */}
       {assignedAgent ? (
         <button
           type="button"
-          className="flex items-center gap-2 w-full text-left hover:bg-accent/50 rounded-md p-1.5 -ml-1.5 transition-colors"
+          className="flex w-full min-w-0 items-center gap-2 overflow-hidden rounded-md p-1.5 text-left transition-colors hover:bg-accent/50"
           onClick={() => navigate(`/${companyPrefix}/agents/${assignedAgent.urlKey}`)}
           data-testid="agent-link"
         >
@@ -95,20 +122,47 @@ export function ProcessSection({ issueId, companyId, companyPrefix }: ProcessSec
       )}
 
       {/* Status + runs */}
-      <div className="flex items-center gap-3 text-xs text-muted-foreground">
-        <div className="flex items-center gap-1.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <div className="flex min-w-0 items-center gap-1.5">
           <div
             className={`h-2 w-2 rounded-full ${isRunning ? "bg-green-500 animate-pulse" : "bg-muted-foreground/40"}`}
           />
-          <span>{isRunning ? "Running" : "Idle"}</span>
+          <span className="min-w-0 truncate">{isRunning ? "Running" : "Idle"}</span>
         </div>
-        <span>{totalRuns} run{totalRuns !== 1 ? "s" : ""}</span>
+        <span className="shrink-0">{totalRuns} run{totalRuns !== 1 ? "s" : ""}</span>
       </div>
+
+      {assignedAgent && !activeRun && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 w-full text-xs"
+          onClick={() => wakeAgent.mutate(assignedAgent.id)}
+          disabled={wakeAgent.isPending}
+        >
+          <Play className="mr-1.5 h-3.5 w-3.5" />
+          Wake agent
+        </Button>
+      )}
+
+      {latestRunId && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 w-full text-xs"
+          onClick={() => onOpenLogs?.(latestRunId)}
+          aria-label="Open latest logs"
+        >
+          Logs
+        </Button>
+      )}
 
       {/* Blockers */}
       {isBlocked && blockingTasks.length > 0 && (
-        <div className="space-y-1" data-testid="blockers-list">
-          <div className="flex items-center gap-1 text-xs font-medium text-amber-600">
+        <div className="min-w-0 space-y-1 overflow-hidden" data-testid="blockers-list">
+          <div className="flex min-w-0 items-center gap-1 text-xs font-medium text-amber-600">
             <AlertTriangle className="h-3 w-3" />
             Blocked by
           </div>
@@ -122,7 +176,7 @@ export function ProcessSection({ issueId, companyId, companyPrefix }: ProcessSec
 
       {/* Upstream dependency outputs (absorbed from ContextSection) */}
       {completedUpstream.length > 0 && (
-        <div className="space-y-1" data-testid="upstream-deps">
+        <div className="min-w-0 space-y-1 overflow-hidden" data-testid="upstream-deps">
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
             Dependency Outputs
           </div>
@@ -146,11 +200,11 @@ function UpstreamDep({ issueId, title }: { issueId: string; title: string }) {
   });
 
   return (
-    <div className="flex items-center gap-2 text-xs py-0.5" data-testid="upstream-dep">
+    <div className="flex min-w-0 items-center gap-2 overflow-hidden py-0.5 text-xs" data-testid="upstream-dep">
       <ArrowDown className="h-3 w-3 text-muted-foreground shrink-0" />
-      <span className="truncate">{title}</span>
+      <span className="min-w-0 truncate">{title}</span>
       {artifact && (
-        <span className="text-muted-foreground shrink-0">
+        <span className="min-w-0 truncate text-muted-foreground">
           ({artifact.title} v{artifact.versions[0]?.versionNumber ?? 0})
         </span>
       )}

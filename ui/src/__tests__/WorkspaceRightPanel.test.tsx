@@ -1,12 +1,11 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { WorkspaceRightPanel } from "../components/workspace/WorkspaceRightPanel";
 import { mockCompanyContext } from "./test-utils";
-
-// ─── Mock data ───────────────────────────────────────────────────────────────
 
 const mockWorkspace = {
   id: "ws-1",
@@ -122,29 +121,6 @@ const mockIssue = {
   updatedAt: new Date(),
 };
 
-const mockRuns = [
-  {
-    runId: "run-1",
-    status: "completed",
-    agentId: "agent-1",
-    startedAt: "2026-04-01T10:00:00Z",
-    finishedAt: "2026-04-01T10:05:00Z",
-    createdAt: "2026-04-01T10:00:00Z",
-    invocationSource: "heartbeat",
-  },
-  {
-    runId: "run-2",
-    status: "completed",
-    agentId: "agent-1",
-    startedAt: "2026-04-01T11:00:00Z",
-    finishedAt: "2026-04-01T11:03:00Z",
-    createdAt: "2026-04-01T11:00:00Z",
-    invocationSource: "heartbeat",
-  },
-];
-
-// ─── API Mocks ───────────────────────────────────────────────────────────────
-
 const artifactsApiMock = {
   getByIssueId: vi.fn().mockResolvedValue(mockArtifact),
   get: vi.fn().mockResolvedValue(mockArtifact),
@@ -156,10 +132,21 @@ const dependenciesApiMock = {
 
 const agentsApiMock = {
   list: vi.fn().mockResolvedValue([mockAgent]),
+  wakeup: vi.fn().mockResolvedValue({ id: "run-wake-1", status: "queued" }),
 };
 
 const activityApiMock = {
-  runsForIssue: vi.fn().mockResolvedValue(mockRuns),
+  runsForIssue: vi.fn().mockResolvedValue([
+    {
+      runId: "run-1",
+      status: "completed",
+      agentId: "agent-1",
+      startedAt: "2026-04-01T10:00:00Z",
+      finishedAt: "2026-04-01T10:05:00Z",
+      createdAt: "2026-04-01T10:00:00Z",
+      invocationSource: "heartbeat",
+    },
+  ]),
 };
 
 const heartbeatsApiMock = {
@@ -175,6 +162,33 @@ const issuesApiMock = {
 
 const executionWorkspacesApiMock = {
   runtimeServices: vi.fn().mockResolvedValue([]),
+  getGitStatus: vi.fn().mockResolvedValue({
+    gitAvailable: true,
+    branch: "feat/fix-auth",
+    detachedHead: false,
+    remote: null,
+    ahead: null,
+    behind: null,
+    files: [],
+    clean: true,
+  }),
+  getGitLog: vi.fn().mockResolvedValue({ gitAvailable: true, entries: [] }),
+  gitCommit: vi.fn(),
+  gitPush: vi.fn(),
+};
+
+const outputDetectionApiMock = {
+  listForIssue: vi.fn().mockResolvedValue([]),
+  confirm: vi.fn().mockResolvedValue({
+    artifactId: "art-confirmed",
+    versionId: "version-confirmed",
+    status: "confirmed",
+  }),
+  dismiss: vi.fn(),
+};
+
+const memoryRetrievalsApiMock = {
+  listForIssue: vi.fn().mockResolvedValue([]),
 };
 
 vi.mock("../api/artifacts", () => ({
@@ -205,27 +219,14 @@ vi.mock("../api/execution-workspaces", () => ({
   executionWorkspacesApi: new Proxy({}, { get: (_t, prop) => (executionWorkspacesApiMock as any)[prop] }),
 }));
 
-// Mock xterm modules to avoid DOM issues in jsdom
-vi.mock("@xterm/xterm", () => ({
-  Terminal: vi.fn().mockImplementation(() => ({
-    loadAddon: vi.fn(),
-    open: vi.fn(),
-    clear: vi.fn(),
-    write: vi.fn(),
-    dispose: vi.fn(),
-  })),
+vi.mock("../api/output-detection", () => ({
+  outputDetectionApi: new Proxy({}, { get: (_t, prop) => (outputDetectionApiMock as any)[prop] }),
 }));
 
-vi.mock("@xterm/addon-fit", () => ({
-  FitAddon: vi.fn().mockImplementation(() => ({
-    fit: vi.fn(),
-  })),
+vi.mock("../api/memoryRetrievals", () => ({
+  memoryRetrievalsApi: new Proxy({}, { get: (_t, prop) => (memoryRetrievalsApiMock as any)[prop] }),
 }));
 
-vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
-
-// Mock MemorySection so the expanded memory section renders a known placeholder
-// testid rather than spinning up the full memoryRetrievalsApi query.
 vi.mock("../components/workspace/sections/MemorySection", () => ({
   MemorySection: () => <div data-testid="memory-placeholder" />,
 }));
@@ -246,8 +247,6 @@ vi.mock("../context/ToastContext", () => ({
     clearToasts: vi.fn(),
   }),
 }));
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function renderRightPanel(props: Partial<React.ComponentProps<typeof WorkspaceRightPanel>> = {}) {
   const qc = new QueryClient({
@@ -274,8 +273,6 @@ function renderRightPanel(props: Partial<React.ComponentProps<typeof WorkspaceRi
   );
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
@@ -285,347 +282,329 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe("WorkspaceRightPanel — section rendering", () => {
-  it("renders permanent sections (artifacts, process, terminal, notes) when no previewMode", async () => {
-    renderRightPanel({ previewMode: null });
+describe("WorkspaceRightPanel cockpit contract", () => {
+  it("renders the software cockpit sections in the final order", async () => {
+    renderRightPanel({ functionType: "software_development" });
 
-    await waitFor(() => {
-      expect(screen.getByTestId("section-artifacts")).toBeInTheDocument();
-    });
+    const expected = [
+      "cockpit-section-process",
+      "cockpit-section-git",
+      "cockpit-section-services",
+      "cockpit-section-artifacts",
+      "cockpit-section-memory",
+      "cockpit-section-context",
+      "cockpit-section-access",
+    ];
 
-    expect(screen.getByTestId("section-process")).toBeInTheDocument();
-    expect(screen.getByTestId("section-services")).toBeInTheDocument();
-    expect(screen.getByTestId("section-terminal")).toBeInTheDocument();
-    expect(screen.getByTestId("section-notes")).toBeInTheDocument();
+    for (const testId of expected) {
+      expect(await screen.findByTestId(testId)).toBeInTheDocument();
+    }
 
-    // No contextual section when previewMode is null
-    expect(screen.queryByTestId("section-contextual")).not.toBeInTheDocument();
+    const sectionIds = screen
+      .getAllByTestId(/^cockpit-section-/)
+      .map((node) => node.getAttribute("data-testid"))
+      .filter((testId) => testId && !testId.includes("trigger") && !testId.includes("summary"));
+    expect(sectionIds).toEqual(expected);
+    expect(screen.queryByTestId("cockpit-section-engineering")).not.toBeInTheDocument();
   });
 
-  it("renders section labels", async () => {
-    renderRightPanel({ previewMode: null });
-
-    await waitFor(() => {
-      expect(screen.getByText("Artifacts")).toBeInTheDocument();
+  it("replaces static card subtitles with live summaries and hides empty summaries", async () => {
+    executionWorkspacesApiMock.getGitStatus.mockResolvedValueOnce({
+      gitAvailable: true,
+      branch: "feat/fix-auth",
+      detachedHead: false,
+      remote: { name: "origin", branch: "feat/fix-auth" },
+      ahead: 2,
+      behind: 0,
+      files: [{ path: "src/app.ts", status: "modified" }],
+      clean: false,
     });
-
-    expect(screen.getByText("Process")).toBeInTheDocument();
-    expect(screen.getByText("Terminal")).toBeInTheDocument();
-    expect(screen.getByText("Notes")).toBeInTheDocument();
-  });
-
-  it("hides terminal section for non-software departments", async () => {
-    renderRightPanel({ functionType: "marketing", previewMode: null });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("section-artifacts")).toBeInTheDocument();
-    });
-
-    expect(screen.queryByTestId("section-terminal")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("section-services")).not.toBeInTheDocument();
-  });
-});
-
-describe("WorkspaceRightPanel — contextual top section", () => {
-  it("shows Changes contextual section when previewMode is 'changes'", async () => {
-    renderRightPanel({ previewMode: "changes" });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("section-contextual")).toBeInTheDocument();
-    });
-
-    expect(screen.getByText("Changes")).toBeInTheDocument();
-  });
-
-  it("shows Runs contextual section when previewMode is 'logs'", async () => {
-    renderRightPanel({ previewMode: "logs" });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("section-contextual")).toBeInTheDocument();
-    });
-
-    expect(screen.getByText("Runs")).toBeInTheDocument();
-  });
-
-  it("shows Preview contextual section when previewMode is 'preview'", async () => {
-    renderRightPanel({ previewMode: "preview" });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("section-contextual")).toBeInTheDocument();
-    });
-
-    expect(screen.getByText("Preview")).toBeInTheDocument();
-  });
-});
-
-describe("WorkspaceRightPanel — expand/collapse persistence", () => {
-  it("toggles a section and persists to localStorage", async () => {
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("section-artifacts")).toBeInTheDocument();
-    });
-
-    // Artifacts is open by default — click to collapse
-    const trigger = screen.getByText("Artifacts");
-    fireEvent.click(trigger);
-
-    expect(localStorage.getItem("aoa:workspace:section:artifacts")).toBe("false");
-  });
-
-  it("loads expand state from localStorage on mount", async () => {
-    localStorage.setItem("aoa:workspace:section:artifacts", "false");
-    localStorage.setItem("aoa:workspace:section:terminal", "true");
-
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("section-artifacts")).toBeInTheDocument();
-    });
-
-    // Terminal section should be expanded
-    expect(screen.getByTestId("section-terminal")).toBeInTheDocument();
-  });
-});
-
-describe("ArtifactsSection", () => {
-  it("shows artifacts list when artifact exists", async () => {
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("artifacts-list")).toBeInTheDocument();
-    });
-
-    expect(screen.getByText("API Specification")).toBeInTheDocument();
-    expect(screen.getByText("v3")).toBeInTheDocument();
-    expect(screen.getByText("agent")).toBeInTheDocument();
-  });
-
-  it("shows empty state when no artifact linked", async () => {
-    artifactsApiMock.getByIssueId.mockResolvedValueOnce(null);
-
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("artifacts-empty")).toBeInTheDocument();
-    });
-  });
-
-  it("calls onPreviewArtifact when artifact row clicked", async () => {
-    const onPreview = vi.fn();
-    renderRightPanel({ onPreviewArtifact: onPreview });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("artifact-row")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId("artifact-row"));
-
-    expect(onPreview).toHaveBeenCalledWith(mockArtifact, mockArtifact.versions[0]);
-  });
-});
-
-describe("ProcessSection", () => {
-  it("shows agent info with name and adapter type", async () => {
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("agent-link")).toBeInTheDocument();
-    });
-
-    expect(screen.getByText("Claude Agent")).toBeInTheDocument();
-    expect(screen.getByText("claude_local")).toBeInTheDocument();
-  });
-
-  it("shows run count", async () => {
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByText("2 runs")).toBeInTheDocument();
-    });
-  });
-
-  it("shows idle status when no active run", async () => {
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByText("Idle")).toBeInTheDocument();
-    });
-  });
-
-  it("shows no-agent state when no agent assigned", async () => {
-    issuesApiMock.get.mockResolvedValueOnce({ ...mockIssue, assigneeAgentId: null });
-
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("no-agent")).toBeInTheDocument();
-    });
-  });
-
-  it("shows upstream dependency outputs when deps are completed", async () => {
-    dependenciesApiMock.list.mockResolvedValueOnce({
-      upstream: [
-        {
-          id: "dep-1",
-          dependencyIssueId: "issue-upstream",
-          title: "Write API Spec",
-          status: "done",
-          createdAt: "2026-04-01",
-        },
-      ],
-      downstream: [],
-    });
-
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByText("Write API Spec")).toBeInTheDocument();
-    });
-  });
-});
-
-describe("NotesSection", () => {
-  it("renders textarea with placeholder", async () => {
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("notes-textarea")).toBeInTheDocument();
-    });
-
-    expect(screen.getByPlaceholderText("Add notes about this workspace...")).toBeInTheDocument();
-  });
-
-  it("saves notes to localStorage after typing (debounced)", async () => {
-    renderRightPanel();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("notes-textarea")).toBeInTheDocument();
-    });
-
-    const textarea = screen.getByTestId("notes-textarea");
-    fireEvent.change(textarea, { target: { value: "My workspace notes" } });
-
-    // Not saved immediately
-    expect(localStorage.getItem("aoa:workspace:notes:ws-1")).toBeNull();
-
-    // Wait for debounce to fire (500ms + buffer)
-    await waitFor(
-      () => {
-        expect(localStorage.getItem("aoa:workspace:notes:ws-1")).toBe("My workspace notes");
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValueOnce([
+      {
+        id: "svc-1",
+        serviceName: "web",
+        status: "running",
+        port: 3100,
+        url: "http://localhost:3100",
+        command: "pnpm dev",
+        cwd: "/tmp/ws",
+        provider: "local_process",
+        lifecycle: "shared",
+        startedAt: "2026-05-16T10:00:00Z",
+        stoppedAt: null,
       },
-      { timeout: 2000 },
-    );
+    ]);
+    outputDetectionApiMock.listForIssue.mockResolvedValueOnce([
+      {
+        runId: "run-1",
+        runFinishedAt: "2026-04-01T10:05:00Z",
+        outputIndex: 0,
+        path: "session-debug-report.html",
+        filename: "session-debug-report.html",
+        byteSize: 128,
+        contentType: "text/html",
+        assetId: "asset-1",
+        sha256: "sha256-session-debug-report",
+        source: "diff",
+        label: "Session debug report",
+        artifactType: "document",
+        status: "pending",
+      },
+    ]);
+    memoryRetrievalsApiMock.listForIssue.mockResolvedValueOnce([
+      {
+        id: "mem-1",
+        companyId: "comp-1",
+        agentId: "agent-1",
+        runId: "run-1",
+        taskId: "issue-1",
+        triggeredBy: "agent_search",
+        query: "testing",
+        itemId: "item-1",
+        similarityScore: "0.91",
+        rank: 1,
+        shownToAgent: true,
+        createdAt: "2026-05-16T10:00:00Z",
+        itemTitle: "Testing standards",
+        itemContent: "Use real product tests",
+        itemCategory: "engineering",
+        itemLayer: "department",
+        itemStatus: "active",
+        itemPinnedToSkill: false,
+      },
+    ]);
+
+    renderRightPanel({ functionType: "software_development" });
+
+    expect(await screen.findByText("Idle · 1 run")).toBeInTheDocument();
+    expect(await screen.findByText("1 changed file · 2 ahead")).toBeInTheDocument();
+    expect(await screen.findByText("1 running · web")).toBeInTheDocument();
+    expect(await screen.findByText("1 artifact · 1 candidate")).toBeInTheDocument();
+    expect(await screen.findByText("1 retrieval")).toBeInTheDocument();
+    expect(await screen.findByText("Repo connected")).toBeInTheDocument();
+
+    expect(screen.queryByText("Agent, run, blockers")).not.toBeInTheDocument();
+    expect(screen.queryByText("Branch, changes, PR")).not.toBeInTheDocument();
+    expect(screen.queryByText("Task scope and inputs")).not.toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-section-summary-context")).toBeEmptyDOMElement();
   });
 
-  it("loads saved notes from localStorage on mount", async () => {
-    localStorage.setItem("aoa:workspace:notes:ws-1", "Previously saved notes");
-
-    renderRightPanel();
-
-    await waitFor(() => {
-      const textarea = screen.getByTestId("notes-textarea") as HTMLTextAreaElement;
-      expect(textarea.value).toBe("Previously saved notes");
-    });
-  });
-});
-
-describe("WorkspaceRightPanel — collapsed icon rail", () => {
-  it("renders icon rail instead of sections when collapsed", () => {
-    renderRightPanel({ collapsed: true });
-
-    expect(screen.getByTestId("workspace-right-panel-collapsed")).toBeInTheDocument();
-    expect(screen.queryByTestId("section-artifacts")).not.toBeInTheDocument();
-    expect(screen.getByTestId("workspace-right-panel-expand")).toBeInTheDocument();
-  });
-
-  it("shows all permanent section icons for software_development", () => {
-    renderRightPanel({ collapsed: true, functionType: "software_development" });
-
-    expect(screen.getByTestId("workspace-rail-section-artifacts")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-rail-section-process")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-rail-section-services")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-rail-section-memory")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-rail-section-git")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-rail-section-terminal")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-rail-section-notes")).toBeInTheDocument();
-  });
-
-  it("hides git + terminal icons for non-software functionType", () => {
-    renderRightPanel({ collapsed: true, functionType: "marketing" });
-
-    expect(screen.getByTestId("workspace-rail-section-artifacts")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-rail-section-process")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-rail-section-memory")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-rail-section-notes")).toBeInTheDocument();
-    expect(screen.queryByTestId("workspace-rail-section-services")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("workspace-rail-section-git")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("workspace-rail-section-terminal")).not.toBeInTheDocument();
-  });
-
-  it("clicking a section icon calls onExpandAndShowSection with section name", () => {
-    const onExpandAndShowSection = vi.fn();
+  it("renders the cockpit header with ticket identifier, actions, and collapse", async () => {
+    const user = userEvent.setup();
+    const onToggleCollapse = vi.fn();
+    const onOpenSettings = vi.fn();
+    const onOpenArchive = vi.fn();
     renderRightPanel({
-      collapsed: true,
-      onExpandAndShowSection,
+      functionType: "software_development",
+      selectedIssueIdentifier: "ENG-42",
+      onToggleCollapse,
+      onOpenSettings,
+      onOpenArchive,
     });
 
-    fireEvent.click(screen.getByTestId("workspace-rail-section-memory"));
-    expect(onExpandAndShowSection).toHaveBeenCalledWith("memory");
-  });
+    expect(await screen.findByText("Workspace cockpit")).toBeInTheDocument();
+    expect(screen.getByText("ENG-42")).toBeInTheDocument();
+    await user.click(screen.getByTestId("workspace-cockpit-menu-trigger"));
+    await user.click(await screen.findByTestId("workspace-cockpit-menu-settings"));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
 
-  it("expand toggle calls onToggleCollapse", () => {
-    const onToggleCollapse = vi.fn();
-    renderRightPanel({ collapsed: true, onToggleCollapse });
+    await user.click(screen.getByTestId("workspace-cockpit-menu-trigger"));
+    await user.click(await screen.findByTestId("workspace-cockpit-menu-archive"));
+    expect(onOpenArchive).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByTestId("workspace-right-panel-expand"));
-    expect(onToggleCollapse).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows collapse button in expanded header", () => {
-    const onToggleCollapse = vi.fn();
-    renderRightPanel({ collapsed: false, onToggleCollapse });
-
-    expect(screen.getByTestId("workspace-right-panel-collapse")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("workspace-right-panel-collapse"));
     expect(onToggleCollapse).toHaveBeenCalledTimes(1);
   });
 
-  it("openSection prop force-opens the named section when expanded", async () => {
-    // Memory section starts closed by setting localStorage to "false"
-    localStorage.setItem("aoa:workspace:section:memory", "false");
+  it("keeps workspace actions reachable from the collapsed cockpit rail", async () => {
+    const user = userEvent.setup();
+    const onOpenSettings = vi.fn();
+    const onOpenArchive = vi.fn();
+    renderRightPanel({
+      collapsed: true,
+      selectedIssueIdentifier: "ENG-42",
+      onOpenSettings,
+      onOpenArchive,
+    });
 
-    const { rerender } = renderRightPanel({
+    expect(screen.getByTestId("workspace-right-panel-collapsed")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-right-panel-collapsed").className).toContain("items-center");
+    expect(screen.getByTestId("workspace-right-panel-collapsed").className).not.toContain("items-end");
+    await user.click(screen.getByTestId("workspace-cockpit-menu-trigger"));
+    await user.click(await screen.findByTestId("workspace-cockpit-menu-settings"));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not render Engineering for non-software departments", async () => {
+    renderRightPanel({ functionType: "marketing" });
+
+    expect(await screen.findByTestId("cockpit-section-process")).toBeInTheDocument();
+    expect(screen.queryByTestId("cockpit-section-engineering")).not.toBeInTheDocument();
+  });
+
+  it("applies containment classes to every cockpit section", async () => {
+    renderRightPanel({ functionType: "software_development" });
+
+    for (const id of ["process", "git", "services", "artifacts", "memory", "context", "access"]) {
+      const section = await screen.findByTestId(`cockpit-section-${id}`);
+      expect(section.className).toContain("min-w-0");
+      expect(section.className).toContain("max-w-full");
+      expect(section.className).toContain("overflow-hidden");
+    }
+  });
+
+  it("keeps collapsed cockpit rows status-only with actions hidden", async () => {
+    renderRightPanel({ functionType: "software_development" });
+
+    expect(await screen.findByTestId("cockpit-section-process")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Wake agent" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create PR" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Commit" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel run" })).not.toBeInTheDocument();
+  });
+
+  it("shows Wake agent only after Process is expanded and never shows pause or cancel controls", async () => {
+    heartbeatsApiMock.activeRunForIssue.mockResolvedValueOnce(null);
+    renderRightPanel({ functionType: "software_development" });
+
+    fireEvent.click(await screen.findByTestId("cockpit-section-trigger-process"));
+
+    expect(await screen.findByRole("button", { name: "Wake agent" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Open latest logs" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open latest run" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel run" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause run" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume run" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause agent" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+  });
+
+  it("wakes the assigned agent with the current issue payload", async () => {
+    renderRightPanel();
+
+    fireEvent.click(await screen.findByTestId("cockpit-section-trigger-process"));
+    fireEvent.click(await screen.findByRole("button", { name: "Wake agent" }));
+
+    await waitFor(() => {
+      expect(agentsApiMock.wakeup).toHaveBeenCalledWith(
+        "agent-1",
+        expect.objectContaining({
+          source: "on_demand",
+          payload: { issueId: "issue-1" },
+        }),
+        "comp-1",
+      );
+    });
+  });
+
+  it("renders services under Services and git under Git", async () => {
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValueOnce([
+      {
+        id: "svc-1",
+        serviceName: "web",
+        status: "running",
+        port: 3100,
+        url: "http://localhost:3100",
+        command: "pnpm dev",
+        cwd: "/tmp/ws",
+        provider: "local_process",
+        lifecycle: "shared",
+        startedAt: "2026-05-16T10:00:00Z",
+        stoppedAt: null,
+      },
+    ]);
+
+    renderRightPanel();
+
+    fireEvent.click(await screen.findByTestId("cockpit-section-trigger-services"));
+    expect(await screen.findByTestId("section-services-body")).toBeInTheDocument();
+    expect(await screen.findByText("web")).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByTestId("cockpit-section-trigger-git"));
+    expect(await screen.findByTestId("git-panel")).toBeInTheDocument();
+  });
+
+  it("shows artifact details only after Artifacts is expanded", async () => {
+    renderRightPanel();
+
+    expect(screen.queryByText("API Specification")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId("cockpit-section-trigger-artifacts"));
+
+    expect(await screen.findByText("API Specification")).toBeInTheDocument();
+    expect(screen.getByText("v3")).toBeInTheDocument();
+  });
+
+  it("shows pending detected outputs as read-only sidebar rows", async () => {
+    artifactsApiMock.getByIssueId.mockResolvedValueOnce(null);
+    outputDetectionApiMock.listForIssue.mockResolvedValueOnce([
+      {
+        runId: "run-1",
+        runFinishedAt: "2026-04-01T10:05:00Z",
+        outputIndex: 0,
+        path: "session-debug-report.html",
+        filename: "session-debug-report.html",
+        byteSize: 128,
+        contentType: "text/html",
+        assetId: "asset-1",
+        sha256: "sha256-session-debug-report",
+        source: "diff",
+        label: "Session debug report",
+        artifactType: "document",
+        status: "pending",
+      },
+      {
+        runId: "run-1",
+        runFinishedAt: "2026-04-01T10:05:00Z",
+        outputIndex: 1,
+        path: "src/app.ts",
+        filename: "app.ts",
+        byteSize: 256,
+        contentType: "text/typescript",
+        assetId: null,
+        sha256: null,
+        source: "git_diff",
+        label: null,
+        artifactType: "code",
+        status: "pending",
+      },
+    ]);
+
+    renderRightPanel();
+    fireEvent.click(await screen.findByTestId("cockpit-section-trigger-artifacts"));
+
+    expect(await screen.findByText("session-debug-report.html")).toBeInTheDocument();
+    expect(await screen.findByText("app.ts")).toBeInTheDocument();
+    expect(screen.getAllByText("candidate")).toHaveLength(2);
+    expect(screen.getByText("captured")).toBeInTheDocument();
+    expect(screen.getByText("live")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Publish$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirm artifact" })).not.toBeInTheDocument();
+    expect(outputDetectionApiMock.confirm).not.toHaveBeenCalled();
+  });
+
+  it("opens Memory from the collapsed rail and force-expands it", async () => {
+    const onExpandAndShowSection = vi.fn();
+    renderRightPanel({ collapsed: true, onExpandAndShowSection });
+
+    fireEvent.click(screen.getByTestId("workspace-rail-section-memory"));
+    expect(onExpandAndShowSection).toHaveBeenCalledWith("memory");
+
+    renderRightPanel({
       collapsed: false,
-      openSection: null,
+      openSection: { section: "memory", nonce: 1 },
     });
 
-    // memory section should be rendered but collapsed (no memory-placeholder visible)
-    await waitFor(() => {
-      expect(screen.getByTestId("section-memory")).toBeInTheDocument();
-    });
-    expect(screen.queryByTestId("memory-placeholder")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("memory-placeholder")).toBeInTheDocument();
+  });
 
-    // Now re-render with an openSection request
-    rerender(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })}>
-        <MemoryRouter>
-          <WorkspaceRightPanel
-            issueId="issue-1"
-            companyId="comp-1"
-            companyPrefix="TC"
-            workspace={mockWorkspace}
-            functionType="software_development"
-            previewMode={null}
-            collapsed={false}
-            openSection={{ section: "memory", nonce: 123 }}
-          />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
+  it("renders Access without leaking secret values", async () => {
+    renderRightPanel();
 
-    await waitFor(() => {
-      expect(screen.getByTestId("memory-placeholder")).toBeInTheDocument();
-    });
+    fireEvent.click(await screen.findByTestId("cockpit-section-trigger-access"));
+
+    expect(await screen.findByTestId("access-cockpit-section")).toBeInTheDocument();
+    expect(screen.getByText("names only")).toBeInTheDocument();
+    expect(screen.queryByText(/sk-/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/ghp_/)).not.toBeInTheDocument();
   });
 });
