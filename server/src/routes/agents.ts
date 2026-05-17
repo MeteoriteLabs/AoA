@@ -512,6 +512,7 @@ export function agentRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     await assertRole(db, req, companyId, "founder");
+    const agentId = req.params.id as string;
     const triggerId = req.params.triggerId as string;
     const { enabled, config } = req.body as { enabled?: boolean; config?: Record<string, unknown> };
     const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -524,6 +525,19 @@ export function agentRoutes(db: Db) {
       .returning()
       .then((rows) => rows[0]);
     if (!updated) throw notFound("Trigger not found");
+
+    // D3: Audit trigger config changes.
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "aoa_agent.trigger_changed",
+      entityType: "aoa_agent_trigger",
+      entityId: triggerId,
+      agentId,
+      details: { enabled: updated.enabled, kind: updated.kind },
+    });
+
     res.json(updated);
   });
 
@@ -1013,6 +1027,21 @@ export function agentRoutes(db: Db) {
       details: { name: agent.name, role: agent.role },
     });
 
+    // D3: AoA-specific audit entry so governance queries can filter by kind.
+    if (agent.kind === "aoa") {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "aoa_agent.created",
+        entityType: "agent",
+        entityId: agent.id,
+        details: { name: agent.name, role: agent.role },
+      });
+    }
+
     res.status(201).json(agent);
   });
 
@@ -1270,6 +1299,18 @@ export function agentRoutes(db: Db) {
       entityType: "agent",
       entityId: agent.id,
     });
+
+    // D3: AoA-specific audit entry.
+    if (existing.kind === "aoa") {
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "aoa_agent.paused",
+        entityType: "agent",
+        entityId: agent.id,
+      });
+    }
 
     res.json(agent);
   });
