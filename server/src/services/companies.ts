@@ -203,6 +203,8 @@ export function companyService(db: Db) {
         db
           .select({ companyId: agents.companyId, count: count() })
           .from(agents)
+          // Per-company agent counts exclude platform (Commander-team) agents.
+          .where(eq(agents.kind, "org"))
           .groupBy(agents.companyId),
         db
           .select({ companyId: issues.companyId, count: count() })

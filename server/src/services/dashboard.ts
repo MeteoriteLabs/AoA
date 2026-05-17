@@ -17,7 +17,8 @@ export function dashboardService(db: Db) {
       const agentRows = await db
         .select({ status: agents.status, count: sql<number>`count(*)` })
         .from(agents)
-        .where(eq(agents.companyId, companyId))
+        // Exclude platform (Commander-team) agents from user dashboard counts.
+        .where(and(eq(agents.companyId, companyId), eq(agents.kind, "org")))
         .groupBy(agents.status);
 
       const taskRows = await db

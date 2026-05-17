@@ -1566,8 +1566,10 @@ export function issueService(db: Db) {
       let m: RegExpExecArray | null;
       while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
       if (tokens.size === 0) return [];
+      // @mention resolution excludes platform (Commander-team) agents —
+      // they are not mentionable by org users in task comments.
       const rows = await db.select({ id: agents.id, name: agents.name })
-        .from(agents).where(eq(agents.companyId, companyId));
+        .from(agents).where(and(eq(agents.companyId, companyId), eq(agents.kind, "org")));
       return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
     },
 

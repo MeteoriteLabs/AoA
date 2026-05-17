@@ -649,7 +649,8 @@ export function agentService(db: Db) {
         db
           .select()
           .from(agents)
-          .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated"))),
+          // Org chart excludes platform (Commander-team) agents.
+          .where(and(eq(agents.companyId, companyId), eq(agents.kind, "org"), ne(agents.status, "terminated"))),
         db
           .select({
             userId: companyMemberships.principalId,
@@ -887,7 +888,11 @@ export function agentService(db: Db) {
         return { agent: null, ambiguous: false } as const;
       }
 
-      const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+      // Platform (Commander-team) agents are not resolvable via user-facing URL keys.
+      const rows = await db
+        .select()
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.kind, "org")));
       const matches = rows
         .map(normalizeAgentRow)
         .filter((agent) => agent.urlKey === urlKey && agent.status !== "terminated");
