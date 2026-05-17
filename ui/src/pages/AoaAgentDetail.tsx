@@ -9,7 +9,6 @@ import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { isUuidLike, type Agent } from "@armyofagents/shared";
 import type { CompanySkillListItem } from "@armyofagents/shared";
-import { agentRouteRef } from "../lib/utils";
 import { AgentDetailCore } from "../components/agent-detail/AgentDetailCore";
 import { AoaTriggersTab } from "../components/agent-detail/AoaTriggersTab";
 import { AoaRunsPanel } from "../components/agent-detail/AoaRunsPanel";
@@ -93,24 +92,20 @@ export function AoaAgentDetail() {
   });
 
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
-  const canonicalRef = agent ? agentRouteRef(agent) : routeAgentRef;
+  // AoA detail is UUID-routed and must NEVER slug-canonicalize: kind='aoa'
+  // agents are deliberately excluded from the server's urlKey resolver
+  // (resolveByReference is hardcoded eq(agents.kind,"org") — Plan-A M1 /
+  // Decision #99). Resolving a name-slug for an aoa agent 404s; only the
+  // by-id path resolves kind='aoa'. So every aoa route/tab URL stays
+  // /team/aoa/<uuid>. (Worker AgentDetail keeps its slug pretty-URLs —
+  // workers ARE in the urlKey resolver. Do not change that.)
+  const aoaRouteRef = agent?.id ?? routeAgentRef;
 
   // Sync company if agent belongs to a different company
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
     setSelectedCompanyId(agent.companyId, { source: "route_sync" });
   }, [agent?.companyId, selectedCompanyId, setSelectedCompanyId]);
-
-  // Redirect if canonical ref doesn't match route ref
-  useEffect(() => {
-    if (!agent) return;
-    if (routeAgentRef === canonicalRef) return;
-    if (urlTab) {
-      navigate(`/team/aoa/${canonicalRef}/${urlTab}`, { replace: true });
-      return;
-    }
-    navigate(`/team/aoa/${canonicalRef}`, { replace: true });
-  }, [agent, routeAgentRef, canonicalRef, urlTab, navigate]);
 
   // Update breadcrumbs
   useEffect(() => {
@@ -121,13 +116,13 @@ export function AoaAgentDetail() {
     if (activeView === "overview") {
       crumbs.push({ label: agentName });
     } else {
-      crumbs.push({ label: agentName, href: `/team/aoa/${canonicalRef}` });
+      crumbs.push({ label: agentName, href: `/team/aoa/${aoaRouteRef}` });
       if (activeView === "triggers") crumbs.push({ label: "Triggers" });
       else if (activeView === "runs") crumbs.push({ label: "Runs" });
       else if (activeView === "configure") crumbs.push({ label: "Configure" });
     }
     setBreadcrumbs(crumbs);
-  }, [setBreadcrumbs, agent, routeAgentRef, canonicalRef, activeView]);
+  }, [setBreadcrumbs, agent, routeAgentRef, aoaRouteRef, activeView]);
 
   useBeforeUnload(
     useCallback(
@@ -146,7 +141,7 @@ export function AoaAgentDetail() {
       agentsApi.update(routeAgentRef, { icon }, resolvedCompanyId ?? undefined),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(canonicalRef) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(aoaRouteRef) });
       if (resolvedCompanyId) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
       }
@@ -183,8 +178,8 @@ export function AoaAgentDetail() {
       onViewChange={(v) => {
         const target =
           v === "overview"
-            ? `/team/aoa/${canonicalRef}`
-            : `/team/aoa/${canonicalRef}/${v}`;
+            ? `/team/aoa/${aoaRouteRef}`
+            : `/team/aoa/${aoaRouteRef}/${v}`;
         navigate(target);
       }}
       actionBar={{
@@ -201,7 +196,7 @@ export function AoaAgentDetail() {
             <AoaOverview
               agent={agent}
               companyId={resolvedCompanyId ?? ""}
-              agentRef={canonicalRef}
+              agentRef={aoaRouteRef}
             />
           );
         }

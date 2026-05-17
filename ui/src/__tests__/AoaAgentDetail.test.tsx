@@ -7,16 +7,18 @@ import { renderWithProviders, makeAgent, mockCompanyContext, mockBreadcrumbConte
 
 const mockNavigate = vi.fn();
 
+const mockParams: { agentId: string; companyPrefix?: string; tab?: string } = {
+  agentId: "agent-aoa-1",
+  companyPrefix: undefined,
+  tab: undefined,
+};
+
 vi.mock("@/lib/router", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
   return {
     ...actual,
     useNavigate: () => mockNavigate,
-    useParams: () => ({
-      agentId: "agent-aoa-1",
-      companyPrefix: undefined,
-      tab: undefined,
-    }),
+    useParams: () => mockParams,
     Link: actual.Link,
     NavLink: actual.NavLink,
     useBeforeUnload: vi.fn(),
@@ -142,6 +144,9 @@ describe("AoaAgentDetail", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockParams.agentId = "agent-aoa-1";
+    mockParams.companyPrefix = undefined;
+    mockParams.tab = undefined;
     mockCompanyContext.selectedCompanyId = "comp-1";
     mockAgentsGet.mockResolvedValue(aoaAgent);
     mockListTriggers.mockResolvedValue([]);
@@ -167,6 +172,60 @@ describe("AoaAgentDetail", () => {
       expect(screen.getByTestId("tab-configure")).toBeInTheDocument();
       expect(screen.getByTestId("tab-triggers")).toBeInTheDocument();
     });
+  });
+});
+
+describe("AoaAgentDetail — UUID routing (kind='aoa' excluded from urlKey resolver)", () => {
+  const AOA_UUID = "e9d5f695-6b38-49cf-afb3-7c986e5203ea";
+  const AOA_SLUG = "discussion-extraction";
+
+  // kind='aoa' member agent whose slug ("discussion-extraction") != its uuid.
+  const aoaMember = makeAgent({
+    id: AOA_UUID,
+    name: "Discussion Extraction",
+    role: "engineer",
+    status: "active",
+    kind: "aoa",
+    urlKey: AOA_SLUG,
+    runtimeConfig: { aoa: { role: "member" } },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockParams.agentId = AOA_UUID;
+    mockParams.companyPrefix = undefined;
+    mockParams.tab = undefined;
+    mockCompanyContext.selectedCompanyId = "comp-1";
+    mockListTriggers.mockResolvedValue([]);
+    mockGetAoaRuns.mockResolvedValue([]);
+    // Models the real server: by-id resolves any kind; by-slug 404s for kind='aoa'
+    // (server resolveByReference is hardcoded eq(agents.kind,"org") — M1 / Decision #99).
+    mockAgentsGet.mockImplementation(async (ref: string) => {
+      if (ref === AOA_UUID) return aoaMember;
+      throw new Error("Agent not found");
+    });
+  });
+
+  it("loads a kind='aoa' agent by uuid without slug-canonicalizing the URL", async () => {
+    renderWithProviders(<AoaAgentDetail />);
+
+    // Agent loads by uuid — name renders, tabs render, no "Agent not found".
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-name")).toHaveTextContent("Discussion Extraction");
+    });
+    expect(screen.getByTestId("tab-overview")).toBeInTheDocument();
+    expect(screen.queryByText(/agent not found/i)).not.toBeInTheDocument();
+
+    // The bug: a replace-navigate rewrote /team/aoa/<uuid> -> /team/aoa/discussion-extraction,
+    // then the refetch-by-slug 404'd. Assert the URL is NEVER rewritten to the slug.
+    expect(mockNavigate).not.toHaveBeenCalledWith(
+      expect.stringContaining(AOA_SLUG),
+      expect.anything(),
+    );
+    expect(mockNavigate).not.toHaveBeenCalledWith(`/team/aoa/${AOA_SLUG}`, { replace: true });
+
+    // agentsApi.get must only ever be called with the uuid, never the slug.
+    expect(mockAgentsGet).not.toHaveBeenCalledWith(AOA_SLUG, expect.anything());
   });
 });
 
