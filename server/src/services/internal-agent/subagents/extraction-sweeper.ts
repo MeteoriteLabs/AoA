@@ -1,6 +1,6 @@
-import { and, eq, lt, or } from "drizzle-orm";
+import { and, eq, lt, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { discussionEntries, discussions } from "@armyofagents/db";
+import { discussionEntries, discussions, internalAgentRuns } from "@armyofagents/db";
 import { runExtractionConsumer } from "./extraction-consumer.js";
 import { ensurePlatformAgent } from "./platform-agent.js";
 import { createLimiter } from "./concurrency-limiter.js";
@@ -9,8 +9,10 @@ import { logger } from "../../../middleware/logger.js";
 export interface SweepOptions {
   /** Max simultaneous extractions per sweep tick. */
   limiterMax: number;
-  /** A 'processing' entry older than this is treated as orphaned (crash
-   *  between the atomic claim and a terminal status) and reclaimed. */
+  /** A 'processing' entry whose run has been 'running' (non-terminal) longer
+   *  than this is treated as orphaned (crash between the M2 atomic claim and
+   *  a terminal status) and reclaimed. Must be conservatively larger than the
+   *  longest legitimate extraction so healthy in-flight work is never reset. */
   staleMs: number;
 }
 
@@ -20,32 +22,66 @@ export interface SweepOptions {
  * `discussion_entries.extractionStatus='pending'` IS the work item, so no
  * event can be "lost" (spec §6.2). Each tick:
  *
- *  - drains `pending` (the normal new-entry path), AND
- *  - reclaims `processing` older than staleMs (orphaned by a crash between
- *    the atomic claim and a terminal write — spec §6.3).
+ *  1. RECLAIM orphans (spec §6.3): an entry stuck in 'processing' whose
+ *     `internal_agent_runs` row is still 'running' and older than staleMs is
+ *     atomically reset → 'pending' (extraction_run_id cleared). The run's
+ *     createdAt ≈ processing start (the consumer inserts the run immediately
+ *     before extraction), so this never false-reclaims healthy in-flight work.
+ *     Reset is guarded (`AND extraction_status='processing'`) so it is safe
+ *     even if state changed between the select and the update.
  *
- * Idempotency-safe alongside the untouched reprocess direct-call path: the
- * Milestone-2 atomic claim inside extractFromDiscussionEntry guarantees
- * at-most-one extraction per entry even under concurrent pickup. Runs the
- * consumer under a bounded limiter; resolves the platform agent once per
- * company per tick.
+ *  2. DRAIN pending (incl. just-reclaimed). The Milestone-2 atomic claim
+ *     inside extractFromDiscussionEntry guarantees at-most-one extraction per
+ *     entry even under concurrent pickup (sweeper vs the untouched reprocess
+ *     direct-call path).
+ *
+ * Runs the consumer under a bounded limiter; resolves the platform agent once
+ * per company per tick.
  */
 export async function runExtractionSweep(db: Db, opts: SweepOptions): Promise<void> {
   const staleCutoff = new Date(Date.now() - opts.staleMs);
 
+  // ── Phase 1: reclaim orphaned 'processing' entries ─────────────────────────
+  const orphanRows: Array<{ id: string }> = await db
+    .select({ id: discussionEntries.id })
+    .from(discussionEntries)
+    .innerJoin(
+      internalAgentRuns,
+      and(
+        eq(internalAgentRuns.relatedEntityId, discussionEntries.id),
+        eq(internalAgentRuns.relatedEntityType, "discussion"),
+      ),
+    )
+    .where(
+      and(
+        eq(discussionEntries.extractionStatus, "processing"),
+        eq(internalAgentRuns.status, "running"),
+        lt(internalAgentRuns.createdAt, staleCutoff),
+      ),
+    )
+    .then((r: Array<{ id: string }>) => r);
+
+  if (orphanRows.length > 0) {
+    const orphanIds = [...new Set(orphanRows.map((o) => o.id))];
+    await db
+      .update(discussionEntries)
+      .set({ extractionStatus: "pending", extractionRunId: null })
+      .where(
+        and(
+          inArray(discussionEntries.id, orphanIds),
+          // guard: only reset rows that are still 'processing' (safe under
+          // concurrency with the consumer / reprocess path)
+          eq(discussionEntries.extractionStatus, "processing"),
+        ),
+      );
+  }
+
+  // ── Phase 2: drain pending (includes the just-reclaimed orphans) ───────────
   const rows: Array<{ id: string; companyId: string }> = await db
     .select({ id: discussionEntries.id, companyId: discussions.companyId })
     .from(discussionEntries)
     .innerJoin(discussions, eq(discussions.id, discussionEntries.discussionId))
-    .where(
-      or(
-        eq(discussionEntries.extractionStatus, "pending"),
-        and(
-          eq(discussionEntries.extractionStatus, "processing"),
-          lt(discussionEntries.createdAt, staleCutoff),
-        ),
-      ),
-    )
+    .where(eq(discussionEntries.extractionStatus, "pending"))
     .limit(200)
     .then((r: Array<{ id: string; companyId: string }>) => r);
 
@@ -69,5 +105,8 @@ export async function runExtractionSweep(db: Db, opts: SweepOptions): Promise<vo
 
   logger
     .child({ subagent: "extraction-sweeper" })
-    .info({ swept: rows.length }, "extraction sweep complete");
+    .info(
+      { reclaimed: orphanRows.length, drained: rows.length },
+      "extraction sweep complete",
+    );
 }
