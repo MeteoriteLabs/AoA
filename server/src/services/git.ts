@@ -524,3 +524,234 @@ export function setCachedStatus(workspaceId: string, data: GitStatusResult): voi
 export function invalidateStatusCache(workspaceId: string): void {
   statusCache.delete(workspaceId);
 }
+
+// ---------------------------------------------------------------------------
+// Git Command Centre — branch list + commit graph
+// ---------------------------------------------------------------------------
+
+export interface LocalBranchInfo {
+  name: string;
+  isLocal: boolean;
+  isRemote: boolean;
+  tipSha: string;
+  aheadCount: number;
+  behindCount: number;
+  lastCommitMessage: string;
+  lastCommitAt: string;   // ISO 8601
+  lastCommitAuthor: string;
+  tags: string[];
+  overlays: {
+    hasConflicts: boolean;
+    isDiverged: boolean;
+    isBehindRemote: boolean;
+  };
+}
+
+export interface CommitGraphEntry {
+  sha: string;
+  parentShas: string[];
+  message: string;
+  author: string;
+  committedAt: string;   // ISO 8601
+  refs: string[];        // branch names + tags that point here
+}
+
+/**
+ * Resolve the name of the remote's default branch (typically "main" or
+ * "master"). Falls back to "main" if the symbolic ref is absent.
+ *
+ * Requires git ≥ 2.31 for the ahead-behind format token used in getBranches.
+ */
+async function resolveDefaultBranch(gitRoot: string): Promise<string> {
+  try {
+    const symRef = await runGit(
+      ["symbolic-ref", "refs/remotes/origin/HEAD"],
+      gitRoot,
+      { timeout: 5_000 },
+    );
+    // "refs/remotes/origin/main" → "main"
+    const parts = symRef.split("/");
+    return parts[parts.length - 1] ?? "main";
+  } catch {
+    // Symbolic ref not set — try git remote show (slower)
+    try {
+      const remoteShow = await runGit(
+        ["remote", "show", "origin"],
+        gitRoot,
+        { timeout: 10_000 },
+      );
+      const match = remoteShow.match(/HEAD branch:\s+(\S+)/);
+      if (match?.[1]) return match[1];
+    } catch {
+      // ignore
+    }
+    return "main";
+  }
+}
+
+/**
+ * List all local + remote branches with ahead/behind counts, last-commit
+ * metadata, and version tags. Batches tag lookup into a single git call.
+ */
+export async function getBranches(gitRoot: string): Promise<LocalBranchInfo[]> {
+  const defaultBranch = await resolveDefaultBranch(gitRoot);
+
+  // ── 1. One for-each-ref call for all branches ──────────────────────────
+  const SEP = "\x1f";  // unit separator — safe in git output
+  const FORMAT = [
+    "%(refname:short)",
+    "%(objectname)",
+    `%(ahead-behind:origin/${defaultBranch})`,
+    "%(contents:subject)",
+    "%(authordate:iso-strict)",
+    "%(authorname)",
+  ].join(SEP);
+
+  const raw = await runGit(
+    ["for-each-ref", "refs/heads", "refs/remotes", `--format=${FORMAT}`],
+    gitRoot,
+    { timeout: 15_000 },
+  );
+
+  // ── 2. Batch tag lookup — ONE subprocess, not N ───────────────────────
+  const tagMap = new Map<string, string[]>();  // shortSha → tag names
+  try {
+    const tagRaw = await runGit(
+      ["tag", "-l", "--format=%(objectname:short) %(refname:short)"],
+      gitRoot,
+      { timeout: 10_000 },
+    );
+    for (const line of tagRaw.split("\n")) {
+      const [sha, tagName] = line.split(" ");
+      if (sha && tagName) {
+        const existing = tagMap.get(sha) ?? [];
+        existing.push(tagName);
+        tagMap.set(sha, existing);
+      }
+    }
+  } catch {
+    // Tags are optional — proceed without them
+  }
+
+  // ── 3. Parse for-each-ref output ──────────────────────────────────────
+  const byName = new Map<string, LocalBranchInfo>();
+
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const parts = line.split(SEP);
+    if (parts.length < 6) continue;
+
+    const [refShort, sha, aheadBehind, subject, authorDate, authorName] = parts as [
+      string, string, string, string, string, string
+    ];
+
+    const isRemote = refShort.startsWith("origin/");
+    const localName = isRemote ? refShort.slice("origin/".length) : refShort;
+
+    // Skip remote HEAD pointer
+    if (localName === "HEAD") continue;
+
+    const [aheadStr, behindStr] = (aheadBehind ?? "0 0").split(" ");
+    const ahead = parseInt(aheadStr ?? "0", 10) || 0;
+    const behind = parseInt(behindStr ?? "0", 10) || 0;
+    const shortSha = sha.slice(0, 8);
+
+    const existing = byName.get(localName);
+    if (existing) {
+      // Merge local + remote entries for the same branch
+      if (!isRemote) {
+        existing.isLocal = true;
+        existing.aheadCount = ahead;
+        existing.behindCount = behind;
+        existing.tipSha = sha;
+        existing.lastCommitMessage = subject;
+        existing.lastCommitAt = authorDate;
+        existing.lastCommitAuthor = authorName;
+      } else {
+        existing.isRemote = true;
+      }
+    } else {
+      byName.set(localName, {
+        name: localName,
+        isLocal: !isRemote,
+        isRemote: isRemote,
+        tipSha: sha,
+        aheadCount: ahead,
+        behindCount: behind,
+        lastCommitMessage: subject,
+        lastCommitAt: authorDate,
+        lastCommitAuthor: authorName,
+        tags: tagMap.get(shortSha) ?? [],
+        overlays: {
+          hasConflicts: false,    // git alone can't detect this reliably
+          isDiverged: ahead > 0 && behind > 0,
+          isBehindRemote: behind > 0 && ahead === 0,
+        },
+      });
+    }
+  }
+
+  return [...byName.values()];
+}
+
+/**
+ * Return a topologically-ordered commit graph for the D3 canvas renderer.
+ * Parses `git log --all --topo-order` output into structured entries.
+ */
+export async function getCommitGraph(
+  gitRoot: string,
+  opts?: { limit?: number; since?: string },
+): Promise<CommitGraphEntry[]> {
+  const limit = opts?.limit ?? 200;
+  const args = [
+    "log",
+    "--all",
+    "--topo-order",
+    `--format=%H\x1f%P\x1f%s\x1f%an\x1f%aI\x1f%D`,
+    `-n`,
+    String(limit),
+  ];
+  if (opts?.since) args.push(`--since=${opts.since}`);
+
+  const raw = await runGit(args, gitRoot, { timeout: 20_000 });
+  const entries: CommitGraphEntry[] = [];
+
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const [sha, parentsRaw, message, author, committedAt, decorations] =
+      line.split("\x1f") as [string, string, string, string, string, string];
+
+    if (!sha) continue;
+
+    const parentShas = parentsRaw
+      ? parentsRaw.split(" ").filter(Boolean)
+      : [];
+
+    // %D: "HEAD -> main, origin/main, tag: v1.2.0" → extract ref names
+    const refs: string[] = [];
+    if (decorations) {
+      for (const part of decorations.split(",")) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        if (trimmed.startsWith("HEAD ->")) {
+          refs.push(trimmed.replace("HEAD ->", "").trim());
+        } else if (trimmed.startsWith("tag:")) {
+          refs.push(trimmed.replace("tag:", "").trim());
+        } else {
+          refs.push(trimmed);
+        }
+      }
+    }
+
+    entries.push({
+      sha,
+      parentShas,
+      message: message ?? "",
+      author: author ?? "",
+      committedAt: committedAt ?? new Date().toISOString(),
+      refs,
+    });
+  }
+
+  return entries;
+}

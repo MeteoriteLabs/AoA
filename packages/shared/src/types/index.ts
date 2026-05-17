@@ -288,6 +288,18 @@ export type {
 export type { Environment } from "./environment.js";
 
 export type {
+  GitPrReviewState,
+  GitCIStatus,
+  GitPipelineStage,
+  GitBranchInfo,
+  GitCommitNode,
+  GitGraphData,
+  GitProjectGraphResponse,
+  GitBranchEnrichment,
+  GitProjectEnrichResponse,
+} from "./git-graph.js";
+
+export type {
   JsonSchema,
   PluginJobDeclaration,
   PluginWebhookDeclaration,

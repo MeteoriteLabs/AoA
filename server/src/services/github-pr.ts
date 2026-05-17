@@ -4,6 +4,9 @@ import {
   GITHUB_PAT_SECRET_NAME,
   type GitHubPrCreateResponse,
   type GitHubPrMetadata,
+  type GitPrReviewState,
+  type GitCIStatus,
+  type GitBranchInfo,
 } from "@armyofagents/shared";
 import { secretService } from "./secrets.js";
 
@@ -186,5 +189,139 @@ export async function createPullRequest(
     };
   } catch (err: unknown) {
     mapGitHubApiError(err, owner, repo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Git Command Centre enrichment helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve PR review state using per-reviewer latest review logic.
+ *
+ * Why not "newest-overall"? If reviewer A left CHANGES_REQUESTED and reviewer
+ * B later left APPROVED, the PR still has outstanding change requests from A.
+ * GitHub's own merge check uses per-reviewer latest — we match that behaviour.
+ */
+export async function getPrReviewState(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  isDraft: boolean,
+  prState: "open" | "closed" | "merged",
+): Promise<GitPrReviewState> {
+  if (prState === "merged") return "merged";
+  if (prState === "closed") return "closed";
+  if (isDraft) return "draft";
+
+  const { data: reviews } = await octokit.pulls.listReviews({
+    owner,
+    repo,
+    pull_number: prNumber,
+    per_page: 100,
+  });
+
+  // API returns newest-first — take each reviewer's first occurrence (= latest)
+  const latestByReviewer = new Map<string, string>();
+  for (const review of reviews) {
+    const login = review.user?.login;
+    if (login && !latestByReviewer.has(login)) {
+      latestByReviewer.set(login, review.state);
+    }
+  }
+
+  const states = [...latestByReviewer.values()];
+  if (states.some((s) => s === "CHANGES_REQUESTED")) return "changes_requested";
+  if (states.length > 0 && states.every((s) => s === "APPROVED")) return "approved";
+  return "open";
+}
+
+/**
+ * Fetch the combined CI/check status for a git ref.
+ * Maps GitHub combined status to our 3-value enum.
+ */
+export async function getCIStatus(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  ref: string,
+): Promise<{ status: GitCIStatus; ciUrl: string | null }> {
+  try {
+    const { data } = await octokit.repos.getCombinedStatusForRef({
+      owner,
+      repo,
+      ref,
+    });
+    const { state, statuses } = data;
+    let status: GitCIStatus = null;
+    if (state === "success") status = "passing";
+    else if (state === "failure" || state === "error") status = "failing";
+    else if (state === "pending") status = "pending";
+
+    // Link to first failed check's target URL, or overall combined_url
+    const failedStatus = statuses.find((s) => s.state === "failure" || s.state === "error");
+    const ciUrl: string | null =
+      failedStatus?.target_url ?? data.repository?.html_url ?? null;
+
+    return { status, ciUrl };
+  } catch {
+    return { status: null, ciUrl: null };
+  }
+}
+
+/**
+ * Fully enrich a single branch with PR metadata, review state, CI status,
+ * and comment count. Returns null when no PAT is configured.
+ *
+ * The caller is responsible for creating the Octokit instance (so the PAT
+ * is decrypted once per request, not once per branch).
+ */
+export async function enrichBranchPr(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  branchName: string,
+): Promise<GitBranchInfo["pr"] | null> {
+  try {
+    const { data: prs } = await octokit.pulls.list({
+      owner,
+      repo,
+      state: "all",
+      head: `${owner}:${branchName}`,
+      per_page: 5,
+      sort: "updated",
+      direction: "desc",
+    });
+
+    const match = prs.find((pr) => pr.head?.ref === branchName);
+    if (!match) return null;
+
+    const prState: "open" | "closed" | "merged" = match.merged_at
+      ? "merged"
+      : match.state === "closed"
+        ? "closed"
+        : "open";
+
+    const [reviewState, ciResult, commentData] = await Promise.all([
+      getPrReviewState(octokit, owner, repo, match.number, match.draft ?? false, prState),
+      prState === "open"
+        ? getCIStatus(octokit, owner, repo, match.head.sha)
+        : Promise.resolve({ status: null as GitCIStatus, ciUrl: null }),
+      octokit.pulls.get({ owner, repo, pull_number: match.number }),
+    ]);
+
+    return {
+      number: match.number,
+      url: match.html_url,
+      reviewState,
+      ciStatus: ciResult.status,
+      ciUrl: ciResult.ciUrl,
+      commentCount: commentData.data.comments + commentData.data.review_comments,
+    };
+  } catch (err) {
+    if (err instanceof GitHubPrError) throw err;
+    // Swallow per-branch errors — don't fail the whole enrichment batch
+    return null;
   }
 }

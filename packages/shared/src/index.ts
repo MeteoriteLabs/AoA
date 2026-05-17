@@ -487,6 +487,16 @@ export type {
   GitHubPrMetadata,
   GitHubPrSyncMetadata,
   GitHubPrSyncResponse,
+  // Git Command Centre
+  GitPrReviewState,
+  GitCIStatus,
+  GitPipelineStage,
+  GitBranchInfo,
+  GitCommitNode,
+  GitGraphData,
+  GitProjectGraphResponse,
+  GitBranchEnrichment,
+  GitProjectEnrichResponse,
   // Plugin system
   JsonSchema,
   PluginJobDeclaration,
