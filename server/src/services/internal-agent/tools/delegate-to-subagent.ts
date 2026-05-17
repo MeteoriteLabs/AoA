@@ -19,7 +19,7 @@ export const delegateToSubagentTool: AgentTool = {
     },
     required: ["agentName", "instruction"],
   },
-  category: "coordination",
+  category: "action",
   requiredRole: "founder",
   requiresConfirmation: false,
   execute: async (params: unknown, ctx) => {
