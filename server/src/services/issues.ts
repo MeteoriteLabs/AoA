@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   assets,
   authUsers,
   companies,
@@ -1571,6 +1572,36 @@ export function issueService(db: Db) {
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.kind, ["org", "aoa"])));
       return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+    },
+
+    resolveAgentKinds: async (ids: string[]): Promise<Map<string, string>> => {
+      const unique = [...new Set(ids)].filter(Boolean);
+      if (unique.length === 0) return new Map();
+      const rows = await db
+        .select({ id: agents.id, kind: agents.kind })
+        .from(agents)
+        .where(inArray(agents.id, unique));
+      return new Map(rows.map((r) => [r.id, r.kind]));
+    },
+
+    // F1: AoA agents are dispatched by the AoA dispatcher Phase-3, which drains
+    // agent_wakeup_requests {status:'queued', kind:'aoa'} with NO source filter.
+    // Calling heartbeat.wakeup for an aoa agent ALSO enqueues a heartbeat_run
+    // (dual execution). Mirror delegate-to-subagent.ts: insert the wakeup row
+    // directly and let Phase-3 own the single execution.
+    enqueueAoaMentionWakeup: async (
+      companyId: string,
+      agentId: string,
+      opts: { source?: string | null; reason?: string | null; payload?: unknown },
+    ): Promise<void> => {
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: opts.source ?? "automation",
+        reason: opts.reason ?? "issue_comment_mentioned",
+        payload: (opts.payload ?? null) as Record<string, unknown> | null,
+        status: "queued",
+      });
     },
 
     /**
