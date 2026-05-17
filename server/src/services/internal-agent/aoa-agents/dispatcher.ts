@@ -1,0 +1,173 @@
+import { and, eq, lt, inArray } from "drizzle-orm";
+import type { Db } from "@armyofagents/db";
+import { discussionEntries, discussions, internalAgentRuns } from "@armyofagents/db";
+import { listEnabledOutboxAgents } from "./triggers.js";
+import { ensureExtractionAgent } from "./ensure-extraction-agent.js";
+import { runExtractionConsumer } from "../subagents/extraction-consumer.js";
+import { createLimiter } from "../subagents/concurrency-limiter.js";
+import { logger } from "../../../middleware/logger.js";
+
+export interface DispatchOptions {
+  /** Max simultaneous extractions per dispatch tick. */
+  limiterMax: number;
+  /** A 'processing' entry whose LINKED run has been 'running' (non-terminal)
+   *  longer than this is treated as orphaned (crash between the M2 atomic
+   *  claim and a terminal status). Must be conservatively larger than the
+   *  longest legitimate extraction so healthy in-flight is never reset. */
+  staleMs: number;
+}
+
+/**
+ * AoA Dispatcher — the generalized durable poll (transactional-outbox
+ * pattern), not an event listener. Generalizes the battle-tested
+ * Decision-#99 extraction sweeper: the committed row
+ * `discussion_entries.extractionStatus='pending'` IS the work item, so no
+ * event can be "lost" (spec §6.2). Each tick:
+ *
+ *  1. RECLAIM orphans (spec §6.3) — VERBATIM the #99 linked-run reclaim.
+ *     Orphan = entry `processing` AND its **linked current run**
+ *     (`extraction_run_id`, set by the consumer at run creation) is still
+ *     `running` and older than staleMs. Reclaim atomically: (a) terminalize
+ *     that linked run → `failed` so it can never re-trigger reclaim (no
+ *     zombie `running` rows, no perpetual re-reclaim of a healthily-
+ *     reprocessing entry — the bug the prior join-on-any-running design
+ *     produced); (b) reset the entry → `pending`, `extraction_run_id=null`.
+ *     Both guarded so they are safe under concurrency with the consumer /
+ *     the untouched reprocess path. Using the LINKED run means a stale
+ *     leftover run from a *previous* attempt cannot condemn an entry that a
+ *     *fresh* run is healthily processing. (Identical predicates to the
+ *     extraction sweeper; only the reclaim error message differs.)
+ *
+ *  2. DRAIN pending (incl. just-reclaimed), GATED PER COMPANY. A pending
+ *     entry is only dispatched if its company has an enabled `outbox`
+ *     trigger (`listEnabledOutboxAgents`). Companies with no enabled outbox
+ *     agent are SKIPPED — they have not opted into the durable extraction
+ *     pipeline. For gated-in companies the extraction agent is resolved
+ *     (memoized per company) and the consumer invoked under a bounded
+ *     limiter. The Milestone-2 atomic claim inside extractFromDiscussionEntry
+ *     guarantees at-most-one extraction per entry even under concurrent
+ *     pickup.
+ *
+ * Memoizes BOTH the per-company enabled-outbox check and the per-company
+ * extraction agent id once per tick.
+ */
+export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<void> {
+  const staleCutoff = new Date(Date.now() - opts.staleMs);
+
+  // ── Phase 1: reclaim orphaned 'processing' entries (#99 verbatim) ──────────
+  const orphanRows: Array<{ id: string; runId: string | null }> = await db
+    .select({
+      id: discussionEntries.id,
+      runId: discussionEntries.extractionRunId,
+    })
+    .from(discussionEntries)
+    .leftJoin(
+      internalAgentRuns,
+      eq(internalAgentRuns.id, discussionEntries.extractionRunId),
+    )
+    .where(
+      // Orphan = a CONSUMER-driven 'processing' entry whose LINKED run is
+      // still 'running' and older than the stale window. The consumer links
+      // extraction_run_id *before* the atomic claim, so every consumer-driven
+      // 'processing' entry has a non-null linked run — there is no consumer
+      // path that yields (processing, run_id NULL). The only producer of
+      // (processing, run_id NULL) is the untouched reprocess direct-call path
+      // (Q2-b), which is HEALTHY in-flight work; a NULL-guard branch would
+      // false-reclaim it and cause double extraction. Reprocess-crash
+      // recovery is a deferred follow-up (spec §16.1), not in scope here.
+      and(
+        eq(discussionEntries.extractionStatus, "processing"),
+        eq(internalAgentRuns.status, "running"),
+        lt(internalAgentRuns.createdAt, staleCutoff),
+      ),
+    )
+    .then((r: Array<{ id: string; runId: string | null }>) => r);
+
+  if (orphanRows.length > 0) {
+    const orphanIds = [...new Set(orphanRows.map((o) => o.id))];
+    const staleRunIds = [
+      ...new Set(
+        orphanRows
+          .map((o) => o.runId)
+          .filter((v): v is string => typeof v === "string"),
+      ),
+    ];
+
+    // (a) Terminalize the stale linked runs so they can never re-trigger
+    //     reclaim. Guarded on status='running' so an already-terminal run is
+    //     never clobbered.
+    if (staleRunIds.length > 0) {
+      await db
+        .update(internalAgentRuns)
+        .set({
+          status: "failed",
+          errorMessage: "reclaimed: orphaned (aoa-dispatcher)",
+          completedAt: new Date(),
+        })
+        .where(
+          and(
+            inArray(internalAgentRuns.id, staleRunIds),
+            eq(internalAgentRuns.status, "running"),
+          ),
+        );
+    }
+
+    // (b) Reset the entries → pending. Guarded on status='processing' so it
+    //     is safe even if state changed between the select and the update.
+    await db
+      .update(discussionEntries)
+      .set({ extractionStatus: "pending", extractionRunId: null })
+      .where(
+        and(
+          inArray(discussionEntries.id, orphanIds),
+          eq(discussionEntries.extractionStatus, "processing"),
+        ),
+      );
+  }
+
+  // ── Phase 2: drain pending (includes the just-reclaimed orphans) ───────────
+  const rows: Array<{ id: string; companyId: string }> = await db
+    .select({ id: discussionEntries.id, companyId: discussions.companyId })
+    .from(discussionEntries)
+    .innerJoin(discussions, eq(discussions.id, discussionEntries.discussionId))
+    .where(eq(discussionEntries.extractionStatus, "pending"))
+    .limit(200)
+    .then((r: Array<{ id: string; companyId: string }>) => r);
+
+  if (rows.length === 0) return;
+
+  const limiter = createLimiter(opts.limiterMax);
+  // Per-company memoization within this tick: the enabled-outbox gate result
+  // (true = has an enabled outbox agent) and the resolved extraction agent id.
+  const outboxByCompany = new Map<string, boolean>();
+  const agentByCompany = new Map<string, string>();
+
+  await Promise.allSettled(
+    rows.map((row) =>
+      limiter.run(async () => {
+        // Gate: only dispatch if the company has an enabled `outbox` trigger.
+        let gated = outboxByCompany.get(row.companyId);
+        if (gated === undefined) {
+          const enabled = await listEnabledOutboxAgents(db, row.companyId);
+          gated = enabled.length > 0;
+          outboxByCompany.set(row.companyId, gated);
+        }
+        if (!gated) return; // no outbox trigger for this company → skip
+
+        let agentId = agentByCompany.get(row.companyId);
+        if (!agentId) {
+          agentId = await ensureExtractionAgent(db, row.companyId);
+          agentByCompany.set(row.companyId, agentId);
+        }
+        await runExtractionConsumer(db, row.companyId, row.id, agentId);
+      }),
+    ),
+  );
+
+  logger
+    .child({ subagent: "aoa-dispatcher" })
+    .info(
+      { reclaimed: orphanRows.length, drained: rows.length },
+      "aoa dispatch complete",
+    );
+}
