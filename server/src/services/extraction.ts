@@ -380,9 +380,27 @@ export function extractionService(db: Db) {
 
         discussionId = entry.discussionId;
 
-        // Guard: skip if already processing or completed (prevents double extraction)
-        if (entry.extractionStatus !== "pending") {
-          log.info({ currentStatus: entry.extractionStatus }, "Entry not in pending status — skipping");
+        // Atomic claim: flip pending -> processing in a single statement.
+        // Only the writer that gets a row back proceeds. This replaces the
+        // prior non-atomic read-then-check, fixing a pre-existing race
+        // (concurrent reprocess / reprocess-all) AND making the durable
+        // sweeper (sub-agent #1) safe to run alongside the untouched
+        // reprocess direct-call path.
+        const claimed = await db
+          .update(discussionEntries)
+          .set({ extractionStatus: "processing" })
+          .where(
+            and(
+              eq(discussionEntries.id, entryId),
+              eq(discussionEntries.extractionStatus, "pending"),
+            ),
+          )
+          .returning();
+        if (claimed.length === 0) {
+          log.info(
+            { currentStatus: entry.extractionStatus },
+            "Entry not claimable (already processing/terminal) — skipping",
+          );
           return;
         }
 
@@ -461,11 +479,7 @@ export function extractionService(db: Db) {
           }
         }
 
-        // 5. Set extraction status to processing
-        await db
-          .update(discussionEntries)
-          .set({ extractionStatus: "processing" })
-          .where(eq(discussionEntries.id, entryId));
+        // (status was already set to 'processing' by the atomic claim above)
 
         // 6. Get thread context (most recent 10 entries, excluding current)
         const previousEntries = await db
