@@ -54,7 +54,7 @@ export function NewAoaAgentDialog({
       agentsApi.create(companyId, data),
     onSuccess: () => {
       onSuccess();
-      pushToast({ title: "AoA agent created", tone: "positive" });
+      pushToast({ title: "AoA agent created", tone: "success" });
       handleOpenChange(false);
     },
     onError: (error) => {
