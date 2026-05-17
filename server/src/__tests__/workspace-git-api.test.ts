@@ -294,6 +294,18 @@ describe("POST /execution-workspaces/:id/git/commit", () => {
     expect(res.body.error).toMatch(/escapes/);
   });
 
+  it("returns 400 for repository-root pathspec errors", async () => {
+    mockCommit.mockRejectedValue(new Error('Invalid file path: "." targets the repository root'));
+
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/git/commit")
+      .send({ message: "root", files: ["."] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/repository root/);
+  });
+
   it("returns 400 for detached HEAD", async () => {
     mockCommit.mockRejectedValue(new Error("Cannot commit in detached HEAD state"));
 
@@ -469,5 +481,37 @@ describe("GET /execution-workspaces/:id/git/safety", () => {
       push: true,
       createPr: true,
     });
+  });
+
+  it("evaluates safety across all tasks linked to a reused workspace", async () => {
+    const db = createSequenceDb([
+      [
+        { id: "issue-done", companyId: "company-1", title: "Done task", status: "done", identifier: "ENG-1", assigneeAgentId: null, checkoutRunId: null, executionRunId: null },
+        { id: "issue-running", companyId: "company-1", title: "Still running", status: "in_progress", identifier: "ENG-2", assigneeAgentId: "agent-2", checkoutRunId: null, executionRunId: "run-2" },
+      ],
+      [{ id: "run-2", status: "running", agentId: "agent-2", startedAt: "2026-05-15T11:00:00.000Z", createdAt: "2026-05-15T10:59:00.000Z" }],
+    ]);
+
+    const app = createApp(boardActor, db);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/git/safety");
+
+    expect(res.status).toBe(200);
+    expect(res.body.task).toMatchObject({
+      id: "issue-running",
+      status: "in_progress",
+      identifier: "ENG-2",
+    });
+    expect(res.body.activeRun).toMatchObject({ id: "run-2", status: "running" });
+    expect(res.body.requiresConfirmation).toEqual({
+      commit: true,
+      push: true,
+      createPr: true,
+    });
+    expect(res.body.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/task is not complete/i),
+        expect.stringMatching(/agent run/i),
+      ]),
+    );
   });
 });

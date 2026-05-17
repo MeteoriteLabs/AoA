@@ -123,24 +123,22 @@ async function getWorkspaceMutationSafety(db: Db, workspaceId: string) {
       executionRunId: issues.executionRunId,
     })
     .from(issues)
-    .where(eq(issues.executionWorkspaceId, workspaceId))
-    .limit(1);
+    .where(eq(issues.executionWorkspaceId, workspaceId));
 
-  const issue = linkedIssues[0] ?? null;
+  const primaryIssue = linkedIssues.find((issue) => !["done", "cancelled"].includes(issue.status)) ?? linkedIssues[0] ?? null;
   const agentIds = linkedIssues
     .map((i) => i.assigneeAgentId)
     .filter((id): id is string => id !== null);
-  const runIds = [
-    issue?.checkoutRunId,
-    issue?.executionRunId,
-  ].filter((id): id is string => id !== null && id !== undefined);
+  const runIds = linkedIssues
+    .flatMap((issue) => [issue.checkoutRunId, issue.executionRunId])
+    .filter((id): id is string => id !== null && id !== undefined);
   const activeRunPredicates = [
     ...(agentIds.length > 0 ? [inArray(heartbeatRuns.agentId, agentIds)] : []),
     ...(runIds.length > 0 ? [inArray(heartbeatRuns.id, runIds)] : []),
-    ...(issue ? [sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`] : []),
+    ...linkedIssues.map((issue) => sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`),
   ];
 
-  const activeRuns = issue && activeRunPredicates.length > 0
+  const activeRuns = primaryIssue && activeRunPredicates.length > 0
     ? await db
       .select({
         id: heartbeatRuns.id,
@@ -150,7 +148,7 @@ async function getWorkspaceMutationSafety(db: Db, workspaceId: string) {
       .from(heartbeatRuns)
       .where(
         and(
-          eq(heartbeatRuns.companyId, issue.companyId),
+          eq(heartbeatRuns.companyId, primaryIssue.companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
           or(...activeRunPredicates),
         ),
@@ -160,23 +158,24 @@ async function getWorkspaceMutationSafety(db: Db, workspaceId: string) {
 
   const activeRun = activeRuns[0] ?? null;
   const hasActiveRun = activeRun !== null;
-  const taskIsIncomplete = issue !== null && !["done", "cancelled"].includes(issue.status);
+  const incompleteTasks = linkedIssues.filter((issue) => !["done", "cancelled"].includes(issue.status));
+  const taskIsIncomplete = incompleteTasks.length > 0;
   const warnings: string[] = [];
 
   if (taskIsIncomplete) {
-    warnings.push("Task is not complete.");
+    warnings.push(incompleteTasks.length === 1 ? "Task is not complete." : `${incompleteTasks.length} tasks are not complete.`);
   }
   if (hasActiveRun) {
     warnings.push("An agent run is currently active.");
   }
 
   return {
-    task: issue
+    task: primaryIssue
       ? {
-        id: issue.id,
-        title: issue.title,
-        status: issue.status,
-        identifier: issue.identifier,
+        id: primaryIssue.id,
+        title: primaryIssue.title,
+        status: primaryIssue.status,
+        identifier: primaryIssue.identifier,
       }
       : null,
     activeRun,
@@ -296,7 +295,12 @@ export function workspaceGitRoutes(db: Db) {
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Commit failed";
       // Detached HEAD and path traversal errors are user-facing
-      if (msg.includes("detached HEAD") || msg.includes("escapes the repository") || msg.includes("deny-list")) {
+      if (
+        msg.includes("detached HEAD") ||
+        msg.includes("escapes the repository") ||
+        msg.includes("targets the repository root") ||
+        msg.includes("deny-list")
+      ) {
         res.status(400).json({ error: msg });
         return;
       }
