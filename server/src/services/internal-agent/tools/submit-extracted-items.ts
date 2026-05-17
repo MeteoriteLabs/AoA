@@ -136,8 +136,12 @@ export const submitExtractedItemsTool: AgentTool = {
     // pending -> processing; this tool is the single terminalizer and must
     // only complete a still-processing entry), matching the codebase
     // terminalizer/claim convention (extraction.ts:389-398,
-    // dispatcher.ts:121-124).
-    await ctx.db
+    // dispatcher.ts:121-124). Capture the affected rows via `.returning()` —
+    // same idiom as runner.ts's M2 atomic claim
+    // (runner.ts:57-64: `const claimed = ...returning(); if
+    // (claimed.length === 0) abort`) — so the F2 emit below can be gated on
+    // whether THIS call actually performed the transition.
+    const terminalized = await ctx.db
       .update(discussionEntries)
       .set({ extractionStatus: "completed" })
       .where(
@@ -145,12 +149,22 @@ export const submitExtractedItemsTool: AgentTool = {
           eq(discussionEntries.id, entryIdStr),
           eq(discussionEntries.extractionStatus, "processing"),
         ),
-      );
+      )
+      .returning({ id: discussionEntries.id });
 
     // F2: publish the completion LiveEvent AFTER the terminal status write,
     // mirroring extraction.ts:630-638 (ordering parity) so UIs subscribed to
     // `discussion.extraction.completed` refresh when an AoA agent finishes.
-    if (resolvedDiscussionId) {
+    // Gate on BOTH a resolvable discussionId AND this call having performed
+    // the pending->completed transition (non-empty `.returning()`). This
+    // mirrors the single-terminalizer / atomic-claim convention: runner.ts's
+    // M2 claim only proceeds when its RETURNING is non-empty, and
+    // extraction.ts emits only inside its linear success branch. Without this
+    // gate a concurrent terminalizer that already completed the entry (this
+    // UPDATE matches 0 rows) would cause a double-emit that extraction.ts
+    // never exhibits. The tool still returns success either way (idempotent
+    // no-op when already terminal — only the EVENT is suppressed).
+    if (resolvedDiscussionId && terminalized.length > 0) {
       publishLiveEvent({
         companyId: ctx.companyId,
         type: "discussion.extraction.completed",

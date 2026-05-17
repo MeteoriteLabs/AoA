@@ -52,7 +52,20 @@ import { submitExtractedItemsTool } from "../services/internal-agent/tools/submi
 // Builds a mock Db that records the ORDER of side-effecting operations so we
 // can assert the terminal entry update happens before publishLiveEvent. The
 // `select(...).from(...).where(...)` chain resolves entryId -> discussionId.
-function makeMockDb(discussionId: string | null = "d-1") {
+//
+// `terminalRows` models what the guarded terminal UPDATE's `.returning()`
+// resolves to: a NON-EMPTY array means the pending->completed transition was
+// performed by THIS call (the entry was still `processing`); an empty array
+// models a concurrent terminalizer having already moved the entry out of
+// `processing` (0 rows matched). Default is a single matched row, faithful to
+// the existing F2 tests' intent ("entry was processing -> transition happens
+// -> event fires"). The pendingItemCount increment update is a bare `await`
+// (no `.returning()`), so the returned handle is BOTH thenable and exposes a
+// `.returning()` method.
+function makeMockDb(
+  discussionId: string | null = "d-1",
+  terminalRows: Array<{ id: string }> = [{ id: "e-1" }],
+) {
   const order: string[] = [];
   const db: any = {
     insert: (_table: any) => ({
@@ -64,14 +77,22 @@ function makeMockDb(discussionId: string | null = "d-1") {
     update: (table: any) => ({
       set: (v: any) => ({
         where: (_w: any) => {
+          const isTerminal = v?.extractionStatus === "completed";
           // Tag the terminal entry-status write distinctly from the
           // pendingItemCount increment so ordering can be asserted.
-          if (v?.extractionStatus === "completed") {
+          if (isTerminal) {
             order.push("update:entry-completed");
           } else {
             order.push("update:other");
           }
-          return Promise.resolve([]);
+          // The bare pendingItemCount update awaits this directly; the
+          // guarded terminal write calls `.returning()` on it. Return a
+          // thenable that also exposes `.returning()` so both call shapes
+          // work off the same mock handle.
+          const result = isTerminal ? terminalRows : [];
+          const handle: any = Promise.resolve(result);
+          handle.returning = (_proj?: any) => Promise.resolve(result);
+          return handle;
         },
       }),
     }),
@@ -144,6 +165,23 @@ describe("submit_extracted_items publishes discussion.extraction.completed (F2)"
         itemCount: 0,
       },
     });
+  });
+
+  it("does NOT emit discussion.extraction.completed when the guarded terminal write matched 0 rows (concurrent terminalize)", async () => {
+    // discussionId IS resolvable, but a concurrent terminalizer already moved
+    // the entry out of `processing`, so the guarded UPDATE matches 0 rows
+    // (.returning() === []). The emit must be suppressed (no double-emit),
+    // mirroring the single-terminalizer / atomic-claim convention. The tool
+    // must still return success (idempotent no-op when already terminal).
+    const { db } = makeMockDb("d-1", []);
+    const res = await submitExtractedItemsTool.execute(
+      { entryId: "e-1", items: [{ type: "task", content: "x" }] },
+      makeCtx(db),
+    );
+
+    expect(res.success).toBe(true);
+    expect((res.data as any).count).toBe(1);
+    expect(publishLiveEventMock).not.toHaveBeenCalled();
   });
 
   it("publishes AFTER the terminal entry-status write (ordering parity with extraction.ts)", async () => {

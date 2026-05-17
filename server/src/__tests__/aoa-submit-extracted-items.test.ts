@@ -46,7 +46,21 @@ function makeMockDb(discussionId: string | null = "disc-1") {
       set: (v: any) => ({
         where: (w: any) => {
           updated.push({ table, set: v, where: w });
-          return Promise.resolve([]);
+          // The guarded terminal entry-status write calls `.returning()`
+          // (same idiom as runner.ts's M2 atomic claim) so the F2 emit can
+          // be gated on whether the pending->completed transition happened.
+          // The bare pendingItemCount increment awaits this directly. Return
+          // a thenable that ALSO exposes `.returning()` so both call shapes
+          // work. A NON-EMPTY array is faithful to every test here: the
+          // entry is `processing` in each scenario (the I-2 test asserts the
+          // guarded `processing` where-clause), so the terminal UPDATE
+          // legitimately matches a row. This is mock-shape alignment to the
+          // tool's call shape — it does not change any I-1/I-2 assertion
+          // (those inspect the recorded `set`/`where`, not the return value).
+          const handle: any = Promise.resolve([]);
+          handle.returning = (_proj?: any) =>
+            Promise.resolve([{ id: "entry" }]);
+          return handle;
         },
       }),
     }),
