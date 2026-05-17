@@ -103,17 +103,13 @@ describe("runExtractionSweep — linked-run orphan reclaim", () => {
     expect(consumerMock).toHaveBeenCalledWith(db, "c1", "e1", "pa-1");
   });
 
-  it("orphan with NULL extraction_run_id (crashed pre-claim/link): reset only, no run-fail", async () => {
-    const db = makeDb([
-      [{ id: "e2", runId: null }],
-      [{ id: "e2", companyId: "c2" }],
-    ]);
-    await runExtractionSweep(db, { limiterMax: 2, staleMs: 600_000 });
-
-    expect(db._sets.some(runFail)).toBe(false); // no run to fail
-    expect(db._sets.some(entryReset)).toBe(true);
-    expect(consumerMock).toHaveBeenCalledWith(db, "c2", "e2", "pa-1");
-  });
+  // NOTE: a 'processing' entry with extraction_run_id = NULL is the untouched
+  // reprocess direct-call path (HEALTHY in-flight). The orphan SELECT's WHERE
+  // (status='processing' AND linked run 'running' & stale) structurally
+  // excludes it — there is NO isNull branch. That exclusion lives entirely in
+  // the SQL predicate, which a mock cannot exercise faithfully; it is the
+  // authority of the Linux-CI integration test, not this contract test.
+  // (A prior design false-reclaimed this case → double extraction — fixed.)
 
   it("healthy in-flight (orphan-select returns nothing): no updates, only genuine pending drained", async () => {
     const db = makeDb([

@@ -1,4 +1,4 @@
-import { and, or, eq, lt, isNull, inArray } from "drizzle-orm";
+import { and, eq, lt, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { discussionEntries, discussions, internalAgentRuns } from "@armyofagents/db";
 import { runExtractionConsumer } from "./extraction-consumer.js";
@@ -58,17 +58,19 @@ export async function runExtractionSweep(db: Db, opts: SweepOptions): Promise<vo
       eq(internalAgentRuns.id, discussionEntries.extractionRunId),
     )
     .where(
+      // Orphan = a CONSUMER-driven 'processing' entry whose LINKED run is
+      // still 'running' and older than the stale window. The consumer links
+      // extraction_run_id *before* the atomic claim, so every consumer-driven
+      // 'processing' entry has a non-null linked run — there is no consumer
+      // path that yields (processing, run_id NULL). The only producer of
+      // (processing, run_id NULL) is the untouched reprocess direct-call path
+      // (Q2-b), which is HEALTHY in-flight work; a NULL-guard branch would
+      // false-reclaim it and cause double extraction. Reprocess-crash
+      // recovery is a deferred follow-up (spec §16.1), not in scope here.
       and(
         eq(discussionEntries.extractionStatus, "processing"),
-        or(
-          // consumer crashed before linking the run / before the claim
-          isNull(discussionEntries.extractionRunId),
-          // linked run still 'running' and older than the stale window
-          and(
-            eq(internalAgentRuns.status, "running"),
-            lt(internalAgentRuns.createdAt, staleCutoff),
-          ),
-        ),
+        eq(internalAgentRuns.status, "running"),
+        lt(internalAgentRuns.createdAt, staleCutoff),
       ),
     )
     .then((r: Array<{ id: string; runId: string | null }>) => r);
