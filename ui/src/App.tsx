@@ -31,6 +31,7 @@ import { DesignGuide } from "./pages/DesignGuide";
 import { TeamPage } from "./pages/TeamPage";
 import { TeamDetail } from "./pages/TeamDetail";
 import { HumanDetail } from "./pages/HumanDetail";
+import { AoaAgentDetail } from "./pages/AoaAgentDetail";
 import { ActiveAgents } from "./pages/ActiveAgents";
 import { DiscussionCaptureModal } from "./components/DiscussionCaptureModal";
 import { MemoryQuickSwitcher } from "./components/memory/MemoryQuickSwitcher";
@@ -134,6 +135,8 @@ function boardRoutes() {
       <Route path="team" element={<TeamPage />} />
       <Route path="org" element={<Navigate to="../team" replace />} />
       <Route path="team/teams/:slug" element={<TeamDetail />} />
+      <Route path="team/aoa/:agentId" element={<AoaAgentDetail />} />
+      <Route path="team/aoa/:agentId/:tab" element={<AoaAgentDetail />} />
       <Route path="team/:userId" element={<HumanDetail />} />
       <Route path="team/:userId/:tab" element={<HumanDetail />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
