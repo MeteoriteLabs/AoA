@@ -95,6 +95,14 @@ export async function startBridge(): Promise<void> {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // D2: AoA agent kind + tool allowlist. Absent → undefined (non-AoA path).
+  const agentKind = process.env.AOA_AGENT_KIND || undefined;
+  const toolAllowlistRaw = process.env.AOA_TOOL_ALLOWLIST ?? "";
+  const toolAllowlist = toolAllowlistRaw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
   const { createDb } = await import("@armyofagents/db");
   const { createServiceContainer } = await import("./service-container.js");
   const { createToolRegistry, executeTool } = await import("./tool-registry.js");
@@ -113,6 +121,8 @@ export async function startBridge(): Promise<void> {
     userId,
     userRole,
     enabledCapabilities,
+    agentKind,
+    toolAllowlist,
     db,
     services,
   };

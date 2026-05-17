@@ -43,7 +43,11 @@ export interface ToolContext {
   companyId: string;
   userId: string;
   userRole: string;
-  enabledCapabilities: readonly string[];   // NEW: from internal_agent_config
+  enabledCapabilities: readonly string[];   // from internal_agent_config
+  /** D2: kind of the calling agent. 'aoa' triggers per-agent tool allowlist gate. */
+  agentKind?: string;
+  /** D2: explicit tool allowlist for AoA agents. Absent/empty = default-deny. */
+  toolAllowlist?: readonly string[];
   db: Db;
   services: ServiceContainer;
 }

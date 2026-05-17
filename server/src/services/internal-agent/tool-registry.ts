@@ -102,11 +102,12 @@ export async function executeTool(
   params: unknown,
   ctx: ToolContext,
 ): Promise<ToolResult> {
-  // Role + capability gate (closes C13)
+  // Role + capability gate (closes C13) + D2 AoA tool allowlist gate
   const decision = authorizeToolInvocation(
     tool,
     ctx.userRole,
     ctx.enabledCapabilities,
+    { agentKind: ctx.agentKind, toolAllowlist: ctx.toolAllowlist },
   );
   if (!decision.allowed) {
     return {

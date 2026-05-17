@@ -72,19 +72,29 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       }
     }
 
+    const rc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
+    const aoaCfg = (rc.aoa ?? {}) as Record<string, unknown>;
+    const instruction = typeof aoaCfg.instruction === "string" ? aoaCfg.instruction : "";
+
+    // D2: read per-agent toolAllowlist from runtimeConfig.aoa.toolAllowlist.
+    // The runner always sets agentKind='aoa' so the bridge activates
+    // default-deny. toolAllowlist is pulled from the agent's runtimeConfig
+    // so the seed values (ensureExtractionAgent / ensureCommanderAgent) govern
+    // what each agent is allowed to call — no separate config required.
+    const toolAllowlistFromConfig = Array.isArray(aoaCfg.toolAllowlist)
+      ? (aoaCfg.toolAllowlist as string[])
+      : [];
     const mcp = buildMcpConfig({
       companyId: payload.companyId,
       userId: SUBAGENT_SESSION_USER_ID,
       userRole: SUBAGENT_SESSION_USER_ROLE,
       enabledCapabilities: SUBAGENT_ENABLED_CAPABILITIES,
       bridgeEntrypoint: resolveBridgeEntrypoint(),
+      agentKind: "aoa",
+      toolAllowlist: toolAllowlistFromConfig,
     });
     cfgPath = join(tmpdir(), `aoa-mcp-${agentId}-${runId ?? "x"}.json`);
     await writeFile(cfgPath, JSON.stringify(mcp, null, 2));
-
-    const rc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
-    const aoaCfg = (rc.aoa ?? {}) as Record<string, unknown>;
-    const instruction = typeof aoaCfg.instruction === "string" ? aoaCfg.instruction : "";
 
     const adapter = getServerAdapter(agent.adapterType);
     const baseConfig = { ...(agent.adapterConfig ?? {}) } as Record<string, unknown>;

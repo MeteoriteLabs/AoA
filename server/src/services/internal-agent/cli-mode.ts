@@ -55,6 +55,10 @@ interface McpConfigParams {
   userRole: string;
   enabledCapabilities: readonly string[];
   bridgeEntrypoint: string;
+  /** D2: kind of the calling agent ('aoa' triggers tool allowlist gate) */
+  agentKind?: string;
+  /** D2: explicit tool allowlist for AoA agents (comma-separated when passed via env) */
+  toolAllowlist?: readonly string[];
 }
 
 interface McpConfig {
@@ -80,6 +84,12 @@ export function buildMcpConfig(params: McpConfigParams): McpConfig {
           // C13: thread capability set into the bridge so executeTool can
           // gate on it. Comma-separated; bridge parses on the other side.
           AOA_SESSION_ENABLED_CAPABILITIES: params.enabledCapabilities.join(","),
+          // D2: per-agent tool allowlist for AoA agents. agentKind='aoa'
+          // activates default-deny; toolAllowlist is the explicit permit set.
+          ...(params.agentKind ? { AOA_AGENT_KIND: params.agentKind } : {}),
+          ...(params.toolAllowlist && params.toolAllowlist.length > 0
+            ? { AOA_TOOL_ALLOWLIST: params.toolAllowlist.join(",") }
+            : {}),
           ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
         },
       },
