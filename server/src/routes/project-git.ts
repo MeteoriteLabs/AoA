@@ -218,7 +218,14 @@ export function projectGitRoutes(db: Db) {
       });
 
       // 7. Build GitGraphData — assign lane indices + colors
-      const tipShaToName = new Map(sorted.map((b) => [b.tipSha, b.name]));
+      // Use first-occurrence so the default branch wins when multiple branches
+      // share the same tip SHA (e.g. main, ARM-15, ARM-19 all at the same commit).
+      const tipShaToName = new Map<string, string>();
+      for (const b of sorted) {
+        if (!tipShaToName.has(b.tipSha)) {
+          tipShaToName.set(b.tipSha, b.name);
+        }
+      }
       const commits: GitCommitNode[] = commitEntries.map((c) => ({
         sha: c.sha,
         parentShas: c.parentShas,

@@ -71,7 +71,6 @@ export interface GitGraphCanvasProps {
 
 function computeLayout(graph: GitGraphData, branches: GitBranchInfo[]): LayoutResult {
   const laneColors = new Map(graph.branches.map((b) => [b.name, b.color]));
-  const branchByTip = new Map(graph.branches.map((b) => [b.tipSha, b.name]));
   const taskTips = new Set(branches.filter((b) => b.linkedIssueId).map((b) => b.lastCommitSha));
 
   // Lane Y assignment
@@ -80,17 +79,35 @@ function computeLayout(graph: GitGraphData, branches: GitBranchInfo[]): LayoutRe
     laneY.set(b.name, PAD_TOP + idx * Y_SPACING);
   });
 
-  // SHA → commit index (topological order from git log)
-  const shaToIdx = new Map(graph.commits.map((c, i) => [c.sha, i]));
+  // Build tip→lane map: FIRST branch wins for shared tips (so default branch
+  // takes priority over later branches at the same commit).
+  const tipShaToLane = new Map<string, string>();
+  for (const b of graph.branches) {
+    if (!tipShaToLane.has(b.tipSha)) {
+      tipShaToLane.set(b.tipSha, b.name);
+    }
+  }
+
+  // Propagate lanes backward through parent links.
+  // git log is topological (newest → oldest), so when we reach a parent we can
+  // safely assign its lane from the first child that claimed it.
+  const commitLane = new Map<string, string>(tipShaToLane);
+  for (const commit of graph.commits) {
+    const lane = commitLane.get(commit.sha);
+    if (!lane) continue;
+    for (const parentSha of commit.parentShas) {
+      if (!commitLane.has(parentSha)) {
+        commitLane.set(parentSha, lane);
+      }
+    }
+  }
 
   // Assign X: left-to-right = newest first in git log (index 0 is newest)
   // Flip so oldest is left (most natural for a history graph)
   const maxIdx = Math.max(0, graph.commits.length - 1);
 
   const nodes: CommitLayout[] = graph.commits.map((commit, idx) => {
-    // Find which branch lane this commit belongs to
-    const branchAtTip = branchByTip.get(commit.sha);
-    const laneName = branchAtTip ?? commit.branchNames[0] ?? graph.defaultBranch;
+    const laneName = commitLane.get(commit.sha) ?? graph.defaultBranch;
     const y = laneY.get(laneName) ?? PAD_TOP;
     const x = PAD_LEFT + (maxIdx - idx) * X_SPACING;
     const color = laneColors.get(laneName) ?? "#7E8AA8";
@@ -100,7 +117,8 @@ function computeLayout(graph: GitGraphData, branches: GitBranchInfo[]): LayoutRe
       x,
       y,
       isMerge: commit.isMerge,
-      branchName: branchAtTip ?? null,
+      // branchName only set at explicit branch tips (used for hover + task card)
+      branchName: tipShaToLane.get(commit.sha) ?? null,
       isTaskTip: taskTips.has(commit.sha),
       tags: commit.tags,
       laneColor: color,
@@ -264,6 +282,8 @@ export function GitGraphCanvas({
 }: GitGraphCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const transformRef = useRef(d3.zoomIdentity);
+  const zoomRef = useRef<d3.ZoomBehavior<HTMLCanvasElement, unknown> | null>(null);
+  const initialPanApplied = useRef(false);
   const rafRef = useRef<number | null>(null);
   const animPhaseRef = useRef(0);
 
@@ -296,6 +316,17 @@ export function GitGraphCanvas({
 
   const layout = useMemo(() => computeLayout(graph, branches), [graph, branches]);
 
+  // Always-current layout ref so the ResizeObserver callback can read totalWidth
+  // without closing over a stale value (ResizeObserver callback dependency is redraw).
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+
+  // Reset initial-pan flag whenever graph data changes so new data re-anchors
+  // to the newest commits automatically.
+  useEffect(() => {
+    initialPanApplied.current = false;
+  }, [graph]);
+
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -303,10 +334,13 @@ export function GitGraphCanvas({
     if (!ctx) return;
 
     const t = transformRef.current;
+    // Scale D3's CSS-pixel transform into physical pixels so hit-testing
+    // and rendering stay consistent regardless of devicePixelRatio.
+    const dpr = window.devicePixelRatio || 1;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.save();
-    ctx.setTransform(t.k, 0, 0, t.k, t.x, t.y);
+    ctx.setTransform(t.k * dpr, 0, 0, t.k * dpr, t.x * dpr, t.y * dpr);
 
     // Filter nodes/edges to visible branches
     const visibleNodes = layout.nodes.filter(
@@ -367,12 +401,26 @@ export function GitGraphCanvas({
 
     const obs = new ResizeObserver(() => {
       const dpr = window.devicePixelRatio || 1;
-      canvas.width = parent.clientWidth * dpr;
-      canvas.height = parent.clientHeight * dpr;
-      canvas.style.width = `${parent.clientWidth}px`;
-      canvas.style.height = `${parent.clientHeight}px`;
-      const ctx = canvas.getContext("2d");
-      if (ctx) ctx.scale(dpr, dpr);
+      const w = parent.clientWidth;
+      const h = parent.clientHeight;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+      // No ctx.scale(dpr, dpr) — redraw applies DPR inside setTransform.
+
+      // Apply initial pan here, inside the ResizeObserver, because this is the
+      // earliest point at which the canvas has guaranteed non-zero dimensions.
+      // layoutRef.current is always fresh (assigned in the render body above).
+      const totalWidth = layoutRef.current.totalWidth;
+      if (!initialPanApplied.current && zoomRef.current && w > 0 && totalWidth > w) {
+        // Pan so the newest commits (rightmost) land near the right edge.
+        const initialX = w - totalWidth - PAD_LEFT;
+        const t = d3.zoomIdentity.translate(initialX, 0);
+        d3.select(canvas).call(zoomRef.current.transform, t);
+        initialPanApplied.current = true;
+      }
+
       redraw();
     });
     obs.observe(parent);
@@ -392,9 +440,11 @@ export function GitGraphCanvas({
         redraw();
       });
 
+    zoomRef.current = zoom;
     d3.select(canvas).call(zoom);
     return () => {
       d3.select(canvas).on(".zoom", null);
+      zoomRef.current = null;
     };
   }, [redraw]);
 
