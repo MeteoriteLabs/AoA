@@ -630,4 +630,3 @@ Expected: clean commit with tests passing before commit.
 - Type consistency: `healthCheckedAt`, `ttlMs`, and `maxConcurrency` names are used consistently.
 - Scope check: this is focused on preview refresh correctness and viewer verification, not a larger viewer redesign.
 - Known deferred work: Playwright E2E for real agent-created previews remains deferred until local/GitHub DB setup is settled.
-

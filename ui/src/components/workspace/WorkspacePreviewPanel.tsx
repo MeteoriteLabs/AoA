@@ -252,13 +252,6 @@ function PreviewTabBar({
   onCloseTab?: (tabId: string) => void;
   onOpenTab?: (kind: PreviewTabKind) => void;
 }) {
-  const [addOpen, setAddOpen] = useState(false);
-
-  const requestTab = (kind: PreviewTabKind) => {
-    setAddOpen(false);
-    onOpenTab?.(kind);
-  };
-
   return (
     <div className="flex min-w-0 shrink-0 items-center gap-1 border-b border-border px-2 py-1" data-testid="workspace-preview-tabs">
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Workspace preview tabs">
@@ -300,56 +293,18 @@ function PreviewTabBar({
         })}
       </div>
       {onOpenTab && (
-        <div className="relative shrink-0">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            aria-label="Open preview tab"
-            aria-expanded={addOpen}
-            title="Open preview tab"
-            data-testid="preview-tab-add"
-            onClick={() => setAddOpen((open) => !open)}
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
-          {addOpen && (
-            <div
-              className="absolute right-0 top-8 z-20 w-40 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
-              data-testid="preview-tab-add-menu"
-            >
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
-                onClick={() => requestTab("home")}
-                data-testid="preview-tab-add-home"
-              >
-                <LayoutGrid className="h-4 w-4" />
-                Viewer Home
-              </button>
-              <div className="my-1 h-px bg-border" />
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
-                onClick={() => requestTab("browser")}
-                data-testid="preview-tab-add-browser"
-              >
-                <Globe className="h-4 w-4" />
-                Browser
-              </button>
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
-                onClick={() => requestTab("logs")}
-                data-testid="preview-tab-add-logs"
-              >
-                <Terminal className="h-4 w-4" />
-                Logs
-              </button>
-            </div>
-          )}
-        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 shrink-0"
+          aria-label="Open Viewer Home"
+          title="Open Viewer Home"
+          data-testid="preview-tab-add"
+          onClick={() => onOpenTab("home")}
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </Button>
       )}
     </div>
   );
@@ -485,7 +440,7 @@ function BrowserTabView({
                   ))
                 ) : (
                   <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
-                    No running local services
+                    No live browser services
                   </div>
                 )}
               </div>
@@ -567,7 +522,7 @@ function ViewerHome({
             />
           ))
         ) : (
-          <ViewerHomeEmpty>No running browser services</ViewerHomeEmpty>
+          <ViewerHomeEmpty>No live browser services</ViewerHomeEmpty>
         )}
       </ViewerHomeSection>
 
@@ -610,7 +565,7 @@ function ViewerHome({
             />
           ))
         ) : (
-          <ViewerHomeEmpty>No artifacts available</ViewerHomeEmpty>
+          <ViewerHomeEmpty>No artifacts yet</ViewerHomeEmpty>
         )}
       </ViewerHomeSection>
 

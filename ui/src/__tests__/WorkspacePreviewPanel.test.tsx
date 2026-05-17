@@ -265,10 +265,15 @@ describe("WorkspacePreviewPanel tab deck", () => {
     expect(onCloseTab).toHaveBeenCalledWith("browser:svc-1");
   });
 
-  it("opens the add-tab picker without offering run-output changes as a center viewer", () => {
+  it("uses the add-tab button to focus Viewer Home without opening a picker", () => {
     const onOpenTab = vi.fn();
     const tabs: WorkspacePreviewTab[] = [
-      { id: "home:issue-1", kind: "home", title: "Viewer", issueId: "issue-1" },
+      {
+        id: "browser:manual:ws-1",
+        kind: "browser",
+        title: "Browser",
+        url: "about:blank",
+      },
     ];
 
     render(
@@ -284,13 +289,9 @@ describe("WorkspacePreviewPanel tab deck", () => {
     );
 
     fireEvent.click(screen.getByTestId("preview-tab-add"));
-    expect(screen.queryByTestId("preview-tab-add-changes")).not.toBeInTheDocument();
-    expect(screen.getByTestId("preview-tab-add-browser")).toBeInTheDocument();
-    expect(screen.getByTestId("preview-tab-add-logs")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId("preview-tab-add-home"));
 
     expect(onOpenTab).toHaveBeenCalledWith("home");
+    expect(screen.queryByTestId("preview-tab-add-menu")).not.toBeInTheDocument();
   });
 
   it("lists service, artifact, and logs in Viewer Home without a Changes entry", async () => {
@@ -402,7 +403,7 @@ describe("WorkspacePreviewPanel tab deck", () => {
       { wrapper },
     );
 
-    await waitFor(() => expect(screen.getByText("No running browser services")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("No live browser services")).toBeInTheDocument());
     expect(screen.queryByTestId("viewer-home-service-svc-unhealthy")).not.toBeInTheDocument();
   });
 

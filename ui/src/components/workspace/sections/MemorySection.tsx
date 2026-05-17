@@ -97,14 +97,15 @@ export function MemorySection({ issueId, companyId, companyPrefix }: MemorySecti
   if (total === 0) {
     return (
       <div
-        className="mx-3 p-3 rounded-md border border-dashed border-muted-foreground/30 flex items-start gap-2"
+        className="mx-3 flex items-start gap-2 rounded-md border border-dashed border-muted-foreground/30 p-3"
         data-testid="memory-section-empty"
       >
         <Brain className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-        <div className="text-xs text-muted-foreground">
-          No memory retrievals recorded for this task yet. Memory the
-          agent uses during runs (auto-retrieved or pulled via
-          memory.search) will show up here.
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-foreground">No memory used yet</div>
+          <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+            Retrievals from future runs will appear here.
+          </div>
         </div>
       </div>
     );

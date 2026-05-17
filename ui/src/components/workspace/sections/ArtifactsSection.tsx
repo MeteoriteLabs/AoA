@@ -61,7 +61,7 @@ export function ArtifactsSection({ issueId, onPreviewArtifact, onPreviewOutput }
   if (!artifact && !outputsLoading && candidates.length === 0) {
     return (
       <div className="px-3 py-2 text-xs text-muted-foreground" data-testid="artifacts-empty">
-        No artifacts linked
+        No artifacts yet
       </div>
     );
   }

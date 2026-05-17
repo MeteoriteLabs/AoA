@@ -62,6 +62,20 @@ function saveExpanded(name: string, open: boolean) {
   }
 }
 
+function limitExpandedSections(expanded: Record<string, boolean>): Record<string, boolean> {
+  const openIds = WORKSPACE_COCKPIT_SECTIONS
+    .map((section) => section.id)
+    .filter((sectionId) => expanded[sectionId]);
+  if (openIds.length <= MAX_EXPANDED_COCKPIT_SECTIONS) return expanded;
+
+  const keepOpen = new Set(openIds.slice(-MAX_EXPANDED_COCKPIT_SECTIONS));
+  const next = { ...expanded };
+  for (const section of WORKSPACE_COCKPIT_SECTIONS) {
+    next[section.id] = keepOpen.has(section.id);
+  }
+  return next;
+}
+
 interface WorkspaceRightPanelProps {
   issueId: string;
   companyId: string;
@@ -99,6 +113,8 @@ const WORKSPACE_COCKPIT_SECTIONS: CockpitSectionDef[] = [
   { id: "context", title: "Context", icon: Paperclip },
   { id: "access", title: "Access", icon: KeyRound },
 ];
+
+const MAX_EXPANDED_COCKPIT_SECTIONS = 3;
 
 type CockpitSummaryMap = Partial<Record<CockpitSectionDef["id"], string | null>>;
 
@@ -282,12 +298,32 @@ export function WorkspaceRightPanel({
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
     for (const section of WORKSPACE_COCKPIT_SECTIONS) initial[section.id] = loadExpanded(section.id);
-    return initial;
+    return limitExpandedSections(initial);
   });
 
   const setSectionOpen = useCallback((id: string, open: boolean) => {
-    setExpanded((prev) => ({ ...prev, [id]: open }));
-    saveExpanded(id, open);
+    setExpanded((prev) => {
+      let next = { ...prev, [id]: open };
+
+      if (open) {
+        const openIds = WORKSPACE_COCKPIT_SECTIONS
+          .map((section) => section.id)
+          .filter((sectionId) => sectionId !== id && prev[sectionId]);
+        const keepOpen = new Set([...openIds, id].slice(-MAX_EXPANDED_COCKPIT_SECTIONS));
+        next = { ...prev };
+        for (const section of WORKSPACE_COCKPIT_SECTIONS) {
+          next[section.id] = keepOpen.has(section.id);
+        }
+      }
+
+      for (const section of WORKSPACE_COCKPIT_SECTIONS) {
+        if (prev[section.id] !== next[section.id]) {
+          saveExpanded(section.id, Boolean(next[section.id]));
+        }
+      }
+
+      return next;
+    });
   }, []);
 
   useEffect(() => {

@@ -64,7 +64,8 @@ describe("MemorySection", () => {
     );
 
     expect(await screen.findByTestId("memory-section-empty")).toBeInTheDocument();
-    expect(screen.getByText(/No memory retrievals/)).toBeInTheDocument();
+    expect(screen.getByText("No memory used yet")).toBeInTheDocument();
+    expect(screen.getByText("Retrievals from future runs will appear here.")).toBeInTheDocument();
   });
 
   it("groups retrievals by triggeredBy (auto / agent-pulled / skill)", async () => {
