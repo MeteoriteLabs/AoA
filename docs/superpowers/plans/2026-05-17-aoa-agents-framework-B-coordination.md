@@ -94,7 +94,7 @@ import { delegateToSubagentTool } from "../services/internal-agent/tools/delegat
 it("resolves target by name and enqueues a wakeup with the instruction", async () => {
   const ins:any[]=[];
   const db:any = { select:()=>({from:()=>({where:()=>({then:(r:any)=>Promise.resolve([{id:"sub-1"}]).then(r)})})}), insert:()=>({values:(v:any)=>{ins.push(v);return Promise.resolve([]);}}) };
-  const res = await delegateToSubagentTool.handler({ agentName:"Discussion Extraction", instruction:"process entry e1" }, { db, companyId:"co-1" } as any);
+  const res = await delegateToSubagentTool.execute({ agentName:"Discussion Extraction", instruction:"process entry e1" }, { db, companyId:"co-1" } as any);
   expect(res.success).toBe(true);
   expect(ins[0].agentId).toBe("sub-1");
   expect(ins[0].source).toBe("aoa.delegate");
