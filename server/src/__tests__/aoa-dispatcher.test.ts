@@ -25,6 +25,7 @@ vi.mock("drizzle-orm", () => ({
   lt: vi.fn((a: unknown, b: unknown) => ({ lt: [a, b] })),
   isNull: vi.fn((c: unknown) => ({ isNull: c })),
   inArray: vi.fn((c: unknown, v: unknown) => ({ inArray: [c, v] })),
+  notInArray: vi.fn((c: unknown, v: unknown) => ({ notInArray: [c, v] })),
 }));
 vi.mock("@armyofagents/db", () => {
   const t = (n: string) =>
@@ -35,8 +36,13 @@ vi.mock("@armyofagents/db", () => {
     discussionEntries: t("discussion_entries"),
     discussions: t("discussions"),
     internalAgentRuns: t("internal_agent_runs"),
+    agentWakeupRequests: t("agent_wakeup_requests"),
+    agents: t("agents"),
   };
 });
+vi.mock("../services/internal-agent/aoa-agents/runner.js", () => ({
+  runAoaAgent: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("../services/internal-agent/subagents/extraction-consumer.js", () => ({
   runExtractionConsumer: consumerMock,
 }));

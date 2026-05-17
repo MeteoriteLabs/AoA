@@ -1,9 +1,10 @@
-import { and, eq, lt, inArray } from "drizzle-orm";
+import { and, eq, lt, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { discussionEntries, discussions, internalAgentRuns } from "@armyofagents/db";
+import { discussionEntries, discussions, internalAgentRuns, agentWakeupRequests, agents } from "@armyofagents/db";
 import { listEnabledOutboxAgents } from "./triggers.js";
 import { ensureExtractionAgent } from "./ensure-extraction-agent.js";
 import { runExtractionConsumer } from "../subagents/extraction-consumer.js";
+import { runAoaAgent } from "./runner.js";
 import { createLimiter } from "../subagents/concurrency-limiter.js";
 import { logger } from "../../../middleware/logger.js";
 
@@ -134,40 +135,99 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     .limit(200)
     .then((r: Array<{ id: string; companyId: string }>) => r);
 
-  if (rows.length === 0) return;
-
   const limiter = createLimiter(opts.limiterMax);
-  // Per-company memoization within this tick: the enabled-outbox gate result
-  // (true = has an enabled outbox agent) and the resolved extraction agent id.
-  const outboxByCompany = new Map<string, boolean>();
-  const agentByCompany = new Map<string, string>();
 
-  await Promise.allSettled(
-    rows.map((row) =>
-      limiter.run(async () => {
-        // Gate: only dispatch if the company has an enabled `outbox` trigger.
-        let gated = outboxByCompany.get(row.companyId);
-        if (gated === undefined) {
-          const enabled = await listEnabledOutboxAgents(db, row.companyId);
-          gated = enabled.length > 0;
-          outboxByCompany.set(row.companyId, gated);
-        }
-        if (!gated) return; // no outbox trigger for this company → skip
+  if (rows.length > 0) {
+    // Per-company memoization within this tick: the enabled-outbox gate result
+    // (true = has an enabled outbox agent) and the resolved extraction agent id.
+    const outboxByCompany = new Map<string, boolean>();
+    const agentByCompany = new Map<string, string>();
 
-        let agentId = agentByCompany.get(row.companyId);
-        if (!agentId) {
-          agentId = await ensureExtractionAgent(db, row.companyId);
-          agentByCompany.set(row.companyId, agentId);
-        }
-        await runExtractionConsumer(db, row.companyId, row.id, agentId);
-      }),
-    ),
-  );
+    await Promise.allSettled(
+      rows.map((row) =>
+        limiter.run(async () => {
+          // Gate: only dispatch if the company has an enabled `outbox` trigger.
+          let gated = outboxByCompany.get(row.companyId);
+          if (gated === undefined) {
+            const enabled = await listEnabledOutboxAgents(db, row.companyId);
+            gated = enabled.length > 0;
+            outboxByCompany.set(row.companyId, gated);
+          }
+          if (!gated) return; // no outbox trigger for this company → skip
+
+          let agentId = agentByCompany.get(row.companyId);
+          if (!agentId) {
+            agentId = await ensureExtractionAgent(db, row.companyId);
+            agentByCompany.set(row.companyId, agentId);
+          }
+          await runExtractionConsumer(db, row.companyId, row.id, agentId);
+        }),
+      ),
+    );
+  }
+
+  // ── Phase 3: drain the wakeup queue for kind='aoa' agents ─────────────────
+  const wakeupRows: Array<{ id: string; agentId: string; companyId: string; payload: Record<string, unknown> | null }> = await db
+    .select({
+      id: agentWakeupRequests.id,
+      agentId: agentWakeupRequests.agentId,
+      companyId: agentWakeupRequests.companyId,
+      payload: agentWakeupRequests.payload,
+    })
+    .from(agentWakeupRequests)
+    .innerJoin(agents, eq(agents.id, agentWakeupRequests.agentId))
+    .where(
+      and(
+        eq(agentWakeupRequests.status, "queued"),
+        eq(agents.kind, "aoa"),
+        notInArray(agents.status, ["paused", "terminated"]),
+      ),
+    )
+    .limit(200)
+    .then((r) => r);
+
+  if (wakeupRows.length > 0) {
+    await Promise.allSettled(
+      wakeupRows.map((w) =>
+        limiter.run(async () => {
+          // Atomic claim: queued → processing
+          const claimed = await db
+            .update(agentWakeupRequests)
+            .set({ status: "processing", claimedAt: new Date() })
+            .where(and(eq(agentWakeupRequests.id, w.id), eq(agentWakeupRequests.status, "queued")))
+            .returning({ id: agentWakeupRequests.id });
+          if (claimed.length === 0) return; // already claimed by concurrent tick
+
+          try {
+            await runAoaAgent(db, w.agentId, {
+              companyId: w.companyId,
+              source: "wakeup",
+              wakeupId: w.id,
+              ...(w.payload ?? {}),
+            });
+            await db
+              .update(agentWakeupRequests)
+              .set({ status: "done", finishedAt: new Date() })
+              .where(eq(agentWakeupRequests.id, w.id));
+          } catch (err: unknown) {
+            await db
+              .update(agentWakeupRequests)
+              .set({
+                status: "failed",
+                error: err instanceof Error ? err.message : String(err),
+                finishedAt: new Date(),
+              })
+              .where(eq(agentWakeupRequests.id, w.id));
+          }
+        }),
+      ),
+    );
+  }
 
   logger
     .child({ subagent: "aoa-dispatcher" })
     .info(
-      { reclaimed: orphanRows.length, drained: rows.length },
+      { reclaimed: orphanRows.length, drained: rows.length, wakeups: wakeupRows.length },
       "aoa dispatch complete",
     );
 }
