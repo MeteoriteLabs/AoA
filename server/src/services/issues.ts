@@ -1566,10 +1566,10 @@ export function issueService(db: Db) {
       let m: RegExpExecArray | null;
       while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
       if (tokens.size === 0) return [];
-      // @mention resolution excludes platform (Commander-team) agents —
-      // they are not mentionable by org users in task comments.
+      // @mention resolution resolves org + aoa (Commander-team) agents;
+      // platform stays excluded — platform agents are not mentionable by users.
       const rows = await db.select({ id: agents.id, name: agents.name })
-        .from(agents).where(and(eq(agents.companyId, companyId), eq(agents.kind, "org")));
+        .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.kind, ["org", "aoa"])));
       return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
     },
 
