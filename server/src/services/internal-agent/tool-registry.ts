@@ -9,6 +9,7 @@ import { createFileTools } from "./tools/file-tools.js";
 import { createCoordinationTools } from "./tools/coordination-tools.js";
 import { createAnalysisTools } from "./tools/analysis-tools.js";
 import { submitExtractedItemsTool } from "./tools/submit-extracted-items.js";
+import { delegateToSubagentTool } from "./tools/delegate-to-subagent.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -20,6 +21,7 @@ export function createToolRegistry(): AgentTool[] {
     ...createWorkflowTools(),
     ...createFileTools(),
     ...createCoordinationTools(),
+    delegateToSubagentTool,
     ...createAnalysisTools(),
   ];
 }

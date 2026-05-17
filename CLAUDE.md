@@ -198,7 +198,7 @@ Requests with neither → 401. `local_trusted` MCP writes succeed without a Bear
 
 Always-on AI assistant for coordination, proactive monitoring, and workflow management. CLI-mode execution (defaults to `claude_cli`; `codex` and `opencode` also supported). No per-company API key required. SSE streaming.
 
-- **30 tools** across 8 categories: discussion, query, action, memory, workflow, file, coordination, analysis.
+- **31 tools** across 8 categories: discussion, query, action, memory, workflow, file, coordination, analysis.
 - **Per-company config** (`internal_agent_config` table): executionMode, provider, model, autonomyLevel, enabledCapabilities (12 types), budget, proactive interval.
 - **Agent loop:** HTTP route → agentLoopService (conversation + user message persistence) → cliModeService (subprocess spawn + MCP bridge + stdout streaming) → SSE to UI.
 - **One persistent conversation** per user per company. History summarization for token management.
