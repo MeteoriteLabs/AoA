@@ -8,6 +8,7 @@ import { createWorkflowTools } from "./tools/workflow-tools.js";
 import { createFileTools } from "./tools/file-tools.js";
 import { createCoordinationTools } from "./tools/coordination-tools.js";
 import { createAnalysisTools } from "./tools/analysis-tools.js";
+import { submitExtractedItemsTool } from "./tools/submit-extracted-items.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -15,6 +16,7 @@ export function createToolRegistry(): AgentTool[] {
     ...createActionTools(),
     ...createMemoryTools(),
     ...createDiscussionTools(),
+    submitExtractedItemsTool,
     ...createWorkflowTools(),
     ...createFileTools(),
     ...createCoordinationTools(),
