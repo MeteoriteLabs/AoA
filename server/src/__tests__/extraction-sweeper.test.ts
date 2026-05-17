@@ -1,16 +1,11 @@
 // Contract test for runExtractionSweep — the durable PRIMARY trigger.
 //
-// Two phases per tick:
-//  1. RECLAIM orphans: an entry stuck 'processing' whose internal_agent_runs
-//     row is still 'running' and older than staleMs (crash between the M2
-//     atomic claim and a terminal status) is atomically reset → 'pending'
-//     (extraction_run_id cleared). Healthy in-flight ('running' run younger
-//     than staleMs) is NOT reclaimed.
-//  2. DRAIN pending (incl. just-reclaimed) → consumer under the limiter.
-//
-// Proves §6.2/§6.3 end-to-end recovery (the prior createdAt-based code
-// selected orphans but never reset them, so the consumer's pending-claim
-// no-op'd them — silent permanent stuck-in-processing).
+// Orphan signal uses the entry's LINKED current run (discussion_entries.
+// extraction_run_id), not "any run for the entry". Reclaim BOTH resets the
+// entry → 'pending' AND terminalizes the stale linked run → 'failed', so a
+// leftover 'running' run can never re-trigger reclaim (the bug that the
+// prior join-on-any-running design produced: perpetual re-reclaim of a
+// healthily-reprocessing entry + zombie runs). Then drains 'pending'.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { consumerMock, ensurePlatformMock } = vi.hoisted(() => ({
@@ -20,8 +15,10 @@ const { consumerMock, ensurePlatformMock } = vi.hoisted(() => ({
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...a: unknown[]) => ({ and: a })),
+  or: vi.fn((...a: unknown[]) => ({ or: a })),
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
   lt: vi.fn((a: unknown, b: unknown) => ({ lt: [a, b] })),
+  isNull: vi.fn((c: unknown) => ({ isNull: c })),
   inArray: vi.fn((c: unknown, v: unknown) => ({ inArray: [c, v] })),
 }));
 vi.mock("@armyofagents/db", () => {
@@ -49,20 +46,22 @@ import { runExtractionSweep } from "../services/internal-agent/subagents/extract
 
 /**
  * Sequence-aware mock DB.
- * - select() returns the next queued rows array (phase 1 = orphan ids,
- *   phase 2 = pending rows).
- * - update().set(v).where() captures `v` so we can assert the reclaim reset.
+ * - select() returns the next queued rows array (1 = orphan-select,
+ *   2 = pending-drain).
+ * - update().set(v).where() pushes `v` into `_sets` so we can assert which
+ *   updates were issued (run-fail vs entry-reset, by payload shape).
  */
 function makeDb(selectQueue: unknown[][]) {
   let si = 0;
-  const updates: any[] = [];
+  const sets: any[] = [];
   const db: any = {
-    _updates: updates,
+    _sets: sets,
     select: () => {
       const n = si++;
       const c: any = {};
       c.from = () => c;
       c.innerJoin = () => c;
+      c.leftJoin = () => c;
       c.where = () => c;
       c.limit = () => c;
       c.then = (resolve: (v: unknown[]) => unknown) =>
@@ -71,7 +70,7 @@ function makeDb(selectQueue: unknown[][]) {
     },
     update: () => ({
       set: (v: any) => {
-        updates.push(v);
+        sets.push(v);
         return { where: () => Promise.resolve([]) };
       },
     }),
@@ -79,41 +78,59 @@ function makeDb(selectQueue: unknown[][]) {
   return db;
 }
 
-describe("runExtractionSweep — orphan reclaim + pending drain", () => {
+const runFail = (s: any) => s.status === "failed";
+const entryReset = (s: any) =>
+  s.extractionStatus === "pending" && s.extractionRunId === null;
+
+describe("runExtractionSweep — linked-run orphan reclaim", () => {
   beforeEach(() => {
     consumerMock.mockClear();
     ensurePlatformMock.mockClear();
   });
 
-  it("RECLAIMS an orphaned 'processing' entry (old running run) → reset to pending → re-extracted", async () => {
+  it("true orphan (linked run stale-running): fails the run, resets the entry, re-extracts", async () => {
     const db = makeDb([
-      [{ id: "e-orphan" }], // phase1: one orphan
-      [{ id: "e-orphan", companyId: "c1" }], // phase2: now pending
+      [{ id: "e1", runId: "r1" }], // orphan-select (projected as {id, runId})
+      [{ id: "e1", companyId: "c1" }], // pending-drain (now pending)
     ]);
     await runExtractionSweep(db, { limiterMax: 2, staleMs: 600_000 });
 
-    expect(db._updates).toHaveLength(1);
-    expect(db._updates[0].extractionStatus).toBe("pending");
-    expect(db._updates[0].extractionRunId).toBeNull();
-    expect(consumerMock).toHaveBeenCalledWith(db, "c1", "e-orphan", "pa-1");
+    // Stale linked run terminalized so it can never re-trigger reclaim.
+    expect(db._sets.some(runFail)).toBe(true);
+    // Entry atomically reset.
+    expect(db._sets.some(entryReset)).toBe(true);
+    // …and actually re-extracted.
+    expect(consumerMock).toHaveBeenCalledWith(db, "c1", "e1", "pa-1");
   });
 
-  it("does NOT reclaim when there are no stale running runs (healthy in-flight untouched)", async () => {
+  it("orphan with NULL extraction_run_id (crashed pre-claim/link): reset only, no run-fail", async () => {
     const db = makeDb([
-      [], // phase1: no orphans
+      [{ id: "e2", runId: null }],
       [{ id: "e2", companyId: "c2" }],
     ]);
     await runExtractionSweep(db, { limiterMax: 2, staleMs: 600_000 });
 
-    expect(db._updates).toHaveLength(0);
+    expect(db._sets.some(runFail)).toBe(false); // no run to fail
+    expect(db._sets.some(entryReset)).toBe(true);
     expect(consumerMock).toHaveBeenCalledWith(db, "c2", "e2", "pa-1");
+  });
+
+  it("healthy in-flight (orphan-select returns nothing): no updates, only genuine pending drained", async () => {
+    const db = makeDb([
+      [], // orphan-select: linked run is recent → excluded by the query
+      [{ id: "e3", companyId: "c3" }],
+    ]);
+    await runExtractionSweep(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect(db._sets).toHaveLength(0); // nothing reclaimed
+    expect(consumerMock).toHaveBeenCalledWith(db, "c3", "e3", "pa-1");
     expect(consumerMock).toHaveBeenCalledTimes(1);
   });
 
   it("no-op when nothing stuck and nothing pending", async () => {
     const db = makeDb([[], []]);
     await runExtractionSweep(db, { limiterMax: 2, staleMs: 600_000 });
-    expect(db._updates).toHaveLength(0);
+    expect(db._sets).toHaveLength(0);
     expect(consumerMock).not.toHaveBeenCalled();
   });
 

@@ -48,6 +48,18 @@ export async function runExtractionConsumer(
       .returning();
     runId = inserted[0]?.id ?? null;
 
+    // Link the entry to its CURRENT run immediately (before extraction), so a
+    // 'processing' entry always points to the run actively working it. The
+    // sweeper's orphan signal keys on this linked run — without the link it
+    // would have to match ANY historical run and could false-reclaim a
+    // healthily-reprocessing entry (see RESUME-BRIEF §4).
+    if (runId) {
+      await db
+        .update(discussionEntries)
+        .set({ extractionRunId: runId })
+        .where(eq(discussionEntries.id, entryId));
+    }
+
     await extractionService(db).extractFromDiscussionEntry(companyId, entryId);
 
     if (runId) {
@@ -59,10 +71,7 @@ export async function runExtractionConsumer(
           completedAt: new Date(),
         })
         .where(eq(internalAgentRuns.id, runId));
-      await db
-        .update(discussionEntries)
-        .set({ extractionRunId: runId })
-        .where(eq(discussionEntries.id, entryId));
+      // (extraction_run_id was already linked at run creation, above.)
     }
 
     // Platform-scoped cost_event → existing budgetService.evaluateCostEvent

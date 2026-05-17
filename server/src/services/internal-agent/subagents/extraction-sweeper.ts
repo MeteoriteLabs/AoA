@@ -1,4 +1,4 @@
-import { and, eq, lt, inArray } from "drizzle-orm";
+import { and, or, eq, lt, isNull, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { discussionEntries, discussions, internalAgentRuns } from "@armyofagents/db";
 import { runExtractionConsumer } from "./extraction-consumer.js";
@@ -9,10 +9,10 @@ import { logger } from "../../../middleware/logger.js";
 export interface SweepOptions {
   /** Max simultaneous extractions per sweep tick. */
   limiterMax: number;
-  /** A 'processing' entry whose run has been 'running' (non-terminal) longer
-   *  than this is treated as orphaned (crash between the M2 atomic claim and
-   *  a terminal status) and reclaimed. Must be conservatively larger than the
-   *  longest legitimate extraction so healthy in-flight work is never reset. */
+  /** A 'processing' entry whose LINKED run has been 'running' (non-terminal)
+   *  longer than this is treated as orphaned (crash between the M2 atomic
+   *  claim and a terminal status). Must be conservatively larger than the
+   *  longest legitimate extraction so healthy in-flight is never reset. */
   staleMs: number;
 }
 
@@ -22,18 +22,23 @@ export interface SweepOptions {
  * `discussion_entries.extractionStatus='pending'` IS the work item, so no
  * event can be "lost" (spec §6.2). Each tick:
  *
- *  1. RECLAIM orphans (spec §6.3): an entry stuck in 'processing' whose
- *     `internal_agent_runs` row is still 'running' and older than staleMs is
- *     atomically reset → 'pending' (extraction_run_id cleared). The run's
- *     createdAt ≈ processing start (the consumer inserts the run immediately
- *     before extraction), so this never false-reclaims healthy in-flight work.
- *     Reset is guarded (`AND extraction_status='processing'`) so it is safe
- *     even if state changed between the select and the update.
+ *  1. RECLAIM orphans (spec §6.3). Orphan = entry `processing` AND its
+ *     **linked current run** (`extraction_run_id`, set by the consumer at run
+ *     creation) is still `running` and older than staleMs — OR
+ *     `extraction_run_id IS NULL` while `processing` (consumer crashed before
+ *     linking/claim). Reclaim atomically: (a) terminalize that linked run →
+ *     `failed` so it can never re-trigger reclaim (no zombie `running` rows,
+ *     no perpetual re-reclaim of a healthily-reprocessing entry — the bug the
+ *     prior join-on-any-running design produced); (b) reset the entry →
+ *     `pending`, `extraction_run_id=null`. Both guarded so they are safe
+ *     under concurrency with the consumer / the untouched reprocess path.
+ *     Using the LINKED run means a stale leftover run from a *previous*
+ *     attempt cannot condemn an entry that a *fresh* run is healthily
+ *     processing.
  *
  *  2. DRAIN pending (incl. just-reclaimed). The Milestone-2 atomic claim
- *     inside extractFromDiscussionEntry guarantees at-most-one extraction per
- *     entry even under concurrent pickup (sweeper vs the untouched reprocess
- *     direct-call path).
+ *     inside extractFromDiscussionEntry guarantees at-most-one extraction
+ *     per entry even under concurrent pickup.
  *
  * Runs the consumer under a bounded limiter; resolves the platform agent once
  * per company per tick.
@@ -42,35 +47,69 @@ export async function runExtractionSweep(db: Db, opts: SweepOptions): Promise<vo
   const staleCutoff = new Date(Date.now() - opts.staleMs);
 
   // ── Phase 1: reclaim orphaned 'processing' entries ─────────────────────────
-  const orphanRows: Array<{ id: string }> = await db
-    .select({ id: discussionEntries.id })
+  const orphanRows: Array<{ id: string; runId: string | null }> = await db
+    .select({
+      id: discussionEntries.id,
+      runId: discussionEntries.extractionRunId,
+    })
     .from(discussionEntries)
-    .innerJoin(
+    .leftJoin(
       internalAgentRuns,
-      and(
-        eq(internalAgentRuns.relatedEntityId, discussionEntries.id),
-        eq(internalAgentRuns.relatedEntityType, "discussion"),
-      ),
+      eq(internalAgentRuns.id, discussionEntries.extractionRunId),
     )
     .where(
       and(
         eq(discussionEntries.extractionStatus, "processing"),
-        eq(internalAgentRuns.status, "running"),
-        lt(internalAgentRuns.createdAt, staleCutoff),
+        or(
+          // consumer crashed before linking the run / before the claim
+          isNull(discussionEntries.extractionRunId),
+          // linked run still 'running' and older than the stale window
+          and(
+            eq(internalAgentRuns.status, "running"),
+            lt(internalAgentRuns.createdAt, staleCutoff),
+          ),
+        ),
       ),
     )
-    .then((r: Array<{ id: string }>) => r);
+    .then((r: Array<{ id: string; runId: string | null }>) => r);
 
   if (orphanRows.length > 0) {
     const orphanIds = [...new Set(orphanRows.map((o) => o.id))];
+    const staleRunIds = [
+      ...new Set(
+        orphanRows
+          .map((o) => o.runId)
+          .filter((v): v is string => typeof v === "string"),
+      ),
+    ];
+
+    // (a) Terminalize the stale linked runs so they can never re-trigger
+    //     reclaim. Guarded on status='running' so an already-terminal run is
+    //     never clobbered.
+    if (staleRunIds.length > 0) {
+      await db
+        .update(internalAgentRuns)
+        .set({
+          status: "failed",
+          errorMessage: "reclaimed: orphaned (sweeper)",
+          completedAt: new Date(),
+        })
+        .where(
+          and(
+            inArray(internalAgentRuns.id, staleRunIds),
+            eq(internalAgentRuns.status, "running"),
+          ),
+        );
+    }
+
+    // (b) Reset the entries → pending. Guarded on status='processing' so it
+    //     is safe even if state changed between the select and the update.
     await db
       .update(discussionEntries)
       .set({ extractionStatus: "pending", extractionRunId: null })
       .where(
         and(
           inArray(discussionEntries.id, orphanIds),
-          // guard: only reset rows that are still 'processing' (safe under
-          // concurrency with the consumer / reprocess path)
           eq(discussionEntries.extractionStatus, "processing"),
         ),
       );
