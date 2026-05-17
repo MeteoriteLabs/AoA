@@ -4,6 +4,24 @@
 >
 > Worktree: `AoA-2.5/.worktrees/commander-subagent-1` (branch `commander-subagent-1`). Test cmd: `cd "<worktree>/server" && npx vitest run src/__tests__/<file>`. Git: add by name only; `docs/superpowers/` is gitignored → `git add -f`.
 
+---
+
+## ✅ RESOLUTION STATUS (follow-up pass complete 2026-05-18, executed before Plan D)
+
+All four code follow-ups implemented subagent-driven, strict TDD, controller code-verified against landed source (never trusted reports), regression-gated. Plan: `2026-05-17-aoa-agents-framework-FOLLOWUPS-PLAN.md` (commit `df6db00c`). Full follow-up regression sweep after F4: **30 test files passed + 2 Windows-integration skipped (by design), 121 tests passed / 5 skipped / 0 failed**; `tsc --noEmit` clean at every milestone.
+
+| ID | Status | Commit | Notes |
+|----|--------|--------|-------|
+| **F1** | ✅ RESOLVED | `b178e8d2` | Dual-exec confirmed real. Fix: partition both routes/issues.ts dispatch loops by agent kind — `kind='aoa'` → direct `agent_wakeup_requests` insert via new `issueService.resolveAgentKinds`/`enqueueAoaMentionWakeup` (mirrors delegate-to-subagent; Phase-3 single execution); `kind='org'` → `heartbeat.wakeup` **byte-identical**. Register prose discrepancy: landed mention `source` is `"automation"` not `'mention'` (guards only special-case `timer`; conclusion unchanged). B1 contract + 2-`findMentionedAgents`-calls guard stay green. |
+| **F2** | ✅ RESOLVED | `dde5bf38` | submit-extracted-items.ts now emits `discussion.extraction.completed` (exact extraction.ts:630-638 shape) after the terminal write. discussionId resolved **unconditionally** (single lookup reused by I-1 increment + the event) so empty-items completions emit too. `aoa-submit-extracted-items.test.ts` empty-items test's incidental `selects.length===0` (pre-F2 strategy) updated to `===1` with documented rationale — real no-increment contract stays enforced by the sibling `pendingUpdates===0`. |
+| **F3** | ✅ RESOLVED | `1bf12b31` | `platform-agent.ts` + `platform-agent-seed.test.ts` deleted (142 deletions). Re-confirmed zero production callers; only refs were history comments (agents.ts:380, extraction-sweeper.ts:18, left as-is). `agents.ts` list = positive kind allowlist, cost attribution uses aoa agentId — structurally independent. agents-list-exclusion test green without the seeder. |
+| **F4** | ✅ RESOLVED | `b0870dcb` | runner.ts: `cfgPath` hoisted to `let`, best-effort `unlink` in a `finally`. Robustness deviation (accepted): nested try/catch also swallows a synchronous unlink throw — proven necessary because pre-existing `aoa-runner.test.ts:14` mocks fs/promises as `{writeFile}` only; strictly matches the spec invariant ("never throws out of runAoaAgent"). |
+| **F5** | ✅ NO ACTION | — | Worktree `CLAUDE.md` correctly says "31 tools" (verified). Stale "29 tools" is in the main-repo working copy (outside this branch) — self-resolves on merge. Truly-global `~/.claude/CLAUDE.md` is the gstack file (no tool count). Default honored: leave it. |
+
+Next: Plan D (governance + §17 gated real-output acceptance) → `finishing-a-development-branch`.
+
+---
+
 ## F1 — @mention → AoA agent DUAL EXECUTION (correctness; highest priority)
 
 **Verified by code-truth (2026-05-18).** Plan B's B1 made `findMentionedAgents` (`server/src/services/issues.ts:1572`) resolve `kind='aoa'` agent ids. But the callers in `server/src/routes/issues.ts` (~lines 792–827, both the issue-comment create path ~`:787` and the patch path ~`:1170`) iterate the resolved ids and call `heartbeat.wakeup(agentId, wakeup)` — i.e. `enqueueWakeup` in `server/src/services/heartbeat.ts:3874`. For a `kind='aoa'` agent:
