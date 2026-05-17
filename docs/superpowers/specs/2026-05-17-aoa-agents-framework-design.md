@@ -31,7 +31,8 @@ These supersessions are recorded as a new locked decision (§13) — not relitig
 |---|---|
 | L1 | AoA agents are first-class `agents` rows, `kind='aoa'`. Non-heartbeat, non-task; **trigger-driven**. |
 | L2 | They **inherit** existing `agents`-keyed machinery: status/pause/resume, budget auto-pause, `agent_config_revisions`, skills, the `AgentDetail` page, RBAC, `activity_log` audit. |
-| L3 | Execution = the existing **worker adapter registry**, invoked by a new lightweight **no-task runner** that builds the prompt from `instructions + skills + trigger payload` (not from an issue). Not Commander cli-mode (broken), not provider-SDK-only (weak). |
+| L3 | **Uniform execution (LOCKED 2026-05-17, §7):** EVERY AoA agent (Commander, extraction, future) runs through the existing **worker CLI adapter** via a new no-task runner (prompt from `instructions + skills + trigger payload`, not an issue). Structured results persisted by the agent calling **MCP tools via the internal-agent bridge** (not stdout parsing). **No hybrid / no `structured_llm` executor.** Provider-SDK is reserved strictly for non-agent **primitives** (embeddings, transcription) as utility services — never agents, never in the registry (Decision #91-consistent). |
+| L3b | Commander/member discriminator = `kind='aoa'` + `runtimeConfig.aoa.role` (`'lead'`\|`'member'`). **Do NOT overload `agents.role`** (special-cased: `canCreateAgents===cxo`, 0070 tiers). Skills/instructions are **marketplace-seeded** ("comes with the app"). |
 | L4 | **Commander is also a `kind='aoa'` row** — the team lead. Its existing chat loop (`agent-loop.ts` → conversations/SSE) is **preserved untouched** as its `'conversation'` trigger. `internal_agent_config` becomes Commander's linked config payload. |
 | L5 | Dispatch substrate = generalized Decision-#99 transactional-outbox poll + Routines (cron) + events + `@mention`/directive → wakeup. One substrate built on existing `agent_wakeup_requests` + `internal_agent_runs`. **No separate task board.** |
 | L6 | Commander↔sub-agent delegation = a wakeup/run-request carrying an instruction payload. A "Commander Team activity" view renders over `agent_wakeup_requests` + `internal_agent_runs`. |
@@ -114,7 +115,9 @@ Routine triggers MAY reference the existing `routine_triggers` (cron) rather tha
 The Decision-#99 atomic-claim pattern generalizes. Work units already exist per trigger source (e.g. `discussion_entries.extractionStatus='pending'`, `agent_wakeup_requests.status='queued'`). The dispatcher claims them with the existing `UPDATE … WHERE status=… RETURNING` atomic pattern. **No new queue table** — `agent_wakeup_requests` is the delegation/mention/manual queue; per-domain pending columns are the event/outbox queues. The dispatcher is a generalization of the existing sweeper, not new storage.
 
 ### 5.5 Commander linkage
-`internal_agent_config` gains `agent_id uuid -> agents` (nullable until migrated), linking the per-company Commander config singleton to Commander's `kind='aoa'` row. Commander's chat tables (`internal_agent_conversations`/`messages`) are unchanged. Commander is distinguished from sub-agents as the **team lead** via an existing `agents` discriminator (reuse `agents.role`, e.g. `role='commander_lead'`, vs a default for members — exact value resolved in the plan); no new column for this.
+`internal_agent_config` gains `agent_id uuid -> agents` (nullable until migrated), linking the per-company Commander config singleton to Commander's `kind='aoa'` row. Commander's chat tables (`internal_agent_conversations`/`messages`) are unchanged.
+
+**Commander vs member discriminator — do NOT overload `agents.role`** (spike-corrected, Finding 4). `agents.role` is special-cased across the codebase: `agent-permissions.ts:11` (`canCreateAgents: role === "cxo"`), `agents.ts:48` (`role === "cxo"`), `ROLE_LABELS`, and migration 0070 collapsed roles to `cxo|lead|general`. Inventing `role='commander_lead'`/`'aoa_member'` risks role-dependent logic/labels. Instead: every AoA agent keeps `role='general'`; the lead/member distinction lives in **`runtimeConfig.aoa = { role: 'lead' | 'member' }`** (the existing free-form `runtimeConfig` JSON — same place the non-dispatchable heartbeat flag lives). `kind='aoa'` + `runtimeConfig.aoa.role` is the discriminator; `agents.role` stays within the existing tier vocabulary.
 
 ### 5.6 Two distinct layers (avoid conflation)
 `aoa_agent_triggers.kind` is the **dispatch binding** (what causes a run). `internal_agent_runs.trigger_type` is the **recorded provenance** (what *did* cause this run, for observability). They are different fields on different tables with overlapping vocabularies; the kind→trigger_type mapping is a small implementation detail resolved in the plan (e.g. binding `outbox`/`event` → run `event`; `routine` → `routine`; `mention`/`manual` → `mention`; `conversation` → `conversation`).
@@ -134,18 +137,23 @@ The extraction sweeper (`extraction-sweeper.ts`) generalizes into an **AoA Dispa
 
 Commander's `conversation` trigger is **not** dispatched here — it stays in `agent-loop.ts`.
 
-## 7. Execution — the no-task runner
+## 7. Execution — uniform CLI-adapter runner (no hybrid; LOCKED 2026-05-17)
 
-New module `server/src/services/internal-agent/aoa-agents/runner.ts` (sibling of the existing `subagents/`):
+> **Spike-driven decision (read this — it overrides the earlier draft).** The spike proved: `AdapterExecutionResult` (adapter-utils `types.ts:70`) has **no text-output field** — agentic adapters stream via `onLog`, return only metadata. So a runner **cannot** reliably parse structured extraction from adapter stdout. Resolution (user-locked): **every AoA agent — Commander, extraction, and all future ones — executes through the existing worker CLI adapter, and persists structured results by calling MCP tools through the internal-agent MCP bridge** (the proven Commander `cli-mode.ts --mcp-config` mechanism), **not** by the runner parsing stdout. There is **no hybrid / no `structured_llm` executor**. The provider-SDK is reserved strictly for non-agent **primitives** (embeddings, transcription) as standalone utility services — never agents, never in the adapter registry (consistent with Decision #91 / the CLAUDE.md divergence note).
 
-- Input: `(db, agentId, triggerPayload)`.
-- Load the AoA agent row + its instructions + assigned skills + adapter config.
-- Build a prompt/context from **instructions + skills + trigger payload** (NOT an issue/goal). A small `buildAoaRunContext()` replaces the heartbeat issue-context builder.
-- Invoke the **existing worker adapter** (`server/src/adapters/registry.ts`) — the proven CLI execution path — with that context. Adapter output captured.
-- Hard error boundary (reuse the consumer's pattern: never rethrow; record run `failed`; notify via Inbox).
-- Write `internal_agent_runs` (running→completed|failed) + `cost_event` (platform/agent-scoped → `budgetService`).
+New module `server/src/services/internal-agent/aoa-agents/runner.ts`:
 
-This is the only substantial *new* execution code. Everything else is reuse.
+- Input: `runAoaAgent(db, agentId, triggerPayload)`.
+- Load the AoA agent row + its **marketplace-seeded** instructions + assigned skills + `adapterConfig`.
+- `buildAoaRunContext()` builds the prompt/context from **instructions + skills + trigger payload** (NOT an issue/goal).
+- Resolve the adapter via **`getServerAdapter(agent.adapterType)`** (NOT `getAdapter` — spike-corrected) + `resolveAdapterExecutionContext(config, adapter)` (exported, `heartbeat.ts:172`). Spawn the adapter **with the internal-agent MCP bridge attached** so the agent can call back into AoA.
+- **Structured output via MCP tools, not stdout.** The agent persists results by calling a schema-validated tool through the bridge. The discussion-extraction agent calls a **new `submit-extracted-items(items[])` tool** — the framework **linchpin** (no such tool exists today: the write surface has `debrief-push` (input side) but no extracted-items persistence tool; it must be added and exposed via `mcp-bridge.ts`). Persistence happens via the agent's tool call, so the no-text-return adapter limitation is irrelevant.
+- Hard error boundary (reuse the consumer's nested try/catch; never rethrow; record run `failed`; notify via Inbox).
+- Write `internal_agent_runs` (running→completed|failed) + `cost_event` (agent-scoped → `budgetService`; v1 amounts zeroed per the prior backend §16.3).
+
+**Skills/instructions are seeded via the marketplace** ("comes with the app"): the framework seeds the Commander team + their default skills (e.g. an `extract-discussion` skill) through the existing marketplace seeding mechanism — not hardcoded prompts.
+
+**Honest trade (user-acknowledged):** a CLI agentic session per discussion entry is **less deterministic and heavier** than the old one-shot SDK call. Mitigation: a tight marketplace `extract-discussion` skill + a **schema-validated** `submit-extracted-items` tool keeps output near-deterministic; the durable dispatcher + `concurrency-limiter` absorb cost/backpressure. The new execution code = the runner + the `submit-extracted-items` tool + the bridge wiring; everything else is reuse.
 
 ## 8. Coordination & delegation (no task board)
 
@@ -203,6 +211,7 @@ Commander's detail page Config tab surfaces the existing `internal_agent_config`
 ## 13. New decision record (to append to `docs/architecture/decisions.md`)
 
 **Decision #100 — AoA Agents framework: Commander + sub-agents as trigger-driven first-class agents.**
+- **Uniform CLI-adapter execution (LOCKED 2026-05-17):** every AoA agent runs through the existing worker CLI adapter; structured results are persisted by the agent calling MCP tools via the internal-agent bridge (not stdout parsing — the spike proved adapters return no text). No hybrid/`structured_llm` executor. Provider-SDK stays a non-agent primitive (embeddings, transcription) — **consistent with Decision #91** (no provider adapter re-added to the registry), so #91 is honored, not superseded.
 - **Supersedes DA-27 clauses (b) no queue, (c) no atomic checkout, (d) no adapter abstraction, and the *wakeup* half of (e)** — AoA agents use atomic-claim dispatch, the worker adapter layer, and trigger/wakeup. **Keeps** DA-27 (a) separate `internal_agent_runs` table and the *assignment/task* half of (e) (no founder-managed issue/task lifecycle).
 - **Resolves Decision #95** — the deferred access model is designed here (§10) against its now-concrete consumer; #95's "revisit when team-under-Commander begins" condition is met.
 - **Extends Decision #99** — the durable transactional-outbox trigger, atomic claim, and orphan-recovery generalize framework-wide; the per-company platform agent and zeroed cost path carry forward; the extraction sub-agent becomes the first migrated AoA agent (its #99 correctness preserved).
@@ -226,13 +235,15 @@ The `aoa_agent_triggers.kind` taxonomy is open. A future **`task` trigger** — 
 2. Exact reuse boundary of `AgentDetail.tsx` (shared component vs `kind`-aware branch) — it is 45K-token large; the plan should split a shared core rather than fork.
 3. Tool allowlist storage (new column on `agents` vs a small join table) for §10 least-privilege.
 
+**Spike-resolved (no longer open — see §7/§5.5/L3):** the executor model is LOCKED uniform-CLI-adapter; `agents.role` overload is rejected (use `runtimeConfig.aoa.role`); the registry export is `getServerAdapter`; `resolveAdapterExecutionContext`/`parseExtractedItems` are exported. **The `submit-extracted-items` MCP tool is a CONFIRMED required Plan A task (the linchpin)** — no such tool exists today (`debrief-push` is input-side only); it must be added and exposed via `mcp-bridge.ts`. It is not an open question; it is a planned task.
+
 ## 17. Definition of Done (v1 top-level acceptance — REQUIRED)
 
 The implementation plan's overarching goal. v1 is **not done** until **all** of the following are true and verified:
 
 1. **Visible:** Commander and the migrated extraction sub-agent both appear in **Team → Commander Team** sub-tab (status, last run, triggers shown).
 2. **Configurable:** each opens a working `AgentDetail`-style page (Overview / Instructions / Skills / Runs / Config / Triggers). Editing config persists and writes an `agent_config_revisions` row.
-3. **Real output end-to-end (the hard bar):** a discussion entry → the extraction AoA agent's `outbox` trigger fires → the no-task runner invokes a **configured worker adapter** → a **real LLM call succeeds** → **real `discussion_extracted_items` are produced and visible in the UI**, with the run recorded in `internal_agent_runs` and a `cost_event` emitted. **Not a stub/fake adapter** — actual extracted content.
+3. **Real output end-to-end (the hard bar):** a discussion entry → the extraction AoA agent's `outbox` trigger fires → the runner spawns the **configured CLI adapter with the internal-agent MCP bridge** → the agent (driven by its marketplace-seeded `extract-discussion` skill) calls the new **`submit-extracted-items`** tool → **real `discussion_extracted_items` are persisted and visible in the UI**, with the run recorded in `internal_agent_runs` and a `cost_event` emitted. **Not a stub** — a real CLI adapter run producing actual extracted content via the tool.
 4. **Lifecycle works:** pause/resume halts/restarts dispatch; a budget cap auto-pauses the agent; `@mention`/delegation enqueues a wakeup that produces a run.
 5. **No regression:** all existing M1–M6 backend tests stay green; the extraction backend is generalized, never broken.
 6. **Verified by:** an integration test that runs **with a provisioned adapter/credential** AND a documented manual acceptance run (create discussion entry → watch real extraction appear in the Commander-Team UI).
