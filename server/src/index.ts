@@ -35,6 +35,7 @@ import {
   WORKER_INTERVAL_MS,
 } from "./services/index.js";
 import { getDbCapabilities, probeDbCapabilities } from "./services/db-capabilities.js";
+import { runExtractionSweep } from "./services/internal-agent/subagents/extraction-sweeper.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
   restartDesiredRuntimeServicesOnStartup,
@@ -663,6 +664,20 @@ setInterval(() => {
 }, WORKER_INTERVAL_MS);
 // No immediate first tick — the first interval fires at T+15s, which is acceptable
 // since resetStuckJobs already ran synchronously above
+
+// Sub-agent #1: durable discussion-extraction sweeper (primary trigger).
+// Polls discussion_entries.extractionStatus='pending' (+ reclaims orphaned
+// 'processing') and runs extraction via the consumer under a bounded limiter.
+// Idempotency-safe alongside the reprocess path via the M2 atomic claim.
+const EXTRACTION_SWEEP_INTERVAL_MS = 45_000;
+let extractionSweepInFlight = false;
+setInterval(() => {
+  if (extractionSweepInFlight) return;
+  extractionSweepInFlight = true;
+  void runExtractionSweep(db as any, { limiterMax: 4, staleMs: 10 * 60 * 1000 })
+    .catch((err) => logger.warn({ err }, "extraction sweep tick failed"))
+    .finally(() => { extractionSweepInFlight = false; });
+}, EXTRACTION_SWEEP_INTERVAL_MS);
 
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
