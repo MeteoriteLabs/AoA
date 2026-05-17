@@ -666,3 +666,16 @@ Implementation: pages opt in by passing `defaultCollapsed={true}` to `LobbyShell
 - The reprocess direct-call path (Q2-b) is untouched and remains the only (`processing`, `run_id` NULL) producer; reprocess-crash recovery is a deferred follow-up.
 
 **Reference:** `server/src/services/internal-agent/subagents/{extraction-sweeper,extraction-consumer,platform-agent,concurrency-limiter}.ts`; `server/src/services/extraction.ts` (atomic claim); `server/src/index.ts` (sweep registration). Tests: `extraction-sweeper.test.ts`, `extraction-consumer.test.ts`, `extraction-consumer-contract.test.ts`, `extraction-atomic-claim.test.ts`, `platform-agent-seed.test.ts`, `concurrency-limiter.test.ts`, `extraction-sweeper-wiring.test.ts`, `agents-list-excludes-platform.test.ts` (+ `.integration.test.ts`, Linux-CI), `agents-kind-normalize.test.ts`, `agent-read-sites-org-filter.test.ts`. Implements DA-17; uses DA-27; cost attribution per DA-25; the concrete consumer Decision #95 / #91 (team-under-Commander) deferred for. Working spec/plan were `docs/superpowers/` material (gitignored); code is the authority per `CLAUDE.md`.
+
+---
+
+## Decision #100 — AoA Agents framework: Commander + sub-agents as trigger-driven first-class agents
+
+**Status:** Locked 2026-05-17.
+
+- **Uniform CLI-adapter execution:** every AoA agent (`kind='aoa'`: Commander + sub-agents) runs through the existing worker CLI adapter via a no-task runner; structured results persisted by the agent calling internal-agent MCP tools through the bridge (e.g. `submit-extracted-items`), not by parsing adapter stdout (`AdapterExecutionResult` returns no text). No hybrid/`structured_llm` executor. Provider-SDK stays a non-agent primitive (embeddings, transcription) — **Decision #91 honored, not superseded.**
+- **Supersedes DA-27** clauses (b) no queue, (c) no atomic checkout, (d) no adapter abstraction, and the *wakeup* half of (e) — AoA agents use atomic-claim dispatch, the worker adapter, and trigger/wakeup. **Keeps** DA-27 (a) separate `internal_agent_runs` table and the *assignment/task* half of (e) (no founder-managed issue/task lifecycle).
+- **Resolves Decision #95** — the deferred access model is implemented (per-agent tool allowlist, default-deny) against its now-concrete consumer.
+- **Extends Decision #99** — the durable transactional-outbox trigger, atomic claim and orphan-recovery generalize framework-wide; the extraction sub-agent is the first migrated `kind='aoa'` citizen, its #99/M2 correctness preserved (the runner re-asserts the atomic `pending→processing` claim).
+- **Discriminator:** `kind='aoa'` + `runtimeConfig.aoa.role` (`lead`|`member`); `agents.role` is NOT overloaded (it is special-cased: `role==='cxo'`, 0070 tiers).
+- **Rationale:** a growing internal automation team needs real agentic execution + a uniform reusable model; ~70–75% is reuse of existing `agents`-keyed infrastructure. Spec: `docs/superpowers/specs/2026-05-17-aoa-agents-framework-design.md`.
