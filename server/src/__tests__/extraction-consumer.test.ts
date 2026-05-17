@@ -59,6 +59,16 @@ describe("runExtractionConsumer", () => {
     const [companyArg, data] = createEventMock.mock.calls[0];
     expect(companyArg).toBe("c1");
     expect(data.agentId).toBe("platform-1"); // platform-scoped cost
+    // M5 budget post-hoc verification: the event flows to the EXISTING
+    // costService.createEvent → budgetService.evaluateCostEvent path
+    // (costs.ts), scoped to the platform agent. v1 amounts are ZEROED by
+    // design (spec §16.3 — callLLM surfaces no token usage yet); this proves
+    // the budget PATH without billing real money. Locking the zeroed shape
+    // here means a future change that accidentally bills is caught by a test.
+    expect(data.provider).toBe("anthropic");
+    expect(data.inputTokens).toBe(0);
+    expect(data.outputTokens).toBe(0);
+    expect(data.costCents).toBe(0);
   });
 
   it("failure is isolated: extraction throws → run failed, NO rethrow", async () => {
