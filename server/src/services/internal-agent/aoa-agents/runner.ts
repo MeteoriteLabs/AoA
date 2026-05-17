@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeFile } from "node:fs/promises";
+import { writeFile, unlink } from "node:fs/promises";
 import type { Db } from "@armyofagents/db";
 import { agents, internalAgentRuns, discussionEntries } from "@armyofagents/db";
 import { getServerAdapter } from "../../../adapters/registry.js";
@@ -36,6 +36,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
   const log = logger.child({ svc: "aoa-runner", agentId, companyId: payload.companyId });
   const startedAt = Date.now();
   let runId: string | null = null;
+  let cfgPath: string | null = null;
   try {
     const agent = await db.select().from(agents).where(eq(agents.id, agentId)).then((r: any[]) => r[0] ?? null);
     if (!agent) { log.warn("aoa agent missing; skip"); return; }
@@ -78,7 +79,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       enabledCapabilities: SUBAGENT_ENABLED_CAPABILITIES,
       bridgeEntrypoint: resolveBridgeEntrypoint(),
     });
-    const cfgPath = join(tmpdir(), `aoa-mcp-${agentId}-${runId ?? "x"}.json`);
+    cfgPath = join(tmpdir(), `aoa-mcp-${agentId}-${runId ?? "x"}.json`);
     await writeFile(cfgPath, JSON.stringify(mcp, null, 2));
 
     const rc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
@@ -120,6 +121,16 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
           .set({ status: "failed", errorMessage: String((err as Error)?.message ?? err), durationMs: Date.now() - startedAt, completedAt: new Date() })
           .where(eq(internalAgentRuns.id, runId));
       } catch { /* swallow */ }
+    }
+  } finally {
+    if (cfgPath) {
+      try {
+        await unlink(cfgPath).catch(() => {
+          /* best-effort cleanup; never break the run or its hard-error boundary */
+        });
+      } catch {
+        /* unlink itself unavailable/threw synchronously — still must not escape */
+      }
     }
   }
 }
