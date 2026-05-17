@@ -19,7 +19,7 @@ The backend on this branch (M1–M6) shipped a single, deliberately **hidden**, 
 
 This was a deliberate re-scope decision: Decision #95 deferred the "team-under-Commander" framework "until a concrete consumer exists … design alongside the actual consumer." That consumer now exists (the extraction sub-agent) and the product need is concrete. This spec is that framework. It consciously **supersedes**:
 
-- **DA-27** ("internal agent execution has *no adapter abstraction*, no wakeup/assignment lifecycle"). We adopt the worker **adapter** execution layer for AoA agents (but *not* the issue/task lifecycle). Rationale: DA-27's "no adapter" was correct when internal agents were only a chat loop; a growing automation team needs real agentic execution, and the adapter registry is the proven path. Commander's `cli-mode.ts` is currently not working, which removes it as the basis.
+- **DA-27** stated internal agents deliberately have: (a) a run table separate from `heartbeat_runs`, (b) no queue, (c) no atomic checkout, (d) no adapter abstraction, (e) no wakeup/assignment lifecycle. This framework **supersedes (b), (c), (d), and the *wakeup* half of (e)** — AoA agents get atomic-claim dispatch, the worker adapter layer, and trigger/wakeup. It **keeps (a)** (runs stay in `internal_agent_runs`) and **keeps the *assignment/task* half of (e)** (no founder-managed issue/task lifecycle). Rationale: DA-27's "no adapter / no queue" was correct when internal agents were only Commander's chat loop; a growing automation team needs real agentic execution, the adapter registry is the proven path, and Commander's `cli-mode.ts` is currently not working, which removes it as the basis.
 - **Decision #95** — resolved: the access/permission model it deferred is designed here (§9), now that the concrete consumer exists.
 - **Decision #99** — extended: the durable transactional-outbox trigger and the per-company platform agent generalize into this framework; the extraction sub-agent becomes the first migrated citizen.
 
@@ -40,6 +40,7 @@ These supersessions are recorded as a new locked decision (§13) — not relitig
 | L9 | The existing extraction sub-agent is **migrated** onto this framework as the reference citizen; its #99 durable trigger is preserved as one trigger type. |
 | L10 | Scope = full-enterprise-v1 **via maximal reuse** (~70–75% is wiring existing infra). |
 | L11 | **Forward-compatible:** the trigger taxonomy is additive. A future `task` trigger type (Commander-team work board, or issue integration) can be added later **without** re-architecting the spine. |
+| L12 | **Definition of Done = real output (§17).** v1 is done only when Commander + the migrated extraction sub-agent are visible/configurable in the UI and the extraction agent produces **real extracted items end-to-end** through a configured adapter — not a stub. Acceptance requires a provisioned credential/adapter (a gated acceptance, not a credential-less unit test). |
 
 ## 4. Architecture overview
 
@@ -201,7 +202,11 @@ Commander's detail page Config tab surfaces the existing `internal_agent_config`
 
 ## 13. New decision record (to append to `docs/architecture/decisions.md`)
 
-**Decision #100 — AoA Agents framework: Commander + sub-agents as trigger-driven first-class agents.** Supersedes DA-27 (internal agents may use the adapter abstraction; the issue/task lifecycle is still excluded), resolves Decision #95 (the access model is designed here against its concrete consumer), and extends Decision #99 (the durable outbox trigger and platform-agent cost path generalize; extraction becomes the first AoA agent). Rationale: a growing internal automation team needs real agentic execution and a uniform, reusable model; ~70–75% is reuse of existing `agents`-keyed infrastructure.
+**Decision #100 — AoA Agents framework: Commander + sub-agents as trigger-driven first-class agents.**
+- **Supersedes DA-27 clauses (b) no queue, (c) no atomic checkout, (d) no adapter abstraction, and the *wakeup* half of (e)** — AoA agents use atomic-claim dispatch, the worker adapter layer, and trigger/wakeup. **Keeps** DA-27 (a) separate `internal_agent_runs` table and the *assignment/task* half of (e) (no founder-managed issue/task lifecycle).
+- **Resolves Decision #95** — the deferred access model is designed here (§10) against its now-concrete consumer; #95's "revisit when team-under-Commander begins" condition is met.
+- **Extends Decision #99** — the durable transactional-outbox trigger, atomic claim, and orphan-recovery generalize framework-wide; the per-company platform agent and zeroed cost path carry forward; the extraction sub-agent becomes the first migrated AoA agent (its #99 correctness preserved).
+- **Rationale:** a growing internal automation team needs real agentic execution and a uniform, reusable model; ~70–75% is reuse of existing `agents`-keyed infrastructure.
 
 ## 14. Forward extensibility (explicitly designed-in)
 
@@ -220,3 +225,18 @@ The `aoa_agent_triggers.kind` taxonomy is open. A future **`task` trigger** — 
 1. `aoa_agent_triggers.config` for routines: own cron fields vs FK to `routine_triggers` (both schema-safe).
 2. Exact reuse boundary of `AgentDetail.tsx` (shared component vs `kind`-aware branch) — it is 45K-token large; the plan should split a shared core rather than fork.
 3. Tool allowlist storage (new column on `agents` vs a small join table) for §10 least-privilege.
+
+## 17. Definition of Done (v1 top-level acceptance — REQUIRED)
+
+The implementation plan's overarching goal. v1 is **not done** until **all** of the following are true and verified:
+
+1. **Visible:** Commander and the migrated extraction sub-agent both appear in **Team → Commander Team** sub-tab (status, last run, triggers shown).
+2. **Configurable:** each opens a working `AgentDetail`-style page (Overview / Instructions / Skills / Runs / Config / Triggers). Editing config persists and writes an `agent_config_revisions` row.
+3. **Real output end-to-end (the hard bar):** a discussion entry → the extraction AoA agent's `outbox` trigger fires → the no-task runner invokes a **configured worker adapter** → a **real LLM call succeeds** → **real `discussion_extracted_items` are produced and visible in the UI**, with the run recorded in `internal_agent_runs` and a `cost_event` emitted. **Not a stub/fake adapter** — actual extracted content.
+4. **Lifecycle works:** pause/resume halts/restarts dispatch; a budget cap auto-pauses the agent; `@mention`/delegation enqueues a wakeup that produces a run.
+5. **No regression:** all existing M1–M6 backend tests stay green; the extraction backend is generalized, never broken.
+6. **Verified by:** an integration test that runs **with a provisioned adapter/credential** AND a documented manual acceptance run (create discussion entry → watch real extraction appear in the Commander-Team UI).
+
+**Honest precondition (non-negotiable consequence of choosing "real output required"):** acceptance step 3 needs a working adapter + LLM credential in the verification environment. This is the **same precondition every worker agent already has** — it is not a defect of this design. Consequence for the plan: this acceptance is a **gated step** (a CI job with a provider secret, or the documented manual run in an environment that has a credential) — it **cannot** be a credential-less, Windows-skippable unit test. The plan must include: provider/credential provisioning steps, and the manual acceptance script. Contract/unit tests still cover the framework logic credential-free; the *real-output* proof is the gated acceptance.
+
+§16(a/b/c) are resolved during planning and do **not** gate this Definition of Done.
