@@ -243,6 +243,55 @@ describe("AoA RBAC — D1 (founder-gated create / disable / triggers)", () => {
     });
   });
 
+  // ── AoA pause (D1): POST /companies/:companyId/agents/:id/pause ─────────────
+
+  describe("POST /companies/:companyId/agents/:id/pause {kind:'aoa'}", () => {
+    const aoaAgent = {
+      id: AGENT_ID,
+      companyId: COMPANY_ID,
+      kind: "aoa",
+      name: "AoA Commander",
+      status: "idle",
+    };
+
+    it("team_member → 403", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(aoaAgent);
+      mockAssertRole.mockRejectedValueOnce(forbidden("Requires one of: founder"));
+
+      const res = await request(makeApp(memberActor))
+        .post(`/api/agents/${AGENT_ID}/pause`);
+
+      expect(res.status).toBe(403);
+      expect(mockAssertRole).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        COMPANY_ID,
+        "founder",
+      );
+      expect(mockAgentService.pause).not.toHaveBeenCalled();
+    });
+
+    it("founder → 200", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(aoaAgent);
+      mockAssertRole.mockResolvedValueOnce(undefined);
+
+      const pausedAgent = { ...aoaAgent, status: "paused" };
+      mockAgentService.pause.mockResolvedValueOnce(pausedAgent);
+
+      const res = await request(makeApp(founderActor))
+        .post(`/api/agents/${AGENT_ID}/pause`);
+
+      expect(res.status).toBe(200);
+      expect(mockAssertRole).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        COMPANY_ID,
+        "founder",
+      );
+      expect(mockAgentService.pause).toHaveBeenCalledWith(AGENT_ID);
+    });
+  });
+
   // ── AoA trigger (C1): PATCH /companies/:companyId/agents/:id/triggers/:triggerId ──
 
   describe("PATCH /companies/:companyId/agents/:id/triggers/:triggerId", () => {

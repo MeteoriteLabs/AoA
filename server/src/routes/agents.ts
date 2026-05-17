@@ -1250,6 +1250,9 @@ export function agentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (existing.kind === "aoa") {
+      await assertRole(db, req, existing.companyId, "founder");
+    }
 
     const agent = await svc.pause(id);
     if (!agent) {
