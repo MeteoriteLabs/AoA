@@ -75,10 +75,9 @@ export const submitExtractedItemsTool: AgentTool = {
       ? (items as SubmitItem[])
       : [];
 
-    const { discussionExtractedItems, discussionEntries } = await import(
-      "@armyofagents/db"
-    );
-    const { eq } = await import("drizzle-orm");
+    const { discussionExtractedItems, discussionEntries, discussions } =
+      await import("@armyofagents/db");
+    const { eq, and, sql } = await import("drizzle-orm");
 
     // Map onto the REAL discussion_extracted_items columns, matching
     // extraction.ts's itemValues shape. The schema has no `content`,
@@ -99,14 +98,43 @@ export const submitExtractedItemsTool: AgentTool = {
       }));
 
       await ctx.db.insert(discussionExtractedItems).values(rows);
+
+      // I-1: increment the parent discussion's pendingItemCount, mirroring
+      // extraction.ts (lines ~614-620) EXACTLY. The tool only has entryId in
+      // scope, so resolve entry -> discussionId first (extraction.ts gets
+      // this from `entry.discussionId` after fetching the entry row).
+      const [entryRow] = await ctx.db
+        .select({ discussionId: discussionEntries.discussionId })
+        .from(discussionEntries)
+        .where(eq(discussionEntries.id, entryIdStr));
+
+      if (entryRow?.discussionId) {
+        await ctx.db
+          .update(discussions)
+          .set({
+            pendingItemCount: sql`${discussions.pendingItemCount} + ${rows.length}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(discussions.id, entryRow.discussionId));
+      }
     }
 
     // Terminal success status — extraction.ts sets extractionStatus
-    // "completed" on the entry after writing items.
+    // "completed" on the entry after writing items. I-2: guard the terminal
+    // write on the still-`processing` state (the runner's atomic claim set
+    // pending -> processing; this tool is the single terminalizer and must
+    // only complete a still-processing entry), matching the codebase
+    // terminalizer/claim convention (extraction.ts:389-398,
+    // dispatcher.ts:121-124).
     await ctx.db
       .update(discussionEntries)
       .set({ extractionStatus: "completed" })
-      .where(eq(discussionEntries.id, entryIdStr));
+      .where(
+        and(
+          eq(discussionEntries.id, entryIdStr),
+          eq(discussionEntries.extractionStatus, "processing"),
+        ),
+      );
 
     return {
       success: true,
