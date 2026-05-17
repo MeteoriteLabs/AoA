@@ -9,6 +9,10 @@
 // submission produces rows indistinguishable from legacy in-process extraction.
 
 import type { AgentTool } from "../types.js";
+// publishLiveEvent is a runtime value (not a type) — static top import,
+// mirroring extraction.ts:5. live-events.ts only imports node:events + a
+// shared type, so this introduces no circular-import at module load.
+import { publishLiveEvent } from "../../live-events.js";
 
 interface SubmitItem {
   type: string;
@@ -79,6 +83,19 @@ export const submitExtractedItemsTool: AgentTool = {
       await import("@armyofagents/db");
     const { eq, and, sql } = await import("drizzle-orm");
 
+    // Resolve entry -> discussionId UNCONDITIONALLY (single lookup reused by
+    // both the I-1 pendingItemCount increment and the F2 completion event).
+    // extraction.ts gets this from `entry.discussionId` after fetching the
+    // entry row; the tool only has entryId in scope so it queries for it.
+    // Done regardless of itemList.length so empty-items completions still
+    // carry a discussionId for the LiveEvent (F2 parity).
+    const [entryRow] = await ctx.db
+      .select({ discussionId: discussionEntries.discussionId })
+      .from(discussionEntries)
+      .where(eq(discussionEntries.id, entryIdStr));
+    const resolvedDiscussionId: string | null =
+      entryRow?.discussionId ?? null;
+
     // Map onto the REAL discussion_extracted_items columns, matching
     // extraction.ts's itemValues shape. The schema has no `content`,
     // `confidence`, or `companyId` columns — `content` maps to the required
@@ -100,22 +117,16 @@ export const submitExtractedItemsTool: AgentTool = {
       await ctx.db.insert(discussionExtractedItems).values(rows);
 
       // I-1: increment the parent discussion's pendingItemCount, mirroring
-      // extraction.ts (lines ~614-620) EXACTLY. The tool only has entryId in
-      // scope, so resolve entry -> discussionId first (extraction.ts gets
-      // this from `entry.discussionId` after fetching the entry row).
-      const [entryRow] = await ctx.db
-        .select({ discussionId: discussionEntries.discussionId })
-        .from(discussionEntries)
-        .where(eq(discussionEntries.id, entryIdStr));
-
-      if (entryRow?.discussionId) {
+      // extraction.ts (lines ~614-620) EXACTLY. Reuses the discussionId
+      // resolved above (no second identical query).
+      if (resolvedDiscussionId) {
         await ctx.db
           .update(discussions)
           .set({
             pendingItemCount: sql`${discussions.pendingItemCount} + ${rows.length}`,
             updatedAt: new Date(),
           })
-          .where(eq(discussions.id, entryRow.discussionId));
+          .where(eq(discussions.id, resolvedDiscussionId));
       }
     }
 
@@ -135,6 +146,21 @@ export const submitExtractedItemsTool: AgentTool = {
           eq(discussionEntries.extractionStatus, "processing"),
         ),
       );
+
+    // F2: publish the completion LiveEvent AFTER the terminal status write,
+    // mirroring extraction.ts:630-638 (ordering parity) so UIs subscribed to
+    // `discussion.extraction.completed` refresh when an AoA agent finishes.
+    if (resolvedDiscussionId) {
+      publishLiveEvent({
+        companyId: ctx.companyId,
+        type: "discussion.extraction.completed",
+        payload: {
+          discussionId: resolvedDiscussionId,
+          entryId: entryIdStr,
+          itemCount: itemList.length,
+        },
+      });
+    }
 
     return {
       success: true,

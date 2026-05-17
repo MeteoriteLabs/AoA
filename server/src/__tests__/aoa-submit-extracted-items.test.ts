@@ -193,8 +193,11 @@ describe("submit-extracted-items internal-agent tool", () => {
       (u) => u.set?.pendingItemCount !== undefined,
     );
     expect(pendingUpdates.length).toBe(0);
-    // No need to resolve the discussion id when there are no rows to count.
-    expect(selects.length).toBe(0);
+    // F2: discussionId is now resolved UNCONDITIONALLY so the
+    // discussion.extraction.completed LiveEvent fires even for empty
+    // extractions (parity with extraction.ts). The no-increment contract is
+    // still enforced by the pendingUpdates assertion above.
+    expect(selects.length).toBe(1);
   });
 
   // ── I-2: terminal extractionStatus update is guarded on "processing" ──────
