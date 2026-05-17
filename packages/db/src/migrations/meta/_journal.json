@@ -687,6 +687,13 @@
       "when": 1778967673778,
       "tag": "0097_gifted_hercules",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1779013065734,
+      "tag": "0098_flat_christian_walker",
+      "breakpoints": true
     }
   ]
 }

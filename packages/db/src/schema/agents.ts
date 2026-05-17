@@ -18,6 +18,7 @@ export const agents = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     role: text("role").notNull().default("general"),
+    kind: text("kind").notNull().default("org"), // 'org' | 'platform' — platform = Commander-team sub-agent identity (non-dispatchable, budget-scoped)
     title: text("title"),
     icon: text("icon"),
     status: text("status").notNull().default("idle"),
