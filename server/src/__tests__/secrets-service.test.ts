@@ -91,9 +91,26 @@ describe("secretService", () => {
     expect(typeof svc.checkProviderConfig).toBe("function");
     expect(typeof svc.createBinding).toBe("function");
     expect(typeof svc.syncEnvBindingsForTarget).toBe("function");
+    expect(typeof svc.normalizeEnvConfigForPersistence).toBe("function");
     expect(typeof svc.previewRemoteImport).toBe("function");
     expect(typeof svc.importRemoteSecrets).toBe("function");
     expect(typeof svc.resolveSecretValue).toBe("function");
+  });
+
+  it("normalizes env config for persistence with strict validation", async () => {
+    await expect(secretService({} as any).normalizeEnvConfigForPersistence("company-1", {
+      NODE_ENV: "production",
+    }, { strictMode: true })).resolves.toEqual({
+      NODE_ENV: { type: "plain", value: "production" },
+    });
+
+    await expect(secretService({} as any).normalizeEnvConfigForPersistence("company-1", {
+      "1BAD": "value",
+    }, { strictMode: true })).rejects.toThrow("Invalid environment variable name");
+
+    await expect(secretService({} as any).normalizeEnvConfigForPersistence("company-1", {
+      API_KEY: "sk-test",
+    }, { strictMode: true })).rejects.toThrow("Strict secret mode requires secret references");
   });
 
   it("keeps legacy system reads audited but unbound while enforcing runtime env bindings", () => {
@@ -181,6 +198,24 @@ describe("secretService", () => {
         }),
       }),
     ]);
+  });
+
+  it("preserves local encrypted external references for display metadata", async () => {
+    process.env.AOA_SECRETS_MASTER_KEY = "12345678901234567890123456789012";
+
+    const prepared = await localEncryptedProvider.createVersion({
+      value: "ghp_test",
+      externalRef: "octocat",
+      context: {
+        companyId: "company-1",
+        secretId: "secret-1",
+        secretKey: "GITHUB_PAT",
+        secretName: "GitHub PAT",
+        version: 1,
+      },
+    });
+
+    expect(prepared.externalRef).toBe("octocat");
   });
 
   it("rejects unbound agent env reads and audits the failure", async () => {

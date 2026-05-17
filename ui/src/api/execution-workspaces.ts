@@ -68,6 +68,27 @@ export interface GitPushResponse {
   activeRunWarning?: boolean;
 }
 
+export interface WorkspaceMutationSafety {
+  task: {
+    id: string;
+    title: string;
+    status: string;
+    identifier?: string | null;
+  } | null;
+  activeRun: {
+    id: string;
+    status: string;
+    startedAt: string | null;
+    agentName?: string | null;
+  } | null;
+  requiresConfirmation: {
+    commit: boolean;
+    push: boolean;
+    createPr: boolean;
+  };
+  warnings: string[];
+}
+
 export interface WorkspaceRuntimeService {
   id: string;
   serviceName: string;
@@ -77,9 +98,16 @@ export interface WorkspaceRuntimeService {
   command: string | null;
   cwd: string | null;
   provider: string;
+  providerRef?: string | null;
+  ownerAgentId?: string | null;
+  startedByRunId?: string | null;
+  scopeType?: string | null;
   lifecycle: string;
   startedAt: string | null;
   stoppedAt: string | null;
+  stopPolicy?: Record<string, unknown> | null;
+  healthStatus?: string | null;
+  healthCheckedAt?: string | null;
 }
 
 export const executionWorkspacesApi = {
@@ -159,6 +187,8 @@ export const executionWorkspacesApi = {
   // --- Git operations ---
   getGitStatus: (id: string) =>
     api.get<GitStatusResponse>(`/execution-workspaces/${id}/git/status`),
+  safety: (id: string) =>
+    api.get<WorkspaceMutationSafety>(`/execution-workspaces/${id}/git/safety`),
   getGitLog: (id: string, limit?: number) => {
     const params = limit ? `?limit=${limit}` : "";
     return api.get<GitLogResponse>(`/execution-workspaces/${id}/git/log${params}`);

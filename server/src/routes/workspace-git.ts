@@ -1,8 +1,9 @@
 /**
  * Git operations routes for execution workspaces.
  *
- * Exposes 4 endpoints:
+ * Exposes 5 endpoints:
  *   GET  /execution-workspaces/:id/git/status
+ *   GET  /execution-workspaces/:id/git/safety
  *   GET  /execution-workspaces/:id/git/log
  *   POST /execution-workspaces/:id/git/commit
  *   POST /execution-workspaces/:id/git/push
@@ -11,7 +12,7 @@
  * workspace lookup, access check, git root resolution, and null handling.
  */
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
 import { heartbeatRuns, issues } from "@armyofagents/db";
@@ -102,33 +103,89 @@ async function resolveWorkspaceGit(
 
 async function hasActiveRunForWorkspace(db: Db, workspaceId: string): Promise<boolean> {
   try {
-    // Find issues linked to this workspace, then check for active runs on their assigned agents
-    const linkedIssues = await db
-      .select({ assigneeAgentId: issues.assigneeAgentId })
-      .from(issues)
-      .where(eq(issues.executionWorkspaceId, workspaceId));
-
-    const agentIds = linkedIssues
-      .map((i) => i.assigneeAgentId)
-      .filter((id): id is string => id !== null);
-
-    if (agentIds.length === 0) return false;
-
-    const activeRuns = await db
-      .select({ id: heartbeatRuns.id })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          inArray(heartbeatRuns.agentId, agentIds),
-          inArray(heartbeatRuns.status, ["queued", "running"]),
-        ),
-      )
-      .limit(1);
-
-    return activeRuns.length > 0;
+    const safety = await getWorkspaceMutationSafety(db, workspaceId);
+    return safety.activeRun !== null;
   } catch {
     return false; // Fail open — don't block git operations if the check fails
   }
+}
+
+async function getWorkspaceMutationSafety(db: Db, workspaceId: string) {
+  const linkedIssues = await db
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      title: issues.title,
+      status: issues.status,
+      identifier: issues.identifier,
+      assigneeAgentId: issues.assigneeAgentId,
+      checkoutRunId: issues.checkoutRunId,
+      executionRunId: issues.executionRunId,
+    })
+    .from(issues)
+    .where(eq(issues.executionWorkspaceId, workspaceId));
+
+  const primaryIssue = linkedIssues.find((issue) => !["done", "cancelled"].includes(issue.status)) ?? linkedIssues[0] ?? null;
+  const agentIds = linkedIssues
+    .map((i) => i.assigneeAgentId)
+    .filter((id): id is string => id !== null);
+  const runIds = linkedIssues
+    .flatMap((issue) => [issue.checkoutRunId, issue.executionRunId])
+    .filter((id): id is string => id !== null && id !== undefined);
+  const activeRunPredicates = [
+    ...(agentIds.length > 0 ? [inArray(heartbeatRuns.agentId, agentIds)] : []),
+    ...(runIds.length > 0 ? [inArray(heartbeatRuns.id, runIds)] : []),
+    ...linkedIssues.map((issue) => sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`),
+  ];
+
+  const activeRuns = primaryIssue && activeRunPredicates.length > 0
+    ? await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, primaryIssue.companyId),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+          or(...activeRunPredicates),
+        ),
+      )
+      .limit(1)
+    : [];
+
+  const activeRun = activeRuns[0] ?? null;
+  const hasActiveRun = activeRun !== null;
+  const incompleteTasks = linkedIssues.filter((issue) => !["done", "cancelled"].includes(issue.status));
+  const taskIsIncomplete = incompleteTasks.length > 0;
+  const warnings: string[] = [];
+
+  if (taskIsIncomplete) {
+    warnings.push(incompleteTasks.length === 1 ? "Task is not complete." : `${incompleteTasks.length} tasks are not complete.`);
+  }
+  if (hasActiveRun) {
+    warnings.push("An agent run is currently active.");
+  }
+
+  return {
+    task: primaryIssue
+      ? {
+        id: primaryIssue.id,
+        title: primaryIssue.title,
+        status: primaryIssue.status,
+        identifier: primaryIssue.identifier,
+      }
+      : null,
+    activeRun,
+    requiresConfirmation: {
+      commit: hasActiveRun,
+      push: hasActiveRun,
+      createPr: hasActiveRun || taskIsIncomplete,
+    },
+    warnings,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +234,22 @@ export function workspaceGitRoutes(db: Db) {
     res.json({ gitAvailable: true, ...status });
   });
 
+  // GET /execution-workspaces/:id/git/safety
+  router.get("/execution-workspaces/:id/git/safety", async (req, res) => {
+    const svc = executionWorkspaceService(db);
+    const workspace = await svc.getById(req.params.id);
+
+    if (!workspace) {
+      res.status(404).json({ error: "Execution workspace not found" });
+      return;
+    }
+
+    assertCompanyAccess(req, workspace.companyId);
+
+    const safety = await getWorkspaceMutationSafety(db, workspace.id);
+    res.json(safety);
+  });
+
   // GET /execution-workspaces/:id/git/log
   router.get("/execution-workspaces/:id/git/log", async (req, res) => {
     const ctx = await resolveWorkspaceGit(db, req, res, req.params.id);
@@ -222,7 +295,12 @@ export function workspaceGitRoutes(db: Db) {
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Commit failed";
       // Detached HEAD and path traversal errors are user-facing
-      if (msg.includes("detached HEAD") || msg.includes("escapes the repository") || msg.includes("deny-list")) {
+      if (
+        msg.includes("detached HEAD") ||
+        msg.includes("escapes the repository") ||
+        msg.includes("targets the repository root") ||
+        msg.includes("deny-list")
+      ) {
         res.status(400).json({ error: msg });
         return;
       }
@@ -255,7 +333,13 @@ export function workspaceGitRoutes(db: Db) {
       res.json(result);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Push failed";
-      if (msg.includes("detached HEAD") || msg.includes("No remote configured")) {
+      if (
+        msg.includes("detached HEAD") ||
+        msg.includes("No remote configured") ||
+        msg.includes("Invalid remote") ||
+        msg.includes("Unknown remote") ||
+        msg.includes("Invalid branch")
+      ) {
         res.status(400).json({ error: msg });
         return;
       }

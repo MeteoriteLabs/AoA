@@ -36,3 +36,21 @@ export interface GitHubPrMetadata {
   createdAt: string;
   draft: boolean;
 }
+
+export interface GitHubPrSyncMetadata {
+  pr: GitHubPrMetadata | null;
+  githubLastSyncedAt: string;
+  githubSyncError?: string | null;
+  noPrFound?: boolean;
+}
+
+export interface GitHubPrSyncResponse {
+  workspaceId: string;
+  repoUrl: string;
+  branchName: string;
+  baseRef: string | null;
+  pr: GitHubPrMetadata | null;
+  githubLastSyncedAt: string;
+  githubSyncError: string | null;
+  cached: boolean;
+}

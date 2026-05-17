@@ -17,12 +17,15 @@ import type {
   CompanySkillFileInventoryEntry,
   MarketplaceSkillBundle,
 } from "@armyofagents/shared";
+import { isMarketplaceGitHubRepo } from "@armyofagents/shared/marketplace";
 
 const execFileAsync = promisify(execFile);
 
 export interface MaterializeSkillBundleOptions {
   destination: string;
   repoUrl?: string;
+  unsafeTestRepoUrl?: string;
+  unsafeTestCheckoutRef?: string;
   overwrite?: boolean;
 }
 
@@ -41,14 +44,16 @@ export async function materializeSkillBundle(
   const destination = path.resolve(options.destination);
   validateDestination(destination);
   const bundlePath = validateBundlePath(bundle.path);
-  const repoUrl = options.repoUrl ?? repoUrlForBundle(bundle);
+  const repoUrl = repoUrlForBundle(bundle, options);
+  const checkoutRef = unsafeTestValue(options.unsafeTestCheckoutRef, "unsafeTestCheckoutRef") ?? bundle.commitSha;
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "aoa-skill-bundle-"));
   const checkoutDir = path.join(tempRoot, "repo");
 
   try {
     await prepareDestination(destination, options.overwrite ?? false);
     await gitClone(repoUrl, checkoutDir);
-    await git(checkoutDir, "checkout", "--detach", bundle.commitSha);
+    await git(checkoutDir, "checkout", "--detach", checkoutRef);
+    await assertCheckedOutCommit(checkoutDir, bundle.commitSha);
 
     const sourceDir = path.resolve(checkoutDir, bundlePath);
     assertWithin(checkoutDir, sourceDir, `Unsafe bundle path "${bundle.path}"`);
@@ -94,9 +99,36 @@ export function safeCatalogSkillId(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
-function repoUrlForBundle(bundle: MarketplaceSkillBundle): string {
-  if (/^(?:https?:|file:)/.test(bundle.repo) || path.isAbsolute(bundle.repo)) return bundle.repo;
-  return `https://github.com/${bundle.repo}.git`;
+export function repoUrlForBundle(
+  bundle: MarketplaceSkillBundle,
+  options: Pick<MaterializeSkillBundleOptions, "repoUrl" | "unsafeTestRepoUrl"> = {},
+): string {
+  const unsafeRepoUrl = unsafeTestValue(options.unsafeTestRepoUrl, "unsafeTestRepoUrl");
+  if (unsafeRepoUrl) return unsafeRepoUrl;
+  return marketplaceGitHubRepoUrl(options.repoUrl ?? bundle.repo);
+}
+
+function marketplaceGitHubRepoUrl(repo: string): string {
+  if (!isMarketplaceGitHubRepo(repo)) {
+    throw new Error(`Unsafe marketplace skill bundle GitHub repo "${repo}"`);
+  }
+  if (/^https:\/\//i.test(repo)) {
+    const url = new URL(repo);
+    const [owner, repoNameWithSuffix] = url.pathname.split("/").filter(Boolean);
+    const repoName = repoNameWithSuffix.endsWith(".git")
+      ? repoNameWithSuffix.slice(0, -".git".length)
+      : repoNameWithSuffix;
+    return `https://github.com/${owner}/${repoName}.git`;
+  }
+  return `https://github.com/${repo}.git`;
+}
+
+function unsafeTestValue(value: string | undefined, optionName: string): string | undefined {
+  if (!value) return undefined;
+  if (process.env.NODE_ENV !== "test" && process.env.VITEST !== "true") {
+    throw new Error(`${optionName} is only available in tests`);
+  }
+  return value;
 }
 
 function validateBundlePath(rawPath: string): string {
@@ -136,6 +168,16 @@ async function gitClone(repoUrl: string, checkoutDir: string) {
 
 async function git(cwd: string, ...args: string[]) {
   await execFileAsync("git", args, { cwd, windowsHide: true });
+}
+
+async function assertCheckedOutCommit(checkoutDir: string, expectedSha: string) {
+  const actualSha = (await execFileAsync("git", ["rev-parse", "HEAD"], {
+    cwd: checkoutDir,
+    windowsHide: true,
+  })).stdout.trim();
+  if (actualSha.toLowerCase() !== expectedSha.toLowerCase()) {
+    throw new Error(`Checked out commit SHA ${actualSha} did not match expected ${expectedSha}`);
+  }
 }
 
 async function assertFile(filePath: string, message: string) {

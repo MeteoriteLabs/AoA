@@ -11,6 +11,7 @@ import {
   normalizeAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
+  refreshAdapterManagedPreviewRuntimeServiceRows,
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
@@ -1107,6 +1108,7 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
       startedByRunId: "run-1",
     });
     expect(first[0]?.id).toBe(second[0]?.id);
+    expect(first[0]?.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 
   it("prefers execution workspace ids over cwd for execution-scoped adapter services", () => {
@@ -1136,5 +1138,315 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
       scopeId: "execution-workspace-1",
       executionWorkspaceId: "execution-workspace-1",
     });
+  });
+
+  it("deduplicates reports that resolve to the same stable service id", () => {
+    const workspace = buildWorkspace("/tmp/project");
+
+    const refs = normalizeAdapterManagedRuntimeServices({
+      adapterType: "codex_local",
+      runId: "run-1",
+      agent: {
+        id: "agent-1",
+        name: "Codex Agent",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-1",
+      reports: [
+        {
+          serviceName: "localhost:54853",
+          scopeType: "execution_workspace",
+          url: "http://127.0.0.1:54853/",
+          port: 54853,
+          healthStatus: "healthy",
+        },
+        {
+          serviceName: "localhost:54853",
+          scopeType: "execution_workspace",
+          url: "http://127.0.0.1:54853/",
+          port: 54853,
+          healthStatus: "healthy",
+        },
+      ],
+    });
+
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      serviceName: "localhost:54853",
+      scopeType: "execution_workspace",
+      scopeId: "execution-workspace-1",
+      url: "http://127.0.0.1:54853/",
+      port: 54853,
+    });
+  });
+
+  it("uses the execution workspace and URL as the stable identity for preview services", () => {
+    const workspace = buildWorkspace("/tmp/project");
+    const commonInput = {
+      adapterType: "codex_local",
+      agent: {
+        id: "agent-1",
+        name: "Codex Agent",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-1",
+      reports: [
+        {
+          serviceName: "localhost:54853",
+          scopeType: "execution_workspace" as const,
+          url: "http://127.0.0.1:54853/",
+          port: 54853,
+          command: null,
+          providerRef: null,
+          healthStatus: "healthy" as const,
+        },
+      ],
+    };
+
+    const first = normalizeAdapterManagedRuntimeServices({
+      ...commonInput,
+      runId: "run-1",
+    });
+    const second = normalizeAdapterManagedRuntimeServices({
+      ...commonInput,
+      runId: "run-2",
+    });
+
+    expect(first[0]?.id).toBe(second[0]?.id);
+  });
+});
+
+describe("refreshAdapterManagedPreviewRuntimeServiceRows", () => {
+  const baseRow = {
+    id: "11111111-1111-4111-8111-111111111111",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: "workspace-1",
+    executionWorkspaceId: "execution-workspace-1",
+    issueId: "issue-1",
+    scopeType: "execution_workspace",
+    scopeId: "execution-workspace-1",
+    serviceName: "localhost:54853",
+    status: "running",
+    lifecycle: "ephemeral",
+    reuseKey: null,
+    command: null,
+    cwd: "/tmp/project",
+    port: 54853,
+    url: "http://127.0.0.1:54853/",
+    provider: "adapter_managed",
+    providerRef: null,
+    ownerAgentId: "agent-1",
+    startedByRunId: "run-1",
+    lastUsedAt: new Date("2026-05-16T00:00:00.000Z"),
+    startedAt: new Date("2026-05-16T00:00:00.000Z"),
+    stoppedAt: null,
+    stopPolicy: null,
+    healthStatus: "healthy",
+    healthCheckedAt: null,
+    createdAt: new Date("2026-05-16T00:00:00.000Z"),
+    updatedAt: new Date("2026-05-16T00:00:00.000Z"),
+  };
+
+  it("does not probe preview rows checked within the TTL", async () => {
+    let probes = 0;
+    const now = new Date("2026-05-17T10:00:30.000Z");
+    const freshRow = {
+      ...baseRow,
+      healthCheckedAt: new Date("2026-05-17T10:00:10.000Z"),
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [freshRow as any],
+      now,
+      ttlMs: 30_000,
+      probeUrl: async () => {
+        probes += 1;
+        return false;
+      },
+    });
+
+    expect(probes).toBe(0);
+    expect(result.rows[0]).toBe(freshRow);
+    expect(result.updates).toEqual([]);
+  });
+
+  it("probes preview rows whose health check is stale", async () => {
+    let probes = 0;
+    const now = new Date("2026-05-17T10:01:00.000Z");
+    const staleRow = {
+      ...baseRow,
+      healthCheckedAt: new Date("2026-05-17T10:00:00.000Z"),
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [staleRow as any],
+      now,
+      ttlMs: 30_000,
+      probeUrl: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(1);
+    expect(result.rows[0]).toMatchObject({
+      status: "running",
+      healthStatus: "healthy",
+      healthCheckedAt: now,
+      stoppedAt: null,
+      updatedAt: now,
+    });
+  });
+
+  it("marks unreachable adapter-managed previews unavailable", async () => {
+    const now = new Date("2026-05-16T10:00:00.000Z");
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [baseRow as any],
+      now,
+      probeUrl: async () => false,
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      id: baseRow.id,
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: now,
+      healthCheckedAt: now,
+      updatedAt: now,
+    });
+    expect(result.updates).toEqual([
+      {
+        id: baseRow.id,
+        status: "stopped",
+        healthStatus: "unhealthy",
+        stoppedAt: now,
+        healthCheckedAt: now,
+        updatedAt: now,
+      },
+    ]);
+  });
+
+  it("marks reachable adapter-managed previews running and healthy", async () => {
+    const now = new Date("2026-05-16T10:00:00.000Z");
+    const stoppedRow = {
+      ...baseRow,
+      status: "stopped",
+      healthStatus: "unhealthy",
+      stoppedAt: new Date("2026-05-16T09:00:00.000Z"),
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [stoppedRow as any],
+      now,
+      probeUrl: async () => true,
+    });
+
+    expect(result.rows[0]).toMatchObject({
+      id: baseRow.id,
+      status: "running",
+      healthStatus: "healthy",
+      stoppedAt: null,
+      healthCheckedAt: now,
+      updatedAt: now,
+    });
+  });
+
+  it("does not probe controllable local process services", async () => {
+    let probes = 0;
+    const localProcessRow = {
+      ...baseRow,
+      id: "22222222-2222-4222-8222-222222222222",
+      provider: "local_process",
+      command: "pnpm dev",
+      providerRef: "pid:123",
+    };
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [localProcessRow as any],
+      now: new Date("2026-05-16T10:00:00.000Z"),
+      probeUrl: async () => {
+        probes += 1;
+        return false;
+      },
+    });
+
+    expect(probes).toBe(0);
+    expect(result.rows[0]).toBe(localProcessRow);
+    expect(result.updates).toEqual([]);
+  });
+
+  it("limits concurrent preview probes without dropping previews", async () => {
+    let active = 0;
+    let maxActive = 0;
+    let probes = 0;
+    const now = new Date("2026-05-17T10:00:00.000Z");
+    const rows = Array.from({ length: 12 }, (_, index) => ({
+      ...baseRow,
+      id: `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`,
+      serviceName: `localhost:${55000 + index}`,
+      port: 55000 + index,
+      url: `http://127.0.0.1:${55000 + index}/`,
+      healthCheckedAt: null,
+    }));
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: rows as any,
+      now,
+      ttlMs: 30_000,
+      maxConcurrency: 5,
+      probeUrl: async () => {
+        probes += 1;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+        return true;
+      },
+    });
+
+    expect(probes).toBe(12);
+    expect(maxActive).toBeLessThanOrEqual(5);
+    expect(result.rows).toHaveLength(12);
+    expect(result.rows.every((row) => row.status === "running")).toBe(true);
+  });
+
+  it("deduplicates concurrent probes for the same preview service", async () => {
+    let probes = 0;
+    const now = new Date("2026-05-17T10:00:00.000Z");
+    const row = {
+      ...baseRow,
+      healthCheckedAt: null,
+    };
+
+    const probeUrl = async () => {
+      probes += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return true;
+    };
+
+    const [first, second] = await Promise.all([
+      refreshAdapterManagedPreviewRuntimeServiceRows({
+        rows: [row as any],
+        now,
+        ttlMs: 30_000,
+        probeUrl,
+      }),
+      refreshAdapterManagedPreviewRuntimeServiceRows({
+        rows: [row as any],
+        now,
+        ttlMs: 30_000,
+        probeUrl,
+      }),
+    ]);
+
+    expect(probes).toBe(1);
+    expect(first.rows[0]?.healthStatus).toBe("healthy");
+    expect(second.rows[0]?.healthStatus).toBe("healthy");
   });
 });

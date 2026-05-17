@@ -55,6 +55,7 @@ export function MemorySection({ issueId, companyId, companyPrefix }: MemorySecti
     queryKey: queryKeys.memory.retrievalsForIssue(companyId, issueId),
     queryFn: () => memoryRetrievalsApi.listForIssue(companyId, issueId, { limit: 100 }),
     enabled: Boolean(companyId && issueId),
+    staleTime: 5000,
   });
 
   const groups = useMemo(() => {
@@ -96,21 +97,22 @@ export function MemorySection({ issueId, companyId, companyPrefix }: MemorySecti
   if (total === 0) {
     return (
       <div
-        className="mx-3 p-3 rounded-md border border-dashed border-muted-foreground/30 flex items-start gap-2"
+        className="mx-3 flex items-start gap-2 rounded-md border border-dashed border-muted-foreground/30 p-3"
         data-testid="memory-section-empty"
       >
         <Brain className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-        <div className="text-xs text-muted-foreground">
-          No memory retrievals recorded for this task yet. Memory the
-          agent uses during runs (auto-retrieved or pulled via
-          memory.search) will show up here.
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-foreground">No memory used yet</div>
+          <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+            Retrievals from future runs will appear here.
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-3 px-3" data-testid="memory-section">
+    <div className="min-w-0 max-w-full space-y-3 overflow-hidden px-1" data-testid="memory-section">
       <div className="text-xs text-muted-foreground">
         {total} memory {total === 1 ? "retrieval" : "retrievals"} on this task
       </div>
@@ -149,12 +151,12 @@ export function MemorySection({ issueId, companyId, companyPrefix }: MemorySecti
         // Collapsed by default via <details> — pinned-skill deliveries
         // tend to be high-volume (one row per pinned item per run) and
         // less interesting per-item than auto/agent-pulled.
-        <details className="space-y-1" data-testid="memory-group-skill">
-          <summary className="text-xs uppercase tracking-wide text-muted-foreground cursor-pointer flex items-center gap-1.5">
-            <FileText className="h-3 w-3" />
+        <details className="min-w-0 space-y-1 overflow-hidden" data-testid="memory-group-skill">
+          <summary className="flex min-w-0 cursor-pointer items-center gap-1.5 overflow-hidden text-xs uppercase tracking-wide text-muted-foreground">
+            <FileText className="h-3 w-3 shrink-0" />
             <span>Skill-materialized · {groups.skill.length}</span>
           </summary>
-          <div className="space-y-1 mt-1">
+          <div className="mt-1 min-w-0 space-y-1 overflow-hidden">
             {groups.skill.map((row) => (
               <RetrievalRow key={row.id} row={row} companyPrefix={companyPrefix} />
             ))}
@@ -175,14 +177,14 @@ interface RetrievalGroupViewProps {
 
 function RetrievalGroupView({ label, icon: Icon, rows, companyPrefix, testid }: RetrievalGroupViewProps) {
   return (
-    <div className="space-y-1" data-testid={testid}>
-      <div className="text-xs uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
-        <Icon className="h-3 w-3" />
-        <span>
+    <div className="min-w-0 space-y-1 overflow-hidden" data-testid={testid}>
+      <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-xs uppercase tracking-wide text-muted-foreground">
+        <Icon className="h-3 w-3 shrink-0" />
+        <span className="min-w-0 truncate">
           {label} · {rows.length}
         </span>
       </div>
-      <div className="space-y-1">
+      <div className="min-w-0 space-y-1 overflow-hidden">
         {rows.map((row) => (
           <RetrievalRow key={row.id} row={row} companyPrefix={companyPrefix} />
         ))}
@@ -195,15 +197,17 @@ function RetrievalRow({ row, companyPrefix }: { row: MemoryRetrievalRowApi; comp
   const title = row.itemTitle ?? "(item deleted)";
   const isDeleted = !row.itemTitle;
   const sim = row.similarityScore ? Math.round(parseFloat(row.similarityScore) * 100) : null;
-  const href = row.itemId ? `/${companyPrefix}/memory/explore?item=${row.itemId}` : null;
+  const href = row.itemId
+    ? `/${companyPrefix}/memory/explore?item=${row.itemId}&type=memory_item`
+    : null;
 
   const content = (
-    <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50 transition-colors">
-      <div className="flex-1 min-w-0">
+    <div className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-md px-2 py-1.5 transition-colors hover:bg-accent/50">
+      <div className="min-w-0 flex-1 overflow-hidden">
         <div className={cn("text-sm truncate", isDeleted && "italic text-muted-foreground")}>
           {title}
         </div>
-        <div className="flex items-center gap-1.5 mt-0.5">
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden">
           {row.itemLayer && (
             <Badge variant="outline" className="text-[10px] h-4 px-1">
               {row.itemLayer}
@@ -220,10 +224,10 @@ function RetrievalRow({ row, companyPrefix }: { row: MemoryRetrievalRowApi; comp
             </Badge>
           )}
           {sim !== null && (
-            <span className="text-[10px] text-muted-foreground tabular-nums">{sim}%</span>
+            <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">{sim}%</span>
           )}
           {row.rank !== null && (
-            <span className="text-[10px] text-muted-foreground tabular-nums">#{row.rank}</span>
+            <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">#{row.rank}</span>
           )}
         </div>
       </div>
@@ -233,13 +237,13 @@ function RetrievalRow({ row, companyPrefix }: { row: MemoryRetrievalRowApi; comp
 
   if (href) {
     return (
-      <a href={href} data-testid="memory-retrieval-row" className="block">
+      <a href={href} data-testid="memory-retrieval-row" className="block min-w-0 max-w-full overflow-hidden">
         {content}
       </a>
     );
   }
   return (
-    <div data-testid="memory-retrieval-row" className="cursor-default">
+    <div data-testid="memory-retrieval-row" className="min-w-0 max-w-full cursor-default overflow-hidden">
       {content}
     </div>
   );

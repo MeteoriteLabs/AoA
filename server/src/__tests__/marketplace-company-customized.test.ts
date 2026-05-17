@@ -1,6 +1,13 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import express from "express";
 import request from "supertest";
+import { HttpError } from "../errors.js";
+
+const authzMocks = vi.hoisted(() => ({
+  assertBoard: vi.fn(),
+  assertCompanyAccess: vi.fn(),
+  assertCanManageInstanceSettings: vi.fn(),
+}));
 
 vi.mock("@armyofagents/db", () => {
   const tableProxy = new Proxy({}, { get: () => Symbol("col") });
@@ -28,11 +35,19 @@ vi.mock("../services/marketplace-merge.js", () => ({
   applyMergeDecisions: vi.fn(() => "# Merged Content"),
 }));
 vi.mock("../routes/authz.js", () => ({
-  assertBoard: vi.fn(),
-  assertCompanyAccess: vi.fn(),
+  assertBoard: authzMocks.assertBoard,
+  assertCompanyAccess: authzMocks.assertCompanyAccess,
+  assertCanManageInstanceSettings: authzMocks.assertCanManageInstanceSettings,
 }));
 
 import { createMarketplaceCompanyRouter } from "../routes/marketplace-company.js";
+import { assertCanManageInstanceSettings } from "../routes/authz.js";
+
+beforeEach(() => {
+  authzMocks.assertBoard.mockReset();
+  authzMocks.assertCompanyAccess.mockReset();
+  authzMocks.assertCanManageInstanceSettings.mockReset();
+});
 
 function buildApp(dbOverrides: any = {}) {
   const app = express();
@@ -249,6 +264,9 @@ describe("POST /updates/:id/apply plugin updates", () => {
         pluginRollback,
       }),
     );
+    app.use((err: any, _req: any, res: any, _next: any) => {
+      res.status(err.status ?? 500).json({ error: err.message });
+    });
 
     return { app, upgrade, capturedSets };
   }
@@ -288,6 +306,27 @@ describe("POST /updates/:id/apply plugin updates", () => {
     expect(res.status).toBe(200);
     expect(upgrade).toHaveBeenCalledWith("plugin-1", "1.0.0");
     expect(capturedSets.some((set) => set.status === "applied")).toBe(true);
+  });
+
+  it("requires instance settings permission before upgrading a marketplace plugin", async () => {
+    const upgrade = vi.fn(async () => ({ version: "1.0.0", status: "ready" }));
+    vi.mocked(assertCanManageInstanceSettings).mockImplementationOnce(() => {
+      throw new HttpError(403, "Instance admin access required");
+    });
+    const { app } = buildPluginApplyApp({
+      updateRow: baseUpdateRow,
+      pluginRows: [[basePluginRow]],
+      upgrade,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/c1/marketplace/updates/upd-plugin-1/apply")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Instance admin access required" });
+    expect(assertCanManageInstanceSettings).toHaveBeenCalled();
+    expect(upgrade).not.toHaveBeenCalled();
   });
 
   it("rejects stale plugin update rows without upgrading", async () => {

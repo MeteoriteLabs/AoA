@@ -37,6 +37,14 @@ describe("loadDefaultAgentInstructionsBundle", () => {
     expect(bundle["TOOLS.md"]).toBeUndefined();
   });
 
+  it("all default AGENTS.md files include the AoA preview URL protocol", async () => {
+    for (const role of ["default", "lead", "cxo"] as const) {
+      const bundle = await loadDefaultAgentInstructionsBundle(role);
+      expect(bundle["AGENTS.md"]).toContain("AOA_PREVIEW_URL=<full localhost URL>");
+      expect(bundle["AGENTS.md"]).toContain("Do not create a preview server just because this instruction exists");
+    }
+  });
+
   it("CXO bundle has no paperclipai repo references", async () => {
     const bundle = await loadDefaultAgentInstructionsBundle("cxo");
     expect(bundle["AGENTS.md"]).not.toMatch(/\bpaperclipai\b/);

@@ -127,6 +127,7 @@ interface EnvironmentDialogProps {
   mode: "create" | "edit";
   initial?: Environment;
   isPending: boolean;
+  submitError?: string | null;
   onClose: () => void;
   onSubmit: (data: CreateEnvironmentInput | UpdateEnvironmentInput) => void;
 }
@@ -136,6 +137,7 @@ function EnvironmentDialog({
   mode,
   initial,
   isPending,
+  submitError,
   onClose,
   onSubmit,
 }: EnvironmentDialogProps) {
@@ -217,6 +219,12 @@ function EnvironmentDialog({
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4 pt-2">
+          {submitError && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+              {submitError}
+            </div>
+          )}
+
           {/* Name */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -462,6 +470,17 @@ export function EnvironmentsSection({ companyId }: { companyId: string }) {
   const envVarCount = (env: Environment) =>
     Object.keys(env.envVars ?? {}).length;
 
+  const createErrorMessage = createMutation.isError
+    ? createMutation.error instanceof Error
+      ? createMutation.error.message
+      : "Failed to create environment"
+    : null;
+  const updateErrorMessage = updateMutation.isError
+    ? updateMutation.error instanceof Error
+      ? updateMutation.error.message
+      : "Failed to update environment"
+    : null;
+
   return (
     <>
       {/* ------------------------------------------------------------------ */}
@@ -599,6 +618,7 @@ export function EnvironmentsSection({ companyId }: { companyId: string }) {
         open={createOpen}
         mode="create"
         isPending={createMutation.isPending}
+        submitError={createErrorMessage}
         onClose={() => { setCreateOpen(false); createMutation.reset(); }}
         onSubmit={handleCreate}
       />
@@ -611,6 +631,7 @@ export function EnvironmentsSection({ companyId }: { companyId: string }) {
         mode="edit"
         initial={editTarget ?? undefined}
         isPending={updateMutation.isPending}
+        submitError={updateErrorMessage}
         onClose={() => { setEditTarget(null); updateMutation.reset(); }}
         onSubmit={handleUpdate}
       />

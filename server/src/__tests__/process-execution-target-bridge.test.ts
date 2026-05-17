@@ -104,4 +104,47 @@ describe("process adapter execution target bridge context", () => {
       }),
     );
   });
+
+  it("uses the realized workspace cwd from heartbeat context for process execution", async () => {
+    const { execute } = await import("../adapters/process/execute.js");
+
+    await execute({
+      runId: "run-process-workspace",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Process Runner",
+        adapterType: "process",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "node",
+        cwd: "C:/server-default",
+        env: {},
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: "C:/aoa/worktrees/task-123",
+          source: "project_primary",
+        },
+      },
+      executionTarget: { type: "local" },
+      runtimeCommandSpec: null,
+      authToken: "ctx-token",
+      onLog: async () => {},
+    });
+
+    expect(mocks.runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "local" }),
+      expect.objectContaining({
+        cwd: "C:/aoa/worktrees/task-123",
+      }),
+    );
+  });
 });

@@ -264,9 +264,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
       // Separate runtimeConfig-level fields from heartbeat-level fields
       const hb = overlay.heartbeat as Record<string, unknown>;
-      const { autoRunSummary: ars, injectCompanyContext: icc, contextMode: cm, ...heartbeatFields } = hb;
+      const {
+        autoRunSummary: ars,
+        aoaAppPreviews: aap,
+        injectCompanyContext: icc,
+        contextMode: cm,
+        ...heartbeatFields
+      } = hb;
       const mergedRc: Record<string, unknown> = { ...existingRc, heartbeat: { ...existingHb, ...heartbeatFields } };
       if (ars !== undefined) mergedRc.autoRunSummary = ars;
+      if (aap !== undefined) mergedRc.aoaAppPreviews = aap;
       if (icc !== undefined) mergedRc.injectCompanyContext = icc;
       if (cm !== undefined) mergedRc.contextMode = cm;
       patch.runtimeConfig = mergedRc;
@@ -983,6 +990,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   runtimeConfig.autoRunSummary !== false,
                 )}
                 onChange={(v) => mark("heartbeat", "autoRunSummary", v)}
+              />
+              <ToggleField
+                label="AoA app previews"
+                hint={help.aoaAppPreviews}
+                checked={eff(
+                  "heartbeat",
+                  "aoaAppPreviews",
+                  runtimeConfig.aoaAppPreviews !== false,
+                )}
+                onChange={(v) => mark("heartbeat", "aoaAppPreviews", v)}
               />
           </div>
         </div>

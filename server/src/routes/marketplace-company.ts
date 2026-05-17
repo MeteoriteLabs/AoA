@@ -15,7 +15,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { and, eq, ne } from "drizzle-orm";
 import { type Db, marketplacePendingUpdates, companySkills, plugins } from "@armyofagents/db";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCanManageInstanceSettings, assertCompanyAccess } from "./authz.js";
 import { marketplaceSettingsService } from "../services/marketplace-settings.js";
 import { computeSectionDiff, applyMergeDecisions } from "../services/marketplace-merge.js";
 import { marketplaceNotifications } from "../services/marketplace-notifications.js";
@@ -152,6 +152,8 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     }
 
     if (update.itemType === "plugin") {
+      assertCanManageInstanceSettings(req);
+
       if (!deps.pluginLifecycle) {
         res.status(501).json({ error: "Plugin update apply is not configured on this server" });
         return;

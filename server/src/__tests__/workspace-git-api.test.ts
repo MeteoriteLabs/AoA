@@ -59,14 +59,14 @@ import { workspaceGitRoutes } from "../routes/workspace-git.js";
 // Test app factory
 // ---------------------------------------------------------------------------
 
-function createApp(actor: unknown = boardActor) {
+function createApp(actor: unknown = boardActor, db: unknown = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", workspaceGitRoutes({} as any));
+  app.use("/api", workspaceGitRoutes(db as any));
   app.use(errorHandler);
   return app;
 }
@@ -91,6 +91,23 @@ const mockWorkspace = {
   status: "active",
   metadata: {},
 };
+
+function createSequenceDb(rows: unknown[][]) {
+  const select = vi.fn(() => {
+    const result = rows.shift() ?? [];
+    const chain = {
+      from: vi.fn(() => chain),
+      where: vi.fn(() => chain),
+      limit: vi.fn(() => Promise.resolve(result)),
+      orderBy: vi.fn(() => chain),
+      leftJoin: vi.fn(() => chain),
+      then: (resolve: (value: unknown[]) => void, reject?: (reason: unknown) => void) =>
+        Promise.resolve(result).then(resolve, reject),
+    };
+    return chain;
+  });
+  return { select };
+}
 
 // ---------------------------------------------------------------------------
 // Test setup
@@ -277,6 +294,18 @@ describe("POST /execution-workspaces/:id/git/commit", () => {
     expect(res.body.error).toMatch(/escapes/);
   });
 
+  it("returns 400 for repository-root pathspec errors", async () => {
+    mockCommit.mockRejectedValue(new Error('Invalid file path: "." targets the repository root'));
+
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/git/commit")
+      .send({ message: "root", files: ["."] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/repository root/);
+  });
+
   it("returns 400 for detached HEAD", async () => {
     mockCommit.mockRejectedValue(new Error("Cannot commit in detached HEAD state"));
 
@@ -329,5 +358,160 @@ describe("POST /execution-workspaces/:id/git/push", () => {
       .send({});
 
     expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for invalid push remote", async () => {
+    mockPush.mockRejectedValue(new Error("Invalid remote: remote must be a configured remote name"));
+
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/git/push")
+      .send({ remote: "https://attacker.example/repo.git" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/remote/i);
+  });
+
+  it("returns 400 for invalid push branch", async () => {
+    mockPush.mockRejectedValue(new Error("Invalid branch name: main;touch-owned"));
+
+    const app = createApp();
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/git/push")
+      .send({ branch: "main;touch-owned" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/branch/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /execution-workspaces/:id/git/safety
+// ---------------------------------------------------------------------------
+
+describe("GET /execution-workspaces/:id/git/safety", () => {
+  it("returns the planned safety shape with linked task, active run, and action confirmations", async () => {
+    const db = createSequenceDb([
+      [{ id: "issue-1", companyId: "company-1", title: "Fix auth bug", status: "in_progress", identifier: "ENG-99", assigneeAgentId: "agent-1", checkoutRunId: null, executionRunId: null }],
+      [{ id: "run-1", status: "running", agentId: "agent-1", startedAt: "2026-05-15T10:00:00.000Z", createdAt: "2026-05-15T09:59:00.000Z" }],
+    ]);
+
+    const app = createApp(boardActor, db);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/git/safety");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      task: {
+        id: "issue-1",
+        title: "Fix auth bug",
+        status: "in_progress",
+        identifier: "ENG-99",
+      },
+      activeRun: {
+        id: "run-1",
+        status: "running",
+        startedAt: "2026-05-15T10:00:00.000Z",
+      },
+      requiresConfirmation: {
+        commit: true,
+        push: true,
+        createPr: true,
+      },
+    });
+    expect(res.body).not.toHaveProperty("issue");
+    expect(res.body).not.toHaveProperty("shouldWarn");
+    expect(res.body.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/task is not complete/i),
+        expect.stringMatching(/agent run/i),
+      ]),
+    );
+  });
+
+  it("does not warn when the linked task is done and no run is active", async () => {
+    const db = createSequenceDb([
+      [{ id: "issue-1", companyId: "company-1", title: "Done task", status: "done", identifier: "ENG-99", assigneeAgentId: "agent-1", checkoutRunId: null, executionRunId: null }],
+      [],
+    ]);
+
+    const app = createApp(boardActor, db);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/git/safety");
+
+    expect(res.status).toBe(200);
+    expect(res.body.requiresConfirmation).toEqual({
+      commit: false,
+      push: false,
+      createPr: false,
+    });
+    expect(res.body.activeRun).toBeNull();
+    expect(res.body.task.status).toBe("done");
+  });
+
+  it("requires PR confirmation for an incomplete task even when no run is active", async () => {
+    const db = createSequenceDb([
+      [{ id: "issue-1", companyId: "company-1", title: "Review me", status: "in_review", identifier: "ENG-99", assigneeAgentId: "agent-1", checkoutRunId: null, executionRunId: null }],
+      [],
+    ]);
+
+    const app = createApp(boardActor, db);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/git/safety");
+
+    expect(res.status).toBe(200);
+    expect(res.body.activeRun).toBeNull();
+    expect(res.body.requiresConfirmation).toEqual({
+      commit: false,
+      push: false,
+      createPr: true,
+    });
+  });
+
+  it("requires confirmation when a linked task has an active execution run but no current assignee", async () => {
+    const db = createSequenceDb([
+      [{ id: "issue-1", companyId: "company-1", title: "Running without assignee", status: "in_progress", identifier: "ENG-100", assigneeAgentId: null, checkoutRunId: null, executionRunId: "run-2" }],
+      [{ id: "run-2", status: "running", agentId: "agent-old", startedAt: "2026-05-15T11:00:00.000Z", createdAt: "2026-05-15T10:59:00.000Z" }],
+    ]);
+
+    const app = createApp(boardActor, db);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/git/safety");
+
+    expect(res.status).toBe(200);
+    expect(res.body.activeRun).toMatchObject({ id: "run-2", status: "running" });
+    expect(res.body.requiresConfirmation).toEqual({
+      commit: true,
+      push: true,
+      createPr: true,
+    });
+  });
+
+  it("evaluates safety across all tasks linked to a reused workspace", async () => {
+    const db = createSequenceDb([
+      [
+        { id: "issue-done", companyId: "company-1", title: "Done task", status: "done", identifier: "ENG-1", assigneeAgentId: null, checkoutRunId: null, executionRunId: null },
+        { id: "issue-running", companyId: "company-1", title: "Still running", status: "in_progress", identifier: "ENG-2", assigneeAgentId: "agent-2", checkoutRunId: null, executionRunId: "run-2" },
+      ],
+      [{ id: "run-2", status: "running", agentId: "agent-2", startedAt: "2026-05-15T11:00:00.000Z", createdAt: "2026-05-15T10:59:00.000Z" }],
+    ]);
+
+    const app = createApp(boardActor, db);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/git/safety");
+
+    expect(res.status).toBe(200);
+    expect(res.body.task).toMatchObject({
+      id: "issue-running",
+      status: "in_progress",
+      identifier: "ENG-2",
+    });
+    expect(res.body.activeRun).toMatchObject({ id: "run-2", status: "running" });
+    expect(res.body.requiresConfirmation).toEqual({
+      commit: true,
+      push: true,
+      createPr: true,
+    });
+    expect(res.body.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/task is not complete/i),
+        expect.stringMatching(/agent run/i),
+      ]),
+    );
   });
 });

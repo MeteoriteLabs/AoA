@@ -26,7 +26,7 @@ interface WorkspaceTaskNavProps {
   companyPrefix: string;
   projectId: string;
   selectedIssueId: string | null;
-  onSelectIssue: (issueId: string) => void;
+  onSelectIssue: (issueId: string, executionWorkspaceId?: string | null) => void;
   onBack: () => void;
   departmentName: string;
   collapsed?: boolean;
@@ -128,7 +128,7 @@ export function WorkspaceTaskNav({
   if (collapsed) {
     return (
       <div
-        className="flex flex-col h-full items-start py-2 gap-1"
+        className="flex flex-col h-full items-center py-2 gap-1"
         data-testid="workspace-task-nav-collapsed"
       >
         <button
@@ -181,11 +181,12 @@ export function WorkspaceTaskNav({
         <button
           type="button"
           onClick={onBack}
+          title={`Back to ${departmentName}`}
           className="flex-1 flex items-center gap-1.5 px-3 py-3 text-sm text-muted-foreground hover:text-foreground transition-colors min-w-0"
           data-testid="workspace-back-btn"
         >
           <ChevronLeft className="h-4 w-4 shrink-0" />
-          <span className="truncate">Back to Department</span>
+          <span className="truncate">{departmentName}</span>
         </button>
         {onToggleCollapse && (
           <button
@@ -199,11 +200,6 @@ export function WorkspaceTaskNav({
             <PanelLeftClose className="h-4 w-4" />
           </button>
         )}
-      </div>
-
-      {/* Department name */}
-      <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground border-b border-border shrink-0">
-        {departmentName}
       </div>
 
       {/* Search */}
@@ -265,7 +261,7 @@ export function WorkspaceTaskNav({
                         key={issue.id}
                         issue={issue}
                         isSelected={issue.id === selectedIssueId}
-                        onSelect={() => onSelectIssue(issue.id)}
+                        onSelect={() => onSelectIssue(issue.id, issue.executionWorkspaceId)}
                       />
                     ))}
                   </div>

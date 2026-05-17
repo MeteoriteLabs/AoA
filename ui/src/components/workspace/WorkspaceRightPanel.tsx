@@ -1,43 +1,56 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import {
+  Archive,
   Brain,
-  ChevronRight,
   FileBox,
   GitBranch,
+  KeyRound,
+  MoreHorizontal,
   PanelRight,
   PanelRightClose,
+  Paperclip,
   Server,
-  StickyNote,
-  Terminal as TerminalIcon,
+  Settings,
   Workflow,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { agentsApi } from "../../api/agents";
+import { activityApi } from "../../api/activity";
+import { artifactsApi } from "../../api/artifacts";
+import { dependenciesApi } from "../../api/dependencies";
+import { executionWorkspacesApi, type GitFileEntry, type WorkspaceRuntimeService } from "../../api/execution-workspaces";
+import { heartbeatsApi } from "../../api/heartbeats";
+import { issuesApi } from "../../api/issues";
+import { memoryRetrievalsApi } from "../../api/memoryRetrievals";
+import { outputDetectionApi } from "../../api/output-detection";
+import { queryKeys } from "../../lib/queryKeys";
 import { ArtifactsSection } from "./sections/ArtifactsSection";
 import { ProcessSection } from "./sections/ProcessSection";
-import { ServicesSection } from "./sections/ServicesSection";
-import { NotesSection } from "./sections/NotesSection";
-import { ChangesContextSection } from "./sections/ChangesContextSection";
-import { LogsContextSection } from "./sections/LogsContextSection";
-import { PreviewContextSection } from "./sections/PreviewContextSection";
 import { MemorySection } from "./sections/MemorySection";
+import { ServicesSection } from "./sections/ServicesSection";
 import { GitPanel } from "./tools/GitPanel";
-import { TerminalPanel } from "./tools/TerminalPanel";
+import { CockpitSection } from "./cockpit/CockpitSection";
 import type { PreviewMode } from "./WorkspacePreviewPanel";
-import type { ArtifactWithVersions, ArtifactVersion, ExecutionWorkspace } from "@armyofagents/shared";
+import type { Agent, ArtifactWithVersions, ArtifactVersion, ExecutionWorkspace, DetectedOutputForUI } from "@armyofagents/shared";
 
 function sectionKey(name: string) {
-  return `aoa:workspace:section:${name}`;
+  return `aoa:workspace:cockpit:section:${name}`;
 }
 
-function loadExpanded(name: string, defaultOpen = true): boolean {
+function loadExpanded(name: string): boolean {
   try {
-    const stored = localStorage.getItem(sectionKey(name));
-    return stored !== null ? stored === "true" : defaultOpen;
+    return localStorage.getItem(sectionKey(name)) === "true";
   } catch {
-    return defaultOpen;
+    return false;
   }
 }
 
@@ -45,8 +58,22 @@ function saveExpanded(name: string, open: boolean) {
   try {
     localStorage.setItem(sectionKey(name), String(open));
   } catch {
-    // ignore
+    // Ignore storage failures.
   }
+}
+
+function limitExpandedSections(expanded: Record<string, boolean>): Record<string, boolean> {
+  const openIds = WORKSPACE_COCKPIT_SECTIONS
+    .map((section) => section.id)
+    .filter((sectionId) => expanded[sectionId]);
+  if (openIds.length <= MAX_EXPANDED_COCKPIT_SECTIONS) return expanded;
+
+  const keepOpen = new Set(openIds.slice(-MAX_EXPANDED_COCKPIT_SECTIONS));
+  const next = { ...expanded };
+  for (const section of WORKSPACE_COCKPIT_SECTIONS) {
+    next[section.id] = keepOpen.has(section.id);
+  }
+  return next;
 }
 
 interface WorkspaceRightPanelProps {
@@ -59,29 +86,192 @@ interface WorkspaceRightPanelProps {
   selectedFile?: string | null;
   onSelectFile?: (path: string) => void;
   onPreviewArtifact?: (artifact: ArtifactWithVersions, version: ArtifactVersion) => void;
+  onPreviewOutput?: (output: DetectedOutputForUI) => void;
+  onOpenBrowser?: (service: WorkspaceRuntimeService) => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
   onExpandAndShowSection?: (sectionName: string) => void;
   openSection?: { section: string; nonce: number } | null;
+  selectedIssueIdentifier?: string | null;
+  onOpenSettings?: () => void;
+  onOpenArchive?: () => void;
 }
 
-interface SectionDef {
-  name: string;
-  label: string;
-  defaultOpen: boolean;
+interface CockpitSectionDef {
+  id: "process" | "git" | "services" | "artifacts" | "memory" | "context" | "access";
+  title: string;
   icon: LucideIcon;
-  requiresFunctionType?: string;
+  softwareOnly?: boolean;
 }
 
-const PERMANENT_SECTIONS: SectionDef[] = [
-  { name: "artifacts", label: "Artifacts", defaultOpen: true, icon: FileBox },
-  { name: "process", label: "Process", defaultOpen: true, icon: Workflow },
-  { name: "services", label: "Services", defaultOpen: false, icon: Server, requiresFunctionType: "software_development" },
-  { name: "memory", label: "Memory", defaultOpen: true, icon: Brain },
-  { name: "git", label: "Git", defaultOpen: true, icon: GitBranch, requiresFunctionType: "software_development" },
-  { name: "terminal", label: "Terminal", defaultOpen: false, icon: TerminalIcon, requiresFunctionType: "software_development" },
-  { name: "notes", label: "Notes", defaultOpen: true, icon: StickyNote },
+const WORKSPACE_COCKPIT_SECTIONS: CockpitSectionDef[] = [
+  { id: "process", title: "Process", icon: Workflow },
+  { id: "git", title: "Git", icon: GitBranch, softwareOnly: true },
+  { id: "services", title: "Services", icon: Server, softwareOnly: true },
+  { id: "artifacts", title: "Artifacts", icon: FileBox },
+  { id: "memory", title: "Memory", icon: Brain },
+  { id: "context", title: "Context", icon: Paperclip },
+  { id: "access", title: "Access", icon: KeyRound },
 ];
+
+const MAX_EXPANDED_COCKPIT_SECTIONS = 3;
+
+type CockpitSummaryMap = Partial<Record<CockpitSectionDef["id"], string | null>>;
+
+function plural(count: number, singular: string, pluralForm = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+function useCockpitSummaries({
+  issueId,
+  companyId,
+  workspace,
+  functionType,
+}: {
+  issueId: string;
+  companyId: string;
+  workspace: ExecutionWorkspace;
+  functionType: string | null;
+}): CockpitSummaryMap {
+  const isSoftware = functionType === "software_development";
+
+  const { data: issue } = useQuery({
+    queryKey: queryKeys.issues.detail(issueId),
+    queryFn: () => issuesApi.get(issueId),
+    enabled: Boolean(issueId),
+  });
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+    enabled: Boolean(companyId),
+  });
+
+  const { data: runs } = useQuery({
+    queryKey: queryKeys.issues.runs(issueId),
+    queryFn: () => activityApi.runsForIssue(issueId),
+    enabled: Boolean(issueId),
+  });
+
+  const { data: activeRun } = useQuery({
+    queryKey: queryKeys.issues.activeRun(issueId),
+    queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
+    enabled: Boolean(issueId),
+    refetchInterval: 5000,
+  });
+
+  const { data: deps } = useQuery({
+    queryKey: queryKeys.issues.dependencies(issueId),
+    queryFn: () => dependenciesApi.list(companyId, issueId),
+    enabled: Boolean(companyId && issueId),
+  });
+
+  const { data: gitStatus } = useQuery({
+    queryKey: ["workspace-git-status", workspace.id],
+    queryFn: () => executionWorkspacesApi.getGitStatus(workspace.id),
+    enabled: isSoftware && Boolean(workspace.cwd),
+    refetchInterval: 10_000,
+    staleTime: 8000,
+  });
+
+  const { data: services } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.runtimeServices(workspace.id),
+    queryFn: () => executionWorkspacesApi.runtimeServices(workspace.id),
+    enabled: isSoftware,
+    refetchInterval: 3000,
+    staleTime: 2500,
+  });
+
+  const { data: artifact } = useQuery({
+    queryKey: queryKeys.artifacts.byIssue(issueId),
+    queryFn: () => artifactsApi.getByIssueId(issueId),
+    enabled: Boolean(issueId),
+    staleTime: 5000,
+  });
+
+  const { data: detectedOutputs } = useQuery({
+    queryKey: queryKeys.detectedOutputs.byIssue(issueId),
+    queryFn: () => outputDetectionApi.listForIssue(issueId),
+    enabled: Boolean(issueId),
+    staleTime: 5000,
+  });
+
+  const { data: memoryRetrievals } = useQuery({
+    queryKey: queryKeys.memory.retrievalsForIssue(companyId, issueId),
+    queryFn: () => memoryRetrievalsApi.listForIssue(companyId, issueId, { limit: 100 }),
+    enabled: Boolean(companyId && issueId),
+    staleTime: 5000,
+  });
+
+  const assignedAgent = agents?.find((agent: Agent) => agent.id === issue?.assigneeAgentId);
+  const blockingTasks = (deps?.upstream ?? []).filter((d) => d.status !== "done" && d.status !== "completed");
+  const processSummary = (() => {
+    if (activeRun) return `Running · ${assignedAgent?.name ?? "agent"}`;
+    if (issue?.status === "blocked") {
+      return blockingTasks.length > 0 ? `Blocked · ${plural(blockingTasks.length, "blocker")}` : "Blocked";
+    }
+    const runCount = runs?.length ?? 0;
+    if (runCount > 0) return `Idle · ${plural(runCount, "run")}`;
+    if (assignedAgent) return `Idle · ${assignedAgent.name}`;
+    return null;
+  })();
+
+  const gitSummary = (() => {
+    if (!isSoftware || !workspace.cwd || !gitStatus) return null;
+    if (!gitStatus.gitAvailable) return "Git unavailable";
+    if (gitStatus.detachedHead) return "Detached HEAD";
+    const files: GitFileEntry[] = gitStatus.files ?? [];
+    const ahead = gitStatus.ahead ?? 0;
+    const behind = gitStatus.behind ?? 0;
+    const pr = (workspace.metadata as { pr?: { state?: string } } | null)?.pr;
+    if (files.length > 0 && ahead > 0) return `${plural(files.length, "changed file")} · ${ahead} ahead`;
+    if (files.length > 0) return plural(files.length, "changed file");
+    if (ahead > 0 && behind > 0) return `Diverged · ${ahead} ahead`;
+    if (behind > 0) return `${behind} behind`;
+    if (ahead > 0) return `${ahead} ahead`;
+    if (pr?.state) return `Clean · PR ${pr.state}`;
+    if (!gitStatus.remote && !workspace.repoUrl) return "Local only";
+    return gitStatus.clean ? "Clean" : null;
+  })();
+
+  const servicesSummary = (() => {
+    if (!isSoftware || !services || services.length === 0) return null;
+    const running = services.filter((service) => service.status === "running");
+    const failed = services.filter((service) => service.status === "failed");
+    const starting = services.filter((service) => service.status === "starting");
+    if (running.length === 1) return `1 running · ${running[0].serviceName}`;
+    if (running.length > 1) return `${running.length} running`;
+    if (starting.length > 0) return plural(starting.length, "starting service");
+    if (failed.length > 0) return plural(failed.length, "failed service");
+    return plural(services.length, "stopped service");
+  })();
+
+  const artifactsSummary = (() => {
+    const candidates = (detectedOutputs ?? []).filter((output) => output.status === "pending");
+    const parts: string[] = [];
+    if (artifact) parts.push("1 artifact");
+    if (candidates.length > 0) parts.push(plural(candidates.length, "candidate"));
+    return parts.length > 0 ? parts.join(" · ") : null;
+  })();
+
+  const memorySummary = (() => {
+    const total = memoryRetrievals?.length ?? 0;
+    if (total === 0) return null;
+    const filtered = (memoryRetrievals ?? []).filter((row) => !row.shownToAgent).length;
+    if (filtered > 0) return `${plural(total, "retrieval")} · ${filtered} filtered`;
+    return plural(total, "retrieval");
+  })();
+
+  return {
+    process: processSummary,
+    git: gitSummary,
+    services: servicesSummary,
+    artifacts: artifactsSummary,
+    memory: memorySummary,
+    context: null,
+    access: workspace.repoUrl ? "Repo connected" : null,
+  };
+}
 
 export function WorkspaceRightPanel({
   issueId,
@@ -89,92 +279,92 @@ export function WorkspaceRightPanel({
   companyPrefix,
   workspace,
   functionType,
-  previewMode,
-  selectedFile,
-  onSelectFile,
   onPreviewArtifact,
+  onPreviewOutput,
+  onOpenBrowser,
   collapsed = false,
   onToggleCollapse,
   onExpandAndShowSection,
   openSection,
+  selectedIssueIdentifier,
+  onOpenSettings,
+  onOpenArchive,
 }: WorkspaceRightPanelProps) {
+  const sections = WORKSPACE_COCKPIT_SECTIONS.filter(
+    (section) => !section.softwareOnly || functionType === "software_development",
+  );
+  const summaries = useCockpitSummaries({ issueId, companyId, workspace, functionType });
+
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
-    // Contextual section
-    initial["contextual"] = loadExpanded("contextual", true);
-    // Permanent sections
-    for (const s of PERMANENT_SECTIONS) {
-      initial[s.name] = loadExpanded(s.name, s.defaultOpen);
-    }
-    return initial;
+    for (const section of WORKSPACE_COCKPIT_SECTIONS) initial[section.id] = loadExpanded(section.id);
+    return limitExpandedSections(initial);
   });
 
-  const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
-
-  const toggle = useCallback((name: string) => {
+  const setSectionOpen = useCallback((id: string, open: boolean) => {
     setExpanded((prev) => {
-      const next = !prev[name];
-      saveExpanded(name, next);
-      return { ...prev, [name]: next };
+      let next = { ...prev, [id]: open };
+
+      if (open) {
+        const openIds = WORKSPACE_COCKPIT_SECTIONS
+          .map((section) => section.id)
+          .filter((sectionId) => sectionId !== id && prev[sectionId]);
+        const keepOpen = new Set([...openIds, id].slice(-MAX_EXPANDED_COCKPIT_SECTIONS));
+        next = { ...prev };
+        for (const section of WORKSPACE_COCKPIT_SECTIONS) {
+          next[section.id] = keepOpen.has(section.id);
+        }
+      }
+
+      for (const section of WORKSPACE_COCKPIT_SECTIONS) {
+        if (prev[section.id] !== next[section.id]) {
+          saveExpanded(section.id, Boolean(next[section.id]));
+        }
+      }
+
+      return next;
     });
   }, []);
 
-  // When parent requests opening a section (from collapsed-rail click), force-open + scroll
   useEffect(() => {
     if (!openSection || collapsed) return;
-    const name = openSection.section;
-    setExpanded((prev) => {
-      if (prev[name]) return prev;
-      saveExpanded(name, true);
-      return { ...prev, [name]: true };
-    });
-    requestAnimationFrame(() => {
-      const el = sectionRefs.current[name];
-      if (el && typeof el.scrollIntoView === "function") {
-        el.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-    });
-  }, [openSection, collapsed]);
+    setSectionOpen(openSection.section, true);
+  }, [collapsed, openSection, setSectionOpen]);
 
-  // Determine contextual section label based on previewMode
-  const contextualLabel =
-    previewMode === "changes" ? "Changes" :
-    previewMode === "logs" ? "Runs" :
-    previewMode === "preview" ? "Preview" :
-    null;
-
-  // ── Collapsed icon rail ──
   if (collapsed) {
     return (
       <div
-        className="flex flex-col h-full items-end py-2 gap-1"
+        className="flex h-full flex-col items-center gap-1 py-2"
         data-testid="workspace-right-panel-collapsed"
       >
         <button
           type="button"
           onClick={onToggleCollapse}
           title="Expand context"
-          className="flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+          className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
           data-testid="workspace-right-panel-expand"
           aria-label="Expand context panel"
         >
           <PanelRight className="h-4 w-4" />
         </button>
-
-        <div className="w-6 h-px bg-border my-1" />
-
-        {PERMANENT_SECTIONS.map((section) => {
-          if (section.requiresFunctionType && section.requiresFunctionType !== functionType) return null;
+        <WorkspaceCockpitMenu
+          workspace={workspace}
+          onOpenSettings={onOpenSettings}
+          onOpenArchive={onOpenArchive}
+          triggerClassName="h-9 w-9"
+        />
+        <div className="my-1 h-px w-6 bg-border" />
+        {sections.map((section) => {
           const Icon = section.icon;
           return (
             <button
-              key={section.name}
+              key={section.id}
               type="button"
-              onClick={() => onExpandAndShowSection?.(section.name)}
-              title={section.label}
-              className="flex items-center justify-center w-9 h-9 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-              data-testid={`workspace-rail-section-${section.name}`}
-              aria-label={section.label}
+              onClick={() => onExpandAndShowSection?.(section.id)}
+              title={section.title}
+              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              data-testid={`workspace-rail-section-${section.id}`}
+              aria-label={section.title}
             >
               <Icon className="h-4 w-4" />
             </button>
@@ -184,142 +374,163 @@ export function WorkspaceRightPanel({
     );
   }
 
-  // ── Expanded panel ──
   return (
-    <div className="flex flex-col h-full" data-testid="workspace-right-panel-expanded">
-      {onToggleCollapse && (
-        <div
-          className="flex items-center justify-end px-2 py-1 border-b border-border shrink-0"
-          data-testid="workspace-right-panel-header"
-        >
+    <div className="flex h-full min-w-0 flex-col overflow-hidden" data-testid="workspace-right-panel-expanded">
+      <div
+        className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-2 py-2"
+        data-testid="workspace-cockpit-header"
+      >
+        <div className="min-w-0">
+          <div className="truncate text-xs font-semibold text-foreground">Workspace cockpit</div>
+          {selectedIssueIdentifier && (
+            <div
+              className="mt-0.5 inline-flex max-w-full rounded bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-brand"
+              data-testid="workspace-cockpit-ticket"
+            >
+              <span className="truncate">{selectedIssueIdentifier}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <WorkspaceCockpitMenu
+            workspace={workspace}
+            onOpenSettings={onOpenSettings}
+            onOpenArchive={onOpenArchive}
+          />
+          {onToggleCollapse && (
           <button
             type="button"
             onClick={onToggleCollapse}
             title="Collapse context"
-            className="flex items-center justify-center w-7 h-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
             data-testid="workspace-right-panel-collapse"
             aria-label="Collapse context panel"
           >
             <PanelRightClose className="h-4 w-4" />
           </button>
-        </div>
-      )}
-      <ScrollArea className="flex-1 min-h-0" data-testid="workspace-right-panel-scroll">
-        <div className="py-2" data-testid="workspace-right-sections">
-          {/* ── Contextual top section (based on previewMode) — unchanged ── */}
-          {contextualLabel && (
-            <Collapsible
-              open={expanded["contextual"]}
-              onOpenChange={() => toggle("contextual")}
-              data-testid="section-contextual"
-            >
-              <CollapsibleTrigger className="flex items-center gap-1.5 w-full px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors">
-                <ChevronRight
-                  className={cn(
-                    "h-3.5 w-3.5 transition-transform",
-                    expanded["contextual"] && "rotate-90",
-                  )}
-                />
-                {contextualLabel}
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <div className="pb-2">
-                  {previewMode === "changes" && (
-                    <ChangesContextSection
-                      issueId={issueId}
-                      workspaceId={workspace.id}
-                      selectedFile={selectedFile}
-                      onSelectFile={onSelectFile}
-                    />
-                  )}
-                  {previewMode === "logs" && (
-                    <LogsContextSection issueId={issueId} workspace={workspace} />
-                  )}
-                  {previewMode === "preview" && (
-                    <PreviewContextSection
-                      issueId={issueId}
-                      workspaceId={workspace.id}
-                      functionType={functionType}
-                      onPreviewArtifact={onPreviewArtifact}
-                    />
-                  )}
-                </div>
-              </CollapsibleContent>
-            </Collapsible>
           )}
-
-          {/* ── Permanent sections (card style) ── */}
-          <div className="px-2 space-y-2">
-          {PERMANENT_SECTIONS.map((section) => {
-            // Skip sections that require a specific functionType
-            if (section.requiresFunctionType && section.requiresFunctionType !== functionType) return null;
-
-            const SectionIcon = section.icon;
-            const isOpen = expanded[section.name];
-
+        </div>
+      </div>
+      <ScrollArea className="min-h-0 min-w-0 flex-1 overflow-hidden" data-testid="workspace-right-panel-scroll">
+        <div className="w-full min-w-0 max-w-full space-y-2 overflow-hidden px-2 py-2" data-testid="workspace-right-sections">
+          {sections.map((section) => {
+            const isOpen = expanded[section.id] ?? false;
             return (
-              <div
-                key={section.name}
-                ref={(el) => {
-                  sectionRefs.current[section.name] = el;
-                }}
-                className="border border-border rounded-md overflow-hidden bg-background"
+              <CockpitSection
+                key={section.id}
+                id={section.id}
+                title={section.title}
+                summary={summaries[section.id]}
+                icon={section.icon}
+                open={isOpen}
+                onOpenChange={(open) => setSectionOpen(section.id, open)}
               >
-                <Collapsible
-                  open={isOpen}
-                  onOpenChange={() => toggle(section.name)}
-                  data-testid={`section-${section.name}`}
-                >
-                  <CollapsibleTrigger className="flex items-center gap-2 w-full px-3 py-2 text-xs font-medium text-foreground hover:bg-muted/50 transition-colors">
-                    <SectionIcon className="h-4 w-4 text-muted-foreground shrink-0" />
-                    <span className="flex-1 text-left">{section.label}</span>
-                    <ChevronRight
-                      className={cn(
-                        "h-3.5 w-3.5 text-muted-foreground transition-transform",
-                        isOpen && "rotate-90",
-                      )}
-                    />
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <div className="border-t border-border py-2">
-                      {section.name === "artifacts" && (
-                        <ArtifactsSection issueId={issueId} onPreviewArtifact={onPreviewArtifact} />
-                      )}
-                      {section.name === "process" && (
-                        <ProcessSection issueId={issueId} companyId={companyId} companyPrefix={companyPrefix} />
-                      )}
-                      {section.name === "services" && (
-                        <ServicesSection workspace={workspace} />
-                      )}
-                      {section.name === "git" && (
-                        <div className="px-3">
-                          <GitPanel workspace={workspace} issueId={issueId} isExpanded={!!isOpen} />
-                        </div>
-                      )}
-                      {section.name === "terminal" && (
-                        <div className="px-3">
-                          <TerminalPanel issueId={issueId} companyId={companyId} />
-                        </div>
-                      )}
-                      {section.name === "memory" && (
-                        <MemorySection
-                          issueId={issueId}
-                          companyId={companyId}
-                          companyPrefix={companyPrefix}
-                        />
-                      )}
-                      {section.name === "notes" && (
-                        <NotesSection workspaceId={workspace.id} />
-                      )}
-                    </div>
-                  </CollapsibleContent>
-                </Collapsible>
-              </div>
+                {section.id === "process" && (
+                  <ProcessSection issueId={issueId} companyId={companyId} companyPrefix={companyPrefix} />
+                )}
+                {section.id === "context" && <ContextCockpitSection workspace={workspace} />}
+                {section.id === "artifacts" && (
+                  <ArtifactsSection issueId={issueId} onPreviewArtifact={onPreviewArtifact} onPreviewOutput={onPreviewOutput} />
+                )}
+                {section.id === "git" && (
+                  <GitPanel workspace={workspace} issueId={issueId} isExpanded />
+                )}
+                {section.id === "services" && <ServicesSection workspace={workspace} onOpenBrowser={onOpenBrowser} />}
+                {section.id === "memory" && (
+                  <MemorySection issueId={issueId} companyId={companyId} companyPrefix={companyPrefix} />
+                )}
+                {section.id === "access" && <AccessCockpitSection workspace={workspace} />}
+              </CockpitSection>
             );
           })}
-          </div>
         </div>
       </ScrollArea>
+    </div>
+  );
+}
+
+function WorkspaceCockpitMenu({
+  workspace,
+  onOpenSettings,
+  onOpenArchive,
+  triggerClassName = "h-7 w-7",
+}: {
+  workspace: ExecutionWorkspace;
+  onOpenSettings?: () => void;
+  onOpenArchive?: () => void;
+  triggerClassName?: string;
+}) {
+  if (!onOpenSettings && !onOpenArchive) return null;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          title="Workspace actions"
+          aria-label="Workspace actions"
+          data-testid="workspace-cockpit-menu-trigger"
+          className={`flex ${triggerClassName} items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground`}
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {onOpenSettings && (
+          <DropdownMenuItem onClick={onOpenSettings} data-testid="workspace-cockpit-menu-settings">
+            <Settings className="mr-2 h-4 w-4" />
+            Settings
+          </DropdownMenuItem>
+        )}
+        {onOpenArchive && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={onOpenArchive}
+              disabled={workspace.status === "archived"}
+              variant="destructive"
+              data-testid="workspace-cockpit-menu-archive"
+            >
+              <Archive className="mr-2 h-4 w-4" />
+              Archive
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function ContextCockpitSection({ workspace }: { workspace: ExecutionWorkspace }) {
+  return (
+    <div className="min-w-0 max-w-full space-y-2 overflow-hidden text-xs" data-testid="context-cockpit-section">
+      <div className="flex min-w-0 justify-between gap-2 overflow-hidden">
+        <span className="shrink-0 text-muted-foreground">Workspace</span>
+        <span className="min-w-0 truncate font-mono">{workspace.name}</span>
+      </div>
+      <div className="flex min-w-0 justify-between gap-2 overflow-hidden">
+        <span className="shrink-0 text-muted-foreground">Mode</span>
+        <span className="min-w-0 truncate">{workspace.mode}</span>
+      </div>
+    </div>
+  );
+}
+
+function AccessCockpitSection({ workspace }: { workspace: ExecutionWorkspace }) {
+  return (
+    <div className="min-w-0 max-w-full space-y-2 overflow-hidden text-xs" data-testid="access-cockpit-section">
+      <div className="flex min-w-0 justify-between gap-2 overflow-hidden">
+        <span className="shrink-0 text-muted-foreground">Secrets</span>
+        <span className="min-w-0 truncate">names only</span>
+      </div>
+      <div className="flex min-w-0 justify-between gap-2 overflow-hidden">
+        <span className="shrink-0 text-muted-foreground">Repo</span>
+        <span className="min-w-0 truncate">{workspace.repoUrl ? "configured" : "local only"}</span>
+      </div>
+      <div className="flex min-w-0 justify-between gap-2 overflow-hidden">
+        <span className="shrink-0 text-muted-foreground">Deploy</span>
+        <span className="min-w-0 truncate">approval gated</span>
+      </div>
     </div>
   );
 }

@@ -680,6 +680,13 @@
       "when": 1778682040372,
       "tag": "0096_simple_scourge",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1778967673778,
+      "tag": "0097_gifted_hercules",
+      "breakpoints": true
     }
   ]
 }

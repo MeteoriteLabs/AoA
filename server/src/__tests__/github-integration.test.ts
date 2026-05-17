@@ -24,16 +24,25 @@ import { errorHandler } from "../middleware/index.js";
 import { GITHUB_PAT_ACTIVITY_KINDS, GITHUB_PAT_SECRET_NAME } from "@armyofagents/shared";
 import { githubRoutes } from "../routes/github.js";
 
-function createApp(actor: any) {
+function createApp(actor: any, db: any = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", githubRoutes({} as any));
+  app.use("/api", githubRoutes(db as any));
   app.use(errorHandler);
   return app;
+}
+
+function createActivityDb(details: Record<string, unknown>) {
+  const limit = vi.fn().mockResolvedValue([{ details }]);
+  const orderBy = vi.fn(() => ({ limit }));
+  const where = vi.fn(() => ({ orderBy }));
+  const from = vi.fn(() => ({ where }));
+  const select = vi.fn(() => ({ from }));
+  return { select, from, where, orderBy, limit };
 }
 
 const boardActor = {
@@ -193,6 +202,7 @@ describe("github integration routes", () => {
       const createdAt = new Date("2026-04-22T10:00:00Z");
       mockSvc.getByName.mockResolvedValue({
         id: "secret-1",
+        status: "active",
         externalRef: "octocat",
         createdAt,
       });
@@ -228,6 +238,7 @@ describe("github integration routes", () => {
     it("returns githubUser=null when externalRef is missing", async () => {
       mockSvc.getByName.mockResolvedValue({
         id: "secret-1",
+        status: "active",
         externalRef: null,
         createdAt: new Date("2026-04-22T10:00:00Z"),
       });
@@ -240,6 +251,43 @@ describe("github integration routes", () => {
       expect(res.status).toBe(200);
       expect(res.body.configured).toBe(true);
       expect(res.body.githubUser).toBeNull();
+    });
+
+    it("returns githubUser from connect activity when stored externalRef is missing", async () => {
+      mockSvc.getByName.mockResolvedValue({
+        id: "secret-1",
+        status: "active",
+        externalRef: null,
+        createdAt: new Date("2026-04-22T10:00:00Z"),
+      });
+      const db = createActivityDb({ githubUser: "octocat" });
+
+      const app = createApp(boardActor, db);
+      const res = await request(app).get(
+        "/api/companies/company-1/github/pat/status",
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body.configured).toBe(true);
+      expect(res.body.githubUser).toBe("octocat");
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns configured=false when the stored PAT row is disabled", async () => {
+      mockSvc.getByName.mockResolvedValue({
+        id: "secret-1",
+        status: "disabled",
+        externalRef: "octocat",
+        createdAt: new Date("2026-04-22T10:00:00Z"),
+      });
+
+      const app = createApp(boardActor);
+      const res = await request(app).get(
+        "/api/companies/company-1/github/pat/status",
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ configured: false });
     });
   });
 

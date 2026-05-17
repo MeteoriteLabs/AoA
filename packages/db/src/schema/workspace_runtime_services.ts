@@ -43,6 +43,7 @@ export const workspaceRuntimeServices = pgTable(
     stoppedAt: timestamp("stopped_at", { withTimezone: true }),
     stopPolicy: jsonb("stop_policy").$type<Record<string, unknown>>(),
     healthStatus: text("health_status").notNull().default("unknown"),
+    healthCheckedAt: timestamp("health_checked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

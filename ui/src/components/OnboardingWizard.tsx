@@ -96,7 +96,7 @@ export function OnboardingWizard() {
 
   // Step 3 (agent — was step 2)
   const [agentName, setAgentName] = useState("Director");
-  const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
+  const [adapterType, setAdapterType] = useState<AdapterType>("codex_local");
   const [cwd, setCwd] = useState("");
   const [cwdManuallyEdited, setCwdManuallyEdited] = useState(false);
   const [model, setModel] = useState("");

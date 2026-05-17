@@ -64,7 +64,8 @@ describe("MemorySection", () => {
     );
 
     expect(await screen.findByTestId("memory-section-empty")).toBeInTheDocument();
-    expect(screen.getByText(/No memory retrievals/)).toBeInTheDocument();
+    expect(screen.getByText("No memory used yet")).toBeInTheDocument();
+    expect(screen.getByText("Retrievals from future runs will appear here.")).toBeInTheDocument();
   });
 
   it("groups retrievals by triggeredBy (auto / agent-pulled / skill)", async () => {
@@ -137,7 +138,7 @@ describe("MemorySection", () => {
     expect(await screen.findByText("(item deleted)")).toBeInTheDocument();
   });
 
-  it("links each row to /<companyPrefix>/memory/explore?item=<id> when itemId present", async () => {
+  it("links each row to a memory-item deep link when itemId present", async () => {
     listForIssue.mockResolvedValue([
       row({ itemId: "item-77", itemTitle: "Linked item" }),
     ]);
@@ -147,7 +148,10 @@ describe("MemorySection", () => {
     );
 
     await screen.findByText("Linked item");
-    const link = container.querySelector('a[href="/acme/memory/explore?item=item-77"]');
-    expect(link).toBeInTheDocument();
+    const link = container.querySelector("[data-testid='memory-retrieval-row']");
+    expect(link).toHaveAttribute(
+      "href",
+      "/acme/memory/explore?item=item-77&type=memory_item",
+    );
   });
 });

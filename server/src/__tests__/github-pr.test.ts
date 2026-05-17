@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ---- Octokit mock ----
 const mockOctokit = vi.hoisted(() => ({
   users: { getAuthenticated: vi.fn() },
-  pulls: { create: vi.fn() },
+  pulls: { create: vi.fn(), list: vi.fn() },
 }));
 vi.mock("@octokit/rest", () => ({
   Octokit: vi.fn(() => mockOctokit),
@@ -48,12 +48,22 @@ vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => mockWsSvc,
 }));
 
+const mockResolveGitRoot = vi.hoisted(() => vi.fn());
+const mockRunGit = vi.hoisted(() => vi.fn());
+const mockPush = vi.hoisted(() => vi.fn());
+vi.mock("../services/git.js", () => ({
+  resolveGitRoot: mockResolveGitRoot,
+  runGit: mockRunGit,
+  push: mockPush,
+}));
+
 import { errorHandler } from "../middleware/index.js";
 import { GITHUB_PAT_ACTIVITY_KINDS, GITHUB_PAT_SECRET_NAME } from "@armyofagents/shared";
 import { githubRoutes } from "../routes/github.js";
 import {
   GitHubPrError,
   createPullRequest,
+  findPullRequestForBranch,
   parseGitHubRepoUrl,
 } from "../services/github-pr.js";
 
@@ -135,6 +145,9 @@ describe("parseGitHubRepoUrl", () => {
 describe("createPullRequest service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockResolveGitRoot.mockResolvedValue(null);
+    mockRunGit.mockResolvedValue("");
+    mockPush.mockResolvedValue({ pushed: true, remote: "origin", branch: "feature/x" });
   });
 
   const baseArgs = {
@@ -244,12 +257,105 @@ describe("createPullRequest service", () => {
 });
 
 // -----------------------------------------------------------------------------
+// Unit tests: findPullRequestForBranch service
+// -----------------------------------------------------------------------------
+
+describe("findPullRequestForBranch service", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const baseArgs = {
+    companyId: "company-1",
+    repoUrl: "https://github.com/owner/repo",
+    branchName: "feature/x",
+  };
+
+  it("finds an open PR for the workspace branch and returns its base ref", async () => {
+    mockSvc.getByName.mockResolvedValue({ id: "secret-1" });
+    mockSvc.resolveSecretValue.mockResolvedValue("ghp_valid");
+    mockOctokit.pulls.list.mockResolvedValue({
+      data: [
+        {
+          html_url: "https://github.com/owner/repo/pull/42",
+          number: 42,
+          state: "open",
+          draft: false,
+          merged_at: null,
+          head: { ref: "feature/x" },
+          base: { ref: "main" },
+        },
+      ],
+    });
+
+    const result = await findPullRequestForBranch({} as any, baseArgs);
+
+    expect(result).toEqual({
+      pr: {
+        url: "https://github.com/owner/repo/pull/42",
+        number: 42,
+        state: "open",
+        draft: false,
+        createdAt: expect.any(String),
+      },
+      baseRef: "main",
+    });
+    expect(mockOctokit.pulls.list).toHaveBeenCalledWith({
+      owner: "owner",
+      repo: "repo",
+      state: "all",
+      head: "owner:feature/x",
+      per_page: 10,
+      sort: "updated",
+      direction: "desc",
+    });
+  });
+
+  it("maps a closed PR with merged_at to merged", async () => {
+    mockSvc.getByName.mockResolvedValue({ id: "secret-1" });
+    mockSvc.resolveSecretValue.mockResolvedValue("ghp_valid");
+    mockOctokit.pulls.list.mockResolvedValue({
+      data: [
+        {
+          html_url: "https://github.com/owner/repo/pull/43",
+          number: 43,
+          state: "closed",
+          draft: false,
+          merged_at: "2026-05-16T08:00:00.000Z",
+          head: { ref: "feature/x" },
+          base: { ref: "main" },
+        },
+      ],
+    });
+
+    const result = await findPullRequestForBranch({} as any, baseArgs);
+
+    expect(result.pr?.state).toBe("merged");
+    expect(result.baseRef).toBe("main");
+  });
+
+  it("returns null metadata when GitHub has no PR for the branch", async () => {
+    mockSvc.getByName.mockResolvedValue({ id: "secret-1" });
+    mockSvc.resolveSecretValue.mockResolvedValue("ghp_valid");
+    mockOctokit.pulls.list.mockResolvedValue({ data: [] });
+
+    await expect(findPullRequestForBranch({} as any, baseArgs)).resolves.toEqual({
+      pr: null,
+      baseRef: null,
+    });
+  });
+});
+
+// -----------------------------------------------------------------------------
 // Route tests: POST /issues/:issueId/github-pr
 // -----------------------------------------------------------------------------
 
 describe("POST /issues/:issueId/github-pr", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockResolveGitRoot.mockResolvedValue(null);
+    mockRunGit.mockResolvedValue("");
+    mockPush.mockResolvedValue({ pushed: true, remote: "origin", branch: "feature/x" });
   });
 
   const happyIssue = {
@@ -413,6 +519,45 @@ describe("POST /issues/:issueId/github-pr", () => {
     );
   });
 
+  it("adds origin from workspace repoUrl before auto-pushing when local worktree has no remote", async () => {
+    mockHappyPath();
+    mockWsSvc.getById.mockResolvedValue({
+      ...happyWs,
+      cwd: "C:\\repo",
+    });
+    mockResolveGitRoot.mockResolvedValue("C:\\repo");
+    mockRunGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "remote" && args[1] === "get-url") {
+        throw new Error("No such remote 'origin'");
+      }
+      if (args[0] === "remote" && args[1] === "add") {
+        return "";
+      }
+      if (args[0] === "rev-parse") {
+        throw new Error("no upstream configured");
+      }
+      return "";
+    });
+
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/issues/issue-1/github-pr")
+      .send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockRunGit).toHaveBeenCalledWith(
+      ["remote", "add", "origin", "https://github.com/acme/repo"],
+      "C:\\repo",
+      { timeout: 5_000 },
+    );
+    expect(mockPush).toHaveBeenCalledWith(
+      "C:\\repo",
+      "origin",
+      "feature/x",
+      { pat: "ghp_valid" },
+    );
+  });
+
   it("returns 400 when body is missing title (zod fail)", async () => {
     const app = createApp(boardActor);
     const res = await request(app)
@@ -459,6 +604,169 @@ describe("POST /issues/:issueId/github-pr", () => {
     expect(res.status).toBe(412);
     expect(res.body.error).toContain("not configured");
     expect(res.body.hint).toContain("Settings");
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Route tests: POST /execution-workspaces/:id/github-pr/sync
+// -----------------------------------------------------------------------------
+
+describe("POST /execution-workspaces/:id/github-pr/sync", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const workspace = {
+    id: "11111111-1111-1111-1111-111111111111",
+    companyId: "company-1",
+    repoUrl: "https://github.com/owner/repo",
+    branchName: "feature/x",
+    baseRef: null,
+    metadata: null,
+  };
+
+  it("persists the existing GitHub PR, sync timestamp, and discovered base branch", async () => {
+    mockWsSvc.getById.mockResolvedValue(workspace);
+    mockWsSvc.update.mockResolvedValue(workspace);
+    mockSvc.getByName.mockResolvedValue({ id: "secret-1" });
+    mockSvc.resolveSecretValue.mockResolvedValue("ghp_valid");
+    mockOctokit.pulls.list.mockResolvedValue({
+      data: [
+        {
+          html_url: "https://github.com/owner/repo/pull/42",
+          number: 42,
+          state: "open",
+          draft: false,
+          merged_at: null,
+          head: { ref: "feature/x" },
+          base: { ref: "main" },
+        },
+      ],
+    });
+
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/execution-workspaces/11111111-1111-1111-1111-111111111111/github-pr/sync")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      workspaceId: workspace.id,
+      repoUrl: workspace.repoUrl,
+      branchName: workspace.branchName,
+      baseRef: "main",
+      pr: expect.objectContaining({
+        url: "https://github.com/owner/repo/pull/42",
+        number: 42,
+        state: "open",
+        draft: false,
+      }),
+      githubLastSyncedAt: expect.any(String),
+      githubSyncError: null,
+      cached: false,
+    });
+    expect(mockWsSvc.update).toHaveBeenCalledWith(
+      workspace.id,
+      expect.objectContaining({
+        baseRef: "main",
+        metadata: expect.objectContaining({
+          githubLastSyncedAt: expect.any(String),
+          githubSyncError: null,
+          noPrFound: false,
+          pr: expect.objectContaining({
+            url: "https://github.com/owner/repo/pull/42",
+            number: 42,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("uses cached workspace metadata when recently synced and force is false", async () => {
+    const syncedAt = new Date().toISOString();
+    mockWsSvc.getById.mockResolvedValue({
+      ...workspace,
+      baseRef: "main",
+      metadata: {
+        githubLastSyncedAt: syncedAt,
+        githubSyncError: null,
+        noPrFound: false,
+        pr: {
+          url: "https://github.com/owner/repo/pull/42",
+          number: 42,
+          state: "open",
+          draft: false,
+          createdAt: syncedAt,
+        },
+      },
+    });
+
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/execution-workspaces/11111111-1111-1111-1111-111111111111/github-pr/sync")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.cached).toBe(true);
+    expect(mockOctokit.pulls.list).not.toHaveBeenCalled();
+    expect(mockWsSvc.update).not.toHaveBeenCalled();
+  });
+
+  it("records noPrFound and clears stale PR metadata when no PR exists", async () => {
+    mockWsSvc.getById.mockResolvedValue({
+      ...workspace,
+      baseRef: "main",
+      metadata: {
+        pr: {
+          url: "https://github.com/owner/repo/pull/1",
+          number: 1,
+          state: "open",
+          draft: false,
+          createdAt: "2026-05-01T00:00:00.000Z",
+        },
+      },
+    });
+    mockWsSvc.update.mockResolvedValue(workspace);
+    mockSvc.getByName.mockResolvedValue({ id: "secret-1" });
+    mockSvc.resolveSecretValue.mockResolvedValue("ghp_valid");
+    mockOctokit.pulls.list.mockResolvedValue({ data: [] });
+
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/execution-workspaces/11111111-1111-1111-1111-111111111111/github-pr/sync")
+      .send({ force: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.pr).toBeNull();
+    const updatePayload = mockWsSvc.update.mock.calls[0]![1] as { metadata: Record<string, unknown> };
+    expect(updatePayload.metadata.noPrFound).toBe(true);
+    expect(updatePayload.metadata.githubSyncError).toBeNull();
+    expect(updatePayload.metadata).not.toHaveProperty("pr");
+  });
+
+  it("persists githubSyncError metadata when GitHub lookup fails", async () => {
+    mockWsSvc.getById.mockResolvedValue(workspace);
+    mockWsSvc.update.mockResolvedValue(workspace);
+    mockSvc.getByName.mockResolvedValue({ id: "secret-1" });
+    mockSvc.resolveSecretValue.mockResolvedValue("ghp_valid");
+    mockOctokit.pulls.list.mockRejectedValue({ status: 500 });
+
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/execution-workspaces/11111111-1111-1111-1111-111111111111/github-pr/sync")
+      .send({ force: true });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe("GitHub API error");
+    expect(mockWsSvc.update).toHaveBeenCalledWith(
+      workspace.id,
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          githubLastSyncedAt: expect.any(String),
+          githubSyncError: "GitHub API error",
+        }),
+      }),
+    );
   });
 });
 

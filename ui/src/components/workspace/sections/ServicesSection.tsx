@@ -3,7 +3,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Play, Square, RotateCw, Server, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EmptyState } from "@/components/EmptyState";
 import { executionWorkspacesApi } from "@/api/execution-workspaces";
 import type { WorkspaceRuntimeService } from "@/api/execution-workspaces";
 import { queryKeys } from "@/lib/queryKeys";
@@ -12,6 +11,7 @@ import type { ExecutionWorkspace } from "@armyofagents/shared";
 
 interface ServicesSectionProps {
   workspace: ExecutionWorkspace;
+  onOpenBrowser?: (service: WorkspaceRuntimeService) => void;
 }
 
 type ServiceAction = "start" | "stop" | "restart";
@@ -44,7 +44,19 @@ function statusLabel(status: string): string {
   }
 }
 
-export function ServicesSection({ workspace }: ServicesSectionProps) {
+function isPreviewOnlyService(service: WorkspaceRuntimeService): boolean {
+  return service.provider === "adapter_managed" && !service.command && !service.providerRef;
+}
+
+function canControlService(service: WorkspaceRuntimeService): boolean {
+  return service.provider === "local_process";
+}
+
+function isUnavailablePreviewService(service: WorkspaceRuntimeService): boolean {
+  return isPreviewOnlyService(service) && (service.status !== "running" || service.healthStatus === "unhealthy");
+}
+
+export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionProps) {
   const queryClient = useQueryClient();
   const [pendingByService, setPendingByService] = useState<Record<string, ServiceAction | null>>({});
   const [errorByService, setErrorByService] = useState<Record<string, string | null>>({});
@@ -53,6 +65,7 @@ export function ServicesSection({ workspace }: ServicesSectionProps) {
     queryKey: queryKeys.executionWorkspaces.runtimeServices(workspace.id),
     queryFn: () => executionWorkspacesApi.runtimeServices(workspace.id),
     refetchInterval: 3000,
+    staleTime: 2500,
   });
 
   // Clear stale errors when a service transitions to "running" (e.g., external
@@ -106,7 +119,7 @@ export function ServicesSection({ workspace }: ServicesSectionProps) {
 
   if (isLoading) {
     return (
-      <div className="space-y-2 px-3" data-testid="section-services-body">
+      <div className="min-w-0 max-w-full space-y-2 overflow-hidden px-1" data-testid="section-services-body">
         <Skeleton className="h-10 w-full" />
         <Skeleton className="h-10 w-full" />
       </div>
@@ -115,32 +128,40 @@ export function ServicesSection({ workspace }: ServicesSectionProps) {
 
   if (!services || services.length === 0) {
     return (
-      <div data-testid="section-services-body">
-        <EmptyState
-          icon={Server}
-          message="No services configured"
-          description="Configure dev servers in workspace settings."
-        />
+      <div
+        className="flex min-w-0 max-w-full items-start gap-2 overflow-hidden px-1 py-2 text-xs"
+        data-testid="section-services-body"
+      >
+        <Server className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <div className="min-w-0 space-y-0.5 overflow-hidden">
+          <p className="truncate font-medium text-foreground">No app previews</p>
+          <p className="text-[11px] leading-4 text-muted-foreground">
+            Agent-created localhost apps will appear here.
+          </p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-2 px-3" data-testid="section-services-body">
+    <div className="min-w-0 max-w-full space-y-2 overflow-hidden px-1" data-testid="section-services-body">
       {services.map((service: WorkspaceRuntimeService) => {
         const pendingAction = pendingByService[service.id] ?? null;
         const error = errorByService[service.id] ?? null;
         const isPending = pendingAction !== null;
         const isRunning = service.status === "running";
         const isStarting = service.status === "starting";
+        const previewOnly = isPreviewOnlyService(service);
+        const unavailablePreview = isUnavailablePreviewService(service);
+        const controllable = canControlService(service);
 
         return (
           <div
             key={service.id}
-            className="flex flex-col gap-1 rounded-md border p-2"
+            className="flex min-w-0 max-w-full flex-col gap-1 overflow-hidden rounded-md border border-border bg-background/40 px-2 py-1.5"
             data-testid={`service-row-${service.id}`}
           >
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2 overflow-hidden">
               <div
                 className={cn("h-2 w-2 rounded-full shrink-0", statusDotClass(service.status))}
                 aria-label={statusLabel(service.status)}
@@ -149,6 +170,16 @@ export function ServicesSection({ workspace }: ServicesSectionProps) {
               <span className="text-xs font-medium text-foreground truncate flex-1 min-w-0">
                 {service.serviceName}
               </span>
+              {previewOnly && (
+                <span className="shrink-0 rounded border border-brand/[0.25] bg-brand/[0.08] px-1.5 py-0.5 text-[10px] font-medium leading-none text-[hsl(15_60%_75%)]">
+                  Preview
+                </span>
+              )}
+              {unavailablePreview && (
+                <span className="shrink-0 rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+                  Unavailable
+                </span>
+              )}
               {service.port !== null && (
                 <span className="text-[10px] text-muted-foreground font-mono shrink-0">
                   :{service.port}
@@ -157,33 +188,51 @@ export function ServicesSection({ workspace }: ServicesSectionProps) {
               <div className="flex items-center gap-1 shrink-0 ml-auto">
                 {isRunning && (
                   <>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={() => handleAction(service.id, "stop")}
-                      disabled={isPending}
-                      title="Stop service"
-                      aria-label={`Stop ${service.serviceName}`}
-                      data-testid={`service-stop-${service.id}`}
-                    >
-                      <Square className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={() => handleAction(service.id, "restart")}
-                      disabled={isPending}
-                      title="Restart service"
-                      aria-label={`Restart ${service.serviceName}`}
-                      data-testid={`service-restart-${service.id}`}
-                    >
-                      <RotateCw className="h-3 w-3" />
-                    </Button>
+                    {service.url && !unavailablePreview && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-[11px]"
+                        onClick={() => onOpenBrowser?.(service)}
+                        title={`Open ${service.serviceName}`}
+                        aria-label={`Open ${service.serviceName}`}
+                        data-testid={`service-open-${service.id}`}
+                      >
+                        Open
+                      </Button>
+                    )}
+                    {controllable && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        onClick={() => handleAction(service.id, "stop")}
+                        disabled={isPending}
+                        title="Stop service"
+                        aria-label={`Stop ${service.serviceName}`}
+                        data-testid={`service-stop-${service.id}`}
+                      >
+                        <Square className="h-3 w-3" />
+                      </Button>
+                    )}
+                    {controllable && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        onClick={() => handleAction(service.id, "restart")}
+                        disabled={isPending}
+                        title="Restart service"
+                        aria-label={`Restart ${service.serviceName}`}
+                        data-testid={`service-restart-${service.id}`}
+                      >
+                        <RotateCw className="h-3 w-3" />
+                      </Button>
+                    )}
                   </>
                 )}
-                {isStarting && (
+                {isStarting && controllable && (
                   <Button
                     type="button"
                     variant="ghost"
@@ -197,7 +246,7 @@ export function ServicesSection({ workspace }: ServicesSectionProps) {
                     <Square className="h-3 w-3" />
                   </Button>
                 )}
-                {!isRunning && !isStarting && (
+                {!isRunning && !isStarting && controllable && (
                   <Button
                     type="button"
                     variant="ghost"
@@ -218,7 +267,7 @@ export function ServicesSection({ workspace }: ServicesSectionProps) {
                 href={service.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors pl-4 truncate"
+                className="flex min-w-0 items-center gap-1 overflow-hidden pl-4 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
                 data-testid={`service-url-${service.id}`}
               >
                 <ExternalLink className="h-3 w-3 shrink-0" />
@@ -227,7 +276,7 @@ export function ServicesSection({ workspace }: ServicesSectionProps) {
             )}
             {error && (
               <div
-                className="text-[10px] text-destructive pl-4"
+                className="min-w-0 truncate pl-4 text-[10px] text-destructive"
                 data-testid={`service-error-${service.id}`}
               >
                 {error}

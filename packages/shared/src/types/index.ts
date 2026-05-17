@@ -281,6 +281,8 @@ export type {
   GitHubPrCreateRequest,
   GitHubPrCreateResponse,
   GitHubPrMetadata,
+  GitHubPrSyncMetadata,
+  GitHubPrSyncResponse,
 } from "./github.js";
 
 export type { Environment } from "./environment.js";

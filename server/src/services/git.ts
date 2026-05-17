@@ -287,35 +287,40 @@ export async function getLog(gitRoot: string, limit = 5): Promise<GitLogEntry[]>
 }
 
 /**
- * Get remote info, preferring "origin" if multiple remotes exist.
+ * Parse `git remote -v` output into a map keyed by remote name.
  */
-export async function getRemoteInfo(gitRoot: string): Promise<GitRemoteInfo | null> {
-  try {
-    const output = await runGit(["remote", "-v"], gitRoot, { timeout: API_TIMEOUT });
-    if (!output) return null;
+async function getConfiguredRemotes(gitRoot: string): Promise<Map<string, GitRemoteInfo>> {
+  const output = await runGit(["remote", "-v"], gitRoot, { timeout: API_TIMEOUT });
+  const remotes = new Map<string, { fetchUrl: string; pushUrl: string }>();
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
+    if (!match) continue;
+    const [, name, url, type] = match;
+    const existing = remotes.get(name) ?? { fetchUrl: "", pushUrl: "" };
+    if (type === "fetch") existing.fetchUrl = url;
+    if (type === "push") existing.pushUrl = url;
+    remotes.set(name, existing);
+  }
 
-    const remotes = new Map<string, { fetchUrl: string; pushUrl: string }>();
-    for (const line of output.split(/\r?\n/)) {
-      const match = line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
-      if (!match) continue;
-      const [, name, url, type] = match;
-      const existing = remotes.get(name) ?? { fetchUrl: "", pushUrl: "" };
-      if (type === "fetch") existing.fetchUrl = url;
-      if (type === "push") existing.pushUrl = url;
-      remotes.set(name, existing);
-    }
+  return new Map([...remotes.entries()].map(([name, urls]) => [name, { name, ...urls }]));
+}
+
+/**
+ * Get remote info, preferring "origin" if multiple remotes exist.
+ * When remoteName is provided, returns only that exact configured remote.
+ */
+export async function getRemoteInfo(gitRoot: string, remoteName?: string): Promise<GitRemoteInfo | null> {
+  try {
+    const remotes = await getConfiguredRemotes(gitRoot);
 
     if (remotes.size === 0) return null;
+    if (remoteName) return remotes.get(remoteName) ?? null;
 
     // Prefer "origin"
-    if (remotes.has("origin")) {
-      const origin = remotes.get("origin")!;
-      return { name: "origin", ...origin };
-    }
+    if (remotes.has("origin")) return remotes.get("origin")!;
 
     // Fall back to first remote
-    const [firstName, firstUrls] = [...remotes.entries()][0];
-    return { name: firstName, ...firstUrls };
+    return [...remotes.values()][0];
   } catch {
     return null;
   }
@@ -363,7 +368,10 @@ export async function commit(
 
   for (const file of files) {
     const resolved = path.resolve(resolvedGitRoot, file);
-    if (!resolved.startsWith(resolvedGitRoot + path.sep) && resolved !== resolvedGitRoot) {
+    if (resolved === resolvedGitRoot) {
+      throw new Error(`Invalid file path: "${file}" targets the repository root`);
+    }
+    if (!resolved.startsWith(resolvedGitRoot + path.sep)) {
       throw new Error(`Invalid file path: "${file}" escapes the repository root`);
     }
 
@@ -382,11 +390,10 @@ export async function commit(
     );
   }
 
-  // Stage files
-  await runGit(["add", "--", ...validatedFiles], gitRoot);
-
-  // Commit
-  const commitOutput = await runGit(["commit", "-m", message], gitRoot);
+  // Mark untracked selected files as known to git, then commit only the
+  // validated pathspecs so unrelated pre-staged changes stay out of the commit.
+  await runGit(["add", "--intent-to-add", "--", ...validatedFiles], gitRoot);
+  const commitOutput = await runGit(["commit", "--only", "-m", message, "--", ...validatedFiles], gitRoot);
 
   // Extract hash from commit output
   let hash = "";
@@ -429,10 +436,33 @@ export async function push(
   const targetBranch = branch ?? branchOutput;
   const targetRemote = remote ?? "origin";
 
-  // Check remote exists
-  const remoteInfo = await getRemoteInfo(gitRoot);
-  if (!remoteInfo) {
+  const remotes = await getConfiguredRemotes(gitRoot);
+  if (remotes.size === 0) {
     throw new Error("No remote configured. Add a remote with `git remote add origin <url>`.");
+  }
+
+  const looksLikeRawRemote = /:\/\//.test(targetRemote) ||
+    /^[A-Za-z]:[\\/]/.test(targetRemote) ||
+    targetRemote.startsWith("/") ||
+    targetRemote.startsWith("\\") ||
+    targetRemote.includes("/") ||
+    targetRemote.includes("\\");
+  if (looksLikeRawRemote) {
+    throw new Error("Invalid remote: remote must be a configured remote name");
+  }
+
+  const remoteInfo = remotes.get(targetRemote);
+  if (!remoteInfo) {
+    throw new Error(`Unknown remote: ${targetRemote}`);
+  }
+
+  try {
+    await runGit(["check-ref-format", "--branch", targetBranch], gitRoot, { timeout: API_TIMEOUT });
+  } catch {
+    throw new Error(`Invalid branch name: ${targetBranch}`);
+  }
+  if (!/^[A-Za-z0-9._/-]+$/.test(targetBranch)) {
+    throw new Error(`Invalid branch name: ${targetBranch}`);
   }
 
   // Authenticate push via http.extraheader for HTTPS remotes when PAT is available
@@ -443,7 +473,7 @@ export async function push(
       // and doesn't require temp files or scripts.
       const authToken = Buffer.from(`x-access-token:${opts.pat}`).toString("base64");
       const authArgs = [
-        "-c", `http.extraheader=Authorization: Basic ${authToken}`,
+        "-c", `http.${pushUrl}.extraheader=Authorization: Basic ${authToken}`,
         "push", targetRemote, targetBranch,
       ];
       await runGit(authArgs, gitRoot, {

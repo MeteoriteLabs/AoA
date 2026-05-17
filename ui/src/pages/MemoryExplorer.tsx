@@ -34,10 +34,9 @@ export function MemoryExplorer() {
 
   // Legacy URL params: ?item=X&type=Y deep-link support.
   const selectedItemId = searchParams.get("item");
-  const selectedItemType = searchParams.get("type") as
-    | "memory_item"
-    | "asset"
-    | null;
+  const selectedItemType = (
+    searchParams.get("type") ?? (selectedItemId ? "memory_item" : null)
+  ) as "memory_item" | "asset" | null;
 
   // Tab state — owned here, passed down to viewer + list.
   const { tabs, activeKey, openOrActivate, close, setActive } = useMemoryTabs();

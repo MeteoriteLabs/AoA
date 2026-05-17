@@ -137,7 +137,7 @@ export const localEncryptedProvider: SecretProviderModule = {
       material: encryptValue(masterKey, input.value),
       valueSha256,
       fingerprintSha256: valueSha256,
-      externalRef: null,
+      externalRef: input.externalRef ?? null,
     };
   },
   async resolveVersion(input) {

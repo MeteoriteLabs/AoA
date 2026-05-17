@@ -6,7 +6,10 @@ import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import type { MarketplaceSkillBundle } from "@armyofagents/shared";
-import { materializeSkillBundle } from "../services/marketplace-install/skill-bundle-materializer.js";
+import {
+  materializeSkillBundle,
+  repoUrlForBundle,
+} from "../services/marketplace-install/skill-bundle-materializer.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,7 +25,7 @@ describe("materializeSkillBundle", () => {
 
     const result = await materializeSkillBundle(makeBundle({ commitSha, path: "skills/research" }), {
       destination,
-      repoUrl: repo,
+      unsafeTestRepoUrl: repo,
     });
 
     expect(normalizeNewlines(result.markdown)).toBe("# Research\n");
@@ -46,7 +49,7 @@ describe("materializeSkillBundle", () => {
 
     const result = await materializeSkillBundle(makeBundle({ commitSha, path: "." }), {
       destination,
-      repoUrl: repo,
+      unsafeTestRepoUrl: repo,
     });
 
     expect(normalizeNewlines(result.markdown)).toBe("# Root Skill\n");
@@ -59,11 +62,62 @@ describe("materializeSkillBundle", () => {
       await expect(
         materializeSkillBundle(makeBundle({ path: bundlePath }), {
           destination: path.join(await tempDir("bundle-unsafe-"), "out"),
-          repoUrl: "unused",
+          unsafeTestRepoUrl: "unused",
         }),
       ).rejects.toThrow(/unsafe bundle path/i);
     },
   );
+
+  it("adds a git suffix to HTTPS GitHub repo URLs when needed", () => {
+    expect(repoUrlForBundle(makeBundle({ repo: "https://github.com/owner/repo" }))).toBe(
+      "https://github.com/owner/repo.git",
+    );
+    expect(repoUrlForBundle(makeBundle({ repo: "https://github.com/owner/repo.git" }))).toBe(
+      "https://github.com/owner/repo.git",
+    );
+    expect(repoUrlForBundle(makeBundle({ repo: "HTTPS://github.com/owner/repo" }))).toBe(
+      "https://github.com/owner/repo.git",
+    );
+  });
+
+  it.each(["file:///tmp/repo", "C:/Users/TK/repo", "/tmp/repo", "https://example.com/owner/repo.git"])(
+    "rejects unsafe repo source %s before cloning",
+    async (repo) => {
+      const destination = path.join(await tempDir("bundle-unsafe-repo-"), "out");
+
+      await expect(
+        materializeSkillBundle(makeBundle({ commitSha: FULL_SHA, path: ".", repo }), { destination }),
+      ).rejects.toThrow(/github repo/i);
+      expect(existsSync(destination)).toBe(false);
+    },
+  );
+
+  it.each(["file:///tmp/repo", "C:/Users/TK/repo", "/tmp/repo", "https://example.com/owner/repo.git"])(
+    "rejects unsafe repoUrl override %s before cloning",
+    async (repoUrl) => {
+      const destination = path.join(await tempDir("bundle-unsafe-override-"), "out");
+
+      await expect(
+        materializeSkillBundle(makeBundle({ commitSha: FULL_SHA, path: "." }), { destination, repoUrl }),
+      ).rejects.toThrow(/github repo/i);
+      expect(existsSync(destination)).toBe(false);
+    },
+  );
+
+  it("rejects when checkout resolves to a different commit SHA", async () => {
+    const { repo, commitSha } = await createRepo({ "SKILL.md": "# Skill\n" });
+    const destination = path.join(await tempDir("bundle-sha-mismatch-"), "out");
+    const expectedSha = `${commitSha.slice(0, -1)}${commitSha.endsWith("0") ? "1" : "0"}`;
+
+    await expect(
+      materializeSkillBundle(makeBundle({ commitSha: expectedSha, path: "." }), {
+        destination,
+        unsafeTestRepoUrl: repo,
+        unsafeTestCheckoutRef: commitSha,
+      }),
+    ).rejects.toThrow(/commit sha/i);
+    expect(existsSync(destination)).toBe(false);
+  });
 
   it("refuses to overwrite an existing destination unless requested", async () => {
     const { repo, commitSha } = await createRepo({ "SKILL.md": "# Skill\n" });
@@ -71,12 +125,12 @@ describe("materializeSkillBundle", () => {
     await writeFile(path.join(destination, "old.txt"), "old");
 
     await expect(
-      materializeSkillBundle(makeBundle({ commitSha, path: "." }), { destination, repoUrl: repo }),
+      materializeSkillBundle(makeBundle({ commitSha, path: "." }), { destination, unsafeTestRepoUrl: repo }),
     ).rejects.toThrow(/already exists/i);
 
     await materializeSkillBundle(makeBundle({ commitSha, path: "." }), {
       destination,
-      repoUrl: repo,
+      unsafeTestRepoUrl: repo,
       overwrite: true,
     });
     expect(existsSync(path.join(destination, "old.txt"))).toBe(false);
@@ -101,7 +155,7 @@ describe("materializeSkillBundle", () => {
 
     const result = await materializeSkillBundle(makeBundle({ commitSha, path: "." }), {
       destination,
-      repoUrl: repo,
+      unsafeTestRepoUrl: repo,
     });
 
     expect(result.fileInventory).toEqual([{ path: "SKILL.md", kind: "skill" }]);
@@ -113,12 +167,14 @@ function makeBundle(overrides: Partial<MarketplaceSkillBundle> = {}): Marketplac
   return {
     type: "github-directory",
     repo: "owner/repo",
-    commitSha: "HEAD",
+    commitSha: FULL_SHA,
     path: "skills/research",
-    treeUrl: "https://github.com/owner/repo/tree/HEAD/skills/research",
+    treeUrl: `https://github.com/owner/repo/tree/${FULL_SHA}/skills/research`,
     ...overrides,
   };
 }
+
+const FULL_SHA = "0123456789abcdef0123456789abcdef01234567";
 
 async function createRepo(files: Record<string, string>) {
   const repo = await tempDir("bundle-repo-");

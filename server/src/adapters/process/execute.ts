@@ -16,7 +16,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!command) throw new Error("Process adapter missing command");
 
   const args = asStringArray(config.args);
-  const cwd = asString(config.cwd, process.cwd());
+  const workspaceContext = parseObject(ctx.context?.paperclipWorkspace);
+  const workspaceCwd = asString(workspaceContext.cwd, "");
+  const workspaceSource = asString(workspaceContext.source, "");
+  const configuredCwd = asString(config.cwd, "");
+  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
+  const cwd = (useConfiguredInsteadOfAgentHome ? "" : workspaceCwd) || configuredCwd || process.cwd();
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = { ...buildAoaEnv(agent) };
   for (const [k, v] of Object.entries(envConfig)) {

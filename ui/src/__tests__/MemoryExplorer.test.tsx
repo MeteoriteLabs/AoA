@@ -5,6 +5,46 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ToastProvider } from "../context/ToastContext";
 
+const memoryApiMock = vi.hoisted(() => ({
+  list: vi.fn(async () => []),
+  get: vi.fn(async () => ({
+    id: "mem-1",
+    companyId: "co-1",
+    title: "Deep linked memory",
+    content: "Opened from URL.",
+    category: "workflow",
+    source: "manual",
+    status: "approved",
+    tags: [],
+    departmentId: null,
+    projectId: null,
+    createdBy: "test",
+    layer: "domain",
+    priority: 0,
+    visibility: "scoped",
+    expiresAt: null,
+    goalId: null,
+    taskId: null,
+    sourceArtifactId: null,
+    sourceContext: null,
+    accessedAt: null,
+    currentVersionId: null,
+    embeddingRetries: 0,
+    agentId: null,
+    validationCount: 1,
+    lastValidatedAt: null,
+    pinnedToSkill: false,
+    importJobId: null,
+    folderPath: "",
+    lastAccessedByUserId: null,
+    founderPinnedToTop: false,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  })),
+  moveItem: vi.fn(),
+  setPinnedToTop: vi.fn(),
+}));
+
 // Mock react-pdf and pdfjs-dist to avoid DOMMatrix/canvas issues in jsdom
 vi.mock("react-pdf", () => ({
   Document: ({ children }: any) => <div data-testid="pdf-document">{children}</div>,
@@ -34,15 +74,6 @@ vi.mock("react-resizable-panels", () => ({
     onLayoutChange: vi.fn(),
   }),
 }));
-
-vi.mock("@/lib/router", async () => {
-  const actual = await vi.importActual<Record<string, unknown>>("@/lib/router");
-  return {
-    ...actual,
-    useSearchParams: () => [new URLSearchParams(), vi.fn()],
-    useNavigate: () => vi.fn(),
-  };
-});
 
 vi.mock("../api/memoryFolders", () => ({
   memoryFoldersApi: {
@@ -83,12 +114,7 @@ vi.mock("../api/memoryAssets", () => ({
 }));
 
 vi.mock("../api/memory", () => ({
-  memoryApi: {
-    list: vi.fn(async () => []),
-    get: vi.fn(),
-    moveItem: vi.fn(),
-    setPinnedToTop: vi.fn(),
-  },
+  memoryApi: memoryApiMock,
 }));
 
 vi.mock("../api/projects", () => ({
@@ -124,14 +150,14 @@ vi.mock("../context/BreadcrumbContext", () => ({
 
 import { MemoryExplorer } from "../pages/MemoryExplorer";
 
-function renderPage() {
+function renderPage(initialEntry = "/co1/memory/explore") {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={[initialEntry]}>
           <MemoryExplorer />
         </MemoryRouter>
       </ToastProvider>
@@ -140,7 +166,9 @@ function renderPage() {
 }
 
 describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
 
   it("renders 3 panes and shows company + dept folders in the tree", async () => {
     renderPage();
@@ -167,5 +195,13 @@ describe("MemoryExplorer (Phase 6.1a smoke test)", () => {
     );
     expect(screen.queryByText(/Coming soon/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Memory graph view/i)).not.toBeInTheDocument();
+  });
+
+  it("opens memory item deep links even when the URL omits legacy type=memory_item", async () => {
+    renderPage("/co1/memory/explore?item=mem-1");
+
+    await waitFor(() =>
+      expect(memoryApiMock.get).toHaveBeenCalledWith("co-1", "mem-1"),
+    );
   });
 });
