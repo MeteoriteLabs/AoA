@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders, makeAgent, mockCompanyContext } from "./test-utils";
 import { CommanderTeamTab } from "../components/team/CommanderTeamTab";
+import { agentsApi } from "../api/agents";
 
 // --- Mocks ---
 
@@ -27,6 +28,7 @@ vi.mock("@/lib/router", async () => {
 vi.mock("../api/agents", () => ({
   agentsApi: {
     listAoa: vi.fn().mockResolvedValue([]),
+    create: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -70,6 +72,45 @@ vi.mock("@/components/ui/empty-state", () => ({
     </div>
   ),
 }));
+
+vi.mock("@/components/ui/dialog", () => ({
+  Dialog: ({ open, children }: any) => open ? <div role="dialog">{children}</div> : null,
+  DialogContent: ({ children }: any) => <div>{children}</div>,
+  DialogHeader: ({ children }: any) => <div>{children}</div>,
+  DialogTitle: ({ children }: any) => <h2>{children}</h2>,
+  DialogDescription: ({ children }: any) => <p>{children}</p>,
+  DialogFooter: ({ children }: any) => <div>{children}</div>,
+}));
+
+vi.mock("@/components/ui/select", () => ({
+  Select: ({ onValueChange, defaultValue, children }: any) => (
+    <select defaultValue={defaultValue} onChange={(e) => onValueChange?.(e.target.value)}>
+      {children}
+    </select>
+  ),
+  SelectTrigger: ({ children }: any) => <>{children}</>,
+  SelectValue: ({ placeholder }: any) => <span>{placeholder}</span>,
+  SelectContent: ({ children }: any) => <>{children}</>,
+  SelectItem: ({ value, children }: any) => <option value={value}>{children}</option>,
+}));
+
+const mockInvalidateQueries = vi.fn();
+vi.mock("@tanstack/react-query", async () => {
+  const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
+  return {
+    ...actual,
+    useQueryClient: () => ({ invalidateQueries: mockInvalidateQueries }),
+    useMutation: (opts: any) => ({
+      mutate: (data: any) => {
+        const result = opts.mutationFn(data);
+        if (result && typeof result.then === "function") {
+          result.then((res: any) => opts.onSuccess?.(res)).catch((err: any) => opts.onError?.(err));
+        }
+      },
+      isPending: false,
+    }),
+  };
+});
 
 // --- Tests ---
 
@@ -182,5 +223,44 @@ describe("CommanderTeamTab", () => {
     );
 
     expect(screen.queryByText("New AoA Agent")).not.toBeInTheDocument();
+  });
+
+  it("New AoA Agent button opens dialog and submits kind=aoa", async () => {
+    const user = userEvent.setup();
+    const fakeAgent = makeAgent({ id: "new-aoa-1", name: "Test Agent", kind: "aoa" });
+    vi.mocked(agentsApi.create).mockResolvedValue(fakeAgent as any);
+
+    renderWithProviders(
+      <CommanderTeamTab agents={[]} permissions={{ isFounder: true }} />,
+    );
+
+    // Click "New AoA Agent" button in empty state
+    const button = screen.getByText("New AoA Agent");
+    await user.click(button);
+
+    // Dialog should appear
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    // Fill name input
+    const nameInput = screen.getByPlaceholderText("Agent name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Test Agent");
+
+    // Submit form
+    const createBtn = screen.getByRole("button", { name: /create/i });
+    await user.click(createBtn);
+
+    // Verify agentsApi.create was called with kind=aoa and runtimeConfig.aoa.role=member
+    await waitFor(() => {
+      expect(agentsApi.create).toHaveBeenCalledWith(
+        "comp-1",
+        expect.objectContaining({
+          kind: "aoa",
+          runtimeConfig: expect.objectContaining({
+            aoa: expect.objectContaining({ role: "member" }),
+          }),
+        }),
+      );
+    });
   });
 });
