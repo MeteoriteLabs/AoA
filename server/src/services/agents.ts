@@ -375,13 +375,13 @@ export function agentService(db: Db) {
   return {
     backfillParentFields,
 
-    list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
+    list: async (companyId: string, options?: { includeTerminated?: boolean; kind?: "org" | "aoa" }) => {
       // Centralized org-agent accessor: platform agents (Commander team,
       // kind='platform') are excluded from user-facing enumeration. Backfill
       // default is 'org', so this is a no-op for all pre-existing data.
       const conditions = [
         eq(agents.companyId, companyId),
-        eq(agents.kind, "org"),
+        eq(agents.kind, options?.kind ?? "org"),
       ];
       if (!options?.includeTerminated) {
         conditions.push(ne(agents.status, "terminated"));

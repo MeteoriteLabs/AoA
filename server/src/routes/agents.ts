@@ -2,7 +2,7 @@ import { Router, type Request } from "express";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@armyofagents/db";
-import { agents as agentsTable, companies, heartbeatRuns } from "@armyofagents/db";
+import { agents as agentsTable, aoaAgentTriggers, companies, heartbeatRuns, internalAgentRuns } from "@armyofagents/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   createAgentKeySchema,
@@ -459,13 +459,72 @@ export function agentRoutes(db: Db) {
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+    const kind = req.query.kind === "aoa" ? "aoa" as const : undefined;
+    const result = await svc.list(companyId, kind ? { kind } : undefined);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs || req.actor.type === "board") {
       res.json(result);
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+  });
+
+  router.get("/companies/:companyId/agents/:id/aoa-runs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const agentId = req.params.id as string;
+    const limit = Math.min(parseInt(String(req.query.limit ?? 50)), 200);
+    const runs = await db
+      .select()
+      .from(internalAgentRuns)
+      .where(and(eq(internalAgentRuns.companyId, companyId), eq(internalAgentRuns.agentId, agentId)))
+      .orderBy(desc(internalAgentRuns.createdAt))
+      .limit(limit);
+    res.json(runs);
+  });
+
+  router.get("/companies/:companyId/agents/:id/triggers", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const agentId = req.params.id as string;
+    const triggers = await db
+      .select()
+      .from(aoaAgentTriggers)
+      .where(and(eq(aoaAgentTriggers.companyId, companyId), eq(aoaAgentTriggers.agentId, agentId)));
+    res.json(triggers);
+  });
+
+  router.post("/companies/:companyId/agents/:id/triggers", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
+    const agentId = req.params.id as string;
+    const { kind, config, enabled } = req.body as { kind: string; config?: Record<string, unknown>; enabled?: boolean };
+    const created = await db
+      .insert(aoaAgentTriggers)
+      .values({ companyId, agentId, kind, config: config ?? {}, enabled: enabled ?? true })
+      .returning()
+      .then((rows) => rows[0]);
+    res.status(201).json(created);
+  });
+
+  router.patch("/companies/:companyId/agents/:id/triggers/:triggerId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
+    const triggerId = req.params.triggerId as string;
+    const { enabled, config } = req.body as { enabled?: boolean; config?: Record<string, unknown> };
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (enabled !== undefined) updates.enabled = enabled;
+    if (config !== undefined) updates.config = config;
+    const updated = await db
+      .update(aoaAgentTriggers)
+      .set(updates)
+      .where(and(eq(aoaAgentTriggers.id, triggerId), eq(aoaAgentTriggers.companyId, companyId)))
+      .returning()
+      .then((rows) => rows[0]);
+    if (!updated) throw notFound("Trigger not found");
+    res.json(updated);
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
