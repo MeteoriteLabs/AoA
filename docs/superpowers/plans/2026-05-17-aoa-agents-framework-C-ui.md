@@ -35,12 +35,12 @@ it("kind=aoa filter + aoa-runs + triggers endpoints exist", () => { expect(true)
 - [ ] **Step 3: Run → FAIL.**
 - [ ] **Step 4: Implement**
   - `GET /companies/:companyId/agents`: read `req.query.kind`; if `'aoa'` → list `kind='aoa'` (reuse `agentService.list` with a kind arg, or a direct `eq(agents.kind,'aoa')` query mirroring the existing one). Default unchanged (`org`) so M1 enumerations are unaffected.
-  - `GET /companies/:companyId/agents/:id/aoa-runs`: `select * from internal_agent_runs where companyId=:c and (relatedEntityId/agent linkage)`. **[verify@exec]** the exact agent↔run linkage column (Plan A's runner writes `internal_agent_runs`; confirm whether it stamps `agentId` — if not, add an `agentId` column to `internalAgentRuns` as a Plan-C schema task via `pnpm db:generate`, additive, and have the Plan-A runner set it; note this dependency back to Plan A at execution).
+  - `GET /companies/:companyId/agents/:id/aoa-runs`: `select * from internal_agent_runs where companyId=:c and agentId=:id order by createdAt desc limit N`. **Plan A v3 now provides `internal_agent_runs.agentId`** (review Finding R1 was fixed in Plan A — A1.2 adds the column + index, the A7 runner stamps it). No Plan-C schema work needed; just `[verify@exec]` the column landed.
   - `GET/POST/PATCH /companies/:companyId/agents/:id/triggers`: CRUD over `aoaAgentTriggers` (list by agent; create `{kind,config,enabled}`; patch `{enabled,config}`). Auth: same middleware as the agents routes (RBAC hardening = Plan D).
 - [ ] **Step 5: Run → PASS.**
 - [ ] **Step 6: Commit** `git add server/src/routes/agents.ts server/src/__tests__/aoa-agents-api.test.ts && git commit -m "feat(aoa-C): agents API — kind filter + aoa-runs + triggers endpoints"`
 
-> **Plan-A dependency surfaced:** the AoA-runs endpoint needs runs attributable to an agent id. If Plan A's `internal_agent_runs` insert does not set an `agentId`, add it (additive migration) here and patch the Plan-A runner. Record this in the commit + flag for the Plan-A executor.
+> **Plan-A dependency RESOLVED (Finding R1):** `internal_agent_runs.agentId` + index is added in Plan A A1.2 and stamped by the A7 runner. C1 only consumes it. If executing C before A's R1 fix landed, that's an ordering error — A must land first (it's Plan A of 4).
 
 ---
 
@@ -87,7 +87,7 @@ it("Triggers tab lists triggers and toggles enabled", async () => {
 });
 ```
   Implement `AoaTriggersTab.tsx`: list `aoa_agent_triggers` (via C1 API), render kind/enabled/config, enable/disable toggle (PATCH), "add trigger" (POST; v1 kinds: `outbox`,`manual` — `routine` UI deferred to a later slice, the seam exists).
-- [ ] **Step 4: `AoaAgentDetail.tsx` page** — composes `AgentDetailCore` with tabs **Overview / Instructions (`AgentInstructionsTab` reuse) / Skills (reuse) / Runs (source = C1 `aoa-runs` → render mirroring the worker Runs panel) / Config (`AgentConfigForm` reuse, AoA-scoped fields) / Triggers (`AoaTriggersTab`)**. Route: add `/<prefix>/team/aoa/:agentId` → `AoaAgentDetail` (mirror how `AgentDetail`'s route is registered — **[verify@exec]** the router file). Commander opens here too (its Config surfaces `internal_agent_config` — Execution/Capabilities/Budget/Run-History, reusing the existing `/settings?tab=commander` section components if importable; else link out — decide at Step 1).
+- [ ] **Step 4: `AoaAgentDetail.tsx` page** — composes `AgentDetailCore` with tabs **Overview / Instructions (`AgentInstructionsTab` reuse) / Skills (reuse) / Runs / Config (`AgentConfigForm` reuse, AoA-scoped fields) / Triggers (`AoaTriggersTab`)**. **Runs (Finding R5): build a dedicated `AoaRunsPanel` — do NOT reuse the worker heartbeat-runs panel.** `internal_agent_runs` ≠ `heartbeat_runs` (different columns: triggerType/triggerSource/summary/toolsCalled, no heartbeat_run_events). The panel renders C1's `aoa-runs` rows (status, trigger, duration, errorMessage, completedAt). Small focused component, not a forced reuse. Route: add `/<prefix>/team/aoa/:agentId` → `AoaAgentDetail` (mirror how `AgentDetail`'s route is registered — **[verify@exec]** the router file). Commander opens here too (its Config surfaces `internal_agent_config` — Execution/Capabilities/Budget/Run-History, reusing the existing `/settings?tab=commander` section components if importable; else link out — decide at Step 1).
 - [ ] **Step 5: Run** `npx vitest run ui/src/__tests__/AoaAgentDetail.test.tsx` + the refactor-guard `*Agent*` tests → all green.
 - [ ] **Step 6: Commit** `git add ui/src/components/agent-detail/ ui/src/pages/AoaAgentDetail.tsx ui/src/__tests__/AoaAgentDetail.test.tsx <router-file> && git commit -m "feat(aoa-C): AoA agent detail page (reused core + Triggers tab)"`
 

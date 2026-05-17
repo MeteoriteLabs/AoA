@@ -96,9 +96,10 @@ export const aoaAgentTriggersRelations = relations(aoaAgentTriggers, ({ one }) =
 
 - [ ] **Step 1: Add failing assertion**
 ```ts
-  it("internal_agent_config exposes agentId", async () => {
-    const { internalAgentConfig } = await import("@armyofagents/db");
+  it("internal_agent_config + internal_agent_runs expose agentId", async () => {
+    const { internalAgentConfig, internalAgentRuns } = await import("@armyofagents/db");
     expect(Object.keys(internalAgentConfig)).toContain("agentId");
+    expect(Object.keys(internalAgentRuns)).toContain("agentId"); // Finding R1
   });
 ```
 - [ ] **Step 2: Run → FAIL.**
@@ -106,9 +107,17 @@ export const aoaAgentTriggersRelations = relations(aoaAgentTriggers, ({ one }) =
 ```ts
     agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
 ```
-and in `internalAgentConfigRelations` `one(...)` add `agent: one(agents, { fields: [internalAgentConfig.agentId], references: [agents.id] }),`. In `agents.ts:21` change the comment only: `// 'org' | 'platform' | 'aoa' — 'aoa' = Commander + sub-agents (trigger-driven)`.
+and in `internalAgentConfigRelations` `one(...)` add `agent: one(agents, { fields: [internalAgentConfig.agentId], references: [agents.id] }),`.
+
+**ALSO (review Finding R1 — required for Plan C's per-agent Runs tab):** the `internalAgentRuns` table (same file) has **no agent attribution** today (only `relatedEntityType/Id` = the discussion entry). Add an indexed nullable `agentId` so runs are filterable per AoA agent. After `userId: text("user_id"),` in `internalAgentRuns` add:
+```ts
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+```
+and add to its index block: `agentIdx: index("ia_runs_agent_idx").on(table.companyId, table.agentId),`. (Additive, nullable — existing rows unaffected; the A7 runner sets it.)
+
+In `agents.ts:21` change the comment only: `// 'org' | 'platform' | 'aoa' — 'aoa' = Commander + sub-agents (trigger-driven)`.
 - [ ] **Step 4: Run → PASS.**
-- [ ] **Step 5: Generate migration** `cd <worktree> && pnpm db:generate`. Open the emitted `packages/db/src/migrations/00NN_*.sql`; confirm it is **additive only** (`CREATE TABLE aoa_agent_triggers`, `ALTER TABLE internal_agent_config ADD COLUMN agent_id`). Never hand-edit it.
+- [ ] **Step 5: Generate migration** `cd <worktree> && pnpm db:generate`. Open the emitted `packages/db/src/migrations/00NN_*.sql`; confirm it is **additive only** (`CREATE TABLE aoa_agent_triggers`, `ALTER TABLE internal_agent_config ADD COLUMN agent_id`, `ALTER TABLE internal_agent_runs ADD COLUMN agent_id` + the new index). Never hand-edit it.
 - [ ] **Step 6: Commit** `git add packages/db/src/schema/internal_agent.ts packages/db/src/schema/agents.ts packages/db/src/migrations/ server/src/__tests__/aoa-schema-additive.test.ts && git commit -m "feat(aoa): internal_agent_config.agentId + kind='aoa'; migration"`
 
 ---
@@ -612,7 +621,8 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     if (!agent) { log.warn("aoa agent missing; skip"); return; }
 
     const inserted = await db.insert(internalAgentRuns).values({
-      companyId: payload.companyId, triggerType: "sub_agent", triggerSource: payload.source,
+      companyId: payload.companyId, agentId, // Finding R1: per-agent attribution (Plan C Runs tab)
+      triggerType: "sub_agent", triggerSource: payload.source,
       status: "running", relatedEntityType: payload.entryId ? "discussion" : null,
       relatedEntityId: payload.entryId ?? null, userId: null,
     }).returning();
@@ -774,6 +784,8 @@ describe.skipIf(process.platform === "win32")("AoA backend (integration)", () =>
 **3. Type consistency:** `runAoaAgent(db,agentId,AoaTriggerPayload{companyId,source,entryId?})` identical across A6 (consumer call), A7 (impl/test), A8. `runExtractionConsumer(db,companyId,entryId,agentId)` identical A6/A8 (+ preserved for extraction-sweeper.test.ts). `runAoaDispatch(db,{limiterMax,staleMs})` = SweepOptions shim. `submitExtractedItemsTool` shape reconciled in A5 Step 1 before use. `ensureCommanderAgent`/`ensureExtractionAgent`→`Promise<string>` used in A6/A9. Consistent.
 
 **4. Skeptical re-review (v2→v3) — found + fixed:** **Finding 6 (CRITICAL):** v2's runner dropped the M2/#99 atomic claim (it no longer calls `extractFromDiscussionEntry`) → dispatcher would re-run the same `pending` entry every tick. **Fixed:** A7 runner now performs the atomic `pending→processing`+`extraction_run_id` claim itself (mirrors `extraction.ts:389-402`), aborts if not claimed, + a dedicated test; the "#99/M2 invariants" section makes this explicit so it stops recurring. **Finding 7 (MEDIUM):** `adapterType:'process'` default makes `--mcp-config` a no-op (process≠claude) — already honestly scoped (real extraction = Plan D `claude_local`); Finding-6's claim ensures the entry leaves `pending` regardless of adapter, so no loop. **Finding 8 (MINOR):** `runtimeConfig?.aoa?.instruction` on `Record<string,unknown>` won't compile → A7 now narrows explicitly. v3 has no known critical defects; the softest remaining spot is A5 Step 1 (must read the real `AgentTool`/column shapes before writing the tool) — bounded, named-source, logic fully specified.
+
+**5. Cross-plan review (Finding R1, from reviewing Plan C):** `internal_agent_runs` had no agent attribution (only `relatedEntityId`=the entry) → Plan C's per-agent Runs tab would be impossible. **Fixed in A** (not deferred): A1.2 adds `internal_agent_runs.agentId` + index (same additive migration); A7 runner stamps `agentId`; A1.2 test asserts it. Plan C's C1 now just consumes it. This is why per-plan pre-execution review matters — A was incomplete for the program until C's review surfaced it.
 
 ---
 
