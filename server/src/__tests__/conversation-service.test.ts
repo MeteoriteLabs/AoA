@@ -139,10 +139,10 @@ describe("conversationService", () => {
       const db = createSequenceDb({ selects: [[{ count: 20 }]] });
       const svc = conversationService(db as any);
 
-      const mockProvider = { name: "anthropic", chat: vi.fn() };
-      await svc.summarizeIfNeeded("conv-1", mockProvider as any, { model: "claude-sonnet-4-6" });
+      const summarize = vi.fn(async (_t: string) => "summary");
+      await svc.summarizeIfNeeded("conv-1", summarize);
 
-      expect(mockProvider.chat).not.toHaveBeenCalled();
+      expect(summarize).not.toHaveBeenCalled();
     });
 
     it("triggers summarization when more than 20 messages", async () => {
@@ -161,19 +161,12 @@ describe("conversationService", () => {
         updates: [[{ id: "conv-1", summarizedContext: "Summary..." }]],
       });
 
-      const mockProvider = {
-        name: "anthropic",
-        chat: vi.fn().mockReturnValue((async function* () {
-          yield { type: "text" as const, delta: "Summarized " };
-          yield { type: "text" as const, delta: "conversation." };
-          yield { type: "done" as const, usage: { inputTokens: 100, outputTokens: 20 } };
-        })()),
-      };
+      const summarize = vi.fn(async (_t: string) => "Summarized conversation.");
 
       const svc = conversationService(db as any);
-      await svc.summarizeIfNeeded("conv-1", mockProvider as any, { model: "claude-sonnet-4-6" });
+      await svc.summarizeIfNeeded("conv-1", summarize);
 
-      expect(mockProvider.chat).toHaveBeenCalled();
+      expect(summarize).toHaveBeenCalled();
     });
   });
 

@@ -4,7 +4,6 @@ import {
   internalAgentConversations,
   internalAgentMessages,
 } from "@armyofagents/db";
-import type { LLMProvider, ChatMessage } from "./providers/types.js";
 
 export interface MessageInput {
   role: string;
@@ -110,8 +109,7 @@ export function conversationService(db: Db) {
 
     async summarizeIfNeeded(
       conversationId: string,
-      provider: LLMProvider,
-      config: { model: string },
+      summarize: (transcript: string) => Promise<string>,
     ) {
       const countResult = await db
         .select({ count: sql`count(*)` })
@@ -146,25 +144,8 @@ export function conversationService(db: Db) {
 
       if (!transcript.trim()) return;
 
-      const messages: ChatMessage[] = [
-        {
-          role: "user",
-          content: `Summarize this conversation history concisely, preserving key decisions, action items, and context:\n\n${transcript}`,
-        },
-      ];
-
-      let summary = "";
-      for await (const chunk of provider.chat({
-        messages,
-        tools: [],
-        model: config.model,
-        maxTokens: 1000,
-        systemPrompt: "You are a conversation summarizer. Be concise.",
-      })) {
-        if (chunk.type === "text") {
-          summary += chunk.delta;
-        }
-      }
+      const summary = await summarize(transcript);
+      if (!summary || !summary.trim()) return;
 
       const lastOldMessage = oldMessages[oldMessages.length - 1] as any;
       await db
