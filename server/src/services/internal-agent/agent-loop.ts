@@ -10,6 +10,8 @@ import { loadCommanderPersona } from "./commander-context.js";
 import { ensureCommanderAgent } from "./aoa-agents/ensure-commander.js";
 import { summarizeViaCli } from "./cli-summarizer.js";
 import { memoryService } from "../memory.js";
+import { buildSkillsSection } from "./commander-skills.js";
+import { companySkillService } from "../company-skills.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -142,6 +144,11 @@ export function agentLoopService(db: Db) {
           const persona = agentRow
             ? await loadCommanderPersona({ agent: agentRow, service: agentInstructionsService() })
             : null;
+          const skillsSection = await buildSkillsSection({
+            companyId: params.companyId,
+            agentId: commanderAgentId,
+            resolve: (cid, aid) => companySkillService(db).listRuntimeSkillEntries(cid, aid),
+          });
           const history = await convService.getMessagesSince(
             conversation.id,
             (conversation as { summarizedUpToMessageId?: string | null }).summarizedUpToMessageId ?? null,
@@ -165,6 +172,7 @@ export function agentLoopService(db: Db) {
           });
           assembledContent =
             `${assembled.systemPrompt}` +
+            (skillsSection ? `\n\n${skillsSection}` : "") +
             (historyText ? `\n\n## Conversation So Far\n${historyText}` : "") +
             `\n\n## User Message\n${params.content}`;
         } catch {
