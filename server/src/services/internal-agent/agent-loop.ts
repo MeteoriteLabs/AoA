@@ -1,9 +1,13 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { internalAgentConfig } from "@armyofagents/db";
+import { internalAgentConfig, agents } from "@armyofagents/db";
 import type { ToolResult } from "./types.js";
 import { conversationService } from "./conversation.js";
 import { cliModeService } from "./cli-mode.js";
+import { agentInstructionsService } from "../agent-instructions.js";
+import { contextAssemblyService } from "./context-assembly.js";
+import { loadCommanderPersona } from "./commander-context.js";
+import { ensureCommanderAgent } from "./aoa-agents/ensure-commander.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -121,8 +125,37 @@ export function agentLoopService(db: Db) {
         // throws; a partial accumulation is intentionally discarded so a
         // failed turn never leaves a truncated assistant message — the
         // persisted user turn + the streamed error are the durable record).
+
+        // Assemble the per-turn prompt (Option B). cli-mode is UNCHANGED:
+        // it sends params.content verbatim, so substituting content here
+        // keeps the spawn shape byte-identical (content-only change).
+        let assembledContent = params.content;
+        try {
+          const commanderAgentId = await ensureCommanderAgent(db, params.companyId);
+          const agentRow = await db
+            .select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterConfig: agents.adapterConfig })
+            .from(agents)
+            .where(eq(agents.id, commanderAgentId))
+            .then((r: { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null }[]) => r[0] ?? null);
+          const persona = agentRow
+            ? await loadCommanderPersona({ agent: agentRow, service: agentInstructionsService() })
+            : null;
+          const assembled = await contextAssemblyService(db).assembleContext(params.companyId, {
+            ...(persona ? { systemInstructions: persona } : {}),
+            ...(params.pageContext ? { pageContext: params.pageContext } : {}),
+            ...(params.departmentContext ? { departmentContext: params.departmentContext } : {}),
+            contextTokenBudget: (config as { contextTokenBudget?: number }).contextTokenBudget,
+          });
+          assembledContent = `${assembled.systemPrompt}\n\n## User Message\n${params.content}`;
+        } catch {
+          // Any assembly failure → send the raw message (never hard-fail).
+          assembledContent = params.content;
+        }
+
+        const cliParams = { ...params, content: assembledContent };
+
         let accumulatedAssistant = "";
-        for await (const chunk of cliService.chat(params, config)) {
+        for await (const chunk of cliService.chat(cliParams, config)) {
           if (chunk.type === "text") accumulatedAssistant += chunk.delta;
           yield chunk;
         }
