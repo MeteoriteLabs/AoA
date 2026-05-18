@@ -156,6 +156,23 @@ interface CliInvocation {
 }
 
 /**
+ * Per-session managed CODEX_HOME directory. Single source of truth so the
+ * codex invocation, the config.toml write, and the session's cleanup
+ * `mcpConfigPath` all point at the SAME path (MX-chatparse).
+ */
+function codexHomeDirFor(companyId: string, userId: string): string {
+  return join(
+    tmpdir(),
+    `aoa-codex-chat-${`${companyId}:${userId}`.replace(/[^a-zA-Z0-9_-]/g, "-")}`,
+  );
+}
+
+/** The config.toml inside the per-session managed CODEX_HOME. */
+function codexConfigTomlPath(companyId: string, userId: string): string {
+  return join(codexHomeDirFor(companyId, userId), "config.toml");
+}
+
+/**
  * Per-CLI chat invocation translator. claude_cli is kept BYTE-IDENTICAL to
  * pre-MX4 (write the {mcpServers:{aoa}} wrapper JSON, spawn `claude
  * --mcp-config <json> -p <msg> --output-format text`). codex gets a correct
@@ -169,11 +186,17 @@ interface CliInvocation {
  * spawning a broken `opencode --mcp-config -p` process.
  *
  * Returns null for an unsupported CLI (caller emits the error).
+ *
+ * `resumeCodexSessionId` (MX-chatparse): codex `exec` is ONE-SHOT — multi-
+ * turn continuity is not a persistent process but a re-spawn with `resume
+ * <sessionId> -` (mirrors the codex-local adapter convention). null/absent ⇒
+ * a fresh turn-1 `codex exec --json -`. Ignored for non-codex CLIs.
  */
 async function resolveCliInvocation(
   cliTool: string,
   params: McpConfigParams,
   safeContent: string,
+  resumeCodexSessionId?: string | null,
 ): Promise<CliInvocation | null> {
   switch (cliTool) {
     case "claude_cli": {
@@ -201,19 +224,23 @@ async function resolveCliInvocation(
       const { writeCodexMcpConfigToml } = await import(
         "@armyofagents/adapter-codex-local/server"
       );
-      const codexHomeDir = join(
-        tmpdir(),
-        `aoa-codex-chat-${`${params.companyId}:${params.userId}`.replace(/[^a-zA-Z0-9_-]/g, "-")}`,
-      );
+      const codexHomeDir = codexHomeDirFor(params.companyId, params.userId);
       await writeCodexMcpConfigToml(codexHomeDir, buildMcpBridgeSpec(params));
+      // ONE-SHOT model (MX-chatparse): turn-1 = `codex exec --json -`
+      // (prompt via stdin). Continuation turn appends `resume <sessionId>
+      // -` — same convention as the codex-local adapter (buildArgs:
+      // resumeSessionId ? push("resume", id, "-") : push("-")).
+      const codexArgs = resumeCodexSessionId
+        ? ["exec", "--json", "resume", resumeCodexSessionId, "-"]
+        : ["exec", "--json", "-"];
       return {
         binary: "codex",
-        args: ["exec", "--json", "-"],
+        args: codexArgs,
         spawnEnv: { CODEX_HOME: codexHomeDir },
         // Record the config.toml so the existing best-effort unlink cleanup
         // (cli-session-store.killSession) reaps the primary artifact, the
         // same way it reaps claude's tmp .json. Parity, no new machinery.
-        mcpArtifactPath: join(codexHomeDir, "config.toml"),
+        mcpArtifactPath: codexConfigTomlPath(params.companyId, params.userId),
       };
     }
     default:
@@ -271,6 +298,82 @@ export function cliModeService(db: Db) {
       let accumulatedText = "";
 
       try {
+        if (config.cliTool === "codex") {
+          // ── codex: ONE-SHOT per turn + resume continuity ──────────────
+          // codex `exec` is one-shot (runs the turn, exits). So there is
+          // NO persistent process: the conversation is carried by the
+          // codex sessionId. Each turn re-spawns; turn-N appends `resume
+          // <id> -`. stdout is buffered for the whole turn and parsed via
+          // parseCodexJsonl on exit (exit == turn end). The assistant text
+          // is the parsed `summary` (NOT raw JSONL — the pre-MX-chatparse
+          // bug). claude is UNTOUCHED (the else-branch below).
+          const isWin = platform() === "win32";
+          const bridgePath = getBridgeEntrypoint();
+          const mcpParams: McpConfigParams = {
+            companyId: params.companyId,
+            userId: params.userId,
+            userRole: params.userRole,
+            enabledCapabilities: params.enabledCapabilities,
+            bridgeEntrypoint: bridgePath,
+          };
+
+          if (session) session.lastMessageAt = new Date();
+
+          for await (const chunk of runCodexTurn({
+            mcpParams,
+            prompt: params.content,
+            isWin,
+            resumeSessionId: session?.codexSessionId ?? null,
+            onSessionId: (sid) => {
+              const existing = sessionStore.get(sessionKey);
+              if (existing) {
+                // Refresh the codex sessionId from this turn's parse.
+                existing.codexSessionId = sid ?? existing.codexSessionId;
+                existing.lastMessageAt = new Date();
+              } else {
+                // First turn: create a PROCESS-LESS session (cliProcess
+                // null — codex has no long-lived process; killSession
+                // guards on null).
+                const fresh: CLISession = {
+                  cliProcess: null,
+                  mcpProcess: null,
+                  cliTool: "codex",
+                  ...(sid ? { codexSessionId: sid } : {}),
+                  companyId: params.companyId,
+                  userId: params.userId,
+                  userRole: params.userRole,
+                  startedAt: new Date(),
+                  lastMessageAt: new Date(),
+                  // config.toml path recorded so the existing best-effort
+                  // unlink cleanup reaps it (parity with claude's tmp .json).
+                  mcpConfigPath: codexConfigTomlPath(params.companyId, params.userId),
+                  status: "active",
+                  messageQueue: [],
+                  processing: false,
+                };
+                sessionStore.set(sessionKey, fresh);
+                session = fresh;
+              }
+            },
+          })) {
+            if (chunk.type === "text") accumulatedText += chunk.delta;
+            yield chunk;
+          }
+
+          // Done event (shape UNCHANGED).
+          yield {
+            type: "done",
+            summary: {
+              runId: "",
+              toolsCalled: [],
+              durationMs: 0,
+              costCents: 0,
+              tokenUsage: { inputTokens: 0, outputTokens: 0 },
+            },
+          };
+          return;
+        }
+
         if (!session) {
           // 3. First message — spawn new session
           const bridgePath = getBridgeEntrypoint();
@@ -356,11 +459,17 @@ export function cliModeService(db: Db) {
             yield chunk;
           }
         } else {
-          // Subsequent message — pipe to existing process stdin
+          // Subsequent message — pipe to existing process stdin.
+          // (claude only: codex returned above. cliProcess is non-null on
+          // the persistent claude path; the local narrows the now-nullable
+          // type — a null process is treated exactly like a dead stdin,
+          // i.e. the pre-existing "session ended" path. Runtime behavior
+          // for claude is UNCHANGED — MX-chatparse.)
           session.lastMessageAt = new Date();
-          if (session.cliProcess.stdin?.writable) {
-            session.cliProcess.stdin.write(params.content + "\n");
-            for await (const chunk of streamProcessOutput(session.cliProcess)) {
+          const cliProc = session.cliProcess;
+          if (cliProc && cliProc.stdin?.writable) {
+            cliProc.stdin.write(params.content + "\n");
+            for await (const chunk of streamProcessOutput(cliProc)) {
               if (chunk.type === "text") accumulatedText += chunk.delta;
               yield chunk;
             }
@@ -441,5 +550,123 @@ async function* streamProcessOutput(
     }
     if (done) break;
     await new Promise<void>((r) => { resolve = r; });
+  }
+}
+
+// ── codex one-shot turn helper (MX-chatparse) ───────────────────────────────
+//
+// `codex exec` is ONE-SHOT: it runs the turn and exits. There is no
+// persistent process and no per-line text; codex emits JSONL events on
+// stdout. So: spawn fresh, pipe the prompt over stdin, buffer the WHOLE
+// turn's stdout+stderr, and on exit run parseCodexJsonl. The assistant
+// reply is the parsed `summary` (NOT raw JSON — the pre-MX-chatparse bug).
+// Continuity is via codex's `resume <sessionId> -`; an unknown-session
+// resume retries once FRESH (mirrors the codex-local adapter). claude is
+// NOT routed here — its persistent-process/plain-text path is unchanged.
+//
+// Token-by-token streaming for codex is an explicit deferred polish: v1
+// emits the full `summary` as a single text chunk on turn completion.
+
+interface RunCodexTurnArgs {
+  mcpParams: McpConfigParams;
+  prompt: string;
+  isWin: boolean;
+  resumeSessionId: string | null;
+  /** Called with the parsed codex sessionId so the caller can persist it. */
+  onSessionId: (sessionId: string | null) => void;
+}
+
+async function* runCodexTurn(
+  args: RunCodexTurnArgs,
+): AsyncGenerator<AgentStreamChunk> {
+  const { parseCodexJsonl, isCodexUnknownSessionError } = await import(
+    "@armyofagents/adapter-codex-local/server"
+  );
+
+  // Buffer the full stdout+stderr of one codex process to completion.
+  async function spawnAndCollect(
+    resume: string | null,
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+    // resolveCliInvocation writes the per-session CODEX_HOME/config.toml
+    // (the bridge must be present on EVERY spawn — MX4 parity) and builds
+    // the argv (`exec --json [resume <id>] -`).
+    const invocation = await resolveCliInvocation(
+      "codex",
+      args.mcpParams,
+      args.prompt, // codex prompt is delivered over stdin, NOT argv
+      resume,
+    );
+    if (!invocation) {
+      // codex is a wired CLI — resolveCliInvocation never returns null for
+      // it. Defensive: surface rather than spawn garbage.
+      throw new Error("codex invocation could not be resolved");
+    }
+
+    const proc = spawn(invocation.binary, invocation.args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, ...invocation.spawnEnv },
+      shell: args.isWin,
+    });
+
+    // codex reads the prompt from stdin (the `-` PROMPT arg) until EOF, so
+    // the stream MUST be closed for the one-shot turn to proceed. Raw
+    // content (NOT the win32 argv-escaped form) — codex never sees a shell.
+    if (proc.stdin?.writable) {
+      proc.stdin.write(args.prompt + "\n");
+      proc.stdin.end?.();
+    }
+
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (d: Buffer) => {
+      stdout += d.toString();
+    });
+    proc.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
+
+    const exitCode = await new Promise<number | null>((resolveExit) => {
+      proc.on("exit", (code) => resolveExit(code));
+      proc.on("error", () => resolveExit(-1));
+    });
+
+    return { stdout, stderr, exitCode };
+  }
+
+  let result = await spawnAndCollect(args.resumeSessionId);
+
+  // Unknown/stale resume session ⇒ retry ONCE fresh (no `resume`), so the
+  // turn renders instead of hanging or surfacing "CLI session ended".
+  if (
+    args.resumeSessionId &&
+    (result.exitCode ?? 0) !== 0 &&
+    isCodexUnknownSessionError(result.stdout, result.stderr)
+  ) {
+    result = await spawnAndCollect(null);
+  }
+
+  const parsed = parseCodexJsonl(result.stdout);
+
+  // Persist/refresh the codex sessionId for the NEXT turn's `resume`.
+  args.onSessionId(parsed.sessionId);
+
+  const errorMessage =
+    parsed.errorMessage ??
+    ((result.exitCode ?? 0) !== 0 && !parsed.summary
+      ? isCodexUnknownSessionError(result.stdout, result.stderr)
+        ? "codex session could not be resumed and a fresh attempt failed."
+        : `codex exited with code ${result.exitCode ?? -1}`
+      : null);
+
+  if (errorMessage) {
+    yield { type: "error", message: errorMessage };
+    return;
+  }
+
+  // v1: emit the full parsed assistant reply as a single text chunk
+  // (token-by-token codex streaming is a deferred polish). NEVER the raw
+  // JSONL — that was the rendered-nothing bug.
+  if (parsed.summary) {
+    yield { type: "text", delta: parsed.summary };
   }
 }

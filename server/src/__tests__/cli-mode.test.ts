@@ -16,9 +16,19 @@ vi.mock("node:fs/promises", () => ({
   unlink: vi.fn(async () => {}),
 }));
 
-vi.mock("@armyofagents/adapter-codex-local/server", () => ({
-  writeCodexMcpConfigToml: vi.fn(async () => {}),
-}));
+// MX-chatparse: the chat now also parses codex stdout via the REAL
+// parseCodexJsonl / isCodexUnknownSessionError from this barrel (pure
+// functions — we want their true behavior, not a stub). Only the disk
+// writer is stubbed; the parsers come from importOriginal.
+vi.mock("@armyofagents/adapter-codex-local/server", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@armyofagents/adapter-codex-local/server")
+  >();
+  return {
+    ...actual,
+    writeCodexMcpConfigToml: vi.fn(async () => {}),
+  };
+});
 
 // ── Session Store Tests ─────────────────────────────────────────────────────
 
@@ -772,5 +782,357 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     const err = chunks.find((c) => c.type === "error");
     expect(err).toBeDefined();
     expect(err.message).toContain("not yet supported");
+  });
+});
+
+// ── MX-chatparse: per-CLI JSONL parsing + one-shot/resume session ───────────
+//
+// Live §17 verification found the codex Commander chat invoked correctly
+// (MX4) but rendering NOTHING:
+//  1. parseLine treated codex's `exec --json` JSONL events as raw text →
+//     the SSE stream got garbage JSON, no assistant message.
+//  2. The persistent-process session model broke codex's one-shot
+//     `codex exec` on multi-turn (turn-2 found stdin closed).
+//
+// Required per-CLI behavior:
+//  - claude_cli : UNCHANGED. Persistent process; turn-1 spawns with `-p`
+//                 argv; subsequent turns pipe stdin to the SAME process;
+//                 plain-text accumulation via the parseCliOutput stub;
+//                 `done` event unchanged.
+//  - codex      : parse the full turn stdout via parseCodexJsonl on process
+//                 exit (codex exec is one-shot — exit = turn end). Yielded
+//                 chat text == parsed `summary` (NOT raw JSON). Store the
+//                 codex `sessionId`, NOT a long-lived process. Turn-N spawns
+//                 a FRESH `codex exec --json [flags] resume <id> -`.
+//                 isCodexUnknownSessionError on a resume → retry fresh (no
+//                 `resume`). turn.failed/error → an {type:"error"} chunk.
+
+describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatparse)", () => {
+  // A fake one-shot process: emits its preset stdout/stderr once the chat
+  // attaches listeners, then exits with the preset code (mirrors `codex
+  // exec`, which runs the turn and exits). Multiple spawns in a turn-chain
+  // are served from a queue so turn-2 (resume) gets its own stdout fixture.
+  function makeOneShotProcess(opts: {
+    stdout: string;
+    stderr?: string;
+    exitCode?: number;
+  }) {
+    const proc: any = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.stdin = { writable: true, write: vi.fn(), end: vi.fn() };
+    proc.kill = vi.fn();
+    let driven = false;
+    const drive = () => {
+      if (driven) return;
+      driven = true;
+      setImmediate(() => {
+        if (opts.stdout) proc.stdout.emit("data", Buffer.from(opts.stdout));
+        if (opts.stderr) proc.stderr.emit("data", Buffer.from(opts.stderr));
+        proc.emit("exit", opts.exitCode ?? 0, null);
+      });
+    };
+    proc.stdout.on("newListener", drive);
+    proc.on("newListener", (ev: string) => {
+      if (ev === "exit") drive();
+    });
+    return proc;
+  }
+
+  // A claude-style persistent process: never exits on its own; emits
+  // plain-text stdout for whatever turn is currently streaming. Each
+  // `feed(text)` schedules one stdout burst (no exit) so multi-turn
+  // stdin-piping stays on the SAME process.
+  function makePersistentProcess() {
+    const proc: any = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.stdin = { writable: true, write: vi.fn() };
+    proc.kill = vi.fn();
+    proc.feed = (text: string) => {
+      setImmediate(() => proc.stdout.emit("data", Buffer.from(text)));
+    };
+    return proc;
+  }
+
+  const CODEX_TURN1_JSONL = [
+    JSON.stringify({ type: "thread.started", thread_id: "codex-sess-aaa" }),
+    JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: "Hello from codex turn one." },
+    }),
+    JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 5 } }),
+  ].join("\n");
+
+  const CODEX_TURN2_JSONL = [
+    JSON.stringify({ type: "thread.started", thread_id: "codex-sess-bbb" }),
+    JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: "Follow-up answer from codex." },
+    }),
+    JSON.stringify({ type: "turn.completed", usage: { input_tokens: 4, output_tokens: 2 } }),
+  ].join("\n");
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    // vi.clearAllMocks() clears mock.calls but NOT a queued
+    // mockReturnValueOnce implementation chain. Reset spawn's
+    // implementation so a prior test's per-turn process queue cannot
+    // bleed into the next test (the codex resume/unknown-session tests
+    // use mockReturnValueOnce).
+    const cp = await import("node:child_process");
+    vi.mocked(cp.spawn).mockReset();
+    vi.mocked(cp.execSync).mockReset();
+  });
+
+  async function drainChat(
+    service: any,
+    cliTool: string,
+    content: string,
+  ): Promise<any[]> {
+    const chunks: any[] = [];
+    for await (const chunk of service.chat(
+      {
+        companyId: "comp1",
+        userId: "user1",
+        userRole: "founder",
+        content,
+        enabledCapabilities: [],
+      } as any,
+      { cliTool, executionMode: "cli" } as any,
+    )) {
+      chunks.push(chunk);
+    }
+    return chunks;
+  }
+
+  it("codex turn-1: yields the parsed summary (NOT raw JSON), stores the sessionId, emits done after exit, and writes the per-session CODEX_HOME config.toml", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    vi.mocked(cp.spawn).mockReturnValue(proc as any);
+    const codexMod = await import("@armyofagents/adapter-codex-local/server");
+    const expectedSummary = "Hello from codex turn one.";
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    const chunks = await drainChat(service, "codex", "hi codex");
+
+    // Assistant text == parsed summary, NOT the raw JSONL.
+    const text = chunks
+      .filter((c) => c.type === "text")
+      .map((c) => c.delta)
+      .join("");
+    expect(text).toContain(expectedSummary);
+    expect(text).not.toContain("thread.started");
+    expect(text).not.toContain("agent_message");
+    expect(text).not.toContain('"type"');
+
+    // done emitted (after the one-shot process exits).
+    expect(chunks.some((c) => c.type === "done")).toBe(true);
+    expect(chunks.some((c) => c.type === "error")).toBe(false);
+
+    // The MX4 per-session CODEX_HOME config.toml write still happens.
+    expect(vi.mocked(codexMod.writeCodexMcpConfigToml)).toHaveBeenCalledTimes(1);
+
+    // The codex sessionId from the fixture is stored on the session.
+    const stored = service.getSessionStore().get("comp1:user1");
+    expect(stored).toBeDefined();
+    expect(stored.codexSessionId).toBe("codex-sess-aaa");
+  });
+
+  it("codex turn-2: a follow-up on the same session spawns a FRESH `codex exec --json … resume <storedId> -` and refreshes the stored sessionId", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc1 = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    const proc2 = makeOneShotProcess({ stdout: CODEX_TURN2_JSONL });
+    vi.mocked(cp.spawn)
+      .mockReturnValueOnce(proc1 as any)
+      .mockReturnValueOnce(proc2 as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+
+    await drainChat(service, "codex", "first message");
+    const afterT1 = service.getSessionStore().get("comp1:user1");
+    expect(afterT1.codexSessionId).toBe("codex-sess-aaa");
+
+    const chunks2 = await drainChat(service, "codex", "second message");
+
+    // A fresh process was spawned for turn-2 (one-shot model).
+    expect(vi.mocked(cp.spawn)).toHaveBeenCalledTimes(2);
+    const [binary, args] = vi.mocked(cp.spawn).mock.calls[1];
+    expect(binary).toBe("codex");
+    expect(args[0]).toBe("exec");
+    expect(args[1]).toBe("--json");
+    // Continuation argv carries `resume <storedSessionId>` and the `-`
+    // stdin-prompt sentinel.
+    const resumeIdx = (args as string[]).indexOf("resume");
+    expect(resumeIdx).toBeGreaterThan(-1);
+    expect(args[resumeIdx + 1]).toBe("codex-sess-aaa");
+    expect((args as string[])[args.length - 1]).toBe("-");
+
+    // Turn-2 text == turn-2 summary; sessionId refreshed from the new parse.
+    const text2 = chunks2
+      .filter((c) => c.type === "text")
+      .map((c) => c.delta)
+      .join("");
+    expect(text2).toContain("Follow-up answer from codex.");
+    const afterT2 = service.getSessionStore().get("comp1:user1");
+    expect(afterT2.codexSessionId).toBe("codex-sess-bbb");
+  });
+
+  it("codex unknown-session: a resume whose output matches isCodexUnknownSessionError retries FRESH (no `resume`), no hang, no 'CLI session ended'", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+
+    const proc1 = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    // Turn-2 resume attempt fails with an unknown-session signal.
+    const proc2 = makeOneShotProcess({
+      stdout: "",
+      stderr: "Error: unknown session codex-sess-aaa",
+      exitCode: 1,
+    });
+    // Fresh retry succeeds.
+    const proc3 = makeOneShotProcess({ stdout: CODEX_TURN2_JSONL });
+    vi.mocked(cp.spawn)
+      .mockReturnValueOnce(proc1 as any)
+      .mockReturnValueOnce(proc2 as any)
+      .mockReturnValueOnce(proc3 as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+
+    await drainChat(service, "codex", "first message");
+    const chunks2 = await drainChat(service, "codex", "second message");
+
+    // 3 spawns total: t1, failed resume, fresh retry.
+    expect(vi.mocked(cp.spawn)).toHaveBeenCalledTimes(3);
+    const retryArgs = vi.mocked(cp.spawn).mock.calls[2][1] as string[];
+    expect(retryArgs).not.toContain("resume");
+    expect(retryArgs[retryArgs.length - 1]).toBe("-");
+
+    // No spurious "CLI session ended" error; the retry's summary is yielded.
+    const errs = chunks2.filter((c) => c.type === "error");
+    expect(errs.some((e) => /CLI session ended/i.test(e.message))).toBe(false);
+    const text2 = chunks2
+      .filter((c) => c.type === "text")
+      .map((c) => c.delta)
+      .join("");
+    expect(text2).toContain("Follow-up answer from codex.");
+    // sessionId refreshed from the successful fresh retry.
+    expect(service.getSessionStore().get("comp1:user1").codexSessionId).toBe(
+      "codex-sess-bbb",
+    );
+  });
+
+  it("codex error: a turn.failed / error event yields an {type:'error'} chunk (not silent, not raw JSON)", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const failJsonl = [
+      JSON.stringify({ type: "thread.started", thread_id: "codex-sess-err" }),
+      JSON.stringify({
+        type: "turn.failed",
+        error: { message: "codex model exploded" },
+      }),
+    ].join("\n");
+    const proc = makeOneShotProcess({ stdout: failJsonl, exitCode: 1 });
+    vi.mocked(cp.spawn).mockReturnValue(proc as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    const chunks = await drainChat(service, "codex", "make it fail");
+
+    const err = chunks.find((c) => c.type === "error");
+    expect(err).toBeDefined();
+    expect(err.message).toContain("codex model exploded");
+    // The error text is not raw JSONL leaking through as "text".
+    const text = chunks
+      .filter((c) => c.type === "text")
+      .map((c) => c.delta)
+      .join("");
+    expect(text).not.toContain("turn.failed");
+    expect(text).not.toContain('"type"');
+  });
+
+  it("claude_cli stays UNCHANGED: persistent-process spawn + `-p` argv (prompt NOT on stdin) + plain-text accumulation + done shape; no codex sessionId", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/claude\n" as any);
+    // Persistent claude process: streamProcessOutput attaches its listeners
+    // lazily; on attach we feed plain text then emit exit so the turn's
+    // for-await completes (claude's `--output-format text` prints plain
+    // text, NOT JSONL). The persistent-vs-one-shot distinction is proven
+    // by the codex tests (which show a FRESH re-spawn per turn); claude
+    // must keep the pre-MX-chatparse persistent-process + `-p` argv shape.
+    const persistent = makePersistentProcess();
+    vi.mocked(cp.spawn).mockReturnValue(persistent as any);
+    const fsp = await import("node:fs/promises");
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+
+    let attached = false;
+    persistent.stdout.on("newListener", () => {
+      if (attached) return;
+      attached = true;
+      setImmediate(() => {
+        persistent.stdout.emit("data", Buffer.from("claude turn one text"));
+        persistent.emit("exit", 0, null);
+      });
+    });
+
+    const chunks1 = await drainChat(service, "claude_cli", "first");
+
+    // Persistent process: claude takes the prompt in `-p` argv and is NOT
+    // written to stdin on turn-1.
+    expect(persistent.stdin.write).not.toHaveBeenCalled();
+    expect(vi.mocked(cp.spawn)).toHaveBeenCalledTimes(1);
+    const [binary, args] = vi.mocked(cp.spawn).mock.calls[0];
+    expect(binary).toBe("claude");
+    expect(args).toEqual([
+      "--mcp-config",
+      expect.stringMatching(/\.json$/),
+      "-p",
+      expect.stringContaining("first"),
+      "--output-format",
+      "text",
+    ]);
+    // Plain-text accumulation (the parseCliOutput stub), NOT JSONL parsing.
+    const text1 = chunks1
+      .filter((c) => c.type === "text")
+      .map((c) => c.delta)
+      .join("");
+    expect(text1).toContain("claude turn one text");
+    // done shape unchanged.
+    const done1 = chunks1.find((c) => c.type === "done");
+    expect(done1).toBeDefined();
+    expect(done1.summary).toEqual({
+      runId: "",
+      toolsCalled: [],
+      durationMs: 0,
+      costCents: 0,
+      tokenUsage: { inputTokens: 0, outputTokens: 0 },
+    });
+
+    // claude must NOT acquire a codex sessionId.
+    expect(
+      service.getSessionStore().get("comp1:user1")?.codexSessionId,
+    ).toBeUndefined();
+
+    // claude writes exactly the {mcpServers:{aoa}} wrapper JSON once.
+    expect(vi.mocked(fsp.writeFile)).toHaveBeenCalledTimes(1);
+    const parsed = JSON.parse(String(vi.mocked(fsp.writeFile).mock.calls[0][1]));
+    expect(parsed.mcpServers.aoa.command).toBe("node");
   });
 });
