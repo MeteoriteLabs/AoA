@@ -10,13 +10,13 @@
 // company) and runExtractionConsumer is invoked under a bounded limiter.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { consumerMock, ensureExtractionMock, listOutboxMock } = vi.hoisted(
-  () => ({
+const { consumerMock, ensureExtractionMock, listOutboxMock, publishLiveEventMock } =
+  vi.hoisted(() => ({
     consumerMock: vi.fn().mockResolvedValue(undefined),
     ensureExtractionMock: vi.fn().mockResolvedValue("ext-1"),
     listOutboxMock: vi.fn().mockResolvedValue(["ext-1"]),
-  }),
-);
+    publishLiveEventMock: vi.fn(),
+  }));
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...a: unknown[]) => ({ and: a })),
@@ -26,6 +26,13 @@ vi.mock("drizzle-orm", () => ({
   isNull: vi.fn((c: unknown) => ({ isNull: c })),
   inArray: vi.fn((c: unknown, v: unknown) => ({ inArray: [c, v] })),
   notInArray: vi.fn((c: unknown, v: unknown) => ({ notInArray: [c, v] })),
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...vals: unknown[]) => ({
+      sql: strings.join("?"),
+      vals,
+    }),
+    {},
+  ),
 }));
 vi.mock("@armyofagents/db", () => {
   const t = (n: string) =>
@@ -52,6 +59,9 @@ vi.mock("../services/internal-agent/aoa-agents/ensure-extraction-agent.js", () =
 vi.mock("../services/internal-agent/aoa-agents/triggers.js", () => ({
   listEnabledOutboxAgents: listOutboxMock,
 }));
+vi.mock("../services/live-events.js", () => ({
+  publishLiveEvent: publishLiveEventMock,
+}));
 vi.mock("../middleware/logger.js", () => ({
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
 }));
@@ -60,11 +70,18 @@ import { runAoaDispatch } from "../services/internal-agent/aoa-agents/dispatcher
 
 /**
  * Sequence-aware mock DB — VERBATIM the makeDb harness from
- * extraction-sweeper.test.ts (renamed makeSeqDb).
- * - select() returns the next queued rows array (1 = orphan-select,
- *   2 = pending-drain).
+ * extraction-sweeper.test.ts (renamed makeSeqDb), extended for FX1.
+ * Select slots, in dispatcher call order:
+ *   0 = Phase-1 orphan-select (#99 verbatim: processing + linked run 'running' + stale)
+ *   1 = Phase-2 pending-drain
+ *   (2 = Phase-3 wakeup-select → defaults to [])
+ *   3 = Phase-4 FX1 reclaim-select (processing + linked run 'failed')
+ * Phase-4 runs LAST (after the wakeup drain) so the #99 select ordering the
+ * other suites depend on is unchanged; it is functionally order-independent
+ * (output is terminal 'failed', feeds no later phase).
  * - update().set(v).where() pushes `v` into `_sets` so we can assert which
- *   updates were issued (run-fail vs entry-reset, by payload shape).
+ *   updates were issued (run-fail vs entry-reset vs FX1 entry→failed, by
+ *   payload shape).
  */
 function makeSeqDb(selectQueue: unknown[][]) {
   let si = 0;
@@ -96,12 +113,17 @@ function makeSeqDb(selectQueue: unknown[][]) {
 const runFail = (s: any) => s.status === "failed";
 const entryReset = (s: any) =>
   s.extractionStatus === "pending" && s.extractionRunId === null;
+// FX1 Phase-1b: entry terminalized → 'failed' (NOT pending) with a
+// sourceInfo.extractionError jsonb_set payload.
+const entryFailReclaim = (s: any) =>
+  s.extractionStatus === "failed" && s.sourceInfo !== undefined;
 
 describe("runAoaDispatch — generalized #99 dispatcher", () => {
   beforeEach(() => {
     consumerMock.mockClear();
     ensureExtractionMock.mockClear();
     listOutboxMock.mockClear();
+    publishLiveEventMock.mockClear();
     ensureExtractionMock.mockResolvedValue("ext-1");
     listOutboxMock.mockResolvedValue(["ext-1"]);
   });
@@ -209,5 +231,66 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
     expect(db._sets).toHaveLength(0);
     expect(consumerMock).not.toHaveBeenCalled();
+  });
+
+  // ── FX1 Part A / Phase-4: a disjoint reclaim. The existing Phase-1 (#99)
+  //    reclaim handles entries whose linked run is still 'running' & stale →
+  //    reset to 'pending' (retry). FX1 adds: an entry 'processing' whose
+  //    linked run is already 'failed' (the runner's catch terminalized the
+  //    RUN but — pre-FX1 — left the entry stuck 'processing' forever). These
+  //    must be terminalized → 'failed' (NOT 'pending'; the run already
+  //    failed, retrying it is wrong) with the discussion.extraction.failed
+  //    LiveEvent. Mirrors extraction.ts. Runs LAST (select slot 3, after the
+  //    Phase-3 wakeup select) so the #99 ordering other suites depend on is
+  //    unchanged.
+  it("Phase-4: processing entry w/ linked FAILED run → entry extractionStatus='failed' (NOT pending) + discussion.extraction.failed LiveEvent", async () => {
+    const db = makeSeqDb([
+      [], // 0: Phase-1 orphan-select: nothing 'running'+stale
+      [], // 1: Phase-2 pending-drain: nothing pending
+      [], // 2: Phase-3 wakeup-select: nothing queued
+      // 3: Phase-4 reclaim-select — processing entry whose linked run failed.
+      // Shape follows the Phase-4 select (id + discussionId + company).
+      [
+        {
+          id: "e9",
+          discussionId: "disc-9",
+          companyId: "co-9",
+        },
+      ],
+    ]);
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    // The entry was terminalized → 'failed' (NOT pending) with a
+    // sourceInfo.extractionError jsonb_set payload (mirrors extraction.ts).
+    const failSets = db._sets.filter(entryFailReclaim);
+    expect(failSets).toHaveLength(1);
+    expect(failSets[0].extractionStatus).toBe("failed");
+    expect(failSets[0].sourceInfo).toBeDefined();
+    // It must NOT have been reset to 'pending' (no retry loop on a run that
+    // already failed).
+    expect(db._sets.some(entryReset)).toBe(false);
+
+    // discussion.extraction.failed LiveEvent published for the reclaimed entry.
+    expect(publishLiveEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "co-9",
+        type: "discussion.extraction.failed",
+        payload: expect.objectContaining({
+          discussionId: "disc-9",
+          entryId: "e9",
+          error: "reclaimed: extraction run failed (aoa-dispatcher)",
+        }),
+      }),
+    );
+    // It was NOT dispatched to the extraction consumer (terminal, not retry).
+    expect(consumerMock).not.toHaveBeenCalled();
+  });
+
+  it("Phase-4: nothing failed-linked → no FX1 terminalize writes, no failed LiveEvent", async () => {
+    const db = makeSeqDb([[], []]);
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+    expect(db._sets.some(entryFailReclaim)).toBe(false);
+    expect(publishLiveEventMock).not.toHaveBeenCalled();
   });
 });

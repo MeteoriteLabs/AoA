@@ -14,7 +14,7 @@ describe("ensureExtractionAgent", () => {
     expect(av[0].kind).toBe("aoa"); expect(av[0].role).toBe("general");
     expect(av[0].runtimeConfig.aoa.role).toBe("member");
     expect(typeof av[0].runtimeConfig.aoa.instruction).toBe("string");
-    expect(av[0].runtimeConfig.aoa.instruction).toContain("submit-extracted-items");
+    expect(av[0].runtimeConfig.aoa.instruction).toContain("submit_extracted_items");
     // D2: toolAllowlist must be set to exactly submit_extracted_items
     expect(av[0].runtimeConfig.aoa.toolAllowlist).toEqual([...EXTRACTION_AGENT_TOOL_ALLOWLIST]);
     expect(tv[0].kind).toBe("outbox");

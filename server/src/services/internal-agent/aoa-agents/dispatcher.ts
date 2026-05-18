@@ -1,4 +1,4 @@
-import { and, eq, lt, inArray, notInArray } from "drizzle-orm";
+import { and, eq, lt, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { discussionEntries, discussions, internalAgentRuns, agentWakeupRequests, agents } from "@armyofagents/db";
 import { listEnabledOutboxAgents } from "./triggers.js";
@@ -6,6 +6,7 @@ import { ensureExtractionAgent } from "./ensure-extraction-agent.js";
 import { runExtractionConsumer } from "../subagents/extraction-consumer.js";
 import { runAoaAgent } from "./runner.js";
 import { createLimiter } from "../subagents/concurrency-limiter.js";
+import { publishLiveEvent } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
 
 export interface DispatchOptions {
@@ -224,10 +225,98 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     );
   }
 
+  // ── Phase 4 (FX1/B1): disjoint reclaim — 'processing' entries whose LINKED
+  //    run is already 'failed' ────────────────────────────────────────────────
+  // Phase 1 handles entries whose linked run is still 'running' & stale (crash
+  // mid-flight) → reset to 'pending' for a retry. This phase handles a
+  // DIFFERENT terminal case: the runner's catch terminalized the RUN →
+  // 'failed' but (pre-FX1) left the entry stuck 'processing' forever — silent
+  // permanent loss. The run already failed, so retrying is wrong — terminalize
+  // the ENTRY → 'failed' (NOT 'pending') + emit the
+  // discussion.extraction.failed LiveEvent. Mirrors extraction.ts's failure
+  // branch (status + sourceInfo.extractionError + event; NO notification).
+  // Disjoint from Phase 1 (linked run 'running' vs 'failed' are mutually
+  // exclusive) and from the runner's own in-process terminalizer (this is the
+  // durable safety net for a run that died before it could run its catch —
+  // e.g. SIGKILL). Runs LAST: it neither feeds Phase 2 (output is terminal
+  // 'failed', not 'pending') nor interacts with the Phase 3 wakeup queue, so
+  // ordering is irrelevant to correctness. Each transition individually
+  // guarded; per-entry best-effort so one failure can't abort the tick.
+  const failedRunRows: Array<{
+    id: string;
+    discussionId: string;
+    companyId: string;
+  }> = await db
+    .select({
+      id: discussionEntries.id,
+      discussionId: discussionEntries.discussionId,
+      companyId: discussions.companyId,
+    })
+    .from(discussionEntries)
+    .innerJoin(discussions, eq(discussions.id, discussionEntries.discussionId))
+    .leftJoin(
+      internalAgentRuns,
+      eq(internalAgentRuns.id, discussionEntries.extractionRunId),
+    )
+    .where(
+      and(
+        eq(discussionEntries.extractionStatus, "processing"),
+        eq(internalAgentRuns.status, "failed"),
+      ),
+    )
+    .limit(200)
+    .then(
+      (
+        r: Array<{ id: string; discussionId: string; companyId: string }>,
+      ) => r,
+    );
+
+  if (failedRunRows.length > 0) {
+    const reclaimErr = "reclaimed: extraction run failed (aoa-dispatcher)";
+    for (const fr of failedRunRows) {
+      // Guarded on status='processing' so a concurrent transition is never
+      // clobbered.
+      await db
+        .update(discussionEntries)
+        .set({
+          extractionStatus: "failed",
+          sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(reclaimErr)}::jsonb)`,
+        })
+        .where(
+          and(
+            eq(discussionEntries.id, fr.id),
+            eq(discussionEntries.extractionStatus, "processing"),
+          ),
+        )
+        .catch((updateErr: unknown) => {
+          logger
+            .child({ subagent: "aoa-dispatcher" })
+            .error(
+              { err: updateErr, entryId: fr.id },
+              "Phase-4: failed to terminalize entry with failed linked run",
+            );
+        });
+      publishLiveEvent({
+        companyId: fr.companyId,
+        type: "discussion.extraction.failed",
+        payload: {
+          discussionId: fr.discussionId,
+          entryId: fr.id,
+          error: reclaimErr,
+        },
+      });
+    }
+  }
+
   logger
     .child({ subagent: "aoa-dispatcher" })
     .info(
-      { reclaimed: orphanRows.length, drained: rows.length, wakeups: wakeupRows.length },
+      {
+        reclaimed: orphanRows.length,
+        failedRunReclaimed: failedRunRows.length,
+        drained: rows.length,
+        wakeups: wakeupRows.length,
+      },
       "aoa dispatch complete",
     );
 }

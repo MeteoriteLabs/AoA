@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFile, unlink } from "node:fs/promises";
@@ -9,6 +9,7 @@ import { costService } from "../../costs.js";
 import { buildMcpConfig } from "../cli-mode.js";
 import { resolveAdapterExecutionContext } from "../../heartbeat.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
+import { publishLiveEvent } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; [k: string]: unknown; }
@@ -37,6 +38,10 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
   const startedAt = Date.now();
   let runId: string | null = null;
   let cfgPath: string | null = null;
+  // FX1/B1: id of the discussion entry this run atomically CLAIMED
+  // (pending→processing). Stays null on the not-claimable early-return so the
+  // catch terminalizer never touches an entry this run does not own.
+  let claimedEntryId: string | null = null;
   try {
     const agent = await db.select().from(agents).where(eq(agents.id, agentId)).then((r: any[]) => r[0] ?? null);
     if (!agent) { log.warn("aoa agent missing; skip"); return; }
@@ -70,6 +75,9 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         log.info("entry not claimable (already processing/terminal) — skipping");
         return;
       }
+      // Claim succeeded — this run now OWNS the entry. Record it so a later
+      // failure can terminalize it (FX1/B1).
+      claimedEntryId = payload.entryId;
     }
 
     const rc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
@@ -125,12 +133,64 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     });
   } catch (err) {
     log.error({ err }, "aoa run failed (isolated)");
+    const errMessage = err instanceof Error ? err.message : String(err);
     if (runId) {
       try {
         await db.update(internalAgentRuns)
           .set({ status: "failed", errorMessage: String((err as Error)?.message ?? err), durationMs: Date.now() - startedAt, completedAt: new Date() })
           .where(eq(internalAgentRuns.id, runId));
       } catch { /* swallow */ }
+    }
+    // FX1/B1: a failed extraction RUN must terminalize the entry it claimed —
+    // otherwise the entry is stuck 'processing' forever (silent permanent
+    // loss). Mirrors extraction.ts:639-659's failure branch VERBATIM (status
+    // 'failed' + sourceInfo.extractionError + the discussion.extraction.failed
+    // LiveEvent; NO notification — extraction.ts writes none). Guarded on
+    // extractionStatus='processing' AND extractionRunId=runId: extraction.ts
+    // guards by id only because it owns the lifecycle linearly; the runner is
+    // concurrent, so it must not clobber an entry a *different* run owns or
+    // one already terminalized. Entirely best-effort — the catch must never
+    // throw (consistent with the file's existing swallow style). `runId` is
+    // necessarily a non-null string whenever claimedEntryId is set (the atomic
+    // claim that set it also linked extractionRunId=runId); the `&& runId`
+    // guard makes that invariant explicit (and narrows the type for eq()).
+    if (claimedEntryId && runId) {
+      const claimedRunId = runId;
+      try {
+        let discussionId: string | null = null;
+        try {
+          const drow = await db
+            .select({ discussionId: discussionEntries.discussionId })
+            .from(discussionEntries)
+            .where(eq(discussionEntries.id, claimedEntryId));
+          discussionId = drow[0]?.discussionId ?? null;
+        } catch { /* swallow — terminalize on best-effort below */ }
+
+        await db
+          .update(discussionEntries)
+          .set({
+            extractionStatus: "failed",
+            sourceInfo: sql`jsonb_set(COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb), '{extractionError}', ${JSON.stringify(errMessage)}::jsonb)`,
+          })
+          .where(
+            and(
+              eq(discussionEntries.id, claimedEntryId),
+              eq(discussionEntries.extractionStatus, "processing"),
+              eq(discussionEntries.extractionRunId, claimedRunId),
+            ),
+          )
+          .catch((updateErr: unknown) => {
+            log.error({ err: updateErr }, "Failed to update entry status after extraction failure");
+          });
+
+        if (discussionId) {
+          publishLiveEvent({
+            companyId: payload.companyId,
+            type: "discussion.extraction.failed",
+            payload: { discussionId, entryId: claimedEntryId, error: errMessage },
+          });
+        }
+      } catch { /* terminalizer is best-effort; never escape the run boundary */ }
     }
   } finally {
     if (cfgPath) {

@@ -6,7 +6,7 @@ export const EXTRACTION_AGENT_NAME = "Discussion Extraction";
 export const EXTRACTION_INSTRUCTION =
   "You are the discussion-extraction agent. Read the discussion entry in your " +
   "context. Identify decisions, tasks, insights, context, references and " +
-  "preferences. Call the `submit-extracted-items` tool with the structured " +
+  "preferences. Call the `submit_extracted_items` tool with the structured " +
   "items. Do not output anything else.";
 
 // D2: explicit allowlist — extraction agent may ONLY call submit_extracted_items.
