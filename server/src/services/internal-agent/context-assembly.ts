@@ -42,6 +42,7 @@ export function contextAssemblyService(db: Db) {
         departmentContext?: string;
         conversationSummary?: string | null;
         contextTokenBudget?: number;
+        systemInstructions?: string;
       } = {},
     ): Promise<{ systemPrompt: string; estimatedTokens: number }> {
       const budget = options.contextTokenBudget ?? 8000;
@@ -64,7 +65,10 @@ export function contextAssemblyService(db: Db) {
       };
 
       // 1. System instructions (always included, highest priority)
-      addSection("Instructions", SYSTEM_INSTRUCTIONS);
+      const persona = options.systemInstructions && options.systemInstructions.trim().length > 0
+        ? options.systemInstructions
+        : SYSTEM_INSTRUCTIONS;
+      addSection("Instructions", persona);
 
       // 2. Company identity
       const company = await db
