@@ -9,6 +9,7 @@ import { contextAssemblyService } from "./context-assembly.js";
 import { loadCommanderPersona } from "./commander-context.js";
 import { ensureCommanderAgent } from "./aoa-agents/ensure-commander.js";
 import { summarizeViaCli } from "./cli-summarizer.js";
+import { memoryService } from "../memory.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -158,6 +159,9 @@ export function agentLoopService(db: Db) {
             ...(params.pageContext ? { pageContext: params.pageContext } : {}),
             ...(params.departmentContext ? { departmentContext: params.departmentContext } : {}),
             contextTokenBudget: (config as { contextTokenBudget?: number }).contextTokenBudget,
+            relevanceQuery: params.content,
+            memorySearch: (q: string) =>
+              memoryService(db).searchSemantic(params.companyId, q, { limit: 8 }),
           });
           assembledContent =
             `${assembled.systemPrompt}` +
