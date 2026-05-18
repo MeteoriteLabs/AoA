@@ -53,7 +53,7 @@ export async function summarizeViaCli(args: SummarizeArgs): Promise<string> {
       out += d.toString();
     });
 
-    child.on("close", (code: number) => {
+    child.on("close", (code: number | null) => {
       if (code === 0 && out.trim().length > 0) {
         resolve(out.trim());
       } else {
