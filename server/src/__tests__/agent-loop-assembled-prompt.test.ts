@@ -11,6 +11,7 @@ vi.mock("../services/internal-agent/conversation.js", () => ({
   conversationService: () => ({
     getOrCreateActive: async () => ({ id: "conv1", summarizedContext: null, summarizedUpToMessageId: null }),
     appendMessage: async () => ({ id: "m1" }),
+    getMessagesSince: async () => [],
   }),
 }));
 vi.mock("../services/internal-agent/commander-context.js", () => ({

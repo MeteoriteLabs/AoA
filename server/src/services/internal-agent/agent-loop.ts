@@ -140,13 +140,28 @@ export function agentLoopService(db: Db) {
           const persona = agentRow
             ? await loadCommanderPersona({ agent: agentRow, service: agentInstructionsService() })
             : null;
+          const history = await convService.getMessagesSince(
+            conversation.id,
+            (conversation as { summarizedUpToMessageId?: string | null }).summarizedUpToMessageId ?? null,
+            50,
+          );
+          const historyText = history
+            .map((m: { role: string; content?: string | null }) => (m.content ? `${m.role}: ${m.content}` : null))
+            .filter(Boolean)
+            .join("\n");
           const assembled = await contextAssemblyService(db).assembleContext(params.companyId, {
             ...(persona ? { systemInstructions: persona } : {}),
+            ...((conversation as { summarizedContext?: string | null }).summarizedContext
+              ? { conversationSummary: (conversation as { summarizedContext?: string | null }).summarizedContext }
+              : {}),
             ...(params.pageContext ? { pageContext: params.pageContext } : {}),
             ...(params.departmentContext ? { departmentContext: params.departmentContext } : {}),
             contextTokenBudget: (config as { contextTokenBudget?: number }).contextTokenBudget,
           });
-          assembledContent = `${assembled.systemPrompt}\n\n## User Message\n${params.content}`;
+          assembledContent =
+            `${assembled.systemPrompt}` +
+            (historyText ? `\n\n## Conversation So Far\n${historyText}` : "") +
+            `\n\n## User Message\n${params.content}`;
         } catch {
           // Any assembly failure → send the raw message (never hard-fail).
           assembledContent = params.content;
