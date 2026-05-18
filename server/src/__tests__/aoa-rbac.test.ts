@@ -22,6 +22,7 @@ const mockAgentService = vi.hoisted(() => ({
   list: vi.fn().mockResolvedValue([]),
   resolveByReference: vi.fn(),
   update: vi.fn(),
+  updatePermissions: vi.fn(),
   orgForCompany: vi.fn().mockResolvedValue([]),
   listConfigRevisions: vi.fn().mockResolvedValue([]),
   getConfigRevision: vi.fn(),
@@ -31,6 +32,17 @@ const mockAgentService = vi.hoisted(() => ({
   createApiKey: vi.fn(),
   revokeKey: vi.fn(),
   getKeyById: vi.fn(),
+}));
+
+const mockAgentInstructionsService = vi.hoisted(() => ({
+  getBundle: vi.fn(),
+  readFile: vi.fn(),
+  updateBundle: vi.fn(),
+  writeFile: vi.fn(),
+  deleteFile: vi.fn(),
+  exportFiles: vi.fn(),
+  ensureManagedBundle: vi.fn(),
+  materializeManagedBundle: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -49,16 +61,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
-  agentInstructionsService: () => ({
-    getBundle: vi.fn(),
-    readFile: vi.fn(),
-    updateBundle: vi.fn(),
-    writeFile: vi.fn(),
-    deleteFile: vi.fn(),
-    exportFiles: vi.fn(),
-    ensureManagedBundle: vi.fn(),
-    materializeManagedBundle: vi.fn(),
-  }),
+  agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => ({ canUser: vi.fn(), hasPermission: vi.fn() }),
   approvalService: () => ({}),
   companySkillService: () => ({ listRuntimeSkillEntries: vi.fn(), resolveSkillKeys: vi.fn().mockResolvedValue([]) }),
@@ -550,6 +553,340 @@ describe("AoA RBAC — M1/M2 (founder-gated PATCH + resume; spec §10)", () => {
       // assertRole must NOT be invoked for a kind='org' resume.
       expect(mockAssertRole).not.toHaveBeenCalled();
       expect(mockAgentService.resume).toHaveBeenCalledWith(AGENT_ID);
+    });
+  });
+});
+
+describe("AoA RBAC — FX6/MIN-1 (founder-gated permissions + instructions; spec §10)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // clearAllMocks does NOT drain queued mock*Once values. These handlers can
+    // reject before a queued actor-agent getById is consumed, so a stale
+    // once-value would leak into the next test. Fully reset every mock this
+    // suite drives so each test is hermetic (mirrors the M1/M2 suite).
+    mockAgentService.getById.mockReset();
+    mockAgentService.update.mockReset();
+    mockAgentService.updatePermissions.mockReset();
+    mockAgentService.getChainOfCommand.mockReset().mockResolvedValue([]);
+    mockAgentInstructionsService.updateBundle.mockReset();
+    mockAgentInstructionsService.writeFile.mockReset();
+    mockAgentInstructionsService.deleteFile.mockReset();
+    mockAssertRole.mockReset().mockResolvedValue(undefined);
+  });
+
+  const aoaAgent = {
+    id: AGENT_ID,
+    companyId: COMPANY_ID,
+    kind: "aoa",
+    name: "AoA Commander",
+    role: "general",
+    adapterType: "process",
+    adapterConfig: {},
+    runtimeConfig: {},
+    status: "idle",
+    permissions: {},
+  };
+
+  const orgAgent = {
+    id: AGENT_ID,
+    companyId: COMPANY_ID,
+    kind: "org",
+    name: "Worker",
+    role: "general",
+    adapterType: "process",
+    adapterConfig: {},
+    runtimeConfig: {},
+    status: "idle",
+    permissions: {},
+  };
+
+  // The CXO agent that an agent-actor key resolves to (req.actor.agentId).
+  // Pre-fix this agent passed /permissions (role === "cxo") and
+  // assertCanManageInstructionsPath has no kind check for a non-founder board
+  // actor — both were the open governance holes MIN-1 closes.
+  const cxoAgentRecord = {
+    id: agentActor.agentId,
+    companyId: COMPANY_ID,
+    kind: "org",
+    name: "Chief of Staff",
+    role: "cxo",
+    permissions: { canCreateAgents: true },
+  };
+
+  const bundleResult = {
+    bundle: {
+      agentId: AGENT_ID,
+      companyId: COMPANY_ID,
+      mode: "external",
+      rootPath: "/tmp/external",
+      managedRootPath: "/tmp/agent-1",
+      entryFile: "AGENTS.md",
+      resolvedEntryPath: "/tmp/external/AGENTS.md",
+      editable: true,
+      warnings: [],
+      legacyPromptTemplateActive: false,
+      legacyBootstrapPromptTemplateActive: false,
+      files: [],
+    },
+    adapterConfig: {
+      instructionsBundleMode: "external",
+      instructionsRootPath: "/tmp/external",
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: "/tmp/external/AGENTS.md",
+    },
+  };
+
+  // ── R1: PATCH /agents/:id/permissions ─────────────────────────────────────
+
+  describe("PATCH /agents/:id/permissions {kind:'aoa'}", () => {
+    it("(FX6-core) agent actor (cxo, NOT founder) → 403", async () => {
+      mockAgentService.getById.mockImplementation(async (lookupId: string) =>
+        lookupId === agentActor.agentId ? cxoAgentRecord : aoaAgent,
+      );
+
+      const res = await request(makeApp(agentActor))
+        .patch(`/api/agents/${AGENT_ID}/permissions`)
+        .send({ canCreateAgents: true });
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
+    });
+
+    it("non-founder board user → 403", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(aoaAgent);
+      mockAssertRole.mockRejectedValueOnce(forbidden("Requires one of: founder"));
+
+      const res = await request(makeApp(memberActor))
+        .patch(`/api/agents/${AGENT_ID}/permissions`)
+        .send({ canCreateAgents: true });
+
+      expect(res.status).toBe(403);
+      expect(mockAssertRole).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        COMPANY_ID,
+        "founder",
+      );
+      expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
+    });
+
+    it("founder board user → 200", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(aoaAgent);
+      mockAssertRole.mockResolvedValueOnce(undefined);
+      mockAgentService.updatePermissions.mockResolvedValueOnce({
+        ...aoaAgent,
+        permissions: { canCreateAgents: true },
+      });
+
+      const res = await request(makeApp(founderActor))
+        .patch(`/api/agents/${AGENT_ID}/permissions`)
+        .send({ canCreateAgents: true });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAssertRole).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        COMPANY_ID,
+        "founder",
+      );
+      expect(mockAgentService.updatePermissions).toHaveBeenCalled();
+    });
+  });
+
+  describe("PATCH /agents/:id/permissions {kind:'org'} — behaviour unchanged", () => {
+    it("agent actor (cxo) → 200 (org permissions NOT founder-gated)", async () => {
+      mockAgentService.getById.mockImplementation(async (lookupId: string) =>
+        lookupId === agentActor.agentId ? cxoAgentRecord : orgAgent,
+      );
+      mockAgentService.updatePermissions.mockResolvedValueOnce({
+        ...orgAgent,
+        permissions: { canCreateAgents: true },
+      });
+
+      const res = await request(makeApp(agentActor))
+        .patch(`/api/agents/${AGENT_ID}/permissions`)
+        .send({ canCreateAgents: true });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      // assertRole must NOT be invoked for a kind='org' target.
+      expect(mockAssertRole).not.toHaveBeenCalled();
+      expect(mockAgentService.updatePermissions).toHaveBeenCalled();
+    });
+
+    it("non-founder board user → 200 (no role gate pre/post for org)", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(orgAgent);
+      mockAgentService.updatePermissions.mockResolvedValueOnce({
+        ...orgAgent,
+        permissions: { canCreateAgents: true },
+      });
+
+      const res = await request(makeApp(memberActor))
+        .patch(`/api/agents/${AGENT_ID}/permissions`)
+        .send({ canCreateAgents: true });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAssertRole).not.toHaveBeenCalled();
+      expect(mockAgentService.updatePermissions).toHaveBeenCalled();
+    });
+  });
+
+  // ── R2: PATCH /agents/:id/instructions-path ───────────────────────────────
+
+  describe("PATCH /agents/:id/instructions-path {kind:'aoa'}", () => {
+    it("(FX6-core) agent actor (cxo, NOT founder) → 403", async () => {
+      mockAgentService.getById.mockImplementation(async (lookupId: string) =>
+        lookupId === agentActor.agentId ? cxoAgentRecord : aoaAgent,
+      );
+
+      const res = await request(makeApp(agentActor))
+        .patch(`/api/agents/${AGENT_ID}/instructions-path`)
+        .send({ path: "/tmp/AGENTS.md" });
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("non-founder board user → 403", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(aoaAgent);
+      mockAssertRole.mockRejectedValueOnce(forbidden("Requires one of: founder"));
+
+      const res = await request(makeApp(memberActor))
+        .patch(`/api/agents/${AGENT_ID}/instructions-path`)
+        .send({ path: "/tmp/AGENTS.md" });
+
+      expect(res.status).toBe(403);
+      expect(mockAssertRole).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        COMPANY_ID,
+        "founder",
+      );
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("founder board user → 200", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(aoaAgent);
+      mockAssertRole.mockResolvedValueOnce(undefined);
+      mockAgentService.update.mockResolvedValueOnce({
+        ...aoaAgent,
+        adapterType: "process",
+        adapterConfig: { instructions: "/tmp/AGENTS.md" },
+      });
+
+      const res = await request(makeApp(founderActor))
+        .patch(`/api/agents/${AGENT_ID}/instructions-path`)
+        .send({ path: "/tmp/AGENTS.md", adapterConfigKey: "instructions" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAssertRole).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        COMPANY_ID,
+        "founder",
+      );
+      expect(mockAgentService.update).toHaveBeenCalled();
+    });
+  });
+
+  describe("PATCH /agents/:id/instructions-path {kind:'org'} — behaviour unchanged", () => {
+    it("non-founder board user → 200 (board passes; no role gate for org)", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(orgAgent);
+      mockAgentService.update.mockResolvedValueOnce({
+        ...orgAgent,
+        adapterType: "process",
+        adapterConfig: { instructions: "/tmp/AGENTS.md" },
+      });
+
+      const res = await request(makeApp(memberActor))
+        .patch(`/api/agents/${AGENT_ID}/instructions-path`)
+        .send({ path: "/tmp/AGENTS.md", adapterConfigKey: "instructions" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      // assertRole must NOT be invoked for a kind='org' instructions-path edit.
+      expect(mockAssertRole).not.toHaveBeenCalled();
+      expect(mockAgentService.update).toHaveBeenCalled();
+    });
+  });
+
+  // ── R3: PATCH /agents/:id/instructions-bundle ─────────────────────────────
+
+  describe("PATCH /agents/:id/instructions-bundle {kind:'aoa'}", () => {
+    it("(FX6-core) agent actor (cxo, NOT founder) → 403", async () => {
+      mockAgentService.getById.mockImplementation(async (lookupId: string) =>
+        lookupId === agentActor.agentId ? cxoAgentRecord : aoaAgent,
+      );
+
+      const res = await request(makeApp(agentActor))
+        .patch(`/api/agents/${AGENT_ID}/instructions-bundle`)
+        .send({ mode: "external", rootPath: "/tmp/external" });
+
+      expect(res.status).toBe(403);
+      expect(mockAgentInstructionsService.updateBundle).not.toHaveBeenCalled();
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("non-founder board user → 403", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(aoaAgent);
+      mockAssertRole.mockRejectedValueOnce(forbidden("Requires one of: founder"));
+
+      const res = await request(makeApp(memberActor))
+        .patch(`/api/agents/${AGENT_ID}/instructions-bundle`)
+        .send({ mode: "external", rootPath: "/tmp/external" });
+
+      expect(res.status).toBe(403);
+      expect(mockAssertRole).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        COMPANY_ID,
+        "founder",
+      );
+      expect(mockAgentInstructionsService.updateBundle).not.toHaveBeenCalled();
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("founder board user → 200", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(aoaAgent);
+      mockAssertRole.mockResolvedValueOnce(undefined);
+      mockAgentInstructionsService.updateBundle.mockResolvedValueOnce(bundleResult);
+      mockAgentService.update.mockResolvedValueOnce({
+        ...aoaAgent,
+        adapterConfig: bundleResult.adapterConfig,
+      });
+
+      const res = await request(makeApp(founderActor))
+        .patch(`/api/agents/${AGENT_ID}/instructions-bundle`)
+        .send({ mode: "external", rootPath: "/tmp/external" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAssertRole).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        COMPANY_ID,
+        "founder",
+      );
+      expect(mockAgentInstructionsService.updateBundle).toHaveBeenCalled();
+      expect(mockAgentService.update).toHaveBeenCalled();
+    });
+  });
+
+  describe("PATCH /agents/:id/instructions-bundle {kind:'org'} — behaviour unchanged", () => {
+    it("non-founder board user → 200 (board passes; no role gate for org)", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(orgAgent);
+      mockAgentInstructionsService.updateBundle.mockResolvedValueOnce(bundleResult);
+      mockAgentService.update.mockResolvedValueOnce({
+        ...orgAgent,
+        adapterConfig: bundleResult.adapterConfig,
+      });
+
+      const res = await request(makeApp(memberActor))
+        .patch(`/api/agents/${AGENT_ID}/instructions-bundle`)
+        .send({ mode: "external", rootPath: "/tmp/external" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      // assertRole must NOT be invoked for a kind='org' instructions-bundle edit.
+      expect(mockAssertRole).not.toHaveBeenCalled();
+      expect(mockAgentInstructionsService.updateBundle).toHaveBeenCalled();
+      expect(mockAgentService.update).toHaveBeenCalled();
     });
   });
 });

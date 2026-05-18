@@ -319,8 +319,26 @@ export function agentRoutes(db: Db) {
     return path.resolve(cwd, trimmed);
   }
 
-  async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
+  async function assertCanManageInstructionsPath(
+    req: Request,
+    targetAgent: { id: string; companyId: string; kind?: string | null },
+  ) {
     assertCompanyAccess(req, targetAgent.companyId);
+    // Spec §10 governance: only founders may edit AoA agents (Commander +
+    // sub-agents). This is the single chokepoint for instructions path/bundle/
+    // file mutations, so the kind='aoa' gate lives here (mirrors the FX2
+    // assertCanUpdateAgent pattern). assertRole is a NO-OP for agent actors
+    // (rbac.ts), so an agent actor — and the unauthenticated board fall-through
+    // below — MUST be rejected explicitly here: without this, an ancestor
+    // manager agent or any non-founder board user could rewrite an AoA agent's
+    // instructions bundle. kind!=='aoa' path is byte-unchanged.
+    if (targetAgent.kind === "aoa") {
+      if (req.actor.type !== "board") {
+        throw forbidden("Only a founder may modify AoA agents");
+      }
+      await assertRole(db, req, targetAgent.companyId, "founder");
+      return;
+    }
     if (req.actor.type === "board") return;
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
@@ -1070,7 +1088,21 @@ export function agentRoutes(db: Db) {
     }
     assertCompanyAccess(req, existing.companyId);
 
-    if (req.actor.type === "agent") {
+    // Spec §10 governance: only founders may edit AoA agents (Commander +
+    // sub-agents). This handler uses neither shared authz helper, so the
+    // kind='aoa' gate is inline here, before any mutation/authz that could let
+    // a non-founder through. assertRole is a NO-OP for agent actors (rbac.ts),
+    // so the explicit non-board rejection is load-bearing: pre-fix a cxo agent
+    // (role==='cxo') passed the agent branch below and a non-founder board user
+    // had no gate at all, letting either toggle an AoA agent's canCreateAgents.
+    // Mirrors the FX2 assertCanUpdateAgent pattern. kind!=='aoa' byte-unchanged.
+    if (existing.kind === "aoa") {
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only a founder may modify AoA agents" });
+        return;
+      }
+      await assertRole(db, req, existing.companyId, "founder");
+    } else if (req.actor.type === "agent") {
       const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
       if (!actorAgent || actorAgent.companyId !== existing.companyId) {
         res.status(403).json({ error: "Forbidden" });
