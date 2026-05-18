@@ -8,6 +8,7 @@ import { agentInstructionsService } from "../agent-instructions.js";
 import { contextAssemblyService } from "./context-assembly.js";
 import { loadCommanderPersona } from "./commander-context.js";
 import { ensureCommanderAgent } from "./aoa-agents/ensure-commander.js";
+import { summarizeViaCli } from "./cli-summarizer.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -185,6 +186,19 @@ export function agentLoopService(db: Db) {
             role: "assistant",
             content: accumulatedAssistant,
           });
+        }
+
+        // Post-turn compaction (graceful: never blocks/raises into the turn).
+        try {
+          await convService.summarizeIfNeeded(conversation.id, (transcript) =>
+            summarizeViaCli({
+              cliTool: (config as { cliTool?: string }).cliTool ?? "claude_cli",
+              cheapModel: (config as { cheapModel?: string | null }).cheapModel ?? null,
+              transcript,
+            }),
+          );
+        } catch {
+          // swallow — a failed compaction must never affect the delivered reply
         }
       } catch (err: any) {
         yield {
