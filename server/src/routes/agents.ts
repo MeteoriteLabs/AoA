@@ -122,8 +122,24 @@ export function agentRoutes(db: Db) {
     return allowedByGrant || canCreateAgents(actorAgent);
   }
 
-  async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
+  async function assertCanUpdateAgent(
+    req: Request,
+    targetAgent: { id: string; companyId: string; kind?: string | null },
+  ) {
     assertCompanyAccess(req, targetAgent.companyId);
+    // Spec §10 governance: only founders may edit AoA agents (Commander +
+    // sub-agents). assertRole is a NO-OP for agent actors (rbac.ts), so an
+    // agent actor MUST be rejected explicitly here — calling assertRole alone
+    // would let a cxo/creator agent escalate by rewriting an AoA agent's
+    // runtimeConfig.aoa.toolAllowlist (the D2 least-privilege boundary),
+    // adapterType/adapterConfig, or status. kind!=='aoa' path is unchanged.
+    if (targetAgent.kind === "aoa") {
+      if (req.actor.type !== "board") {
+        throw forbidden("Only a founder may modify AoA agents");
+      }
+      await assertRole(db, req, targetAgent.companyId, "founder");
+      return;
+    }
     if (req.actor.type === "board") {
       await assertRole(db, req, targetAgent.companyId, "founder");
       return;
@@ -1324,6 +1340,9 @@ export function agentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (existing.kind === "aoa") {
+      await assertRole(db, req, existing.companyId, "founder");
+    }
 
     const agent = await svc.resume(id);
     if (!agent) {
