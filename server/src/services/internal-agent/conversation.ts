@@ -1,4 +1,4 @@
-import { and, eq, desc, sql } from "drizzle-orm";
+import { and, eq, desc, gt, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   internalAgentConversations,
@@ -80,6 +80,23 @@ export function conversationService(db: Db) {
         .orderBy(desc(internalAgentMessages.createdAt), desc(internalAgentMessages.id))
         .limit(limit)
         .then((rows: any[]) => rows.reverse());
+    },
+
+    async getMessagesSince(conversationId: string, sinceMessageId: string | null, limit = 50) {
+      const base = db
+        .select()
+        .from(internalAgentMessages)
+        .where(
+          sinceMessageId
+            ? and(eq(internalAgentMessages.conversationId, conversationId), gt(internalAgentMessages.id, sinceMessageId))
+            : eq(internalAgentMessages.conversationId, conversationId),
+        );
+      // Chronological; cap at `limit` most-recent then re-sort ascending.
+      const rows = await base
+        .orderBy(desc(internalAgentMessages.createdAt), desc(internalAgentMessages.id))
+        .limit(limit)
+        .then((r: any[]) => r.reverse());
+      return rows;
     },
 
     async summarizeIfNeeded(
