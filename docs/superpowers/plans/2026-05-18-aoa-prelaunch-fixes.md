@@ -8,6 +8,24 @@
 
 **Risk order:** FX1 (B1 BLOCKER + prompt/tool-name mismatch — both silently defeat real §17 output) → FX2 (M1+M2 security, same file) → FX3 (B2 dual-exec) → FX4 (M3 defense-in-depth) → FX5 (M4 liveness). Each independently committable; each `[verify@exec]` re-confirms its premise against landed code before coding (symbols authoritative, not line numbers).
 
+---
+
+## ✅ RESOLUTION STATUS (all FX1–FX5 complete, code-verified, 2026-05-18)
+
+Executed subagent-driven, strict TDD, controller code-verified every diff against landed source (never trusted reports). Two plan-spec errors caught by the FX1 implementer at [verify@exec] and controller-adjudicated (extraction.ts has NO notification → mirror status+sourceInfo+LiveEvent only; authorized superseded-test `aoa-ensure-extraction-agent.test.ts:17`). Full whole-program regression after FX5: **352 test files passed / 10 skipped (env+Windows-gated, by design) / 0 FAILED**, `tsc --noEmit` exit 0. Independent final review verdict: **SHIP** (0 BLOCKER, 0 MAJOR).
+
+| ID | Status | Commit | Result |
+|----|--------|--------|--------|
+| **B1** | ✅ RESOLVED | `c35d8413` | Runner failure path now atomically terminalizes the claimed entry → `failed` + sourceInfo + `discussion.extraction.failed` LiveEvent, guarded (`id AND status='processing' AND extractionRunId=runId`), best-effort (catch can't throw). Dispatcher Phase-4 reclaims `processing`+linked-`failed`-run entries → `failed` (not `pending`). Phase-1 #99 block byte-unchanged. No more silent permanent loss. |
+| **prompt/tool-name mismatch** | ✅ RESOLVED | `c35d8413` | Seeded `EXTRACTION_INSTRUCTION` now says `submit_extracted_items` (= the registered tool name + allowlist); drift-guard contract test added. Real §17 output works once an adapter is provisioned. |
+| **M1** | ✅ RESOLVED | `30163351` | `assertCanUpdateAgent` now rejects all agent actors AND non-founder board actors for `kind='aoa'` (explicit non-board rejection — `assertRole` is a no-op for agents). Centralized: covers PATCH `/agents/:id` + config-revision rollback. D2 toolAllowlist/adapter/status escalation closed. `kind='org'` byte-unchanged. |
+| **M2** | ✅ RESOLVED | `30163351` | `/agents/:id/resume` now has the `kind='aoa'`→founder gate `/pause` has. Non-founder can't reverse a founder/budget pause. |
+| **B2** | ✅ RESOLVED | `c6a8fd96` | `enqueueWakeup` refuses `kind='aoa'`/`'platform'` (skipped row + return null) — single chokepoint; an AoA agent can never be driven through the heartbeat runtime from any route. `enqueueAoaMentionWakeup`/`delegate` bypass it (unaffected). `kind='org'` byte-unchanged. |
+| **M3** | ✅ RESOLVED | `3b885625` | `submit_extracted_items` extends its single entry→discussion resolution with an innerJoin and gates ALL side-effects on `discussions.companyId === ctx.companyId` (error result on mismatch/not-found). Same-company byte-unchanged. |
+| **M4** | ✅ RESOLVED | `7df50bbb` | Dispatcher Phase-2 & Phase-3 drains now run concurrently (`Promise.all`, separate limiters); Phase-1 still first+awaited (ordering invariant); selects in original positional order (positional-mock tests untouched). Delegation/@mention no longer starved by extraction backlog. Per-company fairness tuning still deferred (spec §15). |
+| **NIT** layer/comment | ⏸️ logged | — | hardcoded `layer:'domain'` + a stale comment — cosmetic, deferred. |
+| **MIN-1** (new, from final review) | ⏸️ PRE-EXISTING, logged | — | `/agents/:id/permissions`, `/instructions-path`, `/instructions-bundle` lack a `kind='aoa'` founder gate. **Code-verified pre-existing** (byte-identical at pre-fix base `840f48c6`; NOT introduced/worsened by FX1–FX5) and **NOT the D2 boundary** (they touch `canCreateAgents`/`adapterConfig` instructions-path, not `runtimeConfig.aoa.toolAllowlist` — the actual M1 vector, which IS closed by FX2). Real but lower-severity governance surface; user decision: fix as FX6 vs tracked follow-up ticket.|
+
 **Verified interaction model (informs FX3 scope):** org agents run via the heartbeat runtime; aoa agents via the AoA dispatcher (Phase-2 outbox / Phase-3 wakeup-queue, `dispatcher.ts` filters `kind='aoa'`). Cross-kind *triggering* is intended via explicit channels (@mention→`enqueueAoaMentionWakeup`, `delegate_to_subagent`, shared product state) — those bypass `enqueueWakeup`. The forbidden case (B2) is an aoa agent executed by the *heartbeat* runtime. FX3 gates only that; it does not touch the legitimate channels.
 
 **Out of scope (nits only, logged):** hardcoded `layer:'domain'` in submit-extracted-items (cosmetic; downstream memory-layer routing) and a stale comment in `cli-mode.ts`/`agents.ts` — tracked, not fixed here.
