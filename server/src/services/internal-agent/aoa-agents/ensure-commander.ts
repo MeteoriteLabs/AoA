@@ -1,6 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, internalAgentConfig } from "@armyofagents/db";
+import { agentInstructionsService } from "../../agent-instructions.js";
+import { seedCommanderInstructionBundle } from "./seed-commander-bundle.js";
 
 export const COMMANDER_AGENT_NAME = "Commander";
 
@@ -82,6 +84,25 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
         .set({ runtimeConfig: updatedRc, updatedAt: new Date() })
         .where(eq(agents.id, agentId));
     }
+  }
+  // Seed the editable instruction bundle (idempotent; never clobbers edits).
+  // Runs for BOTH the just-created and the pre-existing (back-fill) paths.
+  try {
+    const row = await db
+      .select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((r: { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null }[]) => r[0]);
+    if (row) {
+      const nextAdapterConfig = await seedCommanderInstructionBundle({
+        agent: { id: row.id, companyId: row.companyId, name: row.name, adapterConfig: row.adapterConfig },
+        service: agentInstructionsService(),
+      });
+      await db.update(agents).set({ adapterConfig: nextAdapterConfig, updatedAt: new Date() }).where(eq(agents.id, agentId));
+    }
+  } catch {
+    // Seeding failure must not block Commander provisioning (graceful: the
+    // chat falls back to the SYSTEM_INSTRUCTIONS constant — M2).
   }
   await db.update(internalAgentConfig).set({ agentId, updatedAt: new Date() })
     .where(eq(internalAgentConfig.companyId, companyId));

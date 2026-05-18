@@ -1,11 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const { eqMock, andMock } = vi.hoisted(() => ({ eqMock: vi.fn((a:unknown,b:unknown)=>({eq:[a,b]})), andMock: vi.fn((...a:unknown[])=>({and:a})) }));
+const { eqMock, andMock, seedBundleFn } = vi.hoisted(() => ({
+  eqMock: vi.fn((a:unknown,b:unknown)=>({eq:[a,b]})),
+  andMock: vi.fn((...a:unknown[])=>({and:a})),
+  seedBundleFn: vi.fn(async (_args: any) => ({ instructionsBundle: { mode: "managed" } } as Record<string, unknown>)),
+}));
 vi.mock("drizzle-orm", () => ({ and: andMock, eq: eqMock }));
 vi.mock("@armyofagents/db", () => { const t=(n:string)=>new Proxy({},{get:(_x,p)=>typeof p==="string"?Symbol(`${n}.${p}`):undefined}); return { agents:t("agents"), internalAgentConfig:t("iac") }; });
+vi.mock("../services/internal-agent/aoa-agents/seed-commander-bundle.js", () => ({ seedCommanderInstructionBundle: seedBundleFn }));
+vi.mock("../services/agent-instructions.js", () => ({
+  agentInstructionsService: vi.fn(() => ({
+    ensureWritableBundle: vi.fn(async () => ({ adapterConfig: { instructionsBundle: { mode: "managed" } }, state: { rootPath: null, entryFile: "AGENTS.md" } })),
+  })),
+}));
 import { ensureCommanderAgent, COMMANDER_TOOL_ALLOWLIST } from "../services/internal-agent/aoa-agents/ensure-commander.js";
 function sel(rows:unknown[]){const c:any={};c.from=()=>c;c.where=()=>c;c.then=(r:(v:unknown[])=>unknown)=>Promise.resolve(rows).then(r);return c;}
 describe("ensureCommanderAgent", () => {
-  beforeEach(() => { eqMock.mockClear(); andMock.mockClear(); });
+  beforeEach(() => { eqMock.mockClear(); andMock.mockClear(); seedBundleFn.mockClear(); });
   it("returns existing commander id, no insert (toolAllowlist already set → no update)", async () => {
     const insert = vi.fn();
     const update = vi.fn(()=>({set:()=>({where:()=>Promise.resolve([])})}));
@@ -49,5 +59,20 @@ describe("ensureCommanderAgent", () => {
     expect(agentRcUpdate.runtimeConfig.aoa.toolAllowlist).toContain("delegate_to_subagent");
     // role must be preserved
     expect(agentRcUpdate.runtimeConfig.aoa.role).toBe("lead");
+  });
+  it("seeds the commander instruction bundle and persists the linked adapterConfig", async () => {
+    const setCalls: unknown[] = [];
+    const db = {
+      select: () => sel([{ id: "cmd1", runtimeConfig: { aoa: { toolAllowlist: ["x"] } }, companyId: "c1", name: "Commander", adapterConfig: {} }]),
+      update: () => ({ set: (v: unknown) => { setCalls.push(v); return { where: () => Promise.resolve([]) }; } }),
+      insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "cmd1" }]) }) }),
+    };
+    const { ensureCommanderAgent: eca } = await import("../services/internal-agent/aoa-agents/ensure-commander.js");
+    const id = await eca(db as any, "c1");
+    expect(id).toBe("cmd1");
+    expect(seedBundleFn).toHaveBeenCalled();
+    const calledAgentId = seedBundleFn.mock.calls[0]?.[0]?.agent?.id;
+    expect(calledAgentId).toBe("cmd1");
+    expect(setCalls.some((c: any) => c.adapterConfig?.instructionsBundle)).toBe(true);
   });
 });
