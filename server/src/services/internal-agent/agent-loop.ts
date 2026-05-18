@@ -50,6 +50,10 @@ export interface ChatInput {
  * - Persist the inbound user message (for history + audit)
  * - Fetch the company's Commander config and surface "not configured" errors
  * - Dispatch to cli-mode, forwarding its stream chunks to the caller
+ * - Persist the assistant turn after a clean stream (MX-chatpersist):
+ *   cli-mode streams the reply but never writes it back, so the
+ *   conversation-owning layer accumulates the text chunks and appends one
+ *   role:"assistant" message (skipped on empty / error-only / throw)
  *
  * Responsibilities moved to cli-mode.ts:
  * - Session management, CLI subprocess spawn + stdin piping
@@ -102,8 +106,38 @@ export function agentLoopService(db: Db) {
           return;
         }
 
-        // 4. Dispatch to CLI mode (the only execution path post-Sprint-2A)
-        yield* cliService.chat(params, config);
+        // 4. Dispatch to CLI mode (the only execution path post-Sprint-2A).
+        //
+        // MX-chatpersist: agent-loop OWNS the conversation, so it is the
+        // correct layer to persist the assistant turn. cli-mode streams the
+        // reply to the caller but never writes it back (its accumulatedText
+        // was dead). We forward every chunk UNCHANGED (SSE/streaming stays
+        // byte-identical for claude AND codex — we only ADD post-stream
+        // persistence here; cli-mode spawn/args/parsing is untouched) and
+        // separately accumulate type:"text" deltas. After a CLEAN stream
+        // completion, if there is non-empty assistant text, append one
+        // role:"assistant" message. Nothing is persisted on the empty,
+        // error-only, or mid-stream-throw paths (the catch below handles
+        // throws; a partial accumulation is intentionally discarded so a
+        // failed turn never leaves a truncated assistant message — the
+        // persisted user turn + the streamed error are the durable record).
+        let accumulatedAssistant = "";
+        for await (const chunk of cliService.chat(params, config)) {
+          if (chunk.type === "text") accumulatedAssistant += chunk.delta;
+          yield chunk;
+        }
+
+        if (accumulatedAssistant.trim()) {
+          // Assistant replies have no originating page / department-persona
+          // context (those describe where the USER was), so we omit them —
+          // appendMessage defaults the optional fields to null, matching the
+          // internal_agent_messages schema. role:"assistant" is a valid role
+          // per the schema's role enum.
+          await convService.appendMessage(conversation.id, {
+            role: "assistant",
+            content: accumulatedAssistant,
+          });
+        }
       } catch (err: any) {
         yield {
           type: "error",
