@@ -1,0 +1,67 @@
+import { describe, it, expect } from "vitest";
+import {
+  buildMcpBridgeSpec,
+  buildMcpConfig,
+} from "../services/internal-agent/cli-mode.js";
+
+// ── MX1: provider-neutral buildMcpBridgeSpec seam ─────────────────────────────
+//
+// buildMcpBridgeSpec exposes the already-neutral inner MCP server spec
+// ({command,args,env}) that buildMcpConfig wraps. This milestone is purely
+// additive — buildMcpConfig's output must remain byte-identical (it becomes a
+// thin claude {mcpServers:{aoa:spec}} wrapper over buildMcpBridgeSpec).
+
+describe("buildMcpBridgeSpec", () => {
+  const params = {
+    companyId: "c",
+    userId: "u",
+    userRole: "founder",
+    enabledCapabilities: ["discussion_processing"],
+    bridgeEntrypoint: "/b.js",
+    agentKind: "aoa",
+    toolAllowlist: ["submit_extracted_items"],
+  } as const;
+
+  it("produces the neutral {command,args,env} inner spec", () => {
+    // Mirror cli-mode.ts's exact conditional-omission for DATABASE_URL so the
+    // assertion is robust to its presence/absence in the test environment.
+    const expectedEnv: Record<string, string> = {
+      AOA_SESSION_COMPANY_ID: "c",
+      AOA_SESSION_USER_ID: "u",
+      AOA_SESSION_USER_ROLE: "founder",
+      AOA_SESSION_ENABLED_CAPABILITIES: "discussion_processing",
+      AOA_AGENT_KIND: "aoa",
+      AOA_TOOL_ALLOWLIST: "submit_extracted_items",
+      ...(process.env.DATABASE_URL
+        ? { DATABASE_URL: process.env.DATABASE_URL }
+        : {}),
+    };
+
+    expect(buildMcpBridgeSpec(params)).toEqual({
+      command: "node",
+      args: ["/b.js"],
+      env: expectedEnv,
+    });
+  });
+
+  it("omits AOA_AGENT_KIND / AOA_TOOL_ALLOWLIST when not provided (matches cli-mode conditionals)", () => {
+    const spec = buildMcpBridgeSpec({
+      companyId: "c",
+      userId: "u",
+      userRole: "founder",
+      enabledCapabilities: [],
+      bridgeEntrypoint: "/b.js",
+    });
+    expect(spec.command).toBe("node");
+    expect(spec.args).toEqual(["/b.js"]);
+    expect(spec.env.AOA_SESSION_ENABLED_CAPABILITIES).toBe("");
+    expect("AOA_AGENT_KIND" in spec.env).toBe(false);
+    expect("AOA_TOOL_ALLOWLIST" in spec.env).toBe(false);
+  });
+
+  it("buildMcpConfig is a thin {mcpServers:{aoa:spec}} wrapper over buildMcpBridgeSpec", () => {
+    expect(buildMcpConfig(params)).toEqual({
+      mcpServers: { aoa: buildMcpBridgeSpec(params) },
+    });
+  });
+});

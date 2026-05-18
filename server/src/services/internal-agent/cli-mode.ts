@@ -71,28 +71,49 @@ interface McpConfig {
   };
 }
 
+/**
+ * Provider-neutral inner MCP server spec ({command,args,env}). This shape is
+ * already provider-agnostic; later milestones reuse it to wire codex/opencode
+ * MCP bridges without going through claude's mcpServers.aoa envelope.
+ */
+export interface McpBridgeSpec {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
+/**
+ * Build the provider-neutral MCP bridge spec. The env construction is the
+ * canonical AoA bridge contract (session identity + capability gate + D2
+ * tool allowlist + DATABASE_URL inheritance). buildMcpConfig wraps this in
+ * the claude-shaped {mcpServers:{aoa:...}} envelope.
+ */
+export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
+  return {
+    command: "node",
+    args: [params.bridgeEntrypoint],
+    env: {
+      AOA_SESSION_COMPANY_ID: params.companyId,
+      AOA_SESSION_USER_ID: params.userId,
+      AOA_SESSION_USER_ROLE: params.userRole,
+      // C13: thread capability set into the bridge so executeTool can
+      // gate on it. Comma-separated; bridge parses on the other side.
+      AOA_SESSION_ENABLED_CAPABILITIES: params.enabledCapabilities.join(","),
+      // D2: per-agent tool allowlist for AoA agents. agentKind='aoa'
+      // activates default-deny; toolAllowlist is the explicit permit set.
+      ...(params.agentKind ? { AOA_AGENT_KIND: params.agentKind } : {}),
+      ...(params.toolAllowlist && params.toolAllowlist.length > 0
+        ? { AOA_TOOL_ALLOWLIST: params.toolAllowlist.join(",") }
+        : {}),
+      ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
+    },
+  };
+}
+
 export function buildMcpConfig(params: McpConfigParams): McpConfig {
   return {
     mcpServers: {
-      aoa: {
-        command: "node",
-        args: [params.bridgeEntrypoint],
-        env: {
-          AOA_SESSION_COMPANY_ID: params.companyId,
-          AOA_SESSION_USER_ID: params.userId,
-          AOA_SESSION_USER_ROLE: params.userRole,
-          // C13: thread capability set into the bridge so executeTool can
-          // gate on it. Comma-separated; bridge parses on the other side.
-          AOA_SESSION_ENABLED_CAPABILITIES: params.enabledCapabilities.join(","),
-          // D2: per-agent tool allowlist for AoA agents. agentKind='aoa'
-          // activates default-deny; toolAllowlist is the explicit permit set.
-          ...(params.agentKind ? { AOA_AGENT_KIND: params.agentKind } : {}),
-          ...(params.toolAllowlist && params.toolAllowlist.length > 0
-            ? { AOA_TOOL_ALLOWLIST: params.toolAllowlist.join(",") }
-            : {}),
-          ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
-        },
-      },
+      aoa: buildMcpBridgeSpec(params),
     },
   };
 }
