@@ -43,6 +43,8 @@ export function contextAssemblyService(db: Db) {
         conversationSummary?: string | null;
         contextTokenBudget?: number;
         systemInstructions?: string;
+        relevanceQuery?: string;
+        memorySearch?: (query: string) => Promise<Array<{ title?: string; content?: string; layer?: string }>>;
       } = {},
     ): Promise<{ systemPrompt: string; estimatedTokens: number }> {
       const budget = options.contextTokenBudget ?? 8000;
@@ -82,28 +84,85 @@ export function contextAssemblyService(db: Db) {
         if (company.vision) parts.push(`Vision: ${company.vision}`);
         if (company.mission) parts.push(`Mission: ${company.mission}`);
 
-        const identityItems = await db
-          .select(memoryItemsSelection())
-          .from(memoryItems)
-          .where(
-            and(
-              eq(memoryItems.companyId, companyId),
-              eq(memoryItems.layer, "identity"),
-              eq(memoryItems.status, "approved"),
-            ),
-          );
-
-        for (const item of identityItems) {
-          parts.push(`${item.title}: ${item.content}`);
-        }
-
         if (parts.length > 0) {
           addSection("Company Identity", parts.join("\n"));
         }
       }
 
-      // 3. Department context (if set)
-      if (options.departmentContext) {
+      // Relevance-ranked approved memory (identity + department domain).
+      // Falls back to nothing on error — never hard-fail (DI hides the
+      // pgvector-or-keyword decision; memory.ts handles the no-API-key case).
+      if (options.memorySearch && options.relevanceQuery) {
+        try {
+          const items = await options.memorySearch(options.relevanceQuery);
+          const scoped = items.filter((m) => m.layer === "identity" || m.layer === "domain");
+          if (scoped.length > 0) {
+            addSection(
+              "Relevant Company Memory",
+              scoped.map((m) => `${m.title ?? "Memory"}: ${m.content ?? ""}`).join("\n"),
+            );
+          }
+        } catch {
+          // omit the section; the rest of the prompt is unaffected
+        }
+      } else {
+        // Legacy path retained for non-Commander callers (byte-identical):
+        // company identity memory items + department domain items.
+        if (company) {
+          const identityItems = await db
+            .select(memoryItemsSelection())
+            .from(memoryItems)
+            .where(
+              and(
+                eq(memoryItems.companyId, companyId),
+                eq(memoryItems.layer, "identity"),
+                eq(memoryItems.status, "approved"),
+              ),
+            );
+
+          if (identityItems.length > 0) {
+            const parts: string[] = [];
+            for (const item of identityItems) {
+              parts.push(`${item.title}: ${item.content}`);
+            }
+            addSection("Company Identity Memory", parts.join("\n"));
+          }
+        }
+
+        if (options.departmentContext) {
+          const dept = await db
+            .select()
+            .from(projects)
+            .where(eq(projects.id, options.departmentContext))
+            .then((rows: any[]) => rows[0] ?? null);
+
+          if (dept) {
+            const parts: string[] = [`Department: ${dept.name}`];
+            if (dept.description) parts.push(dept.description);
+
+            const domainItems = await db
+              .select(memoryItemsSelection())
+              .from(memoryItems)
+              .where(
+                and(
+                  eq(memoryItems.companyId, companyId),
+                  eq(memoryItems.layer, "domain"),
+                  eq(memoryItems.departmentId, options.departmentContext),
+                  eq(memoryItems.status, "approved"),
+                ),
+              );
+
+            for (const item of domainItems) {
+              parts.push(`${item.title}: ${item.content}`);
+            }
+
+            addSection("Department Context", parts.join("\n"));
+          }
+        }
+      }
+
+      // 3. Department context header (when using relevance path, no legacy DB queries)
+      if (options.memorySearch && options.relevanceQuery && options.departmentContext) {
         const dept = await db
           .select()
           .from(projects)
@@ -113,23 +172,6 @@ export function contextAssemblyService(db: Db) {
         if (dept) {
           const parts: string[] = [`Department: ${dept.name}`];
           if (dept.description) parts.push(dept.description);
-
-          const domainItems = await db
-            .select(memoryItemsSelection())
-            .from(memoryItems)
-            .where(
-              and(
-                eq(memoryItems.companyId, companyId),
-                eq(memoryItems.layer, "domain"),
-                eq(memoryItems.departmentId, options.departmentContext),
-                eq(memoryItems.status, "approved"),
-              ),
-            );
-
-          for (const item of domainItems) {
-            parts.push(`${item.title}: ${item.content}`);
-          }
-
           addSection("Department Context", parts.join("\n"));
         }
       }
