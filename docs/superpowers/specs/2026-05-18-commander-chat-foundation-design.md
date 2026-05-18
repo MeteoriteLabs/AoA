@@ -37,7 +37,7 @@ Net: the Commander chat is the most bare-bones path in the system — no persona
 - Interactive "ask the user with option buttons" mechanism; new tools (create team, browse/install marketplace); audit logging; autonomy-level wiring. (Separate later specs.)
 - Memory **folders** as a retrieval key, and the `active_context`/`working` memory layers in per-turn injection.
 
-**Locked decisions honored:** Decision #15/#52 (agents cannot write company memory directly — only propose `pending`); Decision #91 (API-mode adapters removed; provider SDKs are extraction/embedding only); Decision #87 (`runtimeConfig.contextMode`); the prior MX invariant that the claude/codex **spawn shape stays byte-identical** (only prompt content may change).
+**Locked decisions honored:** Decision #15/#52 (agents cannot write company memory directly — only propose `pending`); Decision #91 (API-mode adapters removed; provider SDKs are extraction/embedding only); the prior MX invariant that the claude/codex **spawn shape stays byte-identical** (only prompt content may change). Note: `runtimeConfig.contextMode` (Decision #87) is an AoA-agent *runner* concept; the internal-agent chat is sized by `internal_agent_config.contextTokenBudget` instead — do not conflate them.
 
 ## Approach decision
 
@@ -48,6 +48,10 @@ Net: the Commander chat is the most bare-bones path in the system — no persona
 ## Architecture
 
 A single **chat context assembler** (the revived/extended `context-assembly.ts`) with one responsibility: given conversation + company + Commander bundle, produce the final per-turn prompt. `agent-loop.ts` orchestrates (load bundle, load history-since-marker, call the assembler, materialize skills, trigger post-turn compaction). `cli-mode.ts` sends the assembled prompt through the existing per-adapter channel unchanged in shape. The compaction summarizer sits behind a thin interface with a CLI-backed implementation (testable, swappable).
+
+**Conversation identity:** there is exactly one active conversation per **(companyId, userId)** — `conversation.ts:getOrCreateActive` keys on `(companyId, userId, status='active')`. Different users in the same company have independent histories. Starting a fresh chat uses the existing `reset()` (archives the active conversation, opens a new empty one); this spec adds no new reset UI. The assembler is a **pure function** returning the prompt string (so unit tests inspect it directly).
+
+**Token budget:** the assembler budget is `internal_agent_config.contextTokenBudget` (the configurable per-company value; `assembleContext` already defaults it to `8000` at `:47`). The plan wires the configured value through rather than hardcoding 8000.
 
 ### Per-turn assembled prompt
 
@@ -72,21 +76,26 @@ Skills are materialized as files in a managed skills directory referenced by `TO
 
 Resolve Commander's seeded + user-attached skill keys via the existing `company-skills.ts` resolution (the same path `heartbeat.ts` uses). Materialize them as markdown files in a managed skills directory visible to the chat's CLI run — mirroring the adapter `skillsDir` pattern (`heartbeat.ts:749,3104` — "adapters materialize `context.skills` as files in `skillsDir`"), analogous to how `cli-mode.ts` already manages a per-session `CODEX_HOME`. The Skills UI is reused unchanged for attaching skills. No new skill machinery; this is net-new wiring for the chat path only.
 
+**Lifecycle:** the materialized skills directory is a managed per-session artifact reaped by the **existing** idle/session cleanup that already reaps the codex `CODEX_HOME`/claude tmp config (`cli-session-store`), OR regenerated per turn — the plan picks one at `[verify@exec]`; no new cleanup machinery is introduced.
+
 ## Section 3 — Conversation memory & compaction (Notebook 1)
 
 - Each turn carries: `summarizedContext` (compacted older turns) + verbatim messages **since `summarizedUpToMessageId`** + the new message. Add a "messages since marker" query to `conversation.ts` (today `getRecentMessages:75` returns last 50 ignoring the marker, which would overlap the summary).
 - After each clean turn, if message count exceeds `MESSAGE_THRESHOLD` (20), run compaction: summarize the pre-window messages, store `summarizedContext` + advance `summarizedUpToMessageId`.
 - **Compaction LLM:** `summarizeIfNeeded` currently requires an API `LLMProvider` the CLI path lacks. Change it to summarize **via the same CLI adapter the chat uses, with the cheap model** (`internal_agent_config.cheapModel`, already present in the validator). Behind a thin summarizer interface so it is unit-testable and swappable.
+- **The summarization invocation is a plain, tool-less prompt** — it must NOT attach the MCP bridge / `--mcp-config` / tool surface (a summary must never trigger tool calls, and the bridge is a separate process). It is a distinct, minimal CLI spawn from a chat turn.
 
 ## Section 4 — Company memory injection (Notebook 2)
 
-- Upgrade the assembler's company-memory section from the blunt "inject all approved identity + department domain" (`context-assembly.ts:81-99,113-129`) to **relevance retrieval**: embed the user's latest message and fetch the top-K most relevant **approved** memory items (K = a small configurable count; exact default set in the implementation plan) via the existing `memory.ts` `searchSemantic` (pgvector cosine `<=>` at `:294,300`), respecting layer + approval gating.
+- Upgrade the assembler's company-memory section from the blunt "inject all approved identity + department domain" (`context-assembly.ts:81-99,113-129`) to **relevance retrieval**: embed the user's latest message and fetch the top-K most relevant memory items (K = a small configurable count; exact default set in the implementation plan) via the existing `memory.ts` `searchSemantic` (pgvector cosine `<=>` at `:294,300`). **Preserve the current layer/approval scope** — only `status='approved'` items in the `identity` + department `domain` layers (the same scope `context-assembly` uses today), just relevance-ranked instead of dumped wholesale. Do **not** silently widen to all layers.
 - **Graceful fallback:** no embedding API key → `searchSemantic` already falls back to keyword `ilike` search (`memory.ts:240,250-251`; `embeddings.ts:28-30` returns null without a key). Reuse this; do not reinvent.
 - Folders and the `active_context`/`working` layers in injection are out of scope (folders remain a UI organization concept). The agent retains its on-demand `query_memory`/`find_similar_memory` MCP tools (`memory-tools.ts:26`) for deeper lookups; `create_memory` stays `pending` (Decision #15/#52).
 
 ## Section 5 — Prompt wiring (claude & codex, adapter-uniform)
 
-`agent-loop` produces one assembled prompt; `cli-mode.ts` sends it through the **existing** per-adapter channel with **no spawn-shape change**: claude `-p <assembled>`, codex `exec --json -` stdin. No adapter-specific flags (e.g. no claude `--system-prompt`) so the verified-working invocation stays byte-stable for claude *and* codex — only prompt **content** changes. Codex `resume <sessionId>` continues to work as an extra continuity layer but the AoA-owned assembled context is the source of truth, so behavior is consistent across CLIs.
+`agent-loop` produces one assembled prompt; `cli-mode.ts` sends it through the **existing** per-adapter channel with **no spawn-shape change**: claude `-p <assembled>`, codex `exec --json -` stdin. No adapter-specific flags (e.g. no claude `--system-prompt`) so the verified-working invocation stays byte-stable for claude *and* codex — only prompt **content** changes.
+
+**Codex `resume` / double-history hazard:** AoA now re-feeds the *full* assembled context (summary + verbatim history) every turn. Codex `resume <sessionId>` also carries codex's own session memory — so naively keeping it would feed the conversation **twice** (token waste + confusion). For the Foundation, treat **both** claude and codex as **stateless per turn**: AoA-owned assembled context is the single source of truth; the chat does not depend on codex `resume` for conversation memory. Whether codex `resume` is dropped for the chat or kept only as a harmless no-op is a `[verify@exec]` decision, but the design intent is uniform stateless + AoA-owned history (no double-feed).
 
 ## Section 6 — Error handling & graceful degradation (never hard-fail the chat)
 
@@ -140,9 +149,19 @@ Resolve Commander's seeded + user-attached skill keys via the existing `company-
 7. Company-memory injection upgraded to **semantic retrieval** with keyword fallback; folders + temporary layers deferred.
 8. Memory guidance lives in **TOOLS.md + a SOUL.md principle** — no new bundle file.
 
+## Open items to confirm at `[verify@exec]` (plan author)
+
+These are intentionally left for the implementation plan to lock against landed code — none change the design:
+
+1. **No schema migration expected.** Seeding/back-fill reuses the existing instructions-bundle storage (files on disk under the agent's `rootPath` + `adapterConfig` linkage) — confirm no Drizzle migration is required (if one *is*, it goes in `packages/db/src/schema/` via `pnpm db:generate`, never raw SQL).
+2. **Exact `agentInstructionsService` read API** (entry file `AGENTS.md`, `listFiles`/`readFile` shape, how `rootPath` resolves for a `kind='aoa'` Commander row) — confirm against `server/src/services/agent-instructions.ts` before wiring.
+3. **Skills-dir lifecycle** — per-session-reaped vs regenerated-per-turn (Section 2) — pick one, reusing existing cleanup.
+4. **Concurrency policy** — two in-flight turns for the same conversation (history read before the prior assistant message persists; racing compactions): serialize per conversation, or accept last-writer. Pick and test the chosen behavior.
+5. **Codex `resume` for the chat** — drop vs harmless no-op (Section 5), preserving uniform stateless behavior.
+
 ## Risks & mitigations
 
-- **Per-turn token cost** (re-feeding history): mitigated by compaction (threshold 20) and the existing `assembleContext` 8000-token budget + truncation.
+- **Per-turn token cost** (re-feeding history): mitigated by compaction (threshold 20) and the configurable `internal_agent_config.contextTokenBudget` (default 8000) + `assembleContext` truncation.
 - **Extra CLI call for compaction:** infrequent (only when crossing the threshold); uses the cheap model; failure degrades gracefully.
 - **Regression on the proven claude/codex chat path:** mitigated by the byte-identical-spawn-shape invariant (content-only change) and explicit regression assertions; **no edits to `runner.ts` or the §17 extraction path** (chat-only spec).
 - **Bundle/skill provisioning on existing companies:** seeding must be idempotent and back-fill existing Commander rows, not only new ones.
