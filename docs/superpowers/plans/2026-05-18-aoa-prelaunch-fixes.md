@@ -123,6 +123,21 @@ Executed subagent-driven, strict TDD, controller code-verified every diff agains
 
 ---
 
+## FX7 — MIN-2 (Phase-2 finding): AoA detail page has no founder lifecycle control
+
+**Finding (Phase-2 UI verification):** the AoA agent detail / Configure / Commander-Team UI exposes NO manual pause/resume/terminate control. Backend governance (M1/M2/FX2 founder-gates + D3 auto-pause) works (verified: API pause/resume HTTP 200, idle→paused→idle), but a founder cannot exercise it from the UI. Pre-existing Plan-C UI scope, not a FX1–FX6 regression. User decision: add the control.
+
+**Design (reuse org pattern; minimal):** `AgentDetailCore` already has a `headerActions?: React.ReactNode` slot (AgentDetailCore.tsx:23, rendered :86-88) that `AoaAgentDetail` does not pass. Add a founder-gated lifecycle control to that slot, mirroring the org `AgentDetail` pattern (AgentDetail.tsx:345-374 `agentAction` mutation; :473-556 Pause/Resume toggle-by-status + overflow Terminate) using `agentsApi.pause/resume/terminate` (api/agents.ts:113-115) + the existing query invalidations. **Hard constraint: NO "Invoke" button** — manually invoking a `kind='aoa'` agent goes through the heartbeat runtime, exactly the runtime-boundary violation FX3 closes (`enqueueWakeup` now refuses aoa); only Pause/Resume/Terminate. Founder-gate the control via the company permissions context (same `permissions.isFounder` the CommanderTeamTab "New AoA Agent" button uses) — hide/disable for non-founder (backend FX2/M2 already enforces; UI gate is for consistency/UX). Status reflected via the existing `StatusBadge`.
+
+**Files:** Modify `ui/src/pages/AoaAgentDetail.tsx` (add `headerActions` with the lifecycle control + the `agentAction` mutation). Test: `ui/src/__tests__/AoaAgentDetail.test.tsx`. UI test cmd: `cd <worktree> && npx vitest run ui/src/__tests__/AoaAgentDetail.test.tsx`.
+
+- [ ] **Step 1 [verify@exec]:** Read `AoaAgentDetail.tsx`, `AgentDetailCore.tsx` (the `headerActions` slot), `AgentDetail.tsx:340-560` (org lifecycle pattern), `api/agents.ts:113-115`, the permissions/`isFounder` context (how CommanderTeamTab gates "New AoA Agent"), and `AoaAgentDetail.test.tsx` harness. Confirm the slot + pattern + that no "Invoke" should be added.
+- [ ] **Step 2 (failing tests):** in `AoaAgentDetail.test.tsx`: idle aoa agent + founder → a "Pause" control renders and clicking calls `agentsApi.pause`; `status:'paused'` → "Resume" renders, calls `agentsApi.resume`; Terminate present (overflow) calls `agentsApi.terminate`; non-founder → control hidden/disabled; **no "Invoke" affordance for aoa**. Run → FAIL.
+- [ ] **Step 3 (implement)** the `headerActions` lifecycle control + mutation, founder-gated, no Invoke. Mirror org invalidation/onError.
+- [ ] **Step 4 (run → PASS)** new + existing `AoaAgentDetail.test.tsx` green.
+- [ ] **Step 5 (regression):** `cd <worktree> && npx vitest run ui/src/__tests__/AoaAgentDetail.test.tsx ui/src/__tests__/CommanderTeamTab.test.tsx` + the server suite stays green (no server change). UI typecheck if available.
+- [ ] **Step 6 (commit):** `git add ui/src/pages/AoaAgentDetail.tsx ui/src/__tests__/AoaAgentDetail.test.tsx && git commit -m "feat(aoa-ui): founder pause/resume/terminate control on AoA detail (FX7/MIN-2; §10 governance UX)"`
+
 ## Closeout
 - [ ] **Full regression sweep:** whole AoA + mention + extraction + dispatcher + runner + rbac + issues-routes suite + `tsc --noEmit` — confirm the 350-file / 0-fail / tsc-0 baseline holds (Windows-skipped integration tests stay skipped, not failed).
 - [ ] **Final independent code-review** subagent over the FX1–FX5 cumulative diff; controller code-verifies the verdict.
