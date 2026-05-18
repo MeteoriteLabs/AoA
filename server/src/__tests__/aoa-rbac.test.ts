@@ -19,6 +19,7 @@ const mockAgentService = vi.hoisted(() => ({
   pause: vi.fn(),
   resume: vi.fn(),
   terminate: vi.fn(),
+  remove: vi.fn(),
   list: vi.fn().mockResolvedValue([]),
   resolveByReference: vi.fn(),
   update: vi.fn(),
@@ -887,6 +888,155 @@ describe("AoA RBAC — FX6/MIN-1 (founder-gated permissions + instructions; spec
       expect(mockAssertRole).not.toHaveBeenCalled();
       expect(mockAgentInstructionsService.updateBundle).toHaveBeenCalled();
       expect(mockAgentService.update).toHaveBeenCalled();
+    });
+  });
+});
+
+describe("AoA RBAC — FX-del (AoA agents are non-deletable / non-terminable)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // clearAllMocks does NOT drain queued mock*Once values; fully reset the
+    // mocks this suite drives so each test is hermetic (mirrors M1/M2).
+    mockAgentService.getById.mockReset();
+    mockAgentService.terminate.mockReset();
+    mockAgentService.remove.mockReset();
+    mockAssertRole.mockReset().mockResolvedValue(undefined);
+    mockHeartbeatService.cancelActiveForAgent.mockReset().mockResolvedValue(undefined);
+  });
+
+  const aoaAgent = {
+    id: AGENT_ID,
+    companyId: COMPANY_ID,
+    kind: "aoa",
+    name: "AoA Commander",
+    role: "general",
+    status: "idle",
+  };
+
+  const orgAgent = {
+    id: AGENT_ID,
+    companyId: COMPANY_ID,
+    kind: "org",
+    name: "Worker",
+    role: "general",
+    status: "idle",
+  };
+
+  // ── DELETE /agents/:id on a kind='aoa' agent → hard-blocked (409) ──────────
+
+  describe("DELETE /agents/:id {kind:'aoa'} — hard-blocked for ALL actors", () => {
+    it("founder board user → 409 (founders included; before the founder gate)", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(aoaAgent);
+
+      const res = await request(makeApp(founderActor))
+        .delete(`/api/agents/${AGENT_ID}`);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      // The hard-block runs BEFORE the founder gate — assertRole never invoked.
+      expect(mockAssertRole).not.toHaveBeenCalled();
+      expect(mockAgentService.remove).not.toHaveBeenCalled();
+    });
+
+    it("non-founder board user → 409", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(aoaAgent);
+
+      const res = await request(makeApp(memberActor))
+        .delete(`/api/agents/${AGENT_ID}`);
+
+      expect(res.status).toBe(409);
+      expect(mockAgentService.remove).not.toHaveBeenCalled();
+    });
+
+    it("agent actor → blocked (403, structurally barred from this board-only route; never deletes)", async () => {
+      // DELETE /agents/:id is a board-only route: assertBoard(req) rejects any
+      // non-board actor (403 "Board access required") at route entry — an
+      // agent-key actor can never reach the handler body, so it can never
+      // delete an AoA (or any) agent. The FX-del 409 hard-block additionally
+      // bars *board* actors (founders included). Net for an agent actor:
+      // blocked. This 403 is pre-existing, byte-unchanged behaviour.
+      mockAgentService.getById.mockResolvedValue(aoaAgent);
+
+      const res = await request(makeApp(agentActor))
+        .delete(`/api/agents/${AGENT_ID}`);
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.remove).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── POST /agents/:id/terminate on a kind='aoa' agent → hard-blocked (409) ──
+
+  describe("POST /agents/:id/terminate {kind:'aoa'} — hard-blocked for ALL actors", () => {
+    it("founder board user → 409", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(aoaAgent);
+
+      const res = await request(makeApp(founderActor))
+        .post(`/api/agents/${AGENT_ID}/terminate`);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(mockAgentService.terminate).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelActiveForAgent).not.toHaveBeenCalled();
+    });
+
+    it("non-founder board user → 409", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(aoaAgent);
+
+      const res = await request(makeApp(memberActor))
+        .post(`/api/agents/${AGENT_ID}/terminate`);
+
+      expect(res.status).toBe(409);
+      expect(mockAgentService.terminate).not.toHaveBeenCalled();
+    });
+
+    it("agent actor → blocked (403, structurally barred from this board-only route; never terminates)", async () => {
+      // POST /agents/:id/terminate is a board-only route: assertBoard(req)
+      // rejects any non-board actor (403 "Board access required") at route
+      // entry — an agent-key actor can never reach the handler body, so it
+      // can never terminate an AoA (or any) agent. The FX-del 409 hard-block
+      // additionally bars *board* actors (founders included). Net for an
+      // agent actor: blocked. This 403 is pre-existing, byte-unchanged.
+      mockAgentService.getById.mockResolvedValue(aoaAgent);
+
+      const res = await request(makeApp(agentActor))
+        .post(`/api/agents/${AGENT_ID}/terminate`);
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.terminate).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── kind='org' delete/terminate — behaviour byte-unchanged ────────────────
+
+  describe("kind='org' delete/terminate — behaviour unchanged", () => {
+    it("DELETE /agents/:id {kind:'org'} founder → 200 (still works, not blocked)", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(orgAgent);
+      mockAssertRole.mockResolvedValueOnce(undefined);
+      mockAgentService.remove.mockResolvedValueOnce({ ...orgAgent });
+
+      const res = await request(makeApp(founderActor))
+        .delete(`/api/agents/${AGENT_ID}`);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      // org delete is still founder-gated (unchanged) — assertRole IS invoked.
+      expect(mockAssertRole).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        COMPANY_ID,
+        "founder",
+      );
+      expect(mockAgentService.remove).toHaveBeenCalledWith(AGENT_ID);
+    });
+
+    it("POST /agents/:id/terminate {kind:'org'} → 200 (still works, not blocked)", async () => {
+      mockAgentService.getById.mockResolvedValueOnce(orgAgent);
+      mockAgentService.terminate.mockResolvedValueOnce({ ...orgAgent, status: "terminated" });
+
+      const res = await request(makeApp(founderActor))
+        .post(`/api/agents/${AGENT_ID}/terminate`);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAgentService.terminate).toHaveBeenCalledWith(AGENT_ID);
+      expect(mockHeartbeatService.cancelActiveForAgent).toHaveBeenCalledWith(AGENT_ID);
     });
   });
 });

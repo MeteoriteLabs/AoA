@@ -307,22 +307,29 @@ describe("AoaAgentDetail — founder lifecycle control (FX7)", () => {
     expect(mockAgentsPause).not.toHaveBeenCalled();
   });
 
-  it("founder → Terminate action exists in overflow; click calls agentsApi.terminate", async () => {
-    const user = userEvent.setup();
+  // FX-del: AoA agents are reserved framework agents and must NOT be
+  // terminable/deletable by anyone. This supersedes the FX7
+  // "Terminate action exists in overflow" test — the FX7 overflow Terminate
+  // is removed (Pause/Resume kept; no Invoke). The real FX7 contracts
+  // (Pause/Resume present + callable, no Invoke) stay green below/above.
+  it("founder → NO Terminate affordance anywhere; agentsApi.terminate is never called (FX-del)", async () => {
     mockAgentsGet.mockResolvedValue(
       makeAgent({ id: "agent-aoa-1", name: "Commander Bot", kind: "aoa", status: "idle" }),
     );
 
     renderWithProviders(<AoaAgentDetail />);
 
+    // Page rendered (founder + Pause control present establishes the control bar).
     const region = await screen.findByTestId("header-actions");
-    // Terminate lives in the overflow popover.
-    const terminate = await within(region).findByRole("button", { name: /terminate/i });
-    await user.click(terminate);
+    expect(
+      await within(region).findByRole("button", { name: /pause/i }),
+    ).toBeInTheDocument();
 
-    await waitFor(() => {
-      expect(mockAgentsTerminate).toHaveBeenCalledWith("agent-aoa-1", "comp-1");
-    });
+    // No Terminate control / text anywhere, and the mutation is never invoked.
+    expect(within(region).queryByRole("button", { name: /terminate/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /terminate/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/terminate/i)).not.toBeInTheDocument();
+    expect(mockAgentsTerminate).not.toHaveBeenCalled();
   });
 
   it("non-founder → lifecycle control is NOT rendered", async () => {

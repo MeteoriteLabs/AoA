@@ -1402,6 +1402,16 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    // FX-del: AoA agents (Commander + sub-agents) are reserved framework
+    // agents. Terminate is hard-blocked for ALL actors (founders included) —
+    // before the company/role gate. kind='org' is unaffected.
+    if (existing.kind === "aoa") {
+      res.status(409).json({
+        error:
+          "AoA agents are reserved framework agents and cannot be deleted or terminated",
+      });
+      return;
+    }
     assertCompanyAccess(req, existing.companyId);
 
     const agent = await svc.terminate(id);
@@ -1430,6 +1440,16 @@ export function agentRoutes(db: Db) {
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    // FX-del: AoA agents (Commander + sub-agents) are reserved framework
+    // agents. Delete is hard-blocked for ALL actors (founders included) —
+    // before the founder gate. kind='org' is unaffected.
+    if (existing.kind === "aoa") {
+      res.status(409).json({
+        error:
+          "AoA agents are reserved framework agents and cannot be deleted or terminated",
+      });
       return;
     }
     await assertRole(db, req, existing.companyId, "founder");

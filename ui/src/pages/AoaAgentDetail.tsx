@@ -20,12 +20,7 @@ import { roleLabels, adapterLabels } from "../components/agent-config-primitives
 import { useTeamAccess } from "../hooks/useTeamAccess";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { Settings, Pause, Play, MoreHorizontal, Trash2 } from "lucide-react";
+import { Settings, Pause, Play } from "lucide-react";
 import { cn, relativeTime, formatDate } from "../lib/utils";
 
 type AoaAgentView = "overview" | "instructions" | "runs" | "skills" | "configure" | "triggers";
@@ -57,7 +52,6 @@ export function AoaAgentDetail() {
   const { role: teamRole } = useTeamAccess(selectedCompanyId);
   const isFounder = teamRole === "founder";
   const [lifecycleError, setLifecycleError] = useState<string | null>(null);
-  const [moreOpen, setMoreOpen] = useState(false);
 
   const routeAgentRef = agentId ?? "";
   const routeCompanyId = useMemo(() => {
@@ -162,18 +156,18 @@ export function AoaAgentDetail() {
   });
 
   // Lifecycle control — mirrors org AgentDetail's agentAction mutation, minus
-  // "invoke". Manually invoking a kind='aoa' agent routes through the heartbeat
-  // runtime, which FX3 closed (enqueueWakeup refuses kind='aoa'). So this is
-  // Pause / Resume / Terminate only.
+  // "invoke" and "terminate". Manually invoking a kind='aoa' agent routes
+  // through the heartbeat runtime, which FX3 closed (enqueueWakeup refuses
+  // kind='aoa'). Terminate is removed because AoA agents are reserved
+  // framework agents and are non-deletable/non-terminable (FX-del). So this
+  // is Pause / Resume only.
   const agentAction = useMutation({
-    mutationFn: async (action: "pause" | "resume" | "terminate") => {
+    mutationFn: async (action: "pause" | "resume") => {
       switch (action) {
         case "pause":
           return agentsApi.pause(aoaRouteRef, resolvedCompanyId ?? undefined);
         case "resume":
           return agentsApi.resume(aoaRouteRef, resolvedCompanyId ?? undefined);
-        case "terminate":
-          return agentsApi.terminate(aoaRouteRef, resolvedCompanyId ?? undefined);
       }
     },
     onSuccess: () => {
@@ -211,8 +205,11 @@ export function AoaAgentDetail() {
     { value: "triggers", label: "Triggers" },
   ];
 
-  // Founder-gated lifecycle control (Pause/Resume toggle + StatusBadge +
-  // overflow Terminate). No Invoke — see agentAction comment / FX3.
+  // Founder-gated lifecycle control (Pause/Resume toggle + StatusBadge).
+  // No Invoke — see agentAction comment / FX3. No Terminate: AoA agents
+  // (Commander + sub-agents) are reserved framework agents and are
+  // non-deletable/non-terminable (FX-del); the backend hard-blocks
+  // DELETE /agents/:id and /agents/:id/terminate for kind='aoa'.
   const headerActions = isFounder ? (
     <>
       {agent.status === "paused" ? (
@@ -239,25 +236,6 @@ export function AoaAgentDetail() {
       <span className="hidden sm:inline">
         <StatusBadge status={agent.status} />
       </span>
-      <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-        <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon-xs" aria-label="More actions">
-            <MoreHorizontal className="h-4 w-4" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent className="w-44 p-1" align="end">
-          <button
-            className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-            onClick={() => {
-              agentAction.mutate("terminate");
-              setMoreOpen(false);
-            }}
-          >
-            <Trash2 className="h-3 w-3" />
-            Terminate
-          </button>
-        </PopoverContent>
-      </Popover>
     </>
   ) : undefined;
 
