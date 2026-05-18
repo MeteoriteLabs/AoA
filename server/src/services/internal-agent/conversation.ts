@@ -83,12 +83,21 @@ export function conversationService(db: Db) {
     },
 
     async getMessagesSince(conversationId: string, sinceMessageId: string | null, limit = 50) {
+      let markerCreatedAt: Date | null = null;
+      if (sinceMessageId) {
+        const markerRows = await db
+          .select({ createdAt: internalAgentMessages.createdAt })
+          .from(internalAgentMessages)
+          .where(eq(internalAgentMessages.id, sinceMessageId))
+          .then((r: { createdAt: Date }[]) => r);
+        markerCreatedAt = markerRows[0]?.createdAt ?? null;
+      }
       const base = db
         .select()
         .from(internalAgentMessages)
         .where(
-          sinceMessageId
-            ? and(eq(internalAgentMessages.conversationId, conversationId), gt(internalAgentMessages.id, sinceMessageId))
+          markerCreatedAt
+            ? and(eq(internalAgentMessages.conversationId, conversationId), gt(internalAgentMessages.createdAt, markerCreatedAt))
             : eq(internalAgentMessages.conversationId, conversationId),
         );
       // Chronological; cap at `limit` most-recent then re-sort ascending.
