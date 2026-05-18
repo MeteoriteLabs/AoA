@@ -138,11 +138,89 @@ export function parseCliOutput(line: string): AgentStreamChunk[] {
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const IDLE_CHECK_INTERVAL_MS = 5 * 60 * 1000; // check every 5 min
 
-const CLI_SPAWN_ARGS: Record<string, (mcpConfigPath: string, message: string) => string[]> = {
-  claude_cli: (mcp, msg) => ["--mcp-config", mcp, "-p", msg, "--output-format", "text"],
-  codex: (mcp, msg) => ["--mcp-config", mcp, "-p", msg],
-  opencode: (mcp, msg) => ["--mcp-config", mcp, "-p", msg],
-};
+/**
+ * Result of resolving a CLI's chat invocation. Each provider gets its OWN
+ * correct wiring: binary + argv + pre-spawn side effects (writing the MCP
+ * config in the shape that provider's CLI actually reads) + any extra spawn
+ * env. `mcpArtifactPath` is the per-session temp artifact recorded on the
+ * session so the existing lifecycle cleanup (cli-session-store.killSession →
+ * unlink) reaps it, mirroring the pre-MX4 claude behavior.
+ */
+interface CliInvocation {
+  binary: string;
+  args: string[];
+  /** Extra env merged over process.env at spawn time (e.g. CODEX_HOME). */
+  spawnEnv?: Record<string, string>;
+  /** Primary temp artifact to record as session.mcpConfigPath for cleanup. */
+  mcpArtifactPath: string;
+}
+
+/**
+ * Per-CLI chat invocation translator. claude_cli is kept BYTE-IDENTICAL to
+ * pre-MX4 (write the {mcpServers:{aoa}} wrapper JSON, spawn `claude
+ * --mcp-config <json> -p <msg> --output-format text`). codex gets a correct
+ * `codex exec --json -` invocation: codex has no --mcp-config flag and reads
+ * `-p` as --profile, so the bridge is delivered via a per-session managed
+ * CODEX_HOME/config.toml ([mcp_servers.aoa]) written by the MX3 helper, and
+ * the prompt is streamed over stdin (the `-` PROMPT arg) — matching the
+ * chat's persistent stdin-piping multi-turn model. opencode's real form
+ * (`opencode run …` + its own MCP config) is not yet wired; returning null
+ * makes the caller emit an explicit "not yet supported" error instead of
+ * spawning a broken `opencode --mcp-config -p` process.
+ *
+ * Returns null for an unsupported CLI (caller emits the error).
+ */
+async function resolveCliInvocation(
+  cliTool: string,
+  params: McpConfigParams,
+  safeContent: string,
+): Promise<CliInvocation | null> {
+  switch (cliTool) {
+    case "claude_cli": {
+      // BYTE-UNCHANGED from pre-MX4: claude {mcpServers:{aoa:spec}} wrapper
+      // written to a tmp .json, passed via --mcp-config.
+      const mcpConfig = buildMcpConfig(params);
+      const configPath = join(
+        tmpdir(),
+        `aoa-mcp-${`${params.companyId}:${params.userId}`.replace(":", "-")}.json`,
+      );
+      await writeFile(configPath, JSON.stringify(mcpConfig, null, 2));
+      return {
+        binary: "claude",
+        args: ["--mcp-config", configPath, "-p", safeContent, "--output-format", "text"],
+        mcpArtifactPath: configPath,
+      };
+    }
+    case "codex": {
+      // codex discovers MCP from $CODEX_HOME/config.toml [mcp_servers.<name>];
+      // it has no --mcp-config flag and treats -p as --profile. Provision a
+      // per-session managed CODEX_HOME and write the neutral bridge spec
+      // there via the MX3 writer. Prompt is delivered over stdin: `codex
+      // exec --json -` reads instructions from stdin (matches the chat's
+      // persistent stdin-piping model for multi-turn).
+      const { writeCodexMcpConfigToml } = await import(
+        "@armyofagents/adapter-codex-local/server"
+      );
+      const codexHomeDir = join(
+        tmpdir(),
+        `aoa-codex-chat-${`${params.companyId}:${params.userId}`.replace(/[^a-zA-Z0-9_-]/g, "-")}`,
+      );
+      await writeCodexMcpConfigToml(codexHomeDir, buildMcpBridgeSpec(params));
+      return {
+        binary: "codex",
+        args: ["exec", "--json", "-"],
+        spawnEnv: { CODEX_HOME: codexHomeDir },
+        // Record the config.toml so the existing best-effort unlink cleanup
+        // (cli-session-store.killSession) reaps the primary artifact, the
+        // same way it reaps claude's tmp .json. Parity, no new machinery.
+        mcpArtifactPath: join(codexHomeDir, "config.toml"),
+      };
+    }
+    default:
+      // opencode (and any future/unknown tool): not yet wired.
+      return null;
+  }
+}
 
 // ── Service ─────────────────────────────────────────────────────────────────
 
@@ -196,23 +274,6 @@ export function cliModeService(db: Db) {
         if (!session) {
           // 3. First message — spawn new session
           const bridgePath = getBridgeEntrypoint();
-          const mcpConfig = buildMcpConfig({
-            companyId: params.companyId,
-            userId: params.userId,
-            userRole: params.userRole,
-            enabledCapabilities: params.enabledCapabilities,
-            bridgeEntrypoint: bridgePath,
-          });
-
-          const configPath = join(tmpdir(), `aoa-mcp-${sessionKey.replace(":", "-")}.json`);
-          await writeFile(configPath, JSON.stringify(mcpConfig, null, 2));
-
-          const binary = CLI_BINARY_MAP[config.cliTool];
-          const argsBuilder = CLI_SPAWN_ARGS[config.cliTool];
-          if (!binary || !argsBuilder) {
-            yield { type: "error", message: `Unsupported CLI tool: ${config.cliTool}` };
-            return;
-          }
 
           // Windows note: CLI tools like `claude`, `codex`, `opencode` are
           // installed as .cmd wrappers. Node's `spawn` can only launch
@@ -225,10 +286,35 @@ export function cliModeService(db: Db) {
           const safeContent = isWin
             ? `"${params.content.replace(/"/g, '""').replace(/%/g, "%%").replace(/\^/g, "^^")}"`
             : params.content;
-          const args = argsBuilder(configPath, safeContent);
-          const cliProcess = spawn(binary, args, {
+
+          // Per-CLI wiring: each provider gets its OWN correct invocation.
+          // claude_cli stays BYTE-IDENTICAL (mcpServers wrapper JSON +
+          // --mcp-config/-p); codex uses `codex exec --json -` with the
+          // bridge delivered via a managed CODEX_HOME/config.toml; opencode
+          // is not yet wired → explicit error (no broken spawn).
+          const invocation = await resolveCliInvocation(
+            config.cliTool,
+            {
+              companyId: params.companyId,
+              userId: params.userId,
+              userRole: params.userRole,
+              enabledCapabilities: params.enabledCapabilities,
+              bridgeEntrypoint: bridgePath,
+            },
+            safeContent,
+          );
+          if (!invocation) {
+            yield {
+              type: "error",
+              message:
+                "opencode is not yet supported for the Commander chat (MCP wiring pending — MX-followup). Use claude or codex.",
+            };
+            return;
+          }
+
+          const cliProcess = spawn(invocation.binary, invocation.args, {
             stdio: ["pipe", "pipe", "pipe"],
-            env: { ...process.env },
+            env: { ...process.env, ...invocation.spawnEnv },
             shell: isWin,
           });
 
@@ -241,7 +327,7 @@ export function cliModeService(db: Db) {
             userRole: params.userRole,
             startedAt: new Date(),
             lastMessageAt: new Date(),
-            mcpConfigPath: configPath,
+            mcpConfigPath: invocation.mcpArtifactPath,
             status: "active",
             messageQueue: [],
             processing: true,
@@ -255,6 +341,14 @@ export function cliModeService(db: Db) {
               sessionStore.delete(sessionKey);
             }
           });
+
+          // codex receives its prompt over stdin (the `-` PROMPT arg →
+          // instructions read from stdin), matching the chat's persistent
+          // stdin-piping multi-turn model. claude takes the prompt in argv
+          // (`-p <msg>`) and is NOT written to here — pre-MX4 behavior.
+          if (config.cliTool === "codex" && cliProcess.stdin?.writable) {
+            cliProcess.stdin.write(params.content + "\n");
+          }
 
           // Stream stdout — collect text for persistence
           for await (const chunk of streamProcessOutput(cliProcess)) {

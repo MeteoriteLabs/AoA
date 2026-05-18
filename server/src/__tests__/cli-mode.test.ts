@@ -1,9 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 
 vi.mock("node:child_process", () => ({
   execSync: vi.fn(),
   spawn: vi.fn(),
+}));
+
+// MX4: the chat writes the claude mcp-config JSON via fs/promises.writeFile
+// and (for codex) provisions a managed CODEX_HOME via the MX3 codex helper.
+// Mock both so the per-CLI wiring can be asserted without touching disk.
+vi.mock("node:fs/promises", () => ({
+  writeFile: vi.fn(async () => {}),
+  mkdir: vi.fn(async () => {}),
+  unlink: vi.fn(async () => {}),
+}));
+
+vi.mock("@armyofagents/adapter-codex-local/server", () => ({
+  writeCodexMcpConfigToml: vi.fn(async () => {}),
 }));
 
 // ── Session Store Tests ─────────────────────────────────────────────────────
@@ -607,5 +621,156 @@ describe("cliModeService", () => {
     expect(typeof store.get).toBe("function");
     expect(typeof store.set).toBe("function");
     expect(typeof store.shutdownAll).toBe("function");
+  });
+});
+
+// ── MX4: per-CLI chat wiring (F-codex-chat) ─────────────────────────────────
+//
+// The chat must give each CLI its OWN correct invocation:
+//  - claude_cli  : write {mcpServers:{aoa}} JSON, spawn `claude` with
+//                  ["--mcp-config", <json>, "-p", <content>, "--output-format",
+//                  "text"] — BYTE-UNCHANGED from pre-MX4.
+//  - codex       : provision a per-session managed CODEX_HOME via the MX3
+//                  writeCodexMcpConfigToml(<dir>, <neutral spec>), spawn
+//                  `codex` with argv starting ["exec","--json"], NO
+//                  --mcp-config, NO -p, and spawn env CODEX_HOME=<dir>.
+//  - opencode    : NO spawn — emit an explicit "not yet supported" error.
+
+describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
+  function makeFakeProcess() {
+    const proc: any = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.stdin = { writable: true, write: vi.fn() };
+    proc.kill = vi.fn();
+    // Drive the stream helper to completion once the chat attaches its
+    // stdout/exit listeners (streamProcessOutput registers them lazily).
+    // Emitting on listener-attach avoids a race where a fixed-timer emit
+    // fires before the chat subscribes and the for-await loop hangs.
+    let driven = false;
+    const drive = () => {
+      if (driven) return;
+      driven = true;
+      setImmediate(() => {
+        proc.stdout.emit("data", Buffer.from("ok"));
+        proc.emit("exit", 0, null);
+      });
+    };
+    proc.stdout.on("newListener", drive);
+    proc.on("newListener", (ev: string) => {
+      if (ev === "exit") drive();
+    });
+    return proc;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+  });
+
+  async function runChat(cliTool: string) {
+    const cp = await import("node:child_process");
+    // CLI detected as available (where/which succeeds).
+    vi.mocked(cp.execSync).mockReturnValue(`/usr/local/bin/x\n` as any);
+    const fake = makeFakeProcess();
+    vi.mocked(cp.spawn).mockReturnValue(fake as any);
+
+    const fsp = await import("node:fs/promises");
+    const codexMod = await import("@armyofagents/adapter-codex-local/server");
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    const chunks: any[] = [];
+    for await (const chunk of service.chat(
+      {
+        companyId: "comp1",
+        userId: "user1",
+        userRole: "founder",
+        content: "hello world",
+        enabledCapabilities: [],
+      } as any,
+      { cliTool, executionMode: "cli" } as any,
+    )) {
+      chunks.push(chunk);
+    }
+    return {
+      chunks,
+      spawn: vi.mocked(cp.spawn),
+      writeFile: vi.mocked(fsp.writeFile),
+      writeCodexMcpConfigToml: vi.mocked(codexMod.writeCodexMcpConfigToml),
+      fake,
+    };
+  }
+
+  it("claude_cli: spawns `claude` with the exact pre-MX4 --mcp-config/-p args (BYTE-UNCHANGED)", async () => {
+    const { spawn, writeFile } = await runChat("claude_cli");
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const [binary, args] = spawn.mock.calls[0];
+    expect(binary).toBe("claude");
+
+    // Args: ["--mcp-config", <.json path>, "-p", <content>, "--output-format", "text"]
+    expect(args[0]).toBe("--mcp-config");
+    expect(typeof args[1]).toBe("string");
+    expect(args[1]).toMatch(/\.json$/);
+    expect(args[2]).toBe("-p");
+    // content (possibly shell-escaped on win32); assert it carries the message
+    expect(String(args[3])).toContain("hello world");
+    expect(args[4]).toBe("--output-format");
+    expect(args[5]).toBe("text");
+    expect(args).toHaveLength(6);
+    expect(args).not.toContain("exec");
+
+    // claude path writes the {mcpServers:{aoa}} wrapper JSON to a tmp file.
+    expect(writeFile).toHaveBeenCalledTimes(1);
+    const [jsonPath, jsonBody] = writeFile.mock.calls[0];
+    expect(String(jsonPath)).toMatch(/\.json$/);
+    const parsed = JSON.parse(String(jsonBody));
+    expect(parsed.mcpServers.aoa.command).toBe("node");
+  });
+
+  it("codex: provisions managed CODEX_HOME via MX3 helper and spawns `codex exec --json` (no --mcp-config/-p)", async () => {
+    const { spawn, writeCodexMcpConfigToml } = await runChat("codex");
+
+    // MX3 helper invoked with (dir, neutral spec).
+    expect(writeCodexMcpConfigToml).toHaveBeenCalledTimes(1);
+    const [codexDir, spec] = writeCodexMcpConfigToml.mock.calls[0];
+    expect(typeof codexDir).toBe("string");
+    expect(String(codexDir).length).toBeGreaterThan(0);
+    // Neutral {command,args,env} bridge spec (NOT the claude wrapper).
+    expect(spec).toEqual(
+      expect.objectContaining({
+        command: "node",
+        args: expect.any(Array),
+        env: expect.objectContaining({
+          AOA_SESSION_COMPANY_ID: "comp1",
+          AOA_SESSION_USER_ID: "user1",
+          AOA_SESSION_USER_ROLE: "founder",
+        }),
+      }),
+    );
+    expect((spec as any).mcpServers).toBeUndefined();
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const [binary, args, opts] = spawn.mock.calls[0];
+    expect(binary).toBe("codex");
+    expect(args[0]).toBe("exec");
+    expect(args[1]).toBe("--json");
+    expect(args).not.toContain("--mcp-config");
+    expect(args).not.toContain("-p");
+
+    // Spawn env carries CODEX_HOME = the managed dir, merged over process.env.
+    expect((opts as any)?.env?.CODEX_HOME).toBe(codexDir);
+  });
+
+  it("opencode: emits an explicit 'not yet supported' error and never spawns", async () => {
+    const { chunks, spawn } = await runChat("opencode");
+
+    expect(spawn).not.toHaveBeenCalled();
+    const err = chunks.find((c) => c.type === "error");
+    expect(err).toBeDefined();
+    expect(err.message).toContain("not yet supported");
   });
 });

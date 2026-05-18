@@ -2,6 +2,8 @@ export { execute } from "./execute.js";
 export { listCodexSkills, syncCodexSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+export { writeCodexMcpConfigToml } from "./codex-config-toml.js";
+export type { CodexMcpBridgeSpec } from "./codex-config-toml.js";
 import type { AdapterSessionCodec } from "@armyofagents/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {
