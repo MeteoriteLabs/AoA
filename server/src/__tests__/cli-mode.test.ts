@@ -19,7 +19,12 @@ vi.mock("node:fs/promises", () => ({
 // MX-chatparse: the chat now also parses codex stdout via the REAL
 // parseCodexJsonl / isCodexUnknownSessionError from this barrel (pure
 // functions — we want their true behavior, not a stub). Only the disk
-// writer is stubbed; the parsers come from importOriginal.
+// writers are stubbed; the parsers come from importOriginal.
+//
+// MX-chatauth: the codex chat ALSO provisions auth.json into its
+// per-session CODEX_HOME via ensureCodexAuthInHome (so `codex exec` is
+// authenticated). Stub it too so the wiring can be asserted without
+// touching the user's real ~/.codex/auth.json.
 vi.mock("@armyofagents/adapter-codex-local/server", async (importOriginal) => {
   const actual = await importOriginal<
     typeof import("@armyofagents/adapter-codex-local/server")
@@ -27,6 +32,7 @@ vi.mock("@armyofagents/adapter-codex-local/server", async (importOriginal) => {
   return {
     ...actual,
     writeCodexMcpConfigToml: vi.fn(async () => {}),
+    ensureCodexAuthInHome: vi.fn(async () => true),
   };
 });
 
@@ -710,12 +716,19 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
       spawn: vi.mocked(cp.spawn),
       writeFile: vi.mocked(fsp.writeFile),
       writeCodexMcpConfigToml: vi.mocked(codexMod.writeCodexMcpConfigToml),
+      ensureCodexAuthInHome: vi.mocked(codexMod.ensureCodexAuthInHome),
       fake,
     };
   }
 
   it("claude_cli: spawns `claude` with the exact pre-MX4 --mcp-config/-p args (BYTE-UNCHANGED)", async () => {
-    const { spawn, writeFile } = await runChat("claude_cli");
+    const { spawn, writeFile, writeCodexMcpConfigToml, ensureCodexAuthInHome } =
+      await runChat("claude_cli");
+
+    // claude path is byte-unchanged: no codex CODEX_HOME provisioning at
+    // all — neither the config.toml writer nor the MX-chatauth auth copy.
+    expect(writeCodexMcpConfigToml).not.toHaveBeenCalled();
+    expect(ensureCodexAuthInHome).not.toHaveBeenCalled();
 
     expect(spawn).toHaveBeenCalledTimes(1);
     const [binary, args] = spawn.mock.calls[0];
@@ -742,13 +755,20 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
   });
 
   it("codex: provisions managed CODEX_HOME via MX3 helper and spawns `codex exec --json` (no --mcp-config/-p)", async () => {
-    const { spawn, writeCodexMcpConfigToml } = await runChat("codex");
+    const { spawn, writeCodexMcpConfigToml, ensureCodexAuthInHome } =
+      await runChat("codex");
 
     // MX3 helper invoked with (dir, neutral spec).
     expect(writeCodexMcpConfigToml).toHaveBeenCalledTimes(1);
     const [codexDir, spec] = writeCodexMcpConfigToml.mock.calls[0];
     expect(typeof codexDir).toBe("string");
     expect(String(codexDir).length).toBeGreaterThan(0);
+
+    // MX-chatauth: codex auth is provisioned into the SAME per-session
+    // CODEX_HOME dir that the config.toml was written into, so `codex
+    // exec` is authenticated (no 401).
+    expect(ensureCodexAuthInHome).toHaveBeenCalledTimes(1);
+    expect(ensureCodexAuthInHome.mock.calls[0][0]).toBe(codexDir);
     // Neutral {command,args,env} bridge spec (NOT the claude wrapper).
     expect(spec).toEqual(
       expect.objectContaining({

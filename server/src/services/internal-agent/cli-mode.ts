@@ -221,11 +221,18 @@ async function resolveCliInvocation(
       // there via the MX3 writer. Prompt is delivered over stdin: `codex
       // exec --json -` reads instructions from stdin (matches the chat's
       // persistent stdin-piping model for multi-turn).
-      const { writeCodexMcpConfigToml } = await import(
+      const { writeCodexMcpConfigToml, ensureCodexAuthInHome } = await import(
         "@armyofagents/adapter-codex-local/server"
       );
       const codexHomeDir = codexHomeDirFor(params.companyId, params.userId);
       await writeCodexMcpConfigToml(codexHomeDir, buildMcpBridgeSpec(params));
+      // MX-chatauth: the per-session CODEX_HOME has config.toml but no
+      // credentials, so `codex exec` run with it 401s ("Missing bearer or
+      // basic authentication"). Provision auth.json into the SAME dir by
+      // copying the user's shared ~/.codex/auth.json (no-op if absent).
+      // Session-isolated: this home/config.toml encodes THIS chat
+      // session's identity and must not be shared with the agent path.
+      await ensureCodexAuthInHome(codexHomeDir);
       // ONE-SHOT model (MX-chatparse): turn-1 = `codex exec --json -`
       // (prompt via stdin). Continuation turn appends `resume <sessionId>
       // -` — same convention as the codex-local adapter (buildArgs:
