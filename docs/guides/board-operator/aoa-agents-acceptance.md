@@ -150,3 +150,46 @@ timeout (checking every 2 seconds). If the extraction agent processes the entry,
 | Run row shows `status='failed'` with auth error | Claude Code CLI not authenticated | Run `claude auth` on the server machine |
 | `extraction_status='processing'` but no items appear | Claude Code CLI ran but did not call `submit_extracted_items` | Check the run's `error_message`; verify the tool allowlist includes `submit_extracted_items` |
 | Test times out after 90 seconds | Dispatch loop not running or agent taking too long | Check the server logs for the AoA dispatcher; verify the heartbeat is not paused |
+
+## Codex adapter variant (provider-neutral MCP bridge)
+
+The internal-agent MCP bridge is **provider-neutral**: AoA agents (and the Commander chat) work on
+`codex_local` as well as `claude_local`. Each CLI adapter translates the same neutral bridge spec
+into its own MCP mechanism — `claude_local` via `--mcp-config`, `codex_local` via a
+`[mcp_servers.aoa]` table written into the adapter-managed `CODEX_HOME/config.toml`.
+
+### Codex setup
+
+1. Install + authenticate the Codex CLI on the server machine (`codex login`; verify
+   `codex login status`). Codex auth (`~/.codex/auth.json`) is copied into each managed
+   `CODEX_HOME` automatically.
+2. Configure the Discussion Extraction agent (and/or Commander) for codex:
+   ```
+   PATCH /api/agents/:agentId?companyId=:companyId
+   { "adapterType": "codex_local",
+     "adapterConfig": { "command": "codex", "cwd": "<writable dir>",
+                        "dangerouslyBypassApprovalsAndSandbox": true } }
+   ```
+3. Commander **chat** on codex: Settings → Commander → CLI tool = `codex`
+   (`internal_agent` config `executionMode:"cli", cliTool:"codex"`).
+
+### Verified results (this branch, live, isolated instance)
+
+- **§17 hard bar PROVEN on codex:** a discussion entry processed by the `codex_local` Discussion
+  Extraction agent produced **3 real `discussion_extracted_items`** (`decision`, `task`,
+  `insight`) via the wired MCP bridge — entry `completed`, run completed, cost event emitted.
+  (Before the provider-neutral bridge: 0 items / stuck `processing`, because `--mcp-config` is a
+  claude-only flag codex ignores.)
+- **Codex Commander chat works end-to-end:** real streamed assistant reply AND persisted to
+  conversation history (multi-turn via codex `resume`).
+- Full server suite green (0 failed) + `tsc` clean with the generalization; `claude_local`
+  byte-unchanged.
+
+### Codex troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| Codex run `failed`, stderr `Process adapter missing command` | Agent still `adapterType='process'` | Apply the Codex PATCH above |
+| Codex `401 Unauthorized … api.openai.com` | Codex not authenticated / no `auth.json` in the managed `CODEX_HOME` | `codex login` on the server (auth auto-copied into managed homes) |
+| Chat returns nothing / raw JSON | Stale build before the provider-neutral bridge | Rebuild/redeploy this branch (codex chat parses `codex exec --json` via `parseCodexJsonl`) |
+| `opencode` chat says "not yet supported" | opencode MCP translator is a tracked follow-up (design-compatible, not implemented) | Use `claude` or `codex` for the chat |
