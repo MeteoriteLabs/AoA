@@ -21,6 +21,11 @@ vi.mock("../services/internal-agent/cli-mode.js", () => ({
   }),
 }));
 
+// Mock conversation — track summarizeIfNeeded calls
+const summarizeIfNeededMock = vi.fn(async () => {
+  throw new Error("sum fail");
+});
+
 vi.mock("../services/internal-agent/conversation.js", () => ({
   conversationService: () => ({
     getOrCreateActive: async () => ({
@@ -30,9 +35,7 @@ vi.mock("../services/internal-agent/conversation.js", () => ({
     }),
     appendMessage: async () => ({ id: "m" }),
     getMessagesSince: async () => [],
-    summarizeIfNeeded: async () => {
-      throw new Error("sum fail");
-    },
+    summarizeIfNeeded: summarizeIfNeededMock,
   }),
 }));
 
@@ -78,10 +81,11 @@ vi.mock("../services/agent-instructions.js", () => ({
   agentInstructionsService: () => ({}),
 }));
 
-// Mock commander-skills
-vi.mock("../services/internal-agent/commander-skills.js", () => ({
-  buildSkillsSection: async () => "",
-}));
+// Mock commander-skills — removed so real buildSkillsSection runs and
+// its try-catch swallows the companySkillService throw
+// vi.mock("../services/internal-agent/commander-skills.js", () => ({
+//   buildSkillsSection: async () => "",
+// }));
 
 // Mock cli-summarizer
 vi.mock("../services/internal-agent/cli-summarizer.js", () => ({
@@ -92,23 +96,26 @@ import { agentLoopService } from "../services/internal-agent/agent-loop.js";
 
 describe("commander graceful degradation", () => {
   it("missing bundle + no memory key + skill fail + summarize throw → still replies", async () => {
-    // Mock DB with config and agent rows
+    // Reset the mock before the test
+    summarizeIfNeededMock.mockClear();
+
+    // Mock DB with config and agent rows using a call counter
+    let selectCallCount = 0;
     const db: any = {
       select: () => ({
         from: (table: any) => ({
           where: (condition: any) => ({
             then: (callback: (rows: any[]) => any) => {
-              // Check if this is config select or agent select based on what was called
-              // First call should be for config, second for agent
-              const isConfigSelect = !db._agentSelectCalled;
-              db._agentSelectCalled = true;
+              // First select (index 0) = config
+              // Second select (index 1) = agent row
+              const callIndex = selectCallCount++;
 
-              if (isConfigSelect) {
+              if (callIndex === 0) {
                 // Return config row
                 return Promise.resolve(
                   callback([{ cliTool: "claude_cli", contextTokenBudget: 4000 }])
                 );
-              } else {
+              } else if (callIndex === 1) {
                 // Return agent row
                 return Promise.resolve(
                   callback([
@@ -121,11 +128,12 @@ describe("commander graceful degradation", () => {
                   ])
                 );
               }
+              // Fallback (should not happen)
+              return Promise.resolve(callback([]));
             },
           }),
         }),
       }),
-      _agentSelectCalled: false,
     };
 
     const chunks: any[] = [];
@@ -144,5 +152,8 @@ describe("commander graceful degradation", () => {
 
     // Should NOT have an error chunk (degradation swallowed all failures)
     expect(chunks.some((c) => c.type === "error")).toBe(false);
+
+    // Verify summarizeIfNeeded was called (proving the post-turn compaction path was reached)
+    expect(summarizeIfNeededMock).toHaveBeenCalled();
   });
 });
