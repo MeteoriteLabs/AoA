@@ -17,9 +17,15 @@ import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusBadge } from "../components/StatusBadge";
 import { roleLabels, adapterLabels } from "../components/agent-config-primitives";
+import { useTeamAccess } from "../hooks/useTeamAccess";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
-import { Settings } from "lucide-react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Settings, Pause, Play, MoreHorizontal, Trash2 } from "lucide-react";
 import { cn, relativeTime, formatDate } from "../lib/utils";
 
 type AoaAgentView = "overview" | "instructions" | "runs" | "skills" | "configure" | "triggers";
@@ -45,6 +51,13 @@ export function AoaAgentDetail() {
   const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+
+  // Founder gate — mirrors TeamPage/CommanderTeamTab (useTeamAccess role === "founder").
+  // Backend already founder-gates pause/resume/terminate; this is the UI parity.
+  const { role: teamRole } = useTeamAccess(selectedCompanyId);
+  const isFounder = teamRole === "founder";
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
 
   const routeAgentRef = agentId ?? "";
   const routeCompanyId = useMemo(() => {
@@ -148,6 +161,34 @@ export function AoaAgentDetail() {
     },
   });
 
+  // Lifecycle control — mirrors org AgentDetail's agentAction mutation, minus
+  // "invoke". Manually invoking a kind='aoa' agent routes through the heartbeat
+  // runtime, which FX3 closed (enqueueWakeup refuses kind='aoa'). So this is
+  // Pause / Resume / Terminate only.
+  const agentAction = useMutation({
+    mutationFn: async (action: "pause" | "resume" | "terminate") => {
+      switch (action) {
+        case "pause":
+          return agentsApi.pause(aoaRouteRef, resolvedCompanyId ?? undefined);
+        case "resume":
+          return agentsApi.resume(aoaRouteRef, resolvedCompanyId ?? undefined);
+        case "terminate":
+          return agentsApi.terminate(aoaRouteRef, resolvedCompanyId ?? undefined);
+      }
+    },
+    onSuccess: () => {
+      setLifecycleError(null);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(aoaRouteRef) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      if (resolvedCompanyId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      }
+    },
+    onError: (err) => {
+      setLifecycleError(err instanceof Error ? err.message : "Action failed");
+    },
+  });
+
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
@@ -170,10 +211,65 @@ export function AoaAgentDetail() {
     { value: "triggers", label: "Triggers" },
   ];
 
+  // Founder-gated lifecycle control (Pause/Resume toggle + StatusBadge +
+  // overflow Terminate). No Invoke — see agentAction comment / FX3.
+  const headerActions = isFounder ? (
+    <>
+      {agent.status === "paused" ? (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => agentAction.mutate("resume")}
+          disabled={agentAction.isPending}
+        >
+          <Play className="h-3.5 w-3.5 sm:mr-1" />
+          <span className="hidden sm:inline">Resume</span>
+        </Button>
+      ) : (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => agentAction.mutate("pause")}
+          disabled={agentAction.isPending}
+        >
+          <Pause className="h-3.5 w-3.5 sm:mr-1" />
+          <span className="hidden sm:inline">Pause</span>
+        </Button>
+      )}
+      <span className="hidden sm:inline">
+        <StatusBadge status={agent.status} />
+      </span>
+      <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+        <PopoverTrigger asChild>
+          <Button variant="ghost" size="icon-xs" aria-label="More actions">
+            <MoreHorizontal className="h-4 w-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-44 p-1" align="end">
+          <button
+            className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+            onClick={() => {
+              agentAction.mutate("terminate");
+              setMoreOpen(false);
+            }}
+          >
+            <Trash2 className="h-3 w-3" />
+            Terminate
+          </button>
+        </PopoverContent>
+      </Popover>
+    </>
+  ) : undefined;
+
   return (
+    <>
+      {lifecycleError && (
+        <p className="text-sm text-destructive">{lifecycleError}</p>
+      )}
     <AgentDetailCore
       agent={agent}
       tabs={tabs}
+      headerActions={headerActions}
       activeView={activeView}
       onViewChange={(v) => {
         const target =
@@ -246,6 +342,7 @@ export function AoaAgentDetail() {
         return null;
       }}
     />
+    </>
   );
 }
 

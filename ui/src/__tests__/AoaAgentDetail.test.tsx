@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders, makeAgent, mockCompanyContext, mockBreadcrumbContext } from "./test-utils";
 
@@ -37,10 +37,19 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
 }));
 
+// Founder gate source — mirrors TeamPage's useTeamAccess(...).role === "founder".
+const mockTeamAccess: { role: string | null } = { role: "founder" };
+vi.mock("../hooks/useTeamAccess", () => ({
+  useTeamAccess: () => mockTeamAccess,
+}));
+
 const mockListTriggers = vi.fn();
 const mockPatchTrigger = vi.fn();
 const mockGetAoaRuns = vi.fn();
 const mockAgentsGet = vi.fn();
+const mockAgentsPause = vi.fn();
+const mockAgentsResume = vi.fn();
+const mockAgentsTerminate = vi.fn();
 
 vi.mock("../api/agents", () => ({
   agentsApi: {
@@ -48,6 +57,9 @@ vi.mock("../api/agents", () => ({
     listTriggers: (...args: any[]) => mockListTriggers(...args),
     patchTrigger: (...args: any[]) => mockPatchTrigger(...args),
     getAoaRuns: (...args: any[]) => mockGetAoaRuns(...args),
+    pause: (...args: any[]) => mockAgentsPause(...args),
+    resume: (...args: any[]) => mockAgentsResume(...args),
+    terminate: (...args: any[]) => mockAgentsTerminate(...args),
     createTrigger: vi.fn().mockResolvedValue({}),
     update: vi.fn().mockResolvedValue({}),
     listKeys: vi.fn().mockResolvedValue([]),
@@ -101,6 +113,15 @@ vi.mock("../components/PageSkeleton", () => ({
 
 vi.mock("../components/StatusBadge", () => ({
   StatusBadge: ({ status }: any) => <span data-testid="status-badge">{status}</span>,
+}));
+
+// Radix Popover portals content to document.body, escaping the header-actions
+// region. Mock it to render trigger + content inline (consistent with this
+// file's harness style of stubbing UI primitives).
+vi.mock("@/components/ui/popover", () => ({
+  Popover: ({ children }: any) => <div data-testid="popover">{children}</div>,
+  PopoverTrigger: ({ children }: any) => <>{children}</>,
+  PopoverContent: ({ children }: any) => <div data-testid="popover-content">{children}</div>,
 }));
 
 vi.mock("../components/AgentIconPicker", () => ({
@@ -226,6 +247,115 @@ describe("AoaAgentDetail — UUID routing (kind='aoa' excluded from urlKey resol
 
     // agentsApi.get must only ever be called with the uuid, never the slug.
     expect(mockAgentsGet).not.toHaveBeenCalledWith(AOA_SLUG, expect.anything());
+  });
+});
+
+describe("AoaAgentDetail — founder lifecycle control (FX7)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockParams.agentId = "agent-aoa-1";
+    mockParams.companyPrefix = undefined;
+    mockParams.tab = undefined;
+    mockCompanyContext.selectedCompanyId = "comp-1";
+    mockTeamAccess.role = "founder";
+    mockListTriggers.mockResolvedValue([]);
+    mockGetAoaRuns.mockResolvedValue([]);
+    mockAgentsPause.mockResolvedValue({});
+    mockAgentsResume.mockResolvedValue({});
+    mockAgentsTerminate.mockResolvedValue({});
+  });
+
+  it("founder + idle agent → Pause control rendered; click calls agentsApi.pause with agent id + company id", async () => {
+    const user = userEvent.setup();
+    mockAgentsGet.mockResolvedValue(
+      makeAgent({ id: "agent-aoa-1", name: "Commander Bot", kind: "aoa", status: "idle" }),
+    );
+
+    renderWithProviders(<AoaAgentDetail />);
+
+    const region = await screen.findByTestId("header-actions");
+    const pauseBtn = await within(region).findByRole("button", { name: /pause/i });
+    expect(pauseBtn).toBeInTheDocument();
+    expect(within(region).queryByRole("button", { name: /^resume$/i })).not.toBeInTheDocument();
+
+    await user.click(pauseBtn);
+
+    await waitFor(() => {
+      expect(mockAgentsPause).toHaveBeenCalledWith("agent-aoa-1", "comp-1");
+    });
+    expect(mockAgentsResume).not.toHaveBeenCalled();
+  });
+
+  it("founder + paused agent → Resume control rendered; click calls agentsApi.resume", async () => {
+    const user = userEvent.setup();
+    mockAgentsGet.mockResolvedValue(
+      makeAgent({ id: "agent-aoa-1", name: "Commander Bot", kind: "aoa", status: "paused" }),
+    );
+
+    renderWithProviders(<AoaAgentDetail />);
+
+    const region = await screen.findByTestId("header-actions");
+    const resumeBtn = await within(region).findByRole("button", { name: /resume/i });
+    expect(resumeBtn).toBeInTheDocument();
+    expect(within(region).queryByRole("button", { name: /^pause$/i })).not.toBeInTheDocument();
+
+    await user.click(resumeBtn);
+
+    await waitFor(() => {
+      expect(mockAgentsResume).toHaveBeenCalledWith("agent-aoa-1", "comp-1");
+    });
+    expect(mockAgentsPause).not.toHaveBeenCalled();
+  });
+
+  it("founder → Terminate action exists in overflow; click calls agentsApi.terminate", async () => {
+    const user = userEvent.setup();
+    mockAgentsGet.mockResolvedValue(
+      makeAgent({ id: "agent-aoa-1", name: "Commander Bot", kind: "aoa", status: "idle" }),
+    );
+
+    renderWithProviders(<AoaAgentDetail />);
+
+    const region = await screen.findByTestId("header-actions");
+    // Terminate lives in the overflow popover.
+    const terminate = await within(region).findByRole("button", { name: /terminate/i });
+    await user.click(terminate);
+
+    await waitFor(() => {
+      expect(mockAgentsTerminate).toHaveBeenCalledWith("agent-aoa-1", "comp-1");
+    });
+  });
+
+  it("non-founder → lifecycle control is NOT rendered", async () => {
+    mockTeamAccess.role = "team_member";
+    mockAgentsGet.mockResolvedValue(
+      makeAgent({ id: "agent-aoa-1", name: "Commander Bot", kind: "aoa", status: "idle" }),
+    );
+
+    renderWithProviders(<AoaAgentDetail />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-name")).toHaveTextContent("Commander Bot");
+    });
+
+    const region = screen.getByTestId("header-actions");
+    expect(within(region).queryByRole("button", { name: /pause/i })).not.toBeInTheDocument();
+    expect(within(region).queryByRole("button", { name: /resume/i })).not.toBeInTheDocument();
+    expect(within(region).queryByRole("button", { name: /terminate/i })).not.toBeInTheDocument();
+  });
+
+  it("no Invoke affordance anywhere on the AoA detail page (FX3 runtime-boundary guard)", async () => {
+    mockAgentsGet.mockResolvedValue(
+      makeAgent({ id: "agent-aoa-1", name: "Commander Bot", kind: "aoa", status: "idle" }),
+    );
+
+    renderWithProviders(<AoaAgentDetail />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-name")).toHaveTextContent("Commander Bot");
+    });
+
+    expect(screen.queryByRole("button", { name: /invoke/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/invoke/i)).not.toBeInTheDocument();
   });
 });
 
