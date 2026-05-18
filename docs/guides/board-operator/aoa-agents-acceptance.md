@@ -193,3 +193,21 @@ into its own MCP mechanism — `claude_local` via `--mcp-config`, `codex_local` 
 | Codex `401 Unauthorized … api.openai.com` | Codex not authenticated / no `auth.json` in the managed `CODEX_HOME` | `codex login` on the server (auth auto-copied into managed homes) |
 | Chat returns nothing / raw JSON | Stale build before the provider-neutral bridge | Rebuild/redeploy this branch (codex chat parses `codex exec --json` via `parseCodexJsonl`) |
 | `opencode` chat says "not yet supported" | opencode MCP translator is a tracked follow-up (design-compatible, not implemented) | Use `claude` or `codex` for the chat |
+
+## Commander Chat Foundation
+
+**When to run:** After deploying any update to `agent-loop.ts`, `commander-context.ts`, `commander-skills.ts`, `cli-summarizer.ts`, or `context-assembly.ts`.
+
+**Preconditions:** A company with ≥1 approved memory item (identity or domain layer). The Commander agent seeded with its persona bundle (AGENTS.md, SOUL.md, TOOLS.md, HEARTBEAT.md present).
+
+**Manual check steps:**
+1. Open the sidebar Commander chat for the test company.
+2. Send 25+ messages in sequence (e.g., number them: "Message 1", "Message 2", …).
+3. After 25+ messages, send: "What was message 5 about?" — Commander should reference it from the rolling summary.
+4. Send a message referencing something in your approved company memory (e.g., mention a domain term from a memory note). Commander should incorporate the memory note in its reply.
+5. Confirm the conversation continues replying after crossing the compaction threshold (no 500 errors, no blank replies).
+
+**Pass criteria:**
+- Commander remembers content from early in the conversation (history+compaction working).
+- Commander's replies reflect approved company memory items (relevance injection working).
+- No error responses after 20+ message exchanges.

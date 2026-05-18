@@ -167,8 +167,11 @@ export function agentLoopService(db: Db) {
             ...(params.departmentContext ? { departmentContext: params.departmentContext } : {}),
             contextTokenBudget: (config as { contextTokenBudget?: number }).contextTokenBudget,
             relevanceQuery: params.content,
-            memorySearch: (q: string) =>
-              memoryService(db).searchSemantic(params.companyId, q, { limit: 8 }),
+            memorySearch: async (q: string) => {
+              const rows = await memoryService(db).searchSemantic(params.companyId, q, { limit: 8 });
+              // Map null → undefined to satisfy the memorySearch option type (string | null → string | undefined)
+              return rows.map((r) => ({ ...r, layer: r.layer ?? undefined }));
+            },
           });
           assembledContent =
             `${assembled.systemPrompt}` +

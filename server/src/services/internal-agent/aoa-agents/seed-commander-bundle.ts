@@ -2,10 +2,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { loadDefaultAgentInstructionsBundle } from "../../default-agent-instructions.js";
 
+// adapterConfig typed as `unknown` to match AgentLike in agent-instructions.ts (contravariance).
+type SeedAgentShape = { id: string; companyId: string; name: string; adapterConfig: unknown };
+
 interface SeedArgs {
   agent: { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null };
-  // agentInstructionsService() instance (no-arg factory); injected for testability.
-  service: { ensureWritableBundle: (agent: unknown, opts?: { clearLegacyPromptTemplate?: boolean }) => Promise<{ adapterConfig: Record<string, unknown>; state: { rootPath?: string | null; entryFile: string } }> };
+  // Injected for testability. The real implementation passes agentInstructionsService() with
+  // ensureWritableBundle aliased from ensureManagedBundle (see ensure-commander.ts).
+  service: { ensureWritableBundle: (agent: SeedAgentShape, opts?: { clearLegacyPromptTemplate?: boolean }) => Promise<{ adapterConfig: Record<string, unknown>; state: { rootPath?: string | null; entryFile: string } }> };
 }
 
 /**

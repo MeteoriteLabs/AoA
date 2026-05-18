@@ -1,8 +1,10 @@
 const BUNDLE_ORDER = ["AGENTS.md", "SOUL.md", "TOOLS.md", "HEARTBEAT.md"] as const;
 
+type CommanderAgentShape = { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null };
+
 interface LoadArgs {
-  agent: { id: string; companyId: string; name: string; adapterConfig: Record<string, unknown> | null };
-  service: { readFile: (agent: unknown, relativePath: string) => Promise<{ content: string }> };
+  agent: CommanderAgentShape;
+  service: { readFile: (agent: CommanderAgentShape, relativePath: string) => Promise<{ content: string }> };
 }
 
 /**
