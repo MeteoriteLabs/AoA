@@ -127,7 +127,28 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
       );
   }
 
-  // ── Phase 2: drain pending (includes the just-reclaimed orphans) ───────────
+  // ── Phase 2 & Phase 3 SELECTS issued first, in the original positional
+  //    order (Phase-2 pending-select THEN Phase-3 wakeup-select), then the two
+  //    DRAIN loops run CONCURRENTLY (M4/FX5) ──────────────────────────────────
+  //
+  // M4: previously Phase-2 (extraction backlog, up to 200/tick) was fully
+  // `await`ed before Phase-3 (the @mention / delegate_to_subagent wakeup
+  // queue) was even queried, and BOTH shared a single limiter. Under an
+  // extraction backlog every wakeup waited behind the entire extraction batch
+  // each tick and one noisy company could starve others — a liveness defect
+  // for the delegation/@mention path. Phase-2 and Phase-3 have NO data
+  // dependency (disjoint tables/rows: pending discussion entries vs the
+  // agent_wakeup_requests queue), so their DRAINS now overlap via
+  // Promise.all, each under its OWN limiter so an extraction backlog cannot
+  // consume the slots the wakeup drain needs. Phase-1 still runs first and
+  // fully awaited (ordering invariant: it resets orphans → 'pending', which
+  // Phase-2's pending-select below must see). The two SELECT queries are
+  // still issued synchronously here in the original order (Phase-2 then
+  // Phase-3) — only the drain loops are parallelized, so the positional
+  // select order other suites depend on is unchanged. No double-processing:
+  // Phase-2 is keyed by entry + the M2 atomic claim; Phase-3 by the
+  // per-wakeup atomic queued→processing claim — both already idempotent and
+  // they touch disjoint rows, so overlapping them changes nothing there.
   const rows: Array<{ id: string; companyId: string }> = await db
     .select({ id: discussionEntries.id, companyId: discussions.companyId })
     .from(discussionEntries)
@@ -136,38 +157,6 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     .limit(200)
     .then((r: Array<{ id: string; companyId: string }>) => r);
 
-  const limiter = createLimiter(opts.limiterMax);
-
-  if (rows.length > 0) {
-    // Per-company memoization within this tick: the enabled-outbox gate result
-    // (true = has an enabled outbox agent) and the resolved extraction agent id.
-    const outboxByCompany = new Map<string, boolean>();
-    const agentByCompany = new Map<string, string>();
-
-    await Promise.allSettled(
-      rows.map((row) =>
-        limiter.run(async () => {
-          // Gate: only dispatch if the company has an enabled `outbox` trigger.
-          let gated = outboxByCompany.get(row.companyId);
-          if (gated === undefined) {
-            const enabled = await listEnabledOutboxAgents(db, row.companyId);
-            gated = enabled.length > 0;
-            outboxByCompany.set(row.companyId, gated);
-          }
-          if (!gated) return; // no outbox trigger for this company → skip
-
-          let agentId = agentByCompany.get(row.companyId);
-          if (!agentId) {
-            agentId = await ensureExtractionAgent(db, row.companyId);
-            agentByCompany.set(row.companyId, agentId);
-          }
-          await runExtractionConsumer(db, row.companyId, row.id, agentId);
-        }),
-      ),
-    );
-  }
-
-  // ── Phase 3: drain the wakeup queue for kind='aoa' agents ─────────────────
   const wakeupRows: Array<{ id: string; agentId: string; companyId: string; payload: Record<string, unknown> | null }> = await db
     .select({
       id: agentWakeupRequests.id,
@@ -187,10 +176,47 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     .limit(200)
     .then((r) => r);
 
-  if (wakeupRows.length > 0) {
+  // Each phase gets its OWN limiter so an extraction backlog (Phase-2) cannot
+  // exhaust every slot the wakeup drain (Phase-3) needs — the whole point of
+  // the M4 fix. limiterMax / its call-site value are unchanged.
+  const p2Limiter = createLimiter(opts.limiterMax);
+  const p3Limiter = createLimiter(opts.limiterMax);
+
+  const drainPhase2 = async (): Promise<void> => {
+    if (rows.length === 0) return;
+    // Per-company memoization within this tick: the enabled-outbox gate result
+    // (true = has an enabled outbox agent) and the resolved extraction agent id.
+    const outboxByCompany = new Map<string, boolean>();
+    const agentByCompany = new Map<string, string>();
+
+    await Promise.allSettled(
+      rows.map((row) =>
+        p2Limiter.run(async () => {
+          // Gate: only dispatch if the company has an enabled `outbox` trigger.
+          let gated = outboxByCompany.get(row.companyId);
+          if (gated === undefined) {
+            const enabled = await listEnabledOutboxAgents(db, row.companyId);
+            gated = enabled.length > 0;
+            outboxByCompany.set(row.companyId, gated);
+          }
+          if (!gated) return; // no outbox trigger for this company → skip
+
+          let agentId = agentByCompany.get(row.companyId);
+          if (!agentId) {
+            agentId = await ensureExtractionAgent(db, row.companyId);
+            agentByCompany.set(row.companyId, agentId);
+          }
+          await runExtractionConsumer(db, row.companyId, row.id, agentId);
+        }),
+      ),
+    );
+  };
+
+  const drainPhase3 = async (): Promise<void> => {
+    if (wakeupRows.length === 0) return;
     await Promise.allSettled(
       wakeupRows.map((w) =>
-        limiter.run(async () => {
+        p3Limiter.run(async () => {
           // Atomic claim: queued → processing
           const claimed = await db
             .update(agentWakeupRequests)
@@ -223,7 +249,10 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
         }),
       ),
     );
-  }
+  };
+
+  // Drains overlap; selects above already ran in the original order.
+  await Promise.all([drainPhase2(), drainPhase3()]);
 
   // ── Phase 4 (FX1/B1): disjoint reclaim — 'processing' entries whose LINKED
   //    run is already 'failed' ────────────────────────────────────────────────

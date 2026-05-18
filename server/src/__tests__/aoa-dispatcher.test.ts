@@ -10,12 +10,13 @@
 // company) and runExtractionConsumer is invoked under a bounded limiter.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { consumerMock, ensureExtractionMock, listOutboxMock, publishLiveEventMock } =
+const { consumerMock, ensureExtractionMock, listOutboxMock, publishLiveEventMock, runAoaMock } =
   vi.hoisted(() => ({
     consumerMock: vi.fn().mockResolvedValue(undefined),
     ensureExtractionMock: vi.fn().mockResolvedValue("ext-1"),
     listOutboxMock: vi.fn().mockResolvedValue(["ext-1"]),
     publishLiveEventMock: vi.fn(),
+    runAoaMock: vi.fn().mockResolvedValue(undefined),
   }));
 
 vi.mock("drizzle-orm", () => ({
@@ -48,7 +49,7 @@ vi.mock("@armyofagents/db", () => {
   };
 });
 vi.mock("../services/internal-agent/aoa-agents/runner.js", () => ({
-  runAoaAgent: vi.fn().mockResolvedValue(undefined),
+  runAoaAgent: runAoaMock,
 }));
 vi.mock("../services/internal-agent/subagents/extraction-consumer.js", () => ({
   runExtractionConsumer: consumerMock,
@@ -124,6 +125,9 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     ensureExtractionMock.mockClear();
     listOutboxMock.mockClear();
     publishLiveEventMock.mockClear();
+    runAoaMock.mockClear();
+    consumerMock.mockResolvedValue(undefined);
+    runAoaMock.mockResolvedValue(undefined);
     ensureExtractionMock.mockResolvedValue("ext-1");
     listOutboxMock.mockResolvedValue(["ext-1"]);
   });
@@ -292,5 +296,135 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
     expect(db._sets.some(entryFailReclaim)).toBe(false);
     expect(publishLiveEventMock).not.toHaveBeenCalled();
+  });
+
+  // ── M4 / FX5: Phase-2 (extraction backlog, up to 200/tick) and Phase-3
+  //    (@mention / delegate_to_subagent wakeups) must DRAIN CONCURRENTLY.
+  //    Pre-fix the dispatcher fully `await`ed Phase-2 before it even queried
+  //    Phase-3, with a SINGLE shared limiter — so under an extraction backlog
+  //    every wakeup waited behind the entire extraction batch each tick and
+  //    one noisy company starved others. This harness records select-slot
+  //    order and supports the Phase-3 atomic-claim `.returning()`. The Phase-2
+  //    consumer blocks on a manually-resolved gate; the test asserts the
+  //    Phase-3 wakeup is claimed/run (runAoaAgent invoked) BEFORE Phase-2 is
+  //    allowed to finish — proving the two drains overlap. It also asserts the
+  //    Phase-1→Phase-2 ordering invariant and that Phase-4 still runs, and
+  //    that the select calls are still issued in the original positional order
+  //    (slot0 Phase-1, slot1 Phase-2, slot2 Phase-3, slot3 Phase-4) so the
+  //    positional-select-sensitive sibling suites stay byte-stable.
+  function makeConcurrencyDb(
+    selectQueue: unknown[][],
+    returningQueue: unknown[][],
+  ) {
+    let si = 0;
+    let ui = 0;
+    const selectOrder: number[] = [];
+    const sets: any[] = [];
+    const db: any = {
+      _sets: sets,
+      _selectOrder: selectOrder,
+      select: () => {
+        const n = si++;
+        selectOrder.push(n);
+        const c: any = {};
+        c.from = () => c;
+        c.innerJoin = () => c;
+        c.leftJoin = () => c;
+        c.where = () => c;
+        c.limit = () => c;
+        c.then = (resolve: (v: unknown[]) => unknown) =>
+          Promise.resolve(selectQueue[n] ?? []).then(resolve);
+        return c;
+      },
+      update: () => ({
+        set: (v: any) => {
+          const idx = ui++;
+          sets.push(v);
+          const ret = returningQueue[idx] ?? [];
+          return {
+            where: () => ({
+              returning: () => Promise.resolve(ret),
+              then: (resolve: (x: unknown) => unknown) =>
+                Promise.resolve(undefined).then(resolve),
+            }),
+          };
+        },
+      }),
+    };
+    return db;
+  }
+
+  it("M4/FX5: Phase-3 wakeup drain is NOT serialized behind Phase-2's full batch (drains overlap; Phase-1 still precedes Phase-2; Phase-4 still runs; positional select order preserved)", async () => {
+    // Phase-2 consumer blocks until we explicitly release it.
+    let releasePhase2!: () => void;
+    const phase2Gate = new Promise<void>((res) => {
+      releasePhase2 = res;
+    });
+    let phase2Resolved = false;
+    consumerMock.mockImplementation(async () => {
+      await phase2Gate;
+      phase2Resolved = true;
+    });
+
+    // runAoaAgent (Phase-3) records whether it ran while Phase-2 was still
+    // blocked. If the drains overlap it will; if Phase-3 is serialized behind
+    // Phase-2 it can only run after we release the gate.
+    let phase3RanWhilePhase2Blocked = false;
+    runAoaMock.mockImplementation(async () => {
+      if (!phase2Resolved) phase3RanWhilePhase2Blocked = true;
+    });
+
+    const db = makeConcurrencyDb(
+      [
+        // slot 0 — Phase-1 orphan-select: nothing stale (keeps writes clean)
+        [],
+        // slot 1 — Phase-2 pending-drain: a gated-in pending entry
+        [{ id: "e1", companyId: "co-1" }],
+        // slot 2 — Phase-3 wakeup-select: a queued aoa wakeup
+        [{ id: "w1", agentId: "a1", companyId: "co-1", payload: { note: "x" } }],
+        // slot 3 — Phase-4 reclaim-select: nothing failed-linked
+        [],
+      ],
+      [
+        // update[0] = Phase-3 atomic claim queued→processing → claimed
+        [{ id: "w1" }],
+      ],
+    );
+
+    const dispatch = runAoaDispatch(db, { limiterMax: 4, staleMs: 600_000 });
+
+    // Let microtasks settle: Phase-1 (awaited) completes, then Phase-2 and
+    // Phase-3 drains both get a chance to start. Phase-2's consumer is parked
+    // on the gate; if the drains overlap, Phase-3's claim+runAoaAgent runs now.
+    await new Promise((r) => setTimeout(r, 20));
+
+    // The wakeup must have been claimed AND runAoaAgent invoked even though
+    // Phase-2's batch is still blocked — proves Phase-3 is NOT serialized
+    // behind Phase-2 (the starvation fix).
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db,
+      "a1",
+      expect.objectContaining({ companyId: "co-1", source: "wakeup", wakeupId: "w1", note: "x" }),
+    );
+    expect(phase3RanWhilePhase2Blocked).toBe(true);
+    expect(phase2Resolved).toBe(false); // Phase-2 genuinely still in-flight
+
+    // Now release Phase-2 and let the whole tick finish.
+    releasePhase2();
+    await dispatch;
+
+    expect(phase2Resolved).toBe(true);
+    expect(consumerMock).toHaveBeenCalledWith(db, "co-1", "e1", "ext-1");
+
+    // Ordering invariant: Phase-1 must complete before Phase-2 dispatches
+    // (Phase-1 resets orphans → 'pending' which Phase-2's select must see).
+    // The orphan select (slot 0) is consumed before the pending select
+    // (slot 1), and both before the wakeup select (slot 2) and Phase-4 (slot
+    // 3) — i.e. the SELECT calls keep their original positional order even
+    // though the DRAINS overlap.
+    expect(db._selectOrder).toEqual([0, 1, 2, 3]);
+
+    // Phase-4 still runs last (its select slot was consumed; nothing to do).
+    expect(db._sets.some(entryFailReclaim)).toBe(false);
   });
 });
