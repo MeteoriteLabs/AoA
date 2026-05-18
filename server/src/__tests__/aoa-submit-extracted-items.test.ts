@@ -30,11 +30,27 @@ import { submitExtractedItemsTool } from "../services/internal-agent/tools/submi
 
 // Builds a mock Db that records insert/update calls (with the table the
 // update/insert targeted + the `.where(...)` predicate) and serves a
-// `select(...).from(...).where(...)` chain resolving entryId -> discussionId.
-function makeMockDb(discussionId: string | null = "disc-1") {
+// `select(...).from(...).innerJoin(...).where(...)` chain resolving the entry
+// to its owning discussion's { discussionId, companyId }.
+//
+// The resolution query now JOINs discussion_entries -> discussions to also
+// yield the discussion's companyId (mirrors dispatcher.ts:131-137 — the
+// established entry->discussion->companyId resolution pattern in this codebase)
+// so the tool can gate all side-effects on a caller-company match (M3). The
+// mock therefore exposes `.innerJoin(...)` as a pass-through that returns the
+// same configured row, now carrying companyId. Default companyId === "co-1"
+// keeps every existing scenario SAME-COMPANY (ctx.companyId is "co-1" in every
+// test below): faithful mock-shape alignment to the tool's new single-query
+// shape — no existing assertion is changed or weakened.
+function makeMockDb(
+  discussionId: string | null = "disc-1",
+  companyId: string = "co-1",
+) {
   const inserted: { table: any; values: any }[] = [];
   const updated: { table: any; set: any; where: any }[] = [];
   const selects: { from: any; where: any }[] = [];
+  const resolvedRow =
+    discussionId === null ? [] : [{ discussionId, companyId }];
   const db: any = {
     insert: (table: any) => ({
       values: (v: any) => {
@@ -65,14 +81,19 @@ function makeMockDb(discussionId: string | null = "disc-1") {
       }),
     }),
     select: (_cols?: any) => ({
-      from: (fromTable: any) => ({
-        where: (w: any) => {
+      from: (fromTable: any) => {
+        // `.where(...)` resolves directly; `.innerJoin(...).where(...)` also
+        // resolves to the same configured row (the join is a pass-through —
+        // the resolved row already carries the joined discussion companyId).
+        const resolve = (w: any) => {
           selects.push({ from: fromTable, where: w });
-          return Promise.resolve(
-            discussionId === null ? [] : [{ discussionId }],
-          );
-        },
-      }),
+          return Promise.resolve(resolvedRow);
+        };
+        return {
+          innerJoin: (_t: any, _on: any) => ({ where: resolve }),
+          where: resolve,
+        };
+      },
     }),
   };
   return { db, inserted, updated, selects };
@@ -245,6 +266,54 @@ describe("submit-extracted-items internal-agent tool", () => {
     const flat = JSON.stringify(where);
     expect(flat).toContain("processing");
     expect(flat).toContain("e1");
+  });
+
+  // ── M3: caller-company isolation gate ─────────────────────────────────────
+  it("returns an error result and performs NO writes when the entry's discussion belongs to a different company", async () => {
+    // Entry resolves, but its owning discussion belongs to "co-OTHER" while
+    // the caller's ctx.companyId is "co-1". entryId is an untrusted agent/
+    // payload input; every other write path enforces company match. The tool
+    // MUST refuse: no insert, no pendingItemCount update, no extractionStatus
+    // update, no LiveEvent.
+    const { db, inserted, updated } = makeMockDb("disc-x", "co-OTHER");
+    const ctx: any = {
+      companyId: "co-1",
+      userId: "u-1",
+      userRole: "founder",
+      enabledCapabilities: ["discussion_processing"],
+      db,
+      services: {},
+    };
+
+    const res = await submitExtractedItemsTool.execute(
+      {
+        entryId: "e-cross",
+        items: [{ type: "task", content: "Cross-tenant write attempt" }],
+      },
+      ctx,
+    );
+
+    // Error-result convention mirrors delegate-to-subagent.ts ("no such
+    // agent"): { success:false, data:null, summary, error }.
+    expect(res.success).toBe(false);
+    expect(res.data).toBeNull();
+    expect(typeof res.summary).toBe("string");
+    expect((res as any).error).toBeTruthy();
+
+    // ZERO side-effects: no item insert, no pendingItemCount increment, no
+    // extractionStatus terminal write.
+    const itemInserts = inserted.filter(
+      (i) => i.values?.[0]?.discussionEntryId !== undefined,
+    );
+    expect(itemInserts.length).toBe(0);
+    const pendingUpdates = updated.filter(
+      (u) => u.set?.pendingItemCount !== undefined,
+    );
+    expect(pendingUpdates.length).toBe(0);
+    const statusUpdates = updated.filter(
+      (u) => u.set?.extractionStatus === "completed",
+    );
+    expect(statusUpdates.length).toBe(0);
   });
 
   it("conforms to the AgentTool shape (discussion category, founder role)", () => {

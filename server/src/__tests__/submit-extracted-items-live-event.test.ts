@@ -51,7 +51,18 @@ import { submitExtractedItemsTool } from "../services/internal-agent/tools/submi
 
 // Builds a mock Db that records the ORDER of side-effecting operations so we
 // can assert the terminal entry update happens before publishLiveEvent. The
-// `select(...).from(...).where(...)` chain resolves entryId -> discussionId.
+// `select(...).from(...).innerJoin(...).where(...)` chain resolves the entry
+// to its owning discussion's { discussionId, companyId }.
+//
+// M3: the resolution query now JOINs discussion_entries -> discussions to also
+// yield the discussion's companyId (mirrors dispatcher.ts:131-137) so the tool
+// can gate all side-effects on a caller-company match. The mock therefore
+// exposes `.innerJoin(...)` as a pass-through returning the same configured
+// row, now carrying companyId. Default companyId === "co-1" keeps every F2
+// scenario SAME-COMPANY (makeCtx sets ctx.companyId to "co-1"): faithful mock-
+// shape alignment to the tool's new single-query shape — no existing F2
+// assertion (event shape, itemCount, ordering, 0-rows-RETURNING suppression)
+// is changed or weakened.
 //
 // `terminalRows` models what the guarded terminal UPDATE's `.returning()`
 // resolves to: a NON-EMPTY array means the pending->completed transition was
@@ -65,8 +76,11 @@ import { submitExtractedItemsTool } from "../services/internal-agent/tools/submi
 function makeMockDb(
   discussionId: string | null = "d-1",
   terminalRows: Array<{ id: string }> = [{ id: "e-1" }],
+  companyId: string = "co-1",
 ) {
   const order: string[] = [];
+  const resolvedRow =
+    discussionId === null ? [] : [{ discussionId, companyId }];
   const db: any = {
     insert: (_table: any) => ({
       values: (_v: any) => {
@@ -97,14 +111,19 @@ function makeMockDb(
       }),
     }),
     select: (_cols?: any) => ({
-      from: (_fromTable: any) => ({
-        where: (_w: any) => {
+      from: (_fromTable: any) => {
+        // `.where(...)` resolves directly; `.innerJoin(...).where(...)` also
+        // resolves to the same configured row (the join is a pass-through —
+        // the resolved row already carries the joined discussion companyId).
+        const resolve = (_w: any) => {
           order.push("select");
-          return Promise.resolve(
-            discussionId === null ? [] : [{ discussionId }],
-          );
-        },
-      }),
+          return Promise.resolve(resolvedRow);
+        };
+        return {
+          innerJoin: (_t: any, _on: any) => ({ where: resolve }),
+          where: resolve,
+        };
+      },
     }),
   };
   return { db, order };

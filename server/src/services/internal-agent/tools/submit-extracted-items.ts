@@ -83,18 +83,48 @@ export const submitExtractedItemsTool: AgentTool = {
       await import("@armyofagents/db");
     const { eq, and, sql } = await import("drizzle-orm");
 
-    // Resolve entry -> discussionId UNCONDITIONALLY (single lookup reused by
-    // both the I-1 pendingItemCount increment and the F2 completion event).
-    // extraction.ts gets this from `entry.discussionId` after fetching the
-    // entry row; the tool only has entryId in scope so it queries for it.
-    // Done regardless of itemList.length so empty-items completions still
-    // carry a discussionId for the LiveEvent (F2 parity).
+    // Resolve entry -> owning discussion UNCONDITIONALLY in a SINGLE lookup
+    // reused by the M3 company gate, the I-1 pendingItemCount increment, and
+    // the F2 completion event. extraction.ts gets discussionId from
+    // `entry.discussionId` after fetching the entry row; the tool only has
+    // entryId in scope so it queries for it. Done regardless of
+    // itemList.length so empty-items completions still carry a discussionId
+    // for the LiveEvent (F2 parity).
+    //
+    // M3: also yield the owning discussion's companyId by JOINing
+    // discussion_entries -> discussions in this SAME query (mirrors the
+    // established entry->discussion->companyId resolution pattern in
+    // dispatcher.ts:131-137). entryId is an untrusted agent/payload-supplied
+    // input; every other write surface in the codebase enforces company
+    // isolation. Gate ALL side-effects below on companyId === ctx.companyId
+    // (defense-in-depth — consistent with the rest of the codebase).
     const [entryRow] = await ctx.db
-      .select({ discussionId: discussionEntries.discussionId })
+      .select({
+        discussionId: discussionEntries.discussionId,
+        companyId: discussions.companyId,
+      })
       .from(discussionEntries)
+      .innerJoin(
+        discussions,
+        eq(discussions.id, discussionEntries.discussionId),
+      )
       .where(eq(discussionEntries.id, entryIdStr));
     const resolvedDiscussionId: string | null =
       entryRow?.discussionId ?? null;
+
+    // M3 gate: refuse if the entry/discussion doesn't exist OR its owning
+    // company differs from the caller's. Mirrors the error-result convention
+    // in the sibling tool delegate-to-subagent.ts ("no such agent" ->
+    // { success:false, data:null, summary, error }). NO insert, NO
+    // pendingItemCount update, NO extractionStatus update, NO LiveEvent.
+    if (!entryRow || entryRow.companyId !== ctx.companyId) {
+      return {
+        success: false,
+        data: null,
+        summary: `Entry '${entryIdStr}' not found in this company`,
+        error: "entry not found in caller company",
+      };
+    }
 
     // Map onto the REAL discussion_extracted_items columns, matching
     // extraction.ts's itemValues shape. The schema has no `content`,
