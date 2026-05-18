@@ -10,14 +10,25 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // vi.mock is hoisted above top-level consts; mock fns we also assert on must
 // be created via vi.hoisted (vitest-sanctioned pattern).
-const { writeFileMock, unlinkMock, adapterExecute, createEventMock, buildMcpMock } =
-  vi.hoisted(() => ({
-    writeFileMock: vi.fn().mockResolvedValue(undefined),
-    unlinkMock: vi.fn().mockResolvedValue(undefined),
-    adapterExecute: vi.fn().mockResolvedValue(undefined),
-    createEventMock: vi.fn().mockResolvedValue(undefined),
-    buildMcpMock: vi.fn(() => ({})),
-  }));
+const {
+  writeFileMock,
+  unlinkMock,
+  adapterExecute,
+  createEventMock,
+  buildMcpMock,
+  buildBridgeSpecMock,
+} = vi.hoisted(() => ({
+  writeFileMock: vi.fn().mockResolvedValue(undefined),
+  unlinkMock: vi.fn().mockResolvedValue(undefined),
+  adapterExecute: vi.fn().mockResolvedValue(undefined),
+  createEventMock: vi.fn().mockResolvedValue(undefined),
+  buildMcpMock: vi.fn(() => ({})),
+  buildBridgeSpecMock: vi.fn(() => ({
+    command: "node",
+    args: ["/bridge.js"],
+    env: { AOA_SESSION_COMPANY_ID: "c" },
+  })),
+}));
 
 vi.mock("node:fs/promises", () => ({
   writeFile: writeFileMock,
@@ -53,6 +64,7 @@ vi.mock("../adapters/registry.js", () => ({
 
 vi.mock("../services/internal-agent/cli-mode.js", () => ({
   buildMcpConfig: buildMcpMock,
+  buildMcpBridgeSpec: buildBridgeSpecMock,
 }));
 
 vi.mock("../services/heartbeat.js", () => ({

@@ -6,7 +6,7 @@ import type { Db } from "@armyofagents/db";
 import { agents, internalAgentRuns, discussionEntries } from "@armyofagents/db";
 import { getServerAdapter } from "../../../adapters/registry.js";
 import { costService } from "../../costs.js";
-import { buildMcpConfig } from "../cli-mode.js";
+import { buildMcpConfig, buildMcpBridgeSpec } from "../cli-mode.js";
 import { resolveAdapterExecutionContext } from "../../heartbeat.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
 import { publishLiveEvent } from "../../live-events.js";
@@ -92,7 +92,9 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const toolAllowlistFromConfig = Array.isArray(aoaCfg.toolAllowlist)
       ? (aoaCfg.toolAllowlist as string[])
       : [];
-    const mcp = buildMcpConfig({
+    // MX2: the bridge params are identical for both the claude {mcpServers}
+    // envelope and the provider-neutral spec — build them once.
+    const mcpParams = {
       companyId: payload.companyId,
       userId: SUBAGENT_SESSION_USER_ID,
       userRole: SUBAGENT_SESSION_USER_ROLE,
@@ -100,14 +102,38 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       bridgeEntrypoint: resolveBridgeEntrypoint(),
       agentKind: "aoa",
       toolAllowlist: toolAllowlistFromConfig,
-    });
+    };
+    // MX2: the claude {mcpServers} JSON temp file is still written
+    // UNCONDITIONALLY (and unlinked in `finally` for every run) so the
+    // tmp-file cleanup contract is adapter-agnostic. For non-claude adapters
+    // the file is simply never referenced (harmless, unused) — only
+    // claude-family gets `--mcp-config <file>` injected into config.args.
+    // The write happens BEFORE buildMcpBridgeSpec so `cfgPath` is always set
+    // by the time any later step can fail — the `finally` unlink invariant
+    // ("if we created the temp file we always remove it") holds regardless of
+    // where a downstream error occurs.
+    const mcp = buildMcpConfig(mcpParams);
     cfgPath = join(tmpdir(), `aoa-mcp-${agentId}-${runId ?? "x"}.json`);
     await writeFile(cfgPath, JSON.stringify(mcp, null, 2));
+    // MX2: provider-neutral bridge spec handed to EVERY adapter via
+    // ctx.mcpBridge. Non-claude adapters (codex/opencode/...) consume this in
+    // a later milestone (MX3); claude keeps its own --mcp-config delivery
+    // below. Building it unconditionally is cheap and keeps the contract
+    // uniform across adapters.
+    const bridgeSpec = buildMcpBridgeSpec(mcpParams);
 
     const adapter = getServerAdapter(agent.adapterType);
     const baseConfig = { ...(agent.adapterConfig ?? {}) } as Record<string, unknown>;
     const prevArgs = Array.isArray(baseConfig.args) ? (baseConfig.args as string[]) : [];
-    const config = { ...baseConfig, args: ["--mcp-config", cfgPath, ...prevArgs] };
+    // MX2: only claude-family CLIs understand `--mcp-config <file>`. Injecting
+    // it for codex/opencode/etc. leaked an invalid flag into their argv (the
+    // reason codex AoA agents got zero MCP tools). claude_local is the ONLY
+    // claude CLI adapter (registry.ts) — do not broaden. claude-family path is
+    // kept BYTE-IDENTICAL to pre-MX2: ["--mcp-config", cfgPath, ...prevArgs].
+    const isClaudeFamily = agent.adapterType === "claude_local";
+    const config = isClaudeFamily
+      ? { ...baseConfig, args: ["--mcp-config", cfgPath, ...prevArgs] }
+      : { ...baseConfig };
     const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
 
     await adapter.execute({
@@ -117,6 +143,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       config,
       context: { aoaInstruction: instruction, payload },
       executionTarget, runtimeCommandSpec,
+      mcpBridge: bridgeSpec,
       onLog: async () => {}, onMeta: async () => {},
       authToken: undefined, onSpawn: () => {},
     });

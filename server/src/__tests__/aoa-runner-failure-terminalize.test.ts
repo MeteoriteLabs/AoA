@@ -15,6 +15,7 @@ const {
   adapterExecute,
   createEventMock,
   buildMcpMock,
+  buildBridgeSpecMock,
   publishLiveEventMock,
 } = vi.hoisted(() => ({
   writeFileMock: vi.fn().mockResolvedValue(undefined),
@@ -22,6 +23,11 @@ const {
   adapterExecute: vi.fn().mockResolvedValue(undefined),
   createEventMock: vi.fn().mockResolvedValue(undefined),
   buildMcpMock: vi.fn(() => ({})),
+  buildBridgeSpecMock: vi.fn(() => ({
+    command: "node",
+    args: ["/bridge.js"],
+    env: { AOA_SESSION_COMPANY_ID: "c" },
+  })),
   publishLiveEventMock: vi.fn(),
 }));
 
@@ -65,6 +71,7 @@ vi.mock("../adapters/registry.js", () => ({
 
 vi.mock("../services/internal-agent/cli-mode.js", () => ({
   buildMcpConfig: buildMcpMock,
+  buildMcpBridgeSpec: buildBridgeSpecMock,
 }));
 
 vi.mock("../services/heartbeat.js", () => ({
