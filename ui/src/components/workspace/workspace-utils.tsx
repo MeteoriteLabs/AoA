@@ -8,10 +8,10 @@ import type { DetectedOutput } from "@armyofagents/shared";
 
 /* ── Duration ──────────────────────────────────────────────────────────────── */
 
-export function formatDuration(start: string | null, end: string | null): string {
+export function formatDuration(start: string | null, end: string | null, nowMs = Date.now()): string {
   if (!start) return "";
   const s = new Date(start).getTime();
-  const e = end ? new Date(end).getTime() : Date.now();
+  const e = end ? new Date(end).getTime() : nowMs;
   const diffSec = Math.round((e - s) / 1000);
   if (diffSec < 60) return `${diffSec}s`;
   const min = Math.floor(diffSec / 60);

@@ -147,4 +147,96 @@ describe("process adapter execution target bridge context", () => {
       }),
     );
   });
+
+  it("injects run id, task id, fallback auth token, and returns execution cwd", async () => {
+    const { execute } = await import("../adapters/process/execute.js");
+    const cwd = process.cwd();
+
+    const result = await execute({
+      runId: "run-process-task-env",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Process Runner",
+        adapterType: "process",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "node",
+        cwd,
+        env: {},
+      },
+      context: {
+        taskId: "task-123",
+      },
+      executionTarget: { type: "local" },
+      runtimeCommandSpec: null,
+      authToken: "ctx-token",
+      onLog: async () => {},
+    });
+
+    expect(mocks.runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "local" }),
+      expect.objectContaining({
+        cwd,
+        authToken: "ctx-token",
+        env: expect.objectContaining({
+          AOA_RUN_ID: "run-process-task-env",
+          AOA_TASK_ID: "task-123",
+          AOA_API_KEY: "ctx-token",
+        }),
+      }),
+    );
+    expect(result.executionCwd).toBe(cwd);
+  });
+
+  it("does not overwrite an explicit process AOA_API_KEY", async () => {
+    const { execute } = await import("../adapters/process/execute.js");
+
+    await execute({
+      runId: "run-process-explicit-key-env",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Process Runner",
+        adapterType: "process",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "node",
+        cwd: process.cwd(),
+        env: { AOA_API_KEY: "configured-token" },
+      },
+      context: {
+        issueId: "issue-123",
+      },
+      executionTarget: { type: "local" },
+      runtimeCommandSpec: null,
+      authToken: "ctx-token",
+      onLog: async () => {},
+    });
+
+    expect(mocks.runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        authToken: "configured-token",
+        env: expect.objectContaining({
+          AOA_TASK_ID: "issue-123",
+          AOA_API_KEY: "configured-token",
+        }),
+      }),
+    );
+  });
 });

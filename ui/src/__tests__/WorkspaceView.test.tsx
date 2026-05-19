@@ -10,6 +10,19 @@ import {
 import { WorkspaceView } from "../pages/WorkspaceView";
 import { useSidebar } from "../context/SidebarContext";
 
+const workspaceTimelineMockState = vi.hoisted(() => ({
+  shouldThrow: false,
+}));
+
+vi.mock("../components/workspace/WorkspaceTimeline", () => ({
+  WorkspaceTimeline: ({ issueId }: { issueId: string }) => {
+    if (workspaceTimelineMockState.shouldThrow) {
+      throw new Error("Synthetic workspace timeline render failure");
+    }
+    return <div data-testid="workspace-timeline">Timeline for {issueId}</div>;
+  },
+}));
+
 // ─── Mock data ────────────────────────────────────────────────────────────────
 
 const mockWorkspace = {
@@ -358,6 +371,7 @@ function renderWorkspaceView(workspaceId = "ws-abc", search = "") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  workspaceTimelineMockState.shouldThrow = false;
   executionWorkspacesApiMock.get.mockResolvedValue(mockWorkspace);
   issuesApiMock.get.mockResolvedValue(mockIssue);
   issuesApiMock.list.mockResolvedValue(mockIssues);
@@ -393,6 +407,19 @@ describe("WorkspaceView — sidebar auto-collapse", () => {
 });
 
 describe("WorkspaceView — three-panel layout", () => {
+  it("shows a workspace error fallback when a panel render fails", async () => {
+    workspaceTimelineMockState.shouldThrow = true;
+
+    renderWorkspaceView();
+
+    expect(await screen.findByTestId("workspace-render-error")).toBeInTheDocument();
+    expect(screen.getByText("Workspace view hit a rendering issue")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reload workspace/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /copy diagnostics/i })).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-layout")).toBeInTheDocument();
+  });
+
   it("renders three panels: left nav, center, and right context", async () => {
     renderWorkspaceView();
 

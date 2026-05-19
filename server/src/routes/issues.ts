@@ -35,6 +35,8 @@ import { documentService } from "../services/documents.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
 import { createEagerWorkspaceForIssue } from "../services/eager-workspace.js";
+import { canDelegateToTarget, type WakeSkippedReason } from "../services/task-policy.js";
+import { listIssueContextBundlesForIssue } from "../services/issue-context-bundles.js";
 
 // Approval statuses that count as an active review path.
 // Extend this set if AoA adds revision_requested or other in-flight states.
@@ -110,7 +112,12 @@ const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
   "image/jpg",
   "image/webp",
   "image/gif",
+  "text/plain",
+  "text/markdown",
+  "application/json",
+  "application/pdf",
 ]);
+const MAX_ATTACHMENTS_PER_COMMENT = Number(process.env.AOA_ATTACHMENTS_PER_COMMENT_MAX) || 5;
 
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -125,6 +132,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
+  });
+  const multiFileUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MAX_ATTACHMENT_BYTES, files: MAX_ATTACHMENTS_PER_COMMENT },
   });
 
   function withContentPath<T extends { id: string }>(attachment: T) {
@@ -141,6 +152,26 @@ export function issueRoutes(db: Db, storage: StorageService) {
         else resolve();
       });
     });
+  }
+
+  async function runMultiFileUpload(req: Request, res: Response) {
+    await new Promise<void>((resolve, reject) => {
+      multiFileUpload.array("files", MAX_ATTACHMENTS_PER_COMMENT)(req, res, (err: unknown) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
+  function validateAttachmentFile(file: { mimetype: string; buffer: Buffer }) {
+    const contentType = (file.mimetype || "").toLowerCase();
+    if (!ALLOWED_ATTACHMENT_CONTENT_TYPES.has(contentType)) {
+      throw unprocessable(`Unsupported attachment type: ${contentType || "unknown"}`);
+    }
+    if (file.buffer.length <= 0) {
+      throw unprocessable("Attachment is empty");
+    }
+    return contentType;
   }
 
   async function assertCanManageIssueApprovalLinks(req: Request, res: Response, companyId: string) {
@@ -233,6 +264,164 @@ export function issueRoutes(db: Db, storage: StorageService) {
       });
     }
     return true;
+  }
+
+  type CommentWakeAttachment = {
+    id: string;
+    originalFilename?: string | null;
+    contentType?: string | null;
+    byteSize?: number | null;
+  };
+
+  function attachmentWakeMetadata(attachments: CommentWakeAttachment[]) {
+    return attachments.map((attachment) => ({
+      id: attachment.id,
+      filename: attachment.originalFilename ?? null,
+      contentType: attachment.contentType ?? null,
+      byteSize: attachment.byteSize ?? null,
+    }));
+  }
+
+  async function enqueueIssueCommentWakeups(input: {
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      workMode: string | null;
+      assigneeAgentId: string | null;
+    };
+    currentIssue: {
+      id: string;
+      companyId: string;
+      status: string;
+      workMode: string | null;
+      assigneeAgentId: string | null;
+    };
+    comment: {
+      id: string;
+      authorAgentId?: string | null;
+    };
+    body: string;
+    actor: ReturnType<typeof getActorInfo>;
+    reopened?: boolean;
+    reopenFromStatus?: string | null;
+    interruptedRunId?: string | null;
+    attachments?: CommentWakeAttachment[];
+  }) {
+    const {
+      issue,
+      currentIssue,
+      comment,
+      body,
+      actor,
+      reopened = false,
+      reopenFromStatus = null,
+      interruptedRunId = null,
+      attachments = [],
+    } = input;
+    const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+    const assigneeId = currentIssue.assigneeAgentId;
+    const actorIsAgent = actor.actorType === "agent";
+    const selfComment = actorIsAgent && actor.actorId === assigneeId;
+    const isClosed = issue.status === "done" || issue.status === "cancelled";
+    const attachmentMetadata = attachmentWakeMetadata(attachments);
+    const attachmentContext = attachments.length > 0
+      ? { attachmentCount: attachments.length, attachments: attachmentMetadata }
+      : {};
+
+    if (assigneeId && (reopened || (!selfComment && !isClosed && shouldDispatchIssueWakeup(currentIssue)))) {
+      if (reopened) {
+        wakeups.set(assigneeId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_reopened_via_comment",
+          payload: {
+            issueId: currentIssue.id,
+            commentId: comment.id,
+            reopenedFrom: reopenFromStatus,
+            mutation: "comment",
+            ...attachmentContext,
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: currentIssue.id,
+            taskId: currentIssue.id,
+            commentId: comment.id,
+            wakeCommentId: comment.id,
+            source: "issue.comment.reopen",
+            wakeReason: "issue_reopened_via_comment",
+            reopenedFrom: reopenFromStatus,
+            ...attachmentContext,
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
+        });
+      } else {
+        wakeups.set(assigneeId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_commented",
+          payload: {
+            issueId: currentIssue.id,
+            commentId: comment.id,
+            mutation: "comment",
+            ...attachmentContext,
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: currentIssue.id,
+            taskId: currentIssue.id,
+            commentId: comment.id,
+            wakeCommentId: comment.id,
+            source: "issue.comment",
+            wakeReason: "issue_commented",
+            ...attachmentContext,
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
+        });
+      }
+    }
+
+    let mentionedIds: string[] = [];
+    try {
+      mentionedIds = await svc.findMentionedAgents(issue.companyId, body);
+    } catch (err) {
+      logger.warn({ err, issueId: issue.id }, "failed to resolve @-mentions");
+    }
+
+    for (const mentionedId of mentionedIds) {
+      if (wakeups.has(mentionedId)) continue;
+      if (actorIsAgent && actor.actorId === mentionedId) continue;
+      if (comment.authorAgentId === mentionedId) continue;
+      wakeups.set(mentionedId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_comment_mentioned",
+        payload: { issueId: issue.id, commentId: comment.id, ...attachmentContext },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          commentId: comment.id,
+          wakeCommentId: comment.id,
+          wakeReason: "issue_comment_mentioned",
+          source: "comment.mention",
+          ...attachmentContext,
+        },
+      });
+    }
+
+    await svc.notifyMentionedHumans(issue.companyId, body, currentIssue.id, actor);
+
+    for (const [agentId, wakeup] of wakeups.entries()) {
+      heartbeat
+        .wakeup(agentId, wakeup)
+        .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
+    }
   }
 
   async function normalizeIssueIdentifier(rawId: string): Promise<string> {
@@ -510,7 +699,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
+    if (req.body.assigneeUserId || (req.body.assigneeAgentId && req.actor.type !== "agent")) {
       await assertCanAssignTasks(req, companyId);
     }
 
@@ -572,6 +761,53 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
+    let wakeSkippedReason: WakeSkippedReason | "workspace_setup_failed" | null = null;
+
+    if (req.actor.type === "agent" && req.actor.agentId && req.body.assigneeAgentId) {
+      const [actorAgent, targetAgent, hasGlobalAssignGrant] = await Promise.all([
+        agentsSvc.getById(req.actor.agentId),
+        agentsSvc.getById(req.body.assigneeAgentId),
+        access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign"),
+      ]);
+
+      if (!actorAgent || actorAgent.companyId !== companyId) {
+        throw forbidden("Agent authentication required");
+      }
+      if (!targetAgent || targetAgent.companyId !== companyId) {
+        throw unprocessable("Assignee agent not found", { field: "assigneeAgentId", id: req.body.assigneeAgentId });
+      }
+
+      const decision = canDelegateToTarget({
+        actorAgent: {
+          id: actorAgent.id,
+          companyId: actorAgent.companyId,
+          role: actorAgent.role,
+          reportsTo: actorAgent.reportsTo ?? null,
+          status: actorAgent.status,
+          permissions: actorAgent.permissions,
+        },
+        targetAgent: {
+          id: targetAgent.id,
+          companyId: targetAgent.companyId,
+          role: targetAgent.role,
+          reportsTo: targetAgent.reportsTo ?? null,
+          status: targetAgent.status,
+          permissions: targetAgent.permissions,
+        },
+        hasGlobalAssignGrant,
+      });
+
+      if (!decision.allowed) {
+        res.status(403).json({
+          error: "Cannot assign target agent",
+          reason: decision.reason,
+          allowedActions: decision.allowedActions,
+        });
+        return;
+      }
+      wakeSkippedReason = decision.wakeSkippedReason ?? null;
+    }
+
     const issue = await svc.create(companyId, {
       ...req.body,
       createdByAgentId: actor.agentId,
@@ -587,26 +823,46 @@ export function issueRoutes(db: Db, storage: StorageService) {
       action: "issue.created",
       entityType: "issue",
       entityId: issue.id,
-      details: { title: issue.title, identifier: issue.identifier },
+      details: { title: issue.title, identifier: issue.identifier, wakeSkippedReason },
     });
 
     // Eager workspace creation — if the project supports execution workspaces,
     // create one immediately so the user sees it right away (instead of waiting
     // for a heartbeat run to provision it).  Fire-and-forget: failures log but
     // never block issue creation.
+    const shouldWakeAssignedAgent =
+      Boolean(issue.assigneeAgentId) &&
+      issue.status !== "backlog" &&
+      shouldDispatchIssueWakeup(issue);
+
     if (issue.projectId && !issue.executionWorkspaceId) {
-      void createEagerWorkspaceForIssue(db, {
+      const projectId = issue.projectId;
+      const ensureWorkspace = () => createEagerWorkspaceForIssue(db, {
         companyId,
         issueId: issue.id,
         issueIdentifier: issue.identifier ?? issue.id,
         issueTitle: issue.title,
-        projectId: issue.projectId,
-      }).catch((err) =>
-        logger.warn({ err, issueId: issue.id }, "eager workspace creation failed (non-blocking)"),
-      );
+        projectId,
+      });
+      if (shouldWakeAssignedAgent && !wakeSkippedReason) {
+        try {
+          await ensureWorkspace();
+        } catch (err) {
+          wakeSkippedReason = "workspace_setup_failed";
+          logger.warn({ err, issueId: issue.id }, "eager workspace creation failed before assignment wakeup");
+        }
+      } else {
+        void ensureWorkspace().catch((err) =>
+          logger.warn({ err, issueId: issue.id }, "eager workspace creation failed (non-blocking)"),
+        );
+      }
     }
 
-    if (issue.assigneeAgentId && issue.status !== "backlog" && shouldDispatchIssueWakeup(issue)) {
+    if (
+      !wakeSkippedReason &&
+      issue.assigneeAgentId &&
+      shouldWakeAssignedAgent
+    ) {
       void heartbeat
         .wakeup(issue.assigneeAgentId, {
           source: "assignment",
@@ -618,9 +874,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
           contextSnapshot: { issueId: issue.id, source: "issue.create" },
         })
         .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue create"));
+    } else if (wakeSkippedReason) {
+      logger.info({ issueId: issue.id, assigneeAgentId: issue.assigneeAgentId, wakeSkippedReason }, "skipped assignment wakeup");
     }
 
-    res.status(201).json(issue);
+    res.status(201).json(wakeSkippedReason ? { ...issue, wakeSkippedReason } : issue);
   });
 
   router.patch("/issues/:id", validate(updateIssueSchema), async (req, res) => {
@@ -1109,107 +1367,141 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
-      const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
-      const assigneeId = currentIssue.assigneeAgentId;
-      const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
-      if (assigneeId && (reopened || !skipWake)) {
-        if (reopened) {
-          wakeups.set(assigneeId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_reopened_via_comment",
-            payload: {
-              issueId: currentIssue.id,
-              commentId: comment.id,
-              reopenedFrom: reopenFromStatus,
-              mutation: "comment",
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: currentIssue.id,
-              taskId: currentIssue.id,
-              commentId: comment.id,
-              source: "issue.comment.reopen",
-              wakeReason: "issue_reopened_via_comment",
-              reopenedFrom: reopenFromStatus,
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
-          });
-        } else {
-          wakeups.set(assigneeId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_commented",
-            payload: {
-              issueId: currentIssue.id,
-              commentId: comment.id,
-              mutation: "comment",
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: currentIssue.id,
-              taskId: currentIssue.id,
-              commentId: comment.id,
-              source: "issue.comment",
-              wakeReason: "issue_commented",
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
-          });
-        }
-      }
-
-      let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
-      }
-
-      for (const mentionedId of mentionedIds) {
-        if (wakeups.has(mentionedId)) continue;
-        if (actorIsAgent && actor.actorId === mentionedId) continue;
-        // P3-G: also check the persisted comment's authorAgentId — when an
-        // agent posts via local-board / user / service actor (e.g.
-        // local_trusted curl with no auth), actorIsAgent is false and the
-        // above check is bypassed, but authorAgentId correctly identifies
-        // the agent.
-        if (comment?.authorAgentId === mentionedId) continue;
-        wakeups.set(mentionedId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_comment_mentioned",
-          payload: { issueId: id, commentId: comment.id },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: id,
-            taskId: id,
-            commentId: comment.id,
-            wakeCommentId: comment.id,
-            wakeReason: "issue_comment_mentioned",
-            source: "comment.mention",
-          },
-        });
-      }
-
-      // @human mention notifications — see issueService.notifyMentionedHumans for safety contract.
-      await svc.notifyMentionedHumans(issue.companyId, req.body.body, currentIssue.id, actor);
-
-      for (const [agentId, wakeup] of wakeups.entries()) {
-        heartbeat
-          .wakeup(agentId, wakeup)
-          .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
-      }
-    })();
+    void enqueueIssueCommentWakeups({
+      issue,
+      currentIssue,
+      comment,
+      body: req.body.body,
+      actor,
+      reopened,
+      reopenFromStatus,
+      interruptedRunId,
+    });
 
     res.status(201).json(comment);
+  });
+
+  router.post("/issues/:id/comments-with-attachments", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+
+    try {
+      await runMultiFileUpload(req, res);
+    } catch (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          res.status(422).json({ error: `Attachment exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
+          return;
+        }
+        if (err.code === "LIMIT_FILE_COUNT" || err.code === "LIMIT_UNEXPECTED_FILE") {
+          res.status(422).json({ error: `At most ${MAX_ATTACHMENTS_PER_COMMENT} attachments are allowed` });
+          return;
+        }
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+
+    const files = ((req as Request & { files?: Express.Multer.File[] }).files ?? []);
+    for (const file of files) validateAttachmentFile(file);
+
+    const actor = getActorInfo(req);
+    const bodyText = typeof req.body?.body === "string" ? req.body.body.trim() : "";
+    const body = bodyText || (files.length > 0
+      ? `Attached ${files.length} file${files.length === 1 ? "" : "s"}`
+      : "");
+    if (!body) {
+      res.status(400).json({ error: "Comment body or attachments are required" });
+      return;
+    }
+
+    const comment = await svc.addComment(id, body, {
+      agentId: actor.agentId ?? undefined,
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+    });
+
+    const attachments = [];
+    for (const file of files) {
+      const contentType = validateAttachmentFile(file);
+      const stored = await storage.putFile({
+        companyId: issue.companyId,
+        namespace: `issues/${id}`,
+        originalFilename: file.originalname || null,
+        contentType,
+        body: file.buffer,
+      });
+
+      const attachment = await svc.createAttachment({
+        issueId: id,
+        issueCommentId: comment.id,
+        provider: stored.provider,
+        objectKey: stored.objectKey,
+        contentType: stored.contentType,
+        byteSize: stored.byteSize,
+        sha256: stored.sha256,
+        originalFilename: stored.originalFilename,
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      attachments.push(attachment);
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.attachment_added",
+        entityType: "issue",
+        entityId: id,
+        details: {
+          attachmentId: attachment.id,
+          originalFilename: attachment.originalFilename,
+          contentType: attachment.contentType,
+          byteSize: attachment.byteSize,
+          commentId: comment.id,
+        },
+      });
+    }
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        commentId: comment.id,
+        bodySnippet: comment.body.slice(0, 120),
+        identifier: issue.identifier,
+        issueTitle: issue.title,
+        attachmentCount: attachments.length,
+      },
+    });
+
+    void enqueueIssueCommentWakeups({
+      issue,
+      currentIssue: issue,
+      comment,
+      body,
+      actor,
+      attachments,
+    });
+
+    res.status(201).json({
+      comment,
+      attachments: attachments.map(withContentPath),
+    });
   });
 
   router.get("/issues/:id/attachments", async (req, res) => {
@@ -1222,6 +1514,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, issue.companyId);
     const attachments = await svc.listAttachments(issueId);
     res.json(attachments.map(withContentPath));
+  });
+
+  router.get("/issues/:id/context-bundles", async (req, res) => {
+    const issueId = req.params.id as string;
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const bundles = await listIssueContextBundlesForIssue(db, issue.companyId, issueId);
+    res.json(bundles);
   });
 
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {
@@ -1257,14 +1561,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(400).json({ error: "Missing file field 'file'" });
       return;
     }
-    const contentType = (file.mimetype || "").toLowerCase();
-    if (!ALLOWED_ATTACHMENT_CONTENT_TYPES.has(contentType)) {
-      res.status(422).json({ error: `Unsupported attachment type: ${contentType || "unknown"}` });
-      return;
-    }
-    if (file.buffer.length <= 0) {
-      res.status(422).json({ error: "Attachment is empty" });
-      return;
+    let contentType: string;
+    try {
+      contentType = validateAttachmentFile(file);
+    } catch (err) {
+      if (err instanceof HttpError) {
+        res.status(err.status).json({ error: err.message, details: err.details });
+        return;
+      }
+      throw err;
     }
 
     const parsedMeta = createIssueAttachmentMetadataSchema.safeParse(req.body ?? {});

@@ -25,6 +25,8 @@ export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
 export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
+export { issueContextBundles } from "./issue_context_bundles.js";
+export { issueContextBundleItems } from "./issue_context_bundle_items.js";
 export { issueMonitors } from "./issue_monitors.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";

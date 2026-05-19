@@ -8,6 +8,19 @@ export const issueAssigneeAdapterOverridesSchema = z
   })
   .strict();
 
+export const issueContextBundleItemSchema = z.object({
+  type: z.enum(["comment", "attachment", "artifact", "memory", "text"]),
+  id: z.string().uuid().optional().nullable(),
+  label: z.string().trim().max(240).optional().nullable(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+export const issueContextBundleSchema = z.object({
+  sourceIssueId: z.string().uuid(),
+  brief: z.string().trim().max(4000).optional().nullable(),
+  items: z.array(issueContextBundleItemSchema).max(10).optional().default([]),
+});
+
 export const createIssueSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
@@ -28,6 +41,7 @@ export const createIssueSchema = z.object({
   dueDate: z.string().datetime().optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
   executionEnvironmentId: z.string().uuid().optional().nullable(),
+  contextBundle: issueContextBundleSchema.optional(),
 });
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;

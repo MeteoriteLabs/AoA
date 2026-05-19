@@ -1,6 +1,21 @@
 import type { Approval, Issue, IssueAttachment, IssueComment, IssueDocument, DocumentRevision, UpsertIssueDocument, IssueLabel } from "@armyofagents/shared";
 import { api } from "./client";
 
+export type IssueContextBundle = {
+  id: string;
+  companyId: string;
+  sourceIssueId: string;
+  targetIssueId: string;
+  brief?: string | null;
+  items: Array<{
+    id: string;
+    itemType: string;
+    sourceId?: string | null;
+    label?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }>;
+};
+
 export const issuesApi = {
   list: (
     companyId: string,
@@ -67,7 +82,27 @@ export const issuesApi = {
         ...(structured?.metadata === undefined ? {} : { metadata: structured.metadata }),
       },
     ),
+  addCommentWithAttachments: (
+    id: string,
+    body: string,
+    files: File[],
+    reopen?: boolean,
+    interrupt?: boolean,
+  ) => {
+    const form = new FormData();
+    form.append("body", body);
+    if (reopen !== undefined) form.append("reopen", String(reopen));
+    if (interrupt !== undefined) form.append("interrupt", String(interrupt));
+    for (const file of files) {
+      form.append("files", file);
+    }
+    return api.postForm<{ comment: IssueComment; attachments: IssueAttachment[] }>(
+      `/issues/${id}/comments-with-attachments`,
+      form,
+    );
+  },
   listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
+  listContextBundles: (id: string) => api.get<IssueContextBundle[]>(`/issues/${id}/context-bundles`),
   uploadAttachment: (
     companyId: string,
     issueId: string,
