@@ -415,6 +415,16 @@ if (config.databaseUrl) {
   startupDbInfo = { mode: "embedded-postgres", dataDir, port };
 }
 
+// Expose the active DB URL in process.env so MCP bridge child processes
+// (Commander bridge spawned by claude/codex CLI) can inherit it.
+// External-postgres sets process.env.DATABASE_URL before this point (it is
+// read by loadConfig via process.env.DATABASE_URL), so the set here is a
+// no-op for that path. Embedded-postgres builds the URL dynamically — this
+// is the only place it reaches process.env, ensuring the bridge gets it.
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = activeDatabaseConnectionString;
+}
+
 // Probe optional database capabilities (pgvector). Services read the result
 // via getDbCapabilities() to gate semantic-search paths and embedding columns.
 await probeDbCapabilities(db as any);

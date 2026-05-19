@@ -1,4 +1,5 @@
 import { execSync, spawn } from "node:child_process";
+import { statSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -87,10 +88,15 @@ export interface McpBridgeSpec {
  * canonical AoA bridge contract (session identity + capability gate + D2
  * tool allowlist + DATABASE_URL inheritance). buildMcpConfig wraps this in
  * the claude-shaped {mcpServers:{aoa:...}} envelope.
+ *
+ * In dev mode (tsx, no compiled output) getBridgeEntrypoint returns a .ts
+ * file. Plain `node` cannot execute TypeScript, so we use `tsx` as the
+ * runner. In production the .js is used with plain node (unchanged behavior).
  */
 export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
+  const isTsBridge = params.bridgeEntrypoint.endsWith(".ts");
   return {
-    command: "node",
+    command: isTsBridge ? "tsx" : "node",
     args: [params.bridgeEntrypoint],
     env: {
       AOA_SESSION_COMPANY_ID: params.companyId,
@@ -237,9 +243,13 @@ async function resolveCliInvocation(
       // (prompt via stdin). Continuation turn appends `resume <sessionId>
       // -` — same convention as the codex-local adapter (buildArgs:
       // resumeSessionId ? push("resume", id, "-") : push("-")).
+      // --dangerously-bypass-approvals-and-sandbox: Commander is a trusted
+      // internal process (MCP bridge is AoA-owned, not user code). Without
+      // this flag Codex's approval gate cancels every MCP tool call since
+      // there is no interactive console to approve them.
       const codexArgs = resumeCodexSessionId
-        ? ["exec", "--json", "resume", resumeCodexSessionId, "-"]
-        : ["exec", "--json", "-"];
+        ? ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "resume", resumeCodexSessionId, "-"]
+        : ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"];
       return {
         binary: "codex",
         args: codexArgs,
@@ -276,7 +286,12 @@ export function cliModeService(db: Db) {
     const thisDir = typeof __dirname !== "undefined"
       ? __dirname
       : fileURLToPath(new URL(".", import.meta.url));
-    return resolve(thisDir, "mcp-bridge.js");
+    const jsPath = resolve(thisDir, "mcp-bridge.js");
+    // In production (after `pnpm build`), the compiled .js exists and plain
+    // node can run it. In dev mode (tsx), only the .ts source exists — return
+    // the .ts path so buildMcpBridgeSpec can select tsx as the runner.
+    try { statSync(jsPath); return jsPath; } catch { /* dev mode — fall through */ }
+    return resolve(thisDir, "mcp-bridge.ts");
   }
 
   return {
