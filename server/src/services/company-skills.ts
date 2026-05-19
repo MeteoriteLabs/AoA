@@ -42,6 +42,8 @@ export interface RuntimeSkillEntry {
   name: string;
   markdown: string;
   trustLevel: string;
+  description?: string;
+  triggerPhrases?: string[];
   /** Ancillary files (non-SKILL.md) from local_path skills, injected alongside markdown. */
   files?: Array<{ path: string; content: string }>;
 }
@@ -2219,6 +2221,29 @@ export function companySkillService(db: Db) {
     return entries;
   }
 
+  async function listCompactSkillEntries(
+    companyId: string,
+    agentId: string,
+  ): Promise<Array<{ key: string; name: string; description: string; triggerPhrases: string[] }>> {
+    const agent = await agents.getById(agentId);
+    if (!agent || agent.companyId !== companyId) return [];
+    const skillKeys: string[] = Array.isArray((agent as any).skillKeys)
+      ? (agent as any).skillKeys
+      : [];
+    if (skillKeys.length === 0) return [];
+    const allSkills = await listFull(companyId);
+    return allSkills
+      .filter((skill) => skillKeys.includes(skill.key))
+      .map((skill) => ({
+        key: skill.key,
+        name: skill.name,
+        description: skill.description ?? skill.name,
+        triggerPhrases: Array.isArray((skill as any).triggerPhrases)
+          ? (skill as any).triggerPhrases
+          : [],
+      }));
+  }
+
   // -----------------------------------------------------------------------
   // Upsert imported skills
   // -----------------------------------------------------------------------
@@ -2423,6 +2448,7 @@ export function companySkillService(db: Db) {
     scanProjectWorkspaces,
     installUpdate,
     listRuntimeSkillEntries,
+    listCompactSkillEntries,
     resolveSkillKeys,
     upsertImportedSkills,
     usage,

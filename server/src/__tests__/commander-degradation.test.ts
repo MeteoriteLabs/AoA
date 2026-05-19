@@ -59,6 +59,9 @@ vi.mock("../services/company-skills.js", () => ({
     listRuntimeSkillEntries: async () => {
       throw new Error("skill fail");
     },
+    listCompactSkillEntries: async () => {
+      throw new Error("skill fail");
+    },
   }),
 }));
 

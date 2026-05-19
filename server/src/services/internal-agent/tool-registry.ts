@@ -10,6 +10,7 @@ import { createCoordinationTools } from "./tools/coordination-tools.js";
 import { createAnalysisTools } from "./tools/analysis-tools.js";
 import { submitExtractedItemsTool } from "./tools/submit-extracted-items.js";
 import { delegateToSubagentTool } from "./tools/delegate-to-subagent.js";
+import { useSkillTool } from "./tools/skill-tools.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -23,10 +24,11 @@ export function createToolRegistry(): AgentTool[] {
     ...createCoordinationTools(),
     delegateToSubagentTool,
     ...createAnalysisTools(),
+    useSkillTool,
   ];
 }
 
-const CORE_TOOLS = new Set(["query_tasks", "query_memory", "query_goals"]);
+const CORE_TOOLS = new Set(["query_tasks", "query_memory", "query_goals", "use_skill"]);
 
 const INTENT_KEYWORDS: Record<string, string[]> = {
   action: ["create", "add", "new", "make", "assign", "wake", "wakeup", "trigger"],

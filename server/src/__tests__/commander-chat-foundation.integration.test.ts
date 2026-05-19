@@ -39,10 +39,12 @@ vi.mock("../services/internal-agent/commander-context.js", () => ({
 
 vi.mock("../services/internal-agent/commander-skills.js", () => ({
   buildSkillsSection: async () => "",
+  buildCompactSkillList: async () =>
+    "## Available Skills\nCall `use_skill` with the skill key to load full instructions before applying a skill.\n\n| Skill | When to use |\n|-------|------------|\n| **Brainstorming** (`brainstorming`) | Before building new features |",
 }));
 
 vi.mock("../services/company-skills.js", () => ({
-  companySkillService: () => ({ listRuntimeSkillEntries: async () => [] }),
+  companySkillService: () => ({ listRuntimeSkillEntries: async () => [], listCompactSkillEntries: async () => [] }),
 }));
 
 vi.mock("../services/memory.js", () => ({
@@ -145,5 +147,9 @@ describe.skipIf(platform() === "win32")("Commander chat foundation (integration)
 
     // 6. The compaction path was reached (summarizeIfNeeded was called)
     expect(summarizeIfNeeded).toHaveBeenCalled();
+
+    // 7. The assembled prompt contains the compact skill list header and use_skill call reference
+    expect(assembled).toContain("## Available Skills");
+    expect(assembled).toContain("use_skill");
   });
 });

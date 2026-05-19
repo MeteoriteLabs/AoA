@@ -10,7 +10,7 @@ import { loadCommanderPersona } from "./commander-context.js";
 import { ensureCommanderAgent } from "./aoa-agents/ensure-commander.js";
 import { summarizeViaCli } from "./cli-summarizer.js";
 import { memoryService } from "../memory.js";
-import { buildSkillsSection } from "./commander-skills.js";
+import { buildCompactSkillList } from "./commander-skills.js";
 import { companySkillService } from "../company-skills.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -146,10 +146,10 @@ export function agentLoopService(db: Db) {
           const persona = agentRow
             ? await loadCommanderPersona({ agent: agentRow, service: agentInstructionsService() })
             : null;
-          const skillsSection = await buildSkillsSection({
+          const skillsSection = await buildCompactSkillList({
             companyId: params.companyId,
             agentId: commanderAgentId,
-            resolve: (cid, aid) => companySkillService(db).listRuntimeSkillEntries(cid, aid),
+            resolve: (cid, aid) => companySkillService(db).listCompactSkillEntries(cid, aid),
           });
           const history = await convService.getMessagesSince(
             conversation.id,

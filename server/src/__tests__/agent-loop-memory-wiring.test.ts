@@ -30,8 +30,8 @@ vi.mock("../services/internal-agent/commander-context.js", () => ({
   loadCommanderPersona: async () => "P",
 }));
 
-vi.mock("../services/internal-agent/commander-skills.js", () => ({ buildSkillsSection: async () => "" }));
-vi.mock("../services/company-skills.js", () => ({ companySkillService: () => ({ listRuntimeSkillEntries: async () => [] }) }));
+vi.mock("../services/internal-agent/commander-skills.js", () => ({ buildSkillsSection: async () => "", buildCompactSkillList: async () => "" }));
+vi.mock("../services/company-skills.js", () => ({ companySkillService: () => ({ listRuntimeSkillEntries: async () => [], listCompactSkillEntries: async () => [] }) }));
 vi.mock("../services/internal-agent/cli-summarizer.js", () => ({ summarizeViaCli: vi.fn(async () => "S") }));
 
 vi.mock("../services/internal-agent/aoa-agents/ensure-commander.js", () => ({
