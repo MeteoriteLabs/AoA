@@ -137,14 +137,6 @@ export function MarketplacePrefsSection() {
                   </Select>
                 </Field>
                 <ToggleField
-                  label="Skill updates"
-                  hint="Auto-apply skill updates when available."
-                  checked={settings.skillUpdatePolicy === "auto"}
-                  onChange={(v) =>
-                    applyPatch({ skillUpdatePolicy: v ? "auto" : "notify" })
-                  }
-                />
-                <ToggleField
                   label="Agent updates"
                   hint="Auto-apply agent updates when available."
                   checked={settings.agentUpdatePolicy === "auto"}
