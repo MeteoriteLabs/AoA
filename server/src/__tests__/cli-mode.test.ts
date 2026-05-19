@@ -742,16 +742,17 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     const [binary, args] = spawn.mock.calls[0];
     expect(binary).toBe("claude");
 
-    // Args: ["--mcp-config", <.json path>, "-p", <content>, "--output-format", "text"]
+    // Args: ["--mcp-config", <.json path>, "--dangerously-skip-permissions", "-p", <content>, "--output-format", "text"]
     expect(args[0]).toBe("--mcp-config");
     expect(typeof args[1]).toBe("string");
     expect(args[1]).toMatch(/\.json$/);
-    expect(args[2]).toBe("-p");
+    expect(args[2]).toBe("--dangerously-skip-permissions");
+    expect(args[3]).toBe("-p");
     // content (possibly shell-escaped on win32); assert it carries the message
-    expect(String(args[3])).toContain("hello world");
-    expect(args[4]).toBe("--output-format");
-    expect(args[5]).toBe("text");
-    expect(args).toHaveLength(6);
+    expect(String(args[4])).toContain("hello world");
+    expect(args[5]).toBe("--output-format");
+    expect(args[6]).toBe("text");
+    expect(args).toHaveLength(7);
     expect(args).not.toContain("exec");
 
     // claude path writes the {mcpServers:{aoa}} wrapper JSON to a tmp file.
@@ -1131,6 +1132,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(args).toEqual([
       "--mcp-config",
       expect.stringMatching(/\.json$/),
+      "--dangerously-skip-permissions",
       "-p",
       expect.stringContaining("first"),
       "--output-format",

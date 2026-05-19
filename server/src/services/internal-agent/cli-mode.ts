@@ -199,11 +199,15 @@ function codexConfigTomlPath(companyId: string, userId: string): string {
  * a fresh turn-1 `codex exec --json -`. Ignored for non-codex CLIs.
  */
 /**
- * Pre-escaped strings for the C-systemsplit path (claude_cli only).
- * Escaping is done at the call site where isWin is available.
+ * C-systemsplit args for the claude_cli path.
+ * rawSystemContext is written to a temp file and passed via --system-prompt-file
+ * to avoid Windows cmd.exe newline-truncation of multi-line inline arg values.
+ * safeRawContent is pre-escaped for the platform's shell (for the -p arg).
  */
 interface SystemSplitArgs {
-  safeSystemContext: string;
+  /** Unescaped system context — written to a temp file, never passed inline. */
+  rawSystemContext: string;
+  /** Platform-safe user message for the -p arg. */
   safeRawContent: string;
 }
 
@@ -216,6 +220,7 @@ async function resolveCliInvocation(
   // of the legacy single -p path.  Strings are pre-escaped by the caller.
   systemSplitArgs?: SystemSplitArgs,
 ): Promise<CliInvocation | null> {
+  const isWin = platform() === "win32";
   switch (cliTool) {
     case "claude_cli": {
       // BYTE-UNCHANGED from pre-MX4: claude {mcpServers:{aoa:spec}} wrapper
@@ -234,12 +239,26 @@ async function resolveCliInvocation(
       // from being applied to what would otherwise look like instruction content
       // inside a user message.  When systemSplitArgs is absent (assembly failed
       // or not applicable) we fall back to the legacy single-arg -p path.
+      //
+      // C-systemsplit (corrected): use --system-prompt-file (not inline --system-prompt)
+      // to avoid Windows cmd.exe newline-truncation: the system context is multi-line
+      // markdown and cmd.exe terminates the argument at the first embedded newline.
+      // Writing to a temp file sidesteps the shell quoting problem entirely.
       if (systemSplitArgs) {
+        const systemPromptPath = join(
+          tmpdir(),
+          `aoa-sysprompt-${`${params.companyId}:${params.userId}`.replace(":", "-")}.txt`,
+        );
+        await writeFile(systemPromptPath, systemSplitArgs.rawSystemContext, "utf8");
+        const safeSystemPromptPath = isWin
+          ? `"${systemPromptPath.replace(/"/g, '""')}"`
+          : systemPromptPath;
         return {
           binary: "claude",
           args: [
             "--mcp-config", configPath,
-            "--system", systemSplitArgs.safeSystemContext,
+            "--system-prompt-file", safeSystemPromptPath,
+            "--dangerously-skip-permissions",
             "-p", systemSplitArgs.safeRawContent,
             "--output-format", "text",
           ],
@@ -249,7 +268,12 @@ async function resolveCliInvocation(
 
       return {
         binary: "claude",
-        args: ["--mcp-config", configPath, "-p", safeContent, "--output-format", "text"],
+        args: [
+          "--mcp-config", configPath,
+          "--dangerously-skip-permissions",
+          "-p", safeContent,
+          "--output-format", "text",
+        ],
         mcpArtifactPath: configPath,
       };
     }
@@ -450,14 +474,14 @@ export function cliModeService(db: Db) {
           // --mcp-config/-p); codex uses `codex exec --json -` with the
           // bridge delivered via a managed CODEX_HOME/config.toml; opencode
           // is not yet wired → explicit error (no broken spawn).
-          // C-systemsplit: build pre-escaped args for the --system split when
+          // C-systemsplit: build args for the --system-prompt-file split when
           // both systemContext and rawContent were assembled by agent-loop.
+          // rawSystemContext is written to a temp file by resolveCliInvocation
+          // to avoid Windows cmd.exe newline-truncation of multi-line contexts.
           const systemSplitArgs: SystemSplitArgs | undefined =
             params.systemContext !== undefined && params.rawContent !== undefined
               ? {
-                  safeSystemContext: isWin
-                    ? `"${params.systemContext.replace(/"/g, '""').replace(/%/g, "%%").replace(/\^/g, "^^")}"`
-                    : params.systemContext,
+                  rawSystemContext: params.systemContext,
                   safeRawContent: isWin
                     ? `"${params.rawContent.replace(/"/g, '""').replace(/%/g, "%%").replace(/\^/g, "^^")}"`
                     : params.rawContent,
