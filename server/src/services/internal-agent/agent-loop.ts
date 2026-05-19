@@ -71,12 +71,14 @@ export interface ChatInput {
  * - Run record creation in `internal_agent_runs`
  * - Per-turn cost accounting / budget enforcement
  * - Tool action confirmations
- * - Conversation summarization — `conversation.ts::summarizeIfNeeded` is
- *   now orphaned. Long Commander conversations will grow unbounded until
- *   summarization is re-wired (needs a provider reference we no longer
- *   hold here). Flagged as dead-code but left in place until replaced.
  * These features existed only in the API-mode loop and will come back when
  * the team-under-Commander architecture lands; see Decision #91.
+ *
+ * Now wired on the CLI path:
+ * - Conversation summarization — `convService.summarizeIfNeeded` is called
+ *   after every clean turn via an injectable tool-less CLI summarizer
+ *   (`summarizeViaCli`). Long conversations are compacted automatically;
+ *   a failed compaction is swallowed so it never affects the delivered reply.
  */
 export function agentLoopService(db: Db) {
   const convService = conversationService(db);
