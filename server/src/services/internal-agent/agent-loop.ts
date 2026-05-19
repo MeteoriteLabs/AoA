@@ -39,6 +39,22 @@ export interface ChatInput {
   // Looked up by the chat route from internal_agent_config. (C13)
   enabledCapabilities: readonly string[];
   content: string;
+  /**
+   * System-level context (persona + skills + conversation history) assembled
+   * by agent-loop. When set, cli-mode passes this via --system so the model
+   * sees it as its system prompt rather than as user-message content.
+   * This prevents the user's global ~/.claude/CLAUDE.md (e.g. gstack routing
+   * rules) from being triggered by what would otherwise look like instruction
+   * text inside a user message. Undefined = fallback (full assembled content
+   * stuffed into -p — pre-Sprint-1 behaviour, kept for codex stdin path).
+   */
+  systemContext?: string;
+  /**
+   * The raw, unassembled user-typed message. When systemContext is present,
+   * cli-mode passes this via -p (the user turn) instead of the full assembled
+   * content string. Undefined = use content (backward compat / codex).
+   */
+  rawContent?: string;
   pageContext?: string;
   departmentContext?: string;
 }
@@ -136,6 +152,7 @@ export function agentLoopService(db: Db) {
         // it sends params.content verbatim, so substituting content here
         // keeps the spawn shape byte-identical (content-only change).
         let assembledContent = params.content;
+        let systemContext: string | undefined;
         try {
           const commanderAgentId = await ensureCommanderAgent(db, params.companyId);
           const agentRow = await db
@@ -175,17 +192,44 @@ export function agentLoopService(db: Db) {
               return rows.map((r) => ({ ...r, layer: r.layer ?? undefined }));
             },
           });
-          assembledContent =
+
+          // Split assembled context from the user message (C-systemsplit).
+          //
+          // Problem: sending the entire assembled prompt (system instructions +
+          // skills + history) as a single -p "user message" causes the global
+          // ~/.claude/CLAUDE.md (which may carry gstack routing rules) to
+          // interpret what looks like instruction text as user content and echo
+          // skill-related text back to the user.
+          //
+          // Fix: pass system context via --system and raw user input via -p so
+          // the model correctly interprets its Commander role from the system
+          // slot, regardless of what the user's personal claude config contains.
+          // For codex (stdin path) the full assembled content is still used
+          // since codex does not read ~/.claude/CLAUDE.md the same way.
+          systemContext =
             `${assembled.systemPrompt}` +
             (skillsSection ? `\n\n${skillsSection}` : "") +
-            (historyText ? `\n\n## Conversation So Far\n${historyText}` : "") +
+            (historyText ? `\n\n## Conversation So Far\n${historyText}` : "");
+
+          // Full assembled string kept for the codex stdin path (unchanged).
+          assembledContent =
+            systemContext +
             `\n\n## User Message\n${params.content}`;
         } catch {
           // Any assembly failure → send the raw message (never hard-fail).
           assembledContent = params.content;
+          systemContext = undefined;
         }
 
-        const cliParams = { ...params, content: assembledContent };
+        // For claude_cli: systemContext + rawContent enable the --system split.
+        // For codex: content (full assembled) is used via stdin — unchanged.
+        const cliParams = {
+          ...params,
+          content: assembledContent,
+          ...(systemContext !== undefined
+            ? { systemContext, rawContent: params.content }
+            : {}),
+        };
 
         let accumulatedAssistant = "";
         for await (const chunk of cliService.chat(cliParams, config)) {

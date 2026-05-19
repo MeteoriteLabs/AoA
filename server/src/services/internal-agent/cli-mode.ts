@@ -198,11 +198,23 @@ function codexConfigTomlPath(companyId: string, userId: string): string {
  * <sessionId> -` (mirrors the codex-local adapter convention). null/absent ⇒
  * a fresh turn-1 `codex exec --json -`. Ignored for non-codex CLIs.
  */
+/**
+ * Pre-escaped strings for the C-systemsplit path (claude_cli only).
+ * Escaping is done at the call site where isWin is available.
+ */
+interface SystemSplitArgs {
+  safeSystemContext: string;
+  safeRawContent: string;
+}
+
 async function resolveCliInvocation(
   cliTool: string,
   params: McpConfigParams,
   safeContent: string,
   resumeCodexSessionId?: string | null,
+  // C-systemsplit: when provided, claude_cli uses --system + -p split instead
+  // of the legacy single -p path.  Strings are pre-escaped by the caller.
+  systemSplitArgs?: SystemSplitArgs,
 ): Promise<CliInvocation | null> {
   switch (cliTool) {
     case "claude_cli": {
@@ -214,6 +226,27 @@ async function resolveCliInvocation(
         `aoa-mcp-${`${params.companyId}:${params.userId}`.replace(":", "-")}.json`,
       );
       await writeFile(configPath, JSON.stringify(mcpConfig, null, 2));
+
+      // C-systemsplit: when the assembled system context is available, pass it
+      // via --system so the model treats it as its system prompt.  The raw user
+      // input goes via -p.  This prevents the user's global CLAUDE.md (which
+      // may carry gstack routing rules that cause the model to echo skill text)
+      // from being applied to what would otherwise look like instruction content
+      // inside a user message.  When systemSplitArgs is absent (assembly failed
+      // or not applicable) we fall back to the legacy single-arg -p path.
+      if (systemSplitArgs) {
+        return {
+          binary: "claude",
+          args: [
+            "--mcp-config", configPath,
+            "--system", systemSplitArgs.safeSystemContext,
+            "-p", systemSplitArgs.safeRawContent,
+            "--output-format", "text",
+          ],
+          mcpArtifactPath: configPath,
+        };
+      }
+
       return {
         binary: "claude",
         args: ["--mcp-config", configPath, "-p", safeContent, "--output-format", "text"],
@@ -417,6 +450,20 @@ export function cliModeService(db: Db) {
           // --mcp-config/-p); codex uses `codex exec --json -` with the
           // bridge delivered via a managed CODEX_HOME/config.toml; opencode
           // is not yet wired → explicit error (no broken spawn).
+          // C-systemsplit: build pre-escaped args for the --system split when
+          // both systemContext and rawContent were assembled by agent-loop.
+          const systemSplitArgs: SystemSplitArgs | undefined =
+            params.systemContext !== undefined && params.rawContent !== undefined
+              ? {
+                  safeSystemContext: isWin
+                    ? `"${params.systemContext.replace(/"/g, '""').replace(/%/g, "%%").replace(/\^/g, "^^")}"`
+                    : params.systemContext,
+                  safeRawContent: isWin
+                    ? `"${params.rawContent.replace(/"/g, '""').replace(/%/g, "%%").replace(/\^/g, "^^")}"`
+                    : params.rawContent,
+                }
+              : undefined;
+
           const invocation = await resolveCliInvocation(
             config.cliTool,
             {
@@ -427,6 +474,8 @@ export function cliModeService(db: Db) {
               bridgeEntrypoint: bridgePath,
             },
             safeContent,
+            undefined,        // resumeCodexSessionId (N/A for the persistent-claude path)
+            systemSplitArgs,
           );
           if (!invocation) {
             yield {
@@ -494,7 +543,15 @@ export function cliModeService(db: Db) {
           session.lastMessageAt = new Date();
           const cliProc = session.cliProcess;
           if (cliProc && cliProc.stdin?.writable) {
-            cliProc.stdin.write(params.content + "\n");
+            // C-systemsplit: for persistent claude sessions, the system context
+            // was already set via --system on turn 1.  Subsequent turns should
+            // send ONLY the raw user input so the model doesn't see the full
+            // assembled context (including history) as a user message — which
+            // would cause double-history and re-trigger any CLAUDE.md routing
+            // rules.  rawContent is the pre-assembly user text; fall back to
+            // params.content when absent (codex or legacy path).
+            const turnInput = params.rawContent ?? params.content;
+            cliProc.stdin.write(turnInput + "\n");
             for await (const chunk of streamProcessOutput(cliProc)) {
               if (chunk.type === "text") accumulatedText += chunk.delta;
               yield chunk;
