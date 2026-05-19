@@ -17,6 +17,11 @@ vi.mock("../services/internal-agent/conversation.js", () => ({
 vi.mock("../services/internal-agent/commander-context.js", () => ({
   loadCommanderPersona: async () => "ROLE: Commander persona",
 }));
+vi.mock("../services/internal-agent/commander-skills.js", () => ({ buildSkillsSection: async () => "" }));
+vi.mock("../services/company-skills.js", () => ({ companySkillService: () => ({ listRuntimeSkillEntries: async () => [] }) }));
+vi.mock("../services/memory.js", () => ({ memoryService: () => ({ searchSemantic: async () => [] }) }));
+vi.mock("../agent-instructions.js", () => ({ agentInstructionsService: () => ({}) }));
+vi.mock("../services/internal-agent/cli-summarizer.js", () => ({ summarizeViaCli: vi.fn(async () => "S") }));
 vi.mock("../services/internal-agent/aoa-agents/ensure-commander.js", () => ({
   ensureCommanderAgent: async () => "cmd1",
 }));
