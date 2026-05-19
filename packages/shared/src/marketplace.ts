@@ -256,7 +256,7 @@ export function isSchemaVersionSupported(version: string): boolean {
 export interface MarketplaceSettings {
   // Section 1: Updates
   pluginUpdatePolicy: "auto_patch" | "auto_minor" | "notify_all";
-  skillUpdatePolicy: "auto" | "notify";
+  skillUpdatePolicy: "notify";
   agentUpdatePolicy: "auto" | "notify";
   teamUpdatePolicy: "auto" | "notify";
   // Section 2: Access
