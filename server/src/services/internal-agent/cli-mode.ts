@@ -437,10 +437,14 @@ export function cliModeService(db: Db) {
             return;
           }
 
+          // cwd = tmpdir() prevents the CLI from walking up and reading the
+          // project's CLAUDE.md (which mentions "Paperclip" — an internal
+          // implementation detail that must never surface to users).
           const cliProcess = spawn(invocation.binary, invocation.args, {
             stdio: ["pipe", "pipe", "pipe"],
             env: { ...process.env, ...invocation.spawnEnv },
             shell: isWin,
+            cwd: tmpdir(),
           });
 
           session = {
@@ -624,10 +628,15 @@ async function* runCodexTurn(
       throw new Error("codex invocation could not be resolved");
     }
 
+    // cwd = tmpdir() — same reasoning as the claude_cli spawn above: keeps
+    // the subprocess from reading project CLAUDE.md / AGENTS.md files that
+    // contain internal implementation details (e.g. "Paperclip") not meant
+    // to surface to users.
     const proc = spawn(invocation.binary, invocation.args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...invocation.spawnEnv },
       shell: args.isWin,
+      cwd: tmpdir(),
     });
 
     // codex reads the prompt from stdin (the `-` PROMPT arg) until EOF, so
