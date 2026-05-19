@@ -42,6 +42,10 @@ import {
   buildIssueMonitorClearedPatch,
   normalizeIssueMonitorPolicy,
 } from "./issue-execution-policy.js";
+import {
+  createIssueContextBundle,
+  type CreateIssueContextBundleItemInput,
+} from "./issue-context-bundles.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -688,10 +692,20 @@ export function issueService(db: Db) {
       data: Omit<typeof issues.$inferInsert, "companyId"> & {
         labelIds?: string[];
         inheritExecutionWorkspaceFromIssueId?: string | null;
+        contextBundle?: {
+          sourceIssueId: string;
+          brief?: string | null;
+          items?: CreateIssueContextBundleItemInput[];
+        };
       },
       outerTx?: Parameters<Parameters<typeof db.transaction>[0]>[0],
     ) => {
-      const { labelIds: inputLabelIds, inheritExecutionWorkspaceFromIssueId, ...issueData } = data;
+      const {
+        labelIds: inputLabelIds,
+        inheritExecutionWorkspaceFromIssueId,
+        contextBundle,
+        ...issueData
+      } = data;
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
@@ -789,6 +803,17 @@ export function issueService(db: Db) {
         const [issue] = await tx.insert(issues).values(values).returning();
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
+        }
+        if (contextBundle) {
+          await createIssueContextBundle(tx, {
+            companyId,
+            sourceIssueId: contextBundle.sourceIssueId,
+            targetIssueId: issue.id,
+            brief: contextBundle.brief ?? null,
+            items: contextBundle.items ?? [],
+            createdByAgentId: issue.createdByAgentId ?? null,
+            createdByUserId: issue.createdByUserId ?? null,
+          });
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;

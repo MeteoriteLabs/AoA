@@ -334,6 +334,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: authMeta.requiresAuth ? "gemini_auth_required" : null,
         clearSession: clearSessionOnMissingSession,
+        executionCwd: cwd,
       };
     }
 
@@ -380,6 +381,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model,
       billingType,
       costUsd: attempt.parsed.costUsd,
+      executionCwd: cwd,
       resultJson: attempt.parsed.resultEvent ?? {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,

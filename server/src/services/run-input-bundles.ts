@@ -1,0 +1,237 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { Readable } from "node:stream";
+import { and, eq } from "drizzle-orm";
+import type { Db } from "@armyofagents/db";
+import {
+  artifacts,
+  artifactVersions,
+  assets,
+  issueAttachments,
+  issueComments,
+  issueContextBundleItems,
+  issueContextBundles,
+} from "@armyofagents/db";
+import type { StorageService } from "../storage/types.js";
+import { getStorageService } from "../storage/index.js";
+
+type RunInputDb = Pick<Db, "select">;
+
+export type RunInputBundle = {
+  markdown: string;
+  inputs: Array<{
+    type: "attachment" | "artifact" | "comment" | "memory" | "text";
+    id: string;
+    label: string;
+    contentType?: string | null;
+    byteSize?: number | null;
+    localPath?: string | null;
+    sourceIssueId?: string | null;
+  }>;
+  skipped: Array<{ id: string; type: string; reason: string }>;
+};
+
+function safeFilename(input: string) {
+  return input
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160) || "input";
+}
+
+async function streamToBuffer(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+async function writeRunInputFile(input: {
+  cwd: string | null | undefined;
+  filename: string;
+  content: Buffer | string;
+}) {
+  if (!input.cwd) return null;
+  const inputsDir = path.join(input.cwd, ".aoa", "inputs");
+  await fs.mkdir(inputsDir, { recursive: true });
+  const localPath = path.join(inputsDir, safeFilename(input.filename));
+  await fs.writeFile(localPath, input.content);
+  return path.relative(input.cwd, localPath).replace(/\\/g, "/");
+}
+
+export async function buildRunInputBundle(input: {
+  db: RunInputDb;
+  companyId: string;
+  issueId: string;
+  cwd?: string | null;
+  storage?: Pick<StorageService, "getObject">;
+}): Promise<RunInputBundle> {
+  const storage = input.storage ?? getStorageService();
+  const bundles = await input.db
+    .select()
+    .from(issueContextBundles)
+    .where(and(eq(issueContextBundles.companyId, input.companyId), eq(issueContextBundles.targetIssueId, input.issueId)));
+
+  const result: RunInputBundle = { markdown: "", inputs: [], skipped: [] };
+  for (const bundle of bundles) {
+    if (bundle.brief) {
+      result.inputs.push({
+        type: "text",
+        id: bundle.id,
+        label: "Inherited brief",
+        sourceIssueId: bundle.sourceIssueId,
+      });
+    }
+
+    const items = await input.db
+      .select()
+      .from(issueContextBundleItems)
+      .where(and(eq(issueContextBundleItems.companyId, input.companyId), eq(issueContextBundleItems.bundleId, bundle.id)));
+
+    for (const item of items) {
+      const itemType = item.itemType as RunInputBundle["inputs"][number]["type"];
+      if (item.itemType === "text") {
+        result.inputs.push({
+          type: "text",
+          id: item.id,
+          label: item.label ?? "Text context",
+          sourceIssueId: bundle.sourceIssueId,
+        });
+        continue;
+      }
+
+      if (!item.sourceId) {
+        result.skipped.push({ id: item.id, type: item.itemType, reason: "missing_source_id" });
+        continue;
+      }
+
+      if (item.itemType === "comment") {
+        const comment = await input.db
+          .select({ id: issueComments.id, body: issueComments.body, issueId: issueComments.issueId })
+          .from(issueComments)
+          .where(and(eq(issueComments.id, item.sourceId), eq(issueComments.companyId, input.companyId)))
+          .then((rows) => rows[0] ?? null);
+        if (!comment) {
+          result.skipped.push({ id: item.sourceId, type: "comment", reason: "not_found" });
+          continue;
+        }
+        result.inputs.push({
+          type: "comment",
+          id: comment.id,
+          label: item.label ?? comment.body.slice(0, 80),
+          sourceIssueId: comment.issueId,
+        });
+        continue;
+      }
+
+      if (item.itemType === "attachment") {
+        const attachment = await input.db
+          .select({
+            id: issueAttachments.id,
+            issueId: issueAttachments.issueId,
+            objectKey: assets.objectKey,
+            originalFilename: assets.originalFilename,
+            contentType: assets.contentType,
+            byteSize: assets.byteSize,
+          })
+          .from(issueAttachments)
+          .innerJoin(assets, eq(assets.id, issueAttachments.assetId))
+          .where(and(eq(issueAttachments.id, item.sourceId), eq(issueAttachments.companyId, input.companyId)))
+          .then((rows) => rows[0] ?? null);
+        if (!attachment) {
+          result.skipped.push({ id: item.sourceId, type: "attachment", reason: "not_found" });
+          continue;
+        }
+        let localPath: string | null = null;
+        if (input.cwd) {
+          try {
+            const object = await storage.getObject(input.companyId, attachment.objectKey);
+            localPath = await writeRunInputFile({
+              cwd: input.cwd,
+              filename: attachment.originalFilename ?? `${attachment.id}`,
+              content: await streamToBuffer(object.stream),
+            });
+          } catch {
+            result.skipped.push({ id: item.sourceId, type: "attachment", reason: "materialize_failed" });
+          }
+        }
+        result.inputs.push({
+          type: "attachment",
+          id: attachment.id,
+          label: item.label ?? attachment.originalFilename ?? attachment.id,
+          contentType: attachment.contentType,
+          byteSize: attachment.byteSize,
+          localPath,
+          sourceIssueId: attachment.issueId,
+        });
+        continue;
+      }
+
+      if (item.itemType === "artifact") {
+        const artifact = await input.db
+          .select({
+            id: artifacts.id,
+            title: artifacts.title,
+            type: artifacts.type,
+            currentVersionId: artifacts.currentVersionId,
+          })
+          .from(artifacts)
+          .where(and(eq(artifacts.id, item.sourceId), eq(artifacts.companyId, input.companyId)))
+          .then((rows) => rows[0] ?? null);
+        if (!artifact) {
+          result.skipped.push({ id: item.sourceId, type: "artifact", reason: "not_found" });
+          continue;
+        }
+        let localPath: string | null = null;
+        if (input.cwd && artifact.currentVersionId) {
+          const version = await input.db
+            .select({ content: artifactVersions.content, fileUrl: artifactVersions.fileUrl })
+            .from(artifactVersions)
+            .where(eq(artifactVersions.id, artifact.currentVersionId))
+            .then((rows) => rows[0] ?? null);
+          if (version?.content) {
+            localPath = await writeRunInputFile({
+              cwd: input.cwd,
+              filename: `${artifact.title}.${artifact.type === "markdown" ? "md" : "txt"}`,
+              content: version.content,
+            });
+          }
+        }
+        result.inputs.push({
+          type: "artifact",
+          id: artifact.id,
+          label: item.label ?? artifact.title,
+          localPath,
+        });
+        continue;
+      }
+
+      if (itemType === "memory") {
+        result.inputs.push({
+          type: "memory",
+          id: item.sourceId,
+          label: item.label ?? "Memory context",
+          sourceIssueId: bundle.sourceIssueId,
+        });
+        continue;
+      }
+
+      result.skipped.push({ id: item.sourceId, type: item.itemType, reason: "unsupported_type" });
+    }
+  }
+
+  if (result.inputs.length > 0 || result.skipped.length > 0) {
+    const lines = ["## Run Inputs"];
+    for (const entry of result.inputs) {
+      const detail = [entry.contentType, entry.localPath].filter(Boolean).join(" - ");
+      lines.push(`- ${entry.label}${detail ? ` (${detail})` : ""}`);
+    }
+    for (const skipped of result.skipped) {
+      lines.push(`- Skipped ${skipped.type} ${skipped.id}: ${skipped.reason}`);
+    }
+    result.markdown = lines.join("\n");
+  }
+
+  return result;
+}

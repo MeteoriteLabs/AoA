@@ -50,6 +50,7 @@ import {
 } from "@armyofagents/adapter-utils/server-utils";
 import type { AdapterRuntimeServiceReport } from "@armyofagents/adapter-utils";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
+import { buildRunInputBundle } from "./run-input-bundles.js";
 
 /** Strip non-Latin1 characters that crash WIN1252-encoded embedded Postgres on Windows. */
 function sanitizeForDb(text: string): string {
@@ -269,6 +270,21 @@ export function mergeAdapterRuntimeServiceReports(input: {
     reports.push(service);
   }
   return reports;
+}
+
+export function resolveOutputDetectionCwd(input: {
+  adapterExecutionCwd?: string | null;
+  effectiveCwd?: string | null;
+}): string | null {
+  const adapterCwd =
+    typeof input.adapterExecutionCwd === "string" && input.adapterExecutionCwd.trim().length > 0
+      ? input.adapterExecutionCwd.trim()
+      : null;
+  const effectiveCwd =
+    typeof input.effectiveCwd === "string" && input.effectiveCwd.trim().length > 0
+      ? input.effectiveCwd.trim()
+      : null;
+  return adapterCwd ?? effectiveCwd;
 }
 
 function parseIssueAssigneeAdapterOverrides(
@@ -2866,6 +2882,30 @@ export function heartbeatService(db: Db) {
       }
     }
 
+    if (issueId) {
+      try {
+        const runInputBundle = await buildRunInputBundle({
+          db,
+          companyId: agent.companyId,
+          issueId,
+          cwd: effectiveCwd,
+        });
+        if (runInputBundle.inputs.length > 0 || runInputBundle.skipped.length > 0) {
+          context.runInputBundle = runInputBundle;
+          const existingTaskMarkdown =
+            typeof context.currentTaskMarkdown === "string" ? context.currentTaskMarkdown : "";
+          context.currentTaskMarkdown = [existingTaskMarkdown, runInputBundle.markdown]
+            .filter((section) => section.trim().length > 0)
+            .join("\n\n");
+        }
+      } catch (err) {
+        logger.warn(
+          { companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId, err },
+          "Failed to build run input bundle for agent run; continuing without selected context",
+        );
+      }
+    }
+
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
     let previousSessionDisplayId = truncateDisplayId(
       taskSessionForRun?.sessionDisplayId ??
@@ -3081,6 +3121,16 @@ export function heartbeatService(db: Db) {
           },
           "local agent jwt secret missing or invalid; running without injected AOA_API_KEY",
         );
+        await appendRunEvent(currentRun, seq++, {
+          eventType: "adapter.auth.warning",
+          stream: "system",
+          level: "warn",
+          message: "Agent API auth was not injected for this local run.",
+          payload: {
+            adapterType: agent.adapterType,
+            reason: "local_agent_jwt_missing",
+          },
+        });
       }
       // Fetch company skills attached to this agent and inject into context
       try {
@@ -3572,13 +3622,34 @@ export function heartbeatService(db: Db) {
       // ── V2: Agent output capture (Decision #67) ─────────────────────
       // Runs AFTER the run is finalized — detection failures are non-fatal.
       let detectedFiles: Array<{ path: string; type?: string }> = [];
-      if (outcome === "succeeded" && effectiveCwd) {
+      const outputDetectionCwd = resolveOutputDetectionCwd({
+        adapterExecutionCwd: adapterResult.executionCwd,
+        effectiveCwd,
+      });
+      if (
+        outputDetectionCwd &&
+        effectiveCwd &&
+        adapterResult.executionCwd &&
+        path.resolve(outputDetectionCwd) !== path.resolve(effectiveCwd)
+      ) {
+        logger.info(
+          {
+            runId: run.id,
+            agentId: agent.id,
+            adapterType: agent.adapterType,
+            outputDetectionCwd,
+            effectiveCwd,
+          },
+          "using adapter execution cwd for output detection",
+        );
+      }
+      if (outcome === "succeeded" && outputDetectionCwd) {
         try {
           const detected = await outputDetector.detectAndCapture({
             runId: run.id,
             companyId: agent.companyId,
             agentId: agent.id,
-            cwd: effectiveCwd,
+            cwd: outputDetectionCwd,
             startedAt: run.startedAt ?? run.createdAt,
             adapterType: agent.adapterType,
             adapterHints: adapterResult.outputFiles,

@@ -9,6 +9,7 @@ import { DependencyChain } from "./DependencyChain";
 import { WorkspaceTimeline } from "./WorkspaceTimeline";
 import { WorkspacePreviewPanel, type PreviewMode, type PreviewTabKind, type WorkspacePreviewTab } from "./WorkspacePreviewPanel";
 import { WorkspaceRightPanel } from "./WorkspaceRightPanel";
+import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
 import { ExecutionWorkspaceCloseDialog } from "./ExecutionWorkspaceCloseDialog";
 import { WorkspaceSettingsSheet } from "./WorkspaceSettingsSheet";
 import { useSidebar } from "../../context/SidebarContext";
@@ -292,8 +293,9 @@ export function WorkspaceLayout({
       )}
 
       {/* Header chrome — workspace title + actions kebab. Menu items are disabled pending later Phase I tasks. */}
-      {isMobile ? (
-        <>
+      <WorkspaceErrorBoundary resetKey={`${workspace.id}:${selectedIssueId ?? "none"}:${isMobile ? "mobile" : "desktop"}`}>
+        {isMobile ? (
+          <>
           {/* Mobile tab bar */}
           <div className="flex border-b border-border shrink-0" data-testid="workspace-mobile-tabs">
             {MOBILE_TABS.map(({ key, label, icon: Icon }) => (
@@ -402,8 +404,8 @@ export function WorkspaceLayout({
               )}
             </div>
           </div>
-        </>
-      ) : (
+          </>
+        ) : (
         /* Desktop layout — existing code */
         <div className="flex flex-1 min-h-0 overflow-hidden">
           {/* Left panel */}
@@ -540,7 +542,8 @@ export function WorkspaceLayout({
             )}
           </div>
         </div>
-      )}
+        )}
+      </WorkspaceErrorBoundary>
 
       {/* Archive / close flow dialog — opens from kebab. Only mounted when open
           to avoid unnecessary portal/query work on every WorkspaceLayout render. */}
