@@ -9,6 +9,12 @@
 // intentionally NOT filtered and are asserted absent below.
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+// Resolve server source files relative to __dirname so this works whether
+// vitest CWD is server/ or the monorepo root.
+const serverSrc = (rel: string) =>
+  resolve(__dirname, "..", rel.replace(/^src\//, ""));
 
 const FILTERED = [
   "src/services/agents.ts",       // list(), orgForCompany(), getByUrlKey()
@@ -28,7 +34,7 @@ const NOT_FILTERED = [
 describe("user-facing agent enumerations filter kind='org'", () => {
   for (const f of FILTERED) {
     it(`${f} references agents.kind`, () => {
-      expect(readFileSync(f, "utf8").includes("agents.kind")).toBe(true);
+      expect(readFileSync(serverSrc(f), "utf8").includes("agents.kind")).toBe(true);
     });
   }
 });
@@ -36,7 +42,7 @@ describe("user-facing agent enumerations filter kind='org'", () => {
 describe("by-id agent lookups are intentionally NOT kind-filtered", () => {
   for (const f of NOT_FILTERED) {
     it(`${f} does not add a kind filter (by-id lookup)`, () => {
-      expect(readFileSync(f, "utf8").includes("agents.kind")).toBe(false);
+      expect(readFileSync(serverSrc(f), "utf8").includes("agents.kind")).toBe(false);
     });
   }
 });

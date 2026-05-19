@@ -16,10 +16,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
+  and: vi.fn((...args: unknown[]) => args),
+  ne: vi.fn((a: unknown, b: unknown) => ({ ne: [a, b] })),
+  sql: Object.assign(
+    vi.fn((strings: any, ...values: any[]) => ({ sql: strings, values })),
+    { raw: vi.fn((input: any) => input) },
+  ),
 }));
 
 vi.mock("@armyofagents/db", () => ({
   internalAgentConfig: { __table: "internal_agent_config", companyId: Symbol("companyId") },
+  agents: { __table: "agents", id: "id", companyId: "companyId", name: "name", adapterConfig: "adapterConfig" },
 }));
 
 const appendMessage = vi.fn(async () => ({ id: "msg" }));
@@ -31,6 +38,40 @@ vi.mock("../services/internal-agent/conversation.js", () => ({
 const cliChat = vi.fn();
 vi.mock("../services/internal-agent/cli-mode.js", () => ({
   cliModeService: vi.fn(() => ({ chat: cliChat })),
+}));
+
+// ── Sprint 1 additions — mock to prevent company-skills → projects → heartbeat chain ──
+vi.mock("../services/company-skills.js", () => ({
+  companySkillService: vi.fn(() => ({
+    listCompactSkillEntries: vi.fn(async () => []),
+  })),
+}));
+vi.mock("../services/internal-agent/commander-skills.js", () => ({
+  buildCompactSkillList: vi.fn(async () => null),
+}));
+
+// ── Pre-Sprint-1 services added to agent-loop.ts but not mocked in this test ──
+vi.mock("../services/internal-agent/context-assembly.js", () => ({
+  contextAssemblyService: vi.fn(() => ({
+    assembleContext: vi.fn(async () => ({ systemPrompt: "" })),
+  })),
+}));
+vi.mock("../services/internal-agent/commander-context.js", () => ({
+  loadCommanderPersona: vi.fn(async () => null),
+}));
+vi.mock("../services/internal-agent/aoa-agents/ensure-commander.js", () => ({
+  ensureCommanderAgent: vi.fn(async () => "commander-id"),
+}));
+vi.mock("../services/internal-agent/cli-summarizer.js", () => ({
+  summarizeViaCli: vi.fn(async () => ""),
+}));
+vi.mock("../services/memory.js", () => ({
+  memoryService: vi.fn(() => ({
+    searchSemantic: vi.fn(async () => []),
+  })),
+}));
+vi.mock("../services/agent-instructions.js", () => ({
+  agentInstructionsService: vi.fn(() => ({})),
 }));
 
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";

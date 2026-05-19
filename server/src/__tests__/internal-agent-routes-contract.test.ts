@@ -68,6 +68,13 @@ vi.mock("../routes/authz.js", () => ({
   })),
 }));
 
+// Mock agent-loop to prevent company-skills → projects → heartbeat transitive
+// import (heartbeat.ts uses many @armyofagents/db exports not in our mock stub).
+// This test only checks the router structure, not runtime agent-loop behaviour.
+vi.mock("../services/internal-agent/agent-loop.js", () => ({
+  agentLoopService: vi.fn(() => ({ chat: vi.fn() })),
+}));
+
 import { internalAgentRoutes } from "../routes/internal-agent.js";
 
 describe("internal-agent-routes-contract", () => {

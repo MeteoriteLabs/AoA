@@ -5,9 +5,11 @@
 // behaviour. Windows-runnable.
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 describe("extraction sweeper is wired into the server worker loop", () => {
-  const src = readFileSync("src/index.ts", "utf8");
+  // Use __dirname so this works whether vitest CWD is server/ or the monorepo root.
+  const src = readFileSync(resolve(__dirname, "../index.ts"), "utf8");
 
   it("imports runExtractionSweep", () => {
     expect(src).toContain("runExtractionSweep");

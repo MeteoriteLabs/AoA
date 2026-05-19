@@ -7,6 +7,14 @@ vi.mock("node:child_process", () => ({
   spawn: vi.fn(),
 }));
 
+// Simulate production layout: mcp-bridge.js exists → command = 'node' (not 'tsx').
+// Without this, getBridgeEntrypoint() falls back to the .ts path in dev mode
+// and the MCP spec would use 'tsx'. Tests assert the production contract.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, statSync: vi.fn() }; // never throws → .js "exists"
+});
+
 // MX4: the chat writes the claude mcp-config JSON via fs/promises.writeFile
 // and (for codex) provisions a managed CODEX_HOME via the MX3 codex helper.
 // Mock both so the per-CLI wiring can be asserted without touching disk.
