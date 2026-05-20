@@ -187,7 +187,7 @@ export function parseCliOutput(line: string): AgentStreamChunk[] {
   const confirmMatch = line.match(CONFIRM_RE);
   if (confirmMatch) {
     try {
-      const payload = JSON.parse(confirmMatch[1]) as { toolName?: string; params?: unknown };
+      const payload = JSON.parse(confirmMatch[1]) as { toolName?: string; params?: unknown; confirmId?: string };
       if (typeof payload.toolName !== "string" || payload.toolName.length === 0) {
         // Missing or invalid toolName — treat as malformed marker
         throw new Error("missing toolName");
@@ -197,7 +197,7 @@ export function parseCliOutput(line: string): AgentStreamChunk[] {
           type: "action_confirmation",
           toolName: payload.toolName,
           params: payload.params,
-          runId: crypto.randomUUID(),
+          runId: payload.confirmId ?? crypto.randomUUID(),
         },
       ];
     } catch {
