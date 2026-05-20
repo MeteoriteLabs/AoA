@@ -60,6 +60,8 @@ interface McpConfigParams {
   agentKind?: string;
   /** D2: explicit tool allowlist for AoA agents (comma-separated when passed via env) */
   toolAllowlist?: readonly string[];
+  /** Actor type threaded into the bridge: "commander" when spawned via Commander. */
+  actorType?: string;
 }
 
 interface McpConfig {
@@ -116,6 +118,7 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
       ...(params.toolAllowlist && params.toolAllowlist.length > 0
         ? { AOA_TOOL_ALLOWLIST: params.toolAllowlist.join(",") }
         : {}),
+      ...(params.actorType ? { AOA_ACTOR_TYPE: params.actorType } : {}),
       ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
     },
   };
@@ -460,6 +463,7 @@ export function cliModeService(db: Db) {
             userRole: params.userRole,
             enabledCapabilities: params.enabledCapabilities,
             bridgeEntrypoint: bridgePath,
+            actorType: "commander",
           };
 
           if (session) session.lastMessageAt = new Date();
@@ -562,6 +566,7 @@ export function cliModeService(db: Db) {
               userRole: params.userRole,
               enabledCapabilities: params.enabledCapabilities,
               bridgeEntrypoint: bridgePath,
+              actorType: "commander",
             },
             safeContent,
             undefined,        // resumeCodexSessionId (N/A for the persistent-claude path)

@@ -137,6 +137,9 @@ export async function startBridge(): Promise<void> {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // Commander actor type: "commander" when invoked via Commander; "board" otherwise.
+  const actorType = process.env.AOA_ACTOR_TYPE ?? "board";
+
   const { createDb } = await import("@armyofagents/db");
   const { createServiceContainer } = await import("./service-container.js");
   const { createToolRegistry, executeTool } = await import("./tool-registry.js");
@@ -157,6 +160,7 @@ export async function startBridge(): Promise<void> {
     enabledCapabilities,
     agentKind,
     toolAllowlist,
+    actorType,
     db,
     services,
   };

@@ -48,6 +48,8 @@ export interface ToolContext {
   agentKind?: string;
   /** D2: explicit tool allowlist for AoA agents. Absent/empty = default-deny. */
   toolAllowlist?: readonly string[];
+  /** Actor type: "commander" when invoked via Commander; "board" otherwise. */
+  actorType?: string;
   db: Db;
   services: ServiceContainer;
 }
