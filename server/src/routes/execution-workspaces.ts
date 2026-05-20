@@ -22,7 +22,11 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertCanControlWorkspace } from "../services/workspace-authz.js";
+import {
+  assertCanConfigureWorkspaceShellCommands,
+  assertCanControlWorkspace,
+  workspaceConfigPatchHasShellCommands,
+} from "../services/workspace-authz.js";
 
 export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
@@ -85,6 +89,12 @@ export function executionWorkspaceRoutes(db: Db) {
       projectId: existing.projectId ?? null,
     });
     const { config: configPatch, ...restBody } = req.body as Record<string, unknown>;
+    if (workspaceConfigPatchHasShellCommands(configPatch)) {
+      await assertCanConfigureWorkspaceShellCommands(db, req, {
+        companyId: existing.companyId,
+        projectId: existing.projectId ?? null,
+      });
+    }
     const patch: Record<string, unknown> = {
       ...restBody,
       ...(req.body.cleanupEligibleAt ? { cleanupEligibleAt: new Date(req.body.cleanupEligibleAt) } : {}),

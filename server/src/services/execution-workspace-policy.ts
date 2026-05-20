@@ -6,6 +6,7 @@ import type {
   ProjectExecutionWorkspacePolicy,
 } from "@armyofagents/shared";
 import { asString, parseObject } from "../adapters/utils.js";
+import { unprocessable } from "../errors.js";
 
 type ParsedExecutionWorkspaceMode = Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing">;
 
@@ -98,6 +99,12 @@ export function parseIssueExecutionWorkspaceSettings(raw: unknown): IssueExecuti
   if (Object.keys(parsed).length === 0) return null;
   const workspaceStrategy = parseExecutionWorkspaceStrategy(parsed.workspaceStrategy);
   const mode = asString(parsed.mode, "");
+  const reuseWorkspaceId =
+    typeof parsed.reuseWorkspaceId === "string" && parsed.reuseWorkspaceId.trim().length > 0
+      ? parsed.reuseWorkspaceId.trim()
+      : parsed.reuseWorkspaceId === null
+        ? null
+        : undefined;
   const normalizedMode = (() => {
     if (
       mode === "inherit" ||
@@ -117,10 +124,113 @@ export function parseIssueExecutionWorkspaceSettings(raw: unknown): IssueExecuti
     ...(normalizedMode
       ? { mode: normalizedMode as IssueExecutionWorkspaceSettings["mode"] }
       : {}),
+    ...(reuseWorkspaceId !== undefined ? { reuseWorkspaceId } : {}),
     ...(workspaceStrategy ? { workspaceStrategy } : {}),
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
       : {}),
+  };
+}
+
+type IssueWorkspacePolicyPatch = {
+  executionWorkspaceId?: string | null;
+  executionWorkspacePreference?: string | null;
+  executionWorkspaceSettings?: Record<string, unknown> | null;
+};
+
+type ReuseWorkspaceBoundary = {
+  id: string;
+  companyId: string;
+  projectId: string;
+  status: string;
+};
+
+function hasIssueWorkspaceCommand(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) {
+    return value.some((entry) => hasIssueWorkspaceCommand(entry));
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of ["provisionCommand", "teardownCommand", "cleanupCommand"]) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) return true;
+  }
+  return Object.values(record).some((entry) => hasIssueWorkspaceCommand(entry));
+}
+
+export function enforceIssueExecutionWorkspaceOverridePolicy(input: {
+  existingIssue: {
+    companyId: string;
+    projectId: string | null;
+  };
+  isolatedWorkspacesEnabled: boolean;
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  patch: IssueWorkspacePolicyPatch;
+  reuseWorkspace: ReuseWorkspaceBoundary | null;
+}): IssueWorkspacePolicyPatch {
+  const hasWorkspaceOverride =
+    input.patch.executionWorkspaceId !== undefined ||
+    input.patch.executionWorkspacePreference !== undefined ||
+    input.patch.executionWorkspaceSettings !== undefined;
+  if (!hasWorkspaceOverride) return input.patch;
+
+  if (!input.isolatedWorkspacesEnabled) {
+    const { executionWorkspaceId, executionWorkspacePreference, executionWorkspaceSettings, ...rest } = input.patch;
+    void executionWorkspaceId;
+    void executionWorkspacePreference;
+    void executionWorkspaceSettings;
+    return rest;
+  }
+
+  if (input.projectPolicy?.enabled && input.projectPolicy.allowIssueOverride === false) {
+    throw unprocessable("Project workspace policy does not allow task-level overrides");
+  }
+
+  if (hasIssueWorkspaceCommand(input.patch.executionWorkspaceSettings)) {
+    throw unprocessable("Issue workspace overrides cannot include commands");
+  }
+
+  const parsedSettings = parseIssueExecutionWorkspaceSettings(input.patch.executionWorkspaceSettings) ?? null;
+  const reuseWorkspaceId = parsedSettings?.reuseWorkspaceId ?? input.patch.executionWorkspaceId ?? null;
+
+  if (input.patch.executionWorkspaceId) {
+    if (!input.reuseWorkspace) {
+      throw unprocessable("Execution workspace not found");
+    }
+    if (input.reuseWorkspace.companyId !== input.existingIssue.companyId) {
+      throw unprocessable("Execution workspace must belong to the task company");
+    }
+    if (!input.existingIssue.projectId || input.reuseWorkspace.projectId !== input.existingIssue.projectId) {
+      throw unprocessable("Execution workspace must belong to the task project");
+    }
+    if (input.reuseWorkspace.status === "archived") {
+      throw unprocessable("Execution workspace is archived");
+    }
+  }
+
+  if (parsedSettings?.mode === "reuse_existing" || input.patch.executionWorkspacePreference === "reuse_existing") {
+    if (!reuseWorkspaceId || !input.reuseWorkspace) {
+      throw unprocessable("Execution workspace not found");
+    }
+    if (input.reuseWorkspace.companyId !== input.existingIssue.companyId) {
+      throw unprocessable("Execution workspace must belong to the task company");
+    }
+    if (!input.existingIssue.projectId || input.reuseWorkspace.projectId !== input.existingIssue.projectId) {
+      throw unprocessable("Execution workspace must belong to the task project");
+    }
+    if (input.reuseWorkspace.status === "archived") {
+      throw unprocessable("Execution workspace is archived");
+    }
+    return {
+      ...input.patch,
+      executionWorkspaceId: input.reuseWorkspace.id,
+      executionWorkspacePreference: "reuse_existing",
+      ...(parsedSettings ? { executionWorkspaceSettings: parsedSettings as Record<string, unknown> } : {}),
+    };
+  }
+
+  return {
+    ...input.patch,
+    ...(parsedSettings ? { executionWorkspaceSettings: parsedSettings as Record<string, unknown> } : {}),
   };
 }
 
@@ -197,9 +307,12 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
       const strategy =
         input.issueSettings?.workspaceStrategy ??
         input.projectPolicy?.workspaceStrategy ??
-        parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) ??
-        ({ type: "git_worktree" } satisfies ExecutionWorkspaceStrategy);
-      nextConfig.workspaceStrategy = strategy as unknown as Record<string, unknown>;
+        parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy);
+      if (strategy) {
+        nextConfig.workspaceStrategy = strategy as unknown as Record<string, unknown>;
+      } else {
+        delete nextConfig.workspaceStrategy;
+      }
     } else {
       delete nextConfig.workspaceStrategy;
     }

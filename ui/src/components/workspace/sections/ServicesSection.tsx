@@ -7,6 +7,7 @@ import { executionWorkspacesApi } from "@/api/execution-workspaces";
 import type { WorkspaceRuntimeService } from "@/api/execution-workspaces";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
 import type { ExecutionWorkspace } from "@armyofagents/shared";
 
 interface ServicesSectionProps {
@@ -58,6 +59,7 @@ function isUnavailablePreviewService(service: WorkspaceRuntimeService): boolean 
 
 export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionProps) {
   const queryClient = useQueryClient();
+  const workspacePermissions = useWorkspacePermissions(workspace.companyId, workspace.projectId);
   const [pendingByService, setPendingByService] = useState<Record<string, ServiceAction | null>>({});
   const [errorByService, setErrorByService] = useState<Record<string, string | null>>({});
 
@@ -153,7 +155,7 @@ export function ServicesSection({ workspace, onOpenBrowser }: ServicesSectionPro
         const isStarting = service.status === "starting";
         const previewOnly = isPreviewOnlyService(service);
         const unavailablePreview = isUnavailablePreviewService(service);
-        const controllable = canControlService(service);
+        const controllable = canControlService(service) && workspacePermissions.canControlRuntimeServices;
 
         return (
           <div

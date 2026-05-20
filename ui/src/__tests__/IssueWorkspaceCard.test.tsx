@@ -46,6 +46,12 @@ vi.mock("../lib/queryKeys", () => ({
   },
 }));
 
+vi.mock("../hooks/useWorkspacePermissions", () => ({
+  useWorkspacePermissions: () => ({
+    canOverrideTaskWorkspace: true,
+  }),
+}));
+
 // We mock react-query's useQuery to return specific shapes per queryKey signature
 type QueryShape = { data: unknown; isLoading?: boolean; error?: unknown };
 const queryShapes: Record<string, QueryShape> = {};
@@ -148,7 +154,7 @@ function seed({
   candidates,
 }: {
   instance?: { enableIsolatedWorkspaces: boolean };
-  project?: { functionType: string | null; executionWorkspacePolicy: { enabled: boolean } | null };
+  project?: { functionType: string | null; executionWorkspacePolicy: { enabled: boolean; allowIssueOverride?: boolean } | null };
   candidates?: Array<{ id: string; name: string; branchName: string | null; lastUsedAt: Date }>;
 }) {
   for (const k of Object.keys(queryShapes)) delete queryShapes[k];
@@ -209,6 +215,21 @@ describe("IssueWorkspaceCard", () => {
     expect(screen.getByTestId("select-item-shared_workspace")).toBeInTheDocument();
     expect(screen.getByTestId("select-item-isolated_workspace")).toBeInTheDocument();
     expect(screen.queryByTestId("select-item-reuse_existing")).not.toBeInTheDocument();
+  });
+
+  it("renders read-only inherited workspace state when project disallows task overrides", () => {
+    seed({
+      instance: { enableIsolatedWorkspaces: true },
+      project: {
+        functionType: "software_development",
+        executionWorkspacePolicy: { enabled: true, allowIssueOverride: false },
+      },
+      candidates: [],
+    });
+    renderCard();
+    expect(screen.getByText(/department default/i)).toBeInTheDocument();
+    expect(screen.getByText(/Task-level workspace overrides are disabled/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("issue-workspace-mode-trigger")).not.toBeInTheDocument();
   });
 
   it("shows reuse_existing option when candidates exist", () => {

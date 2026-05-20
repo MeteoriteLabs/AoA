@@ -238,6 +238,22 @@ export function resolveAdapterManagedRuntimeExecutionWorkspaceId(input: {
     ?? null;
 }
 
+export function shouldUsePersistedExecutionWorkspaceForRun(input: {
+  issueExecutionWorkspaceId?: unknown;
+  issueExecutionWorkspacePreference?: unknown;
+  hasIssueScopedExecutionWorkspace: boolean;
+  existingExecutionWorkspaceStatus?: string | null;
+}): boolean {
+  if (!input.existingExecutionWorkspaceStatus || input.existingExecutionWorkspaceStatus === "archived") {
+    return false;
+  }
+  return (
+    Boolean(readNonEmptyString(input.issueExecutionWorkspaceId)) ||
+    input.issueExecutionWorkspacePreference === "reuse_existing" ||
+    input.hasIssueScopedExecutionWorkspace
+  );
+}
+
 function normalizeRuntimeServiceUrlKey(value: unknown): string | null {
   const raw = readNonEmptyString(value);
   if (!raw) return null;
@@ -2550,10 +2566,12 @@ export function heartbeatService(db: Db) {
       });
       // Short-circuit: if issue prefers reusing an existing workspace, build the
       // realized descriptor from the persisted row instead of re-provisioning.
-      const shouldReuseExisting =
-        (issueRef?.executionWorkspacePreference === "reuse_existing" || Boolean(issueScopedExecutionWorkspace)) &&
-        existingExecutionWorkspace &&
-        existingExecutionWorkspace.status !== "archived";
+      const shouldReuseExisting = shouldUsePersistedExecutionWorkspaceForRun({
+        issueExecutionWorkspaceId: issueRef?.executionWorkspaceId,
+        issueExecutionWorkspacePreference: issueRef?.executionWorkspacePreference,
+        hasIssueScopedExecutionWorkspace: Boolean(issueScopedExecutionWorkspace),
+        existingExecutionWorkspaceStatus: existingExecutionWorkspace?.status ?? null,
+      });
       const realizeBase = {
         baseCwd: resolvedWorkspace.cwd,
         source: resolvedWorkspace.source,

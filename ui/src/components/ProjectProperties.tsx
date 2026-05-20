@@ -85,7 +85,6 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
   const [workspaceCwd, setWorkspaceCwd] = useState("");
   const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
-  const [policyAdvancedOpen, setPolicyAdvancedOpen] = useState(false);
   const [workspaceConfirm, setWorkspaceConfirm] = useState<
     | { kind: "clearLocal"; workspace: Project["workspaces"][number] }
     | { kind: "clearRepo"; workspace: Project["workspaces"][number] }
@@ -141,31 +140,6 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
       projectsApi.updateWorkspace(project.id, workspaceId, data),
     onSuccess: invalidateProject,
   });
-
-  const updatePolicy = (patch: Record<string, unknown>) => {
-    if (!onUpdate) return;
-    onUpdate({
-      executionWorkspacePolicy: {
-        ...(project.executionWorkspacePolicy ?? { enabled: true }),
-        ...patch,
-      },
-    });
-  };
-
-  const updatePolicyStrategy = (strategyPatch: Record<string, unknown>) => {
-    if (!onUpdate) return;
-    const existing = project.executionWorkspacePolicy ?? { enabled: true };
-    onUpdate({
-      executionWorkspacePolicy: {
-        ...existing,
-        workspaceStrategy: {
-          type: "git_worktree",
-          ...((existing as any).workspaceStrategy ?? {}),
-          ...strategyPatch,
-        },
-      },
-    });
-  };
 
   const removeGoal = (goalId: string) => {
     if (!onUpdate) return;
@@ -563,124 +537,6 @@ export function ProjectProperties({ project, onUpdate }: ProjectPropertiesProps)
           )}
         </div>
 
-        {/* Workspace Policy */}
-        {project.executionWorkspacePolicy && (
-          <>
-            <Separator />
-            <div className="py-1.5 space-y-3">
-              <p className="text-xs text-muted-foreground">Workspace Policy</p>
-
-              {/* Default mode toggle */}
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground">Default mode</p>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors",
-                      project.executionWorkspacePolicy.defaultMode === "isolated_workspace" || !project.executionWorkspacePolicy.defaultMode
-                        ? "border-foreground bg-accent/40 text-foreground"
-                        : "border-border hover:bg-accent/30 text-muted-foreground",
-                    )}
-                    onClick={() => updatePolicy({ defaultMode: "isolated_workspace" })}
-                    disabled={!onUpdate}
-                  >
-                    🔒 Isolated
-                  </button>
-                  <button
-                    type="button"
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors",
-                      project.executionWorkspacePolicy.defaultMode === "shared_workspace"
-                        ? "border-foreground bg-accent/40 text-foreground"
-                        : "border-border hover:bg-accent/30 text-muted-foreground",
-                    )}
-                    onClick={() => updatePolicy({ defaultMode: "shared_workspace" })}
-                    disabled={!onUpdate}
-                  >
-                    🔗 Shared
-                  </button>
-                </div>
-              </div>
-
-              {/* Per-task override checkbox */}
-              <label className="flex items-center gap-2 text-xs cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={project.executionWorkspacePolicy.allowIssueOverride ?? false}
-                  onChange={(e) => updatePolicy({ allowIssueOverride: e.target.checked })}
-                  disabled={!onUpdate}
-                  className="h-3.5 w-3.5"
-                />
-                Allow tasks to override workspace mode
-              </label>
-
-              {/* TTL (days) — feeds the instance-level TTL sweeper (Experimental setting).
-                  Leave blank to disable. Sweep marks stale workspaces as cleanup-eligible only. */}
-              <div className="space-y-1">
-                <label htmlFor="project-ttl-days" className="text-xs text-muted-foreground">
-                  Workspace TTL (days)
-                </label>
-                <input
-                  id="project-ttl-days"
-                  data-testid="project-ttl-days-input"
-                  type="number"
-                  min={0}
-                  placeholder="Never expires"
-                  defaultValue={project.executionWorkspacePolicy.ttlDays ?? ""}
-                  onBlur={(e) => {
-                    const raw = e.target.value.trim();
-                    const next = raw === "" ? null : Number(raw);
-                    const current = project.executionWorkspacePolicy?.ttlDays ?? null;
-                    if (Number.isNaN(next as number)) return;
-                    if (next === current) return;
-                    updatePolicy({ ttlDays: next });
-                  }}
-                  disabled={!onUpdate}
-                  className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                />
-                <p className="text-[10px] text-muted-foreground">
-                  After N days without activity, workspaces are marked for cleanup (requires the
-                  Workspace TTL Sweeper to be enabled in Instance Settings). Leave blank for no expiry.
-                </p>
-              </div>
-
-              {/* Advanced — software_development only */}
-              {project.functionType === "software_development" && (
-                <div className="border-t border-border/60 pt-2 space-y-2">
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-                    onClick={() => setPolicyAdvancedOpen((o) => !o)}
-                  >
-                    {policyAdvancedOpen ? "▾ Hide advanced" : "▸ Advanced"}
-                  </button>
-                  {policyAdvancedOpen && (
-                    <div className="space-y-2">
-                      {[
-                        { key: "baseRef", label: "Base ref", placeholder: "main" },
-                        { key: "branchTemplate", label: "Branch template", placeholder: "{{issue.identifier}}-{{slug}}" },
-                        { key: "provisionCommand", label: "Provision command", placeholder: "npm install" },
-                        { key: "teardownCommand", label: "Teardown command", placeholder: "" },
-                      ].map(({ key, label, placeholder }) => (
-                        <div key={key}>
-                          <label className="mb-1 block text-xs text-muted-foreground">{label}</label>
-                          <input
-                            className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-                            defaultValue={(project.executionWorkspacePolicy?.workspaceStrategy as unknown as Record<string, unknown>)?.[key] as string ?? ""}
-                            onBlur={(e) => updatePolicyStrategy({ [key]: e.target.value || null })}
-                            placeholder={placeholder}
-                            disabled={!onUpdate}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </>
-        )}
 
         <Separator />
 

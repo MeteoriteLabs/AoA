@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   assertBoard: vi.fn(),
   assertCompanyAccess: vi.fn(),
   environmentService: vi.fn(() => ({})),
+  logActivity: vi.fn(async () => undefined),
   normalizeEnvConfigForPersistence: vi.fn(async (_companyId: string, value: unknown) => value),
   syncEnvBindingsForTarget: vi.fn(),
 }));
@@ -13,7 +14,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../routes/authz.js", () => ({
   assertBoard: mocks.assertBoard,
   assertCompanyAccess: mocks.assertCompanyAccess,
-  getActorInfo: () => ({ userId: "u-1", actorType: "user" }),
+  getActorInfo: () => ({ actorId: "u-1", actorType: "user", agentId: null, runId: null }),
+}));
+
+vi.mock("../services/index.js", () => ({
+  logActivity: mocks.logActivity,
 }));
 
 // Stub the service module to break the drizzle-orm ESM cycle
@@ -156,6 +161,52 @@ describe("environments routes", () => {
       { targetType: "environment", targetId: envId, pathPrefix: "env" },
       normalizedEnv,
     );
+  });
+
+  it("POST /companies/:cid/environments logs redacted environment creation activity", async () => {
+    const normalizedEnv = {
+      API_URL: { type: "plain", value: "https://api.example.com" },
+      API_KEY: { type: "secret_ref", secretId: "33333333-3333-4333-8333-333333333333", version: "latest" },
+    };
+    mocks.normalizeEnvConfigForPersistence.mockResolvedValueOnce(normalizedEnv);
+    const target = { type: "sandbox-docker", image: "node:22-bookworm" };
+    const svc = {
+      create: vi.fn(async () => ({ ...mockEnv, target })),
+    };
+    const app = buildApp(svc, { withDb: true });
+
+    const res = await request(app)
+      .post(`/companies/${companyId}/environments`)
+      .send({
+        name: "Production",
+        envVars: {
+          API_URL: "https://api.example.com",
+          API_KEY: normalizedEnv.API_KEY,
+        },
+        target,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mocks.logActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        actorType: "user",
+        actorId: "u-1",
+        action: "environment.created",
+        entityType: "environment",
+        entityId: envId,
+        details: expect.objectContaining({
+          name: "Production",
+          targetType: "sandbox-docker",
+          envVarKeys: ["API_KEY", "API_URL"],
+          secretBindingCount: 1,
+        }),
+      }),
+    );
+    const details = mocks.logActivity.mock.calls.at(-1)?.[1]?.details;
+    expect(JSON.stringify(details)).not.toContain("https://api.example.com");
+    expect(JSON.stringify(details)).not.toContain("33333333-3333-4333-8333-333333333333");
   });
 
   it("POST /companies/:cid/environments creates env and syncs bindings in one transaction", async () => {
@@ -333,6 +384,54 @@ describe("environments routes", () => {
     );
   });
 
+  it("PATCH /companies/:cid/environments/:id logs redacted environment update activity", async () => {
+    const normalizedEnv = {
+      NODE_ENV: { type: "plain", value: "staging" },
+      API_KEY: { type: "secret_ref", secretId: "33333333-3333-4333-8333-333333333333", version: "latest" },
+    };
+    mocks.normalizeEnvConfigForPersistence.mockResolvedValueOnce(normalizedEnv);
+    const target = { type: "sandbox-docker", image: "node:22-bookworm" };
+    const updated = { ...mockEnv, name: "Staging", target };
+    const svc = {
+      update: vi.fn(async () => updated),
+    };
+    const app = buildApp(svc, { withDb: true });
+
+    const res = await request(app)
+      .patch(`/companies/${companyId}/environments/${envId}`)
+      .send({
+        name: "Staging",
+        envVars: {
+          NODE_ENV: "staging",
+          API_KEY: normalizedEnv.API_KEY,
+        },
+        target,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mocks.logActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        actorType: "user",
+        actorId: "u-1",
+        action: "environment.updated",
+        entityType: "environment",
+        entityId: envId,
+        details: expect.objectContaining({
+          name: "Staging",
+          targetType: "sandbox-docker",
+          changedFields: ["envVars", "name", "target"],
+          envVarKeys: ["API_KEY", "NODE_ENV"],
+          secretBindingCount: 1,
+        }),
+      }),
+    );
+    const details = mocks.logActivity.mock.calls.at(-1)?.[1]?.details;
+    expect(JSON.stringify(details)).not.toContain("staging");
+    expect(JSON.stringify(details)).not.toContain("33333333-3333-4333-8333-333333333333");
+  });
+
   it("PATCH /companies/:cid/environments/:id accepts clearing target", async () => {
     const svc = {
       update: vi.fn(async () => ({ ...mockEnv, target: null })),
@@ -377,6 +476,36 @@ describe("environments routes", () => {
       { targetType: "environment", targetId: envId, pathPrefix: "env" },
       {},
     );
+  });
+
+  it("DELETE /companies/:cid/environments/:id logs redacted environment deletion activity", async () => {
+    const svc = {
+      delete: vi.fn(async () => mockEnv),
+    };
+    const app = buildApp(svc, { withDb: true });
+
+    const res = await request(app).delete(`/companies/${companyId}/environments/${envId}`);
+
+    expect(res.status).toBe(204);
+    expect(mocks.logActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        actorType: "user",
+        actorId: "u-1",
+        action: "environment.deleted",
+        entityType: "environment",
+        entityId: envId,
+        details: expect.objectContaining({
+          name: "Production",
+          targetType: null,
+          envVarKeys: ["API_URL"],
+          secretBindingCount: 0,
+        }),
+      }),
+    );
+    const details = mocks.logActivity.mock.calls.at(-1)?.[1]?.details;
+    expect(JSON.stringify(details)).not.toContain("https://api.example.com");
   });
 
   // DELETE — not found

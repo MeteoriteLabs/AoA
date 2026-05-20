@@ -15,6 +15,7 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties } from "../components/ProjectProperties";
+import { ProjectSettings } from "../components/project/ProjectSettings";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { IssuesList } from "../components/IssuesList";
@@ -34,7 +35,7 @@ import type { ExecutionWorkspace } from "@armyofagents/shared";
 
 /* ── Top-level tab types ── */
 
-type ProjectTab = "overview" | "list" | "goals" | "team" | "budget" | "discussions" | "workspaces";
+type ProjectTab = "overview" | "list" | "goals" | "team" | "budget" | "discussions" | "workspaces" | "settings";
 
 function resolveProjectTab(pathname: string, projectId: string): ProjectTab | null {
   const segments = pathname.split("/").filter(Boolean);
@@ -48,6 +49,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "budget") return "budget";
   if (tab === "discussions") return "discussions";
   if (tab === "workspaces") return "workspaces";
+  if (tab === "settings") return "settings";
   return null;
 }
 
@@ -890,6 +892,7 @@ export function ProjectDetail() {
       budget: "budget",
       discussions: "discussions",
       workspaces: "workspaces",
+      settings: "settings",
     };
     if (activeTab) {
       navigate(`/projects/${canonicalProjectRef}/${tabPaths[activeTab]}`, { replace: true });
@@ -917,6 +920,7 @@ export function ProjectDetail() {
       budget: "budget",
       discussions: "discussions",
       workspaces: "workspaces",
+      settings: "settings",
     };
     navigate(`/projects/${canonicalProjectRef}/${tabPaths[tab]}`);
   };
@@ -999,6 +1003,16 @@ export function ProjectDetail() {
         >
           Workspaces
         </button>
+        <button
+          className={`px-3 py-2 text-sm font-medium transition-colors border-b-2 ${
+            activeTab === "settings"
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+          onClick={() => handleTabChange("settings")}
+        >
+          Settings
+        </button>
       </div>
 
       {/* Tab content */}
@@ -1041,6 +1055,10 @@ export function ProjectDetail() {
 
       {activeTab === "workspaces" && project?.id && resolvedCompanyId && (
         <ProjectWorkspaces projectId={project.id} companyId={resolvedCompanyId} companyPrefix={resolvedPrefix} />
+      )}
+
+      {activeTab === "settings" && (
+        <ProjectSettings project={project} onUpdate={(data) => updateProject.mutate(data)} />
       )}
     </>
   );

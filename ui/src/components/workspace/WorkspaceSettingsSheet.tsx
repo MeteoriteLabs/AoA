@@ -21,6 +21,7 @@ import { issuesApi } from "../../api/issues";
 import { ApiError } from "../../api/client";
 import { queryKeys } from "../../lib/queryKeys";
 import { formatDateTime } from "../../lib/utils";
+import { useWorkspacePermissions } from "../../hooks/useWorkspacePermissions";
 
 type WorkspaceFormState = {
   name: string;
@@ -173,6 +174,7 @@ export function WorkspaceSettingsSheet({ workspaceId, companyId, open, onOpenCha
   });
 
   const workspace = workspaceQuery.data ?? null;
+  const workspacePermissions = useWorkspacePermissions(companyId, workspace?.projectId);
 
   const [formState, setFormState] = useState<WorkspaceFormState | null>(null);
   const [initialState, setInitialState] = useState<WorkspaceFormState | null>(null);
@@ -261,7 +263,9 @@ export function WorkspaceSettingsSheet({ workspaceId, companyId, open, onOpenCha
     setValidationError(null);
   };
 
-  const inputDisabled = forbidden || updateMutation.isPending;
+  const cannotEditWorkspace = !workspacePermissions.canEditDepartmentWorkspaceSettings;
+  const inputDisabled = forbidden || cannotEditWorkspace || updateMutation.isPending;
+  const commandInputDisabled = inputDisabled || !workspacePermissions.canConfigureRuntimeCommands;
   const mutationErrorMessage = updateMutation.error instanceof Error ? updateMutation.error.message : null;
   const showErrorBanner = !forbidden && (validationError || (updateMutation.isError && mutationErrorMessage));
 
@@ -295,7 +299,7 @@ export function WorkspaceSettingsSheet({ workspaceId, companyId, open, onOpenCha
                 <section className="space-y-4">
                   <h3 className="text-sm font-semibold">Configuration</h3>
 
-                  {forbidden && (
+                  {(forbidden || cannotEditWorkspace) && (
                     <div
                       className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200"
                       data-testid="workspace-settings-forbidden-banner"
@@ -366,7 +370,7 @@ export function WorkspaceSettingsSheet({ workspaceId, companyId, open, onOpenCha
                     <Input
                       value={formState.provisionCommand}
                       onChange={(e) => setFormState({ ...formState, provisionCommand: e.target.value })}
-                      disabled={inputDisabled}
+                      disabled={commandInputDisabled}
                       data-testid="workspace-settings-field-provisionCommand"
                     />
                   </Field>
@@ -375,7 +379,7 @@ export function WorkspaceSettingsSheet({ workspaceId, companyId, open, onOpenCha
                     <Input
                       value={formState.teardownCommand}
                       onChange={(e) => setFormState({ ...formState, teardownCommand: e.target.value })}
-                      disabled={inputDisabled}
+                      disabled={commandInputDisabled}
                       data-testid="workspace-settings-field-teardownCommand"
                     />
                   </Field>
@@ -384,12 +388,12 @@ export function WorkspaceSettingsSheet({ workspaceId, companyId, open, onOpenCha
                     <Input
                       value={formState.cleanupCommand}
                       onChange={(e) => setFormState({ ...formState, cleanupCommand: e.target.value })}
-                      disabled={inputDisabled}
+                      disabled={commandInputDisabled}
                       data-testid="workspace-settings-field-cleanupCommand"
                     />
                   </Field>
 
-                  {!forbidden && (
+                  {!forbidden && !cannotEditWorkspace && (
                     <div className="flex items-center gap-2 pt-1">
                       <Button
                         type="button"

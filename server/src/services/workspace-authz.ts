@@ -18,6 +18,7 @@ export interface WorkspaceControlAuthzTarget {
 }
 
 const DENY_MESSAGE = "Insufficient permissions to control this workspace";
+const SHELL_COMMAND_DENY_MESSAGE = "Only founders can configure workspace shell commands";
 
 /**
  * Synchronous actor-shape check (no DB). Returns null if further DB-backed role
@@ -28,7 +29,7 @@ function checkActorShape(req: Request): WorkspaceControlAuthzDecision | null {
     return { allowed: false, status: 401, message: "Authentication required" };
   }
   if (req.actor.type === "agent" || req.actor.type === "mcp") {
-    return { allowed: true };
+    return { allowed: false, status: 403, message: DENY_MESSAGE };
   }
   if (req.actor.type === "board") {
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
@@ -38,6 +39,79 @@ function checkActorShape(req: Request): WorkspaceControlAuthzDecision | null {
   }
   // Unrecognised actor shape — fail closed.
   return { allowed: false, status: 403, message: "Unsupported actor" };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function workspaceConfigPatchHasShellCommands(configPatch: unknown): boolean {
+  if (!isRecord(configPatch)) return false;
+  if (
+    Object.prototype.hasOwnProperty.call(configPatch, "provisionCommand")
+    || Object.prototype.hasOwnProperty.call(configPatch, "teardownCommand")
+    || Object.prototype.hasOwnProperty.call(configPatch, "cleanupCommand")
+  ) {
+    return true;
+  }
+
+  const workspaceRuntime = configPatch.workspaceRuntime;
+  if (!isRecord(workspaceRuntime)) return false;
+  const services = workspaceRuntime.services;
+  if (!Array.isArray(services)) return false;
+  return services.some(
+    (service) =>
+      isRecord(service)
+      && Object.prototype.hasOwnProperty.call(service, "command"),
+  );
+}
+
+/**
+ * Stronger gate for patches that introduce or edit shell command fields.
+ * Runtime service control can be delegated to founders and scoped team leads,
+ * but executable command configuration remains founder-only and human-only.
+ */
+export async function checkCanConfigureWorkspaceShellCommands(
+  db: Db,
+  req: Request,
+  workspace: WorkspaceControlAuthzTarget,
+): Promise<WorkspaceControlAuthzDecision> {
+  if (req.actor.type === "none") {
+    return { allowed: false, status: 401, message: "Authentication required" };
+  }
+  if (req.actor.type === "agent" || req.actor.type === "mcp") {
+    return { allowed: false, status: 403, message: SHELL_COMMAND_DENY_MESSAGE };
+  }
+  if (req.actor.type !== "board") {
+    return { allowed: false, status: 403, message: "Unsupported actor" };
+  }
+  if (req.actor.source === "local_implicit") {
+    return { allowed: true };
+  }
+
+  const userId = req.actor.userId;
+  if (!userId) {
+    return { allowed: false, status: 401, message: "Authentication required" };
+  }
+
+  const permSvc = permissionService(db);
+  const roles = await permSvc.getUserRoles(workspace.companyId, userId);
+  if (roles.some((r) => r.role === "founder")) {
+    return { allowed: true };
+  }
+
+  return { allowed: false, status: 403, message: SHELL_COMMAND_DENY_MESSAGE };
+}
+
+export async function assertCanConfigureWorkspaceShellCommands(
+  db: Db,
+  req: Request,
+  workspace: WorkspaceControlAuthzTarget,
+): Promise<void> {
+  const decision = await checkCanConfigureWorkspaceShellCommands(db, req, workspace);
+  if (decision.allowed) return;
+  if (decision.status === 401) throw unauthorized(decision.message);
+  throw forbidden(decision.message);
 }
 
 /**
