@@ -326,3 +326,26 @@ export const commanderConversationsApi = {
       {},
     ),
 };
+
+/* ------------------------------------------------------------------ */
+/*  Tool permissions                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface CommanderToolPermission {
+  enabled: boolean;
+  requireConfirmation: boolean;
+  minimumRole: "founder" | "team_lead" | "team_member";
+}
+
+export const toolPermissionsApi = {
+  get: (companyId: string) =>
+    api.get<{ permissions: Record<string, CommanderToolPermission>; default: CommanderToolPermission }>(
+      `/companies/${companyId}/internal-agent/tool-permissions`,
+    ),
+
+  update: (companyId: string, permissions: Record<string, CommanderToolPermission>) =>
+    api.patch<{ success: boolean }>(
+      `/companies/${companyId}/internal-agent/tool-permissions`,
+      permissions,
+    ),
+};

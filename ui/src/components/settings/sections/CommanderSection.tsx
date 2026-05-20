@@ -6,7 +6,8 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
-import { internalAgentApi } from "@/api/internal-agent";
+import { internalAgentApi, toolPermissionsApi } from "@/api/internal-agent";
+import type { CommanderToolPermission } from "@/api/internal-agent";
 import { queryKeys } from "@/lib/queryKeys";
 import { formatCents, budgetProgressColor, relativeTime } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -202,6 +203,64 @@ export function CommanderSection() {
     enabled: !!selectedCompanyId && active === "history",
   });
 
+  // Permissions tab state
+  const { data: permissionsData, isLoading: permissionsLoading } = useQuery({
+    queryKey: ["commander-tool-permissions", selectedCompanyId],
+    queryFn: () => toolPermissionsApi.get(selectedCompanyId!),
+    enabled: !!selectedCompanyId && active === "permissions",
+  });
+
+  const [permissionEdits, setPermissionEdits] = useState<Record<string, Partial<CommanderToolPermission>>>({});
+
+  const updatePermissionsMutation = useMutation({
+    mutationFn: (perms: Record<string, CommanderToolPermission>) =>
+      toolPermissionsApi.update(selectedCompanyId!, perms),
+    onSuccess: () => {
+      setPermissionEdits({});
+      queryClient.invalidateQueries({ queryKey: ["commander-tool-permissions"] });
+    },
+  });
+
+  const KNOWN_TOOLS = [
+    "update_company_identity",
+    "create_task",
+    "update_task",
+    "create_goal",
+    "create_discussion",
+    "query_company",
+    "query_tasks",
+    "query_agents",
+    "use_skill",
+    "delegate_to_subagent",
+  ];
+
+  const defaultPerm: CommanderToolPermission = permissionsData?.default ?? {
+    enabled: true,
+    requireConfirmation: false,
+    minimumRole: "team_member" as const,
+  };
+
+  function getEffectivePerm(toolName: string): CommanderToolPermission {
+    const stored = permissionsData?.permissions[toolName] ?? defaultPerm;
+    const edited = permissionEdits[toolName] ?? {};
+    return { ...stored, ...edited };
+  }
+
+  function handlePermEdit(toolName: string, field: keyof CommanderToolPermission, value: unknown) {
+    setPermissionEdits((prev) => ({
+      ...prev,
+      [toolName]: { ...(prev[toolName] ?? {}), [field]: value },
+    }));
+  }
+
+  function handlePermissionsSave() {
+    const merged: Record<string, CommanderToolPermission> = {};
+    for (const tool of KNOWN_TOOLS) {
+      merged[tool] = getEffectivePerm(tool);
+    }
+    updatePermissionsMutation.mutate(merged);
+  }
+
   // Sync form from config
   useEffect(() => {
     if (!config) return;
@@ -386,6 +445,86 @@ export function CommanderSection() {
             isFetchingNextPage={isFetchingNextPage}
             fetchNextPage={fetchNextPage}
           />
+        )}
+        {active === "permissions" && (
+          <div className="space-y-4">
+            {permissionsLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading tool permissions...
+              </div>
+            ) : (
+              <>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Control which tools Commander can use and what level of access each requires.
+                </p>
+                <div className="rounded-md border border-border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">Tool</th>
+                        <th className="px-3 py-2 text-center font-medium text-xs text-muted-foreground w-20">Enabled</th>
+                        <th className="px-3 py-2 text-center font-medium text-xs text-muted-foreground w-24">Confirm</th>
+                        <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground w-36">Min Role</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {KNOWN_TOOLS.map((toolName) => {
+                        const perm = getEffectivePerm(toolName);
+                        return (
+                          <tr key={toolName} className="hover:bg-muted/20 transition-colors">
+                            <td className="px-3 py-2 font-mono text-xs">{toolName}</td>
+                            <td className="px-3 py-2 text-center">
+                              <input
+                                type="checkbox"
+                                checked={perm.enabled}
+                                onChange={(e) => handlePermEdit(toolName, "enabled", e.target.checked)}
+                                className="rounded"
+                              />
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <input
+                                type="checkbox"
+                                checked={perm.requireConfirmation}
+                                onChange={(e) => handlePermEdit(toolName, "requireConfirmation", e.target.checked)}
+                                className="rounded"
+                              />
+                            </td>
+                            <td className="px-3 py-2">
+                              <select
+                                value={perm.minimumRole}
+                                onChange={(e) => handlePermEdit(toolName, "minimumRole", e.target.value)}
+                                className="text-xs border border-border rounded px-1.5 py-0.5 bg-background"
+                              >
+                                <option value="team_member">Member</option>
+                                <option value="team_lead">Lead</option>
+                                <option value="founder">Founder</option>
+                              </select>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    size="sm"
+                    onClick={handlePermissionsSave}
+                    disabled={updatePermissionsMutation.isPending || Object.keys(permissionEdits).length === 0}
+                  >
+                    {updatePermissionsMutation.isPending ? (
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    ) : null}
+                    Save permissions
+                  </Button>
+                </div>
+                {updatePermissionsMutation.isSuccess && (
+                  <p className="text-xs text-green-600">Permissions saved.</p>
+                )}
+              </>
+            )}
+          </div>
         )}
       </div>
     </div>
