@@ -125,6 +125,19 @@ export interface SSEEvent {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Confirmation API types                                             */
+/* ------------------------------------------------------------------ */
+
+export interface ConfirmActionResult {
+  confirmId: string;
+  result: "rejected" | "executed" | "failed";
+  summary: string | null;
+  error: string | null;
+  entityType: string | null;
+  entityId: string | null;
+}
+
+/* ------------------------------------------------------------------ */
 /*  SSE streaming helper (POST-based — NOT EventSource)                */
 /* ------------------------------------------------------------------ */
 
@@ -213,6 +226,20 @@ export async function* streamAgentChat(
   }
 }
 
+/**
+ * Confirm or reject a pending Commander action.
+ * Wraps POST /companies/:companyId/internal-agent/confirm.
+ */
+export function confirmAction(
+  companyId: string,
+  body: { confirmId: string; approved: boolean },
+): Promise<ConfirmActionResult> {
+  return api.post<ConfirmActionResult>(
+    `/companies/${companyId}/internal-agent/confirm`,
+    body,
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  REST API client                                                    */
 /* ------------------------------------------------------------------ */
@@ -260,10 +287,7 @@ export const internalAgentApi = {
     ),
 
   confirmAction: (companyId: string, confirmId: string, approved: boolean) =>
-    api.post<{ confirmId: string; result: string; entityType?: string; entityId?: string }>(
-      `/companies/${companyId}/internal-agent/confirm`,
-      { confirmId, approved },
-    ),
+    confirmAction(companyId, { confirmId, approved }),
 
   getConfig: (companyId: string) =>
     api.get<AgentConfig>(`/companies/${companyId}/internal-agent/config`),
