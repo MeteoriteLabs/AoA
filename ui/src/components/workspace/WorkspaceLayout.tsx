@@ -35,6 +35,8 @@ const MOBILE_TABS = [
   { key: "context" as const, label: "Context", icon: Layers },
 ];
 
+type PreviewFocusSource = "center" | "right-panel";
+
 interface WorkspaceLayoutProps {
   workspace: ExecutionWorkspace;
   project: Project | null;
@@ -131,7 +133,18 @@ export function WorkspaceLayout({
     [setRightCollapsed],
   );
 
-  const openPreviewTab = useCallback((tab: WorkspacePreviewTab) => {
+  const applyPreviewFocus = useCallback(
+    (source: PreviewFocusSource) => {
+      if (isMobile) return;
+      setLeftCollapsed(true);
+      if (source === "center") {
+        setRightCollapsed(true);
+      }
+    },
+    [isMobile, setLeftCollapsed, setRightCollapsed],
+  );
+
+  const openPreviewTab = useCallback((tab: WorkspacePreviewTab, source: PreviewFocusSource = "center") => {
     setPreviewTabs((current) => {
       if (current.some((existing) => existing.id === tab.id)) {
         return current;
@@ -140,7 +153,8 @@ export function WorkspaceLayout({
     });
     setActivePreviewTabId(tab.id);
     setPreviewVisible(true);
-  }, []);
+    applyPreviewFocus(source);
+  }, [applyPreviewFocus]);
 
   const handlePreviewArtifact = useCallback(
     (artifact: ArtifactWithVersions, version: ArtifactVersion) => {
@@ -150,7 +164,7 @@ export function WorkspaceLayout({
         title: artifact.title,
         artifact,
         version,
-      });
+      }, "right-panel");
     },
     [openPreviewTab],
   );
@@ -162,7 +176,7 @@ export function WorkspaceLayout({
         kind: "output",
         title: output.filename,
         output,
-      });
+      }, "right-panel");
     },
     [openPreviewTab],
   );
@@ -175,7 +189,7 @@ export function WorkspaceLayout({
       title: path.split("/").pop() ?? path,
       issueId: selectedIssueId,
       path,
-    });
+    }, "right-panel");
   }, [openPreviewTab, selectedIssueId]);
 
   const handleOpenBrowser = useCallback((service: WorkspaceRuntimeService) => {
@@ -186,7 +200,7 @@ export function WorkspaceLayout({
       title: service.serviceName || "Browser",
       url: service.url,
       serviceId: service.id,
-    });
+    }, "right-panel");
   }, [openPreviewTab]);
 
   const handleOpenGenericTab = useCallback((kind: PreviewTabKind) => {
@@ -238,10 +252,11 @@ export function WorkspaceLayout({
     if (previewTabs.length > 0) {
       setPreviewVisible(true);
       if (!activePreviewTabId) setActivePreviewTabId(previewTabs[0].id);
+      applyPreviewFocus("center");
       return;
     }
     handleOpenGenericTab("home");
-  }, [activePreviewTabId, handleOpenGenericTab, previewTabs, previewVisible]);
+  }, [activePreviewTabId, applyPreviewFocus, handleOpenGenericTab, previewTabs, previewVisible]);
 
   useEffect(() => {
     setPreviewTabs((current) => {

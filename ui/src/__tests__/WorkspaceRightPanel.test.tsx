@@ -402,8 +402,17 @@ describe("WorkspaceRightPanel cockpit contract", () => {
       onOpenArchive,
     });
 
-    expect(await screen.findByText("Workspace cockpit")).toBeInTheDocument();
-    expect(screen.getByText("ENG-42")).toBeInTheDocument();
+    const header = await screen.findByTestId("workspace-cockpit-header");
+    const collapseButton = screen.getByTestId("workspace-right-panel-collapse");
+    const menuButton = screen.getByTestId("workspace-cockpit-menu-trigger");
+    const title = screen.getByTestId("workspace-cockpit-title");
+
+    expect(title).toHaveTextContent("Cockpit · ENG-42");
+    expect(title.className).toContain("truncate");
+    expect(header.compareDocumentPosition(collapseButton)).toBeTruthy();
+    expect(collapseButton.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(title.compareDocumentPosition(menuButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(menuButton.querySelector("svg")?.className.baseVal).toContain("lucide-ellipsis-vertical");
     await user.click(screen.getByTestId("workspace-cockpit-menu-trigger"));
     await user.click(await screen.findByTestId("workspace-cockpit-menu-settings"));
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
@@ -412,8 +421,27 @@ describe("WorkspaceRightPanel cockpit contract", () => {
     await user.click(await screen.findByTestId("workspace-cockpit-menu-archive"));
     expect(onOpenArchive).toHaveBeenCalledTimes(1);
 
+    expect(screen.getByTestId("workspace-right-panel-collapse").className).toContain("h-9");
+    expect(screen.getByTestId("workspace-right-panel-collapse").className).toContain("w-9");
     fireEvent.click(screen.getByTestId("workspace-right-panel-collapse"));
     expect(onToggleCollapse).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps long cockpit ticket identifiers truncated in one header row", async () => {
+    renderRightPanel({
+      functionType: "software_development",
+      selectedIssueIdentifier: "ENG-1234567890-very-long-ticket-reference",
+      onToggleCollapse: vi.fn(),
+      onOpenSettings: vi.fn(),
+    });
+
+    const header = await screen.findByTestId("workspace-cockpit-header");
+    const title = screen.getByTestId("workspace-cockpit-title");
+    expect(header.className).toContain("overflow-hidden");
+    expect(title).toHaveTextContent("Cockpit · ENG-1234567890-very-long-ticket-reference");
+    expect(title.className).toContain("min-w-0");
+    expect(title.className).toContain("truncate");
+    expect(screen.queryByTestId("workspace-cockpit-ticket")).not.toBeInTheDocument();
   });
 
   it("keeps workspace actions reachable from the collapsed cockpit rail", async () => {
@@ -469,8 +497,10 @@ describe("WorkspaceRightPanel cockpit contract", () => {
 
     fireEvent.click(await screen.findByTestId("cockpit-section-trigger-process"));
 
-    expect(await screen.findByRole("button", { name: "Wake agent" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Open latest logs" })).toBeInTheDocument();
+    const wakeButton = await screen.findByRole("button", { name: "Wake agent" });
+    expect(wakeButton).toBeEnabled();
+    expect(wakeButton.className).toContain("bg-brand");
+    expect(screen.queryByRole("button", { name: "Open latest logs" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open latest run" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Cancel run" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause run" })).not.toBeInTheDocument();
@@ -532,9 +562,13 @@ describe("WorkspaceRightPanel cockpit contract", () => {
 
     expect(await screen.findByText("API Specification")).toBeInTheDocument();
     expect(screen.getByText("v3")).toBeInTheDocument();
+    expect(screen.queryByText("agent")).not.toBeInTheDocument();
+    expect(screen.getByTestId("artifact-row").className).toContain("py-1.5");
+    expect(screen.getByText("API Specification").className).toContain("text-xs");
   });
 
   it("opens captured pending detected outputs from the sidebar artifacts section", async () => {
+    const user = userEvent.setup();
     const onPreviewOutput = vi.fn();
     artifactsApiMock.getByIssueId.mockResolvedValueOnce(null);
     outputDetectionApiMock.listForIssue.mockResolvedValueOnce([
@@ -575,14 +609,62 @@ describe("WorkspaceRightPanel cockpit contract", () => {
 
     expect(await screen.findByText("session-debug-report.html")).toBeInTheDocument();
     expect(await screen.findByText("app.ts")).toBeInTheDocument();
-    expect(screen.getAllByText("candidate")).toHaveLength(2);
-    expect(screen.getByText("captured")).toBeInTheDocument();
-    expect(screen.getByText("live")).toBeInTheDocument();
+    expect(screen.queryByText("candidate")).not.toBeInTheDocument();
+    expect(screen.queryByText("captured")).not.toBeInTheDocument();
+    expect(screen.queryByText("live")).not.toBeInTheDocument();
+    expect(screen.queryByText("text/html")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("artifact-candidate-row")[0].className).toContain("hover:bg-white/[0.06]");
+    expect(screen.getAllByTestId("artifact-candidate-row")[0].className).toContain("w-full");
+    expect(screen.getAllByTestId("artifact-candidate-row")[0].className).toContain("py-1.5");
+    expect(screen.getByText("session-debug-report.html").className).toContain("text-xs");
+    expect(screen.getByText("session-debug-report.html").className).toContain("font-mono");
+    expect(screen.getAllByTestId("artifact-candidate-row")[1].className).not.toContain("hover:bg-accent/50");
     fireEvent.click(screen.getAllByTestId("artifact-candidate-row")[0]);
     expect(onPreviewOutput).toHaveBeenCalledWith(expect.objectContaining({ filename: "session-debug-report.html", assetId: "asset-1" }));
     expect(screen.queryByRole("button", { name: /^Publish$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Confirm artifact" })).not.toBeInTheDocument();
     expect(outputDetectionApiMock.confirm).not.toHaveBeenCalled();
+
+    await user.click(screen.getAllByRole("button", { name: "Artifact actions" })[0]);
+    await user.click(await screen.findByRole("menuitem", { name: "Save as artifact" }));
+    await waitFor(() => {
+      expect(outputDetectionApiMock.confirm).toHaveBeenCalledWith("run-1", 0, {
+        title: "session-debug-report.html",
+        type: "document",
+        changelog: "Agent output: session-debug-report.html",
+      });
+    });
+  });
+
+  it("dismisses pending detected outputs from the sidebar artifact actions menu", async () => {
+    const user = userEvent.setup();
+    artifactsApiMock.getByIssueId.mockResolvedValueOnce(null);
+    outputDetectionApiMock.listForIssue.mockResolvedValueOnce([
+      {
+        runId: "run-dismiss",
+        runFinishedAt: "2026-04-01T10:05:00Z",
+        outputIndex: 2,
+        path: "scratch.txt",
+        filename: "scratch.txt",
+        byteSize: 128,
+        contentType: "text/plain",
+        assetId: "asset-dismiss",
+        sha256: "sha256-dismiss",
+        source: "diff",
+        label: null,
+        artifactType: "document",
+        status: "pending",
+      },
+    ]);
+
+    renderRightPanel();
+    fireEvent.click(await screen.findByTestId("cockpit-section-trigger-artifacts"));
+
+    await user.click(await screen.findByRole("button", { name: "Artifact actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Dismiss" }));
+    await waitFor(() => {
+      expect(outputDetectionApiMock.dismiss).toHaveBeenCalledWith("run-dismiss", 2);
+    });
   });
 
   it("opens Memory from the collapsed rail and force-expands it", async () => {
