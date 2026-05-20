@@ -28,7 +28,7 @@ export function createToolRegistry(): AgentTool[] {
   ];
 }
 
-const CORE_TOOLS = new Set(["query_tasks", "query_memory", "query_goals", "use_skill"]);
+const CORE_TOOLS = new Set(["query_tasks", "query_memory", "query_goals", "use_skill", "query_company"]);
 
 const INTENT_KEYWORDS: Record<string, string[]> = {
   action: ["create", "add", "new", "make", "assign", "wake", "wakeup", "trigger"],

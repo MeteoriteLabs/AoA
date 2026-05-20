@@ -77,5 +77,8 @@ export interface ServiceContainer {
   secrets: ReturnType<typeof secretService>;
   notifications: ReturnType<typeof notificationService>;
   discussions: ReturnType<typeof discussionService>;
+  companies: {
+    get: (id: string) => Promise<{ name: string | null; vision: string | null; mission: string | null; issuePrefix: string | null; stage: string | null } | null>;
+  };
   workflows: null; // Placeholder — workflow service not yet implemented
 }
