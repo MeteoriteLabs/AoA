@@ -11,17 +11,17 @@ const routeSrc = readFileSync(
 
 describe("internal-agent route: multi-chat endpoints exist", () => {
   it("has GET conversations route", () => {
-    expect(routeSrc).toContain("/internal-agent/conversations");
+    expect(routeSrc).toContain(`"/companies/:companyId/internal-agent/conversations"`);
     expect(routeSrc).toContain("router.get");
   });
 
   it("has POST conversations route for creating new conversation", () => {
     expect(routeSrc).toContain("router.post");
-    expect(routeSrc).toContain("/internal-agent/conversations");
+    expect(routeSrc).toContain(`"/companies/:companyId/internal-agent/conversations"`);
   });
 
   it("has PATCH archive route", () => {
-    expect(routeSrc).toContain("archive");
+    expect(routeSrc).toContain(`"/companies/:companyId/internal-agent/conversations/:convId/archive"`);
     expect(routeSrc).toContain("archivedAt");
   });
 });

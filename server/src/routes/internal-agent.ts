@@ -15,7 +15,7 @@ import { validate } from "../middleware/index.js";
 import { assertRole } from "../middleware/rbac.js";
 import { internalAgentChatLimiter } from "../middleware/rate-limit.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { HttpError, badRequest, notFound } from "../errors.js";
+import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
 import { permissionService } from "../services/permissions.js";
 import type { UserRole } from "@armyofagents/shared";
@@ -705,41 +705,42 @@ export function internalAgentRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       const actor = getActorInfo(req);
 
-      // Look up the conversation and verify it belongs to this company.
-      const [existing] = await db
-        .select()
-        .from(internalAgentConversations)
-        .where(
-          and(
-            eq(internalAgentConversations.id, convId),
-            eq(internalAgentConversations.companyId, companyId),
-          ),
-        );
-
-      if (!existing) {
-        return res.status(404).json({ error: "Conversation not found" });
-      }
-
-      // Only founders (or the conversation's owner) may archive.
+      // Get role FIRST so we can embed ownership in the WHERE clause and avoid
+      // leaking conversation existence to non-owners via a 403 vs 404 distinction.
       const isLocalImplicit =
         req.actor.type === "board" && req.actor.source === "local_implicit";
       const isInstanceAdmin =
         req.actor.type === "board" && req.actor.isInstanceAdmin === true;
 
-      let isFounder: boolean;
+      let isFounderRole: boolean;
       if (isLocalImplicit || isInstanceAdmin) {
-        isFounder = true;
+        isFounderRole = true;
       } else {
         const role = await permissionService(db).getEffectiveRole(
           companyId,
           actor.actorId,
         );
-        isFounder = role === "founder";
+        isFounderRole = role === "founder";
       }
 
-      if (existing.userId !== actor.actorId && !isFounder) {
-        return res.status(403).json({ error: "Cannot archive another user's conversation" });
+      // Build conditions: the conversation must be in this company AND either:
+      // - it belongs to the current user (non-founders), or
+      // - we don't filter by userId (founders see all)
+      const convConditions = [
+        eq(internalAgentConversations.id, convId),
+        eq(internalAgentConversations.companyId, companyId),
+      ];
+      if (!isFounderRole) {
+        convConditions.push(eq(internalAgentConversations.userId, actor.actorId));
       }
+
+      const [existing] = await db
+        .select()
+        .from(internalAgentConversations)
+        .where(and(...convConditions));
+
+      if (!existing) throw notFound("Conversation not found");
+      // No separate ownership check needed — WHERE clause already enforces it
 
       const [updated] = await db
         .update(internalAgentConversations)
