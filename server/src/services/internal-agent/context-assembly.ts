@@ -81,6 +81,7 @@ export function contextAssemblyService(db: Db) {
 
       if (company) {
         const parts: string[] = [];
+        if (company.name) parts.push(`Name: ${company.name}`);
         if (company.vision) parts.push(`Vision: ${company.vision}`);
         if (company.mission) parts.push(`Mission: ${company.mission}`);
 
