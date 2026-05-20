@@ -193,15 +193,12 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
     }
   }, [conversation, streaming, setCurrentConversationId, conversationId]);
 
-  // Auto-scroll on new messages — only if user is near bottom (fix #8)
+  // Auto-scroll on new messages or streaming content/action card updates
   useEffect(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return;
-    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    if (distanceFromBottom < 100) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [messages]);
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages.length, messages[messages.length - 1]?.content, messages[messages.length - 1]?.actionConfirm]);
 
   // Focus input when panel opens
   useEffect(() => {
@@ -280,6 +277,7 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
         abortRef.current = null;
         // Refresh conversation from server
         queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(companyId) });
+        queryClient.invalidateQueries({ queryKey: ["commander-conversations"] });
       }
     },
     [companyId, streaming, pageContext, setIsStreaming, queryClient, conversationId],
