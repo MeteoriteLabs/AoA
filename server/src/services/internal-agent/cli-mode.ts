@@ -158,19 +158,25 @@ export function parseCliOutput(line: string): AgentStreamChunk[] {
   if (optMatch) {
     try {
       const payload = JSON.parse(optMatch[1]) as {
-        question: string;
-        options: string[];
+        question?: string;
+        options?: unknown;
       };
+      if (
+        typeof payload.question !== "string" || payload.question.trim() === "" ||
+        !Array.isArray(payload.options) || payload.options.length === 0
+      ) {
+        throw new Error("invalid OPTIONS payload");
+      }
       return [
         {
           type: "options_prompt",
           question: payload.question,
-          options: payload.options,
+          options: payload.options as string[],
           promptId: crypto.randomUUID(),
         },
       ];
     } catch {
-      // Malformed JSON — fall through to plain text
+      // Malformed JSON or invalid payload — fall through to plain text
     }
   }
 

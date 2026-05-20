@@ -36,4 +36,22 @@ describe("parseCliOutput: options_prompt extraction", () => {
     const confirmChunk = chunks.find((c) => c.type === "action_confirmation");
     expect(confirmChunk).toBeDefined();
   });
+
+  it("falls back to text when OPTIONS marker has empty question", () => {
+    const line = `⚡OPTIONS:${JSON.stringify({ question: "", options: ["A", "B"] })}⚡`;
+    const chunks = parseCliOutput(line);
+    expect(chunks[0].type).toBe("text");
+  });
+
+  it("falls back to text when OPTIONS marker has empty options array", () => {
+    const line = `⚡OPTIONS:${JSON.stringify({ question: "Pick one", options: [] })}⚡`;
+    const chunks = parseCliOutput(line);
+    expect(chunks[0].type).toBe("text");
+  });
+
+  it("falls back to text when OPTIONS marker has non-array options", () => {
+    const line = `⚡OPTIONS:${JSON.stringify({ question: "Pick one", options: "bad" })}⚡`;
+    const chunks = parseCliOutput(line);
+    expect(chunks[0].type).toBe("text");
+  });
 });
