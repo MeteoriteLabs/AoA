@@ -31,7 +31,7 @@ interface PendingConfirmation {
   params: unknown;
   companyId: string;
   userId: string;
-  userRole: string;
+  userRole: UserRole;
   enabledCapabilities: string[];
 }
 
@@ -286,11 +286,53 @@ export function internalAgentRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
 
-      // Placeholder: confirm/reject pending action by confirmId
-      // Real implementation would look up pending confirmation and execute/reject
+      const { confirmId, approved } = req.body as { confirmId: string; approved: boolean };
+
+      const pending = pendingConfirmations.get(confirmId);
+      if (!pending) {
+        throw notFound(`No pending confirmation for id: ${confirmId}`);
+      }
+      pendingConfirmations.delete(confirmId);
+
+      if (!approved) {
+        res.json({ confirmId, result: "rejected", entityType: null, entityId: null });
+        return;
+      }
+
+      // Direct re-execution: bypass Commander's LLM and run the tool with the
+      // exact stored params. Industry-standard pattern.
+      const { createToolRegistry, executeTool } = await import(
+        "../services/internal-agent/tool-registry.js"
+      );
+      const { createServiceContainer } = await import(
+        "../services/internal-agent/service-container.js"
+      );
+
+      const tools = createToolRegistry();
+      const tool = tools.find((t) => t.name === pending.toolName);
+      if (!tool) {
+        throw notFound(`Tool not found: ${pending.toolName}`);
+      }
+
+      const services = createServiceContainer(db);
+      const toolContext = {
+        companyId: pending.companyId,
+        userId: pending.userId,
+        userRole: pending.userRole,
+        enabledCapabilities: pending.enabledCapabilities,
+        agentKind: undefined,
+        toolAllowlist: [] as string[],
+        db,
+        services,
+      };
+
+      const result = await executeTool(tool, pending.params, toolContext);
+
       res.json({
-        confirmId: req.body.confirmId,
-        result: "Action confirmation recorded",
+        confirmId,
+        result: result.success ? "executed" : "failed",
+        summary: result.summary ?? null,
+        error: result.error ?? null,
         entityType: null,
         entityId: null,
       });
