@@ -163,69 +163,77 @@ export function AgentPanelContent() {
 
   const pageContext = breadcrumbs.length > 0 ? breadcrumbs.map((b) => b.label).join(" > ") : null;
 
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if (!text || !companyId || streaming) return;
+  const sendText = useCallback(
+    async (text: string) => {
+      if (!text || !companyId || streaming) return;
 
-    setInput("");
-    setStreamingLocal(true);
-    setIsStreaming(true);
+      setStreamingLocal(true);
+      setIsStreaming(true);
 
-    // Add user message
-    const userMsg: LocalMessage = {
-      id: `local-user-${Date.now()}-${++localIdRef.current}`,
-      role: "user",
-      content: text,
-      streamingDone: true,
-      createdAt: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, userMsg]);
+      // Add user message
+      const userMsg: LocalMessage = {
+        id: `local-user-${Date.now()}-${++localIdRef.current}`,
+        role: "user",
+        content: text,
+        streamingDone: true,
+        createdAt: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, userMsg]);
 
-    // Prepare assistant message placeholder
-    const assistantId = `local-assistant-${Date.now()}-${++localIdRef.current}`;
-    const assistantMsg: LocalMessage = {
-      id: assistantId,
-      role: "assistant",
-      content: "",
-      streamingDone: false,
-      toolCalls: [],
-      createdAt: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, assistantMsg]);
+      // Prepare assistant message placeholder
+      const assistantId = `local-assistant-${Date.now()}-${++localIdRef.current}`;
+      const assistantMsg: LocalMessage = {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        streamingDone: false,
+        toolCalls: [],
+        createdAt: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
 
-    const controller = new AbortController();
-    abortRef.current = controller;
+      const controller = new AbortController();
+      abortRef.current = controller;
 
-    try {
-      const stream = streamAgentChat(companyId, text, pageContext, controller.signal);
+      try {
+        const stream = streamAgentChat(companyId, text, pageContext, controller.signal);
 
-      for await (const event of stream) {
-        handleSSEEvent(event, assistantId);
-      }
-    } catch (err) {
-      if ((err as Error).name !== "AbortError") {
+        for await (const event of stream) {
+          handleSSEEvent(event, assistantId);
+        }
+      } catch (err) {
+        if ((err as Error).name !== "AbortError") {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, content: m.content || "Sorry, something went wrong. Please try again.", streamingDone: true }
+                : m,
+            ),
+          );
+        }
+      } finally {
+        // Mark streaming done on the assistant message (fix #1: switch to markdown)
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === assistantId
-              ? { ...m, content: m.content || "Sorry, something went wrong. Please try again.", streamingDone: true }
-              : m,
+            m.id === assistantId ? { ...m, streamingDone: true } : m,
           ),
         );
+        setStreamingLocal(false);
+        setIsStreaming(false);
+        abortRef.current = null;
+        // Refresh conversation from server
+        queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(companyId) });
       }
-    } finally {
-      // Mark streaming done on the assistant message (fix #1: switch to markdown)
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId ? { ...m, streamingDone: true } : m,
-        ),
-      );
-      setStreamingLocal(false);
-      setIsStreaming(false);
-      abortRef.current = null;
-      // Refresh conversation from server
-      queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(companyId) });
-    }
-  }, [input, companyId, streaming, pageContext, setIsStreaming, queryClient]);
+    },
+    [companyId, streaming, pageContext, setIsStreaming, queryClient],
+  );
+
+  const handleSend = useCallback(async () => {
+    const text = input.trim();
+    if (!text) return;
+    setInput("");
+    await sendText(text);
+  }, [input, sendText]);
 
   // Not wrapped in useCallback intentionally — only called from handleSend's async loop,
   // and only uses setMessages (functional updater) + toolCallIdRef (ref). No stale closure risk.
@@ -304,30 +312,23 @@ export function AgentPanelContent() {
     }
   }
 
-  const handleActionConfirm = useCallback(
-    async (messageId: string, confirmId: string, approved: boolean) => {
-      if (!companyId) return;
-      try {
-        await internalAgentApi.confirmAction(companyId, confirmId, approved);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === messageId && m.actionConfirm
-              ? {
-                  ...m,
-                  actionConfirm: {
-                    ...m.actionConfirm,
-                    status: approved ? "approved" : "rejected",
-                  },
-                }
-              : m,
-          ),
-        );
-        queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(companyId) });
-      } catch {
-        // Leave as pending
-      }
+  const sendConfirmMessage = useCallback(
+    (messageId: string, confirmId: string, action: string, approved: boolean) => {
+      // Optimistically update the UI status
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId && m.actionConfirm
+            ? { ...m, actionConfirm: { ...m.actionConfirm, status: approved ? "approved" : "rejected" } }
+            : m,
+        ),
+      );
+      // Send the confirmation/cancellation as a user message to Commander
+      const message = approved
+        ? `Yes, confirmed — proceed with ${action}`
+        : `Cancel — do not proceed with ${action}`;
+      void sendText(message);
     },
-    [companyId, queryClient],
+    [sendText],
   );
 
   const handleReset = useCallback(async () => {
@@ -458,15 +459,21 @@ export function AgentPanelContent() {
 
               {/* Action confirmation */}
               {msg.actionConfirm && (
-                <div className="mt-2 rounded-md border border-border bg-background p-2">
-                  <p className="text-xs font-medium mb-1">{msg.actionConfirm.description}</p>
+                <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-3 space-y-2">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-amber-900 dark:text-amber-100">
+                    <span>⚡</span>
+                    <span>Action requires approval: <code className="font-mono">{msg.actionConfirm.action}</code></span>
+                  </div>
+                  {msg.actionConfirm.description !== msg.actionConfirm.action && (
+                    <p className="text-xs text-muted-foreground">{msg.actionConfirm.description}</p>
+                  )}
                   {msg.actionConfirm.status === "pending" ? (
-                    <div className="flex items-center gap-2 mt-1.5">
+                    <div className="flex items-center gap-2">
                       <Button
                         size="sm"
                         variant="default"
                         className="h-7 text-xs"
-                        onClick={() => handleActionConfirm(msg.id, msg.actionConfirm!.confirmId, true)}
+                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, msg.actionConfirm!.action, true)}
                       >
                         <Check className="h-3 w-3 mr-1" />
                         Confirm
@@ -475,10 +482,10 @@ export function AgentPanelContent() {
                         size="sm"
                         variant="outline"
                         className="h-7 text-xs"
-                        onClick={() => handleActionConfirm(msg.id, msg.actionConfirm!.confirmId, false)}
+                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, msg.actionConfirm!.action, false)}
                       >
                         <X className="h-3 w-3 mr-1" />
-                        Reject
+                        Cancel
                       </Button>
                     </div>
                   ) : (

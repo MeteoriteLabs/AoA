@@ -169,17 +169,26 @@ export function internalAgentRoutes(db: Db) {
                 `event: tool_result\ndata: ${JSON.stringify({ name: chunk.name })}\n\n`,
               );
               break;
-            case "action_confirmation":
+            case "action_confirmation": {
               // parseCliOutput now emits these when the CLI prints a ⚡CONFIRM:...⚡ marker.
               // The branch forwards the confirmation event to the SSE stream for UI handling.
+              const paramsSummary =
+                chunk.params &&
+                typeof chunk.params === "object" &&
+                Object.keys(chunk.params as object).length > 0
+                  ? ` with ${Object.entries(chunk.params as Record<string, unknown>)
+                      .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+                      .join(", ")}`
+                  : "";
               res.write(
                 `event: action_confirm\ndata: ${JSON.stringify({
                   confirmId: chunk.runId,
                   action: chunk.toolName,
-                  description: chunk.toolName,
+                  description: `${chunk.toolName}${paramsSummary}`,
                 })}\n\n`,
               );
               break;
+            }
             case "error":
               res.write(
                 `event: error\ndata: ${JSON.stringify({ code: "INTERNAL", message: chunk.message })}\n\n`,
