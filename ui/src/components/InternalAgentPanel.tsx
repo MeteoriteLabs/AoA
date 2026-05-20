@@ -473,39 +473,17 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <Bot className="h-4 w-4 text-primary shrink-0" />
-          <span className="text-sm font-semibold truncate">Commander</span>
-          {pageContext && (
-            <span className="text-[10px] text-muted-foreground truncate max-w-[120px]">
-              {breadcrumbs[breadcrumbs.length - 1]?.label}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={handleReset}
-            disabled={streaming || messages.length === 0}
-            aria-label="New conversation"
-            title="New conversation"
-          >
-            <MessageSquarePlus className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={closePanel}
-            aria-label="Close Commander"
-            className="md:hidden"
-          >
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
+      {/* Header removed: the Commander page topbar (in Commander.tsx) already shows
+          the breadcrumb. Mobile close button is now positioned as an absolute overlay below. */}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        onClick={closePanel}
+        aria-label="Close Commander"
+        className="md:hidden absolute top-2 right-2 z-10"
+      >
+        <X className="h-4 w-4" />
+      </Button>
 
       {/* Messages (fix #11: aria-live for streaming accessibility) */}
       <div

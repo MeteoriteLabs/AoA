@@ -33,7 +33,9 @@ export function Commander() {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)]">
+    // Negative margins bleed out of the global <main> padding (p-4 md:p-6)
+    // so Commander chrome goes edge-to-edge.
+    <div className="flex flex-col h-[calc(100vh-4rem)] -m-4 md:-m-6">
       {/* Compressed topbar — 40px tall, no big heading */}
       <div className="flex items-center justify-between h-10 px-5 border-b border-border bg-bg shrink-0">
         <div className="flex items-center gap-2 text-xs text-dim">
