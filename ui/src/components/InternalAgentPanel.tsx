@@ -543,6 +543,7 @@ export function AgentPanelContent() {
                   <p className="text-xs text-muted-foreground">
                     Commander is asking — pick one or type your answer below:
                   </p>
+                  <p className="text-xs font-medium text-foreground">{msg.optionsPrompt.question}</p>
                   <div className="flex flex-wrap gap-2">
                     {msg.optionsPrompt.options.map((opt, i) => (
                       <button
