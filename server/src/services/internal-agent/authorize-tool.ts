@@ -59,13 +59,16 @@ export function authorizeToolInvocation(
 
   // Fail closed on unknown role strings (e.g., a malformed
   // AOA_SESSION_USER_ROLE env var). Unknown roles map to no rank.
+  // If requiredRole is absent the tool is open to all roles — skip the gate.
   const userRank = ROLE_RANK[userRole as UserRole];
-  if (userRank === undefined || userRank < ROLE_RANK[tool.requiredRole]) {
-    return {
-      allowed: false,
-      error: "FORBIDDEN_ROLE",
-      summary: `Role '${userRole}' cannot invoke '${tool.name}' (requires '${tool.requiredRole}')`,
-    };
+  if (tool.requiredRole !== undefined) {
+    if (userRank === undefined || userRank < ROLE_RANK[tool.requiredRole]) {
+      return {
+        allowed: false,
+        error: "FORBIDDEN_ROLE",
+        summary: `Role '${userRole}' cannot invoke '${tool.name}' (requires '${tool.requiredRole}')`,
+      };
+    }
   }
 
   // Capability check

@@ -5,6 +5,20 @@
 
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
 
+// ── Role Hierarchy ───────────────────────────────────────────────────────────
+
+// Role hierarchy: founder > team_lead > team_member.
+// Unknown roles are treated as 0 (below team_member) so they fail any role check.
+const ROLE_LEVELS: Record<string, number> = {
+  founder: 3,
+  team_lead: 2,
+  team_member: 1,
+};
+
+function roleAtLeast(userRole: string, required: string): boolean {
+  return (ROLE_LEVELS[userRole] ?? 0) >= (ROLE_LEVELS[required] ?? 0);
+}
+
 // ── Tool Call Handler (pure, testable) ──────────────────────────────────────
 
 interface ToolCallHandlerDeps {
@@ -27,6 +41,18 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
     if (!tool) {
       return {
         content: [{ type: "text", text: `Unknown tool: '${name}'. Available: ${deps.tools.map((t) => t.name).join(", ")}` }],
+        isError: true,
+      };
+    }
+
+    if (tool.requiredRole && !roleAtLeast(deps.toolContext.userRole, tool.requiredRole)) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Tool '${name}' requires role '${tool.requiredRole}' but caller has '${deps.toolContext.userRole}'.`,
+          },
+        ],
         isError: true,
       };
     }

@@ -57,7 +57,8 @@ export interface AgentTool {
   description: string;
   parameters: JsonSchema;
   category: ToolCategory;
-  requiredRole: "founder" | "team_lead" | "team_member";
+  /** When set, the caller's role must be at least this level. Absent = open to all roles. */
+  requiredRole?: "founder" | "team_lead" | "team_member";
   requiresConfirmation: boolean;
   execute: (params: unknown, ctx: ToolContext) => Promise<ToolResult>;
 }

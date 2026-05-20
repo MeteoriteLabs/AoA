@@ -16,6 +16,13 @@ function makeTool(name: string, requiresConfirmation: boolean): AgentTool {
 
 const neverExecute = async () => ({ success: true, data: {}, summary: "" });
 
+// Minimal valid ToolContext for testing the confirmation gate.
+// userRole must be a recognised role string so the role enforcement gate
+// (which runs before requiresConfirmation) does not block these calls.
+// The tools created by makeTool() have requiredRole: "team_member", so any
+// valid role passes.
+const baseCtx = { userRole: "team_member" } as any;
+
 describe("createToolCallHandler: requiresConfirmation gate", () => {
   it("executes tools with requiresConfirmation: false normally", async () => {
     const tool = makeTool("query_tasks", false);
@@ -23,7 +30,7 @@ describe("createToolCallHandler: requiresConfirmation gate", () => {
     const handler = createToolCallHandler({
       tools: [tool],
       executeTool: executeSpy,
-      toolContext: {} as any,
+      toolContext: baseCtx,
     });
     const result = await handler("query_tasks", {});
     expect(result.isError).toBeFalsy();
@@ -36,7 +43,7 @@ describe("createToolCallHandler: requiresConfirmation gate", () => {
     const handler = createToolCallHandler({
       tools: [tool],
       executeTool: executeSpy,
-      toolContext: {} as any,
+      toolContext: baseCtx,
     });
     const result = await handler("create_task", { title: "Test task" });
     expect(executeSpy).not.toHaveBeenCalled();
@@ -50,7 +57,7 @@ describe("createToolCallHandler: requiresConfirmation gate", () => {
     const handler = createToolCallHandler({
       tools: [tool],
       executeTool: neverExecute,
-      toolContext: {} as any,
+      toolContext: baseCtx,
     });
     const params = { title: "Sprint planning task", priority: "high" };
     const result = await handler("create_task", params);
