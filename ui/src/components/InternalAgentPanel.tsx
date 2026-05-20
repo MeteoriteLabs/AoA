@@ -624,17 +624,17 @@ export function AgentPanelContent() {
         </div>
         {/* Input toolbar row */}
         <div className="flex items-center gap-3 pt-1.5 text-muted-foreground">
-          <button className="flex items-center gap-1 text-xs hover:text-foreground transition-colors">
-            <Paperclip className="h-3.5 w-3.5" /> Attach
+          <button disabled aria-disabled="true" className="flex items-center gap-1 text-xs opacity-50 cursor-not-allowed">
+            <Paperclip className="h-3.5 w-3.5" aria-hidden="true" /> Attach
           </button>
-          <button className="flex items-center gap-1 text-xs hover:text-foreground transition-colors">
-            <Sparkles className="h-3.5 w-3.5" /> Skills
+          <button disabled aria-disabled="true" className="flex items-center gap-1 text-xs opacity-50 cursor-not-allowed">
+            <Sparkles className="h-3.5 w-3.5" aria-hidden="true" /> Skills
           </button>
-          <button className="flex items-center gap-1 text-xs hover:text-foreground transition-colors">
-            <AtSign className="h-3.5 w-3.5" /> Mention
+          <button disabled aria-disabled="true" className="flex items-center gap-1 text-xs opacity-50 cursor-not-allowed">
+            <AtSign className="h-3.5 w-3.5" aria-hidden="true" /> Mention
           </button>
-          <button className="flex items-center gap-1 text-xs hover:text-foreground transition-colors">
-            <Mic className="h-3.5 w-3.5" /> Voice
+          <button disabled aria-disabled="true" className="flex items-center gap-1 text-xs opacity-50 cursor-not-allowed">
+            <Mic className="h-3.5 w-3.5" aria-hidden="true" /> Voice
           </button>
         </div>
       </div>

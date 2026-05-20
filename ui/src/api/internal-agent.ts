@@ -309,26 +309,20 @@ export interface ConversationRow {
 }
 
 export const commanderConversationsApi = {
-  list: async (companyId: string) => {
-    const res = await fetch(`/api/companies/${companyId}/internal-agent/conversations`);
-    if (!res.ok) throw new Error("Failed to load conversations");
-    return res.json() as Promise<{ conversations: ConversationRow[] }>;
-  },
-  create: async (companyId: string, title?: string) => {
-    const res = await fetch(`/api/companies/${companyId}/internal-agent/conversations`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title }),
-    });
-    if (!res.ok) throw new Error("Failed to create conversation");
-    return res.json() as Promise<ConversationRow>;
-  },
-  archive: async (companyId: string, convId: string) => {
-    const res = await fetch(
-      `/api/companies/${companyId}/internal-agent/conversations/${convId}/archive`,
-      { method: "PATCH" },
-    );
-    if (!res.ok) throw new Error("Failed to archive conversation");
-    return res.json();
-  },
+  list: (companyId: string) =>
+    api.get<{ conversations: ConversationRow[] }>(
+      `/companies/${companyId}/internal-agent/conversations`,
+    ),
+
+  create: (companyId: string, title?: string) =>
+    api.post<ConversationRow>(
+      `/companies/${companyId}/internal-agent/conversations`,
+      { title },
+    ),
+
+  archive: (companyId: string, convId: string) =>
+    api.patch<ConversationRow>(
+      `/companies/${companyId}/internal-agent/conversations/${convId}/archive`,
+      {},
+    ),
 };

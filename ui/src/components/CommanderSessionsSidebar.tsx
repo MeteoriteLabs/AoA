@@ -34,7 +34,7 @@ function groupByDate(conversations: ConversationRow[]) {
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const yesterdayStart = new Date(todayStart.getTime() - 86_400_000);
-  const weekStart = new Date(todayStart.getTime() - 7 * 86_400_000);
+  const weekStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate() - 7);
   const groups: { label: string; items: ConversationRow[] }[] = [
     { label: "TODAY", items: [] },
     { label: "YESTERDAY", items: [] },
@@ -154,7 +154,6 @@ function SessionItem({
   onSelect: () => void;
   onArchive: () => void;
 }) {
-  const [hover, setHover] = useState(false);
   const title = conv.title ?? `Chat ${formatRelativeTime(conv.createdAt)}`;
 
   return (
@@ -164,8 +163,6 @@ function SessionItem({
         isActive && "bg-black/[0.08]",
       )}
       onClick={onSelect}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
     >
       <MessageSquare className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
       <div className="flex-1 min-w-0">
@@ -175,18 +172,16 @@ function SessionItem({
           {conv.messageCount} msg{conv.messageCount !== 1 ? "s" : ""}
         </p>
       </div>
-      {hover && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onArchive();
-          }}
-          className="p-0.5 rounded hover:bg-black/10 transition-colors"
-          title="Archive"
-        >
-          <Archive className="h-3 w-3 text-muted-foreground" />
-        </button>
-      )}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onArchive();
+        }}
+        className="hidden group-hover:flex items-center p-0.5 rounded hover:bg-black/10 transition-colors"
+        title="Archive"
+      >
+        <Archive className="h-3 w-3 text-muted-foreground" />
+      </button>
     </div>
   );
 }
