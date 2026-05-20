@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const updateMock = vi.fn().mockResolvedValue({});
+const invalidateQueriesMock = vi.fn();
 
 vi.mock("../api/issues", () => ({
   issuesApi: {
@@ -72,9 +73,9 @@ vi.mock("@tanstack/react-query", async () => {
       }
       return { data: undefined, isLoading: false, error: null };
     }),
-    useMutation: (opts: { mutationFn: (payload: unknown) => Promise<unknown> }) => ({
+    useMutation: (opts: { mutationFn: (payload: unknown) => Promise<unknown>; onSuccess?: () => void }) => ({
       mutate: (payload: unknown) => {
-        void opts.mutationFn(payload);
+        void opts.mutationFn(payload).then(() => opts.onSuccess?.());
       },
       mutateAsync: opts.mutationFn,
       isPending: false,
@@ -82,7 +83,7 @@ vi.mock("@tanstack/react-query", async () => {
       isSuccess: false,
     }),
     useQueryClient: () => ({
-      invalidateQueries: vi.fn(),
+      invalidateQueries: invalidateQueriesMock,
     }),
   };
 });
@@ -166,6 +167,7 @@ function seed({
 describe("IssueWorkspaceCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    invalidateQueriesMock.mockClear();
     capturedHandlers.length = 0;
     for (const k of Object.keys(queryShapes)) delete queryShapes[k];
   });
@@ -284,6 +286,25 @@ describe("IssueWorkspaceCard", () => {
     expect(updateMock).toHaveBeenCalledWith("i-1", {
       executionWorkspacePreference: "isolated_workspace",
       executionWorkspaceSettings: null,
+    });
+  });
+
+  it("invalidates issue detail and workspace list after mode update", async () => {
+    seed({
+      instance: { enableIsolatedWorkspaces: true },
+      project: {
+        functionType: "software_development",
+        executionWorkspacePolicy: { enabled: true },
+      },
+      candidates: [],
+    });
+    renderCard();
+
+    capturedHandlers[0]!("isolated_workspace");
+
+    await vi.waitFor(() => {
+      expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: ["issues", "detail", "i-1"] });
+      expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: ["executionWorkspaces", "c-1"] });
     });
   });
 

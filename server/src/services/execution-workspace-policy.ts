@@ -151,7 +151,7 @@ function hasIssueWorkspaceCommand(value: unknown): boolean {
     return value.some((entry) => hasIssueWorkspaceCommand(entry));
   }
   const record = value as Record<string, unknown>;
-  for (const key of ["provisionCommand", "teardownCommand", "cleanupCommand"]) {
+  for (const key of ["command", "provisionCommand", "teardownCommand", "cleanupCommand"]) {
     if (Object.prototype.hasOwnProperty.call(record, key)) return true;
   }
   return Object.values(record).some((entry) => hasIssueWorkspaceCommand(entry));

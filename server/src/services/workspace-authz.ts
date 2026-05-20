@@ -173,3 +173,11 @@ export async function assertCanControlWorkspace(
   if (decision.status === 401) throw unauthorized(decision.message);
   throw forbidden(decision.message);
 }
+
+export async function assertCanOverrideTaskWorkspace(
+  db: Db,
+  req: Request,
+  workspace: WorkspaceControlAuthzTarget,
+): Promise<void> {
+  await assertCanControlWorkspace(db, req, workspace);
+}

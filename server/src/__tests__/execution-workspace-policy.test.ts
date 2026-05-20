@@ -348,6 +348,73 @@ describe("execution workspace policy helpers", () => {
     expect(issueExecutionWorkspaceModeForPersistedWorkspace(undefined)).toBe("agent_default");
   });
 
+  it("normalizes create-time reuse_existing into executionWorkspaceId", () => {
+    expect(
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: { companyId: "company-1", projectId: "project-1" },
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        patch: {
+          executionWorkspacePreference: "reuse_existing",
+          executionWorkspaceSettings: {
+            mode: "reuse_existing",
+            reuseWorkspaceId: "workspace-1",
+          },
+        },
+        reuseWorkspace: {
+          id: "workspace-1",
+          companyId: "company-1",
+          projectId: "project-1",
+          status: "active",
+        },
+      }),
+    ).toEqual({
+      executionWorkspaceId: "workspace-1",
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "reuse_existing",
+        reuseWorkspaceId: "workspace-1",
+      },
+    });
+  });
+
+  it("strips create-time workspace override when isolated workspaces are disabled", () => {
+    expect(
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: { companyId: "company-1", projectId: "project-1" },
+        isolatedWorkspacesEnabled: false,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        patch: {
+          executionWorkspacePreference: "isolated_workspace",
+          executionWorkspaceSettings: { mode: "isolated_workspace" },
+        },
+        reuseWorkspace: null,
+      }),
+    ).toEqual({});
+  });
+
+  it("rejects issue-level runtime service command fields", () => {
+    expect(() =>
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: {
+          companyId: "company-1",
+          projectId: "project-1",
+        },
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        patch: {
+          executionWorkspaceSettings: {
+            mode: "isolated_workspace",
+            workspaceRuntime: {
+              services: [{ name: "web", command: "pnpm dev" }],
+            },
+          },
+        },
+        reuseWorkspace: null,
+      }),
+    ).toThrow("Issue workspace overrides cannot include commands");
+  });
+
   it("disables project execution workspace policy when the instance flag is off", () => {
     expect(
       gateProjectExecutionWorkspacePolicy(

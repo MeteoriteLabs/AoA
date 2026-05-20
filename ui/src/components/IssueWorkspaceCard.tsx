@@ -90,6 +90,7 @@ export function IssueWorkspaceCard({
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
+      qc.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId ?? "") });
     },
   });
 
@@ -157,19 +158,19 @@ export function IssueWorkspaceCard({
             }}
           >
             <SelectTrigger data-testid="issue-workspace-mode-trigger">
-              <SelectValue placeholder="Inherit from project" />
+              <SelectValue placeholder="Use department default" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="inherit">Inherit from project</SelectItem>
+              <SelectItem value="inherit">Use department default</SelectItem>
               <SelectItem value="shared_workspace">
-                Shared workspace (all tasks share)
+                Shared workspace
               </SelectItem>
               <SelectItem value="isolated_workspace">
-                Isolated (new worktree per task)
+                Isolated workspace
               </SelectItem>
               {showReuseOption && (
                 <SelectItem value="reuse_existing">
-                  Reuse existing workspace...
+                  Reuse existing workspace
                 </SelectItem>
               )}
             </SelectContent>
