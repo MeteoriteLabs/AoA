@@ -226,7 +226,7 @@ export function CommanderSection() {
     "create_task",
     "update_task",
     "create_goal",
-    "create_discussion",
+    "extract_from_content",
     "query_company",
     "query_tasks",
     "query_agents",
