@@ -3,6 +3,7 @@ import { readToolHandlers } from "./read-tools.js";
 import { writeToolHandlers } from "./write-tools.js";
 import { documentToolHandlers } from "./document-tools.js";
 import { approvalToolHandlers } from "./approval-tools.js";
+import { skillToolHandlers } from "./skill-tools.js";
 import type { ToolHandler } from "./types.js";
 
 export {
@@ -10,6 +11,7 @@ export {
   writeToolHandlers,
   documentToolHandlers,
   approvalToolHandlers,
+  skillToolHandlers,
 };
 export * from "./types.js";
 
@@ -18,6 +20,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
   ...writeToolHandlers,
   ...documentToolHandlers,
   ...approvalToolHandlers,
+  ...skillToolHandlers,
 };
 
 /**
@@ -481,6 +484,21 @@ export const TOOL_DEFINITIONS = [
         approvalId: { type: "string" },
       },
       required: ["taskId", "approvalId"],
+    },
+  },
+  {
+    name: "use_skill",
+    description:
+      "Load the full instructions for an AoA skill by key (e.g. 'skill:aoa/brainstorm'). Returns the skill's markdown so your model can follow it. Call query_skills first if you are unsure of the available skill keys.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        "key": {
+          type: "string",
+          description: "The skill key, e.g. 'skill:aoa/sprint-planning'",
+        },
+      },
+      required: ["key"],
     },
   },
 ];
