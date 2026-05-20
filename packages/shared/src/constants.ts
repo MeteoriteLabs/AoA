@@ -696,6 +696,22 @@ export type IaConversationStatus = (typeof IA_CONVERSATION_STATUSES)[number];
 export const REMINDER_STATUSES = ["pending", "fired", "cancelled"] as const;
 export type ReminderStatus = (typeof REMINDER_STATUSES)[number];
 
+// ── V2.5: Commander Tool Permissions ─────────────────────────────────────
+
+export interface CommanderToolPermission {
+  enabled: boolean;            // whether the tool is available to Commander at all
+  requireConfirmation: boolean; // force confirmation even if tool.requiresConfirmation is false
+  minimumRole: "founder" | "team_lead" | "team_member"; // minimum human role needed to trigger via Commander
+}
+
+export type CommanderToolPermissions = Record<string, CommanderToolPermission>;
+
+export const COMMANDER_TOOL_PERMISSION_DEFAULT: CommanderToolPermission = {
+  enabled: true,
+  requireConfirmation: false,
+  minimumRole: "team_member",
+};
+
 export const NOTIFICATION_TYPES = [
   "discussion.extraction_complete",
   "discussion.extraction_failed",

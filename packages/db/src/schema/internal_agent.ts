@@ -85,6 +85,10 @@ export const internalAgentConfig = pgTable(
     // Metadata
     metadata: jsonb("metadata").default({}),
 
+    // Per-tool permission overrides for Commander. Keys are tool names.
+    // Null = use system defaults (enabled=true, requireConfirmation=false, minimumRole=team_member).
+    commanderToolPermissions: jsonb("commander_tool_permissions"),
+
     agentId: uuid("agent_id").references(() => agents.id, {
       onDelete: "set null",
     }),
