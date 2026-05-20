@@ -687,7 +687,10 @@ export function internalAgentRoutes(db: Db) {
         .values({
           companyId,
           userId: actor.actorId,
-          status: "active",
+          // "pending" until conversation switching is wired (full multi-chat support).
+          // "active" is reserved for the conversation the agentLoop is currently using;
+          // creating a second "active" row would make chat routing non-deterministic.
+          status: "pending",
           title: req.body.title ?? null,
         })
         .returning();

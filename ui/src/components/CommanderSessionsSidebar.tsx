@@ -33,7 +33,7 @@ interface Props {
 function groupByDate(conversations: ConversationRow[]) {
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterdayStart = new Date(todayStart.getTime() - 86_400_000);
+  const yesterdayStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate() - 1);
   const weekStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate() - 7);
   const groups: { label: string; items: ConversationRow[] }[] = [
     { label: "TODAY", items: [] },
