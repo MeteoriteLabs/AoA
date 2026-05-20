@@ -9,12 +9,10 @@ import { issuesApi } from "../api/issues";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
-import { assetsApi } from "../api/assets";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { ProjectProperties } from "../components/ProjectProperties";
 import { ProjectSettings } from "../components/project/ProjectSettings";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
@@ -58,36 +56,45 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
 function OverviewContent({
   project,
   onUpdate,
-  imageUploadHandler,
-  propertiesContent,
-  environmentContent,
 }: {
-  project: { description: string | null; status: string; targetDate: string | null };
+  project: { description: string | null; functionType?: string | null };
   onUpdate: (data: Record<string, unknown>) => void;
-  imageUploadHandler?: (file: File) => Promise<string>;
-  propertiesContent: React.ReactNode;
-  environmentContent?: React.ReactNode;
 }) {
+  const [description, setDescription] = useState(project.description ?? "");
+
+  useEffect(() => {
+    setDescription(project.description ?? "");
+  }, [project.description]);
+
+  const functionLabel = project.functionType === "software_development"
+    ? "Software department"
+    : project.functionType
+      ? `${project.functionType.replace(/_/g, " ")} department`
+      : "Department";
+
   return (
-    <div className="space-y-6">
-      <InlineEditor
-        value={project.description ?? ""}
-        onSave={(description) => onUpdate({ description })}
-        as="p"
-        className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
-        multiline
-        imageUploadHandler={imageUploadHandler}
-      />
-
-      {/* Properties section */}
-      <div className="rounded-lg border border-border p-4 space-y-1">
-        <h3 className="text-sm font-medium text-muted-foreground mb-3">Properties</h3>
-        {propertiesContent}
+    <div className="max-w-3xl space-y-4 pt-2">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span
+          className="rounded-md border border-border/70 bg-card/60 px-2 py-1 capitalize"
+          data-testid="project-function-type-badge"
+        >
+          {functionLabel}
+        </span>
       </div>
-
-      {/* Environment variables section */}
-      {environmentContent}
+      <div className="rounded-lg border border-border/70 bg-card/30 p-4">
+        <textarea
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+          onBlur={() => {
+            if (description !== (project.description ?? "")) {
+              onUpdate({ description });
+            }
+          }}
+          placeholder="Add a department description..."
+          className="min-h-32 w-full resize-y bg-transparent text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground"
+        />
+      </div>
     </div>
   );
 }
@@ -863,13 +870,6 @@ export function ProjectDetail() {
     onSuccess: invalidateProject,
   });
 
-  const uploadImage = useMutation({
-    mutationFn: async (file: File) => {
-      if (!resolvedCompanyId) throw new Error("No company selected");
-      return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
-    },
-  });
-
   useEffect(() => {
     setBreadcrumbs([
       { label: "Projects", href: "/projects" },
@@ -924,10 +924,6 @@ export function ProjectDetail() {
     };
     navigate(`/projects/${canonicalProjectRef}/${tabPaths[tab]}`);
   };
-
-  const propertiesContent = (
-    <ProjectProperties project={project} onUpdate={(data) => updateProject.mutate(data)} />
-  );
 
   const tabContent = (
     <>
@@ -1020,12 +1016,6 @@ export function ProjectDetail() {
         <OverviewContent
           project={project}
           onUpdate={(data) => updateProject.mutate(data)}
-          imageUploadHandler={async (file) => {
-            const asset = await uploadImage.mutateAsync(file);
-            return asset.contentPath;
-          }}
-          propertiesContent={propertiesContent}
-          environmentContent={project.id ? <ProjectEnvironmentSection projectId={project.id} /> : undefined}
         />
       )}
 
@@ -1058,7 +1048,11 @@ export function ProjectDetail() {
       )}
 
       {activeTab === "settings" && (
-        <ProjectSettings project={project} onUpdate={(data) => updateProject.mutate(data)} />
+        <ProjectSettings
+          project={project}
+          onUpdate={(data) => updateProject.mutate(data)}
+          environmentContent={project.id ? <ProjectEnvironmentSection projectId={project.id} /> : undefined}
+        />
       )}
     </>
   );
