@@ -78,6 +78,17 @@ vi.mock("../services/internal-agent/agent-loop.js", () => ({
   agentLoopService: vi.fn(() => ({ chat: vi.fn() })),
 }));
 
+// Mock tool-registry and service-container for the same reason: their transitive
+// imports (action-tools → heartbeat, service-container → heartbeat/dependencies)
+// reference @armyofagents/db exports not present in our stub above.
+vi.mock("../services/internal-agent/tool-registry.js", () => ({
+  createToolRegistry: vi.fn(() => []),
+  executeTool: vi.fn(),
+}));
+vi.mock("../services/internal-agent/service-container.js", () => ({
+  createServiceContainer: vi.fn(() => ({})),
+}));
+
 import { internalAgentRoutes } from "../routes/internal-agent.js";
 
 describe("internal-agent-routes-contract", () => {

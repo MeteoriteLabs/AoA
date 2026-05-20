@@ -17,6 +17,11 @@ import { internalAgentChatLimiter } from "../middleware/rate-limit.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
+import {
+  createToolRegistry,
+  executeTool,
+} from "../services/internal-agent/tool-registry.js";
+import { createServiceContainer } from "../services/internal-agent/service-container.js";
 import { permissionService } from "../services/permissions.js";
 import type { UserRole } from "@armyofagents/shared";
 
@@ -292,6 +297,13 @@ export function internalAgentRoutes(db: Db) {
       if (!pending) {
         throw notFound(`No pending confirmation for id: ${confirmId}`);
       }
+
+      if (pending.companyId !== companyId) {
+        // Defense-in-depth: a confirmId from one company can't be replayed against
+        // another company's endpoint. Treat as not-found to avoid leaking existence.
+        throw notFound(`No pending confirmation for id: ${confirmId}`);
+      }
+
       pendingConfirmations.delete(confirmId);
 
       if (!approved) {
@@ -301,12 +313,6 @@ export function internalAgentRoutes(db: Db) {
 
       // Direct re-execution: bypass Commander's LLM and run the tool with the
       // exact stored params. Industry-standard pattern.
-      const { createToolRegistry, executeTool } = await import(
-        "../services/internal-agent/tool-registry.js"
-      );
-      const { createServiceContainer } = await import(
-        "../services/internal-agent/service-container.js"
-      );
 
       const tools = createToolRegistry();
       const tool = tools.find((t) => t.name === pending.toolName);
