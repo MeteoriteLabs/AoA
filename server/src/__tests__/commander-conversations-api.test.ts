@@ -17,7 +17,7 @@ describe("internal-agent route: multi-chat endpoints exist", () => {
 
   it("has POST conversations route for creating new conversation", () => {
     expect(routeSrc).toContain("router.post");
-    expect(routeSrc).toContain("router.post");
+    expect(routeSrc).toContain("/internal-agent/conversations");
   });
 
   it("has PATCH archive route", () => {
