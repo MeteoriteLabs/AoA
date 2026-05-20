@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { companySkills } from "@armyofagents/db";
+import { and, eq } from "drizzle-orm";
 import {
   type ToolContext,
   type ToolHandler,
@@ -12,9 +14,6 @@ async function handleUseSkill(
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
   const parsed = z.object({ key: z.string().min(1) }).parse(args);
-
-  const { companySkills } = await import("@armyofagents/db");
-  const { and, eq } = await import("drizzle-orm");
 
   const [skill] = await ctx.db
     .select({
