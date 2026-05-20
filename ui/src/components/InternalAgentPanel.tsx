@@ -171,8 +171,9 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
     setMessages(loaded);
   }, [historyData]);
 
-  // Sync server messages into local state (only when not streaming)
+  // Sync server messages into local state (only when not streaming AND no specific conversation is selected)
   useEffect(() => {
+    if (conversationId) return;
     if (streaming) return;
     if (!conversation) return;
     if (conversation.messages) {
@@ -188,7 +189,7 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
     if (conversation.conversation?.id) {
       setCurrentConversationId(conversation.conversation.id);
     }
-  }, [conversation, streaming, setCurrentConversationId]);
+  }, [conversation, streaming, setCurrentConversationId, conversationId]);
 
   // Auto-scroll on new messages — only if user is near bottom (fix #8)
   useEffect(() => {
