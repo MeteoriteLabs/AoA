@@ -742,7 +742,7 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     const [binary, args] = spawn.mock.calls[0];
     expect(binary).toBe("claude");
 
-    // Args: ["--mcp-config", <.json path>, "--dangerously-skip-permissions", "-p", <content>, "--output-format", "text"]
+    // Args: ["--mcp-config", <.json path>, "--dangerously-skip-permissions", "-p", <content>, "--output-format", "stream-json", "--include-partial-messages", "--verbose"]
     expect(args[0]).toBe("--mcp-config");
     expect(typeof args[1]).toBe("string");
     expect(args[1]).toMatch(/\.json$/);
@@ -751,8 +751,10 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     // content (possibly shell-escaped on win32); assert it carries the message
     expect(String(args[4])).toContain("hello world");
     expect(args[5]).toBe("--output-format");
-    expect(args[6]).toBe("text");
-    expect(args).toHaveLength(7);
+    expect(args[6]).toBe("stream-json");
+    expect(args[7]).toBe("--include-partial-messages");
+    expect(args[8]).toBe("--verbose");
+    expect(args).toHaveLength(9);
     expect(args).not.toContain("exec");
 
     // claude path writes the {mcpServers:{aoa}} wrapper JSON to a tmp file.
@@ -1093,15 +1095,16 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(text).not.toContain('"type"');
   });
 
-  it("claude_cli stays UNCHANGED: persistent-process spawn + `-p` argv (prompt NOT on stdin) + plain-text accumulation + done shape; no codex sessionId", async () => {
+  it("claude_cli stays UNCHANGED: persistent-process spawn + `-p` argv (prompt NOT on stdin) + stream-json accumulation + done shape; no codex sessionId", async () => {
     const cp = await import("node:child_process");
     vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/claude\n" as any);
     // Persistent claude process: streamProcessOutput attaches its listeners
     // lazily; on attach we feed plain text then emit exit so the turn's
-    // for-await completes (claude's `--output-format text` prints plain
-    // text, NOT JSONL). The persistent-vs-one-shot distinction is proven
-    // by the codex tests (which show a FRESH re-spawn per turn); claude
-    // must keep the pre-MX-chatparse persistent-process + `-p` argv shape.
+    // for-await completes (claude's `--output-format stream-json` emits
+    // JSONL lines; the StreamJsonParser extracts text from stream_event deltas).
+    // The persistent-vs-one-shot distinction is proven by the codex tests
+    // (which show a FRESH re-spawn per turn); claude must keep the
+    // pre-MX-chatparse persistent-process + `-p` argv shape.
     const persistent = makePersistentProcess();
     vi.mocked(cp.spawn).mockReturnValue(persistent as any);
     const fsp = await import("node:fs/promises");
@@ -1111,12 +1114,21 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     );
     const service = cliModeService({} as any);
 
+    // Feed stream-json format: a text_delta inside a stream_event line.
+    // StreamJsonParser extracts "claude turn one text" from the delta field.
+    const streamJsonLine = JSON.stringify({
+      type: "stream_event",
+      event: {
+        type: "content_block_delta",
+        delta: { type: "text_delta", text: "claude turn one text" },
+      },
+    });
     let attached = false;
     persistent.stdout.on("newListener", () => {
       if (attached) return;
       attached = true;
       setImmediate(() => {
-        persistent.stdout.emit("data", Buffer.from("claude turn one text"));
+        persistent.stdout.emit("data", Buffer.from(streamJsonLine + "\n"));
         persistent.emit("exit", 0, null);
       });
     });
@@ -1136,9 +1148,12 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       "-p",
       expect.stringContaining("first"),
       "--output-format",
-      "text",
+      "stream-json",
+      "--include-partial-messages",
+      "--verbose",
     ]);
-    // Plain-text accumulation (the parseCliOutput stub), NOT JSONL parsing.
+    // Stream-json accumulation: StreamJsonParser extracts text from stream_event
+    // text_delta events (NOT plain-text parseCliOutput).
     const text1 = chunks1
       .filter((c) => c.type === "text")
       .map((c) => c.delta)

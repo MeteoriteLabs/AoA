@@ -9,6 +9,7 @@ import type { AgentTool } from "./types.js";
 import type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
 import { createCLISessionStore } from "./cli-session-store.js";
 import type { CLISession } from "./cli-session-store.js";
+import { StreamJsonParser } from "./parse-stream-json.js";
 
 // ── CLI Detection ─────────────────────────────────────────────────────────────
 
@@ -329,7 +330,9 @@ async function resolveCliInvocation(
             "--system-prompt-file", safeSystemPromptPath,
             "--dangerously-skip-permissions",
             "-p", systemSplitArgs.safeRawContent,
-            "--output-format", "text",
+            "--output-format", "stream-json",
+            "--include-partial-messages",
+            "--verbose",
           ],
           mcpArtifactPath: configPath,
         };
@@ -341,7 +344,9 @@ async function resolveCliInvocation(
           "--mcp-config", configPath,
           "--dangerously-skip-permissions",
           "-p", safeContent,
-          "--output-format", "text",
+          "--output-format", "stream-json",
+          "--include-partial-messages",
+          "--verbose",
         ],
         mcpArtifactPath: configPath,
       };
@@ -623,8 +628,10 @@ export function cliModeService(db: Db) {
             cliProcess.stdin.write(params.content + "\n");
           }
 
-          // Stream stdout — collect text for persistence
-          for await (const chunk of streamProcessOutput(cliProcess)) {
+          // Stream stdout — collect text for persistence.
+          // claude_cli uses stream-json; codex/opencode use the text parser.
+          const useStreamJson = config.cliTool === "claude_cli";
+          for await (const chunk of streamProcessOutput(cliProcess, useStreamJson)) {
             if (chunk.type === "text") accumulatedText += chunk.delta;
             yield chunk;
           }
@@ -647,7 +654,8 @@ export function cliModeService(db: Db) {
             // params.content when absent (codex or legacy path).
             const turnInput = params.rawContent ?? params.content;
             cliProc.stdin.write(turnInput + "\n");
-            for await (const chunk of streamProcessOutput(cliProc)) {
+            const useStreamJsonCont = config.cliTool === "claude_cli";
+            for await (const chunk of streamProcessOutput(cliProc, useStreamJsonCont)) {
               if (chunk.type === "text") accumulatedText += chunk.delta;
               yield chunk;
             }
@@ -696,6 +704,7 @@ export function cliModeService(db: Db) {
 
 async function* streamProcessOutput(
   proc: import("node:child_process").ChildProcess,
+  useStreamJson = false,
 ): AsyncGenerator<AgentStreamChunk> {
   if (!proc.stdout) return;
 
@@ -704,18 +713,33 @@ async function* streamProcessOutput(
   let resolve: (() => void) | null = null;
   let leftover = "";
 
+  // Branch parser: claude_cli uses the structured stream-json parser;
+  // codex / opencode stay on the existing text-format marker-in-prose path.
+  const streamParser = useStreamJson ? new StreamJsonParser() : null;
+
   function processLines(text: string) {
-    const lines = (leftover + text).split("\n");
-    leftover = lines.pop() ?? "";          // last segment is incomplete
-    for (const line of lines) {
-      for (const chunk of parseCliOutput(line)) {
+    if (streamParser) {
+      // StreamJsonParser handles its own internal buffering — just push text.
+      for (const chunk of streamParser.push(text)) {
         pending.push(chunk);
+      }
+    } else {
+      const lines = (leftover + text).split("\n");
+      leftover = lines.pop() ?? "";          // last segment is incomplete
+      for (const line of lines) {
+        for (const chunk of parseCliOutput(line)) {
+          pending.push(chunk);
+        }
       }
     }
   }
 
   function flushLeftover() {
-    if (leftover.length > 0) {
+    if (streamParser) {
+      for (const chunk of streamParser.flush()) {
+        pending.push(chunk);
+      }
+    } else if (leftover.length > 0) {
       for (const chunk of parseCliOutput(leftover)) {
         pending.push(chunk);
       }
