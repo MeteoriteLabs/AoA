@@ -294,3 +294,41 @@ export const internalAgentApi = {
       {},
     ),
 };
+
+/* ------------------------------------------------------------------ */
+/*  Conversations (sessions sidebar)                                   */
+/* ------------------------------------------------------------------ */
+
+export interface ConversationRow {
+  id: string;
+  title: string | null;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  userId: string;
+}
+
+export const commanderConversationsApi = {
+  list: async (companyId: string) => {
+    const res = await fetch(`/api/companies/${companyId}/internal-agent/conversations`);
+    if (!res.ok) throw new Error("Failed to load conversations");
+    return res.json() as Promise<{ conversations: ConversationRow[] }>;
+  },
+  create: async (companyId: string, title?: string) => {
+    const res = await fetch(`/api/companies/${companyId}/internal-agent/conversations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) throw new Error("Failed to create conversation");
+    return res.json() as Promise<ConversationRow>;
+  },
+  archive: async (companyId: string, convId: string) => {
+    const res = await fetch(
+      `/api/companies/${companyId}/internal-agent/conversations/${convId}/archive`,
+      { method: "PATCH" },
+    );
+    if (!res.ok) throw new Error("Failed to archive conversation");
+    return res.json();
+  },
+};

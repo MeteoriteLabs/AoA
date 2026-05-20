@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AtSign,
   Bot,
   Check,
   Loader2,
   MessageSquarePlus,
+  Mic,
+  Paperclip,
   Send,
+  Sparkles,
   Wrench,
   X,
 } from "lucide-react";
@@ -617,6 +621,21 @@ export function AgentPanelContent() {
               <Send className="h-4 w-4" />
             )}
           </Button>
+        </div>
+        {/* Input toolbar row */}
+        <div className="flex items-center gap-3 pt-1.5 text-muted-foreground">
+          <button className="flex items-center gap-1 text-xs hover:text-foreground transition-colors">
+            <Paperclip className="h-3.5 w-3.5" /> Attach
+          </button>
+          <button className="flex items-center gap-1 text-xs hover:text-foreground transition-colors">
+            <Sparkles className="h-3.5 w-3.5" /> Skills
+          </button>
+          <button className="flex items-center gap-1 text-xs hover:text-foreground transition-colors">
+            <AtSign className="h-3.5 w-3.5" /> Mention
+          </button>
+          <button className="flex items-center gap-1 text-xs hover:text-foreground transition-colors">
+            <Mic className="h-3.5 w-3.5" /> Voice
+          </button>
         </div>
       </div>
     </div>
