@@ -158,6 +158,14 @@ export function conversationService(db: Db) {
         .where(eq(internalAgentConversations.id, conversationId));
     },
 
+    async getById(conversationId: string) {
+      const [conv] = await db
+        .select()
+        .from(internalAgentConversations)
+        .where(eq(internalAgentConversations.id, conversationId));
+      return conv ?? null;
+    },
+
     async reset(companyId: string, userId: string) {
       await db
         .update(internalAgentConversations)

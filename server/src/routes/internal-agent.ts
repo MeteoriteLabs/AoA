@@ -48,6 +48,7 @@ const pendingConfirmations = new Map<string, PendingConfirmation>();
 const chatMessageSchema = z.object({
   message: z.string().min(1).max(10000),
   pageContext: z.string().optional(),
+  conversationId: z.string().uuid().optional(),
 });
 
 const confirmActionSchema = z.object({
@@ -181,6 +182,7 @@ export function internalAgentRoutes(db: Db) {
           enabledCapabilities,
           content: req.body.message,
           pageContext: req.body.pageContext ?? undefined,
+          conversationId: req.body.conversationId ?? undefined,
         });
 
         for await (const chunk of stream) {
@@ -868,6 +870,46 @@ export function internalAgentRoutes(db: Db) {
         .returning();
 
       res.json(updated);
+    },
+  );
+
+  // ── Get Messages for a Specific Conversation ─────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/conversations/:convId/messages",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      // Verify the conversation belongs to this company AND this user
+      const [conv] = await db
+        .select()
+        .from(internalAgentConversations)
+        .where(
+          and(
+            eq(internalAgentConversations.id, convId),
+            eq(internalAgentConversations.companyId, companyId),
+            eq(internalAgentConversations.userId, actor.actorId),
+          ),
+        );
+
+      if (!conv) {
+        throw notFound("Conversation not found");
+      }
+
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      const messages = await db
+        .select()
+        .from(internalAgentMessages)
+        .where(eq(internalAgentMessages.conversationId, convId))
+        .orderBy(asc(internalAgentMessages.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      res.json({ messages, conversationId: convId });
     },
   );
 

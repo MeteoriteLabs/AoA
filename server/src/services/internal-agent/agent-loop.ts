@@ -58,6 +58,7 @@ export interface ChatInput {
   rawContent?: string;
   pageContext?: string;
   departmentContext?: string;
+  conversationId?: string;
 }
 
 // ── Service ──────────────────────────────────────────────────────────────────
@@ -105,10 +106,14 @@ export function agentLoopService(db: Db) {
     async *chat(params: ChatInput): AsyncGenerator<AgentStreamChunk> {
       try {
         // 1. Get/create active conversation
-        const conversation = await convService.getOrCreateActive(
-          params.companyId,
-          params.userId,
-        );
+        const conversation = params.conversationId
+          ? await convService.getById(params.conversationId)
+          : await convService.getOrCreateActive(params.companyId, params.userId);
+
+        if (!conversation) {
+          yield { type: "error", message: "Conversation not found." };
+          return;
+        }
 
         // 2. Persist the user message
         await convService.appendMessage(conversation.id, {

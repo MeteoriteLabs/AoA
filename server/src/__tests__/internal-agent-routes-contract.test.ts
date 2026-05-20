@@ -110,8 +110,8 @@ describe("internal-agent-routes-contract", () => {
       (layer: any) => layer.route != null,
     );
 
-    // 10 original routes + 3 new multi-conversation routes (list, create, archive) + 2 tool-permissions routes
-    expect(routeLayers).toHaveLength(15);
+    // 10 original routes + 3 new multi-conversation routes (list, create, archive) + 2 tool-permissions routes + 1 messages route (Task 8)
+    expect(routeLayers).toHaveLength(16);
   });
 
   it("registers all expected paths and methods", () => {
@@ -143,6 +143,8 @@ describe("internal-agent-routes-contract", () => {
       // tool-permissions routes (Task 6)
       { path: "/companies/:companyId/internal-agent/tool-permissions", method: "get" },
       { path: "/companies/:companyId/internal-agent/tool-permissions", method: "patch" },
+      // conversation messages route (Task 8)
+      { path: "/companies/:companyId/internal-agent/conversations/:convId/messages", method: "get" },
     ];
 
     for (const expected of expectedRoutes) {
