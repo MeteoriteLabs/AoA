@@ -45,6 +45,16 @@ export function createServiceContainer(db: Db): ServiceContainer {
           stage: null, // companies schema has no stage field
         };
       }),
+      update: async (id: string, data: Partial<{ vision: string; mission: string }>) => {
+        const row = await companySvc.update(id, data);
+        if (!row) throw new Error(`Company ${id} not found`);
+        return {
+          id: row.id,
+          name: row.name ?? null,
+          vision: row.vision ?? null,
+          mission: row.mission ?? null,
+        };
+      },
     },
     workflows: null,
   };

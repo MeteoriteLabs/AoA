@@ -195,5 +195,36 @@ export function createActionTools(): AgentTool[] {
         return { success: true, data: result, summary: `Wakeup triggered for agent ${agentId}` };
       },
     },
+    {
+      name: "update_company_identity",
+      description:
+        "Update the company's vision and/or mission statement. Only call this after the user has reviewed and approved the new text. Gated to founders only.",
+      parameters: {
+        type: "object",
+        properties: {
+          vision: { type: "string", description: "New one-sentence vision statement (the world change)" },
+          mission: { type: "string", description: "New one-sentence mission statement (how you get there)" },
+        },
+        required: [],
+      },
+      category: "action",
+      requiredRole: "founder",
+      requiresConfirmation: true,
+      execute: async (params: unknown, ctx) => {
+        const { vision, mission } = (params ?? {}) as Record<string, unknown>;
+        if (!vision && !mission) {
+          return { success: false, error: "At least one of vision or mission must be provided.", data: null, summary: "" };
+        }
+        const updates: Record<string, string> = {};
+        if (vision) updates.vision = vision as string;
+        if (mission) updates.mission = mission as string;
+        const updated = await ctx.services.companies.update(ctx.companyId, updates);
+        return {
+          success: true,
+          data: updated,
+          summary: `Updated company identity: ${Object.keys(updates).join(", ")}`,
+        };
+      },
+    },
   ];
 }

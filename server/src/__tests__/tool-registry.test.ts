@@ -23,9 +23,9 @@ const mockCtx: ToolContext = {
 
 describe("Tool Registry", () => {
   describe("createToolRegistry", () => {
-    it("returns all 33 tools", () => {
+    it("returns all 34 tools", () => {
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(33);
+      expect(tools).toHaveLength(34);
     });
 
     it("every tool has required fields", () => {

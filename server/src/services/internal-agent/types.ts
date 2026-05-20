@@ -79,6 +79,7 @@ export interface ServiceContainer {
   discussions: ReturnType<typeof discussionService>;
   companies: {
     get: (id: string) => Promise<{ name: string | null; vision: string | null; mission: string | null; issuePrefix: string | null; stage: string | null } | null>;
+    update: (id: string, data: Partial<{ vision: string; mission: string }>) => Promise<{ id: string; name: string | null; vision: string | null; mission: string | null }>;
   };
   workflows: null; // Placeholder — workflow service not yet implemented
 }
