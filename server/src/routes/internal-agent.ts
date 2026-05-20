@@ -189,6 +189,15 @@ export function internalAgentRoutes(db: Db) {
               );
               break;
             }
+            case "options_prompt":
+              res.write(
+                `event: options_prompt\ndata: ${JSON.stringify({
+                  promptId: chunk.promptId,
+                  question: chunk.question,
+                  options: chunk.options,
+                })}\n\n`,
+              );
+              break;
             case "error":
               res.write(
                 `event: error\ndata: ${JSON.stringify({ code: "INTERNAL", message: chunk.message })}\n\n`,

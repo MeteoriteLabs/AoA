@@ -74,6 +74,12 @@ interface LocalMessage {
     description: string;
     status: "pending" | "approved" | "rejected";
   };
+  optionsPrompt?: {
+    promptId: string;
+    question: string;
+    options: string[];
+    dismissed: boolean;
+  };
   createdAt: string;
 }
 
@@ -134,6 +140,7 @@ export function AgentPanelContent() {
         return conversation.messages.map((m) => ({
           ...serverToLocal(m),
           actionConfirm: localById.get(m.id)?.actionConfirm,
+          optionsPrompt: localById.get(m.id)?.optionsPrompt,
         }));
       });
     }
@@ -305,6 +312,22 @@ export function AgentPanelContent() {
                   ...m,
                   actionConfirm: { confirmId, action, description, status: "pending" },
                 }
+              : m,
+          ),
+        );
+        break;
+      }
+
+      case "options_prompt": {
+        const { promptId, question, options } = event.data as {
+          promptId: string;
+          question: string;
+          options: string[];
+        };
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? { ...m, optionsPrompt: { promptId, question, options, dismissed: false } }
               : m,
           ),
         );
@@ -511,6 +534,47 @@ export function AgentPanelContent() {
                       {msg.actionConfirm.status === "approved" ? "Confirmed" : "Rejected"}
                     </span>
                   )}
+                </div>
+              )}
+
+              {/* Options prompt */}
+              {msg.optionsPrompt && !msg.optionsPrompt.dismissed && (
+                <div className="mt-2 rounded-lg border border-border bg-background p-3 space-y-2 shadow-sm">
+                  <p className="text-xs text-muted-foreground">
+                    Commander is asking — pick one or type your answer below:
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {msg.optionsPrompt.options.map((opt, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => {
+                          // Dismiss the panel
+                          setMessages((prev) =>
+                            prev.map((m) =>
+                              m.id === msg.id && m.optionsPrompt
+                                ? { ...m, optionsPrompt: { ...m.optionsPrompt, dismissed: true } }
+                                : m,
+                            ),
+                          );
+                          // Send the selected option as a user message
+                          void sendText(opt);
+                        }}
+                        className={cn(
+                          "px-3 py-1.5 rounded-full border text-xs transition-colors",
+                          i === 0
+                            ? "border-primary bg-primary/5 text-primary hover:bg-primary/10 font-medium"
+                            : "border-border hover:bg-muted",
+                        )}
+                      >
+                        {opt}
+                        {i === 0 && <span className="ml-1 opacity-60">(recommended)</span>}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    Clicking a chip sends it as your reply and dismisses this panel.
+                  </p>
                 </div>
               )}
             </div>

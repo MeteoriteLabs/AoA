@@ -28,6 +28,7 @@ export type AgentStreamChunk =
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; name: string; result: ToolResult }
   | { type: "action_confirmation"; toolName: string; params: unknown; runId: string }
+  | { type: "options_prompt"; question: string; options: string[]; promptId: string }
   | { type: "error"; message: string }
   | { type: "done"; summary: RunSummary };
 

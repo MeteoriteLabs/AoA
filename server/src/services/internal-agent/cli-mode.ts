@@ -150,12 +150,35 @@ export function toolToMcpFormat(tool: AgentTool) {
 // ── Output Parsing ────────────────────────────────────────────────────────────
 
 const CONFIRM_RE = /⚡CONFIRM:(.*?)⚡/;
+const OPTIONS_RE = /⚡OPTIONS:(.*?)⚡/;
 
 export function parseCliOutput(line: string): AgentStreamChunk[] {
-  const match = line.match(CONFIRM_RE);
-  if (match) {
+  // OPTIONS marker — structured multiple-choice question
+  const optMatch = line.match(OPTIONS_RE);
+  if (optMatch) {
     try {
-      const payload = JSON.parse(match[1]) as { toolName?: string; params?: unknown };
+      const payload = JSON.parse(optMatch[1]) as {
+        question: string;
+        options: string[];
+      };
+      return [
+        {
+          type: "options_prompt",
+          question: payload.question,
+          options: payload.options,
+          promptId: crypto.randomUUID(),
+        },
+      ];
+    } catch {
+      // Malformed JSON — fall through to plain text
+    }
+  }
+
+  // CONFIRM marker — action approval gate
+  const confirmMatch = line.match(CONFIRM_RE);
+  if (confirmMatch) {
+    try {
+      const payload = JSON.parse(confirmMatch[1]) as { toolName?: string; params?: unknown };
       if (typeof payload.toolName !== "string" || payload.toolName.length === 0) {
         // Missing or invalid toolName — treat as malformed marker
         throw new Error("missing toolName");
@@ -172,6 +195,7 @@ export function parseCliOutput(line: string): AgentStreamChunk[] {
       // Malformed JSON or missing toolName — fall through to plain text
     }
   }
+
   return [{ type: "text", delta: line }];
 }
 

@@ -115,6 +115,7 @@ export type SSEEventType =
   | "tool_result"
   | "content"
   | "action_confirm"
+  | "options_prompt"
   | "done"
   | "error";
 

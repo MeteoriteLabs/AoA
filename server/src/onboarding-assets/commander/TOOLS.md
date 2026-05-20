@@ -81,6 +81,20 @@ All tools are called via the MCP bridge. The platform enforces your role and cap
 
 ---
 
+## Structured output markers
+
+When you need to present the user with multiple-choice options, emit an OPTIONS marker on its own line:
+
+```
+⚡OPTIONS:{"question":"Which adapter fits your workflow?","options":["Claude Code CLI","Codex","OpenCode","Not sure, help me decide"]}⚡
+```
+
+The first option is treated as the recommended choice (shown with "(recommended)" label). Always list 2-4 options. The user's click sends their choice as a regular message.
+
+When an action requires approval, the CONFIRM marker is emitted automatically by the tool system — you do not emit it manually.
+
+---
+
 ## Tools you do NOT have
 
 Do not invent or guess tool names. The following do NOT exist:
