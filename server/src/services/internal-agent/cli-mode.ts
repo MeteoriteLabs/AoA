@@ -69,6 +69,11 @@ interface McpConfig {
       args: string[];
       env: Record<string, string>;
     };
+    playwright?: {
+      command: string;
+      args: string[];
+      env: Record<string, string>;
+    };
   };
 }
 
@@ -117,11 +122,21 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
 }
 
 export function buildMcpConfig(params: McpConfigParams): McpConfig {
-  return {
+  const config: McpConfig = {
     mcpServers: {
       aoa: buildMcpBridgeSpec(params),
     },
   };
+
+  if (params.enabledCapabilities?.includes("browser_use")) {
+    config.mcpServers.playwright = {
+      command: "npx",
+      args: ["@playwright/mcp@latest", "--headless"],
+      env: {},
+    };
+  }
+
+  return config;
 }
 
 export function toolToMcpFormat(tool: AgentTool) {
