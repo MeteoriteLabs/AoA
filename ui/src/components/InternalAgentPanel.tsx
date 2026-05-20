@@ -389,7 +389,6 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
     async (
       messageId: string,
       confirmId: string,
-      _action: string,
       approved: boolean,
     ) => {
       // 1. Optimistic UI: move status to "approving" / "rejected"
@@ -406,8 +405,6 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
             : m,
         ),
       );
-
-      if (!approved) return;
 
       try {
         const result = await confirmAction(companyId, { confirmId, approved });
@@ -598,7 +595,7 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
                         size="sm"
                         variant="default"
                         className="h-7 text-xs"
-                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, msg.actionConfirm!.action, true)}
+                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, true)}
                       >
                         <Check className="h-3 w-3 mr-1" />
                         Confirm
@@ -607,7 +604,7 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
                         size="sm"
                         variant="outline"
                         className="h-7 text-xs"
-                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, msg.actionConfirm!.action, false)}
+                        onClick={() => sendConfirmMessage(msg.id, msg.actionConfirm!.confirmId, false)}
                       >
                         <X className="h-3 w-3 mr-1" />
                         Cancel
