@@ -173,6 +173,9 @@ export {
   IA_CONVERSATION_STATUSES,
   REMINDER_STATUSES,
   NOTIFICATION_TYPES,
+  COMMANDER_TOOL_PERMISSION_DEFAULT,
+  type CommanderToolPermission,
+  type CommanderToolPermissions,
   // V2.5 types
   type DiscussionStatus,
   type DiscussionScopeType,

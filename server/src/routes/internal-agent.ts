@@ -24,6 +24,7 @@ import {
 import { createServiceContainer } from "../services/internal-agent/service-container.js";
 import { permissionService } from "../services/permissions.js";
 import type { UserRole } from "@armyofagents/shared";
+import { COMMANDER_TOOL_PERMISSION_DEFAULT } from "@armyofagents/shared";
 
 // ── Pending Confirmation Store ───────────────────────────────────────────────
 // In-memory Map: confirmId → pending tool execution.
@@ -71,6 +72,14 @@ const updateConfigSchema = z.object({
 const cancelReminderSchema = z.object({
   status: z.literal("cancelled"),
 });
+
+const toolPermissionSchema = z.object({
+  enabled: z.boolean(),
+  requireConfirmation: z.boolean(),
+  minimumRole: z.enum(["founder", "team_lead", "team_member"]),
+});
+
+const updateToolPermissionsSchema = z.record(z.string(), toolPermissionSchema);
 
 // ── Route factory ────────────────────────────────────────────────────────────
 
@@ -342,6 +351,40 @@ export function internalAgentRoutes(db: Db) {
         entityType: null,
         entityId: null,
       });
+    },
+  );
+
+  // ── Tool Permissions ──────────────────────────────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/tool-permissions",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const [config] = await db
+        .select({ commanderToolPermissions: internalAgentConfig.commanderToolPermissions })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId));
+
+      const stored = (config?.commanderToolPermissions as Record<string, unknown> | null) ?? {};
+      res.json({ permissions: stored, default: COMMANDER_TOOL_PERMISSION_DEFAULT });
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/internal-agent/tool-permissions",
+    validate(updateToolPermissionsSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+
+      await db
+        .update(internalAgentConfig)
+        .set({ commanderToolPermissions: req.body })
+        .where(eq(internalAgentConfig.companyId, companyId));
+
+      res.json({ success: true });
     },
   );
 
