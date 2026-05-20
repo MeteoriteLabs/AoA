@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { commanderConversationsApi, type ConversationRow } from "../api/internal-agent";
-import { MessageSquare, Plus, Archive, ChevronLeft, ChevronRight } from "lucide-react";
+import { Plus, Archive, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 
 function formatRelativeTime(dateStr: string): string {
@@ -77,7 +77,7 @@ export function CommanderSessionsSidebar({
 
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center w-9 shrink-0 border-r border-border bg-[#e5e2de]">
+      <div className="flex flex-col items-center w-9 shrink-0 border-r border-border bg-secondary-sidebar">
         <button
           onClick={() => setCollapsed(false)}
           className="mt-3 p-1 rounded hover:bg-black/10 transition-colors"
@@ -90,29 +90,28 @@ export function CommanderSessionsSidebar({
   }
 
   return (
-    <div className="flex flex-col h-full w-56 shrink-0 border-r border-border bg-[#e5e2de]">
+    <div className="flex flex-col h-full w-56 shrink-0 border-r border-border bg-secondary-sidebar">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">
-            Sessions
-          </span>
+      <div className="flex items-center justify-between px-3 py-2.5 border-b border-border-soft">
+        <span className="text-[10px] font-semibold text-very-dim uppercase tracking-widest">
+          Sessions
+        </span>
+        <div className="flex items-center gap-1">
           <button
             onClick={onNewConversation}
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-muted-foreground hover:bg-black/10 transition-colors border border-border/50"
+            className="w-6 h-6 inline-flex items-center justify-center rounded text-dim hover:bg-hd hover:text-text transition-colors"
             title="New conversation"
           >
-            <Plus className="h-3 w-3" />
-            New chat
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => setCollapsed(true)}
+            className="w-6 h-6 inline-flex items-center justify-center rounded text-dim hover:bg-hd hover:text-text transition-colors"
+            title="Collapse sidebar"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
           </button>
         </div>
-        <button
-          onClick={() => setCollapsed(true)}
-          className="p-1 rounded hover:bg-black/10 transition-colors"
-          title="Collapse sidebar"
-        >
-          <ChevronLeft className="h-3.5 w-3.5 text-muted-foreground" />
-        </button>
       </div>
 
       {/* Session list */}
@@ -159,15 +158,14 @@ function SessionItem({
   return (
     <div
       className={cn(
-        "group relative flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-black/5 transition-colors",
-        isActive && "bg-black/[0.08]",
+        "group relative flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-hd transition-colors",
+        isActive && "bg-[color:color-mix(in_srgb,var(--brand)_6%,transparent)] border-l-2 border-l-brand pl-[10px]",
       )}
       onClick={onSelect}
     >
-      <MessageSquare className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
       <div className="flex-1 min-w-0">
         <p className="text-sm truncate">{title}</p>
-        <p className="text-[10px] text-muted-foreground truncate">
+        <p className="font-mono text-[10px] text-very-dim truncate">
           {formatRelativeTime(conv.updatedAt)} ·{" "}
           {conv.messageCount} msg{conv.messageCount !== 1 ? "s" : ""}
         </p>

@@ -33,33 +33,43 @@ export function Commander() {
   };
 
   return (
-    <div className="flex flex-col gap-4 h-[calc(100vh-8rem)]">
-      <div>
-        <h1 className="text-[1.6rem] font-bold tracking-tight">
-          Commander<span className="text-brand">.</span>
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Your always-on AI assistant for coordination and proactive monitoring.
-        </p>
-        {config?.cliTool && config.cliTool !== "claude_cli" && (
-          <div className="mb-3 text-xs text-amber-700 bg-amber-50 dark:bg-amber-950/20 dark:text-amber-200 border border-amber-200 dark:border-amber-800 rounded px-2 py-1 inline-flex items-center gap-1.5">
-            <Info className="h-3 w-3 shrink-0" />
-            <span>
-              Confirmation gates use best-effort detection on <code className="font-mono">{config.cliTool}</code>. Switch to Claude CLI for strict gating.
+    <div className="flex flex-col h-[calc(100vh-4rem)]">
+      {/* Compressed topbar — 40px tall, no big heading */}
+      <div className="flex items-center justify-between h-10 px-5 border-b border-border bg-bg shrink-0">
+        <div className="flex items-center gap-2 text-xs text-dim">
+          <span>AoA Online</span>
+          <span className="text-very-dim">›</span>
+          <span className="text-text font-medium">Commander</span>
+          <span className="ml-3 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[0.7rem] bg-card-2 border border-border">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-success" />
+            online
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          {config?.model && (
+            <span className="font-mono text-[0.7rem] text-dim">
+              {config.model}
             </span>
-          </div>
-        )}
+          )}
+        </div>
       </div>
-      <div className="flex flex-1 min-h-0 overflow-hidden rounded-lg border border-border">
-        {/* Sessions sidebar */}
+
+      {/* Best-effort badge (non-claude_cli warning) */}
+      {config?.cliTool && config.cliTool !== "claude_cli" && (
+        <div className="px-5 py-1.5 bg-amber-50 dark:bg-amber-950/20 border-b border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-200 inline-flex items-center gap-1.5 shrink-0">
+          <Info className="h-3 w-3 shrink-0" />
+          <span>Confirmation gates use best-effort detection on <code className="font-mono">{config.cliTool}</code>. Switch to Claude CLI for strict gating.</span>
+        </div>
+      )}
+
+      {/* Chat workspace — sessions + chat panel, fills remaining height */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
         <CommanderSessionsSidebar
           activeConversationId={activeConversationId}
           onSelect={setActiveConversationId}
           onNewConversation={handleNewConversation}
         />
-
-        {/* Conversation area */}
-        <div className="flex-1 min-w-0 overflow-hidden bg-background">
+        <div className="flex-1 min-w-0 overflow-hidden bg-bg">
           <AgentPanelContent conversationId={activeConversationId} />
         </div>
       </div>
