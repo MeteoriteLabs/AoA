@@ -58,6 +58,6 @@ describe("PATCH archive — implementation contract", () => {
   });
 
   it("returns 404 if conversation belongs to a different company", () => {
-    expect(routeSrc).toContain("404");
+    expect(routeSrc).toContain("throw notFound");
   });
 });
