@@ -20,6 +20,7 @@ import { useSidebar } from "../context/SidebarContext";
 import {
   internalAgentApi,
   streamAgentChat,
+  conversationMessagesApi,
   type AgentMessage,
   type SSEEvent,
   type AgentGreeting,
@@ -101,7 +102,11 @@ function serverToLocal(m: AgentMessage): LocalMessage {
 /*  Panel content (shared between desktop inline & mobile sheet)       */
 /* ------------------------------------------------------------------ */
 
-export function AgentPanelContent() {
+interface AgentPanelContentProps {
+  conversationId?: string | null;
+}
+
+export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {}) {
   const { selectedCompanyId } = useCompany();
   const { breadcrumbs } = useBreadcrumbs();
   const { closePanel, setIsStreaming, setCurrentConversationId } = useAgentPanel();
@@ -133,6 +138,38 @@ export function AgentPanelContent() {
     enabled: !!companyId,
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
   });
+
+  // Load history when switching to a specific conversation
+  const { data: historyData } = useQuery({
+    queryKey: ["conversation-messages", companyId, conversationId],
+    queryFn: () =>
+      companyId && conversationId
+        ? conversationMessagesApi.list(companyId, conversationId)
+        : Promise.resolve(null),
+    enabled: !!companyId && !!conversationId,
+  });
+
+  // Reset messages when switching conversations
+  useEffect(() => {
+    if (!conversationId) return;
+    setMessages([]);
+    setStreamingLocal(false);
+  }, [conversationId]);
+
+  // Populate messages from history when historyData arrives
+  useEffect(() => {
+    if (!historyData?.messages?.length) return;
+    const loaded: LocalMessage[] = historyData.messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => ({
+        id: m.id,
+        role: m.role as "user" | "assistant",
+        content: m.content ?? "",
+        streamingDone: true,
+        createdAt: m.createdAt,
+      }));
+    setMessages(loaded);
+  }, [historyData]);
 
   // Sync server messages into local state (only when not streaming)
   useEffect(() => {
@@ -213,7 +250,7 @@ export function AgentPanelContent() {
       abortRef.current = controller;
 
       try {
-        const stream = streamAgentChat(companyId, text, pageContext, controller.signal);
+        const stream = streamAgentChat(companyId, text, pageContext, controller.signal, conversationId);
 
         for await (const event of stream) {
           handleSSEEvent(event, assistantId);
@@ -242,7 +279,7 @@ export function AgentPanelContent() {
         queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(companyId) });
       }
     },
-    [companyId, streaming, pageContext, setIsStreaming, queryClient],
+    [companyId, streaming, pageContext, setIsStreaming, queryClient, conversationId],
   );
 
   const handleSend = useCallback(async () => {

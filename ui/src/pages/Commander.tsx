@@ -44,7 +44,7 @@ export function Commander() {
 
         {/* Conversation area */}
         <div className="flex-1 min-w-0 overflow-hidden bg-background">
-          <AgentPanelContent />
+          <AgentPanelContent conversationId={activeConversationId} />
         </div>
       </div>
     </div>

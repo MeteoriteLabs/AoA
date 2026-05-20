@@ -159,6 +159,7 @@ export async function* streamAgentChat(
   message: string,
   pageContext?: string | null,
   signal?: AbortSignal,
+  conversationId?: string | null,
 ): AsyncGenerator<SSEEvent> {
   const response = await fetch(
     `/api/companies/${encodeURIComponent(companyId)}/internal-agent/chat`,
@@ -166,7 +167,7 @@ export async function* streamAgentChat(
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, pageContext }),
+      body: JSON.stringify({ message, pageContext, ...(conversationId ? { conversationId } : {}) }),
       signal,
     },
   );
@@ -325,6 +326,21 @@ export const commanderConversationsApi = {
       `/companies/${companyId}/internal-agent/conversations/${convId}/archive`,
       {},
     ),
+};
+
+/* ------------------------------------------------------------------ */
+/*  Conversation messages (session history)                           */
+/* ------------------------------------------------------------------ */
+
+export const conversationMessagesApi = {
+  list: (companyId: string, convId: string, opts?: { limit?: number; offset?: number }) => {
+    const params = new URLSearchParams();
+    params.set("limit", String(opts?.limit ?? 50));
+    params.set("offset", String(opts?.offset ?? 0));
+    return api.get<{ messages: AgentMessage[]; conversationId: string }>(
+      `/companies/${companyId}/internal-agent/conversations/${convId}/messages?${params.toString()}`,
+    );
+  },
 };
 
 /* ------------------------------------------------------------------ */
