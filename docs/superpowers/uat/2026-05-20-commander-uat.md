@@ -136,3 +136,58 @@ _(Requires a second test user with team_member role)_
 | G (Conversation switching) | | | |
 | H (Role enforcement) | | | |
 | I (Edge cases) | | | |
+
+---
+
+## Results — Run 1 (2026-05-20, automated via gstack `/qa` + Playwright)
+
+**Branch:** `commander-subagent-1` @ `62eba2ec` (polish commit) + UAT-doc-update working tree
+**Server:** `pnpm dev` from worktree, port 3100, embedded postgres (fresh state after orphan cleanup)
+**Browser:** Playwright Chromium via `gstack/browse` (launched mode)
+**Driver:** Claude (Opus 4.7), no human interaction during execution — UAT prompts and reply-decisions issued by the agent itself
+
+### Section scoreboard
+
+| Section | Result | Notes |
+|---------|--------|-------|
+| A — Sessions Sidebar | 9/9 PASS (1 minor bug) | A3.b: sidebar `… · N msgs` counter doesn't refresh after a send within an open conversation; refreshes only on full list refetch (e.g. when new sessions are created). Counter lag is cosmetic but visible. |
+| B — Toolbar | 2/2 PASS | Attach / Skills / Mention / Voice all visible and `[disabled]`. |
+| C — Action Confirmation Gate | **0/5 FAIL** | Backend gate fires correctly (`update_company_identity` emits `⚡CONFIRM` per Commander's own report). Frontend never renders an amber confirmation card; user is asked to type "confirm" in chat as a fallback, but that reply doesn't reach `/confirm`. Verified server-side via `GET /api/companies`: `vision: null` after the entire C1→C4 flow. This is the **M5 finding from the final code review** in production form — the polish commit removed the stale TODO but didn't wire the UI through. |
+| D — Options Prompt | not run | Deferred — lower priority for this pass. |
+| E — Skills + `use_skill` | not run | Deferred — lower priority for this pass. |
+| F — Permissions UI | 8/8 PASS | Permissions sub-tab renders, amber "stored-but-not-enforced" banner present (polish I2 ✅), 10 KNOWN_TOOLS visible incl. `extract_from_content` (Task 7 phantom-tool fix ✅), aria-labels in place (polish I4 ✅), persistence works (toggle → save → reload → state preserved), founder-only PATCH role check exercised. |
+| G — Conversation Switching | 6/6 PASS | Two new sessions created, each gets its own response. Switching sessions loads the correct history (Task 8 backend + Task 9 frontend). G6 cross-contamination test passed cleanly — Session 1 has no Session 2 content and vice versa (legacy-sync suppression `8548feca` ✅). |
+| H — Role Enforcement | not run | Requires a second `team_member` user account — out of scope for this automated pass. |
+| I — Edge Cases | not run | Deferred. |
+
+### Bugs and findings
+
+**🔴 Critical — `commander-confirm-ui-missing` (Section C, all rows)**
+- **Symptom:** When Commander triggers a confirmation-gated tool (e.g. `update_company_identity`), the UI does not render the amber confirmation card promised by the UAT spec. Commander instead emits a plain-text "Reply 'confirm' to proceed" message.
+- **Impact:** End-to-end vision/mission/identity updates from chat are not possible. The user has no clickable approval path, and replying "confirm" in chat does not invoke `POST /companies/:cid/internal-agent/confirm` — the pending tool execution sits in the in-memory `pendingConfirmations` map until it eventually evaporates.
+- **Verification:** `curl http://localhost:3100/api/companies` returned `vision: null` after C1→C2 with two "confirm" chat replies.
+- **Root cause:** The chat-route SSE handler in `server/src/routes/internal-agent.ts` emits an `action_confirm` SSE event with the confirmId+tool+description, but `ui/src/components/InternalAgentPanel.tsx` (or the SSE consumer in `streamAgentChat` in `ui/src/api/internal-agent.ts`) has no handler that renders this as an interactive card. The polish-commit `M5` fix only documented the conversational fallback; the actual UI wiring is still missing. Confirmed by Commander itself in chat ("Somewhere in your AoA UI ... there should be a pending confirmation card showing... with Approve / Cancel buttons. Clicking Approve in the UI is what will actually commit the write. ... If you don't see a UI approval ... the Commander chat UI is supposed to surface that approval inline (and isn't, which would be a bug)").
+- **Fix scope (estimate):** consume the `action_confirm` SSE event in `streamAgentChat`, push a `LocalMessage` with role `confirmation` carrying `{confirmId, toolName, params}`, render an inline card with Confirm / Cancel buttons in `InternalAgentPanel`, call `commanderConversationsApi.confirm(companyId, {confirmId, approved})` on click.
+
+**🟡 Minor — `sidebar-msg-count-stale` (Section A, A3.b)**
+- **Symptom:** After sending a message + receiving a response in an active session, the sidebar row still shows the pre-send message count (`… · N msgs`). The counter only updates on full list refetch (e.g. when a new session is created via "New chat").
+- **Impact:** Cosmetic. Doesn't block flows.
+- **Fix scope (estimate):** invalidate the `["commander-conversations", companyId]` query key in `streamAgentChat`'s `onMessage`/`onDone` callback (or in the `sendText` mutation's `onSuccess` in `InternalAgentPanel.tsx`).
+
+**🟢 Working as designed**
+- Permissions tab theater banner correctly tells the tester runtime enforcement isn't wired yet (polish I2).
+- a11y labels on Permissions table checkboxes/selects (polish I4) are present and queryable.
+- `extract_from_content` correctly replaces the phantom `create_discussion` in KNOWN_TOOLS (Task 7 fix `9ebb5f57`).
+- Commander, when faced with a tool-routing decision, can self-correct using the deferred-tool list — useful behavior surface for future UX.
+
+### Screenshots produced
+
+`.gstack/qa-reports/screenshots/` — 19 PNGs spanning landing → company select → Commander page → new chat → message send → history load → archive → collapse/expand → confirmation prompt → permissions tab → save → multi-session switching. Index in chronological order: `01-landing.png`, `02-home.png`, `03-commander-A1.png`, `04-A2-new-chat.png`, `05-A3-message-sent.png`, `06-A3-response.png`, `07-A4-hover.png`, `08-A6-collapsed.png`, `09-A5-archived.png`, `10-A8-history-loaded.png`, `11-A9-appended.png`, `12-A9-scrolled.png`, `13-C1-vision-prompt.png`, `14-C1-result.png`, `15-F1-settings.png`, `16-F2-permissions-tab.png`, `17-F4-saved.png`, `18-F7-founder-saved.png`, `19-G3-two-sessions.png`.
+
+### Recommended follow-ups for this branch (in priority order)
+
+1. **Wire the confirmation card UI** (blocks Section C, real UX gap). Estimate: ~2-4 hours. See "Fix scope" above.
+2. **Refresh sidebar counts on send** (cosmetic). Estimate: ~15 minutes.
+3. Run Sections D, E, H, I manually before merging (the items skipped here).
+4. After (1) lands, re-run Section C and verify `vision` is populated server-side.
+
