@@ -4,9 +4,19 @@ import type { Project } from "@armyofagents/shared";
 import { projectsApi } from "../../api/projects";
 import { queryKeys } from "../../lib/queryKeys";
 import { cn } from "../../lib/utils";
+import { FolderBrowserDialog } from "../FolderBrowserDialog";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
-import { ExternalLink, Github, Trash2 } from "lucide-react";
+import { ExternalLink, FolderOpen, Github, Trash2 } from "lucide-react";
 
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 
@@ -26,8 +36,8 @@ function formatGitHubRepo(url: string) {
 
 export function WorkspaceRuntimeSettings({ project, onUpdate }: WorkspaceRuntimeSettingsProps) {
   const queryClient = useQueryClient();
-  const [workspaceMode, setWorkspaceMode] = useState<"local" | "repo" | null>(null);
-  const [workspaceCwd, setWorkspaceCwd] = useState("");
+  const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
+  const [repoDialogOpen, setRepoDialogOpen] = useState(false);
   const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -71,15 +81,14 @@ export function WorkspaceRuntimeSettings({ project, onUpdate }: WorkspaceRuntime
     });
   };
 
-  const submitLocalWorkspace = () => {
-    const cwd = workspaceCwd.trim();
+  const submitLocalWorkspace = (selectedPath: string) => {
+    const cwd = selectedPath.trim();
     if (!cwd) return;
     createWorkspace.mutate(
       { cwd },
       {
         onSuccess: () => {
-          setWorkspaceMode(null);
-          setWorkspaceCwd("");
+          setFolderBrowserOpen(false);
           setWorkspaceError(null);
         },
         onError: () => setWorkspaceError("Failed to save workspace local folder."),
@@ -97,7 +106,7 @@ export function WorkspaceRuntimeSettings({ project, onUpdate }: WorkspaceRuntime
       { cwd: REPO_ONLY_CWD_SENTINEL, repoUrl },
       {
         onSuccess: () => {
-          setWorkspaceMode(null);
+          setRepoDialogOpen(false);
           setWorkspaceRepoUrl("");
           setWorkspaceError(null);
         },
@@ -165,51 +174,97 @@ export function WorkspaceRuntimeSettings({ project, onUpdate }: WorkspaceRuntime
         )}
 
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="xs" className="h-7 px-2.5" onClick={() => setWorkspaceMode("local")}>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            className="h-7 px-2.5"
+            onClick={() => {
+              setWorkspaceError(null);
+              setFolderBrowserOpen(true);
+            }}
+          >
+            <FolderOpen className="mr-1.5 h-3 w-3" />
             Add local folder
           </Button>
-          <Button variant="outline" size="xs" className="h-7 px-2.5" onClick={() => setWorkspaceMode("repo")}>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            className="h-7 px-2.5"
+            onClick={() => {
+              setWorkspaceError(null);
+              setRepoDialogOpen(true);
+            }}
+          >
+            <Github className="mr-1.5 h-3 w-3" />
             Add GitHub repo
           </Button>
         </div>
 
-        {workspaceMode === "local" && (
-          <div className="space-y-2 rounded-md border border-border p-2">
-            <input
-              className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
-              value={workspaceCwd}
-              onChange={(event) => setWorkspaceCwd(event.target.value)}
-              placeholder="/absolute/path/to/workspace"
-            />
-            <div className="flex gap-2">
-              <Button size="xs" className="h-6 px-2" disabled={!workspaceCwd.trim()} onClick={submitLocalWorkspace}>
-                Save
-              </Button>
-              <Button variant="ghost" size="xs" className="h-6 px-2" onClick={() => setWorkspaceMode(null)}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
+        <FolderBrowserDialog
+          open={folderBrowserOpen}
+          onClose={() => setFolderBrowserOpen(false)}
+          onSelect={submitLocalWorkspace}
+          title="Add local folder"
+          description="Choose a folder this department can use as a workspace source."
+          gitAware={project.functionType === "software_development"}
+          initialPath={workspaces.find((workspace) => workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL)?.cwd ?? undefined}
+        />
 
-        {workspaceMode === "repo" && (
-          <div className="space-y-2 rounded-md border border-border p-2">
-            <input
-              className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-              value={workspaceRepoUrl}
-              onChange={(event) => setWorkspaceRepoUrl(event.target.value)}
-              placeholder="https://github.com/org/repo"
-            />
-            <div className="flex gap-2">
-              <Button size="xs" className="h-6 px-2" disabled={!workspaceRepoUrl.trim()} onClick={submitRepoWorkspace}>
-                Save
-              </Button>
-              <Button variant="ghost" size="xs" className="h-6 px-2" onClick={() => setWorkspaceMode(null)}>
+        <Dialog
+          open={repoDialogOpen}
+          onOpenChange={(open) => {
+            setRepoDialogOpen(open);
+            if (!open) {
+              setWorkspaceRepoUrl("");
+              setWorkspaceError(null);
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Add GitHub repo</DialogTitle>
+              <DialogDescription>
+                Add a repository URL agents can use when creating isolated or shared workspaces.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogBody className="space-y-2">
+              <label htmlFor="project-workspace-repo-url" className="text-xs font-medium text-muted-foreground">
+                Repository URL
+              </label>
+              <input
+                id="project-workspace-repo-url"
+                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground/50 focus:border-foreground"
+                value={workspaceRepoUrl}
+                onChange={(event) => setWorkspaceRepoUrl(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && workspaceRepoUrl.trim()) {
+                    submitRepoWorkspace();
+                  }
+                }}
+                placeholder="https://github.com/org/repo"
+                autoFocus
+              />
+              <p className="text-xs text-muted-foreground">
+                Use the canonical GitHub repository URL. Private repos require the company GitHub PAT to be configured.
+              </p>
+              {workspaceError && <p className="text-xs text-destructive">{workspaceError}</p>}
+            </DialogBody>
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={() => setRepoDialogOpen(false)}>
                 Cancel
               </Button>
-            </div>
-          </div>
-        )}
+              <Button
+                type="button"
+                disabled={!workspaceRepoUrl.trim() || createWorkspace.isPending}
+                onClick={submitRepoWorkspace}
+              >
+                Save repo
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {workspaceError && <p className="text-xs text-destructive">{workspaceError}</p>}
       </div>
