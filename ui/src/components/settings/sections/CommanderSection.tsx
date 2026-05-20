@@ -457,9 +457,7 @@ export function CommanderSection() {
               <>
                 <div className="rounded-md border border-amber-300 bg-amber-50 p-3">
                   <p className="text-xs text-amber-900">
-                    <strong>Note:</strong> Per-tool permissions are stored but not yet enforced at runtime.
-                    Saved settings will be applied once enforcement lands in a follow-up release.
-                    For now this tab persists your preferences only.
+                    <strong>Note:</strong> Per-tool permissions are stored. Runtime enforcement: Claude CLI gates write tools strictly via structured tool events; codex and opencode use best-effort marker detection. For guaranteed gating, set Commander to Claude CLI under Execution &amp; Model.
                   </p>
                 </div>
                 <p className="text-xs text-muted-foreground mb-3">
