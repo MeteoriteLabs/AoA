@@ -37,10 +37,26 @@ import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents
 import { createEagerWorkspaceForIssue } from "../services/eager-workspace.js";
 import { canDelegateToTarget, type WakeSkippedReason } from "../services/task-policy.js";
 import { listIssueContextBundlesForIssue } from "../services/issue-context-bundles.js";
+import { assertCanOverrideTaskWorkspace } from "../services/workspace-authz.js";
 
 // Approval statuses that count as an active review path.
 // Extend this set if AoA adds revision_requested or other in-flight states.
 const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set(["pending"]);
+
+function hasWorkspaceOverrideFields(body: Record<string, unknown>): boolean {
+  return body.executionWorkspaceId !== undefined
+    || body.executionWorkspacePreference !== undefined
+    || body.executionWorkspaceSettings !== undefined;
+}
+
+function workspaceOverrideAuditDetails(body: Record<string, unknown>) {
+  if (!hasWorkspaceOverrideFields(body)) return undefined;
+  return {
+    executionWorkspaceId: body.executionWorkspaceId ?? null,
+    preference: body.executionWorkspacePreference ?? null,
+    settings: body.executionWorkspaceSettings ?? null,
+  };
+}
 
 /**
  * Guard: reject agent-initiated transitions to `in_review` unless a human
@@ -760,6 +776,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
     }
 
+    if (hasWorkspaceOverrideFields(req.body)) {
+      await assertCanOverrideTaskWorkspace(db, req, {
+        companyId,
+        projectId: req.body.projectId ?? null,
+      });
+    }
+
     const actor = getActorInfo(req);
     let wakeSkippedReason: WakeSkippedReason | "workspace_setup_failed" | null = null;
 
@@ -823,7 +846,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
       action: "issue.created",
       entityType: "issue",
       entityId: issue.id,
-      details: { title: issue.title, identifier: issue.identifier, wakeSkippedReason },
+      details: {
+        title: issue.title,
+        identifier: issue.identifier,
+        wakeSkippedReason,
+        ...(workspaceOverrideAuditDetails(req.body)
+          ? { workspaceOverride: workspaceOverrideAuditDetails(req.body) }
+          : {}),
+      },
     });
 
     // Eager workspace creation — if the project supports execution workspaces,
@@ -913,6 +943,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
+    if (hasWorkspaceOverrideFields(updateFields)) {
+      await assertCanOverrideTaskWorkspace(db, req, {
+        companyId: existing.companyId,
+        projectId: updateFields.projectId ?? existing.projectId ?? null,
+      });
+    }
 
     // Guard: prevent agents from self-marking tasks as in_review with no review path
     await assertAgentInReviewReviewPath(
@@ -974,7 +1010,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
       action: "issue.updated",
       entityType: "issue",
       entityId: issue.id,
-      details: { ...updateFields, identifier: issue.identifier, _previous: Object.keys(previous).length > 0 ? previous : undefined },
+      details: {
+        ...updateFields,
+        identifier: issue.identifier,
+        ...(workspaceOverrideAuditDetails(updateFields)
+          ? { workspaceOverride: workspaceOverrideAuditDetails(updateFields) }
+          : {}),
+        _previous: Object.keys(previous).length > 0 ? previous : undefined,
+      },
     });
 
     // Sync routine run status when a linked issue reaches a terminal state

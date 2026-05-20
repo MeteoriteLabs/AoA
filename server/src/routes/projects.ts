@@ -16,6 +16,7 @@ import { projectService, logActivity, instanceSettingsService, secretService } f
 import { conflict, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { gateProjectExecutionWorkspacePolicy, parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
+import { assertCanControlWorkspace } from "../services/workspace-authz.js";
 
 /**
  * Detects whether a request body's executionWorkspacePolicy carries any of the
@@ -112,6 +113,8 @@ export function projectRoutes(db: Db) {
         return;
       }
       await assertRole(db, req, companyId, "founder");
+    } else if (req.body.executionWorkspacePolicy !== undefined) {
+      await assertCanControlWorkspace(db, req, { companyId, projectId: null });
     }
 
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
@@ -189,6 +192,8 @@ export function projectRoutes(db: Db) {
         return;
       }
       await assertRole(db, req, existing.companyId, "founder");
+    } else if (req.body.executionWorkspacePolicy !== undefined) {
+      await assertCanControlWorkspace(db, req, { companyId: existing.companyId, projectId: existing.id });
     }
 
     const project = await svc.update(id, req.body);
