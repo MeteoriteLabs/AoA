@@ -170,8 +170,8 @@ export function internalAgentRoutes(db: Db) {
               );
               break;
             case "action_confirmation":
-              // CLI-mode doesn't yield these today (no per-tool confirmations);
-              // the branch stays here to be explicit about the mapping.
+              // parseCliOutput now emits these when the CLI prints a ⚡CONFIRM:...⚡ marker.
+              // The branch forwards the confirmation event to the SSE stream for UI handling.
               res.write(
                 `event: action_confirm\ndata: ${JSON.stringify({
                   confirmId: chunk.runId,

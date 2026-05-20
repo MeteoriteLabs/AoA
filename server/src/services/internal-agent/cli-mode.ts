@@ -155,7 +155,11 @@ export function parseCliOutput(line: string): AgentStreamChunk[] {
   const match = line.match(CONFIRM_RE);
   if (match) {
     try {
-      const payload = JSON.parse(match[1]) as { toolName: string; params: unknown };
+      const payload = JSON.parse(match[1]) as { toolName?: string; params?: unknown };
+      if (typeof payload.toolName !== "string" || payload.toolName.length === 0) {
+        // Missing or invalid toolName — treat as malformed marker
+        throw new Error("missing toolName");
+      }
       return [
         {
           type: "action_confirmation",
@@ -165,7 +169,7 @@ export function parseCliOutput(line: string): AgentStreamChunk[] {
         },
       ];
     } catch {
-      // Malformed JSON — fall through to plain text
+      // Malformed JSON or missing toolName — fall through to plain text
     }
   }
   return [{ type: "text", delta: line }];
@@ -663,16 +667,33 @@ async function* streamProcessOutput(
   const pending: AgentStreamChunk[] = [];
   let done = false;
   let resolve: (() => void) | null = null;
+  let leftover = "";
+
+  function processLines(text: string) {
+    const lines = (leftover + text).split("\n");
+    leftover = lines.pop() ?? "";          // last segment is incomplete
+    for (const line of lines) {
+      for (const chunk of parseCliOutput(line)) {
+        pending.push(chunk);
+      }
+    }
+  }
+
+  function flushLeftover() {
+    if (leftover.length > 0) {
+      for (const chunk of parseCliOutput(leftover)) {
+        pending.push(chunk);
+      }
+      leftover = "";
+    }
+  }
 
   function notify() {
     if (resolve) { resolve(); resolve = null; }
   }
 
   proc.stdout.on("data", (data: Buffer) => {
-    const text = data.toString();
-    for (const chunk of parseCliOutput(text)) {
-      pending.push(chunk);
-    }
+    processLines(data.toString());
     notify();
   });
 
@@ -680,8 +701,16 @@ async function* streamProcessOutput(
     // Log stderr but don't stream to user
   });
 
-  proc.on("exit", () => { done = true; notify(); });
-  proc.on("error", () => { done = true; notify(); });
+  proc.on("exit", () => {
+    flushLeftover();
+    done = true;
+    notify();
+  });
+  proc.on("error", () => {
+    flushLeftover();
+    done = true;
+    notify();
+  });
 
   while (true) {
     while (pending.length > 0) {

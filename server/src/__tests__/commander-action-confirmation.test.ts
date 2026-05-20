@@ -19,13 +19,15 @@ const neverExecute = async () => ({ success: true, data: {}, summary: "" });
 describe("createToolCallHandler: requiresConfirmation gate", () => {
   it("executes tools with requiresConfirmation: false normally", async () => {
     const tool = makeTool("query_tasks", false);
+    const executeSpy = vi.fn().mockResolvedValue({ success: true, data: { items: [] }, summary: "ok" });
     const handler = createToolCallHandler({
       tools: [tool],
-      executeTool: neverExecute,
+      executeTool: executeSpy,
       toolContext: {} as any,
     });
     const result = await handler("query_tasks", {});
     expect(result.isError).toBeFalsy();
+    expect(executeSpy).toHaveBeenCalledOnce();
   });
 
   it("returns a CONFIRM marker (not an error) for requiresConfirmation: true tools", async () => {

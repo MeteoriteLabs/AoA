@@ -33,4 +33,10 @@ describe("parseCliOutput: action_confirmation extraction", () => {
     const chunks = parseCliOutput(line);
     expect(chunks[0].type).toBe("text");
   });
+
+  it("falls back to text when CONFIRM marker has no toolName", () => {
+    const line = `⚡CONFIRM:${JSON.stringify({ params: {} })}⚡ something`;
+    const chunks = parseCliOutput(line);
+    expect(chunks[0].type).toBe("text");
+  });
 });
