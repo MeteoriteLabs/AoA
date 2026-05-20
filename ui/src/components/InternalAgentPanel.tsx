@@ -21,6 +21,7 @@ import {
   internalAgentApi,
   streamAgentChat,
   conversationMessagesApi,
+  confirmAction,
   type AgentMessage,
   type SSEEvent,
   type AgentGreeting,
@@ -77,7 +78,8 @@ interface LocalMessage {
     confirmId: string;
     action: string;
     description: string;
-    status: "pending" | "approved" | "rejected";
+    status: "pending" | "approving" | "approved" | "rejected" | "failed";
+    errorMessage?: string;
   };
   optionsPrompt?: {
     promptId: string;
@@ -384,27 +386,74 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
   }
 
   const sendConfirmMessage = useCallback(
-    (
+    async (
       messageId: string,
-      confirmId: string, // Conversational fallback: re-sends as a chat message so Commander can re-evaluate. Direct /confirm API wiring is tracked as a follow-up.
-      action: string,
+      confirmId: string,
+      _action: string,
       approved: boolean,
     ) => {
-      // Optimistically update the UI status
+      // 1. Optimistic UI: move status to "approving" / "rejected"
       setMessages((prev) =>
         prev.map((m) =>
           m.id === messageId && m.actionConfirm
-            ? { ...m, actionConfirm: { ...m.actionConfirm, status: approved ? "approved" : "rejected" } }
+            ? {
+                ...m,
+                actionConfirm: {
+                  ...m.actionConfirm,
+                  status: approved ? "approving" : "rejected",
+                },
+              }
             : m,
         ),
       );
-      // Send the confirmation/cancellation as a user message to Commander
-      const message = approved
-        ? `Yes, confirmed — proceed with ${action}`
-        : `Cancel — do not proceed with ${action}`;
-      void sendText(message);
+
+      if (!approved) return;
+
+      try {
+        const result = await confirmAction(companyId, { confirmId, approved });
+
+        // 2. Settle UI based on server result
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId && m.actionConfirm
+              ? {
+                  ...m,
+                  actionConfirm: {
+                    ...m.actionConfirm,
+                    status:
+                      result.result === "executed"
+                        ? "approved"
+                        : result.result === "rejected"
+                          ? "rejected"
+                          : "failed",
+                    errorMessage: result.error ?? undefined,
+                  },
+                }
+              : m,
+          ),
+        );
+
+        // 3. Refresh conversation so any new tool-result messages appear in chat
+        queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(companyId) });
+        queryClient.invalidateQueries({ queryKey: ["commander-conversations"] });
+      } catch (err) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId && m.actionConfirm
+              ? {
+                  ...m,
+                  actionConfirm: {
+                    ...m.actionConfirm,
+                    status: "failed",
+                    errorMessage: err instanceof Error ? err.message : "Network error",
+                  },
+                }
+              : m,
+          ),
+        );
+      }
     },
-    [sendText],
+    [companyId, queryClient],
   );
 
   const handleReset = useCallback(async () => {
@@ -563,6 +612,18 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
                         <X className="h-3 w-3 mr-1" />
                         Cancel
                       </Button>
+                    </div>
+                  ) : msg.actionConfirm.status === "approving" ? (
+                    <span className="inline-flex items-center gap-1 text-xs text-amber-800 dark:text-amber-200">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Executing…
+                    </span>
+                  ) : msg.actionConfirm.status === "failed" ? (
+                    <div className="space-y-1">
+                      <span className="text-xs font-medium text-red-600 dark:text-red-400">Failed</span>
+                      {msg.actionConfirm.errorMessage && (
+                        <p className="text-xs text-muted-foreground">{msg.actionConfirm.errorMessage}</p>
+                      )}
                     </div>
                   ) : (
                     <span
