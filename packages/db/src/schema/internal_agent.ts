@@ -7,6 +7,7 @@ import {
   index,
   uniqueIndex,
   jsonb,
+  boolean,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { companies } from "./companies.js";
@@ -120,6 +121,12 @@ export const internalAgentConversations = pgTable(
     summarizedUpToMessageId: uuid("summarized_up_to_message_id"), // last message included in summary
 
     messageCount: integer("message_count").notNull().default(0), // denormalized
+
+    // Multi-chat (Sprint 3): user-visible conversation title, archive timestamp,
+    // and founder-visible sharing flag (RBAC option C).
+    title: text("title"),            // null = auto-title from first message
+    archivedAt: timestamp("archived_at", { withTimezone: true }), // null = active
+    sharedWithCompany: boolean("shared_with_company").notNull().default(false),
 
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

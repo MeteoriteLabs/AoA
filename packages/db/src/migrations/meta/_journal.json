@@ -708,6 +708,13 @@
       "when": 1779189317748,
       "tag": "0100_purple_puppet_master",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1779264849201,
+      "tag": "0101_gorgeous_strong_guy",
+      "breakpoints": true
     }
   ]
 }
