@@ -78,11 +78,15 @@ describe("checkCanControlWorkspace", () => {
 
     const result = await checkCanControlWorkspace(db, req, WS_WITH_PROJECT);
 
-    expect(result).toEqual({ allowed: true });
+    expect(result).toEqual({
+      allowed: false,
+      status: 403,
+      message: "Insufficient permissions to control this workspace",
+    });
     expect(db.select).not.toHaveBeenCalled();
   });
 
-  it("allows mcp actors without a DB lookup", async () => {
+  it("rejects mcp actors without a DB lookup", async () => {
     const db = makeDb([]);
     const req = makeReq({
       type: "mcp",
@@ -94,7 +98,11 @@ describe("checkCanControlWorkspace", () => {
 
     const result = await checkCanControlWorkspace(db, req, WS_WITH_PROJECT);
 
-    expect(result).toEqual({ allowed: true });
+    expect(result).toEqual({
+      allowed: false,
+      status: 403,
+      message: "Insufficient permissions to control this workspace",
+    });
     expect(db.select).not.toHaveBeenCalled();
   });
 
@@ -373,11 +381,24 @@ describe("assertCanControlWorkspace", () => {
     await expect(assertCanControlWorkspace(db, req, WS_WITH_PROJECT)).resolves.toBeUndefined();
   });
 
-  it("does not throw for agents, mcp, local_implicit, or instance admins", async () => {
+  it("throws HttpError(403) for agents and mcp actors", async () => {
     const db = makeDb([]);
     const cases = [
       { type: "agent", agentId: "a", companyId: "co-1", source: "agent_key" },
       { type: "mcp", userId: "u", companyId: "co-1", keyId: "k", source: "mcp_key" },
+    ];
+    for (const actor of cases) {
+      await expect(assertCanControlWorkspace(db, makeReq(actor), WS_WITH_PROJECT))
+        .rejects.toMatchObject({
+          status: 403,
+          message: "Insufficient permissions to control this workspace",
+        });
+    }
+  });
+
+  it("does not throw for local_implicit board actors or instance admins", async () => {
+    const db = makeDb([]);
+    const cases = [
       {
         type: "board",
         userId: "u",
@@ -396,6 +417,92 @@ describe("assertCanControlWorkspace", () => {
     for (const actor of cases) {
       await expect(assertCanControlWorkspace(db, makeReq(actor), WS_WITH_PROJECT))
         .resolves.toBeUndefined();
+    }
+  });
+});
+
+describe("workspace shell-command config hardening", () => {
+  it("detects command fields in execution workspace config patches", async () => {
+    const {
+      workspaceConfigPatchHasShellCommands,
+    } = await import("../services/workspace-authz.js");
+
+    expect(workspaceConfigPatchHasShellCommands({ provisionCommand: "pnpm install" })).toBe(true);
+    expect(workspaceConfigPatchHasShellCommands({ teardownCommand: null })).toBe(true);
+    expect(workspaceConfigPatchHasShellCommands({ cleanupCommand: "" })).toBe(true);
+    expect(workspaceConfigPatchHasShellCommands({
+      workspaceRuntime: {
+        services: [
+          { name: "web" },
+          { name: "api", command: "pnpm dev" },
+        ],
+      },
+    })).toBe(true);
+    expect(workspaceConfigPatchHasShellCommands({
+      desiredState: "running",
+      workspaceRuntime: { services: [{ name: "web" }] },
+    })).toBe(false);
+    expect(workspaceConfigPatchHasShellCommands(null)).toBe(false);
+  });
+
+  it("allows founder board users to configure workspace shell commands", async () => {
+    const {
+      checkCanConfigureWorkspaceShellCommands,
+    } = await import("../services/workspace-authz.js");
+    const db = makeDb([{ role: "founder", projectId: null }]);
+    const req = makeReq({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["co-1"],
+      isInstanceAdmin: false,
+      source: "session",
+    });
+
+    const result = await checkCanConfigureWorkspaceShellCommands(db, req, WS_WITH_PROJECT);
+
+    expect(result).toEqual({ allowed: true });
+  });
+
+  it("rejects team leads for workspace shell command configuration", async () => {
+    const {
+      checkCanConfigureWorkspaceShellCommands,
+    } = await import("../services/workspace-authz.js");
+    const db = makeDb([{ role: "team_lead", projectId: "proj-1" }]);
+    const req = makeReq({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["co-1"],
+      isInstanceAdmin: false,
+      source: "session",
+    });
+
+    const result = await checkCanConfigureWorkspaceShellCommands(db, req, WS_WITH_PROJECT);
+
+    expect(result).toEqual({
+      allowed: false,
+      status: 403,
+      message: "Only founders can configure workspace shell commands",
+    });
+  });
+
+  it("rejects agent and mcp actors for workspace shell command configuration without a DB lookup", async () => {
+    const {
+      checkCanConfigureWorkspaceShellCommands,
+    } = await import("../services/workspace-authz.js");
+    const cases = [
+      { type: "agent", agentId: "a", companyId: "co-1", source: "agent_key" },
+      { type: "mcp", userId: "u", companyId: "co-1", keyId: "k", source: "mcp_key" },
+    ];
+
+    for (const actor of cases) {
+      const db = makeDb([]);
+      const result = await checkCanConfigureWorkspaceShellCommands(db, makeReq(actor), WS_WITH_PROJECT);
+      expect(result).toEqual({
+        allowed: false,
+        status: 403,
+        message: "Only founders can configure workspace shell commands",
+      });
+      expect(db.select).not.toHaveBeenCalled();
     }
   });
 });

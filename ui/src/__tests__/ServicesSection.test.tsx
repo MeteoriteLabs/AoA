@@ -10,12 +10,19 @@ const executionWorkspacesApiMock = {
   runtimeServices: vi.fn(),
   controlRuntimeServices: vi.fn(),
 };
+let canControlRuntimeServices = true;
 
 vi.mock("../api/execution-workspaces", () => ({
   executionWorkspacesApi: new Proxy(
     {},
     { get: (_t, prop) => (executionWorkspacesApiMock as Record<string, unknown>)[prop as string] },
   ),
+}));
+
+vi.mock("../hooks/useWorkspacePermissions", () => ({
+  useWorkspacePermissions: () => ({
+    canControlRuntimeServices,
+  }),
 }));
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -142,6 +149,7 @@ function renderSection(options: { onOpenBrowser?: (service: any) => void } = {})
 
 beforeEach(() => {
   vi.clearAllMocks();
+  canControlRuntimeServices = true;
 });
 
 describe("ServicesSection", () => {
@@ -196,6 +204,20 @@ describe("ServicesSection", () => {
     });
     expect(screen.getByTestId("service-restart-svc-1")).toBeInTheDocument();
     expect(screen.queryByTestId("service-start-svc-1")).not.toBeInTheDocument();
+  });
+
+  it("hides local process controls when the current user cannot control runtime services", async () => {
+    canControlRuntimeServices = false;
+    executionWorkspacesApiMock.runtimeServices.mockResolvedValue([runningService]);
+
+    renderSection();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("service-row-svc-1")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("service-open-svc-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("service-stop-svc-1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("service-restart-svc-1")).not.toBeInTheDocument();
   });
 
   it("preview-only adapter-managed service shows Open but no process controls", async () => {

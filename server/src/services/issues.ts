@@ -34,7 +34,12 @@ import { dependencyService } from "./dependencies.js";
 import { heartbeatService } from "./heartbeat.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { deriveIssueUserContext } from "./issue-user-context.js";
-import { issueExecutionWorkspaceModeForPersistedWorkspace } from "./execution-workspace-policy.js";
+import {
+  enforceIssueExecutionWorkspaceOverridePolicy,
+  issueExecutionWorkspaceModeForPersistedWorkspace,
+  parseIssueExecutionWorkspaceSettings,
+  parseProjectExecutionWorkspacePolicy,
+} from "./execution-workspace-policy.js";
 import { notificationService } from "./notifications.js";
 import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
 import {
@@ -840,6 +845,69 @@ export function issueService(db: Db) {
         delete (issueData as Record<string, unknown>).executionWorkspaceId;
         delete (issueData as Record<string, unknown>).executionWorkspacePreference;
         delete (issueData as Record<string, unknown>).executionWorkspaceSettings;
+      } else {
+        const hasWorkspaceOverride =
+          (issueData as Record<string, unknown>).executionWorkspaceId !== undefined ||
+          (issueData as Record<string, unknown>).executionWorkspacePreference !== undefined ||
+          (issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined;
+        if (hasWorkspaceOverride) {
+          const nextProjectId =
+            (issueData as { projectId?: string | null }).projectId !== undefined
+              ? ((issueData as { projectId?: string | null }).projectId ?? null)
+              : existing.projectId;
+          const projectPolicy = nextProjectId
+            ? await db
+              .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+              .from(projects)
+              .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)))
+              .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy ?? null))
+            : null;
+          const parsedIssueSettings = parseIssueExecutionWorkspaceSettings(
+            (issueData as Record<string, unknown>).executionWorkspaceSettings,
+          );
+          const reuseWorkspaceId =
+            parsedIssueSettings?.reuseWorkspaceId ??
+            ((issueData as { executionWorkspaceId?: string | null }).executionWorkspaceId ?? null);
+          const reuseWorkspace = reuseWorkspaceId
+            ? await db
+              .select({
+                id: executionWorkspaces.id,
+                companyId: executionWorkspaces.companyId,
+                projectId: executionWorkspaces.projectId,
+                status: executionWorkspaces.status,
+              })
+              .from(executionWorkspaces)
+              .where(eq(executionWorkspaces.id, reuseWorkspaceId))
+              .then((rows) => rows[0] ?? null)
+            : null;
+          const normalizedWorkspacePatch = enforceIssueExecutionWorkspaceOverridePolicy({
+            existingIssue: {
+              companyId: existing.companyId,
+              projectId: nextProjectId,
+            },
+            isolatedWorkspacesEnabled,
+            projectPolicy,
+            patch: {
+              executionWorkspaceId: (issueData as { executionWorkspaceId?: string | null }).executionWorkspaceId,
+              executionWorkspacePreference: (issueData as { executionWorkspacePreference?: string | null }).executionWorkspacePreference,
+              executionWorkspaceSettings: (issueData as { executionWorkspaceSettings?: Record<string, unknown> | null }).executionWorkspaceSettings,
+            },
+            reuseWorkspace,
+          });
+          if ((issueData as Record<string, unknown>).executionWorkspaceId !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspaceId = normalizedWorkspacePatch.executionWorkspaceId;
+          } else if (normalizedWorkspacePatch.executionWorkspaceId !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspaceId = normalizedWorkspacePatch.executionWorkspaceId;
+          }
+          if ((issueData as Record<string, unknown>).executionWorkspacePreference !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspacePreference = normalizedWorkspacePatch.executionWorkspacePreference;
+          } else if (normalizedWorkspacePatch.executionWorkspacePreference !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspacePreference = normalizedWorkspacePatch.executionWorkspacePreference;
+          }
+          if ((issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspaceSettings = normalizedWorkspacePatch.executionWorkspaceSettings;
+          }
+        }
       }
 
       if (issueData.status) {

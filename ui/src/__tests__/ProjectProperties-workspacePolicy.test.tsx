@@ -104,7 +104,7 @@ describe("ProjectProperties — Workspace Policy section", () => {
     vi.clearAllMocks();
   });
 
-  it("shows Workspace Policy section when executionWorkspacePolicy is present", () => {
+  it("does not render editable Workspace Policy controls in Overview", () => {
     const project = {
       ...baseProject,
       executionWorkspacePolicy: {
@@ -114,10 +114,8 @@ describe("ProjectProperties — Workspace Policy section", () => {
       },
     };
     renderProperties(project);
-    expect(screen.getByText("Workspace Policy")).toBeInTheDocument();
-    expect(screen.getByText("🔒 Isolated")).toBeInTheDocument();
-    expect(screen.getByText("🔗 Shared")).toBeInTheDocument();
-    expect(screen.getByRole("checkbox")).toBeInTheDocument();
+    expect(screen.queryByText("Workspace Policy")).not.toBeInTheDocument();
+    expect(screen.queryByText("Allow tasks to override workspace mode")).not.toBeInTheDocument();
   });
 
   it("hides Workspace Policy section when executionWorkspacePolicy is null", () => {

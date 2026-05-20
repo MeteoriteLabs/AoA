@@ -150,6 +150,61 @@ describe("createEagerWorkspaceForIssue", () => {
     expect(result).toBeNull();
   });
 
+  it("returns null for isolated mode when no isolated workspace strategy exists", async () => {
+    const db = createMockDb({
+      select: [
+        [{
+          executionWorkspacePolicy: {
+            enabled: true,
+            defaultMode: "isolated_workspace",
+          },
+        }],
+        [{
+          id: "pw-1",
+          cwd: "/tmp/test-repo",
+          repoUrl: "https://github.com/test/repo",
+          repoRef: "main",
+        }],
+      ],
+    });
+    mockParse.mockReturnValue({
+      enabled: true,
+      defaultMode: "isolated_workspace",
+    });
+    mockGate.mockReturnValue({
+      enabled: true,
+      defaultMode: "isolated_workspace",
+    });
+    mockResolveMode.mockReturnValue("isolated_workspace");
+    mockFsStat.mockResolvedValue({ isDirectory: () => true });
+    mockRealize.mockResolvedValue({
+      baseCwd: "/tmp/test-repo",
+      source: "project_primary",
+      projectId: "p1",
+      workspaceId: "pw-1",
+      repoUrl: "https://github.com/test/repo",
+      repoRef: "main",
+      strategy: "project_primary",
+      cwd: "/tmp/test-repo",
+      branchName: null,
+      worktreePath: null,
+      warnings: [],
+      created: false,
+    });
+
+    const result = await createEagerWorkspaceForIssue(db as never, {
+      companyId: "c1",
+      issueId: "i1",
+      issueIdentifier: "ARM-1",
+      issueTitle: "Test",
+      projectId: "p1",
+    });
+
+    expect(result).toBeNull();
+    expect(mockRealize).not.toHaveBeenCalled();
+    expect(mockEwCreate).not.toHaveBeenCalled();
+  });
+
   it("returns null when no project workspace rows exist", async () => {
     const db = createMockDb({
       select: [

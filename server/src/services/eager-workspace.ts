@@ -77,6 +77,12 @@ export async function createEagerWorkspaceForIssue(
     legacyUseProjectWorkspace: null,
   });
   if (executionWorkspaceMode === "agent_default") return null;
+  if (
+    (executionWorkspaceMode === "isolated_workspace" || executionWorkspaceMode === "operator_branch") &&
+    projectPolicy.workspaceStrategy?.type !== "git_worktree"
+  ) {
+    return null;
+  }
 
   // ── Resolve project workspace (baseCwd, repoUrl, repoRef) ──────────
   const projectWorkspaceRows = await db

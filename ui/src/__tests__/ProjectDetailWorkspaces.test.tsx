@@ -200,6 +200,7 @@ function renderProjectDetail(initialPath: string) {
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
+          <Route path="projects/:projectId/settings" element={<ProjectDetail />} />
           <Route path="projects/:projectId/discussions" element={<ProjectDetail />} />
           <Route path="projects/:projectId/issues" element={<ProjectDetail />} />
           <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
@@ -240,6 +241,17 @@ describe("ProjectDetail — Workspaces tab", () => {
     await screen.findByText("Budget");
     await screen.findByText("Discussions");
     await screen.findByText("Workspaces");
+    await screen.findByRole("button", { name: "Settings" });
+  });
+
+  it("renders the Settings tab with Workspace & Runtime content", async () => {
+    renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/settings");
+
+    const settingsTab = await screen.findByRole("button", { name: "Settings" }, { timeout: 5000 });
+    expect(settingsTab.className).toContain("border-foreground");
+    expect(await screen.findByRole("heading", { name: "Workspace & Runtime" })).toBeInTheDocument();
+    expect(screen.getByText(/Defaults for new tasks and future agent runs/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("project-workspaces-list")).not.toBeInTheDocument();
   });
 
   it("shows workspace list when workspaces tab is active", async () => {
