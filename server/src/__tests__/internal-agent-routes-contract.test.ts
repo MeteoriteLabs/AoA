@@ -31,6 +31,9 @@ vi.mock("@armyofagents/db", () => ({
     companyId: "conv_company_id",
     userId: "conv_user_id",
     status: "conv_status",
+    archivedAt: "conv_archived_at",
+    updatedAt: "conv_updated_at",
+    title: "conv_title",
   },
   internalAgentMessages: {
     id: "msg_id",
@@ -87,7 +90,7 @@ describe("internal-agent-routes-contract", () => {
     expect(Array.isArray(router.stack)).toBe(true);
   });
 
-  it("registers exactly 10 route handlers", () => {
+  it("registers exactly 13 route handlers", () => {
     const db = {} as any;
     const router = internalAgentRoutes(db);
 
@@ -96,7 +99,8 @@ describe("internal-agent-routes-contract", () => {
       (layer: any) => layer.route != null,
     );
 
-    expect(routeLayers).toHaveLength(10);
+    // 10 original routes + 3 new multi-conversation routes (list, create, archive)
+    expect(routeLayers).toHaveLength(13);
   });
 
   it("registers all expected paths and methods", () => {
@@ -121,6 +125,10 @@ describe("internal-agent-routes-contract", () => {
       { path: "/companies/:companyId/internal-agent/runs", method: "get" },
       { path: "/companies/:companyId/internal-agent/reminders", method: "get" },
       { path: "/companies/:companyId/internal-agent/reminders/:reminderId", method: "patch" },
+      // multi-conversation routes (Task 3.2)
+      { path: "/companies/:companyId/internal-agent/conversations", method: "get" },
+      { path: "/companies/:companyId/internal-agent/conversations", method: "post" },
+      { path: "/companies/:companyId/internal-agent/conversations/:convId/archive", method: "patch" },
     ];
 
     for (const expected of expectedRoutes) {

@@ -627,5 +627,129 @@ export function internalAgentRoutes(db: Db) {
     },
   );
 
+  // ── Conversations: list ──────────────────────────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/conversations",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      // RBAC: local_implicit and isInstanceAdmin actors get founder-equivalent
+      // access (mirrors the chat route bypass semantics at lines 113-133).
+      // Otherwise, look up the actor's effective role.
+      const isLocalImplicit =
+        req.actor.type === "board" && req.actor.source === "local_implicit";
+      const isInstanceAdmin =
+        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
+
+      let isFounder: boolean;
+      if (isLocalImplicit || isInstanceAdmin) {
+        isFounder = true;
+      } else {
+        const role = await permissionService(db).getEffectiveRole(
+          companyId,
+          actor.actorId,
+        );
+        isFounder = role === "founder";
+      }
+
+      // Build conditions array — Drizzle's and() does not accept undefined.
+      const conditions: SQL[] = [
+        eq(internalAgentConversations.companyId, companyId),
+        isNull(internalAgentConversations.archivedAt),
+      ];
+      if (!isFounder) {
+        conditions.push(eq(internalAgentConversations.userId, actor.actorId));
+      }
+
+      const rows = await db
+        .select()
+        .from(internalAgentConversations)
+        .where(and(...conditions))
+        .orderBy(desc(internalAgentConversations.updatedAt));
+
+      res.json({ conversations: rows });
+    },
+  );
+
+  // ── Conversations: create new ────────────────────────────────────────
+  router.post(
+    "/companies/:companyId/internal-agent/conversations",
+    validate(z.object({ title: z.string().max(200).optional() })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      const [conv] = await db
+        .insert(internalAgentConversations)
+        .values({
+          companyId,
+          userId: actor.actorId,
+          status: "active",
+          title: req.body.title ?? null,
+        })
+        .returning();
+
+      res.status(201).json(conv);
+    },
+  );
+
+  // ── Conversations: archive ───────────────────────────────────────────
+  router.patch(
+    "/companies/:companyId/internal-agent/conversations/:convId/archive",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      // Look up the conversation and verify it belongs to this company.
+      const [existing] = await db
+        .select()
+        .from(internalAgentConversations)
+        .where(
+          and(
+            eq(internalAgentConversations.id, convId),
+            eq(internalAgentConversations.companyId, companyId),
+          ),
+        );
+
+      if (!existing) {
+        return res.status(404).json({ error: "Conversation not found" });
+      }
+
+      // Only founders (or the conversation's owner) may archive.
+      const isLocalImplicit =
+        req.actor.type === "board" && req.actor.source === "local_implicit";
+      const isInstanceAdmin =
+        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
+
+      let isFounder: boolean;
+      if (isLocalImplicit || isInstanceAdmin) {
+        isFounder = true;
+      } else {
+        const role = await permissionService(db).getEffectiveRole(
+          companyId,
+          actor.actorId,
+        );
+        isFounder = role === "founder";
+      }
+
+      if (existing.userId !== actor.actorId && !isFounder) {
+        return res.status(403).json({ error: "Cannot archive another user's conversation" });
+      }
+
+      const [updated] = await db
+        .update(internalAgentConversations)
+        .set({ archivedAt: new Date(), status: "archived" })
+        .where(eq(internalAgentConversations.id, convId))
+        .returning();
+
+      res.json(updated);
+    },
+  );
+
   return router;
 }
