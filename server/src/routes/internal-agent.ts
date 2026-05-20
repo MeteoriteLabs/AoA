@@ -20,6 +20,23 @@ import { agentLoopService } from "../services/internal-agent/agent-loop.js";
 import { permissionService } from "../services/permissions.js";
 import type { UserRole } from "@armyofagents/shared";
 
+// ── Pending Confirmation Store ───────────────────────────────────────────────
+// In-memory Map: confirmId → pending tool execution.
+// Populated when Commander emits a ⚡CONFIRM:...⚡ marker and cleared when the
+// user clicks Confirm or Cancel in the UI. Scoped to the server process;
+// cleared on restart (acceptable — pending confirmations are ephemeral).
+
+interface PendingConfirmation {
+  toolName: string;
+  params: unknown;
+  companyId: string;
+  userId: string;
+  userRole: string;
+  enabledCapabilities: string[];
+}
+
+const pendingConfirmations = new Map<string, PendingConfirmation>();
+
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
 const chatMessageSchema = z.object({
@@ -170,8 +187,16 @@ export function internalAgentRoutes(db: Db) {
               );
               break;
             case "action_confirmation": {
-              // parseCliOutput now emits these when the CLI prints a ⚡CONFIRM:...⚡ marker.
-              // The branch forwards the confirmation event to the SSE stream for UI handling.
+              const confirmId = chunk.runId;
+              // Store the pending execution so /confirm can re-execute directly.
+              pendingConfirmations.set(confirmId, {
+                toolName: chunk.toolName,
+                params: chunk.params,
+                companyId,
+                userId: actor.actorId,
+                userRole,
+                enabledCapabilities,
+              });
               const paramsSummary =
                 chunk.params &&
                 typeof chunk.params === "object" &&
@@ -182,7 +207,7 @@ export function internalAgentRoutes(db: Db) {
                   : "";
               res.write(
                 `event: action_confirm\ndata: ${JSON.stringify({
-                  confirmId: chunk.runId,
+                  confirmId,
                   action: chunk.toolName,
                   description: `${chunk.toolName}${paramsSummary}`,
                 })}\n\n`,
