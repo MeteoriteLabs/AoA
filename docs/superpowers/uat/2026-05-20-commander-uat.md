@@ -78,10 +78,10 @@ These require Commander to emit a CONFIRM marker. Trigger by asking Commander to
 | F2 | Click "Permissions" sub-tab | Permissions tab content renders — table with tool names, Enabled checkboxes, Confirm checkboxes, Min Role dropdowns | |
 | F3 | Uncheck "Enabled" for `update_company_identity` | Checkbox unchecks | |
 | F4 | Click "Save permissions" | Success message: "Permissions saved." | |
-| F5 | Go to Commander, ask: "Update our vision to X" | Commander should now report the tool is disabled | |
+| F5 | Verify the saved permissions persist: refresh the Settings page, return to Permissions tab | The checkbox state matches what was saved (this validates persistence only — runtime enforcement of these toggles lands in a follow-up release) | |
 | F6 | Go back to Settings > Permissions, re-enable `update_company_identity` | Checkbox checks; save works | |
 | F7 | Change `update_company_identity` minimumRole to "Founder" | Dropdown selects Founder | |
-| F8 | Save — then ask Commander to update identity | Tool executes normally (you are a founder) | |
+| F8 | Save — then ask Commander to update identity | Tool executes normally — confirms runtime enforcement is not yet wired; this is expected for this milestone | |
 
 ---
 

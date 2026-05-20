@@ -455,6 +455,13 @@ export function CommanderSection() {
               </div>
             ) : (
               <>
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3">
+                  <p className="text-xs text-amber-900">
+                    <strong>Note:</strong> Per-tool permissions are stored but not yet enforced at runtime.
+                    Saved settings will be applied once enforcement lands in a follow-up release.
+                    For now this tab persists your preferences only.
+                  </p>
+                </div>
                 <p className="text-xs text-muted-foreground mb-3">
                   Control which tools Commander can use and what level of access each requires.
                 </p>

@@ -386,7 +386,7 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
   const sendConfirmMessage = useCallback(
     (
       messageId: string,
-      confirmId: string, // TODO: wire to internalAgentApi.confirmAction(companyId, confirmId, approved) when /confirm endpoint is implemented
+      confirmId: string, // Conversational fallback: re-sends as a chat message so Commander can re-evaluate. Direct /confirm API wiring is tracked as a follow-up.
       action: string,
       approved: boolean,
     ) => {

@@ -213,7 +213,10 @@ export function internalAgentRoutes(db: Db) {
                 userId: actor.actorId,
                 userRole,
                 enabledCapabilities,
-                actorType: "commander",
+                // Derive from the calling actor — Commander chat is the only path that hits
+                // requiresConfirmation today, but typing this properly future-proofs against
+                // other actors invoking confirmed tools.
+                actorType: actor.actorType ?? "commander",
               });
               const paramsSummary =
                 chunk.params &&
