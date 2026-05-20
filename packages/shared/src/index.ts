@@ -70,6 +70,8 @@ export {
   type MemoryScopeFilter,
   type MemoryWriteScope,
   USER_ROLES,
+  ROLE_RANK,
+  roleAtLeast,
   PERMISSION_KEYS,
   ARTIFACT_TYPES,
   ARTIFACT_STATUSES,

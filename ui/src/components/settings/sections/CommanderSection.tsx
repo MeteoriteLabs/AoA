@@ -480,6 +480,7 @@ export function CommanderSection() {
                                 checked={perm.enabled}
                                 onChange={(e) => handlePermEdit(toolName, "enabled", e.target.checked)}
                                 className="rounded"
+                                aria-label={`Enable Commander to use ${toolName}`}
                               />
                             </td>
                             <td className="px-3 py-2 text-center">
@@ -488,6 +489,7 @@ export function CommanderSection() {
                                 checked={perm.requireConfirmation}
                                 onChange={(e) => handlePermEdit(toolName, "requireConfirmation", e.target.checked)}
                                 className="rounded"
+                                aria-label={`Require confirmation for ${toolName}`}
                               />
                             </td>
                             <td className="px-3 py-2">
@@ -495,6 +497,7 @@ export function CommanderSection() {
                                 value={perm.minimumRole}
                                 onChange={(e) => handlePermEdit(toolName, "minimumRole", e.target.value)}
                                 className="text-xs border border-border rounded px-1.5 py-0.5 bg-background"
+                                aria-label={`Minimum role for ${toolName}`}
                               >
                                 <option value="team_member">Member</option>
                                 <option value="team_lead">Lead</option>

@@ -4,20 +4,7 @@
 // Spawned by CLI tools via MCP config. Exposes all internal agent tools.
 
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
-
-// ── Role Hierarchy ───────────────────────────────────────────────────────────
-
-// Role hierarchy: founder > team_lead > team_member.
-// Unknown roles are treated as 0 (below team_member) so they fail any role check.
-const ROLE_LEVELS: Record<string, number> = {
-  founder: 3,
-  team_lead: 2,
-  team_member: 1,
-};
-
-function roleAtLeast(userRole: string, required: string): boolean {
-  return (ROLE_LEVELS[userRole] ?? 0) >= (ROLE_LEVELS[required] ?? 0);
-}
+import { roleAtLeast } from "@armyofagents/shared";
 
 // ── Tool Call Handler (pure, testable) ──────────────────────────────────────
 
@@ -45,7 +32,7 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
       };
     }
 
-    if (tool.requiredRole && !roleAtLeast(deps.toolContext.userRole, tool.requiredRole)) {
+    if (tool.requiredRole !== undefined && !roleAtLeast(deps.toolContext.userRole, tool.requiredRole)) {
       return {
         content: [
           {

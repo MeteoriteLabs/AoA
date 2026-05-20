@@ -4,13 +4,8 @@
 // See finding C13 in docs/superpowers/specs/2026-05-05-sprint-1-security-fixes-design.md.
 
 import type { AgentCapability, UserRole } from "@armyofagents/shared";
+import { ROLE_RANK } from "@armyofagents/shared";
 import type { AgentTool, ToolCategory } from "./types.js";
-
-const ROLE_RANK: Record<UserRole, number> = {
-  team_member: 0,
-  team_lead: 1,
-  founder: 2,
-};
 
 /**
  * Maps capabilities (as stored in internal_agent_config.enabledCapabilities)

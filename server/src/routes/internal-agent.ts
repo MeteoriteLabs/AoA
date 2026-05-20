@@ -39,6 +39,7 @@ interface PendingConfirmation {
   userId: string;
   userRole: UserRole;
   enabledCapabilities: string[];
+  actorType?: string;
 }
 
 const pendingConfirmations = new Map<string, PendingConfirmation>();
@@ -212,6 +213,7 @@ export function internalAgentRoutes(db: Db) {
                 userId: actor.actorId,
                 userRole,
                 enabledCapabilities,
+                actorType: "commander",
               });
               const paramsSummary =
                 chunk.params &&
@@ -339,6 +341,7 @@ export function internalAgentRoutes(db: Db) {
         enabledCapabilities: pending.enabledCapabilities,
         agentKind: undefined,
         toolAllowlist: [] as string[],
+        actorType: pending.actorType,
         db,
         services,
       };

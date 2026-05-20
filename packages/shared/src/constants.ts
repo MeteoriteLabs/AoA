@@ -496,6 +496,18 @@ export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 export const USER_ROLES = ["founder", "team_lead", "team_member"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
+// Single source of truth for role rank comparisons.
+// founder > team_lead > team_member. Unknown roles map to 0 (below team_member).
+export const ROLE_RANK: Record<string, number> = {
+  founder: 3,
+  team_lead: 2,
+  team_member: 1,
+};
+
+export function roleAtLeast(userRole: string, required: string): boolean {
+  return (ROLE_RANK[userRole] ?? 0) >= (ROLE_RANK[required] ?? 0);
+}
+
 // ── V2: Artifacts ──────────────────────────────────────────────────────
 
 export const ARTIFACT_TYPES = [
