@@ -129,7 +129,13 @@ export function AgentPanelContent() {
     if (streaming) return;
     if (!conversation) return;
     if (conversation.messages) {
-      setMessages(conversation.messages.map(serverToLocal));
+      setMessages((prev) => {
+        const localById = new Map(prev.map((m) => [m.id, m]));
+        return conversation.messages.map((m) => ({
+          ...serverToLocal(m),
+          actionConfirm: localById.get(m.id)?.actionConfirm,
+        }));
+      });
     }
     if (conversation.conversation?.id) {
       setCurrentConversationId(conversation.conversation.id);
@@ -313,7 +319,12 @@ export function AgentPanelContent() {
   }
 
   const sendConfirmMessage = useCallback(
-    (messageId: string, confirmId: string, action: string, approved: boolean) => {
+    (
+      messageId: string,
+      confirmId: string, // TODO: wire to internalAgentApi.confirmAction(companyId, confirmId, approved) when /confirm endpoint is implemented
+      action: string,
+      approved: boolean,
+    ) => {
       // Optimistically update the UI status
       setMessages((prev) =>
         prev.map((m) =>
