@@ -149,8 +149,25 @@ export function toolToMcpFormat(tool: AgentTool) {
 
 // ── Output Parsing ────────────────────────────────────────────────────────────
 
-// Initial implementation: all stdout is treated as text content.
+const CONFIRM_RE = /⚡CONFIRM:(.*?)⚡/;
+
 export function parseCliOutput(line: string): AgentStreamChunk[] {
+  const match = line.match(CONFIRM_RE);
+  if (match) {
+    try {
+      const payload = JSON.parse(match[1]) as { toolName: string; params: unknown };
+      return [
+        {
+          type: "action_confirmation",
+          toolName: payload.toolName,
+          params: payload.params,
+          runId: crypto.randomUUID(),
+        },
+      ];
+    } catch {
+      // Malformed JSON — fall through to plain text
+    }
+  }
   return [{ type: "text", delta: line }];
 }
 
