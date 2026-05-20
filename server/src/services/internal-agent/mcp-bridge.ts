@@ -31,6 +31,14 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
       };
     }
 
+    if (tool.requiresConfirmation) {
+      const marker = `⚡CONFIRM:${JSON.stringify({ toolName: name, params: args })}⚡ This action requires your approval before I can proceed. Please tell me to confirm or cancel, or modify the parameters.`;
+      return {
+        content: [{ type: "text", text: marker }],
+        isError: false,
+      };
+    }
+
     try {
       const result = await deps.executeTool(tool, args, deps.toolContext);
       return {
