@@ -33,6 +33,7 @@ const mockEwCreate = vi.fn();
 vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => ({
     create: mockEwCreate,
+    createTaskOwnedIdempotent: mockEwCreate,
   }),
 }));
 

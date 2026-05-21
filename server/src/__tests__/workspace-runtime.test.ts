@@ -117,6 +117,65 @@ function createWorkspaceOperationRecorderDouble() {
   return { recorder, operations };
 }
 
+function createConcurrentWorktreeCreationRecorder(input: {
+  repoRoot: string;
+  branchName: string;
+  worktreePath: string;
+}) {
+  let injected = false;
+  const operations: string[] = [];
+
+  const recorder: WorkspaceOperationRecorder = {
+    attachExecutionWorkspaceId: async () => undefined,
+    recordOperation: async (operationInput) => {
+      operations.push(operationInput.command ?? "");
+      if (
+        !injected &&
+        operationInput.phase === "worktree_prepare" &&
+        operationInput.command?.includes("git worktree add") &&
+        operationInput.command.includes(input.branchName)
+      ) {
+        injected = true;
+        await runGit(input.repoRoot, [
+          "worktree",
+          "add",
+          "-b",
+          input.branchName,
+          input.worktreePath,
+          "HEAD",
+        ]);
+      }
+
+      const result = await operationInput.run();
+      return {
+        id: `race-op-${operations.length}`,
+        companyId: "company-1",
+        executionWorkspaceId: null,
+        heartbeatRunId: "run-1",
+        phase: operationInput.phase,
+        command: operationInput.command ?? null,
+        cwd: operationInput.cwd ?? null,
+        status: (result.status ?? "succeeded") as WorkspaceOperation["status"],
+        exitCode: result.exitCode ?? null,
+        logStore: "local_file",
+        logRef: `race-op-${operations.length}.ndjson`,
+        logBytes: 0,
+        logSha256: null,
+        logCompressed: false,
+        stdoutExcerpt: result.stdout ?? null,
+        stderrExcerpt: result.stderr ?? null,
+        metadata: operationInput.metadata ?? null,
+        startedAt: new Date(),
+        finishedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    },
+  };
+
+  return { recorder, operations };
+}
+
 afterEach(async () => {
   await Promise.all(
     Array.from(leasedRunIds).map(async (runId) => {
@@ -198,6 +257,55 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.created).toBe(false);
     expect(second.cwd).toBe(first.cwd);
     expect(second.branchName).toBe(first.branchName);
+  });
+
+  it("reuses a worktree created concurrently between path check and git add", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-451-concurrent-worktree-race";
+    const worktreePath = path.join(repoRoot, ".aoa", "worktrees", branchName);
+    const { recorder, operations } = createConcurrentWorktreeCreationRecorder({
+      repoRoot,
+      branchName,
+      worktreePath,
+    });
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-451",
+        title: "Concurrent worktree race",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    expect(workspace.created).toBe(false);
+    expect(workspace.branchName).toBe(branchName);
+    expect(path.resolve(workspace.cwd)).toBe(path.resolve(worktreePath));
+    expect(operations.filter((command) => command.includes("git worktree add"))).toHaveLength(1);
+
+    const currentBranch = (
+      await execFileAsync("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: workspace.cwd })
+    ).stdout.trim();
+    expect(currentBranch).toBe(branchName);
   });
 
   // Skipped on Windows: provision script is bash with `#!/usr/bin/env bash`

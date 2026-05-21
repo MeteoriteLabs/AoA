@@ -26,7 +26,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { GitBranchInfo, LiveEvent } from "@armyofagents/shared";
 import { projectGitApi } from "@/api/project-git";
 import { cn } from "@/lib/utils";
-import { GitGraphCanvas } from "./GitGraphCanvas";
+import { GitGraphCanvas, type GitGraphCanvasHandle } from "./GitGraphCanvas";
 import { GitHoverCard, type HoveredNode } from "./GitHoverCard";
 import { GitPipelineView } from "./GitPipelineView";
 
@@ -119,9 +119,34 @@ export function GitCommandCentre({
   const [hoveredNode, setHoveredNode] = useState<HoveredNode | null>(null);
   const [hoverPosition, setHoverPosition] = useState({ x: 0, y: 0 });
 
+  // Ref to the canvas imperative handle (zoom controls)
+  const canvasHandleRef = useRef<GitGraphCanvasHandle>(null);
+
+  // Tooltip dismiss timer — 200ms grace period so the user can move from the
+  // canvas into the hover card without the card vanishing mid-flight.
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearDismissTimer = useCallback(() => {
+    if (dismissTimerRef.current !== null) {
+      clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleDismiss = useCallback(() => {
+    clearDismissTimer();
+    dismissTimerRef.current = setTimeout(() => {
+      setHoveredNode(null);
+      dismissTimerRef.current = null;
+    }, 200);
+  }, [clearDismissTimer]);
+
+  // Cleanup timer on unmount
+  useEffect(() => () => clearDismissTimer(), [clearDismissTimer]);
+
   // ── Data fetching ────────────────────────────────────────────────────────
 
-  const { data: graphData, refetch: refetchGraph } = useQuery({
+  const { data: graphData, refetch: refetchGraph, isError: graphError, isPending: graphPending } = useQuery({
     queryKey: ["git-graph", companyId, projectId],
     queryFn: () => projectGitApi.getGraph(companyId, projectId),
     refetchInterval: 30_000,
@@ -201,11 +226,29 @@ export function GitCommandCentre({
 
   const handleHover = useCallback(
     (node: HoveredNode | null, position: { x: number; y: number }) => {
-      setHoveredNode(node);
-      setHoverPosition(position);
+      if (node) {
+        // New node in range — cancel any pending dismiss and show immediately
+        clearDismissTimer();
+        setHoveredNode(node);
+        setHoverPosition(position);
+      } else {
+        // Cursor left a hit target — schedule dismiss with grace period so the
+        // user can move into the hover card before it disappears.
+        scheduleDismiss();
+      }
     },
-    [],
+    [clearDismissTimer, scheduleDismiss],
   );
+
+  const handleCardMouseEnter = useCallback(() => {
+    // Cursor entered the card — cancel dismiss so card stays visible
+    clearDismissTimer();
+  }, [clearDismissTimer]);
+
+  const handleCardMouseLeave = useCallback(() => {
+    // Cursor left the card — dismiss after grace period
+    scheduleDismiss();
+  }, [scheduleDismiss]);
 
   const handleClick = useCallback(
     (node: HoveredNode) => {
@@ -219,6 +262,19 @@ export function GitCommandCentre({
   // ── Render ───────────────────────────────────────────────────────────────
 
   if (!graphData) {
+    if (graphError) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full gap-2">
+          <p className="text-sm text-red-400">Failed to load git graph</p>
+          <button
+            className="text-xs text-muted-foreground hover:text-foreground underline"
+            onClick={() => refetchGraph()}
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-sm text-muted-foreground animate-pulse">Loading git graph…</div>
@@ -237,7 +293,7 @@ export function GitCommandCentre({
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 shrink-0">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-white/10 shrink-0">
         {/* View toggle */}
         <div className="flex items-center gap-1 bg-white/5 rounded p-0.5">
           {(["map", "pipeline"] as ViewMode[]).map((mode) => (
@@ -260,26 +316,34 @@ export function GitCommandCentre({
         <div className="flex items-center gap-1">
           {(
             [
-              { key: "all", label: "All" },
-              { key: "running", label: "Running" },
-              { key: "blocked", label: "Blocked" },
-              { key: "prs", label: "PRs" },
-            ] as Array<{ key: FilterMode; label: string }>
-          ).map(({ key, label }) => (
+              { key: "running", label: "Running", dot: "#4FB67E" },
+              { key: "blocked", label: "Blocked", dot: "#ef4444" },
+              { key: "prs",     label: "PRs",     dot: null },
+            ] as Array<{ key: FilterMode; label: string; dot: string | null }>
+          ).map(({ key, label, dot }) => (
             <button
               key={key}
               className={cn(
-                "px-2 py-0.5 rounded text-[11px] transition-colors",
+                "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] border transition-colors",
                 filter === key
-                  ? "bg-white/10 text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
+                  ? "bg-white/10 border-white/20 text-foreground"
+                  : "bg-transparent border-[#2e2c2a] text-[#7E8AA8] hover:text-foreground",
               )}
-              onClick={() => setFilter(key)}
+              onClick={() => setFilter(filter === key ? "all" : key)}
             >
+              {dot && (
+                <span
+                  className="w-1.5 h-1.5 rounded-full inline-block shrink-0"
+                  style={{ background: dot }}
+                />
+              )}
               {label}
             </button>
           ))}
         </div>
+
+        {/* Spacer */}
+        <div className="flex-1" />
 
         {/* PAT notice */}
         {!graphData.hasGitHubPat && (
@@ -287,13 +351,23 @@ export function GitCommandCentre({
             Connect GitHub in Settings → Integrations to see PR & CI status
           </span>
         )}
+
+        {/* Refresh */}
+        <button
+          className="px-2 py-1 rounded text-xs text-muted-foreground hover:text-foreground transition-colors bg-white/5"
+          title="Refresh"
+          onClick={() => { refetchGraph(); refetchEnrich(); }}
+        >
+          ↺
+        </button>
       </div>
 
       {/* Main content area */}
-      <div className="flex-1 relative overflow-hidden">
+      <div className="flex-1 relative overflow-hidden bg-[#0a0a0a]">
         {viewMode === "map" ? (
           <>
             <GitGraphCanvas
+              ref={canvasHandleRef}
               branches={branches}
               graph={graphData.graph}
               filter={filter}
@@ -304,10 +378,35 @@ export function GitCommandCentre({
               node={hoveredNode}
               position={hoverPosition}
               onOpenTask={onSelectIssue}
+              onMouseEnter={handleCardMouseEnter}
+              onMouseLeave={handleCardMouseLeave}
             />
+            {/* Zoom controls — bottom-right corner of canvas */}
+            <div className="absolute bottom-3 right-3 flex flex-col gap-0.5 z-10">
+              {(
+                [
+                  { label: "+", title: "Zoom in", fn: "zoomIn" },
+                  { label: "−", title: "Zoom out", fn: "zoomOut" },
+                  { label: "⊡", title: "Reset zoom", fn: "resetZoom" },
+                ] as Array<{ label: string; title: string; fn: keyof GitGraphCanvasHandle }>
+              ).map(({ label, title, fn }) => (
+                <button
+                  key={fn}
+                  className="w-7 h-7 bg-[#1e1d1c] border border-[#2e2c2a] rounded text-[#7E8AA8] hover:text-foreground text-sm flex items-center justify-center transition-colors"
+                  title={title}
+                  onClick={() => canvasHandleRef.current?.[fn]()}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </>
         ) : (
-          <GitPipelineView branches={branches} onOpenIssue={onSelectIssue} />
+          <GitPipelineView
+            branches={branches}
+            onOpenIssue={onSelectIssue}
+            onSwitchToMap={() => setViewMode("map")}
+          />
         )}
       </div>
     </div>

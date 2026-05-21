@@ -2,7 +2,8 @@
  * GitPipelineView — tabular "pipeline" view for the Git Command Centre.
  *
  * One row per branch. Linked-task branches show full detail.
- * Unlinked git-only branches collapse to a secondary strip.
+ * Unlinked git-only branches collapse to a secondary strip with a
+ * "View all in Map →" shortcut.
  * Done rows are dimmed and hidden behind a toggle.
  */
 
@@ -221,9 +222,11 @@ function BranchRow({
 export function GitPipelineView({
   branches,
   onOpenIssue,
+  onSwitchToMap,
 }: {
   branches: GitBranchInfo[];
   onOpenIssue?: (issueId: string) => void;
+  onSwitchToMap?: () => void;
 }) {
   const [showDone, setShowDone] = useState(false);
   const [showUnlinked, setShowUnlinked] = useState(false);
@@ -238,69 +241,112 @@ export function GitPipelineView({
     (b) => b.linkedIssueStatus === "done" || b.linkedIssueStatus === "cancelled",
   );
 
+  // Summary counts
+  const runningCount = branches.filter((b) => b.linkedIssueStatus === "in_progress").length;
+  const reviewCount = branches.filter((b) => b.linkedIssueStatus === "in_review").length;
+  const blockedCount = branches.filter((b) => b.linkedIssueStatus === "blocked").length;
+
   return (
-    <div className="overflow-auto h-full">
-      <table className="w-full border-collapse">
-        <thead>
-          <tr className="border-b border-white/10 text-[11px] text-muted-foreground uppercase tracking-wider">
-            <th className="w-1" />
-            <th className="px-3 py-2 text-left font-normal">ID</th>
-            <th className="px-3 py-2 text-left font-normal">Task</th>
-            <th className="px-3 py-2 text-left font-normal">Branch</th>
-            <th className="px-3 py-2 text-left font-normal">Status</th>
-            <th className="px-3 py-2 text-left font-normal">Pipeline</th>
-            <th className="px-3 py-2 text-left font-normal">±</th>
-            <th className="px-3 py-2 text-left font-normal">PR</th>
-            <th className="px-3 py-2 text-center font-normal">CI</th>
-            <th className="px-3 py-2" />
-          </tr>
-        </thead>
-        <tbody>
-          {active.map((b) => (
-            <BranchRow key={b.name} branch={b} dimmed={false} onOpenIssue={onOpenIssue} />
-          ))}
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Summary header */}
+      <div className="px-4 py-2 border-b border-white/10 flex items-center gap-3 text-[11px] text-muted-foreground shrink-0">
+        <span>
+          {branches.length} {branches.length === 1 ? "branch" : "branches"}
+        </span>
+        {runningCount > 0 && (
+          <span className="flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#4FB67E] inline-block" />
+            {runningCount} running
+          </span>
+        )}
+        {reviewCount > 0 && (
+          <span className="flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#D9A938] inline-block" />
+            {reviewCount} in review
+          </span>
+        )}
+        {blockedCount > 0 && (
+          <span className="flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#ef4444] inline-block" />
+            {blockedCount} blocked
+          </span>
+        )}
+      </div>
 
-          {/* Done rows toggle */}
-          {done.length > 0 && (
-            <>
-              <tr>
-                <td colSpan={10} className="px-3 py-1.5">
-                  <button
-                    className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={() => setShowDone((v) => !v)}
-                  >
-                    {showDone ? "▾" : "▸"} Show done ({done.length})
-                  </button>
-                </td>
-              </tr>
-              {showDone &&
-                done.map((b) => (
-                  <BranchRow key={b.name} branch={b} dimmed onOpenIssue={onOpenIssue} />
-                ))}
-            </>
-          )}
+      {/* Table */}
+      <div className="overflow-auto flex-1">
+        <table className="w-full border-collapse">
+          <thead>
+            <tr className="border-b border-white/10 text-[11px] text-muted-foreground uppercase tracking-wider">
+              <th className="w-1" />
+              <th className="px-3 py-2 text-left font-normal">ID</th>
+              <th className="px-3 py-2 text-left font-normal">Task</th>
+              <th className="px-3 py-2 text-left font-normal">Branch</th>
+              <th className="px-3 py-2 text-left font-normal">Status</th>
+              <th className="px-3 py-2 text-left font-normal">Pipeline</th>
+              <th className="px-3 py-2 text-left font-normal">±</th>
+              <th className="px-3 py-2 text-left font-normal">PR</th>
+              <th className="px-3 py-2 text-center font-normal">CI</th>
+              <th className="px-3 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {active.map((b) => (
+              <BranchRow key={b.name} branch={b} dimmed={false} onOpenIssue={onOpenIssue} />
+            ))}
 
-          {/* Unlinked git-only branches */}
-          {unlinked.length > 0 && (
-            <>
-              <tr>
-                <td colSpan={10} className="px-3 py-1.5 border-t border-white/10">
-                  <button
-                    className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={() => setShowUnlinked((v) => !v)}
-                  >
-                    {showUnlinked ? "▾" : "▸"} Git-only branches ({unlinked.length})
-                  </button>
-                </td>
-              </tr>
-              {showUnlinked &&
-                unlinked.map((b) => (
-                  <BranchRow key={b.name} branch={b} dimmed />
-                ))}
-            </>
-          )}
-        </tbody>
-      </table>
+            {/* Done rows toggle */}
+            {done.length > 0 && (
+              <>
+                <tr>
+                  <td colSpan={10} className="px-3 py-1.5">
+                    <button
+                      className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => setShowDone((v) => !v)}
+                    >
+                      {showDone ? "▾" : "▸"} Show done ({done.length})
+                    </button>
+                  </td>
+                </tr>
+                {showDone &&
+                  done.map((b) => (
+                    <BranchRow key={b.name} branch={b} dimmed onOpenIssue={onOpenIssue} />
+                  ))}
+              </>
+            )}
+
+            {/* Unlinked git-only branches */}
+            {unlinked.length > 0 && (
+              <>
+                <tr>
+                  <td colSpan={10} className="px-3 py-1.5 border-t border-white/10">
+                    <div className="flex items-center justify-between">
+                      <button
+                        className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                        onClick={() => setShowUnlinked((v) => !v)}
+                      >
+                        {showUnlinked ? "▾" : "▸"} Git-only branches ({unlinked.length})
+                      </button>
+                      {onSwitchToMap && (
+                        <button
+                          className="text-[11px] text-[#6470DC] hover:text-[#8490e8] transition-colors"
+                          onClick={onSwitchToMap}
+                        >
+                          View all in Map →
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+                {showUnlinked &&
+                  unlinked.map((b) => (
+                    <BranchRow key={b.name} branch={b} dimmed />
+                  ))}
+              </>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

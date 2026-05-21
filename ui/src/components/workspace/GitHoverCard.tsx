@@ -42,6 +42,10 @@ interface GitHoverCardProps {
   node: HoveredNode | null;
   position: { x: number; y: number };
   onOpenTask?: (issueId: string) => void;
+  /** Called when the cursor enters the card — used to cancel dismiss timer. */
+  onMouseEnter?: () => void;
+  /** Called when the cursor leaves the card — used to restart dismiss timer. */
+  onMouseLeave?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +90,10 @@ function deriveStage(branch: GitBranchInfo): GitPipelineStage {
   if (branch.pr?.reviewState === "merged") return "merged";
   if (branch.pr) return "pr_open";
   if (branch.isRemote && branch.aheadCount === 0) return "pushed";
-  if (branch.aheadCount > 0 && !branch.isRemote) return "committed";
+  // Fixed: remove `&& !branch.isRemote` — branches that are both local AND remote
+  // (the normal case for feature branches with a remote tracking ref) have isRemote=true,
+  // so the old condition was always false for them, causing "dirty" to show incorrectly.
+  if (branch.aheadCount > 0) return "committed";
   return "dirty";
 }
 
@@ -351,10 +358,10 @@ function TagCard({ name, sha, date }: { name: string; sha: string; date: string 
 // Main component
 // ---------------------------------------------------------------------------
 
-export function GitHoverCard({ node, position, onOpenTask }: GitHoverCardProps) {
+export function GitHoverCard({ node, position, onOpenTask, onMouseEnter, onMouseLeave }: GitHoverCardProps) {
   if (!node) return null;
 
-  // Clamp to viewport (Issue 7 fix)
+  // Clamp to viewport
   const clampedX = Math.min(position.x, window.innerWidth - CARD_WIDTH - 12);
   const clampedY = Math.min(position.y + 12, window.innerHeight - CARD_HEIGHT_APPROX - 12);
 
@@ -366,10 +373,10 @@ export function GitHoverCard({ node, position, onOpenTask }: GitHoverCardProps) 
       <div
         className={cn(
           "rounded-lg border border-white/10 bg-[#1a1917] shadow-xl shadow-black/40",
-          "p-3 text-foreground",
-          // Re-enable pointer events only for interactive cards (task/commit with links)
-          node.type === "task" || node.type === "plain_tip" ? "pointer-events-auto" : "",
+          "p-3 text-foreground pointer-events-auto",
         )}
+        onMouseEnter={onMouseEnter}
+        onMouseLeave={onMouseLeave}
       >
         {node.type === "task" && (
           <TaskCard branch={node.branch} onOpenTask={onOpenTask} />

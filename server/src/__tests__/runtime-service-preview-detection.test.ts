@@ -2,6 +2,8 @@ import http from "node:http";
 import { describe, expect, it } from "vitest";
 import {
   buildPreviewDetectionText,
+  containsExplicitPreviewUrlMarker,
+  createLivePreviewDetectionScheduler,
   detectPreviewRuntimeServiceReports,
   extractLoopbackPreviewUrls,
   shouldDetectAoaAppPreviews,
@@ -153,6 +155,95 @@ describe("detectPreviewRuntimeServiceReports", () => {
 
       expect(reports).toEqual([]);
     });
+  });
+});
+
+describe("live preview stream detection", () => {
+  it("detects explicit preview markers in streamed chunks before adapter completion", async () => {
+    const calls: Array<{ text: string; source: "stream" | "final" }> = [];
+    const scheduler = createLivePreviewDetectionScheduler({
+      onDetect: async (text, source) => {
+        calls.push({ text, source });
+      },
+    });
+
+    scheduler.observeChunk("starting server\n");
+    await scheduler.flush();
+    expect(calls).toEqual([]);
+
+    scheduler.observeChunk("AOA_PREVIEW_URL=http://127.0.0.1:61234/\n");
+    await scheduler.flush();
+
+    expect(calls).toEqual([
+      {
+        text: expect.stringContaining("AOA_PREVIEW_URL=http://127.0.0.1:61234/"),
+        source: "stream",
+      },
+    ]);
+  });
+
+  it("does not schedule live detection for ordinary localhost mentions", async () => {
+    const calls: Array<{ text: string; source: "stream" | "final" }> = [];
+    const scheduler = createLivePreviewDetectionScheduler({
+      onDetect: async (text, source) => {
+        calls.push({ text, source });
+      },
+    });
+
+    scheduler.observeChunk("AoA is running at http://127.0.0.1:3100/\n");
+    await scheduler.flush();
+
+    expect(calls).toEqual([]);
+  });
+
+  it("chains live detection work without blocking log callers", async () => {
+    let releaseFirst!: () => void;
+    const first = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const calls: string[] = [];
+    const scheduler = createLivePreviewDetectionScheduler({
+      minDetectionIntervalMs: 0,
+      onDetect: async (text) => {
+        calls.push(text);
+        if (calls.length === 1) await first;
+      },
+    });
+
+    scheduler.observeChunk("AOA_PREVIEW_URL=http://127.0.0.1:61235/\n");
+    scheduler.observeChunk("AOA_PREVIEW_URL=http://127.0.0.1:61236/\n");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toHaveLength(1);
+    releaseFirst();
+    await scheduler.flush();
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toContain("61236");
+  });
+
+  it("throttles repeated probes while an explicit marker remains in the rolling buffer", async () => {
+    const calls: string[] = [];
+    const scheduler = createLivePreviewDetectionScheduler({
+      minDetectionIntervalMs: 60_000,
+      onDetect: async (text) => {
+        calls.push(text);
+      },
+    });
+
+    scheduler.observeChunk("AOA_PREVIEW_URL=http://127.0.0.1:61237/\n");
+    await scheduler.flush();
+    scheduler.observeChunk("ordinary follow-up log line\n");
+    scheduler.observeChunk("another ordinary follow-up log line\n");
+    await scheduler.flush();
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it("recognizes both supported explicit marker spellings", () => {
+    expect(containsExplicitPreviewUrlMarker("AOA_PREVIEW_URL=http://127.0.0.1:5000/")).toBe(true);
+    expect(containsExplicitPreviewUrlMarker("aoaPreviewUrl=http://127.0.0.1:5000/")).toBe(true);
+    expect(containsExplicitPreviewUrlMarker("http://127.0.0.1:5000/")).toBe(false);
   });
 });
 

@@ -5,6 +5,7 @@ import type {
 
 const EXPLICIT_PREVIEW_URL_PATTERN =
   /\b(?:AOA_PREVIEW_URL|aoaPreviewUrl)\s*[:=]\s*(https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/[^\s\\"'<>)]*)?)/gi;
+const EXPLICIT_PREVIEW_MARKER_PATTERN = /\b(?:AOA_PREVIEW_URL|aoaPreviewUrl)\s*[:=]/i;
 
 function parseUrl(value: string): URL | null {
   try {
@@ -50,6 +51,48 @@ export function extractLoopbackPreviewUrls(
   }
 
   return urls;
+}
+
+export function containsExplicitPreviewUrlMarker(text: string): boolean {
+  return EXPLICIT_PREVIEW_MARKER_PATTERN.test(text);
+}
+
+export function createLivePreviewDetectionScheduler(opts: {
+  onDetect: (text: string, source: "stream") => Promise<unknown>;
+  maxBufferChars?: number;
+  minDetectionIntervalMs?: number;
+  onError?: (err: unknown) => void;
+}) {
+  const maxBufferChars = opts.maxBufferChars ?? 64_000;
+  const minDetectionIntervalMs = opts.minDetectionIntervalMs ?? 2_000;
+  let buffer = "";
+  let inFlight: Promise<void> = Promise.resolve();
+  let lastScheduledAt = 0;
+
+  const schedule = (text: string) => {
+    lastScheduledAt = Date.now();
+    inFlight = inFlight
+      .catch(() => undefined)
+      .then(() => opts.onDetect(text, "stream"))
+      .then(() => undefined)
+      .catch((err: unknown) => {
+        opts.onError?.(err);
+      });
+  };
+
+  return {
+    observeChunk(chunk: string) {
+      buffer = (buffer + chunk).slice(-maxBufferChars);
+      const markerInChunk = containsExplicitPreviewUrlMarker(chunk);
+      if (!markerInChunk && !containsExplicitPreviewUrlMarker(buffer)) return;
+      const intervalElapsed = Date.now() - lastScheduledAt >= minDetectionIntervalMs;
+      if (!markerInChunk && !intervalElapsed) return;
+      schedule(buffer);
+    },
+    flush() {
+      return inFlight;
+    },
+  };
 }
 
 function readNonEmptyString(value: unknown): string | null {
