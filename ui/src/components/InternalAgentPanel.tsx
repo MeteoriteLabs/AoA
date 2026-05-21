@@ -7,9 +7,8 @@ import {
   Loader2,
   MessageSquarePlus,
   Mic,
-  Paperclip,
   Send,
-  Sparkles,
+  Square,
   Wrench,
   X,
 } from "lucide-react";
@@ -38,6 +37,13 @@ import {
 } from "@/components/ui/sheet";
 import { ChatPaneCaption } from "./commander/ChatPaneCaption";
 import { CommanderEmptyState } from "./commander/CommanderEmptyState";
+import { InputAddMenu } from "./commander/InputAddMenu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 /* ------------------------------------------------------------------ */
 /*  Tool call display names                                            */
@@ -121,6 +127,8 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreamingLocal] = useState(false);
+  // Seam for Task 9: skill picker open state
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -319,6 +327,12 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
     setInput("");
     await sendText(text);
   }, [input, sendText]);
+
+  const handleStop = useCallback(() => {
+    abortRef.current?.abort();
+    setStreamingLocal(false);
+    setIsStreaming(false);
+  }, [setIsStreaming]);
 
   // Not wrapped in useCallback intentionally — only called from handleSend's async loop,
   // and only uses setMessages (functional updater) + toolCallIdRef (ref). No stale closure risk.
@@ -696,7 +710,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
 
       {/* Input bar */}
       <div className="shrink-0 border-t border-border p-3">
-        <div className="flex items-end gap-2">
+        {/* TODO(Task 9): render <SkillPicker open={skillPickerOpen} onOpenChange={setSkillPickerOpen} /> here */}
+        <div className="rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-brand-focus-ring focus-within:border-brand transition-shadow">
+          {/* Textarea */}
           <textarea
             ref={inputRef}
             value={input}
@@ -704,43 +720,82 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
             onKeyDown={handleKeyDown}
             placeholder="Ask the agent..."
             rows={1}
-            className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 max-h-[120px] min-h-[36px]"
+            className="w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-sm placeholder:text-muted-foreground focus-visible:outline-none disabled:opacity-50 max-h-[140px] min-h-[36px]"
             style={{ height: "36px" }}
             onInput={(e) => {
               const el = e.currentTarget;
               el.style.height = "36px";
-              el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+              el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
             }}
             disabled={streaming}
           />
-          <Button
-            size="icon-sm"
-            onClick={handleSend}
-            disabled={!input.trim() || streaming}
-            aria-label="Send message"
-            className="shrink-0"
-          >
+          {/* Controls row */}
+          <div className="flex items-center gap-1.5 px-2 pb-2">
+            {/* + add menu (functional) */}
+            <InputAddMenu
+              onUseSkill={() => setSkillPickerOpen(true)}
+              disabled={streaming}
+            />
+
+            {/* @mention (disabled, coming soon) */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    disabled
+                    aria-disabled="true"
+                    className="size-8 rounded-full flex items-center justify-center shrink-0 text-muted-foreground opacity-40 cursor-not-allowed"
+                  >
+                    <AtSign className="size-4" aria-hidden="true" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Coming soon</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            {/* Voice (disabled, coming soon) */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    disabled
+                    aria-disabled="true"
+                    className="size-8 rounded-full flex items-center justify-center shrink-0 text-muted-foreground opacity-40 cursor-not-allowed"
+                  >
+                    <Mic className="size-4" aria-hidden="true" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Coming soon</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            {/* Spacer */}
+            <div className="flex-1" />
+
+            {/* Send / Stop */}
             {streaming ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <button
+                type="button"
+                onClick={handleStop}
+                aria-label="Stop generation"
+                className="size-8 rounded-full flex items-center justify-center shrink-0 bg-[color:var(--error,#ef4444)] text-white hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring"
+              >
+                <Square className="size-3.5 fill-current" aria-hidden="true" />
+              </button>
             ) : (
-              <Send className="h-4 w-4" />
+              <button
+                type="button"
+                onClick={handleSend}
+                disabled={!input.trim()}
+                aria-label="Send message"
+                className="size-8 rounded-full flex items-center justify-center shrink-0 bg-brand text-white hover:bg-brand-hover transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring disabled:opacity-40 disabled:pointer-events-none"
+              >
+                <Send className="size-4" aria-hidden="true" />
+              </button>
             )}
-          </Button>
-        </div>
-        {/* Input toolbar row */}
-        <div className="flex items-center gap-3 pt-1.5 text-muted-foreground">
-          <button disabled aria-disabled="true" className="flex items-center gap-1 text-xs opacity-50 cursor-not-allowed">
-            <Paperclip className="h-3.5 w-3.5" aria-hidden="true" /> Attach
-          </button>
-          <button disabled aria-disabled="true" className="flex items-center gap-1 text-xs opacity-50 cursor-not-allowed">
-            <Sparkles className="h-3.5 w-3.5" aria-hidden="true" /> Skills
-          </button>
-          <button disabled aria-disabled="true" className="flex items-center gap-1 text-xs opacity-50 cursor-not-allowed">
-            <AtSign className="h-3.5 w-3.5" aria-hidden="true" /> Mention
-          </button>
-          <button disabled aria-disabled="true" className="flex items-center gap-1 text-xs opacity-50 cursor-not-allowed">
-            <Mic className="h-3.5 w-3.5" aria-hidden="true" /> Voice
-          </button>
+          </div>
         </div>
       </div>
     </div>

@@ -1,3 +1,4 @@
+export { InputAddMenu } from "./InputAddMenu";
 export { SessionsSidebar } from "./SessionsSidebar";
 export { SessionRow } from "./SessionRow";
 export type { SessionRowProps } from "./SessionRow";
