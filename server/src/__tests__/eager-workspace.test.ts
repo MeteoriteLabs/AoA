@@ -18,10 +18,12 @@ vi.mock("../services/instance-settings.js", () => ({
 const mockParse = vi.fn();
 const mockGate = vi.fn();
 const mockResolveMode = vi.fn();
+const mockParseIssueSettings = vi.fn();
 vi.mock("../services/execution-workspace-policy.js", () => ({
   parseProjectExecutionWorkspacePolicy: (...args: unknown[]) => mockParse(...args),
   gateProjectExecutionWorkspacePolicy: (...args: unknown[]) => mockGate(...args),
   resolveExecutionWorkspaceMode: (...args: unknown[]) => mockResolveMode(...args),
+  parseIssueExecutionWorkspaceSettings: (...args: unknown[]) => mockParseIssueSettings(...args),
 }));
 
 const mockRealize = vi.fn();
@@ -328,5 +330,119 @@ describe("createEagerWorkspaceForIssue", () => {
         strategyType: "git_worktree",
       }),
     );
+  });
+
+  it("respects explicit shared workspace settings instead of creating a worktree", async () => {
+    const db = createMockDb({
+      select: [
+        [{
+          executionWorkspacePolicy: {
+            enabled: true,
+            defaultMode: "isolated_workspace",
+            workspaceStrategy: { type: "git_worktree", baseRef: "main" },
+          },
+        }],
+        [{
+          id: "pw-1",
+          cwd: "/tmp/test-repo",
+          repoUrl: "https://github.com/test/repo",
+          repoRef: "main",
+        }],
+      ],
+      update: [[]],
+    });
+
+    const projectPolicy = {
+      enabled: true,
+      defaultMode: "isolated_workspace",
+      workspaceStrategy: { type: "git_worktree", baseRef: "main" },
+    };
+    mockParse.mockReturnValue(projectPolicy);
+    mockGate.mockReturnValue(projectPolicy);
+    mockParseIssueSettings.mockReturnValue({ mode: "shared_workspace" });
+    mockResolveMode.mockImplementation((input) => input.issueSettings?.mode ?? "isolated_workspace");
+    mockFsStat.mockResolvedValue({ isDirectory: () => true });
+    mockRealize.mockResolvedValue({
+      baseCwd: "/tmp/test-repo",
+      source: "project_primary",
+      projectId: "p1",
+      workspaceId: "pw-1",
+      repoUrl: "https://github.com/test/repo",
+      repoRef: "main",
+      strategy: "project_primary",
+      cwd: "/tmp/test-repo",
+      branchName: null,
+      worktreePath: null,
+      warnings: [],
+      created: false,
+    });
+    mockEwCreate.mockResolvedValue({
+      id: "ew-shared",
+      companyId: "c1",
+      branchName: null,
+      strategy: "project_primary",
+    });
+
+    const result = await createEagerWorkspaceForIssue(db as never, {
+      companyId: "c1",
+      issueId: "i1",
+      issueIdentifier: "ARM-1",
+      issueTitle: "Test",
+      projectId: "p1",
+      issueExecutionWorkspaceSettings: { mode: "shared_workspace" },
+      issueExecutionWorkspacePreference: "shared_workspace",
+      issueExecutionWorkspaceId: null,
+    } as never);
+
+    expect(result).toEqual({
+      workspaceId: "ew-shared",
+      branchName: null,
+      strategy: "project_primary",
+    });
+    expect(mockResolveMode).toHaveBeenCalledWith(expect.objectContaining({
+      issueSettings: { mode: "shared_workspace" },
+    }));
+    expect(mockRealize).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.not.objectContaining({
+        workspaceStrategy: expect.anything(),
+      }),
+    }));
+    expect(mockEwCreate).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      cwd: "/tmp/test-repo",
+      branchName: null,
+    }));
+  });
+
+  it("does not create another workspace when the task already reuses an existing workspace", async () => {
+    const db = createMockDb({
+      select: [[{ executionWorkspacePolicy: { enabled: true } }]],
+    });
+    mockParse.mockReturnValue({ enabled: true, defaultMode: "isolated_workspace" });
+    mockGate.mockReturnValue({ enabled: true, defaultMode: "isolated_workspace" });
+    mockParseIssueSettings.mockReturnValue({
+      mode: "reuse_existing",
+      reuseWorkspaceId: "ew-existing",
+    });
+
+    const result = await createEagerWorkspaceForIssue(db as never, {
+      companyId: "c1",
+      issueId: "i1",
+      issueIdentifier: "ARM-1",
+      issueTitle: "Test",
+      projectId: "p1",
+      issueExecutionWorkspaceSettings: {
+        mode: "reuse_existing",
+        reuseWorkspaceId: "ew-existing",
+      },
+      issueExecutionWorkspacePreference: "reuse_existing",
+      issueExecutionWorkspaceId: "ew-existing",
+    } as never);
+
+    expect(result).toBeNull();
+    expect(mockResolveMode).not.toHaveBeenCalled();
+    expect(mockRealize).not.toHaveBeenCalled();
+    expect(mockEwCreate).not.toHaveBeenCalled();
   });
 });

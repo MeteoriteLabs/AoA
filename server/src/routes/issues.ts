@@ -873,6 +873,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
         issueIdentifier: issue.identifier ?? issue.id,
         issueTitle: issue.title,
         projectId,
+        issueExecutionWorkspaceId: issue.executionWorkspaceId,
+        issueExecutionWorkspacePreference: issue.executionWorkspacePreference,
+        issueExecutionWorkspaceSettings: issue.executionWorkspaceSettings,
       });
       if (shouldWakeAssignedAgent && !wakeSkippedReason) {
         try {
