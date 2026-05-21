@@ -335,6 +335,8 @@ export interface ConversationRow {
   messageCount: number;
   userId: string;
   pinned: boolean;
+  /** Manual drag-order index. null = not manually ordered (recency/date groups). */
+  sortOrder: number | null;
 }
 
 export const commanderConversationsApi = {
@@ -370,6 +372,22 @@ export const commanderConversationsApi = {
   remove: (companyId: string, convId: string) =>
     api.delete<{ ok: true }>(
       `/companies/${companyId}/internal-agent/conversations/${convId}`,
+    ),
+
+  /**
+   * Persist a manual drag order. `orderedIds` is the full visible non-pinned
+   * list in its new top-to-bottom order; the server assigns sortOrder by index.
+   */
+  reorder: (companyId: string, orderedIds: string[]) =>
+    api.patch<{ ok: true }>(
+      `/companies/${companyId}/internal-agent/conversations/reorder`,
+      { orderedIds },
+    ),
+
+  /** Clear the manual order (back to recency/date groups). */
+  resetOrder: (companyId: string) =>
+    api.delete<{ ok: true }>(
+      `/companies/${companyId}/internal-agent/conversations/order`,
     ),
 };
 

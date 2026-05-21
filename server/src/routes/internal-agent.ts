@@ -865,6 +865,69 @@ export function internalAgentRoutes(db: Db) {
     },
   );
 
+  // ── Conversations: reorder (manual drag order) ───────────────────────
+  // Registered BEFORE the `/:convId` routes so "reorder"/"order" are not
+  // captured as a conversation id. Writes are always scoped to the actor's
+  // OWN conversations (even for founders) — manual order is a personal
+  // preference and must never clobber another user's arrangement.
+  router.patch(
+    "/companies/:companyId/internal-agent/conversations/reorder",
+    validate(z.object({ orderedIds: z.array(z.string().uuid()).max(1000) })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      const scope: SQL[] = [
+        eq(internalAgentConversations.companyId, companyId),
+        eq(internalAgentConversations.userId, actor.actorId),
+      ];
+
+      const { orderedIds } = req.body as { orderedIds: string[] };
+
+      // Only (re)order ids the actor owns and that are still active.
+      const owned = await db
+        .select({ id: internalAgentConversations.id })
+        .from(internalAgentConversations)
+        .where(and(...scope, isNull(internalAgentConversations.archivedAt)));
+      const ownedSet = new Set(owned.map((r) => r.id));
+      const finalIds = orderedIds.filter((id) => ownedSet.has(id));
+
+      await db.transaction(async (tx) => {
+        for (let i = 0; i < finalIds.length; i++) {
+          await tx
+            .update(internalAgentConversations)
+            .set({ sortOrder: i })
+            .where(and(eq(internalAgentConversations.id, finalIds[i]!), ...scope));
+        }
+      });
+
+      res.json({ ok: true });
+    },
+  );
+
+  // ── Conversations: reset manual order ────────────────────────────────
+  router.delete(
+    "/companies/:companyId/internal-agent/conversations/order",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      await db
+        .update(internalAgentConversations)
+        .set({ sortOrder: null })
+        .where(
+          and(
+            eq(internalAgentConversations.companyId, companyId),
+            eq(internalAgentConversations.userId, actor.actorId),
+          ),
+        );
+
+      res.json({ ok: true });
+    },
+  );
+
   // ── Conversations: archive ───────────────────────────────────────────
   router.patch(
     "/companies/:companyId/internal-agent/conversations/:convId/archive",

@@ -1,8 +1,24 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useCompany } from "../../context/CompanyContext";
 import { commanderConversationsApi, type ConversationRow } from "../../api/internal-agent";
-import { Plus, ChevronLeft, Search, X, Pin } from "lucide-react";
+import { Plus, ChevronLeft, Search, X, Pin, RotateCcw } from "lucide-react";
+import { cn } from "../../lib/utils";
 import { SessionRow } from "./SessionRow";
 import { CollapsedSessionStrip } from "./CollapsedSessionStrip";
 
@@ -84,6 +100,103 @@ export function applyDeleteOptimistic(
   return {
     conversations: conversations.filter((c) => c.id !== convId),
   };
+}
+
+/**
+ * Manual-order helpers (Batch 2: session drag reorder).
+ *
+ * The list is in "manual mode" once ANY conversation has a non-null sortOrder.
+ * In manual mode the date groups are replaced by a single flat list ordered by
+ * sortOrder. Conversations created since the last reorder (sortOrder null) sort
+ * to the TOP by recency, so a brand-new chat is always visible above the
+ * arranged list until the next drag locks it in.
+ */
+export function isManualOrder(conversations: ConversationRow[]): boolean {
+  return conversations.some((c) => c.sortOrder != null);
+}
+
+export function orderForManual(conversations: ConversationRow[]): ConversationRow[] {
+  const ordered = conversations
+    .filter((c) => c.sortOrder != null)
+    .sort((a, b) => (a.sortOrder as number) - (b.sortOrder as number));
+  const unordered = conversations
+    .filter((c) => c.sortOrder == null)
+    .sort((a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt));
+  return [...unordered, ...ordered];
+}
+
+/** Optimistically stamp sortOrder by index for the dragged list. */
+export function applyReorderOptimistic(
+  data: { conversations: ConversationRow[] } | undefined,
+  orderedIds: string[],
+): { conversations: ConversationRow[] } {
+  const pos = new Map(orderedIds.map((id, i) => [id, i]));
+  const conversations = data?.conversations ?? [];
+  return {
+    conversations: conversations.map((c) =>
+      pos.has(c.id) ? { ...c, sortOrder: pos.get(c.id)! } : c,
+    ),
+  };
+}
+
+/** Optimistically clear all manual ordering (back to date groups). */
+export function applyResetOrderOptimistic(
+  data: { conversations: ConversationRow[] } | undefined,
+): { conversations: ConversationRow[] } {
+  const conversations = data?.conversations ?? [];
+  return {
+    conversations: conversations.map((c) => ({ ...c, sortOrder: null })),
+  };
+}
+
+/**
+ * Sortable wrapper around SessionRow. The wrapper owns the drag ref + pointer
+ * listeners; with a distance activation constraint, a plain click still reaches
+ * SessionRow's onClick (select), while a >6px drag starts a reorder.
+ */
+function SortableSessionRow({
+  conversation,
+  isActive,
+  onSelect,
+  onPin,
+  onRename,
+  onArchive,
+  onDelete,
+}: {
+  conversation: ConversationRow;
+  isActive: boolean;
+  onSelect: () => void;
+  onPin: (pinned: boolean) => void;
+  onRename: (title: string) => void;
+  onArchive: () => void;
+  onDelete: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: conversation.id });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        zIndex: isDragging ? 10 : undefined,
+      }}
+      className={cn("cursor-grab active:cursor-grabbing", isDragging && "opacity-80")}
+      {...attributes}
+      {...listeners}
+    >
+      <SessionRow
+        conversation={conversation}
+        isActive={isActive}
+        onSelect={onSelect}
+        onPin={onPin}
+        onRename={onRename}
+        onArchive={onArchive}
+        onDelete={onDelete}
+      />
+    </div>
+  );
 }
 
 export function SessionsSidebar({
@@ -169,11 +282,54 @@ export function SessionsSidebar({
     },
   });
 
+  const reorderMutation = useMutation({
+    mutationFn: (orderedIds: string[]) =>
+      commanderConversationsApi.reorder(selectedCompanyId!, orderedIds),
+    onMutate: async (orderedIds) => {
+      await qc.cancelQueries({ queryKey });
+      const previous = qc.getQueryData<{ conversations: ConversationRow[] }>(queryKey);
+      qc.setQueryData(queryKey, applyReorderOptimistic(previous, orderedIds));
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous !== undefined) qc.setQueryData(queryKey, ctx.previous);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["commander-conversations"] });
+    },
+  });
+
+  const resetOrderMutation = useMutation({
+    mutationFn: () => commanderConversationsApi.resetOrder(selectedCompanyId!),
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey });
+      const previous = qc.getQueryData<{ conversations: ConversationRow[] }>(queryKey);
+      qc.setQueryData(queryKey, applyResetOrderOptimistic(previous));
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous !== undefined) qc.setQueryData(queryKey, ctx.previous);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["commander-conversations"] });
+    },
+  });
+
+  // Distance constraint: a plain click still selects a row; a >6px drag starts
+  // a reorder. Matches the SidebarProjectsByType pattern.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  );
+
   const conversations = data?.conversations ?? [];
   const filtered = useMemo(
     () => filterConversationsByTitle(conversations, searchQuery),
     [conversations, searchQuery],
   );
+
+  // Manual mode is decided by the full (unfiltered) list so a search that hides
+  // ordered rows doesn't flip the view back to date groups.
+  const manualMode = useMemo(() => isManualOrder(conversations), [conversations]);
 
   /**
    * PINNED group: top 5 pinned conversations from the filtered list, sorted by
@@ -197,9 +353,42 @@ export function SessionsSidebar({
    */
   const pinnedIds = useMemo(() => new Set(pinned.map((c) => c.id)), [pinned]);
 
-  const groups = useMemo(
-    () => groupByDate(filtered.filter((c) => !pinnedIds.has(c.id))),
+  // Non-pinned conversations (the draggable set). Pinned rows live in their own
+  // top group and never participate in the drag reorder.
+  const nonPinned = useMemo(
+    () => filtered.filter((c) => !pinnedIds.has(c.id)),
     [filtered, pinnedIds],
+  );
+
+  // Default mode → date groups. Manual mode → one flat list (no headers).
+  const groups = useMemo(
+    () => (manualMode ? [] : groupByDate(nonPinned)),
+    [manualMode, nonPinned],
+  );
+  const manualList = useMemo(
+    () => (manualMode ? orderForManual(nonPinned) : []),
+    [manualMode, nonPinned],
+  );
+
+  // The SortableContext item array must match the on-screen render order so
+  // dnd-kit's index math lines up: flat manual order, or groups concatenated.
+  const sortableIds = useMemo(
+    () =>
+      (manualMode ? manualList : groups.flatMap((g) => g.items)).map((c) => c.id),
+    [manualMode, manualList, groups],
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const oldIndex = sortableIds.indexOf(active.id as string);
+      const newIndex = sortableIds.indexOf(over.id as string);
+      if (oldIndex === -1 || newIndex === -1) return;
+      const next = arrayMove(sortableIds, oldIndex, newIndex);
+      reorderMutation.mutate(next);
+    },
+    [sortableIds, reorderMutation],
   );
 
   // Auto-focus the input when search opens
@@ -214,6 +403,19 @@ export function SessionsSidebar({
     setSearchOpen(false);
     onNewConversation();
   }
+
+  const renderSortableRow = (conv: ConversationRow) => (
+    <SortableSessionRow
+      key={conv.id}
+      conversation={conv}
+      isActive={conv.id === activeConversationId}
+      onSelect={() => onSelect(conv.id)}
+      onPin={(p) => pinMutation.mutate({ convId: conv.id, pinned: p })}
+      onRename={(title) => renameMutation.mutate({ convId: conv.id, title })}
+      onArchive={() => archiveMutation.mutate(conv.id)}
+      onDelete={() => deleteMutation.mutate(conv.id)}
+    />
+  );
 
   if (collapsed) {
     // Pass the full conversations list (not filtered) — collapsed view has no
@@ -331,25 +533,43 @@ export function SessionsSidebar({
           </div>
         )}
 
-        {groups.map((group) => (
-          <div key={group.label}>
-            <div className="px-3 py-1.5 text-[9px] font-semibold text-muted-foreground uppercase tracking-widest">
-              {group.label}
-            </div>
-            {group.items.map((conv) => (
-              <SessionRow
-                key={conv.id}
-                conversation={conv}
-                isActive={conv.id === activeConversationId}
-                onSelect={() => onSelect(conv.id)}
-                onPin={(p) => pinMutation.mutate({ convId: conv.id, pinned: p })}
-                onRename={(title) => renameMutation.mutate({ convId: conv.id, title })}
-                onArchive={() => archiveMutation.mutate(conv.id)}
-                onDelete={() => deleteMutation.mutate(conv.id)}
-              />
-            ))}
-          </div>
-        ))}
+        {/* Non-pinned sessions — draggable. Date groups by default; one flat
+            "Arranged" list once the user has dragged (manual mode). */}
+        {nonPinned.length > 0 && (
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
+              {manualMode ? (
+                <div>
+                  <div className="px-3 py-1.5 flex items-center justify-between text-[9px] font-semibold text-muted-foreground uppercase tracking-widest">
+                    <span>Arranged</span>
+                    <button
+                      onClick={() => resetOrderMutation.mutate()}
+                      className="flex items-center gap-1 normal-case tracking-normal text-very-dim hover:text-text transition-colors"
+                      title="Reset to most-recent order"
+                    >
+                      <RotateCcw className="h-2.5 w-2.5" />
+                      Reset
+                    </button>
+                  </div>
+                  {manualList.map(renderSortableRow)}
+                </div>
+              ) : (
+                groups.map((group) => (
+                  <div key={group.label}>
+                    <div className="px-3 py-1.5 text-[9px] font-semibold text-muted-foreground uppercase tracking-widest">
+                      {group.label}
+                    </div>
+                    {group.items.map(renderSortableRow)}
+                  </div>
+                ))
+              )}
+            </SortableContext>
+          </DndContext>
+        )}
       </div>
     </div>
   );

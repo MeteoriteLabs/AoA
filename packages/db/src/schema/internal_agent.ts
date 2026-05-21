@@ -133,6 +133,12 @@ export const internalAgentConversations = pgTable(
     pinned: boolean("pinned").notNull().default(false),
     sharedWithCompany: boolean("shared_with_company").notNull().default(false),
 
+    // Manual drag-and-drop ordering of the session list. null = not manually
+    // ordered (the list falls back to recency/date groups). Once the user drags,
+    // every visible conversation gets an explicit index here and the UI switches
+    // to a flat user-arranged list. (Batch 2: Commander session reorder.)
+    sortOrder: integer("sort_order"),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
