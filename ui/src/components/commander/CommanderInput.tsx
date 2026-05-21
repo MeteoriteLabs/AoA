@@ -4,6 +4,7 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
 } from "react";
 import { cn } from "../../lib/utils";
 import { matchSlashToken } from "./skillPickerUtils";
@@ -70,6 +71,11 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
   ) {
     const rootRef = useRef<HTMLDivElement>(null);
 
+    // Placeholder visibility is React-driven (not an imperative classList
+    // toggle) so it survives re-renders — React owns the element's className and
+    // would otherwise clobber an imperatively-added class on the next render.
+    const [isEmpty, setIsEmpty] = useState(true);
+
     // Keep latest props in refs so the imperative handle + DOM handlers stay
     // stable (never go stale, never thrash the ref identity).
     const onSubmitRef = useRef(onSubmit);
@@ -91,7 +97,7 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
       const root = rootRef.current;
       if (!root) return;
       const empty = isRootEmpty(root);
-      root.classList.toggle("is-empty", empty);
+      setIsEmpty(empty);
       if (empty !== lastEmptyRef.current) {
         lastEmptyRef.current = empty;
         onEmptyChangeRef.current(empty);
@@ -318,6 +324,7 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
         className={cn(
           "commander-input w-full bg-transparent px-3 py-2 text-sm leading-5",
           "min-h-[36px] max-h-[140px]",
+          isEmpty && "is-empty",
           disabled && "opacity-50 cursor-not-allowed",
           className,
         )}
