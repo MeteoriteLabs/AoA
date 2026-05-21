@@ -361,3 +361,47 @@ Saved to the system temp dir during the session:
 - `uat-13-overflow.png` — overflow menu (Pin/Rename/Archive/Delete)
 - `uat-14-pinned.png` — PINNED group after reload (persistence)
 
+---
+
+## Run 5 — Skills scoping + UI fixes (2026-05-21)
+
+Live browser UAT (gstack `/browse`, atomic single-call sequences) at
+`http://127.0.0.1:3100/AOA/commander`, branch `commander-subagent-1`. Verifies the
+three fixes from `docs/superpowers/plans/2026-05-21-commander-skills-scoping-and-ui-fixes.md`.
+
+### Verified PASS (observed live)
+
+1. **Issue 1 — overflow menu anchors to its row.** Opened a session's ⋮ menu at desktop
+   width: trigger at x=413,y=198; the menu rendered at **x=435,y=198** (right beside the
+   trigger) with Unpin/Rename/Archive/Delete — NOT at the top-left corner (the bug was
+   x≈0,y≈0). Root cause was the `hidden group-hover:flex` trigger collapsing to a 0×0 anchor;
+   fixed with `opacity`/`pointer-events` + `data-[state=open]` visibility. (uat5-03)
+2. **Issue 2 — `+` menu opens the skill picker.** Clicked `+` → "Use a skill": picker became
+   visible (`PICKER VISIBLE=true`). Before the fix the same script returned `false` (the
+   focus-restore blur closed it). Fixed with a container-aware textarea `onBlur`. (uat5-01)
+3. **Issue 3 — picker is scoped to the Commander's selected skills (end-to-end).**
+   - The one-time backfill initialized the Commander agent's `skillKeys` to **44** (all
+     installed company skills) with `metadata.commanderSkillsInitialized=true` — confirmed via DB.
+   - Set `skillKeys` to a 2-skill subset (`brand-guidelines`, `algorithmic-art`) via DB; after a
+     fresh reload the picker showed **exactly those 2 rows** (was 44). Proves the picker reflects
+     the curated selection live through the new `GET /companies/:cid/internal-agent/skills`
+     endpoint. (uat5-02). `skillKeys` restored to 44 after the test.
+   - `use_skill` enforcement (Task 4) is in the **bridge** tool (`internal-agent/tools/skill-tools.ts`,
+     the path Commander actually uses) — verified by code + contract test; the HTTP-handler dead
+     branch was reverted.
+
+### Notes
+- The backfill defaulted the selection to all-installed, so out of the box the picker shows
+  everything; founders narrow it via Settings → Commander → Skills (writes `agents.skillKeys`),
+  which the picker, prompt, and `use_skill` all now respect. Empty selection = no skills.
+- Tooling: same headed-daemon reset behavior as Run 4; atomic single-call sequences used;
+  `MSYS_NO_PATHCONV=1` for `/` arguments.
+
+### Test suite (post-fix)
+- UI: 234 files / 1676 tests green. Server: 394 files / 3557 tests green (10/37 skipped = known baselines).
+
+### Screenshots (Run 5)
+- `uat5-01-addmenu-picker.png` — `+` menu opens the picker
+- `uat5-02-scoped.png` — picker scoped to the 2-skill subset
+- `uat5-03-overflow.png` — overflow menu anchored beside its row
+
