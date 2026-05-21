@@ -204,4 +204,22 @@ describe("SessionOverflowMenu", () => {
       expect(onDelete).not.toHaveBeenCalled();
     }
   });
+
+  it("trigger stays in layout (not display:hidden) so the menu anchors to it", () => {
+    const conv = makeConversation();
+    render(
+      <SessionOverflowMenu
+        conversation={conv}
+        onPin={vi.fn()}
+        onRename={vi.fn()}
+        onArchive={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByTitle("More options");
+    expect(trigger.className).not.toMatch(/(^|\s)hidden(\s|$)/);
+    expect(trigger.className).toContain("opacity-0");
+    expect(trigger.className).toContain("group-hover:opacity-100");
+    expect(trigger.className).toContain("data-[state=open]:opacity-100");
+  });
 });

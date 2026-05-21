@@ -68,7 +68,7 @@ export function SessionOverflowMenu({
             type="button"
             data-commander-touch
             onClick={(e) => e.stopPropagation()}
-            className="hidden group-hover:flex items-center justify-center p-0.5 rounded hover:bg-black/10 transition-colors shrink-0"
+            className="flex items-center justify-center p-0.5 rounded hover:bg-black/10 transition-colors shrink-0 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto data-[state=open]:opacity-100 data-[state=open]:pointer-events-auto"
             title="More options"
           >
             <MoreVertical className="h-3.5 w-3.5 text-dim" />
