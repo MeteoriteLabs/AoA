@@ -567,6 +567,15 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
     [],
   );
 
+  // Stable callback so SkillPicker's effect dep array doesn't re-fire every
+  // parent render (an inline arrow would recreate on every render).
+  const handleFilteredSkillsChange = useCallback(
+    (skills: CompanySkillListItem[]) => {
+      filteredSkillsRef.current = skills;
+    },
+    [],
+  );
+
   const handleSelectSkill = useCallback(
     (skill: CompanySkillListItem) => {
       const directive = buildSkillDirective(skill);
@@ -849,9 +858,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
           activeIndex={pickerIndex}
           onActiveIndexChange={setPickerIndex}
           onSelect={handleSelectSkill}
-          onFilteredChange={(skills) => {
-            filteredSkillsRef.current = skills;
-          }}
+          onFilteredChange={handleFilteredSkillsChange}
         />
         <div className="rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-brand-focus-ring focus-within:border-brand transition-shadow">
           {/* Textarea */}

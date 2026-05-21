@@ -49,7 +49,7 @@ export const toolAllowedActors: Record<string, McpActorType[]> = {
   "memory.search": ALL_ACTORS,
   "memory.get": ALL_ACTORS,
   "memory.retain": ALL_ACTORS,
-  "use_skill": ["board", "commander"],  // board (founder) + commander both need skills; markdown may contain company IP so still excluded from worker agents + mcp
+  "use_skill": ["board", "commander"],  // HTTP MCP endpoint gate only: founder (board) + commander; worker agents + mcp excluded (skill markdown may contain company IP). Commander's CLI bridge dispatches via tool-registry and does NOT consult this map.
 };
 
 export const TOOL_DEFINITIONS = [
