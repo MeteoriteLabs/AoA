@@ -123,6 +123,20 @@
   50% { transform: translateY(-3px); }
 }
 
+/* Commander confirmation card border pulse — border-color only (no box-shadow, no paint cost).
+   30 iterations × 2s = 60s then auto-stops. Wrapped in prefers-reduced-motion so the class
+   is safe to apply unconditionally; reduced-motion users see a static amber border. */
+@keyframes commander-pulse-border {
+  0%, 100% { border-color: #fde68a; /* amber-200 */ }
+  50%       { border-color: #f59e0b; /* amber-400 */ }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .commander-pulse-border {
+    animation: commander-pulse-border 2s ease-in-out 30;
+  }
+}
+
 :root {
   color-scheme: light;
 

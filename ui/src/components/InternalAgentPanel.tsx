@@ -4,6 +4,7 @@ import {
   AtSign,
   Bot,
   Check,
+  Copy,
   Loader2,
   MessageSquarePlus,
   Mic,
@@ -11,6 +12,7 @@ import {
   Square,
   Wrench,
   X,
+  Zap,
 } from "lucide-react";
 import { useAgentPanel } from "../context/AgentPanelContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -71,6 +73,46 @@ const TOOL_LABELS: Record<string, string> = {
 
 function toolLabel(name: string): string {
   return TOOL_LABELS[name] ?? `Running ${name.replaceAll("_", " ")}...`;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Confirmation card entity-line derivation                           */
+/* ------------------------------------------------------------------ */
+
+/** Verbs we treat as action verbs; anything else falls back to "run <action>". */
+const KNOWN_VERBS = new Set([
+  "update", "create", "delete", "set", "add", "remove", "reset",
+  "enable", "disable", "send", "archive", "restore", "approve",
+  "reject", "assign", "unassign", "move", "copy", "list", "get",
+  "fetch", "run", "start", "stop", "pause", "resume",
+]);
+
+/**
+ * Derives a human-readable entity line from an action identifier.
+ *
+ * Examples:
+ *   "update_company_identity" → "This will update company identity"
+ *   "create_task"             → "This will create task"
+ *   "foo_bar_baz"             → "This will run foo bar baz"
+ *
+ * The result is truncated to 80 characters (including "This will ").
+ */
+export function deriveConfirmEntityLine(action: string): string {
+  const parts = action.split("_");
+  const verb = parts[0] ?? "";
+  const entityParts = parts.slice(1);
+  let line: string;
+  if (KNOWN_VERBS.has(verb.toLowerCase())) {
+    const entity = entityParts.join(" ");
+    line = `This will ${verb} ${entity}`.trim();
+  } else {
+    const humanized = parts.join(" ");
+    line = `This will run ${humanized}`;
+  }
+  if (line.length > 80) {
+    return line.slice(0, 79) + "…";
+  }
+  return line;
 }
 
 /* ------------------------------------------------------------------ */
@@ -149,6 +191,8 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
   const abortRef = useRef<AbortController | null>(null);
   const localIdRef = useRef(0);
   const toolCallIdRef = useRef(0);
+  // Track which message id had its Copy button recently clicked (for checkmark feedback)
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
   const companyId = selectedCompanyId ?? "";
 
@@ -528,6 +572,24 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
     }
   }, [companyId, streaming, queryClient]);
 
+  // Newest pending confirmation id — only the most-recent pending card pulses.
+  const newestPendingConfirmId = useMemo(() => {
+    let result: string | null = null;
+    for (const m of messages) {
+      if (m.actionConfirm?.status === "pending") {
+        result = m.actionConfirm.confirmId;
+      }
+    }
+    return result;
+  }, [messages]);
+
+  // Copy message content to clipboard with a transient checkmark.
+  const handleCopyMessage = useCallback((msgId: string, content: string) => {
+    void navigator.clipboard.writeText(content);
+    setCopiedMessageId(msgId);
+    setTimeout(() => setCopiedMessageId((prev) => (prev === msgId ? null : prev)), 1500);
+  }, []);
+
   // The picker is open if triggered by a slash token OR the `+` menu.
   const pickerOpen = slashActive || skillPickerOpen;
   const pickerQuery = slashActive ? slashQuery : "";
@@ -703,12 +765,32 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
           <div key={msg.id} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
             <div
               className={cn(
-                "max-w-[85%] rounded-lg px-3 py-2 text-sm",
+                "group relative max-w-[85%] rounded-lg px-3 py-2 text-sm",
                 msg.role === "user"
                   ? "bg-primary text-primary-foreground"
                   : "bg-muted",
               )}
             >
+              {/* Hover Copy button — revealed on group-hover, top-right corner */}
+              {msg.content && (
+                <button
+                  type="button"
+                  aria-label="Copy message"
+                  title="Copy"
+                  onClick={() => handleCopyMessage(msg.id, msg.content)}
+                  className={cn(
+                    "absolute top-1 right-1 flex items-center justify-center rounded p-0.5",
+                    "opacity-0 group-hover:opacity-100 transition-opacity",
+                    "text-muted-foreground hover:text-foreground",
+                    msg.role === "user" && "text-primary-foreground/60 hover:text-primary-foreground",
+                  )}
+                >
+                  {copiedMessageId === msg.id
+                    ? <Check className="h-3.5 w-3.5" />
+                    : <Copy className="h-3.5 w-3.5" />}
+                </button>
+              )}
+
               {/* Tool call indicators */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="space-y-1 mb-2">
@@ -745,11 +827,34 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
 
               {/* Action confirmation */}
               {msg.actionConfirm && (
-                <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-3 space-y-2">
+                <div
+                  className={cn(
+                    "mt-2 rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-3 space-y-2",
+                    msg.actionConfirm.status === "pending" &&
+                      msg.actionConfirm.confirmId === newestPendingConfirmId &&
+                      "commander-pulse-border",
+                  )}
+                >
                   <div className="flex items-center gap-1.5 text-xs font-medium text-amber-900 dark:text-amber-100">
-                    <span>⚡</span>
+                    <Zap className="h-3.5 w-3.5 shrink-0" />
                     <span>Action requires approval: <code className="font-mono">{msg.actionConfirm.action}</code></span>
                   </div>
+                  {/* Entity line — derived from action, truncated to 80 chars */}
+                  <p className="text-xs text-amber-800/70 dark:text-amber-200/70">
+                    {(() => {
+                      const line = deriveConfirmEntityLine(msg.actionConfirm.action);
+                      const [prefix, ...rest] = line.split(" ");
+                      const second = rest[0];
+                      const third = rest[1];
+                      const entity = rest.slice(2).join(" ");
+                      return (
+                        <>
+                          {prefix} {second} {third}{entity ? " " : ""}
+                          {entity && <strong className="font-medium">{entity}</strong>}
+                        </>
+                      );
+                    })()}
+                  </p>
                   {msg.actionConfirm.description !== msg.actionConfirm.action && (
                     <p className="text-xs text-muted-foreground">{msg.actionConfirm.description}</p>
                   )}
