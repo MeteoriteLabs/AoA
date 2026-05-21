@@ -282,3 +282,79 @@ All screenshots saved to `.gstack/qa-reports/screenshots/` with `run3-` prefix:
 - `run3-badge-claude-cli-restored.png` — no badge after restoring claude_cli
 - `run3-banner-permissions.png` — Permissions tab with updated banner text
 
+---
+
+## Run 4 — Phase 5 Interaction Redesign (2026-05-21)
+
+Live browser UAT (headed Chromium via gstack `/browse`) against the dev server at
+`http://127.0.0.1:3100/AOA/commander`, branch `commander-subagent-1`. Verifies the
+Phase 5 redesign (Tasks 1–11). DB migration `0103` (pinned column) applied to the
+live embedded Postgres before testing.
+
+### Verified PASS (observed live)
+
+1. **Commander page redesign** — Page-level breadcrumb topbar removed (only the global
+   app-shell header remains); sessions sidebar with full-width brand "New chat" + ghost
+   "Search sessions" + "● online" status row; empty state with greeting + 4 prompt chips
+   + RECENT chats; input box with brand `+` circle, disabled `@mention`/voice, brand send;
+   **no autonomy pill**; **zero console errors**. (uat-02)
+2. **`/skill` picker — slash trigger** — Typing `/` opens the picker listing company
+   skills with name + dim description + mono `skill:<owner>/<key>`. (uat-04b)
+3. **`/skill` picker — filter** — `/brand` narrows to `brand-guidelines`. (uat-05)
+4. **`/skill` picker — keyboard select** — `/brand` + ArrowDown + Enter inserts the
+   directive `Use the "brand-guidelines" skill (skill:anthropic/brand-guidelines).` into
+   the textarea and does **NOT** auto-send (Enter selects, doesn't submit).
+5. **Session switching + caption** — Clicking a session activates it (filled brand ●
+   + edge-to-edge highlight) and the ChatPaneCaption shows `New chat · 12h ago · 0 msgs`
+   (mono numerics). Phase 2 switching intact. (uat-09)
+6. **Responsive** — Mobile 375px: inline sidebar hidden, chat fills, empty state usable,
+   global mobile bottom-nav. Tablet 800px: sidebar collapses to drawer mode. (uat-10, uat-11)
+7. **Sessions drawer** — With an active conversation, the caption "Sessions" button opens
+   a left Sheet drawer containing the full sidebar (focus-trap + dimmed overlay). (uat-12)
+8. **Overflow menu** — Session `⋮` shows **Pin | Rename | Archive | Delete**. (uat-13)
+9. **Pin — real backend** — Clicking Pin moves the session to a PINNED group (optimistic)
+   and the pin **persists across a full page reload**, confirming the Task 1 route +
+   `pinned` column wrote to the database. (uat-14)
+
+### Findings
+
+- **(Minor, non-blocking)** On mobile/tablet **with no active conversation**, there is no
+  trigger to open the full sessions drawer — the ChatPaneCaption (which hosts the "Sessions"
+  button) only renders once a conversation is active. Users reach sessions via the
+  empty-state RECENT list. Suggested follow-up: render a persistent sessions affordance in
+  the mobile empty state.
+
+### Not exercised live (covered by unit/contract tests + code review)
+
+- Rename / Archive / Delete actions (same optimistic+backend pattern as Pin; Delete is
+  gated behind an AlertDialog confirm per code review; routes contract-tested).
+- Inline sidebar search filter (`filterConversationsByTitle` unit-tested).
+- Collapse-to-icon-strip (`CollapsedSessionStrip` built + wired).
+- Confirmation card pulse/entity polish (Task 10; needs a confirmation-triggering action).
+- Full send → `use_skill` LLM round-trip (needs a live model call; directive is correctly
+  formed and the `use_skill` pipeline is verified at code/test level — note the bridge
+  dispatch path does not consult the HTTP `toolAllowedActors` gate, so no 403 applies).
+
+### Test suite (pre-UAT)
+
+- UI: 234 files / 1675 tests green. Server: 392 files / 3548 tests green (10/37 skipped =
+  known Windows baselines).
+
+### Tooling note
+
+The headed `/browse` daemon restarted between separate tool calls in this environment
+(resetting to `about:blank`); each check was run as an atomic single-call sequence
+(connect → goto → act → screenshot). This is a tooling quirk, not an application issue.
+
+### Screenshots (Run 4)
+
+Saved to the system temp dir during the session:
+- `uat-02-commander.png` — full Commander redesign (desktop)
+- `uat-04b-slash.png` — `/skill` picker open
+- `uat-05-filter.png` — `/brand` filtered
+- `uat-09-session.png` — active session + caption
+- `uat-10-mobile.png` / `uat-11-tablet.png` — responsive
+- `uat-12-drawer.png` — sessions drawer open (tablet)
+- `uat-13-overflow.png` — overflow menu (Pin/Rename/Archive/Delete)
+- `uat-14-pinned.png` — PINNED group after reload (persistence)
+
