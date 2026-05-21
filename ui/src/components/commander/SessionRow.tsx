@@ -1,20 +1,26 @@
-import { Pin, MoreVertical } from "lucide-react";
+import { Pin } from "lucide-react";
 import type { ConversationRow } from "../../api/internal-agent";
 import { cn } from "../../lib/utils";
+import { SessionOverflowMenu } from "./SessionOverflowMenu";
 
 export interface SessionRowProps {
   conversation: ConversationRow;
   isActive: boolean;
   onSelect: () => void;
+  onPin: (pinned: boolean) => void;
+  onRename: (title: string) => void;
   onArchive: () => void;
-  // TODO(Task 5): replace ⋮ archive shortcut with <SessionOverflowMenu/>
+  onDelete: () => void;
 }
 
 export function SessionRow({
   conversation,
   isActive,
   onSelect,
+  onPin,
+  onRename,
   onArchive,
+  onDelete,
 }: SessionRowProps) {
   const title = conversation.title ?? "New chat";
 
@@ -59,18 +65,14 @@ export function SessionRow({
         {title}
       </span>
 
-      {/* Hover-revealed ⋮ overflow button */}
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onArchive();
-        }}
-        className="hidden group-hover:flex items-center justify-center p-0.5 rounded hover:bg-black/10 transition-colors shrink-0"
-        title="More options"
-      >
-        <MoreVertical className="h-3.5 w-3.5 text-dim" />
-      </button>
+      {/* Hover-revealed overflow menu */}
+      <SessionOverflowMenu
+        conversation={conversation}
+        onPin={onPin}
+        onRename={onRename}
+        onArchive={onArchive}
+        onDelete={onDelete}
+      />
     </div>
   );
 }

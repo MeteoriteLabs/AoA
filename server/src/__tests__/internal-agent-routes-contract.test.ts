@@ -111,8 +111,8 @@ describe("internal-agent-routes-contract", () => {
       (layer: any) => layer.route != null,
     );
 
-    // 10 original routes + 3 new multi-conversation routes (list, create, archive) + 2 tool-permissions routes + 1 messages route (Task 8) + 2 pin/rename routes (Task 1)
-    expect(routeLayers).toHaveLength(18);
+    // 10 original routes + 3 new multi-conversation routes (list, create, archive) + 2 tool-permissions routes + 1 messages route (Task 8) + 2 pin/rename routes (Task 1) + 1 delete route (Task 5)
+    expect(routeLayers).toHaveLength(19);
   });
 
   it("registers all expected paths and methods", () => {
@@ -149,6 +149,8 @@ describe("internal-agent-routes-contract", () => {
       // pin + rename routes (Task 1)
       { path: "/companies/:companyId/internal-agent/conversations/:convId/pin", method: "patch" },
       { path: "/companies/:companyId/internal-agent/conversations/:convId/rename", method: "patch" },
+      // hard-delete route (Task 5)
+      { path: "/companies/:companyId/internal-agent/conversations/:convId", method: "delete" },
     ];
 
     for (const expected of expectedRoutes) {
@@ -294,8 +296,8 @@ describe("internal-agent pin/rename routes source contract (Task 1)", () => {
 
   it("rename route delegates ownership to loadOwnedConversation()", () => {
     const renameRouteStart = routeSrc.indexOf("/conversations/:convId/rename");
-    const messagesRouteStart = routeSrc.indexOf("/conversations/:convId/messages");
-    const renameRouteBlock = routeSrc.slice(renameRouteStart, messagesRouteStart);
+    const deleteRouteStart = routeSrc.indexOf("/conversations/:convId\",");
+    const renameRouteBlock = routeSrc.slice(renameRouteStart, deleteRouteStart);
     expect(renameRouteBlock).toContain("loadOwnedConversation(");
   });
 
@@ -305,6 +307,33 @@ describe("internal-agent pin/rename routes source contract (Task 1)", () => {
 
   it("rename route validates title with z.string().min(1).max(200)", () => {
     expect(routeSrc).toContain('z.string().min(1).max(200)');
+  });
+});
+
+// ── DELETE /conversations/:convId source contract (Task 5) ────────────────────
+describe("internal-agent DELETE conversation route source contract (Task 5)", () => {
+  const routeSrc = readFileSync(
+    resolve(__dirname, "../routes/internal-agent.ts"),
+    "utf8",
+  );
+
+  it("DELETE conversations/:convId route is registered", () => {
+    // Matches router.delete("/companies/:companyId/internal-agent/conversations/:convId"
+    expect(routeSrc).toMatch(/router\.delete\(\s*["']\/companies\/:companyId\/internal-agent\/conversations\/:convId["']/);
+  });
+
+  it("DELETE route delegates ownership to loadOwnedConversation()", () => {
+    const deleteRouteStart = routeSrc.indexOf("/conversations/:convId\",");
+    const messagesRouteStart = routeSrc.indexOf("/conversations/:convId/messages");
+    const deleteRouteBlock = routeSrc.slice(deleteRouteStart, messagesRouteStart);
+    expect(deleteRouteBlock).toContain("loadOwnedConversation(");
+  });
+
+  it("DELETE route responds with { ok: true }", () => {
+    const deleteRouteStart = routeSrc.indexOf("/conversations/:convId\",");
+    const messagesRouteStart = routeSrc.indexOf("/conversations/:convId/messages");
+    const deleteRouteBlock = routeSrc.slice(deleteRouteStart, messagesRouteStart);
+    expect(deleteRouteBlock).toContain("ok: true");
   });
 });
 

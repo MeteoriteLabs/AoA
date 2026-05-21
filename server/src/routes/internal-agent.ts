@@ -925,6 +925,26 @@ export function internalAgentRoutes(db: Db) {
     },
   );
 
+  // ── Conversations: delete (hard) ────────────────────────────────────
+  // Permanently deletes a conversation and its messages (cascade). Distinct
+  // from the legacy DELETE /conversation endpoint which archives+resets.
+  router.delete(
+    "/companies/:companyId/internal-agent/conversations/:convId",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+
+      await loadOwnedConversation(req, companyId, convId);
+
+      await db
+        .delete(internalAgentConversations)
+        .where(eq(internalAgentConversations.id, convId));
+
+      res.json({ ok: true });
+    },
+  );
+
   // ── Get Messages for a Specific Conversation ─────────────────────────
   router.get(
     "/companies/:companyId/internal-agent/conversations/:convId/messages",

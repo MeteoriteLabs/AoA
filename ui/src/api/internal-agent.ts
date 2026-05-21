@@ -363,6 +363,11 @@ export const commanderConversationsApi = {
       `/companies/${companyId}/internal-agent/conversations/${convId}/rename`,
       { title },
     ),
+
+  remove: (companyId: string, convId: string) =>
+    api.delete<{ ok: true }>(
+      `/companies/${companyId}/internal-agent/conversations/${convId}`,
+    ),
 };
 
 /* ------------------------------------------------------------------ */

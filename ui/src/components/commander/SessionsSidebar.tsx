@@ -46,6 +46,46 @@ function groupByDate(conversations: ConversationRow[]) {
   return groups.filter((g) => g.items.length > 0);
 }
 
+/**
+ * Pure cache-update helpers — exported for unit testing.
+ * Each takes the current cache data shape and returns the updated shape.
+ */
+export function applyPinOptimistic(
+  data: { conversations: ConversationRow[] } | undefined,
+  convId: string,
+  pinned: boolean,
+): { conversations: ConversationRow[] } {
+  const conversations = data?.conversations ?? [];
+  return {
+    conversations: conversations.map((c) =>
+      c.id === convId ? { ...c, pinned } : c,
+    ),
+  };
+}
+
+export function applyRenameOptimistic(
+  data: { conversations: ConversationRow[] } | undefined,
+  convId: string,
+  title: string,
+): { conversations: ConversationRow[] } {
+  const conversations = data?.conversations ?? [];
+  return {
+    conversations: conversations.map((c) =>
+      c.id === convId ? { ...c, title } : c,
+    ),
+  };
+}
+
+export function applyDeleteOptimistic(
+  data: { conversations: ConversationRow[] } | undefined,
+  convId: string,
+): { conversations: ConversationRow[] } {
+  const conversations = data?.conversations ?? [];
+  return {
+    conversations: conversations.filter((c) => c.id !== convId),
+  };
+}
+
 export function SessionsSidebar({
   activeConversationId,
   onSelect,
@@ -58,8 +98,10 @@ export function SessionsSidebar({
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  const queryKey = ["commander-conversations", selectedCompanyId] as const;
+
   const { data } = useQuery({
-    queryKey: ["commander-conversations", selectedCompanyId],
+    queryKey,
     queryFn: () => commanderConversationsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
@@ -68,6 +110,63 @@ export function SessionsSidebar({
     mutationFn: (convId: string) =>
       commanderConversationsApi.archive(selectedCompanyId!, convId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["commander-conversations"] }),
+  });
+
+  const pinMutation = useMutation({
+    mutationFn: ({ convId, pinned }: { convId: string; pinned: boolean }) =>
+      commanderConversationsApi.pin(selectedCompanyId!, convId, pinned),
+    onMutate: async ({ convId, pinned }) => {
+      await qc.cancelQueries({ queryKey });
+      const previous = qc.getQueryData<{ conversations: ConversationRow[] }>(queryKey);
+      qc.setQueryData(queryKey, applyPinOptimistic(previous, convId, pinned));
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous !== undefined) {
+        qc.setQueryData(queryKey, ctx.previous);
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["commander-conversations"] });
+    },
+  });
+
+  const renameMutation = useMutation({
+    mutationFn: ({ convId, title }: { convId: string; title: string }) =>
+      commanderConversationsApi.rename(selectedCompanyId!, convId, title),
+    onMutate: async ({ convId, title }) => {
+      await qc.cancelQueries({ queryKey });
+      const previous = qc.getQueryData<{ conversations: ConversationRow[] }>(queryKey);
+      qc.setQueryData(queryKey, applyRenameOptimistic(previous, convId, title));
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous !== undefined) {
+        qc.setQueryData(queryKey, ctx.previous);
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["commander-conversations"] });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (convId: string) =>
+      commanderConversationsApi.remove(selectedCompanyId!, convId),
+    onMutate: async (convId) => {
+      await qc.cancelQueries({ queryKey });
+      const previous = qc.getQueryData<{ conversations: ConversationRow[] }>(queryKey);
+      qc.setQueryData(queryKey, applyDeleteOptimistic(previous, convId));
+      return { previous };
+    },
+    onError: (_err, _convId, ctx) => {
+      if (ctx?.previous !== undefined) {
+        qc.setQueryData(queryKey, ctx.previous);
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["commander-conversations"] });
+    },
   });
 
   const conversations = data?.conversations ?? [];
@@ -193,7 +292,10 @@ export function SessionsSidebar({
                 conversation={conv}
                 isActive={conv.id === activeConversationId}
                 onSelect={() => onSelect(conv.id)}
+                onPin={(pinned) => pinMutation.mutate({ convId: conv.id, pinned })}
+                onRename={(title) => renameMutation.mutate({ convId: conv.id, title })}
                 onArchive={() => archiveMutation.mutate(conv.id)}
+                onDelete={() => deleteMutation.mutate(conv.id)}
               />
             ))}
           </div>
@@ -202,4 +304,3 @@ export function SessionsSidebar({
     </div>
   );
 }
-
