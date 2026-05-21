@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertCircle, Loader2, Wand2 } from "lucide-react";
 import type { CompanySkillListItem } from "@armyofagents/shared";
 import { useCompany } from "../../context/CompanyContext";
-import { companySkillsApi } from "../../api/companySkills";
+import { internalAgentApi } from "../../api/internal-agent";
 import { queryKeys } from "../../lib/queryKeys";
 import { cn } from "../../lib/utils";
 import { filterSkills } from "./skillPickerUtils";
@@ -50,8 +50,8 @@ export function SkillPicker({
   const listRef = useRef<HTMLUListElement>(null);
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: queryKeys.companySkills.list(companyId),
-    queryFn: () => companySkillsApi.list(companyId),
+    queryKey: queryKeys.commanderSkills(companyId),
+    queryFn: () => internalAgentApi.listSkills(companyId),
     enabled: open && !!companyId,
   });
 

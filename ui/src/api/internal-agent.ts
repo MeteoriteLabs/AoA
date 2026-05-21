@@ -1,4 +1,4 @@
-import type { UpdateInternalAgentConfig } from "@armyofagents/shared";
+import type { CompanySkillListItem, UpdateInternalAgentConfig } from "@armyofagents/shared";
 import { api, ApiError } from "./client";
 
 /* ------------------------------------------------------------------ */
@@ -288,6 +288,9 @@ export const internalAgentApi = {
 
   confirmAction: (companyId: string, confirmId: string, approved: boolean) =>
     confirmAction(companyId, { confirmId, approved }),
+
+  listSkills: (companyId: string) =>
+    api.get<CompanySkillListItem[]>(`/companies/${companyId}/internal-agent/skills`),
 
   getConfig: (companyId: string) =>
     api.get<AgentConfig>(`/companies/${companyId}/internal-agent/config`),

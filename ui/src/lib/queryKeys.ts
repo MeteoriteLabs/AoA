@@ -178,6 +178,7 @@ export const queryKeys = {
   agentGreeting: (companyId: string) => ["agent-greeting", companyId] as const,
   agentConversation: (companyId: string) => ["agent-conversation", companyId] as const,
   agentConfig: (companyId: string) => ["agent-config", companyId] as const,
+  commanderSkills: (companyId: string) => ["commander-skills", companyId] as const,
   agentRuns: (companyId: string) => ["agent-runs", companyId] as const,
   agentReminders: (companyId: string) => ["agent-reminders", companyId] as const,
   notifications: (companyId: string) => ["notifications", companyId] as const,
