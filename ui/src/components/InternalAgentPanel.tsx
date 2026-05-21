@@ -38,6 +38,12 @@ import {
 import { ChatPaneCaption } from "./commander/ChatPaneCaption";
 import { CommanderEmptyState } from "./commander/CommanderEmptyState";
 import { InputAddMenu } from "./commander/InputAddMenu";
+import { SkillPicker } from "./commander/SkillPicker";
+import {
+  buildSkillDirective,
+  matchSlashToken,
+} from "./commander/skillPickerUtils";
+import type { CompanySkillListItem } from "@armyofagents/shared";
 import {
   Tooltip,
   TooltipContent,
@@ -127,8 +133,16 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreamingLocal] = useState(false);
-  // Seam for Task 9: skill picker open state
+  // Task 9: skill picker. `skillPickerOpen` = opened via the `+` menu (shows
+  // all skills). `slashActive`/`slashQuery` = opened via a `/token` typed in
+  // the textarea. The picker is open when either source is active.
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const [slashActive, setSlashActive] = useState(false);
+  const [slashQuery, setSlashQuery] = useState("");
+  const [pickerIndex, setPickerIndex] = useState(0);
+  // The picker computes + reports its filtered list here so handleKeyDown can
+  // clamp the active index and resolve the selected skill without re-filtering.
+  const filteredSkillsRef = useRef<CompanySkillListItem[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -244,10 +258,16 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
     return () => clearTimeout(t);
   }, []);
 
-  // Escape key closes panel on desktop
+  // Escape key closes panel on desktop — UNLESS the skill picker is open, in
+  // which case the picker's own Escape handler closes it instead. The native
+  // document listener can't see React's stopPropagation, so we guard via a ref.
+  const pickerOpenRef = useRef(false);
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closePanel();
+      if (e.key === "Escape") {
+        if (pickerOpenRef.current) return;
+        closePanel();
+      }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -508,7 +528,119 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
     }
   }, [companyId, streaming, queryClient]);
 
+  // The picker is open if triggered by a slash token OR the `+` menu.
+  const pickerOpen = slashActive || skillPickerOpen;
+  const pickerQuery = slashActive ? slashQuery : "";
+
+  // Mirror picker-open into a ref so the native document Escape listener can
+  // defer to the picker without re-subscribing on every toggle.
+  useEffect(() => {
+    pickerOpenRef.current = pickerOpen;
+  }, [pickerOpen]);
+
+  const closePicker = useCallback(() => {
+    setSlashActive(false);
+    setSlashQuery("");
+    setSkillPickerOpen(false);
+    setPickerIndex(0);
+  }, []);
+
+  // Slash detection: inspect the substring up to the caret so a `/` mid-text
+  // (after whitespace) still triggers and a completed `/foo bar` token stops.
+  const handleInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const value = e.target.value;
+      setInput(value);
+      const caret = e.target.selectionStart ?? value.length;
+      const match = matchSlashToken(value.slice(0, caret));
+      if (match.active) {
+        setSlashActive(true);
+        setSlashQuery(match.query);
+        setPickerIndex(0);
+      } else {
+        // Typing past a token closes the slash-triggered picker. Leave a
+        // `+`-menu-triggered picker open (it isn't slash-driven).
+        setSlashActive(false);
+        setSlashQuery("");
+      }
+    },
+    [],
+  );
+
+  const handleSelectSkill = useCallback(
+    (skill: CompanySkillListItem) => {
+      const directive = buildSkillDirective(skill);
+      const el = inputRef.current;
+      const caret = el?.selectionStart ?? input.length;
+
+      let newValue: string;
+      let newCaret: number;
+
+      if (slashActive) {
+        // Replace the `/query` token (start..caret) with the directive,
+        // preserving any text after the caret.
+        const match = matchSlashToken(input.slice(0, caret));
+        const start = match.active ? match.start : caret;
+        const before = input.slice(0, start);
+        const after = input.slice(caret);
+        newValue = before + directive + after;
+        newCaret = (before + directive).length;
+      } else {
+        // Menu path: insert at the caret, padding with a leading space when
+        // the preceding char isn't already whitespace.
+        const before = input.slice(0, caret);
+        const after = input.slice(caret);
+        const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
+        const insert = (needsLeadingSpace ? " " : "") + directive;
+        newValue = before + insert + after;
+        newCaret = (before + insert).length;
+      }
+
+      setInput(newValue);
+      closePicker();
+
+      // Refocus and place caret at the end of the inserted directive.
+      requestAnimationFrame(() => {
+        const node = inputRef.current;
+        if (!node) return;
+        node.focus();
+        node.setSelectionRange(newCaret, newCaret);
+        // Re-run autogrow since the value changed programmatically.
+        node.style.height = "36px";
+        node.style.height = `${Math.min(node.scrollHeight, 140)}px`;
+      });
+    },
+    [input, slashActive, closePicker],
+  );
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // When the picker is open it wins over send/stop/close handling.
+    if (pickerOpen) {
+      const list = filteredSkillsRef.current;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (list.length > 0) setPickerIndex((i) => Math.min(i + 1, list.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (list.length > 0) setPickerIndex((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const skill = list[pickerIndex];
+        if (skill) handleSelectSkill(skill);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closePicker();
+        return;
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -709,15 +841,30 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
       </div>
 
       {/* Input bar */}
-      <div className="shrink-0 border-t border-border p-3">
-        {/* TODO(Task 9): render <SkillPicker open={skillPickerOpen} onOpenChange={setSkillPickerOpen} /> here */}
+      <div className="shrink-0 border-t border-border p-3 relative">
+        {/* Task 9: skill picker — anchored above the input card */}
+        <SkillPicker
+          open={pickerOpen}
+          query={pickerQuery}
+          activeIndex={pickerIndex}
+          onActiveIndexChange={setPickerIndex}
+          onSelect={handleSelectSkill}
+          onFilteredChange={(skills) => {
+            filteredSkillsRef.current = skills;
+          }}
+        />
         <div className="rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-brand-focus-ring focus-within:border-brand transition-shadow">
           {/* Textarea */}
           <textarea
             ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={handleInputChange}
             onKeyDown={handleKeyDown}
+            onBlur={() => {
+              // Close on blur so clicking outside dismisses the picker. Row
+              // clicks use onMouseDown+preventDefault so they fire before blur.
+              if (pickerOpen) closePicker();
+            }}
             placeholder="Ask the agent..."
             rows={1}
             className="w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-sm placeholder:text-muted-foreground focus-visible:outline-none disabled:opacity-50 max-h-[140px] min-h-[36px]"
@@ -733,7 +880,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
           <div className="flex items-center gap-1.5 px-2 pb-2">
             {/* + add menu (functional) */}
             <InputAddMenu
-              onUseSkill={() => setSkillPickerOpen(true)}
+              onUseSkill={() => {
+                setPickerIndex(0);
+                setSkillPickerOpen(true);
+                // Focus the textarea so ↑/↓/Enter drive the picker. Defer past
+                // the dropdown's own focus-restore on close.
+                requestAnimationFrame(() => inputRef.current?.focus());
+              }}
               disabled={streaming}
             />
 
