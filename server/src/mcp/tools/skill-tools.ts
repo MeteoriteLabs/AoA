@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { companySkills, agents, internalAgentConfig } from "@armyofagents/db";
+import { companySkills } from "@armyofagents/db";
 import { and, eq } from "drizzle-orm";
 import {
   type ToolContext,
@@ -35,31 +35,6 @@ async function handleUseSkill(
     return notFoundResult(
       `Skill '${parsed.key}' not found for this company. Use list_skills to see available skills.`,
     );
-  }
-
-  // Curated-source-of-truth enforcement: the Commander may only use skills that
-  // are selected for it (agents.skillKeys). The bridge sets actor.source
-  // "commander" but not agentId, so resolve the Commander agent from companyId
-  // via internalAgentConfig.agentId.
-  if (ctx.actor.source === "commander") {
-    const [cfg] = await ctx.db
-      .select({ agentId: internalAgentConfig.agentId })
-      .from(internalAgentConfig)
-      .where(eq(internalAgentConfig.companyId, ctx.companyId))
-      .limit(1);
-    if (cfg?.agentId) {
-      const [agent] = await ctx.db
-        .select({ skillKeys: agents.skillKeys })
-        .from(agents)
-        .where(eq(agents.id, cfg.agentId))
-        .limit(1);
-      const allowed: string[] = Array.isArray(agent?.skillKeys) ? agent.skillKeys : [];
-      if (!allowed.includes(parsed.key)) {
-        return notFoundResult(
-          `Skill '${parsed.key}' is not enabled for Commander. Enable it in Settings → Commander → Skills.`,
-        );
-      }
-    }
   }
 
   return ok({

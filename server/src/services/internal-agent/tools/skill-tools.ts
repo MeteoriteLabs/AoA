@@ -52,6 +52,35 @@ export const useSkillTool: AgentTool = {
         };
       }
 
+      // Curated-source-of-truth enforcement: the Commander may only use skills
+      // selected for it (agents.skillKeys). The bridge sets actorType
+      // "commander" but not an agent id, so resolve the Commander agent from
+      // companyId via internalAgentConfig.agentId.
+      if (ctx.actorType === "commander") {
+        const { agents, internalAgentConfig } = await import("@armyofagents/db");
+        const [cfg] = await ctx.db
+          .select({ agentId: internalAgentConfig.agentId })
+          .from(internalAgentConfig)
+          .where(eq(internalAgentConfig.companyId, ctx.companyId))
+          .limit(1);
+        if (cfg?.agentId) {
+          const [agent] = await ctx.db
+            .select({ skillKeys: agents.skillKeys })
+            .from(agents)
+            .where(eq(agents.id, cfg.agentId))
+            .limit(1);
+          const allowed: string[] = Array.isArray(agent?.skillKeys) ? agent.skillKeys : [];
+          if (!allowed.includes(key)) {
+            return {
+              success: false,
+              data: null,
+              summary: `Skill '${key}' is not enabled for Commander. Enable it in Settings → Commander → Skills.`,
+              error: "NOT_ENABLED",
+            };
+          }
+        }
+      }
+
       return {
         success: true,
         data: { key: skill.key, name: skill.name, content: skill.markdown },
