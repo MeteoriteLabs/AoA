@@ -249,30 +249,54 @@ describe("internal-agent pin/rename routes source contract (Task 1)", () => {
     "utf8",
   );
 
-  it("pin route embeds userId ownership condition for non-founders", () => {
-    // The pin route must push userId into convConditions for non-founders,
-    // matching the archive route's anti-leak pattern.
-    const pinRouteStart = routeSrc.indexOf(
-      "/conversations/:convId/pin",
-    );
-    const renameRouteStart = routeSrc.indexOf(
-      "/conversations/:convId/rename",
-    );
-    const pinRouteBlock = routeSrc.slice(pinRouteStart, renameRouteStart);
-    expect(pinRouteBlock).toContain("internalAgentConversations.userId");
-    expect(pinRouteBlock).toContain("actor.actorId");
+  // ── Helper contract ──────────────────────────────────────────────────────
+  // The ownership logic was extracted into loadOwnedConversation() to remove
+  // the verbatim triplication across archive, pin, and rename. These assertions
+  // verify the helper itself contains the full ownership guard.
+
+  it("loadOwnedConversation helper contains userId ownership condition for non-founders", () => {
+    // The helper body must push userId into convConditions for non-founders,
+    // preserving the anti-leak pattern (no 403 vs 404 distinction for non-owners).
+    const helperStart = routeSrc.indexOf("async function loadOwnedConversation(");
+    expect(helperStart).toBeGreaterThan(-1);
+    // Slice from the helper start to the next route registration to scope the check
+    const nextRouteStart = routeSrc.indexOf("router.post(", helperStart);
+    const helperBlock = routeSrc.slice(helperStart, nextRouteStart);
+    expect(helperBlock).toContain("internalAgentConversations.userId");
+    expect(helperBlock).toContain("actor.actorId");
   });
 
-  it("rename route embeds userId ownership condition for non-founders", () => {
-    const renameRouteStart = routeSrc.indexOf(
-      "/conversations/:convId/rename",
-    );
-    const messagesRouteStart = routeSrc.indexOf(
-      "/conversations/:convId/messages",
-    );
+  it("loadOwnedConversation helper resolves founder role (getEffectiveRole)", () => {
+    const helperStart = routeSrc.indexOf("async function loadOwnedConversation(");
+    const nextRouteStart = routeSrc.indexOf("router.post(", helperStart);
+    const helperBlock = routeSrc.slice(helperStart, nextRouteStart);
+    expect(helperBlock).toContain("getEffectiveRole");
+    expect(helperBlock).toContain("isFounderRole");
+  });
+
+  // ── Per-route delegation assertions ─────────────────────────────────────
+  // Each of the three mutating routes (archive, pin, rename) must call
+  // loadOwnedConversation() — enforcing ownership without duplicating the logic.
+
+  it("archive route delegates ownership to loadOwnedConversation()", () => {
+    const archiveRouteStart = routeSrc.indexOf("/conversations/:convId/archive");
+    const pinRouteStart = routeSrc.indexOf("/conversations/:convId/pin");
+    const archiveBlock = routeSrc.slice(archiveRouteStart, pinRouteStart);
+    expect(archiveBlock).toContain("loadOwnedConversation(");
+  });
+
+  it("pin route delegates ownership to loadOwnedConversation()", () => {
+    const pinRouteStart = routeSrc.indexOf("/conversations/:convId/pin");
+    const renameRouteStart = routeSrc.indexOf("/conversations/:convId/rename");
+    const pinRouteBlock = routeSrc.slice(pinRouteStart, renameRouteStart);
+    expect(pinRouteBlock).toContain("loadOwnedConversation(");
+  });
+
+  it("rename route delegates ownership to loadOwnedConversation()", () => {
+    const renameRouteStart = routeSrc.indexOf("/conversations/:convId/rename");
+    const messagesRouteStart = routeSrc.indexOf("/conversations/:convId/messages");
     const renameRouteBlock = routeSrc.slice(renameRouteStart, messagesRouteStart);
-    expect(renameRouteBlock).toContain("internalAgentConversations.userId");
-    expect(renameRouteBlock).toContain("actor.actorId");
+    expect(renameRouteBlock).toContain("loadOwnedConversation(");
   });
 
   it("pin route validates body with z.boolean()", () => {

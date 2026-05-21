@@ -331,6 +331,7 @@ export interface ConversationRow {
   updatedAt: string;
   messageCount: number;
   userId: string;
+  pinned: boolean;
 }
 
 export const commanderConversationsApi = {

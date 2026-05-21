@@ -1,6 +1,6 @@
 // server/src/routes/internal-agent.ts
 // Internal Agent HTTP endpoints — T13a
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
 import { and, eq, asc, desc, gte, lte, isNull, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
@@ -87,6 +87,46 @@ const updateToolPermissionsSchema = z.record(z.string(), toolPermissionSchema);
 
 export function internalAgentRoutes(db: Db) {
   const router = Router();
+
+  // ── Conversation ownership helper ────────────────────────────────────────
+  // Resolves whether the actor is a founder-equivalent, then fetches the
+  // conversation enforcing ownership in the WHERE clause — not via a separate
+  // 403 check — to avoid leaking conversation existence to non-owners via a
+  // 403 vs 404 distinction. Shared by archive, pin, and rename routes.
+  async function loadOwnedConversation(req: Request, companyId: string, convId: string) {
+    const actor = getActorInfo(req);
+    const isLocalImplicit =
+      req.actor.type === "board" && req.actor.source === "local_implicit";
+    const isInstanceAdmin =
+      req.actor.type === "board" && req.actor.isInstanceAdmin === true;
+
+    let isFounderRole: boolean;
+    if (isLocalImplicit || isInstanceAdmin) {
+      isFounderRole = true;
+    } else {
+      const role = await permissionService(db).getEffectiveRole(
+        companyId,
+        actor.actorId,
+      );
+      isFounderRole = role === "founder";
+    }
+
+    const convConditions = [
+      eq(internalAgentConversations.id, convId),
+      eq(internalAgentConversations.companyId, companyId),
+    ];
+    if (!isFounderRole) {
+      convConditions.push(eq(internalAgentConversations.userId, actor.actorId));
+    }
+
+    const [existing] = await db
+      .select()
+      .from(internalAgentConversations)
+      .where(and(...convConditions));
+
+    if (!existing) throw notFound("Conversation not found");
+    return existing;
+  }
 
   // ── 2.1 Send Message (SSE Streaming) ─────────────────────────────────
   // Sprint 4 S4-F: rate-limit chat (LLM-billed). 60 requests per minute per
@@ -830,44 +870,8 @@ export function internalAgentRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const convId = req.params.convId as string;
       assertCompanyAccess(req, companyId);
-      const actor = getActorInfo(req);
 
-      // Get role FIRST so we can embed ownership in the WHERE clause and avoid
-      // leaking conversation existence to non-owners via a 403 vs 404 distinction.
-      const isLocalImplicit =
-        req.actor.type === "board" && req.actor.source === "local_implicit";
-      const isInstanceAdmin =
-        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
-
-      let isFounderRole: boolean;
-      if (isLocalImplicit || isInstanceAdmin) {
-        isFounderRole = true;
-      } else {
-        const role = await permissionService(db).getEffectiveRole(
-          companyId,
-          actor.actorId,
-        );
-        isFounderRole = role === "founder";
-      }
-
-      // Build conditions: the conversation must be in this company AND either:
-      // - it belongs to the current user (non-founders), or
-      // - we don't filter by userId (founders see all)
-      const convConditions = [
-        eq(internalAgentConversations.id, convId),
-        eq(internalAgentConversations.companyId, companyId),
-      ];
-      if (!isFounderRole) {
-        convConditions.push(eq(internalAgentConversations.userId, actor.actorId));
-      }
-
-      const [existing] = await db
-        .select()
-        .from(internalAgentConversations)
-        .where(and(...convConditions));
-
-      if (!existing) throw notFound("Conversation not found");
-      // No separate ownership check needed — WHERE clause already enforces it
+      await loadOwnedConversation(req, companyId, convId);
 
       const [updated] = await db
         .update(internalAgentConversations)
@@ -887,42 +891,12 @@ export function internalAgentRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const convId = req.params.convId as string;
       assertCompanyAccess(req, companyId);
-      const actor = getActorInfo(req);
 
-      const isLocalImplicit =
-        req.actor.type === "board" && req.actor.source === "local_implicit";
-      const isInstanceAdmin =
-        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
-
-      let isFounderRole: boolean;
-      if (isLocalImplicit || isInstanceAdmin) {
-        isFounderRole = true;
-      } else {
-        const role = await permissionService(db).getEffectiveRole(
-          companyId,
-          actor.actorId,
-        );
-        isFounderRole = role === "founder";
-      }
-
-      const convConditions = [
-        eq(internalAgentConversations.id, convId),
-        eq(internalAgentConversations.companyId, companyId),
-      ];
-      if (!isFounderRole) {
-        convConditions.push(eq(internalAgentConversations.userId, actor.actorId));
-      }
-
-      const [existing] = await db
-        .select()
-        .from(internalAgentConversations)
-        .where(and(...convConditions));
-
-      if (!existing) throw notFound("Conversation not found");
+      await loadOwnedConversation(req, companyId, convId);
 
       const [updated] = await db
         .update(internalAgentConversations)
-        .set({ pinned: req.body.pinned as boolean })
+        .set({ pinned: req.body.pinned })
         .where(eq(internalAgentConversations.id, convId))
         .returning();
 
@@ -938,42 +912,12 @@ export function internalAgentRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const convId = req.params.convId as string;
       assertCompanyAccess(req, companyId);
-      const actor = getActorInfo(req);
 
-      const isLocalImplicit =
-        req.actor.type === "board" && req.actor.source === "local_implicit";
-      const isInstanceAdmin =
-        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
-
-      let isFounderRole: boolean;
-      if (isLocalImplicit || isInstanceAdmin) {
-        isFounderRole = true;
-      } else {
-        const role = await permissionService(db).getEffectiveRole(
-          companyId,
-          actor.actorId,
-        );
-        isFounderRole = role === "founder";
-      }
-
-      const convConditions = [
-        eq(internalAgentConversations.id, convId),
-        eq(internalAgentConversations.companyId, companyId),
-      ];
-      if (!isFounderRole) {
-        convConditions.push(eq(internalAgentConversations.userId, actor.actorId));
-      }
-
-      const [existing] = await db
-        .select()
-        .from(internalAgentConversations)
-        .where(and(...convConditions));
-
-      if (!existing) throw notFound("Conversation not found");
+      await loadOwnedConversation(req, companyId, convId);
 
       const [updated] = await db
         .update(internalAgentConversations)
-        .set({ title: req.body.title as string })
+        .set({ title: req.body.title })
         .where(eq(internalAgentConversations.id, convId))
         .returning();
 
