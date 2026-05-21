@@ -122,8 +122,8 @@ describe("internal-agent-routes-contract", () => {
       (layer: any) => layer.route != null,
     );
 
-    // 10 original routes + 3 new multi-conversation routes (list, create, archive) + 2 tool-permissions routes + 1 messages route (Task 8) + 2 pin/rename routes (Task 1) + 1 delete route (Task 5) + 1 Commander skills route (Task 5b)
-    expect(routeLayers).toHaveLength(20);
+    // 10 original routes + 3 new multi-conversation routes (list, create, archive) + 2 tool-permissions routes + 1 messages route (Task 8) + 2 pin/rename routes (Task 1) + 1 delete route (Task 5) + 1 Commander skills route (Task 5b) + 2 reorder/reset routes (Batch 2)
+    expect(routeLayers).toHaveLength(22);
   });
 
   it("registers all expected paths and methods", () => {
@@ -164,6 +164,9 @@ describe("internal-agent-routes-contract", () => {
       { path: "/companies/:companyId/internal-agent/conversations/:convId", method: "delete" },
       // Commander skills route (Task 5b)
       { path: "/companies/:companyId/internal-agent/skills", method: "get" },
+      // session reorder + reset routes (Batch 2)
+      { path: "/companies/:companyId/internal-agent/conversations/reorder", method: "patch" },
+      { path: "/companies/:companyId/internal-agent/conversations/order", method: "delete" },
     ];
 
     for (const expected of expectedRoutes) {
@@ -364,6 +367,54 @@ describe("internal-agent Commander-scoped skills route source contract (Task 5b)
   it("scopes the skills route to the commander agent", () => {
     expect(routeSrc).toContain("ensureCommanderAgent");
     expect(routeSrc).toContain("listSkillListItemsForAgent");
+  });
+});
+
+// ── Reorder + reset route source contract (Batch 2) ──────────────────────────
+describe("internal-agent session reorder/reset route source contract (Batch 2)", () => {
+  const routeSrc = readFileSync(
+    resolve(__dirname, "../routes/internal-agent.ts"),
+    "utf8",
+  );
+
+  it("registers PATCH reorder + DELETE order routes", () => {
+    expect(routeSrc).toContain('"/companies/:companyId/internal-agent/conversations/reorder"');
+    expect(routeSrc).toContain('"/companies/:companyId/internal-agent/conversations/order"');
+  });
+
+  it("registers reorder/order BEFORE the :convId routes (avoids path capture)", () => {
+    const reorderIdx = routeSrc.indexOf("/conversations/reorder");
+    const convIdDeleteIdx = routeSrc.indexOf('/conversations/:convId",');
+    expect(reorderIdx).toBeGreaterThan(-1);
+    expect(convIdDeleteIdx).toBeGreaterThan(-1);
+    expect(reorderIdx).toBeLessThan(convIdDeleteIdx);
+  });
+
+  it("scopes reorder writes to the actor's own conversations (userId)", () => {
+    const start = routeSrc.indexOf("/conversations/reorder");
+    const end = routeSrc.indexOf("/conversations/order");
+    const block = routeSrc.slice(start, end);
+    expect(block).toContain("internalAgentConversations.userId");
+    expect(block).toContain("actor.actorId");
+  });
+
+  it("reset clears sortOrder scoped to the actor's own conversations", () => {
+    const start = routeSrc.indexOf("/conversations/order");
+    const end = routeSrc.indexOf("/conversations/:convId/archive");
+    const block = routeSrc.slice(start, end);
+    expect(block).toContain("sortOrder: null");
+    expect(block).toContain("internalAgentConversations.userId");
+  });
+});
+
+describe("internal-agent-conversations sort_order column schema contract (Batch 2)", () => {
+  const schemaSrc = readFileSync(
+    resolve(__dirname, "../../../packages/db/src/schema/internal_agent.ts"),
+    "utf8",
+  );
+
+  it("sort_order column exists (nullable integer) in internalAgentConversations", () => {
+    expect(schemaSrc).toContain('integer("sort_order")');
   });
 });
 
