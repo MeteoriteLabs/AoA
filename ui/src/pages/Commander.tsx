@@ -4,7 +4,7 @@ import { Info } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { AgentPanelContent } from "../components/InternalAgentPanel";
-import { CommanderSessionsSidebar } from "../components/CommanderSessionsSidebar";
+import { SessionsSidebar } from "../components/commander";
 import { commanderConversationsApi, internalAgentApi } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -66,7 +66,7 @@ export function Commander() {
 
       {/* Chat workspace — sessions + chat panel, fills remaining height */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        <CommanderSessionsSidebar
+        <SessionsSidebar
           activeConversationId={activeConversationId}
           onSelect={setActiveConversationId}
           onNewConversation={handleNewConversation}

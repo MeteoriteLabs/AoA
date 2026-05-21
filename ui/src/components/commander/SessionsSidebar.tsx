@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCompany } from "../context/CompanyContext";
-import { commanderConversationsApi, type ConversationRow } from "../api/internal-agent";
+import { useCompany } from "../../context/CompanyContext";
+import { commanderConversationsApi, type ConversationRow } from "../../api/internal-agent";
 import { Plus, Archive, ChevronLeft, ChevronRight } from "lucide-react";
-import { cn } from "../lib/utils";
+import { cn } from "../../lib/utils";
 
 function formatRelativeTime(dateStr: string): string {
   const now = Date.now();
@@ -51,7 +51,7 @@ function groupByDate(conversations: ConversationRow[]) {
   return groups.filter((g) => g.items.length > 0);
 }
 
-export function CommanderSessionsSidebar({
+export function SessionsSidebar({
   activeConversationId,
   onSelect,
   onNewConversation,
