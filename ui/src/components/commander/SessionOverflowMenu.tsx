@@ -66,6 +66,7 @@ export function SessionOverflowMenu({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
+            data-commander-touch
             onClick={(e) => e.stopPropagation()}
             className="hidden group-hover:flex items-center justify-center p-0.5 rounded hover:bg-black/10 transition-colors shrink-0"
             title="More options"

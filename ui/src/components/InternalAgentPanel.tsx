@@ -164,9 +164,15 @@ function serverToLocal(m: AgentMessage): LocalMessage {
 interface AgentPanelContentProps {
   conversationId?: string | null;
   onSelectConversation?: (id: string) => void;
+  /**
+   * Task 11: on mobile/tablet the sessions list lives in a left Sheet drawer.
+   * When provided, the caption's "Sessions" button opens it. Undefined on
+   * desktop/wide (the inline sidebar is shown instead).
+   */
+  onOpenSessions?: () => void;
 }
 
-export function AgentPanelContent({ conversationId, onSelectConversation }: AgentPanelContentProps = {}) {
+export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions }: AgentPanelContentProps = {}) {
   const { selectedCompanyId } = useCompany();
   const { breadcrumbs } = useBreadcrumbs();
   const { closePanel, setIsStreaming, setCurrentConversationId } = useAgentPanel();
@@ -305,11 +311,22 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
   // Escape key closes panel on desktop — UNLESS the skill picker is open, in
   // which case the picker's own Escape handler closes it instead. The native
   // document listener can't see React's stopPropagation, so we guard via a ref.
+  //
+  // Task 11 (Eng E2): the mobile/tablet sessions Sheet is a Radix Dialog. Its
+  // own Escape handler closes the drawer, but the native document listener below
+  // would otherwise ALSO fire closePanel() on the same keystroke (double-fire).
+  // Guard by early-returning whenever any Radix dialog/sheet is open in the DOM
+  // (data-state="open"), so the drawer's Escape only closes the drawer.
   const pickerOpenRef = useRef(false);
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (pickerOpenRef.current) return;
+        // Defer to any open Radix dialog/sheet (e.g. the sessions drawer or the
+        // rename/delete dialogs) — let it own the Escape and skip closePanel().
+        if (document.querySelector('[data-slot="sheet-content"],[role="dialog"][data-state="open"]')) {
+          return;
+        }
         closePanel();
       }
     };
@@ -726,7 +743,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
           title={activeConv?.title ?? "New chat"}
           messageCount={activeConv?.messageCount ?? messages.length}
           updatedAt={activeConv?.updatedAt}
-          onOpenSessions={undefined}
+          onOpenSessions={onOpenSessions}
         />
       )}
 
@@ -744,10 +761,16 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
       {/* Messages (fix #11: aria-live for streaming accessibility) */}
       <div
         ref={messagesContainerRef}
-        className="flex-1 overflow-y-auto px-3 py-3 space-y-3 min-h-0"
+        className="flex-1 overflow-y-auto px-3 py-3 min-h-0"
         aria-live="polite"
         aria-relevant="additions"
       >
+        {/* Task 11: on wide (>= 1536px / Tailwind 2xl) cap the message column at
+            880px centered. Below 2xl this wrapper is a no-op width-wise, so
+            desktop width is unchanged. `h-full` preserves the empty-state's
+            full-height vertical centering (it used to reference the scroll
+            container directly). */}
+        <div className="h-full space-y-3 2xl:max-w-[880px] 2xl:mx-auto">
         {messages.length === 0 && (
           <CommanderEmptyState
             greetingText={
@@ -775,6 +798,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
               {msg.content && (
                 <button
                   type="button"
+                  data-commander-touch
                   aria-label="Copy message"
                   title="Copy"
                   onClick={() => handleCopyMessage(msg.id, msg.content)}
@@ -952,6 +976,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation }: Agen
         ))}
 
         <div ref={messagesEndRef} />
+        </div>
       </div>
 
       {/* Input bar */}

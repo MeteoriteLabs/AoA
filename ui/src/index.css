@@ -350,6 +350,24 @@
   [data-slot="select-trigger"] {
     min-height: 44px;
   }
+
+  /* Commander (Task 11): dense ghost icon buttons (28px) and the session-row
+     overflow menu (22px) are comfortable with a mouse but too small to tap.
+     Bump them to a ~40px square hit area on coarse pointers only — fine
+     (mouse) pointers keep the dense desktop sizing untouched. The session
+     overflow trigger is normally hover-revealed; force it visible on touch
+     since there is no hover. */
+  [data-commander-touch] {
+    min-width: 40px;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  [data-commander-touch].group-hover\:flex {
+    display: inline-flex !important;
+  }
 }
 
 /* Dark mode scrollbars */

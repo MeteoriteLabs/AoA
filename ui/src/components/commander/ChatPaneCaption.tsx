@@ -18,15 +18,21 @@ export function ChatPaneCaption({
 
   return (
     <div className="h-11 flex items-center gap-2 px-5 border-b border-border-soft bg-bg shrink-0">
-      {/* Mobile: Sessions button (drawer wired in Task 11) */}
-      <button
-        type="button"
-        onClick={onOpenSessions}
-        className="md:hidden p-1 rounded text-dim hover:bg-hd hover:text-text transition-colors shrink-0"
-        aria-label="Open sessions"
-      >
-        <PanelLeft className="h-4 w-4" />
-      </button>
+      {/* Mobile/tablet (< 1024px): Sessions button opens the left drawer.
+          `lg:hidden` so it stays visible across the whole drawer-layout range
+          (mobile + tablet) and disappears exactly when the inline sidebar
+          takes over at the desktop tier. */}
+      {onOpenSessions && (
+        <button
+          type="button"
+          data-commander-touch
+          onClick={onOpenSessions}
+          className="lg:hidden p-1 rounded text-dim hover:bg-hd hover:text-text transition-colors shrink-0"
+          aria-label="Open sessions"
+        >
+          <PanelLeft className="h-4 w-4" />
+        </button>
+      )}
 
       {/* Title + meta */}
       <div className="flex flex-col justify-center min-w-0 flex-1">

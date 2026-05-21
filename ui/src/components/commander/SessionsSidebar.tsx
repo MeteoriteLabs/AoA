@@ -291,6 +291,7 @@ export function SessionsSidebar({
             <span className="text-[0.7rem] text-very-dim">online</span>
           </div>
           <button
+            data-commander-touch
             onClick={() => setCollapsed(true)}
             className="p-0.5 rounded text-dim hover:bg-hd hover:text-text transition-colors"
             title="Collapse sidebar"

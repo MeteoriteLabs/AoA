@@ -7,6 +7,8 @@ import { AgentPanelContent } from "../components/InternalAgentPanel";
 import { SessionsSidebar } from "../components/commander";
 import { commanderConversationsApi, internalAgentApi } from "../api/internal-agent";
 import { queryKeys } from "../lib/queryKeys";
+import { useBreakpoint } from "../lib/useBreakpoint";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
 export function Commander() {
   const { selectedCompanyId } = useCompany();
@@ -14,6 +16,10 @@ export function Commander() {
   const queryClient = useQueryClient();
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // Task 11: on mobile/tablet (< 1024px) the sessions list lives in a left
+  // drawer instead of an inline sidebar.
+  const { useDrawerSessions } = useBreakpoint();
+  const [sessionsDrawerOpen, setSessionsDrawerOpen] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Commander" }]);
@@ -29,7 +35,15 @@ export function Commander() {
     if (!selectedCompanyId) return;
     const conv = await commanderConversationsApi.create(selectedCompanyId);
     setActiveConversationId(conv.id);
+    // Close the drawer after starting a new chat on mobile/tablet.
+    setSessionsDrawerOpen(false);
     queryClient.invalidateQueries({ queryKey: ["commander-conversations"] });
+  };
+
+  // Selecting a session closes the drawer (no-op on desktop where it's never open).
+  const handleSelectConversation = (id: string) => {
+    setActiveConversationId(id);
+    setSessionsDrawerOpen(false);
   };
 
   return (
@@ -46,17 +60,37 @@ export function Commander() {
 
       {/* Chat workspace — sessions + chat panel, fills remaining height */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        <SessionsSidebar
-          activeConversationId={activeConversationId}
-          onSelect={setActiveConversationId}
-          onNewConversation={handleNewConversation}
-        />
+        {/* Desktop/wide (>= 1024px): inline sessions sidebar — UNCHANGED */}
+        {!useDrawerSessions && (
+          <SessionsSidebar
+            activeConversationId={activeConversationId}
+            onSelect={setActiveConversationId}
+            onNewConversation={handleNewConversation}
+          />
+        )}
+
         <div className="flex-1 min-w-0 overflow-hidden bg-bg">
           <AgentPanelContent
             conversationId={activeConversationId}
-            onSelectConversation={setActiveConversationId}
+            onSelectConversation={handleSelectConversation}
+            onOpenSessions={useDrawerSessions ? () => setSessionsDrawerOpen(true) : undefined}
           />
         </div>
+
+        {/* Mobile/tablet (< 1024px): sessions in a left slide-in drawer.
+            Radix Dialog (Sheet) provides focus trap + Escape automatically. */}
+        {useDrawerSessions && (
+          <Sheet open={sessionsDrawerOpen} onOpenChange={setSessionsDrawerOpen}>
+            <SheetContent side="left" showCloseButton className="w-auto sm:max-w-[15rem] p-0">
+              <SheetTitle className="sr-only">Sessions</SheetTitle>
+              <SessionsSidebar
+                activeConversationId={activeConversationId}
+                onSelect={handleSelectConversation}
+                onNewConversation={handleNewConversation}
+              />
+            </SheetContent>
+          </Sheet>
+        )}
       </div>
     </div>
   );
