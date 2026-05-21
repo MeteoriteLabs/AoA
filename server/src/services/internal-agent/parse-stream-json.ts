@@ -61,37 +61,37 @@ export class StreamJsonParser {
 
 function parseLine(line: string): AgentStreamChunk[] {
   const trimmed = line.trim();
-  if (trimmed.length === 0) return [];
 
-  let event: Record<string, unknown>;
-  try {
-    event = JSON.parse(trimmed) as Record<string, unknown>;
-  } catch {
-    // Malformed JSON — silently discard, don't throw
-    return [];
+  // Try to parse as a stream-json event first.
+  if (trimmed.length > 0) {
+    try {
+      const event = JSON.parse(trimmed) as Record<string, unknown>;
+      switch (event.type) {
+        case "stream_event":
+          return handleStreamEvent(event);
+        case "assistant":
+          return handleAssistantEvent(event);
+        case "user":
+          return handleUserEvent(event);
+        case "result":
+          return handleResultEvent(event);
+        // Informational only — no chunks emitted.
+        case "system":
+        case "rate_limit_event":
+          return [];
+        default:
+          return [];
+      }
+    } catch {
+      // Not JSON — fall through to the plain-text fallback below.
+    }
   }
 
-  switch (event.type) {
-    case "stream_event":
-      return handleStreamEvent(event);
-
-    case "assistant":
-      return handleAssistantEvent(event);
-
-    case "user":
-      return handleUserEvent(event);
-
-    case "result":
-      return handleResultEvent(event);
-
-    // All of these are informational only — no chunks emitted
-    case "system":
-    case "rate_limit_event":
-      return [];
-
-    default:
-      return [];
-  }
+  // Plain-text fallback: claude_cli emits the answer for an MCP-tool-using turn
+  // as plain text (not stream-json). Surface it as a text chunk so the response
+  // renders instead of being dropped. Re-add the newline that split() stripped
+  // so multi-line markdown reconstructs; a blank line is a paragraph break.
+  return [{ type: "text", delta: line + "\n" }];
 }
 
 // ── stream_event ───────────────────────────────────────────────────────────────

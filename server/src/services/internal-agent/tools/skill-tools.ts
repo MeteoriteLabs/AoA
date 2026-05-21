@@ -29,19 +29,33 @@ export const useSkillTool: AgentTool = {
     }
 
     try {
-      const { companySkills } = await import("@armyofagents/db");
-      const { and, eq } = await import("drizzle-orm");
+      const { companySkills, agents, internalAgentConfig } = await import("@armyofagents/db");
+      const { eq } = await import("drizzle-orm");
 
-      const [skill] = await ctx.db
+      // Flexible resolution: the model sometimes drops the "skill:" prefix or
+      // passes the slug/name. Resolve to the canonical company skill.
+      const all = await ctx.db
         .select({
           key: companySkills.key,
+          slug: companySkills.slug,
           name: companySkills.name,
           description: companySkills.description,
           markdown: companySkills.markdown,
         })
         .from(companySkills)
-        .where(and(eq(companySkills.companyId, ctx.companyId), eq(companySkills.key, key)))
-        .limit(1);
+        .where(eq(companySkills.companyId, ctx.companyId));
+
+      const want = key.toLowerCase();
+      const skill =
+        all.find((s) => s.key.toLowerCase() === want) ??
+        all.find((s) => s.key.toLowerCase() === `skill:${want}`) ??
+        all.find((s) => {
+          const k = s.key.toLowerCase();
+          return k.endsWith(`/${want}`) || k.endsWith(`:${want}`);
+        }) ??
+        all.find((s) => (s.slug ?? "").toLowerCase() === want) ??
+        all.find((s) => (s.name ?? "").toLowerCase() === want) ??
+        null;
 
       if (!skill) {
         return {
@@ -55,9 +69,8 @@ export const useSkillTool: AgentTool = {
       // Curated-source-of-truth enforcement: the Commander may only use skills
       // selected for it (agents.skillKeys). The bridge sets actorType
       // "commander" but not an agent id, so resolve the Commander agent from
-      // companyId via internalAgentConfig.agentId.
+      // companyId via internalAgentConfig.agentId. Check the CANONICAL key.
       if (ctx.actorType === "commander") {
-        const { agents, internalAgentConfig } = await import("@armyofagents/db");
         const [cfg] = await ctx.db
           .select({ agentId: internalAgentConfig.agentId })
           .from(internalAgentConfig)
@@ -70,11 +83,11 @@ export const useSkillTool: AgentTool = {
             .where(eq(agents.id, cfg.agentId))
             .limit(1);
           const allowed: string[] = Array.isArray(agent?.skillKeys) ? agent.skillKeys : [];
-          if (!allowed.includes(key)) {
+          if (!allowed.includes(skill.key)) {
             return {
               success: false,
               data: null,
-              summary: `Skill '${key}' is not enabled for Commander. Enable it in Settings → Commander → Skills.`,
+              summary: `Skill '${skill.key}' is not enabled for Commander. Enable it in Settings → Commander → Skills.`,
               error: "NOT_ENABLED",
             };
           }

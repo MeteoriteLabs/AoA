@@ -5,6 +5,12 @@ vi.mock("@armyofagents/db", () => ({
   companySkills: new Proxy({}, {
     get: (_t, k) => `companySkills.${String(k)}`,
   }),
+  agents: new Proxy({}, {
+    get: (_t, k) => `agents.${String(k)}`,
+  }),
+  internalAgentConfig: new Proxy({}, {
+    get: (_t, k) => `internalAgentConfig.${String(k)}`,
+  }),
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -14,14 +20,29 @@ vi.mock("drizzle-orm", () => ({
 
 import { useSkillTool } from "../services/internal-agent/tools/skill-tools.js";
 
+/**
+ * Build a mock DB context for use_skill tests.
+ *
+ * Fix B changed the fetch from a single exact-match `.where(...).limit(1)` to
+ * a "fetch all, filter in JS" pattern: `.where(eq(companySkills.companyId, ...))`.
+ * That first query has no `.limit()` call; the result is awaited directly from
+ * the `.where()` return value.  The mock therefore exposes a thenable from
+ * `.where()` (for the fetch-all query) while also preserving `.limit()` on it
+ * (for any downstream commander-enforcement queries that do call `.limit()`).
+ */
 function makeCtx(selectResult: any[]) {
+  const whereResult = {
+    // Thenable: the fetch-all path awaits `.where()` directly
+    then: (resolve: (v: any) => any) => Promise.resolve(selectResult).then(resolve),
+    catch: (reject: (e: any) => any) => Promise.resolve(selectResult).catch(reject),
+    // limit() support: enforcement path calls .limit(1)
+    limit: async (_n: number) => selectResult,
+  };
   return {
     db: {
       select: () => ({
         from: () => ({
-          where: () => ({
-            limit: async () => selectResult,
-          }),
+          where: () => whereResult,
         }),
       }),
     },

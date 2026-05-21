@@ -311,21 +311,28 @@ describe("StreamJsonParser", () => {
     expect(chunks2).toEqual([]); // system event — no chunks
   });
 
-  // Test 15: malformed JSON line does not throw, emits no chunks
-  it("malformed JSON line does not throw and emits no chunks", () => {
+  // Test 15: non-JSON line does not throw and emits a text chunk (plain-text fallback)
+  it("non-JSON line does not throw and emits a text chunk", () => {
     const parser = new StreamJsonParser();
     let chunks: AgentStreamChunk[];
     expect(() => {
       chunks = parser.push("this is not json\n");
     }).not.toThrow();
     chunks = parser.push("this is not json\n");
-    expect(chunks).toEqual([]);
+    expect(chunks).toEqual([{ type: "text", delta: "this is not json\n" }]);
   });
 
-  // Test 16: empty / blank lines emit no chunks
-  it("empty and blank lines emit no chunks", () => {
+  // Test 16: blank lines emit a text chunk (paragraph break in plain-text fallback)
+  it("blank lines emit a text chunk with a newline (paragraph break)", () => {
     const parser = new StreamJsonParser();
-    expect(parser.push("\n\n\n")).toEqual([]);
+    // Three blank lines → three completed lines of "", each → { type: "text", delta: "\n" }
+    const chunks = parser.push("\n\n\n");
+    expect(chunks).toEqual([
+      { type: "text", delta: "\n" },
+      { type: "text", delta: "\n" },
+      { type: "text", delta: "\n" },
+    ]);
+    // Nothing buffered after the three newlines
     expect(parser.flush()).toEqual([]);
   });
 
@@ -404,6 +411,27 @@ describe("StreamJsonParser", () => {
     for (const c of cases) {
       expect(parseOnce(JSON.stringify(c))).toEqual([]);
     }
+  });
+
+  // Test 20a: plain-text markdown across multiple lines reconstructs correctly
+  it("plain-text markdown pushed in one chunk yields text chunks that reconstruct the markdown", () => {
+    const markdown = "# Title\n\nbody paragraph\n";
+    const parser = new StreamJsonParser();
+    const chunks = parser.push(markdown);
+    // split("\n") on "# Title\n\nbody paragraph\n" gives:
+    //   ["# Title", "", "body paragraph", ""] — last "" stays buffered
+    // so push() emits 3 completed lines:
+    expect(chunks).toEqual([
+      { type: "text", delta: "# Title\n" },
+      { type: "text", delta: "\n" },
+      { type: "text", delta: "body paragraph\n" },
+    ]);
+    // The trailing empty fragment "" has length 0, so flush() returns [] early.
+    const flushed = parser.flush();
+    expect(flushed).toEqual([]);
+    // Reconstruct: joining all push() deltas gives back the original markdown.
+    const reconstructed = chunks.map((c) => (c as { delta: string }).delta).join("");
+    expect(reconstructed).toBe(markdown);
   });
 
   // Test 20: tool_result with is_error: true sets success=false and error field

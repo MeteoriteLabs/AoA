@@ -10,6 +10,7 @@ import type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
 import { createCLISessionStore } from "./cli-session-store.js";
 import type { CLISession } from "./cli-session-store.js";
 import { StreamJsonParser } from "./parse-stream-json.js";
+import { logger } from "../../middleware/logger.js";
 
 // ── CLI Detection ─────────────────────────────────────────────────────────────
 
@@ -756,8 +757,11 @@ async function* streamProcessOutput(
     notify();
   });
 
-  proc.stderr?.on("data", () => {
-    // Log stderr but don't stream to user
+  proc.stderr?.on("data", (data: Buffer) => {
+    const text = data.toString();
+    if (text.trim().length > 0) {
+      logger.warn({ service: "commander-cli", stderr: text.slice(0, 2000) }, "CLI subprocess stderr");
+    }
   });
 
   proc.on("exit", () => {
