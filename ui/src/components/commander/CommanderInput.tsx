@@ -76,6 +76,15 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
     // would otherwise clobber an imperatively-added class on the next render.
     const [isEmpty, setIsEmpty] = useState(true);
 
+    // Hover card for skill tokens (shows name + description + key on hover).
+    const [hoverCard, setHoverCard] = useState<{
+      name: string;
+      key: string;
+      desc: string;
+      left: number;
+      top: number;
+    } | null>(null);
+
     // Keep latest props in refs so the imperative handle + DOM handlers stay
     // stable (never go stale, never thrash the ref identity).
     const onSubmitRef = useRef(onSubmit);
@@ -305,30 +314,82 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
       emitSlash(readSlash());
     }, [emitSlash, readSlash]);
 
+    // Show the hover card when the pointer is over a skill token.
+    const handleMouseOver = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+      const root = rootRef.current;
+      const token = (e.target as HTMLElement)?.closest?.(
+        '[data-token="skill"]',
+      ) as HTMLElement | null;
+      if (!token || !root?.contains(token)) return;
+      const r = token.getBoundingClientRect();
+      setHoverCard({
+        name: token.dataset.name ?? token.textContent ?? "",
+        key: token.dataset.key ?? "",
+        desc: token.dataset.desc ?? "",
+        left: r.left,
+        top: r.top,
+      });
+    }, []);
+
+    const handleMouseOut = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+      const fromToken = (e.target as HTMLElement)?.closest?.('[data-token="skill"]');
+      const toToken = (e.relatedTarget as HTMLElement | null)?.closest?.(
+        '[data-token="skill"]',
+      );
+      if (fromToken && fromToken !== toToken) setHoverCard(null);
+    }, []);
+
     return (
-      <div
-        ref={rootRef}
-        role="textbox"
-        aria-multiline="true"
-        aria-label={placeholder ?? "Message Commander"}
-        data-placeholder={placeholder ?? ""}
-        contentEditable={!disabled}
-        suppressContentEditableWarning
-        spellCheck
-        onInput={handleInput}
-        onKeyDown={handleKeyDown}
-        onKeyUp={handleSelectionShift}
-        onMouseUp={handleSelectionShift}
-        onPaste={handlePaste}
-        onBlur={onBlur}
-        className={cn(
-          "commander-input w-full bg-transparent px-3 py-2 text-sm leading-5",
-          "min-h-[36px] max-h-[140px]",
-          isEmpty && "is-empty",
-          disabled && "opacity-50 cursor-not-allowed",
-          className,
+      <>
+        <div
+          ref={rootRef}
+          role="textbox"
+          aria-multiline="true"
+          aria-label={placeholder ?? "Message Commander"}
+          data-placeholder={placeholder ?? ""}
+          contentEditable={!disabled}
+          suppressContentEditableWarning
+          spellCheck
+          onInput={handleInput}
+          onKeyDown={handleKeyDown}
+          onKeyUp={handleSelectionShift}
+          onMouseUp={handleSelectionShift}
+          onMouseOver={handleMouseOver}
+          onMouseOut={handleMouseOut}
+          onPaste={handlePaste}
+          onBlur={onBlur}
+          className={cn(
+            "commander-input w-full bg-transparent px-3 py-2 text-sm leading-5",
+            "min-h-[36px] max-h-[140px]",
+            isEmpty && "is-empty",
+            disabled && "opacity-50 cursor-not-allowed",
+            className,
+          )}
+        />
+        {hoverCard && (
+          <div
+            // Fixed to the token's viewport rect, floating just above it. Pointer
+            // events off so it never steals the hover from the token underneath.
+            className="fixed z-50 max-w-xs rounded-lg border border-border bg-popover p-2.5 shadow-lg pointer-events-none"
+            style={{
+              left: hoverCard.left,
+              top: hoverCard.top - 8,
+              transform: "translateY(-100%)",
+            }}
+            role="tooltip"
+          >
+            <div className="text-sm font-medium text-foreground">{hoverCard.name}</div>
+            {hoverCard.desc && (
+              <div className="mt-0.5 text-xs text-muted-foreground">{hoverCard.desc}</div>
+            )}
+            {hoverCard.key && (
+              <div className="mt-1 font-mono text-[10px] text-muted-foreground/60 break-all">
+                {hoverCard.key}
+              </div>
+            )}
+          </div>
         )}
-      />
+      </>
     );
   },
 );

@@ -35,12 +35,15 @@ export const SKILL_TOKEN_CLASS =
 export interface SkillTokenData {
   name: string;
   key: string;
+  /** Optional skill description, stashed on the token for the hover card. */
+  description?: string | null;
 }
 
 /**
  * Build the atomic skill token span inserted into the contenteditable.
  * Shows only the human name; the exact key + name ride along in data-attrs so
- * `serializeRoot` can rebuild the full directive on send.
+ * `serializeRoot` can rebuild the full directive on send, and the description
+ * (when present) powers the hover card.
  */
 export function createSkillToken(
   doc: Document,
@@ -50,6 +53,7 @@ export function createSkillToken(
   span.dataset.token = SKILL_TOKEN_KIND;
   span.dataset.key = skill.key;
   span.dataset.name = skill.name;
+  if (skill.description) span.dataset.desc = skill.description;
   span.setAttribute("contenteditable", "false");
   span.className = SKILL_TOKEN_CLASS;
   span.textContent = skill.name;

@@ -26,6 +26,22 @@ describe("createSkillToken", () => {
     expect(token.getAttribute("contenteditable")).toBe("false");
   });
 
+  it("stashes the description in data-desc for the hover card (but not in the directive)", () => {
+    const token = createSkillToken(document, { ...SKILL, description: "Explore intent first" });
+    expect(token.dataset.desc).toBe("Explore intent first");
+    const r = root();
+    r.appendChild(token);
+    // serializeRoot expands name+key only — description never leaks into the send text.
+    expect(serializeRoot(r)).toBe(
+      `Use the "brainstorming" skill (skill:github-skills/obra/superpowers/brainstorming).`,
+    );
+  });
+
+  it("omits data-desc when no description is provided", () => {
+    const token = createSkillToken(document, SKILL);
+    expect(token.dataset.desc).toBeUndefined();
+  });
+
   it("is recognized by isSkillToken", () => {
     expect(isSkillToken(createSkillToken(document, SKILL))).toBe(true);
     expect(isSkillToken(document.createTextNode("hi"))).toBe(false);

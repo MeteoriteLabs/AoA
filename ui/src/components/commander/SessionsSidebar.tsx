@@ -2,7 +2,9 @@ import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   DndContext,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
+  KeyboardSensor,
   closestCenter,
   useSensor,
   useSensors,
@@ -11,6 +13,7 @@ import {
 import {
   SortableContext,
   arrayMove,
+  sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
@@ -315,10 +318,15 @@ export function SessionsSidebar({
     },
   });
 
-  // Distance constraint: a plain click still selects a row; a >6px drag starts
-  // a reorder. Matches the SidebarProjectsByType pattern.
+  // Per-input sensors so touch works too. Mouse: a >6px move starts a drag (a
+  // plain click still selects). Touch: a long-press (200ms, <6px wobble) starts
+  // a drag — a quick tap selects and a swipe still scrolls the list (rows have
+  // touch-action: manipulation, so PointerSensor alone would lose touch-drags
+  // to scrolling). Keyboard: space/arrows reorder for a11y.
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
   const conversations = data?.conversations ?? [];
