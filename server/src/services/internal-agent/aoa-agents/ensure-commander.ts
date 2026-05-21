@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, internalAgentConfig } from "@armyofagents/db";
+import { agents, internalAgentConfig, companySkills } from "@armyofagents/db";
 import { agentInstructionsService } from "../../agent-instructions.js";
 import { seedCommanderInstructionBundle } from "./seed-commander-bundle.js";
 import { seedDefaultCommanderSkills } from "../../marketplace-install/default-skill-seeder.js";
@@ -110,6 +110,33 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
     await seedDefaultCommanderSkills({ db, companyId });
   } catch {
     // Non-fatal — catalog may not be seeded yet on first boot.
+  }
+  // Initialize the Commander's curated skill selection ONCE (sensible default =
+  // all currently-installed company skills). Flag-guarded via metadata so a
+  // founder who later clears the selection is respected (we never re-backfill).
+  try {
+    const [row] = await db
+      .select({ skillKeys: agents.skillKeys, metadata: agents.metadata })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .limit(1);
+    const meta = (row?.metadata as Record<string, unknown> | null) ?? {};
+    if (!meta.commanderSkillsInitialized) {
+      const installed = await db
+        .select({ key: companySkills.key })
+        .from(companySkills)
+        .where(eq(companySkills.companyId, companyId));
+      await db
+        .update(agents)
+        .set({
+          skillKeys: installed.map((s) => s.key),
+          metadata: { ...meta, commanderSkillsInitialized: true },
+          updatedAt: new Date(),
+        })
+        .where(eq(agents.id, agentId));
+    }
+  } catch {
+    // Non-fatal: a backfill failure must not block Commander provisioning.
   }
   await db.update(internalAgentConfig).set({ agentId, updatedAt: new Date() })
     .where(eq(internalAgentConfig.companyId, companyId));
