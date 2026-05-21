@@ -130,6 +130,7 @@ export const internalAgentConversations = pgTable(
     // and founder-visible sharing flag (RBAC option C).
     title: text("title"),            // null = auto-title from first message
     archivedAt: timestamp("archived_at", { withTimezone: true }), // null = active
+    pinned: boolean("pinned").notNull().default(false),
     sharedWithCompany: boolean("shared_with_company").notNull().default(false),
 
     createdAt: timestamp("created_at", { withTimezone: true })

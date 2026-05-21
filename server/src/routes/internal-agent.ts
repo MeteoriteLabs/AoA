@@ -879,6 +879,108 @@ export function internalAgentRoutes(db: Db) {
     },
   );
 
+  // ── Conversations: pin ───────────────────────────────────────────────
+  router.patch(
+    "/companies/:companyId/internal-agent/conversations/:convId/pin",
+    validate(z.object({ pinned: z.boolean() })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      const isLocalImplicit =
+        req.actor.type === "board" && req.actor.source === "local_implicit";
+      const isInstanceAdmin =
+        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
+
+      let isFounderRole: boolean;
+      if (isLocalImplicit || isInstanceAdmin) {
+        isFounderRole = true;
+      } else {
+        const role = await permissionService(db).getEffectiveRole(
+          companyId,
+          actor.actorId,
+        );
+        isFounderRole = role === "founder";
+      }
+
+      const convConditions = [
+        eq(internalAgentConversations.id, convId),
+        eq(internalAgentConversations.companyId, companyId),
+      ];
+      if (!isFounderRole) {
+        convConditions.push(eq(internalAgentConversations.userId, actor.actorId));
+      }
+
+      const [existing] = await db
+        .select()
+        .from(internalAgentConversations)
+        .where(and(...convConditions));
+
+      if (!existing) throw notFound("Conversation not found");
+
+      const [updated] = await db
+        .update(internalAgentConversations)
+        .set({ pinned: req.body.pinned as boolean })
+        .where(eq(internalAgentConversations.id, convId))
+        .returning();
+
+      res.json(updated);
+    },
+  );
+
+  // ── Conversations: rename ────────────────────────────────────────────
+  router.patch(
+    "/companies/:companyId/internal-agent/conversations/:convId/rename",
+    validate(z.object({ title: z.string().min(1).max(200) })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      const isLocalImplicit =
+        req.actor.type === "board" && req.actor.source === "local_implicit";
+      const isInstanceAdmin =
+        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
+
+      let isFounderRole: boolean;
+      if (isLocalImplicit || isInstanceAdmin) {
+        isFounderRole = true;
+      } else {
+        const role = await permissionService(db).getEffectiveRole(
+          companyId,
+          actor.actorId,
+        );
+        isFounderRole = role === "founder";
+      }
+
+      const convConditions = [
+        eq(internalAgentConversations.id, convId),
+        eq(internalAgentConversations.companyId, companyId),
+      ];
+      if (!isFounderRole) {
+        convConditions.push(eq(internalAgentConversations.userId, actor.actorId));
+      }
+
+      const [existing] = await db
+        .select()
+        .from(internalAgentConversations)
+        .where(and(...convConditions));
+
+      if (!existing) throw notFound("Conversation not found");
+
+      const [updated] = await db
+        .update(internalAgentConversations)
+        .set({ title: req.body.title as string })
+        .where(eq(internalAgentConversations.id, convId))
+        .returning();
+
+      res.json(updated);
+    },
+  );
+
   // ── Get Messages for a Specific Conversation ─────────────────────────
   router.get(
     "/companies/:companyId/internal-agent/conversations/:convId/messages",

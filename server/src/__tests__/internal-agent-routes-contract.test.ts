@@ -34,6 +34,7 @@ vi.mock("@armyofagents/db", () => ({
     archivedAt: "conv_archived_at",
     updatedAt: "conv_updated_at",
     title: "conv_title",
+    pinned: "conv_pinned",
   },
   internalAgentMessages: {
     id: "msg_id",
@@ -110,8 +111,8 @@ describe("internal-agent-routes-contract", () => {
       (layer: any) => layer.route != null,
     );
 
-    // 10 original routes + 3 new multi-conversation routes (list, create, archive) + 2 tool-permissions routes + 1 messages route (Task 8)
-    expect(routeLayers).toHaveLength(16);
+    // 10 original routes + 3 new multi-conversation routes (list, create, archive) + 2 tool-permissions routes + 1 messages route (Task 8) + 2 pin/rename routes (Task 1)
+    expect(routeLayers).toHaveLength(18);
   });
 
   it("registers all expected paths and methods", () => {
@@ -145,6 +146,9 @@ describe("internal-agent-routes-contract", () => {
       { path: "/companies/:companyId/internal-agent/tool-permissions", method: "patch" },
       // conversation messages route (Task 8)
       { path: "/companies/:companyId/internal-agent/conversations/:convId/messages", method: "get" },
+      // pin + rename routes (Task 1)
+      { path: "/companies/:companyId/internal-agent/conversations/:convId/pin", method: "patch" },
+      { path: "/companies/:companyId/internal-agent/conversations/:convId/rename", method: "patch" },
     ];
 
     for (const expected of expectedRoutes) {
@@ -200,5 +204,94 @@ describe("internal-agent-routes-contract", () => {
     );
 
     expect(cancelRoute).toBeDefined();
+  });
+
+  it("registers PATCH pin route for conversations (Task 1)", () => {
+    const db = {} as any;
+    const router = internalAgentRoutes(db);
+
+    const pinRoute = router.stack.find(
+      (layer: any) =>
+        layer.route?.path ===
+          "/companies/:companyId/internal-agent/conversations/:convId/pin" &&
+        layer.route?.methods?.patch,
+    );
+
+    expect(pinRoute).toBeDefined();
+  });
+
+  it("registers PATCH rename route for conversations (Task 1)", () => {
+    const db = {} as any;
+    const router = internalAgentRoutes(db);
+
+    const renameRoute = router.stack.find(
+      (layer: any) =>
+        layer.route?.path ===
+          "/companies/:companyId/internal-agent/conversations/:convId/rename" &&
+        layer.route?.methods?.patch,
+    );
+
+    expect(renameRoute).toBeDefined();
+  });
+});
+
+// ── Source-string contract assertions (Task 1) ───────────────────────────────
+// These read the route source directly to assert ownership-check and default
+// properties without running the handlers. This matches the migration-contract
+// pattern used elsewhere in the test suite (see migration-0069-contract.test.ts).
+
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+describe("internal-agent pin/rename routes source contract (Task 1)", () => {
+  const routeSrc = readFileSync(
+    resolve(__dirname, "../routes/internal-agent.ts"),
+    "utf8",
+  );
+
+  it("pin route embeds userId ownership condition for non-founders", () => {
+    // The pin route must push userId into convConditions for non-founders,
+    // matching the archive route's anti-leak pattern.
+    const pinRouteStart = routeSrc.indexOf(
+      "/conversations/:convId/pin",
+    );
+    const renameRouteStart = routeSrc.indexOf(
+      "/conversations/:convId/rename",
+    );
+    const pinRouteBlock = routeSrc.slice(pinRouteStart, renameRouteStart);
+    expect(pinRouteBlock).toContain("internalAgentConversations.userId");
+    expect(pinRouteBlock).toContain("actor.actorId");
+  });
+
+  it("rename route embeds userId ownership condition for non-founders", () => {
+    const renameRouteStart = routeSrc.indexOf(
+      "/conversations/:convId/rename",
+    );
+    const messagesRouteStart = routeSrc.indexOf(
+      "/conversations/:convId/messages",
+    );
+    const renameRouteBlock = routeSrc.slice(renameRouteStart, messagesRouteStart);
+    expect(renameRouteBlock).toContain("internalAgentConversations.userId");
+    expect(renameRouteBlock).toContain("actor.actorId");
+  });
+
+  it("pin route validates body with z.boolean()", () => {
+    expect(routeSrc).toContain("z.boolean()");
+  });
+
+  it("rename route validates title with z.string().min(1).max(200)", () => {
+    expect(routeSrc).toContain('z.string().min(1).max(200)');
+  });
+});
+
+describe("internal-agent-conversations pinned column schema contract (Task 1)", () => {
+  const schemaSrc = readFileSync(
+    resolve(__dirname, "../../../packages/db/src/schema/internal_agent.ts"),
+    "utf8",
+  );
+
+  it("pinned column exists in internalAgentConversations with DEFAULT false NOT NULL", () => {
+    // Drizzle ORM form: boolean("pinned").notNull().default(false) or .default(false).notNull()
+    expect(schemaSrc).toMatch(/boolean\("pinned"\)\.notNull\(\)\.default\(false\)|boolean\("pinned"\)\.default\(false\)\.notNull\(\)/);
   });
 });

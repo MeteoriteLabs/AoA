@@ -350,6 +350,18 @@ export const commanderConversationsApi = {
       `/companies/${companyId}/internal-agent/conversations/${convId}/archive`,
       {},
     ),
+
+  pin: (companyId: string, convId: string, pinned: boolean) =>
+    api.patch<ConversationRow>(
+      `/companies/${companyId}/internal-agent/conversations/${convId}/pin`,
+      { pinned },
+    ),
+
+  rename: (companyId: string, convId: string, title: string) =>
+    api.patch<ConversationRow>(
+      `/companies/${companyId}/internal-agent/conversations/${convId}/rename`,
+      { title },
+    ),
 };
 
 /* ------------------------------------------------------------------ */
