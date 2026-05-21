@@ -17,6 +17,8 @@ import { internalAgentChatLimiter } from "../middleware/rate-limit.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
+import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
+import { companySkillService } from "../services/company-skills.js";
 import {
   createToolRegistry,
   executeTool,
@@ -982,6 +984,21 @@ export function internalAgentRoutes(db: Db) {
         .offset(offset);
 
       res.json({ messages, conversationId: convId });
+    },
+  );
+
+  // ── Commander skills: the agent's curated selection (for the chat skill picker) ──
+  router.get(
+    "/companies/:companyId/internal-agent/skills",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const agentId = await ensureCommanderAgent(db, companyId);
+      const skills = await companySkillService(db).listSkillListItemsForAgent(
+        companyId,
+        agentId,
+      );
+      res.json(skills);
     },
   );
 

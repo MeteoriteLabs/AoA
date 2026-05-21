@@ -90,6 +90,17 @@ vi.mock("../services/internal-agent/service-container.js", () => ({
   createServiceContainer: vi.fn(() => ({})),
 }));
 
+// Mock ensure-commander and company-skills to avoid transitive db imports.
+vi.mock("../services/internal-agent/aoa-agents/ensure-commander.js", () => ({
+  ensureCommanderAgent: vi.fn(async () => "commander-agent-id"),
+  COMMANDER_TOOL_ALLOWLIST: [],
+}));
+vi.mock("../services/company-skills.js", () => ({
+  companySkillService: vi.fn(() => ({
+    listSkillListItemsForAgent: vi.fn(async () => []),
+  })),
+}));
+
 import { internalAgentRoutes } from "../routes/internal-agent.js";
 
 describe("internal-agent-routes-contract", () => {
@@ -111,8 +122,8 @@ describe("internal-agent-routes-contract", () => {
       (layer: any) => layer.route != null,
     );
 
-    // 10 original routes + 3 new multi-conversation routes (list, create, archive) + 2 tool-permissions routes + 1 messages route (Task 8) + 2 pin/rename routes (Task 1) + 1 delete route (Task 5)
-    expect(routeLayers).toHaveLength(19);
+    // 10 original routes + 3 new multi-conversation routes (list, create, archive) + 2 tool-permissions routes + 1 messages route (Task 8) + 2 pin/rename routes (Task 1) + 1 delete route (Task 5) + 1 Commander skills route (Task 5b)
+    expect(routeLayers).toHaveLength(20);
   });
 
   it("registers all expected paths and methods", () => {
@@ -151,6 +162,8 @@ describe("internal-agent-routes-contract", () => {
       { path: "/companies/:companyId/internal-agent/conversations/:convId/rename", method: "patch" },
       // hard-delete route (Task 5)
       { path: "/companies/:companyId/internal-agent/conversations/:convId", method: "delete" },
+      // Commander skills route (Task 5b)
+      { path: "/companies/:companyId/internal-agent/skills", method: "get" },
     ];
 
     for (const expected of expectedRoutes) {
@@ -334,6 +347,23 @@ describe("internal-agent DELETE conversation route source contract (Task 5)", ()
     const messagesRouteStart = routeSrc.indexOf("/conversations/:convId/messages");
     const deleteRouteBlock = routeSrc.slice(deleteRouteStart, messagesRouteStart);
     expect(deleteRouteBlock).toContain("ok: true");
+  });
+});
+
+// ── Commander skills route source contract (Task 5b) ─────────────────────────
+describe("internal-agent Commander-scoped skills route source contract (Task 5b)", () => {
+  const routeSrc = readFileSync(
+    resolve(__dirname, "../routes/internal-agent.ts"),
+    "utf8",
+  );
+
+  it("registers the Commander-scoped skills route", () => {
+    expect(routeSrc).toContain('"/companies/:companyId/internal-agent/skills"');
+  });
+
+  it("scopes the skills route to the commander agent", () => {
+    expect(routeSrc).toContain("ensureCommanderAgent");
+    expect(routeSrc).toContain("listSkillListItemsForAgent");
   });
 });
 

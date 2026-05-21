@@ -2244,6 +2244,26 @@ export function companySkillService(db: Db) {
       }));
   }
 
+  /**
+   * Returns full CompanySkillListItem rows scoped to an agent's skillKeys.
+   * Empty skillKeys → empty list (explicit: no skills selected). Used by the
+   * Commander skill picker so it shows exactly the curated selection.
+   */
+  async function listSkillListItemsForAgent(
+    companyId: string,
+    agentId: string,
+  ): Promise<CompanySkillListItem[]> {
+    const agent = await agents.getById(agentId);
+    if (!agent || agent.companyId !== companyId) return [];
+    const skillKeys: string[] = Array.isArray((agent as any).skillKeys)
+      ? (agent as any).skillKeys
+      : [];
+    if (skillKeys.length === 0) return [];
+    const keySet = new Set(skillKeys);
+    const all = await list(companyId);
+    return all.filter((s) => keySet.has(s.key));
+  }
+
   // -----------------------------------------------------------------------
   // Upsert imported skills
   // -----------------------------------------------------------------------
@@ -2449,6 +2469,7 @@ export function companySkillService(db: Db) {
     installUpdate,
     listRuntimeSkillEntries,
     listCompactSkillEntries,
+    listSkillListItemsForAgent,
     resolveSkillKeys,
     upsertImportedSkills,
     usage,
