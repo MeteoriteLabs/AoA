@@ -29,17 +29,12 @@ export function SessionRow({
       role="button"
       tabIndex={0}
       className={cn(
-        "group relative flex items-center gap-2 px-3 cursor-pointer transition-colors",
+        "group relative flex items-center gap-2 mx-1.5 px-2.5 rounded-md cursor-pointer transition-colors",
         "h-[var(--row-compact)]",
-        // Base hover — a visible card-2 tint (lighter than the 80% active state).
-        // NOTE: --hd (oklch 0.16) is only ~0.005 lighter than the sidebar (0.155),
-        // so hover:bg-hd was effectively invisible. This mix reads clearly.
-        "hover:bg-[color:color-mix(in_srgb,var(--card-2)_60%,transparent)]",
-        // Active: edge-to-edge bg + 1px top/bottom border — NO inset padding shift
-        // so the indicator column stays at the same x-position as inactive rows.
-        isActive
-          ? "bg-[color:color-mix(in_srgb,var(--card-2)_80%,transparent)] border-y border-border"
-          : "border-y border-transparent",
+        // Clearly visible hover (foreground overlay reads on the dark sidebar).
+        "hover:bg-[color:color-mix(in_srgb,var(--foreground)_8%,transparent)]",
+        // Active: rounded inset card (replaces the old edge-to-edge border-y).
+        isActive && "bg-[color:color-mix(in_srgb,var(--foreground)_12%,transparent)]",
       )}
       onClick={onSelect}
       onKeyDown={(e) => {

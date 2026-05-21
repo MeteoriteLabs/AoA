@@ -79,7 +79,7 @@ export function SkillPicker({
 
   return (
     <div
-      className="absolute bottom-full left-0 right-0 mb-2 z-20"
+      className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-20 w-[440px] max-w-[calc(100%-1rem)]"
       role="listbox"
       aria-label="Company skills"
     >
@@ -87,20 +87,15 @@ export function SkillPicker({
         <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border text-xs font-medium text-muted-foreground">
           <Wand2 className="size-3.5" aria-hidden="true" />
           <span>Skills</span>
-          <span className="ml-auto flex items-center gap-2">
+          <span className="ml-auto flex items-center gap-1.5">
             <kbd className="text-[10px] font-normal text-muted-foreground/60">Esc</kbd>
             <button
               type="button"
-              // onMouseDown+preventDefault: close without first blurring the
-              // textarea (mirrors the row-select pattern).
-              onMouseDown={(e) => {
-                e.preventDefault();
-                onClose();
-              }}
+              onMouseDown={(e) => { e.preventDefault(); onClose(); }}
               aria-label="Close skills"
-              className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+              className="size-6 flex items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
             >
-              <X className="size-3.5" aria-hidden="true" />
+              <X className="size-4" aria-hidden="true" />
             </button>
           </span>
         </div>
@@ -146,8 +141,8 @@ export function SkillPicker({
                     <span className="text-sm font-medium text-foreground truncate">
                       {skill.name}
                     </span>
-                    <span className="font-mono text-[11px] text-muted-foreground shrink-0 truncate max-w-[45%]">
-                      {skill.key}
+                    <span className="shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-muted/60 text-muted-foreground truncate max-w-[40%]">
+                      {skill.key.replace(/^skill:/, "").split("/")[0]}
                     </span>
                   </div>
                   {skill.description && (

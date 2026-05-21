@@ -643,6 +643,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         // `+`-menu-triggered picker open (it isn't slash-driven).
         setSlashActive(false);
         setSlashQuery("");
+        setPickerIndex(0);
       }
     },
     [],
