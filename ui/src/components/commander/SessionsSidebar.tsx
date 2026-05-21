@@ -2,9 +2,9 @@ import { useState, useMemo, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../../context/CompanyContext";
 import { commanderConversationsApi, type ConversationRow } from "../../api/internal-agent";
-import { Plus, ChevronLeft, ChevronRight, Search, X } from "lucide-react";
-import { cn } from "../../lib/utils";
+import { Plus, ChevronLeft, Search, X, Pin } from "lucide-react";
 import { SessionRow } from "./SessionRow";
+import { CollapsedSessionStrip } from "./CollapsedSessionStrip";
 
 /** Pure exported helper — used by SessionsSidebar and pinned-group filter in Task 6. */
 export function filterConversationsByTitle(
@@ -174,7 +174,33 @@ export function SessionsSidebar({
     () => filterConversationsByTitle(conversations, searchQuery),
     [conversations, searchQuery],
   );
-  const groups = useMemo(() => groupByDate(filtered), [filtered]);
+
+  /**
+   * PINNED group: top 5 pinned conversations from the filtered list, sorted by
+   * updatedAt descending.
+   * pinnedAt not tracked; sort by updatedAt as proxy.
+   * Cap at 5 — overflow conversations remain visible in their date groups.
+   */
+  const pinned = useMemo(
+    () =>
+      filtered
+        .filter((c) => c.pinned)
+        .sort((a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt))
+        .slice(0, 5),
+    [filtered],
+  );
+
+  /**
+   * Exclude the displayed-pinned 5 from date groups to avoid duplication.
+   * If a user has >5 pinned conversations, the overflow still appears in its
+   * date group so no sessions are hidden.
+   */
+  const pinnedIds = useMemo(() => new Set(pinned.map((c) => c.id)), [pinned]);
+
+  const groups = useMemo(
+    () => groupByDate(filtered.filter((c) => !pinnedIds.has(c.id))),
+    [filtered, pinnedIds],
+  );
 
   // Auto-focus the input when search opens
   useEffect(() => {
@@ -190,16 +216,16 @@ export function SessionsSidebar({
   }
 
   if (collapsed) {
+    // Pass the full conversations list (not filtered) — collapsed view has no
+    // search box, so filtering by the search query would silently hide sessions.
     return (
-      <div className="flex flex-col items-center w-9 shrink-0 border-r border-border bg-secondary-sidebar">
-        <button
-          onClick={() => setCollapsed(false)}
-          className="mt-3 p-1 rounded hover:bg-black/10 transition-colors"
-          title="Expand sessions"
-        >
-          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-        </button>
-      </div>
+      <CollapsedSessionStrip
+        conversations={conversations}
+        activeConversationId={activeConversationId}
+        onSelect={onSelect}
+        onExpand={() => setCollapsed(false)}
+        onNewConversation={handleNewChat}
+      />
     );
   }
 
@@ -281,6 +307,29 @@ export function SessionsSidebar({
             {searchQuery.trim() ? "No sessions match" : "No sessions yet"}
           </p>
         )}
+
+        {/* PINNED group — rendered above date groups when any pinned sessions exist */}
+        {pinned.length > 0 && (
+          <div>
+            <div className="px-3 py-1.5 flex items-center gap-1 text-[9px] font-semibold text-muted-foreground uppercase tracking-widest">
+              <Pin className="h-2.5 w-2.5 shrink-0" />
+              Pinned
+            </div>
+            {pinned.map((conv) => (
+              <SessionRow
+                key={conv.id}
+                conversation={conv}
+                isActive={conv.id === activeConversationId}
+                onSelect={() => onSelect(conv.id)}
+                onPin={(p) => pinMutation.mutate({ convId: conv.id, pinned: p })}
+                onRename={(title) => renameMutation.mutate({ convId: conv.id, title })}
+                onArchive={() => archiveMutation.mutate(conv.id)}
+                onDelete={() => deleteMutation.mutate(conv.id)}
+              />
+            ))}
+          </div>
+        )}
+
         {groups.map((group) => (
           <div key={group.label}>
             <div className="px-3 py-1.5 text-[9px] font-semibold text-muted-foreground uppercase tracking-widest">
@@ -292,7 +341,7 @@ export function SessionsSidebar({
                 conversation={conv}
                 isActive={conv.id === activeConversationId}
                 onSelect={() => onSelect(conv.id)}
-                onPin={(pinned) => pinMutation.mutate({ convId: conv.id, pinned })}
+                onPin={(p) => pinMutation.mutate({ convId: conv.id, pinned: p })}
                 onRename={(title) => renameMutation.mutate({ convId: conv.id, title })}
                 onArchive={() => archiveMutation.mutate(conv.id)}
                 onDelete={() => deleteMutation.mutate(conv.id)}
