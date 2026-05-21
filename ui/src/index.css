@@ -159,6 +159,9 @@
   --border-soft: hsl(20 8% 92%);
   --border-strong: hsl(20 8% 78%);
 
+  /* Sizing tokens */
+  --row-compact: 32px; /* denser than --row-data for high-frequency session lists */
+
   /* Component tokens (light) */
   --secondary-sidebar-bg: oklch(0.92 0.005 30);
   --sidebar-active-text: hsl(15 55% 40%);

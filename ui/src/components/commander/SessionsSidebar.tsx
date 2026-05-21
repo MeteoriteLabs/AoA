@@ -2,27 +2,9 @@ import { useState, useMemo, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../../context/CompanyContext";
 import { commanderConversationsApi, type ConversationRow } from "../../api/internal-agent";
-import { Plus, Archive, ChevronLeft, ChevronRight, Search, X } from "lucide-react";
+import { Plus, ChevronLeft, ChevronRight, Search, X } from "lucide-react";
 import { cn } from "../../lib/utils";
-
-function formatRelativeTime(dateStr: string): string {
-  const now = Date.now();
-  const then = new Date(dateStr).getTime();
-  const diffMs = now - then;
-  const diffSec = Math.floor(diffMs / 1000);
-  if (diffSec < 60) return "just now";
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  if (diffDay < 7) return `${diffDay}d ago`;
-  const diffWk = Math.floor(diffDay / 7);
-  if (diffWk < 5) return `${diffWk}w ago`;
-  const diffMo = Math.floor(diffDay / 30);
-  if (diffMo < 12) return `${diffMo}mo ago`;
-  return `${Math.floor(diffMo / 12)}y ago`;
-}
+import { SessionRow } from "./SessionRow";
 
 /** Pure exported helper — used by SessionsSidebar and pinned-group filter in Task 6. */
 export function filterConversationsByTitle(
@@ -206,9 +188,9 @@ export function SessionsSidebar({
               {group.label}
             </div>
             {group.items.map((conv) => (
-              <SessionItem
+              <SessionRow
                 key={conv.id}
-                conv={conv}
+                conversation={conv}
                 isActive={conv.id === activeConversationId}
                 onSelect={() => onSelect(conv.id)}
                 onArchive={() => archiveMutation.mutate(conv.id)}
@@ -221,44 +203,3 @@ export function SessionsSidebar({
   );
 }
 
-function SessionItem({
-  conv,
-  isActive,
-  onSelect,
-  onArchive,
-}: {
-  conv: ConversationRow;
-  isActive: boolean;
-  onSelect: () => void;
-  onArchive: () => void;
-}) {
-  const title = conv.title ?? `Chat ${formatRelativeTime(conv.createdAt)}`;
-
-  return (
-    <div
-      className={cn(
-        "group relative flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-hd transition-colors",
-        isActive && "bg-[color:color-mix(in_srgb,var(--brand)_6%,transparent)] border-l-2 border-l-brand pl-[10px]",
-      )}
-      onClick={onSelect}
-    >
-      <div className="flex-1 min-w-0">
-        <p className="text-sm truncate">{title}</p>
-        <p className="font-mono text-[10px] text-very-dim truncate">
-          {formatRelativeTime(conv.updatedAt)} ·{" "}
-          {conv.messageCount} msg{conv.messageCount !== 1 ? "s" : ""}
-        </p>
-      </div>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onArchive();
-        }}
-        className="hidden group-hover:flex items-center p-0.5 rounded hover:bg-black/10 transition-colors"
-        title="Archive"
-      >
-        <Archive className="h-3 w-3 text-muted-foreground" />
-      </button>
-    </div>
-  );
-}
