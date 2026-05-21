@@ -49,6 +49,21 @@ function cloneRecord(value: unknown): Record<string, unknown> | null {
   return { ...value };
 }
 
+export function mergeExecutionWorkspaceMetadataPatch(input: {
+  existingMetadata: unknown;
+  incomingMetadata: unknown;
+}): Record<string, unknown> | null {
+  const incoming = cloneRecord(input.incomingMetadata) ?? {};
+  delete incoming.config;
+
+  const existingConfig = cloneRecord(input.existingMetadata)?.config;
+  if (existingConfig !== undefined) {
+    incoming.config = existingConfig;
+  }
+
+  return Object.keys(incoming).length > 0 ? incoming : null;
+}
+
 async function pathExists(value: string | null | undefined) {
   if (!value) return false;
   try {

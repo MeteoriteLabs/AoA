@@ -129,6 +129,7 @@ const projectsApiMock = {
   assignAgent: vi.fn(),
   unassignAgent: vi.fn(),
   createWorkspace: vi.fn().mockResolvedValue({}),
+  updateWorkspace: vi.fn().mockResolvedValue({}),
   removeWorkspace: vi.fn().mockResolvedValue({}),
   getEnvironment: vi.fn().mockResolvedValue({ env: null }),
   updateEnvironment: vi.fn().mockResolvedValue({ env: null }),
@@ -283,6 +284,9 @@ describe("ProjectDetail — Workspaces tab", () => {
 
     const settingsTab = await screen.findByRole("button", { name: "Settings" }, { timeout: 5000 });
     expect(settingsTab.className).toContain("border-foreground");
+    expect(await screen.findByRole("heading", { name: "Department details" })).toBeInTheDocument();
+    expect(await screen.findByText("Status")).toBeInTheDocument();
+    expect(await screen.findByText("Created")).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Workspace & Runtime" })).toBeInTheDocument();
     expect(screen.getByText(/Defaults for new tasks and future agent runs/i)).toBeInTheDocument();
     expect(await screen.findByText("Environment Variables")).toBeInTheDocument();
@@ -309,6 +313,39 @@ describe("ProjectDetail — Workspaces tab", () => {
         { cwd: "/__paperclip_repo_only__", repoUrl: "https://github.com/acme/app" },
       );
     });
+  });
+
+  it("removes only the selected workspace source when a row has both local folder and repo", async () => {
+    const user = userEvent.setup();
+    projectsApiMock.get.mockResolvedValue({
+      ...mockProject,
+      workspaces: [
+        {
+          id: "source-1",
+          name: "Primary",
+          cwd: "C:\\Work\\Repo",
+          repoUrl: "https://github.com/acme/app.git",
+          repoRef: null,
+          metadata: null,
+          isPrimary: true,
+          createdAt: "2026-04-01T09:00:00Z",
+          updatedAt: "2026-04-01T10:00:00Z",
+        },
+      ],
+    });
+
+    renderProjectDetail("/projects/ENG/settings");
+
+    await user.click(await screen.findByRole("button", { name: "Delete workspace repo" }));
+
+    await waitFor(() => {
+      expect(projectsApiMock.updateWorkspace).toHaveBeenCalledWith(
+        mockProject.id,
+        "source-1",
+        { repoUrl: null },
+      );
+    });
+    expect(projectsApiMock.removeWorkspace).not.toHaveBeenCalled();
   });
 
   it("keeps department overview simple and moves controls out of the profile", async () => {

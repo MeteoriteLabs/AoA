@@ -29,4 +29,11 @@ describe("sniffsShellCommandFields", () => {
       workspaceStrategy: { cleanupCommand: "git clean -fd" },
     })).toBe(true);
   });
+  it("returns true when a runtime service command is set", () => {
+    expect(sniffsShellCommandFields({
+      workspaceRuntime: {
+        services: [{ name: "web", command: "pnpm dev" }],
+      },
+    })).toBe(true);
+  });
 });

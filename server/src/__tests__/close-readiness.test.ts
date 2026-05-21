@@ -48,6 +48,7 @@ import {
   executionWorkspaceService,
   inspectGitCloseReadiness,
   mergeExecutionWorkspaceConfig,
+  mergeExecutionWorkspaceMetadataPatch,
   readExecutionWorkspaceConfig,
 } from "../services/execution-workspaces.js";
 
@@ -262,6 +263,60 @@ describe("mergeExecutionWorkspaceConfig", () => {
 });
 
 // ── inspectGitCloseReadiness (real temp git repos) ───────────────────────────
+
+describe("mergeExecutionWorkspaceMetadataPatch", () => {
+  it("drops direct metadata.config writes while preserving existing config", () => {
+    const result = mergeExecutionWorkspaceMetadataPatch({
+      existingMetadata: {
+        config: { provisionCommand: "pnpm install" },
+        existing: "not preserved",
+      },
+      incomingMetadata: {
+        note: "updated",
+        config: { provisionCommand: "malicious" },
+      },
+    });
+
+    expect(result).toEqual({
+      note: "updated",
+      config: { provisionCommand: "pnpm install" },
+    });
+  });
+
+  it("does not accept direct metadata.config when no existing config exists", () => {
+    const result = mergeExecutionWorkspaceMetadataPatch({
+      existingMetadata: null,
+      incomingMetadata: {
+        note: "updated",
+        config: { workspaceRuntime: { services: [{ command: "pnpm dev" }] } },
+      },
+    });
+
+    expect(result).toEqual({ note: "updated" });
+  });
+
+  it("is safe to use as the metadata base before applying an explicit config patch", () => {
+    const metadataBase = mergeExecutionWorkspaceMetadataPatch({
+      existingMetadata: null,
+      incomingMetadata: {
+        config: { provisionCommand: "malicious" },
+        note: "updated",
+      },
+    });
+
+    expect(mergeExecutionWorkspaceConfig(metadataBase, { cleanupCommand: "pnpm clean" })).toEqual({
+      note: "updated",
+      config: {
+        provisionCommand: null,
+        teardownCommand: null,
+        cleanupCommand: "pnpm clean",
+        workspaceRuntime: null,
+        desiredState: null,
+        serviceStates: null,
+      },
+    });
+  });
+});
 
 const execFileAsync = promisify(execFile);
 const tempDirsToCleanup = new Set<string>();

@@ -6,6 +6,14 @@ const MIGRATION_PATH = resolve(
   __dirname,
   "../../../packages/db/src/migrations/0099_square_spectrum.sql",
 );
+const SNAPSHOT_0098_PATH = resolve(
+  __dirname,
+  "../../../packages/db/src/migrations/meta/0098_snapshot.json",
+);
+const SNAPSHOT_0099_PATH = resolve(
+  __dirname,
+  "../../../packages/db/src/migrations/meta/0099_snapshot.json",
+);
 
 describe("Migration 0099 - execution workspace active task uniqueness", () => {
   const sql = readFileSync(MIGRATION_PATH, "utf8");
@@ -38,5 +46,17 @@ describe("Migration 0099 - execution workspace active task uniqueness", () => {
       /ON\s+"execution_workspaces"\s+USING\s+btree\s*\("company_id",\s*"source_issue_id"\)/i,
     );
     expect(sql).toMatch(/WHERE\s+source_issue_id\s+IS\s+NOT\s+NULL\s+AND\s+status\s*<>\s*'archived'/i);
+  });
+
+  it("carries forward the previous snapshot tables while adding the execution workspace index", () => {
+    const snapshot0098 = JSON.parse(readFileSync(SNAPSHOT_0098_PATH, "utf8"));
+    const snapshot0099 = JSON.parse(readFileSync(SNAPSHOT_0099_PATH, "utf8"));
+
+    expect(snapshot0099.prevId).toBe(snapshot0098.id);
+    expect(snapshot0099.tables["public.issue_context_bundles"]).toBeDefined();
+    expect(snapshot0099.tables["public.issue_context_bundle_items"]).toBeDefined();
+    expect(
+      snapshot0099.tables["public.execution_workspaces"].indexes.execution_workspaces_active_task_workspace_uq,
+    ).toBeDefined();
   });
 });

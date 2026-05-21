@@ -3,6 +3,7 @@ import {
   pickWorkspaceInheritanceSourceIssueId,
   resolveExecutionWorkspaceInheritance,
   resolveCreateIssueExecutionWorkspaceFields,
+  shouldClearExecutionWorkspaceForProjectChange,
 } from "../services/issues.js";
 
 describe("pickWorkspaceInheritanceSourceIssueId", () => {
@@ -53,7 +54,14 @@ describe("resolveExecutionWorkspaceInheritance", () => {
   it("inherits workspace id + reuse_existing preference + merged settings with mapped mode", () => {
     const resolved = resolveExecutionWorkspaceInheritance({
       sourceIssue: sourceWithWorkspace,
-      sourceWorkspaceMode: "operator_branch",
+      sourceWorkspace: {
+        mode: "operator_branch",
+        companyId: "company-1",
+        projectId: "project-1",
+        status: "active",
+      },
+      targetCompanyId: "company-1",
+      targetProjectId: "project-1",
       isolatedWorkspacesEnabled: true,
       hasExplicitOverride: false,
     });
@@ -71,7 +79,14 @@ describe("resolveExecutionWorkspaceInheritance", () => {
   it("maps adapter_managed source mode to agent_default for the issue settings", () => {
     const resolved = resolveExecutionWorkspaceInheritance({
       sourceIssue: { executionWorkspaceId: "ws-1", executionWorkspaceSettings: null },
-      sourceWorkspaceMode: "adapter_managed",
+      sourceWorkspace: {
+        mode: "adapter_managed",
+        companyId: "company-1",
+        projectId: "project-1",
+        status: "active",
+      },
+      targetCompanyId: "company-1",
+      targetProjectId: "project-1",
       isolatedWorkspacesEnabled: true,
       hasExplicitOverride: false,
     });
@@ -83,7 +98,9 @@ describe("resolveExecutionWorkspaceInheritance", () => {
     expect(
       resolveExecutionWorkspaceInheritance({
         sourceIssue: null,
-        sourceWorkspaceMode: null,
+        sourceWorkspace: null,
+        targetCompanyId: "company-1",
+        targetProjectId: "project-1",
         isolatedWorkspacesEnabled: true,
         hasExplicitOverride: false,
       }),
@@ -94,7 +111,14 @@ describe("resolveExecutionWorkspaceInheritance", () => {
     expect(
       resolveExecutionWorkspaceInheritance({
         sourceIssue: sourceWithWorkspace,
-        sourceWorkspaceMode: "isolated_workspace",
+        sourceWorkspace: {
+          mode: "isolated_workspace",
+          companyId: "company-1",
+          projectId: "project-1",
+          status: "active",
+        },
+        targetCompanyId: "company-1",
+        targetProjectId: "project-1",
         isolatedWorkspacesEnabled: false,
         hasExplicitOverride: false,
       }),
@@ -105,7 +129,14 @@ describe("resolveExecutionWorkspaceInheritance", () => {
     expect(
       resolveExecutionWorkspaceInheritance({
         sourceIssue: sourceWithWorkspace,
-        sourceWorkspaceMode: "isolated_workspace",
+        sourceWorkspace: {
+          mode: "isolated_workspace",
+          companyId: "company-1",
+          projectId: "project-1",
+          status: "active",
+        },
+        targetCompanyId: "company-1",
+        targetProjectId: "project-1",
         isolatedWorkspacesEnabled: true,
         hasExplicitOverride: true,
       }),
@@ -116,7 +147,9 @@ describe("resolveExecutionWorkspaceInheritance", () => {
     expect(
       resolveExecutionWorkspaceInheritance({
         sourceIssue: { executionWorkspaceId: null, executionWorkspaceSettings: null },
-        sourceWorkspaceMode: null,
+        sourceWorkspace: null,
+        targetCompanyId: "company-1",
+        targetProjectId: "project-1",
         isolatedWorkspacesEnabled: true,
         hasExplicitOverride: false,
       }),
@@ -126,11 +159,86 @@ describe("resolveExecutionWorkspaceInheritance", () => {
   it("produces mode agent_default when source workspace mode is null/undefined", () => {
     const resolved = resolveExecutionWorkspaceInheritance({
       sourceIssue: { executionWorkspaceId: "ws-1", executionWorkspaceSettings: null },
-      sourceWorkspaceMode: null,
+      sourceWorkspace: {
+        mode: null,
+        companyId: "company-1",
+        projectId: "project-1",
+        status: "active",
+      },
+      targetCompanyId: "company-1",
+      targetProjectId: "project-1",
       isolatedWorkspacesEnabled: true,
       hasExplicitOverride: false,
     });
     expect(resolved?.executionWorkspaceSettings).toEqual({ mode: "agent_default" });
+  });
+
+  it("returns null when the source workspace is not in the target project", () => {
+    expect(
+      resolveExecutionWorkspaceInheritance({
+        sourceIssue: sourceWithWorkspace,
+        sourceWorkspace: {
+          mode: "isolated_workspace",
+          companyId: "company-1",
+          projectId: "other-project",
+          status: "active",
+        },
+        targetCompanyId: "company-1",
+        targetProjectId: "project-1",
+        isolatedWorkspacesEnabled: true,
+        hasExplicitOverride: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when the source workspace is archived", () => {
+    expect(
+      resolveExecutionWorkspaceInheritance({
+        sourceIssue: sourceWithWorkspace,
+        sourceWorkspace: {
+          mode: "isolated_workspace",
+          companyId: "company-1",
+          projectId: "project-1",
+          status: "archived",
+        },
+        targetCompanyId: "company-1",
+        targetProjectId: "project-1",
+        isolatedWorkspacesEnabled: true,
+        hasExplicitOverride: false,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("shouldClearExecutionWorkspaceForProjectChange", () => {
+  it("clears when a task moves projects and its workspace belongs to the old project", () => {
+    expect(
+      shouldClearExecutionWorkspaceForProjectChange({
+        projectChanged: true,
+        companyId: "company-1",
+        nextProjectId: "project-2",
+        workspace: {
+          companyId: "company-1",
+          projectId: "project-1",
+          status: "active",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps the workspace when it still belongs to the next project", () => {
+    expect(
+      shouldClearExecutionWorkspaceForProjectChange({
+        projectChanged: true,
+        companyId: "company-1",
+        nextProjectId: "project-2",
+        workspace: {
+          companyId: "company-1",
+          projectId: "project-2",
+          status: "active",
+        },
+      }),
+    ).toBe(false);
   });
 });
 

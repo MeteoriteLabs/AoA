@@ -10,7 +10,11 @@ import {
 import { validate } from "../middleware/validate.js";
 import { executionWorkspaceService, instanceSettingsService, logActivity, workspaceOperationService } from "../services/index.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
-import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
+import {
+  mergeExecutionWorkspaceConfig,
+  mergeExecutionWorkspaceMetadataPatch,
+  readExecutionWorkspaceConfig,
+} from "../services/execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -100,16 +104,21 @@ export function executionWorkspaceRoutes(db: Db) {
       ...(req.body.cleanupEligibleAt ? { cleanupEligibleAt: new Date(req.body.cleanupEligibleAt) } : {}),
     };
     if (configPatch !== undefined) {
+      const metadataBase = req.body.metadata !== undefined
+        ? mergeExecutionWorkspaceMetadataPatch({
+          existingMetadata: existing.metadata,
+          incomingMetadata: req.body.metadata,
+        })
+        : existing.metadata;
       patch.metadata = mergeExecutionWorkspaceConfig(
-        (req.body.metadata as Record<string, unknown> | null | undefined) ?? existing.metadata,
+        metadataBase,
         configPatch as Record<string, unknown>,
       );
     } else if (req.body.metadata !== undefined) {
-      const existingConfig = (existing.metadata as Record<string, unknown> | null)?.config;
-      patch.metadata = {
-        ...(req.body.metadata as Record<string, unknown>),
-        ...(existingConfig !== undefined ? { config: existingConfig } : {}),
-      };
+      patch.metadata = mergeExecutionWorkspaceMetadataPatch({
+        existingMetadata: existing.metadata,
+        incomingMetadata: req.body.metadata,
+      });
     }
     let workspace = existing;
     let cleanupWarnings: string[] = [];
