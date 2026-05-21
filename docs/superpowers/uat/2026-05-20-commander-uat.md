@@ -318,11 +318,14 @@ live embedded Postgres before testing.
 
 ### Findings
 
-- **(Minor, non-blocking)** On mobile/tablet **with no active conversation**, there is no
+- ~~**(Minor, non-blocking)** On mobile/tablet **with no active conversation**, there is no
   trigger to open the full sessions drawer — the ChatPaneCaption (which hosts the "Sessions"
-  button) only renders once a conversation is active. Users reach sessions via the
-  empty-state RECENT list. Suggested follow-up: render a persistent sessions affordance in
-  the mobile empty state.
+  button) only renders once a conversation is active.~~ **RESOLVED (commit `b04927e5`):**
+  added an always-available `lg:hidden` "Chats" toggle (Lucide `PanelLeft`) that renders in
+  the empty state when no conversation is active, opening the drawer. Re-verified live at
+  375px: toggle present on the empty state → opens the full drawer (New chat, search, PINNED
+  group, session groups). Exactly one trigger shows at a time (the caption owns the
+  active-conversation case). (uat-15, uat-16)
 
 ### Not exercised live (covered by unit/contract tests + code review)
 
