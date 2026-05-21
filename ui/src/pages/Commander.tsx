@@ -47,9 +47,14 @@ export function Commander() {
   };
 
   return (
-    // Negative margins bleed out of the global <main> padding (p-4 md:p-6)
-    // so Commander chrome goes edge-to-edge.
-    <div className="flex flex-col h-[calc(100vh-4rem)] -m-4 md:-m-6">
+    // Commander is a full-bleed route — Layout drops the global <main> padding
+    // for `/commander`, so we just fill main with h-full (no negative-margin
+    // hack, no 100vh math). main keeps its mobile bottom padding, which lifts the
+    // input clear of the MobileBottomNav and keeps main from scrolling (h-full
+    // resolves to main's content box, so content + pb == client → no outer
+    // scrollbar; only the message list scrolls).
+    <div className="flex flex-col h-full min-h-0">
+
       {/* Best-effort badge (non-claude_cli warning) */}
       {config?.cliTool && config.cliTool !== "claude_cli" && (
         <div className="px-5 py-1.5 bg-amber-50 dark:bg-amber-950/20 border-b border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-200 inline-flex items-center gap-1.5 shrink-0">
