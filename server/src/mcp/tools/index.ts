@@ -49,7 +49,7 @@ export const toolAllowedActors: Record<string, McpActorType[]> = {
   "memory.search": ALL_ACTORS,
   "memory.get": ALL_ACTORS,
   "memory.retain": ALL_ACTORS,
-  "use_skill": ["board"],  // Restrict to board actors — skill markdown may contain sensitive company IP
+  "use_skill": ["board", "commander"],  // board (founder) + commander both need skills; markdown may contain company IP so still excluded from worker agents + mcp
 };
 
 export const TOOL_DEFINITIONS = [
