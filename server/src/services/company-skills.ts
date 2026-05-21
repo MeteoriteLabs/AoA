@@ -1273,6 +1273,13 @@ export function resolveSkillReferenceByIdentifier(
   const byId = skills.find((s) => s.id === trimmed);
   if (byId) return { skill: byId, ambiguous: false };
 
+  // Exact key match — catalog skills store their raw catalog ID as the key
+  // (e.g. "skill:github-skills/obra/superpowers/brainstorming"), which may
+  // contain colons that normalizeSkillKey strips. Always try the exact key
+  // before attempting normalization so catalog skill refs round-trip correctly.
+  const byKeyExact = skills.find((s) => s.key === trimmed);
+  if (byKeyExact) return { skill: byKeyExact, ambiguous: false };
+
   // Normalized key match (normalizes each path segment independently)
   const normalizedKey = normalizeSkillKey(trimmed);
   if (normalizedKey) {

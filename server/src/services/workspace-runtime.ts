@@ -827,6 +827,42 @@ export async function realizeExecutionWorkspace(input: {
     };
   }
 
+  async function reuseConcurrentWorktreeIfValid(): Promise<RealizedExecutionWorkspace | null> {
+    if (await directoryExists(worktreePath)) {
+      const validation = await validateLinkedGitWorktree({
+        repoRoot,
+        worktreePath,
+        expectedBranchName: branchName,
+      });
+      if (validation.valid) {
+        return await reuseExistingWorktreeAt(worktreePath);
+      }
+
+      const existingGitDir = await runGit(["rev-parse", "--git-dir"], worktreePath).catch(() => null);
+      if (existingGitDir) {
+        throw new Error(
+          `Configured worktree path "${worktreePath}" is not reusable: ${validation.reason}.`,
+        );
+      }
+    }
+
+    const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
+    if (!registeredBranchWorktree) {
+      return null;
+    }
+    const validation = await validateLinkedGitWorktree({
+      repoRoot,
+      worktreePath: registeredBranchWorktree,
+      expectedBranchName: branchName,
+    });
+    if (validation.valid) {
+      return await reuseExistingWorktreeAt(registeredBranchWorktree);
+    }
+    throw new Error(
+      `Configured worktree branch "${branchName}" is registered but not reusable: ${validation.reason}.`,
+    );
+  }
+
   const existingWorktree = await directoryExists(worktreePath);
   if (existingWorktree) {
     const validation = await validateLinkedGitWorktree({
@@ -878,6 +914,10 @@ export async function realizeExecutionWorkspace(input: {
   } catch (error) {
     if (!gitErrorIncludes(error, "already exists")) {
       throw error;
+    }
+    const concurrentlyCreated = await reuseConcurrentWorktreeIfValid();
+    if (concurrentlyCreated) {
+      return concurrentlyCreated;
     }
     try {
       await recordGitOperation(input.recorder, {

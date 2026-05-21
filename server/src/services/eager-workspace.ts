@@ -210,7 +210,7 @@ export async function createEagerWorkspaceForIssue(
         ? "operator_branch"
         : "shared_workspace";
 
-  const persisted = await ewSvc.create({
+  const persisted = await ewSvc.createTaskOwnedIdempotent({
     companyId,
     projectId,
     projectWorkspaceId,

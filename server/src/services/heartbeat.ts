@@ -77,11 +77,13 @@ import {
 } from "./workspace-runtime.js";
 import {
   buildPreviewDetectionText,
+  createLivePreviewDetectionScheduler,
   detectPreviewRuntimeServiceReports,
   extractLoopbackPreviewUrls,
   shouldDetectAoaAppPreviews,
 } from "./runtime-service-preview-detection.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
+import { selectConcurrentPersistedExecutionWorkspace } from "./execution-workspace-race.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
@@ -2602,6 +2604,19 @@ export function heartbeatService(db: Db) {
       realizedWorkspace = executionWorkspace;
       const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
       const resolvedProjectWorkspaceId = resolvedWorkspace.workspaceId ?? null;
+      const concurrentlyPersistedExecutionWorkspace =
+        !shouldReuseExisting && issueRef?.id && !executionWorkspace.created
+          ? selectConcurrentPersistedExecutionWorkspace({
+              realizedWorkspace: executionWorkspace,
+              candidates: await executionWorkspacesSvc.list(agent.companyId, {
+                issueId: issueRef.id,
+                reuseEligible: true,
+              }),
+            })
+          : null;
+      const workspaceToUpdate = shouldReuseExisting && existingExecutionWorkspace
+        ? existingExecutionWorkspace
+        : concurrentlyPersistedExecutionWorkspace;
 
       // Snapshot the workspace config at creation so it survives across runs
       // (provisionCommand / teardownCommand / cleanupCommand / workspaceRuntime).
@@ -2629,8 +2644,8 @@ export function heartbeatService(db: Db) {
 
       // ── Persist execution workspace ─────────────────────────────────
       try {
-        persistedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
-          ? await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
+        persistedExecutionWorkspace = workspaceToUpdate
+          ? await executionWorkspacesSvc.update(workspaceToUpdate.id, {
               cwd: executionWorkspace.cwd,
               repoUrl: executionWorkspace.repoUrl,
               baseRef: executionWorkspace.repoRef,
@@ -2640,13 +2655,13 @@ export function heartbeatService(db: Db) {
               status: "active",
               lastUsedAt: new Date(),
               metadata: {
-                ...(existingExecutionWorkspace.metadata ?? {}),
+                ...(workspaceToUpdate.metadata ?? {}),
                 source: executionWorkspace.source,
                 createdByRuntime: executionWorkspace.created,
               },
             })
           : resolvedProjectId
-            ? await executionWorkspacesSvc.create({
+            ? await executionWorkspacesSvc.createTaskOwnedIdempotent({
                 companyId: agent.companyId,
                 projectId: resolvedProjectId,
                 projectWorkspaceId: resolvedProjectWorkspaceId,
@@ -3352,10 +3367,97 @@ export function heartbeatService(db: Db) {
       let outputSeq = 0;
       let lastOutputDbMs = 0;
       let appPreviewOutputBuffer = "";
+      const previewExcludedOrigins = [
+        process.env.AOA_API_URL ?? "",
+        `http://localhost:${process.env.PORT ?? "3100"}`,
+        `http://127.0.0.1:${process.env.PORT ?? "3100"}`,
+      ];
+      const pendingPreviewUrls = new Set<string>();
+      const persistedPreviewUrls = new Set<string>();
+      const adapterManagedRuntimeServicesById = new Map<
+        string,
+        Awaited<ReturnType<typeof persistAdapterManagedRuntimeServices>>[number]
+      >();
+      const persistDetectedPreviewServices = async (text: string, source: "stream" | "final") => {
+        if (!isolatedWorkspacesEnabled || !realizedWorkspace) return [];
+        if (!shouldDetectAoaAppPreviews(parseObject(agent.runtimeConfig))) return [];
+
+        const previewCandidateUrls = extractLoopbackPreviewUrls(text, {
+          excludedOrigins: previewExcludedOrigins,
+        }).filter((url) => !persistedPreviewUrls.has(url) && !pendingPreviewUrls.has(url));
+        if (previewCandidateUrls.length === 0) return [];
+
+        for (const url of previewCandidateUrls) pendingPreviewUrls.add(url);
+        try {
+          const detectedRuntimeServices = await detectPreviewRuntimeServiceReports({
+            text: previewCandidateUrls.map((url) => `AOA_PREVIEW_URL=${url}`).join("\n"),
+            cwd: realizedWorkspace.cwd,
+            excludedOrigins: previewExcludedOrigins,
+          });
+
+          await onLog(
+            "stderr",
+            `[aoa] App preview detection (${source}) found ${previewCandidateUrls.length} candidate URL(s), ${detectedRuntimeServices.length} reachable service(s)\n`,
+          );
+
+          if (detectedRuntimeServices.length === 0) return [];
+
+          const adapterManagedRuntimeServices = await persistAdapterManagedRuntimeServices({
+            db,
+            adapterType: agent.adapterType,
+            runId: run.id,
+            agent: {
+              id: agent.id,
+              name: agent.name,
+              companyId: agent.companyId,
+            },
+            issue: issueRef,
+            workspace: realizedWorkspace,
+            executionWorkspaceId: resolveAdapterManagedRuntimeExecutionWorkspaceId({
+              persistedExecutionWorkspace,
+              issue: issueRef,
+            }),
+            reports: detectedRuntimeServices,
+          });
+
+          for (const service of adapterManagedRuntimeServices) {
+            if (service.url) persistedPreviewUrls.add(service.url);
+            adapterManagedRuntimeServicesById.set(service.id, service);
+          }
+
+          if (adapterManagedRuntimeServices.length > 0) {
+            const combinedRuntimeServices = [
+              ...runtimeServices,
+              ...Array.from(adapterManagedRuntimeServicesById.values()),
+            ];
+            context.paperclipRuntimeServices = combinedRuntimeServices;
+            context.paperclipRuntimePrimaryUrl =
+              combinedRuntimeServices.find((service) => readNonEmptyString(service.url))?.url ?? null;
+            await db
+              .update(heartbeatRuns)
+              .set({
+                contextSnapshot: context,
+                updatedAt: new Date(),
+              })
+              .where(eq(heartbeatRuns.id, run.id));
+          }
+
+          return adapterManagedRuntimeServices;
+        } finally {
+          for (const url of previewCandidateUrls) pendingPreviewUrls.delete(url);
+        }
+      };
+      const livePreviewDetection = createLivePreviewDetectionScheduler({
+        onDetect: persistDetectedPreviewServices,
+        onError: (err) => {
+          logger.warn({ err, runId: run.id }, "[heartbeat] live app preview persistence failed");
+        },
+      });
       const originalOnLog = onLog;
       const onLogWithOutput = async (stream: "stdout" | "stderr", chunk: string) => {
         outputSeq += 1;
         appPreviewOutputBuffer = (appPreviewOutputBuffer + chunk).slice(-64_000);
+        livePreviewDetection.observeChunk(chunk);
         const now = Date.now();
         if (now - lastOutputDbMs > 1000) {
           lastOutputDbMs = now;
@@ -3393,40 +3495,17 @@ export function heartbeatService(db: Db) {
         authToken: authToken ?? undefined,
         onSpawn,
       });
+      await livePreviewDetection.flush();
 
       // ── Persist adapter-managed runtime services (gated) ───────────
       const previewDetectionText = buildPreviewDetectionText({
         streamedText: appPreviewOutputBuffer,
         adapterResult,
       });
-      const previewExcludedOrigins = [
-        process.env.AOA_API_URL ?? "",
-        `http://localhost:${process.env.PORT ?? "3100"}`,
-        `http://127.0.0.1:${process.env.PORT ?? "3100"}`,
-      ];
-      const previewCandidateUrls =
-        isolatedWorkspacesEnabled && realizedWorkspace && shouldDetectAoaAppPreviews(parseObject(agent.runtimeConfig))
-          ? extractLoopbackPreviewUrls(previewDetectionText, {
-              excludedOrigins: previewExcludedOrigins,
-            })
-          : [];
-      const detectedRuntimeServices =
-        previewCandidateUrls.length > 0 && realizedWorkspace
-          ? await detectPreviewRuntimeServiceReports({
-              text: previewDetectionText,
-              cwd: realizedWorkspace.cwd,
-              excludedOrigins: previewExcludedOrigins,
-            })
-          : [];
-      if (previewCandidateUrls.length > 0) {
-        await onLog(
-          "stderr",
-          `[aoa] App preview detection found ${previewCandidateUrls.length} candidate URL(s), ${detectedRuntimeServices.length} reachable service(s)\n`,
-        );
-      }
+      await persistDetectedPreviewServices(previewDetectionText, "final");
       const runtimeServiceReports = mergeAdapterRuntimeServiceReports({
         adapterReports: adapterResult.runtimeServices ?? [],
-        detectedReports: detectedRuntimeServices,
+        detectedReports: [],
       });
 
       if (isolatedWorkspacesEnabled && realizedWorkspace && runtimeServiceReports.length > 0) {

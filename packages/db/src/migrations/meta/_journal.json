@@ -694,6 +694,13 @@
       "when": 1779092769181,
       "tag": "0098_romantic_agent_zero",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1779386695708,
+      "tag": "0099_square_spectrum",
+      "breakpoints": true
     }
   ]
 }
