@@ -8,6 +8,7 @@ import {
   Loader2,
   MessageSquarePlus,
   Mic,
+  PanelLeft,
   Send,
   Square,
   Wrench,
@@ -745,6 +746,25 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           updatedAt={activeConv?.updatedAt}
           onOpenSessions={onOpenSessions}
         />
+      )}
+
+      {/* Mobile/tablet Sessions trigger — shown only when there is NO active
+          conversation (the caption's Sessions button covers the active case).
+          `lg:hidden` keeps the desktop layout completely unchanged. */}
+      {!conversationId && onOpenSessions && (
+        <div className="lg:hidden shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-border bg-background">
+          <button
+            type="button"
+            data-commander-touch
+            onClick={() => onOpenSessions()}
+            aria-label="Open sessions"
+            title="Sessions"
+            className="p-1 rounded text-muted-foreground hover:bg-muted hover:text-foreground transition-colors shrink-0"
+          >
+            <PanelLeft className="h-4 w-4" />
+          </button>
+          <span className="text-xs text-muted-foreground select-none">Chats</span>
+        </div>
       )}
 
       {/* Mobile close button (absolute overlay, not in flow) */}
