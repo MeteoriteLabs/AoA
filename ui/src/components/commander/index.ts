@@ -6,3 +6,5 @@ export { SessionOverflowMenu } from "./SessionOverflowMenu";
 export type { SessionOverflowMenuProps } from "./SessionOverflowMenu";
 export { CollapsedSessionStrip } from "./CollapsedSessionStrip";
 export type { CollapsedSessionStripProps } from "./CollapsedSessionStrip";
+export { CommanderInput } from "./CommanderInput";
+export type { CommanderInputHandle, SlashState } from "./CommanderInput";

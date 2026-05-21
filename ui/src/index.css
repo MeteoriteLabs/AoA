@@ -137,6 +137,24 @@
   }
 }
 
+/* Commander rich (contenteditable) input. Uncontrolled — the DOM owns the
+   live text. `pre-wrap` preserves the Shift+Enter newlines we insert as "\n";
+   the JS-toggled `.is-empty` class drives the placeholder (more reliable than
+   `:empty`, which a leftover <br> would defeat). */
+.commander-input {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-y: auto;
+  outline: none;
+}
+.commander-input.is-empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  pointer-events: none;
+  user-select: none;
+}
+
 :root {
   color-scheme: light;
 
@@ -151,6 +169,12 @@
   --warning: #a87a1c;
   --error: #ef4444;
   --info: #2563eb;
+
+  /* Rich-input tokens (Commander). One color per token kind; expandable
+     (skill now; mention/file later). Text color + soft wash background so the
+     token reads as an atomic unit without being a removable pill chip. */
+  --token-skill: #2563eb;
+  --token-skill-bg: color-mix(in srgb, var(--token-skill) 10%, transparent);
 
   /* Data palette (same hex on both modes) */
   --data-teal: #3fa8c7;
@@ -238,6 +262,10 @@
   --warning: #d9a938;
   --error: #ef4444;
   --info: #3b82f6;
+
+  /* Rich-input tokens (Commander) — lighter blue for contrast on dark. */
+  --token-skill: #6ea8fe;
+  --token-skill-bg: color-mix(in srgb, var(--token-skill) 14%, transparent);
 
   /* Data palette (same as light) */
   --data-teal: #3fa8c7;

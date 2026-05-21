@@ -43,9 +43,10 @@ import { CommanderEmptyState } from "./commander/CommanderEmptyState";
 import { InputAddMenu } from "./commander/InputAddMenu";
 import { SkillPicker } from "./commander/SkillPicker";
 import {
-  buildSkillDirective,
-  matchSlashToken,
-} from "./commander/skillPickerUtils";
+  CommanderInput,
+  type CommanderInputHandle,
+  type SlashState,
+} from "./commander/CommanderInput";
 import type { CompanySkillListItem } from "@armyofagents/shared";
 import {
   Tooltip,
@@ -180,7 +181,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const queryClient = useQueryClient();
 
   const [messages, setMessages] = useState<LocalMessage[]>([]);
-  const [input, setInput] = useState("");
+  // The rich input is uncontrolled (the contenteditable DOM owns the live
+  // text). We only track empty-ness here to drive the Send button + placeholder.
+  const [inputEmpty, setInputEmpty] = useState(true);
   const [streaming, setStreamingLocal] = useState(false);
   // Task 9: skill picker. `skillPickerOpen` = opened via the `+` menu (shows
   // all skills). `slashActive`/`slashQuery` = opened via a `/token` typed in
@@ -194,7 +197,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const filteredSkillsRef = useRef<CompanySkillListItem[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<CommanderInputHandle>(null);
   const inputBarRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const localIdRef = useRef(0);
@@ -405,11 +408,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   );
 
   const handleSend = useCallback(async () => {
-    const text = input.trim();
+    // Read the expanded directive text (skill tokens → full use_skill lines)
+    // straight from the rich input; it clears itself on submit.
+    const text = inputRef.current?.getText() ?? "";
     if (!text) return;
-    setInput("");
+    inputRef.current?.clear();
     await sendText(text);
-  }, [input, sendText]);
+  }, [sendText]);
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
@@ -626,28 +631,24 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     setPickerIndex(0);
   }, []);
 
-  // Slash detection: inspect the substring up to the caret so a `/` mid-text
-  // (after whitespace) still triggers and a completed `/foo bar` token stops.
-  const handleInputChange = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const value = e.target.value;
-      setInput(value);
-      const caret = e.target.selectionStart ?? value.length;
-      const match = matchSlashToken(value.slice(0, caret));
-      if (match.active) {
-        setSlashActive(true);
-        setSlashQuery(match.query);
-        setPickerIndex(0);
-      } else {
-        // Typing past a token closes the slash-triggered picker. Leave a
-        // `+`-menu-triggered picker open (it isn't slash-driven).
-        setSlashActive(false);
-        setSlashQuery("");
-        setPickerIndex(0);
-      }
-    },
-    [],
-  );
+  // CommanderInput reports its empty/non-empty state so we can disable Send.
+  const handleEmptyChange = useCallback((empty: boolean) => {
+    setInputEmpty(empty);
+  }, []);
+
+  // CommanderInput reports the slash-command context at the caret. A `/` token
+  // drives the slash-triggered picker; a `+`-menu-triggered picker is left
+  // untouched (it isn't slash-driven).
+  const handleSlashChange = useCallback((slash: SlashState) => {
+    if (slash.active) {
+      setSlashActive(true);
+      setSlashQuery(slash.query);
+    } else {
+      setSlashActive(false);
+      setSlashQuery("");
+    }
+    setPickerIndex(0);
+  }, []);
 
   // Stable callback so SkillPicker's effect dep array doesn't re-fire every
   // parent render (an inline arrow would recreate on every render).
@@ -660,81 +661,42 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
 
   const handleSelectSkill = useCallback(
     (skill: CompanySkillListItem) => {
-      const directive = buildSkillDirective(skill);
-      const el = inputRef.current;
-      const caret = el?.selectionStart ?? input.length;
-
-      let newValue: string;
-      let newCaret: number;
-
-      if (slashActive) {
-        // Replace the `/query` token (start..caret) with the directive,
-        // preserving any text after the caret.
-        const match = matchSlashToken(input.slice(0, caret));
-        const start = match.active ? match.start : caret;
-        const before = input.slice(0, start);
-        const after = input.slice(caret);
-        newValue = before + directive + after;
-        newCaret = (before + directive).length;
-      } else {
-        // Menu path: insert at the caret, padding with a leading space when
-        // the preceding char isn't already whitespace.
-        const before = input.slice(0, caret);
-        const after = input.slice(caret);
-        const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
-        const insert = (needsLeadingSpace ? " " : "") + directive;
-        newValue = before + insert + after;
-        newCaret = (before + insert).length;
-      }
-
-      setInput(newValue);
+      // The rich input inserts a colored atomic token (just the skill name);
+      // it expands to the full use_skill directive on send. `slashActive`
+      // tells it whether to replace a typed `/query` or insert inline.
+      inputRef.current?.insertSkill(skill, slashActive);
       closePicker();
-
-      // Refocus and place caret at the end of the inserted directive.
-      requestAnimationFrame(() => {
-        const node = inputRef.current;
-        if (!node) return;
-        node.focus();
-        node.setSelectionRange(newCaret, newCaret);
-        // Re-run autogrow since the value changed programmatically.
-        node.style.height = "36px";
-        node.style.height = `${Math.min(node.scrollHeight, 140)}px`;
-      });
     },
-    [input, slashActive, closePicker],
+    [slashActive, closePicker],
   );
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // When the picker is open it wins over send/stop/close handling.
-    if (pickerOpen) {
-      const list = filteredSkillsRef.current;
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        if (list.length > 0) setPickerIndex((i) => Math.min(i + 1, list.length - 1));
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        if (list.length > 0) setPickerIndex((i) => Math.max(i - 1, 0));
-        return;
-      }
-      if (e.key === "Enter") {
-        e.preventDefault();
-        const skill = list[pickerIndex];
-        if (skill) handleSelectSkill(skill);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        closePicker();
-        return;
-      }
-    }
-
-    if (e.key === "Enter" && !e.shiftKey) {
+  // Parent gets first crack at keydown (CommanderInput calls this before its
+  // own Enter/Backspace handling). When the picker is open, picker nav wins and
+  // we preventDefault so CommanderInput skips submit. When the picker is closed,
+  // we do nothing here and let CommanderInput own Enter-to-send.
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!pickerOpen) return;
+    const list = filteredSkillsRef.current;
+    if (e.key === "ArrowDown") {
       e.preventDefault();
-      handleSend();
+      if (list.length > 0) setPickerIndex((i) => Math.min(i + 1, list.length - 1));
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (list.length > 0) setPickerIndex((i) => Math.max(i - 1, 0));
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const skill = list[pickerIndex];
+      if (skill) handleSelectSkill(skill);
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closePicker();
     }
   };
 
@@ -1014,32 +976,25 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           onClose={closePicker}
         />
         <div className="rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-brand-focus-ring focus-within:border-brand transition-shadow">
-          {/* Textarea */}
-          <textarea
+          {/* Rich input — renders skill selections as colored atomic tokens */}
+          <CommanderInput
             ref={inputRef}
-            value={input}
-            onChange={handleInputChange}
+            placeholder="Ask the agent..."
+            disabled={streaming}
+            onSubmit={(text) => void sendText(text)}
+            onEmptyChange={handleEmptyChange}
+            onSlashChange={handleSlashChange}
             onKeyDown={handleKeyDown}
             onBlur={(e) => {
               // Only close when focus leaves the whole input bar. Radix restores
               // focus to the `+` trigger after "Use a skill"; that target is inside
               // inputBarRef, so we must NOT close in that case. Skill-row clicks use
-              // onMouseDown+preventDefault and never blur the textarea.
+              // onMouseDown+preventDefault and never blur the input.
               const next = e.relatedTarget as Node | null;
               if (pickerOpen && !inputBarRef.current?.contains(next)) {
                 closePicker();
               }
             }}
-            placeholder="Ask the agent..."
-            rows={1}
-            className="w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-sm placeholder:text-muted-foreground focus-visible:outline-none disabled:opacity-50 max-h-[140px] min-h-[36px]"
-            style={{ height: "36px" }}
-            onInput={(e) => {
-              const el = e.currentTarget;
-              el.style.height = "36px";
-              el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
-            }}
-            disabled={streaming}
           />
           {/* Controls row */}
           <div className="flex items-center gap-1.5 px-2 pb-2">
@@ -1106,7 +1061,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={!input.trim()}
+                disabled={inputEmpty}
                 aria-label="Send message"
                 className="size-8 rounded-full flex items-center justify-center shrink-0 bg-brand text-white hover:bg-brand-hover transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring disabled:opacity-40 disabled:pointer-events-none"
               >
