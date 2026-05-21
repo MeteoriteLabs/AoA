@@ -1066,11 +1066,18 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                       )}
                     </p>
                   ) : workspace ? (
-                    <button
-                      type="button"
+                    <div
+                      role="button"
+                      tabIndex={0}
                       data-testid="workspace-row"
                       className="w-full flex items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-sm hover:bg-accent/30 transition-colors text-left"
                       onClick={() => setSidebarMode("workspace")}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSidebarMode("workspace");
+                        }
+                      }}
                     >
                       <span
                         className={cn(
@@ -1112,7 +1119,7 @@ export function TaskSlideOver({ issueId, open, onClose }: TaskSlideOverProps) {
                         {relativeTime(workspace.lastUsedAt)}
                       </span>
                       <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    </button>
+                    </div>
                   ) : (
                     <p className="text-xs text-muted-foreground">Loading workspace...</p>
                   )}

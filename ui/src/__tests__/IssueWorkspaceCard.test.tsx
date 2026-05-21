@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const updateMock = vi.fn().mockResolvedValue({});
+const invalidateQueriesMock = vi.fn();
 
 vi.mock("../api/issues", () => ({
   issuesApi: {
@@ -46,6 +47,12 @@ vi.mock("../lib/queryKeys", () => ({
   },
 }));
 
+vi.mock("../hooks/useWorkspacePermissions", () => ({
+  useWorkspacePermissions: () => ({
+    canOverrideTaskWorkspace: true,
+  }),
+}));
+
 // We mock react-query's useQuery to return specific shapes per queryKey signature
 type QueryShape = { data: unknown; isLoading?: boolean; error?: unknown };
 const queryShapes: Record<string, QueryShape> = {};
@@ -66,9 +73,9 @@ vi.mock("@tanstack/react-query", async () => {
       }
       return { data: undefined, isLoading: false, error: null };
     }),
-    useMutation: (opts: { mutationFn: (payload: unknown) => Promise<unknown> }) => ({
+    useMutation: (opts: { mutationFn: (payload: unknown) => Promise<unknown>; onSuccess?: () => void }) => ({
       mutate: (payload: unknown) => {
-        void opts.mutationFn(payload);
+        void opts.mutationFn(payload).then(() => opts.onSuccess?.());
       },
       mutateAsync: opts.mutationFn,
       isPending: false,
@@ -76,7 +83,7 @@ vi.mock("@tanstack/react-query", async () => {
       isSuccess: false,
     }),
     useQueryClient: () => ({
-      invalidateQueries: vi.fn(),
+      invalidateQueries: invalidateQueriesMock,
     }),
   };
 });
@@ -148,7 +155,7 @@ function seed({
   candidates,
 }: {
   instance?: { enableIsolatedWorkspaces: boolean };
-  project?: { functionType: string | null; executionWorkspacePolicy: { enabled: boolean } | null };
+  project?: { functionType: string | null; executionWorkspacePolicy: { enabled: boolean; allowIssueOverride?: boolean } | null };
   candidates?: Array<{ id: string; name: string; branchName: string | null; lastUsedAt: Date }>;
 }) {
   for (const k of Object.keys(queryShapes)) delete queryShapes[k];
@@ -160,6 +167,7 @@ function seed({
 describe("IssueWorkspaceCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    invalidateQueriesMock.mockClear();
     capturedHandlers.length = 0;
     for (const k of Object.keys(queryShapes)) delete queryShapes[k];
   });
@@ -209,6 +217,21 @@ describe("IssueWorkspaceCard", () => {
     expect(screen.getByTestId("select-item-shared_workspace")).toBeInTheDocument();
     expect(screen.getByTestId("select-item-isolated_workspace")).toBeInTheDocument();
     expect(screen.queryByTestId("select-item-reuse_existing")).not.toBeInTheDocument();
+  });
+
+  it("renders read-only inherited workspace state when project disallows task overrides", () => {
+    seed({
+      instance: { enableIsolatedWorkspaces: true },
+      project: {
+        functionType: "software_development",
+        executionWorkspacePolicy: { enabled: true, allowIssueOverride: false },
+      },
+      candidates: [],
+    });
+    renderCard();
+    expect(screen.getByText(/department default/i)).toBeInTheDocument();
+    expect(screen.getByText(/Task-level workspace overrides are disabled/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("issue-workspace-mode-trigger")).not.toBeInTheDocument();
   });
 
   it("shows reuse_existing option when candidates exist", () => {
@@ -263,6 +286,25 @@ describe("IssueWorkspaceCard", () => {
     expect(updateMock).toHaveBeenCalledWith("i-1", {
       executionWorkspacePreference: "isolated_workspace",
       executionWorkspaceSettings: null,
+    });
+  });
+
+  it("invalidates issue detail and workspace list after mode update", async () => {
+    seed({
+      instance: { enableIsolatedWorkspaces: true },
+      project: {
+        functionType: "software_development",
+        executionWorkspacePolicy: { enabled: true },
+      },
+      candidates: [],
+    });
+    renderCard();
+
+    capturedHandlers[0]!("isolated_workspace");
+
+    await vi.waitFor(() => {
+      expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: ["issues", "detail", "i-1"] });
+      expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: ["executionWorkspaces", "c-1"] });
     });
   });
 

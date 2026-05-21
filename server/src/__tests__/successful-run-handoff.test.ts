@@ -85,7 +85,7 @@ describe("successful run handoff decisions", () => {
       presentation: {
         kind: "system_notice",
         tone: "warning",
-        title: "Missing task disposition",
+        title: "Task needs final status",
       },
       metadata: {
         version: 1,
@@ -97,5 +97,12 @@ describe("successful run handoff decisions", () => {
         ],
       },
     });
+    const notice = buildSuccessfulRunHandoffNotice({
+      runId: "run-1",
+      agentId: "agent-1",
+      reason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+    });
+    expect(notice.body).toContain("task is still in progress");
+    expect(notice.body).toContain("choose the final task status");
   });
 });

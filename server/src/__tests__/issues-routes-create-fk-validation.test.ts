@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { unprocessable } from "../errors.js";
 import { errorHandler } from "../middleware/index.js";
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -313,5 +314,99 @@ describe("POST /companies/:companyId/issues — FK validation", () => {
     expect(mockGoalService.getById).not.toHaveBeenCalled();
     expect(mockIssueService.getById).not.toHaveBeenCalled();
     expect(mockIssueService.create).toHaveBeenCalled();
+  });
+
+  it("returns 422 when creating a task with workspace override violates project policy", async () => {
+    mockIssueService.create.mockRejectedValue(
+      unprocessable("Project workspace policy does not allow task-level overrides"),
+    );
+
+    const res = await request(createApp())
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Override disallowed",
+        projectId,
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toEqual({
+      error: "Project workspace policy does not allow task-level overrides",
+    });
+  });
+
+  it("returns 403 when an agent actor creates a task with workspace override fields", async () => {
+    const res = await request(createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+    }))
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Worker override attempt",
+        projectId,
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /issues/:id workspace policy", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockIssueService.getById.mockResolvedValue({
+      ...createdIssue,
+      id: "77777777-7777-4777-8777-777777777777",
+      companyId,
+      projectId,
+      workMode: "standard",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      executionRunId: null,
+    });
+    mockIssueService.update.mockRejectedValue(
+      unprocessable("Project workspace policy does not allow task-level overrides"),
+    );
+  });
+
+  it("returns 422 when issue PATCH workspace fields violate project policy", async () => {
+    const res = await request(createApp())
+      .patch("/api/issues/77777777-7777-4777-8777-777777777777")
+      .send({
+        executionWorkspaceSettings: {
+          mode: "isolated_workspace",
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toEqual({
+      error: "Project workspace policy does not allow task-level overrides",
+    });
+  });
+
+  it("returns 403 when an agent actor PATCHes workspace override fields", async () => {
+    mockIssueService.update.mockResolvedValue(null);
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: null,
+    }))
+      .patch("/api/issues/77777777-7777-4777-8777-777777777777")
+      .send({
+        executionWorkspaceSettings: {
+          mode: "isolated_workspace",
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });

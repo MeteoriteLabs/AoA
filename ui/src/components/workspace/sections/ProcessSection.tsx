@@ -17,14 +17,12 @@ interface ProcessSectionProps {
   issueId: string;
   companyId: string;
   companyPrefix: string;
-  onOpenLogs?: (runId: string) => void;
 }
 
 export function ProcessSection({
   issueId,
   companyId,
   companyPrefix,
-  onOpenLogs,
 }: ProcessSectionProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -59,7 +57,6 @@ export function ProcessSection({
   const isRunning = !!activeRun;
   const totalRuns = runs?.length ?? 0;
   const isBlocked = issue?.status === "blocked";
-  const latestRunId = activeRun?.id ?? runs?.[0]?.runId ?? null;
 
   const blockingTasks = isBlocked
     ? (deps?.upstream ?? []).filter((d) => d.status !== "done" && d.status !== "completed")
@@ -136,26 +133,13 @@ export function ProcessSection({
         <Button
           type="button"
           size="sm"
-          variant="outline"
+          variant="default"
           className="h-7 w-full text-xs"
           onClick={() => wakeAgent.mutate(assignedAgent.id)}
           disabled={wakeAgent.isPending}
         >
           <Play className="mr-1.5 h-3.5 w-3.5" />
           Wake agent
-        </Button>
-      )}
-
-      {latestRunId && (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-7 w-full text-xs"
-          onClick={() => onOpenLogs?.(latestRunId)}
-          aria-label="Open latest logs"
-        >
-          Logs
         </Button>
       )}
 

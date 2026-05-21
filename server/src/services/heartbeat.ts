@@ -50,6 +50,7 @@ import {
 } from "@armyofagents/adapter-utils/server-utils";
 import type { AdapterRuntimeServiceReport } from "@armyofagents/adapter-utils";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
+import { buildRunInputBundle } from "./run-input-bundles.js";
 
 /** Strip non-Latin1 characters that crash WIN1252-encoded embedded Postgres on Windows. */
 function sanitizeForDb(text: string): string {
@@ -239,6 +240,22 @@ export function resolveAdapterManagedRuntimeExecutionWorkspaceId(input: {
     ?? null;
 }
 
+export function shouldUsePersistedExecutionWorkspaceForRun(input: {
+  issueExecutionWorkspaceId?: unknown;
+  issueExecutionWorkspacePreference?: unknown;
+  hasIssueScopedExecutionWorkspace: boolean;
+  existingExecutionWorkspaceStatus?: string | null;
+}): boolean {
+  if (!input.existingExecutionWorkspaceStatus || input.existingExecutionWorkspaceStatus === "archived") {
+    return false;
+  }
+  return (
+    Boolean(readNonEmptyString(input.issueExecutionWorkspaceId)) ||
+    input.issueExecutionWorkspacePreference === "reuse_existing" ||
+    input.hasIssueScopedExecutionWorkspace
+  );
+}
+
 function normalizeRuntimeServiceUrlKey(value: unknown): string | null {
   const raw = readNonEmptyString(value);
   if (!raw) return null;
@@ -271,6 +288,21 @@ export function mergeAdapterRuntimeServiceReports(input: {
     reports.push(service);
   }
   return reports;
+}
+
+export function resolveOutputDetectionCwd(input: {
+  adapterExecutionCwd?: string | null;
+  effectiveCwd?: string | null;
+}): string | null {
+  const adapterCwd =
+    typeof input.adapterExecutionCwd === "string" && input.adapterExecutionCwd.trim().length > 0
+      ? input.adapterExecutionCwd.trim()
+      : null;
+  const effectiveCwd =
+    typeof input.effectiveCwd === "string" && input.effectiveCwd.trim().length > 0
+      ? input.effectiveCwd.trim()
+      : null;
+  return adapterCwd ?? effectiveCwd;
 }
 
 function parseIssueAssigneeAdapterOverrides(
@@ -2536,10 +2568,12 @@ export function heartbeatService(db: Db) {
       });
       // Short-circuit: if issue prefers reusing an existing workspace, build the
       // realized descriptor from the persisted row instead of re-provisioning.
-      const shouldReuseExisting =
-        (issueRef?.executionWorkspacePreference === "reuse_existing" || Boolean(issueScopedExecutionWorkspace)) &&
-        existingExecutionWorkspace &&
-        existingExecutionWorkspace.status !== "archived";
+      const shouldReuseExisting = shouldUsePersistedExecutionWorkspaceForRun({
+        issueExecutionWorkspaceId: issueRef?.executionWorkspaceId,
+        issueExecutionWorkspacePreference: issueRef?.executionWorkspacePreference,
+        hasIssueScopedExecutionWorkspace: Boolean(issueScopedExecutionWorkspace),
+        existingExecutionWorkspaceStatus: existingExecutionWorkspace?.status ?? null,
+      });
       const realizeBase = {
         baseCwd: resolvedWorkspace.cwd,
         source: resolvedWorkspace.source,
@@ -2881,6 +2915,30 @@ export function heartbeatService(db: Db) {
       }
     }
 
+    if (issueId) {
+      try {
+        const runInputBundle = await buildRunInputBundle({
+          db,
+          companyId: agent.companyId,
+          issueId,
+          cwd: effectiveCwd,
+        });
+        if (runInputBundle.inputs.length > 0 || runInputBundle.skipped.length > 0) {
+          context.runInputBundle = runInputBundle;
+          const existingTaskMarkdown =
+            typeof context.currentTaskMarkdown === "string" ? context.currentTaskMarkdown : "";
+          context.currentTaskMarkdown = [existingTaskMarkdown, runInputBundle.markdown]
+            .filter((section) => section.trim().length > 0)
+            .join("\n\n");
+        }
+      } catch (err) {
+        logger.warn(
+          { companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId, err },
+          "Failed to build run input bundle for agent run; continuing without selected context",
+        );
+      }
+    }
+
     const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
     let previousSessionDisplayId = truncateDisplayId(
       taskSessionForRun?.sessionDisplayId ??
@@ -3096,6 +3154,16 @@ export function heartbeatService(db: Db) {
           },
           "local agent jwt secret missing or invalid; running without injected AOA_API_KEY",
         );
+        await appendRunEvent(currentRun, seq++, {
+          eventType: "adapter.auth.warning",
+          stream: "system",
+          level: "warn",
+          message: "Agent API auth was not injected for this local run.",
+          payload: {
+            adapterType: agent.adapterType,
+            reason: "local_agent_jwt_missing",
+          },
+        });
       }
       // Fetch company skills attached to this agent and inject into context
       try {
@@ -3651,13 +3719,34 @@ export function heartbeatService(db: Db) {
       // ── V2: Agent output capture (Decision #67) ─────────────────────
       // Runs AFTER the run is finalized — detection failures are non-fatal.
       let detectedFiles: Array<{ path: string; type?: string }> = [];
-      if (outcome === "succeeded" && effectiveCwd) {
+      const outputDetectionCwd = resolveOutputDetectionCwd({
+        adapterExecutionCwd: adapterResult.executionCwd,
+        effectiveCwd,
+      });
+      if (
+        outputDetectionCwd &&
+        effectiveCwd &&
+        adapterResult.executionCwd &&
+        path.resolve(outputDetectionCwd) !== path.resolve(effectiveCwd)
+      ) {
+        logger.info(
+          {
+            runId: run.id,
+            agentId: agent.id,
+            adapterType: agent.adapterType,
+            outputDetectionCwd,
+            effectiveCwd,
+          },
+          "using adapter execution cwd for output detection",
+        );
+      }
+      if (outcome === "succeeded" && outputDetectionCwd) {
         try {
           const detected = await outputDetector.detectAndCapture({
             runId: run.id,
             companyId: agent.companyId,
             agentId: agent.id,
-            cwd: effectiveCwd,
+            cwd: outputDetectionCwd,
             startedAt: run.startedAt ?? run.createdAt,
             adapterType: agent.adapterType,
             adapterHints: adapterResult.outputFiles,

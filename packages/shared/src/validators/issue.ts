@@ -8,6 +8,64 @@ export const issueAssigneeAdapterOverridesSchema = z
   })
   .strict();
 
+function hasIssueWorkspaceCommandKey(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some(hasIssueWorkspaceCommandKey);
+  const record = value as Record<string, unknown>;
+  for (const key of ["command", "provisionCommand", "teardownCommand", "cleanupCommand"]) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) return true;
+  }
+  return Object.values(record).some(hasIssueWorkspaceCommandKey);
+}
+
+const issueExecutionWorkspaceSettingsSchema = z
+  .object({
+    mode: z
+      .enum([
+        "inherit",
+        "shared_workspace",
+        "isolated_workspace",
+        "operator_branch",
+        "reuse_existing",
+        "agent_default",
+      ])
+      .optional(),
+    reuseWorkspaceId: z.string().uuid().nullable().optional(),
+    workspaceStrategy: z
+      .object({
+        type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]),
+        baseRef: z.string().nullable().optional(),
+        branchTemplate: z.string().nullable().optional(),
+        worktreeParentDir: z.string().nullable().optional(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
+    workspaceRuntime: z.record(z.unknown()).nullable().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (hasIssueWorkspaceCommandKey(value)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Issue workspace settings cannot include command fields.",
+      });
+    }
+  });
+
+export const issueContextBundleItemSchema = z.object({
+  type: z.enum(["comment", "attachment", "artifact", "memory", "text"]),
+  id: z.string().uuid().optional().nullable(),
+  label: z.string().trim().max(240).optional().nullable(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+export const issueContextBundleSchema = z.object({
+  sourceIssueId: z.string().uuid(),
+  brief: z.string().trim().max(4000).optional().nullable(),
+  items: z.array(issueContextBundleItemSchema).max(10).optional().default([]),
+});
+
 export const createIssueSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
@@ -28,6 +86,10 @@ export const createIssueSchema = z.object({
   dueDate: z.string().datetime().optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
   executionEnvironmentId: z.string().uuid().optional().nullable(),
+  executionWorkspaceId: z.string().uuid().nullable().optional(),
+  executionWorkspacePreference: z.string().nullable().optional(),
+  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.nullable().optional(),
+  contextBundle: issueContextBundleSchema.optional(),
 });
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
@@ -57,7 +119,7 @@ export const updateIssueSchema = createIssueSchema.partial().extend({
   hiddenAt: z.string().datetime().nullable().optional(),
   executionWorkspaceId: z.string().uuid().nullable().optional(),
   executionWorkspacePreference: z.string().nullable().optional(),
-  executionWorkspaceSettings: z.record(z.unknown()).nullable().optional(),
+  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.nullable().optional(),
   monitorPolicy: issueMonitorPolicySchema.nullable().optional(),
 });
 

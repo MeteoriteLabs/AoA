@@ -67,6 +67,49 @@ describe("normalizeTranscript", () => {
     }
   });
 
+  it("groups known Codex adapter stderr noise as quiet diagnostics", () => {
+    const entries: TranscriptEntry[] = [
+      {
+        kind: "stderr",
+        ts: "2026-01-01T00:00:00Z",
+        text: "WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt",
+      },
+      {
+        kind: "stderr",
+        ts: "2026-01-01T00:00:01Z",
+        text: "WARN codex_core_skills::loader: ignoring interface.icon_small",
+      },
+    ];
+
+    const blocks = normalizeTranscript(entries, false);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ type: "diagnostic_group" });
+    if (blocks[0]?.type === "diagnostic_group") {
+      expect(blocks[0].lines).toHaveLength(2);
+    }
+  });
+
+  it("keeps Codex shell snapshot and plugin sync warnings out of red stderr", () => {
+    const entries: TranscriptEntry[] = [
+      {
+        kind: "stderr",
+        ts: "2026-01-01T00:00:00Z",
+        text: "WARN codex_core::shell_snapshot: Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell",
+      },
+      {
+        kind: "stderr",
+        ts: "2026-01-01T00:00:01Z",
+        text: "WARN codex_core_plugins::startup_sync: git sync failed for curated plugin sync, falling back to GitHub HTTP error=failed to move previous curated plugins repo out of the way: Access is denied.",
+      },
+    ];
+
+    const blocks = normalizeTranscript(entries, false);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ type: "diagnostic_group" });
+  });
+
   it("converts init entry to event block", () => {
     const entries: TranscriptEntry[] = [
       { kind: "init", ts: "2026-01-01T00:00:00Z", model: "claude-sonnet", sessionId: "s1" },

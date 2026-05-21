@@ -58,6 +58,7 @@ vi.mock("../middleware/logger.js", () => ({ logger: { child: () => ({ info: vi.f
 import {
   applyEnvironmentRuntimeTarget,
   mergeAdapterRuntimeServiceReports,
+  resolveOutputDetectionCwd,
   resolveAdapterExecutionContext,
   resolveAdapterManagedRuntimeExecutionWorkspaceId,
 } from "../services/heartbeat.js";
@@ -193,5 +194,23 @@ describe("heartbeat adapter execution target context", () => {
       command: "pnpm dev",
       stopPolicy: "manual",
     });
+  });
+
+  it("prefers adapter execution cwd for output detection", () => {
+    expect(
+      resolveOutputDetectionCwd({
+        adapterExecutionCwd: "C:/repo/actual",
+        effectiveCwd: "C:/aoa/fallback",
+      }),
+    ).toBe("C:/repo/actual");
+  });
+
+  it("falls back to effective cwd when adapter execution cwd is missing", () => {
+    expect(
+      resolveOutputDetectionCwd({
+        adapterExecutionCwd: null,
+        effectiveCwd: "C:/aoa/fallback",
+      }),
+    ).toBe("C:/aoa/fallback");
   });
 });

@@ -1,6 +1,6 @@
 // ui/src/components/workspace/transcript/StructuredRunBlock.tsx
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { heartbeatsApi } from "../../../api/heartbeats";
 import { getUIAdapter } from "../../../adapters/registry";
@@ -20,10 +20,12 @@ import { TranscriptEditGroup } from "./TranscriptEditGroup";
 import { TranscriptProgressBlock } from "./TranscriptProgressBlock";
 import { TranscriptEventRow } from "./TranscriptEventRow";
 import { TranscriptErrorBlock } from "./TranscriptErrorBlock";
+import { TranscriptDiagnosticBlock } from "./TranscriptDiagnosticBlock";
 import { TranscriptStdoutBlock } from "./TranscriptStdoutBlock";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { parseEditStats } from "./aggregate-blocks";
+import { deriveLiveRunState } from "./live-run-state";
 
 interface StructuredRunBlockProps {
   runId: string;
@@ -32,6 +34,8 @@ interface StructuredRunBlockProps {
   isRunning: boolean;
   isLatest?: boolean;
   compact?: boolean;
+  runLogAvailable?: boolean;
+  onActivity?: () => void;
   className?: string;
 }
 
@@ -42,15 +46,20 @@ export function StructuredRunBlock({
   isRunning,
   isLatest = false,
   compact = false,
+  runLogAvailable,
+  onActivity,
   className,
 }: StructuredRunBlockProps) {
+  const shouldFetchLog = runLogAvailable !== false;
   const { data: logData, isLoading } = useQuery({
     queryKey: ["run-log", runId],
     queryFn: () => heartbeatsApi.log(runId),
     refetchInterval: isRunning ? 3000 : false,
+    enabled: shouldFetchLog,
   });
 
   const displayBlocks = useMemo<DisplayBlock[]>(() => {
+    if (!shouldFetchLog) return [];
     if (!logData?.content) return [];
 
     // Parse raw content into NDJSON chunks
@@ -65,7 +74,31 @@ export function StructuredRunBlock({
 
     // Pass 2: aggregate consecutive same-category blocks
     return aggregateBlocks(blocks, departmentType);
-  }, [logData?.content, adapterType, departmentType, isRunning]);
+  }, [shouldFetchLog, logData?.content, adapterType, departmentType, isRunning]);
+
+  const liveState = deriveLiveRunState(displayBlocks, { isRunning });
+  const activitySignature = `${displayBlocks.length}:${liveState.currentStepText ?? ""}:${liveState.summaryItems.join("|")}`;
+
+  useEffect(() => {
+    if (displayBlocks.length === 0) return;
+    onActivity?.();
+  }, [activitySignature, displayBlocks.length, onActivity]);
+
+  if (!shouldFetchLog) {
+    if (isRunning) {
+      return (
+        <div className={cn("flex items-center gap-2 px-3 py-4 text-xs text-muted-foreground", className)}>
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <span>Starting agent...</span>
+        </div>
+      );
+    }
+    return (
+      <p className={cn("px-3 py-4 text-xs text-muted-foreground", className)}>
+        Output unavailable.
+      </p>
+    );
+  }
 
   if (isLoading) {
     return (
@@ -94,11 +127,32 @@ export function StructuredRunBlock({
 
   return (
     <div className={cn("space-y-1 py-2", className)}>
+      {liveState.currentStepText && (
+        <div
+          className="flex items-center gap-2 px-1 pb-1 text-xs text-muted-foreground"
+          data-testid="run-current-step"
+        >
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/70" />
+          <span className="truncate">{liveState.currentStepText}</span>
+        </div>
+      )}
       {displayBlocks.map((block, i) => (
         <div key={i}>
           {renderBlock(block, departmentType)}
         </div>
       ))}
+      {liveState.summaryItems.length > 0 && (
+        <div
+          className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 pt-1 text-xs text-muted-foreground"
+          data-testid="run-live-summary"
+        >
+          {liveState.summaryItems.map((item) => (
+            <span key={item} className="rounded-md bg-muted/40 px-1.5 py-0.5">
+              {item}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -160,6 +214,9 @@ function renderBlock(block: DisplayBlock, departmentType: DepartmentType) {
 
     case "stderr_group":
       return <TranscriptErrorBlock lines={b.lines} />;
+
+    case "diagnostic_group":
+      return <TranscriptDiagnosticBlock lines={b.lines} />;
 
     case "stdout":
       return <TranscriptStdoutBlock text={b.text} />;

@@ -12,6 +12,7 @@ import { issues, projects, projectWorkspaces } from "@armyofagents/db";
 import { instanceSettingsService } from "./instance-settings.js";
 import {
   parseProjectExecutionWorkspacePolicy,
+  parseIssueExecutionWorkspaceSettings,
   gateProjectExecutionWorkspacePolicy,
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
@@ -27,6 +28,9 @@ interface EagerWorkspaceInput {
   issueIdentifier: string;
   issueTitle: string | null;
   projectId: string;
+  issueExecutionWorkspaceId?: string | null;
+  issueExecutionWorkspacePreference?: string | null;
+  issueExecutionWorkspaceSettings?: Record<string, unknown> | null;
 }
 
 interface EagerWorkspaceResult {
@@ -70,13 +74,28 @@ export async function createEagerWorkspaceForIssue(
   );
   if (!projectPolicy?.enabled) return null;
 
-  // Resolve the effective workspace mode — must be isolated or operator_branch
+  // Resolve the effective workspace mode from the project default plus any task override.
+  const issueSettings = parseIssueExecutionWorkspaceSettings(input.issueExecutionWorkspaceSettings ?? null);
+  if (
+    input.issueExecutionWorkspacePreference === "reuse_existing" ||
+    issueSettings?.mode === "reuse_existing" ||
+    input.issueExecutionWorkspaceId
+  ) {
+    return null;
+  }
+
   const executionWorkspaceMode = resolveExecutionWorkspaceMode({
     projectPolicy,
-    issueSettings: null,
+    issueSettings,
     legacyUseProjectWorkspace: null,
   });
   if (executionWorkspaceMode === "agent_default") return null;
+  if (
+    (executionWorkspaceMode === "isolated_workspace" || executionWorkspaceMode === "operator_branch") &&
+    projectPolicy.workspaceStrategy?.type !== "git_worktree"
+  ) {
+    return null;
+  }
 
   // ── Resolve project workspace (baseCwd, repoUrl, repoRef) ──────────
   const projectWorkspaceRows = await db
@@ -121,9 +140,10 @@ export async function createEagerWorkspaceForIssue(
   // ── Build config for realizeExecutionWorkspace ──────────────────────
   const policyObj = parseObject(projectRow.executionWorkspacePolicy);
   const workspaceStrategy = parseObject(policyObj.workspaceStrategy);
-  const config: Record<string, unknown> = {
-    workspaceStrategy,
-  };
+  const config: Record<string, unknown> = {};
+  if (executionWorkspaceMode === "isolated_workspace" || executionWorkspaceMode === "operator_branch") {
+    config.workspaceStrategy = workspaceStrategy;
+  }
 
   const issueRef = {
     id: issueId,
@@ -221,13 +241,24 @@ export async function createEagerWorkspaceForIssue(
   if (!persisted) return null;
 
   // ── Link workspace to the issue + set reuse_existing preference ────
+  const shouldSwitchIssueToExistingWorkspace =
+    executionWorkspaceMode === "isolated_workspace" ||
+    executionWorkspaceMode === "operator_branch";
+  const issuePatch: Record<string, unknown> = {
+    executionWorkspaceId: persisted.id,
+    updatedAt: new Date(),
+  };
+  if (shouldSwitchIssueToExistingWorkspace) {
+    issuePatch.executionWorkspacePreference = "reuse_existing";
+    issuePatch.executionWorkspaceSettings = {
+      ...(issueSettings ?? {}),
+      mode: modeValue,
+    };
+  }
+
   await db
     .update(issues)
-    .set({
-      executionWorkspaceId: persisted.id,
-      executionWorkspacePreference: "reuse_existing",
-      updatedAt: new Date(),
-    })
+    .set(issuePatch)
     .where(eq(issues.id, issueId));
 
   logger.info(

@@ -5,8 +5,9 @@ import {
   updateEnvironmentSchema,
 } from "@armyofagents/shared";
 import { environmentService, type EnvironmentService } from "../services/environments.js";
+import { logActivity } from "../services/index.js";
 import { secretService } from "../services/secrets.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 interface RoutesOptions {
   // Test seam: callers can inject a pre-built service. Production uses `db`.
@@ -35,6 +36,57 @@ export function environmentRoutes(opts: RoutesOptions) {
     }
 
     return operation({ envSvc: svc, secretsSvc });
+  }
+
+  function getEnvVarKeys(envVars: unknown): string[] {
+    if (!envVars || typeof envVars !== "object" || Array.isArray(envVars)) return [];
+    return Object.keys(envVars).sort();
+  }
+
+  function countSecretBindings(envVars: unknown): number {
+    if (!envVars || typeof envVars !== "object" || Array.isArray(envVars)) return 0;
+    return Object.values(envVars).filter((value) =>
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      (value as { type?: unknown }).type === "secret_ref"
+    ).length;
+  }
+
+  function getTargetType(target: unknown): string | null {
+    if (!target || typeof target !== "object" || Array.isArray(target)) return null;
+    const type = (target as { type?: unknown }).type;
+    return typeof type === "string" ? type : null;
+  }
+
+  async function logEnvironmentActivity(
+    req: Request,
+    input: {
+      companyId: string;
+      action: "environment.created" | "environment.updated" | "environment.deleted";
+      entityId: string;
+      name: string;
+      target: unknown;
+      envVars: unknown;
+      changedFields?: string[];
+    },
+  ): Promise<void> {
+    if (!opts.db) return;
+    const actor = getActorInfo(req);
+    await logActivity(opts.db, {
+      companyId: input.companyId,
+      ...actor,
+      action: input.action,
+      entityType: "environment",
+      entityId: input.entityId,
+      details: {
+        name: input.name,
+        targetType: getTargetType(input.target),
+        ...(input.changedFields ? { changedFields: input.changedFields } : {}),
+        envVarKeys: getEnvVarKeys(input.envVars),
+        secretBindingCount: countSecretBindings(input.envVars),
+      },
+    });
   }
 
   // GET list
@@ -102,6 +154,14 @@ export function environmentRoutes(opts: RoutesOptions) {
           }
           return env;
         });
+        await logEnvironmentActivity(req, {
+          companyId,
+          action: "environment.created",
+          entityId: created!.id,
+          name: created!.name,
+          target: created!.target,
+          envVars: normalizedEnvVars ?? {},
+        });
         res.status(201).json(created);
       } catch (err) {
         next(err);
@@ -144,6 +204,15 @@ export function environmentRoutes(opts: RoutesOptions) {
           res.status(404).json({ error: "Environment not found" });
           return;
         }
+        await logEnvironmentActivity(req, {
+          companyId,
+          action: "environment.updated",
+          entityId: updated.id,
+          name: updated.name,
+          target: updated.target,
+          envVars: parsed.data.envVars === undefined ? updated.envVars : normalizedEnvVars ?? {},
+          changedFields: Object.keys(parsed.data).sort(),
+        });
         res.json(updated);
       } catch (err) {
         next(err);
@@ -175,6 +244,14 @@ export function environmentRoutes(opts: RoutesOptions) {
           res.status(404).json({ error: "Environment not found" });
           return;
         }
+        await logEnvironmentActivity(req, {
+          companyId,
+          action: "environment.deleted",
+          entityId: deleted.id,
+          name: deleted.name,
+          target: deleted.target,
+          envVars: deleted.envVars,
+        });
         res.status(204).end();
       } catch (err) {
         next(err);
