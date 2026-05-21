@@ -195,6 +195,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputBarRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const localIdRef = useRef(0);
   const toolCallIdRef = useRef(0);
@@ -1000,7 +1001,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       </div>
 
       {/* Input bar */}
-      <div className="shrink-0 border-t border-border p-3 relative">
+      <div ref={inputBarRef} className="shrink-0 border-t border-border p-3 relative">
         {/* Task 9: skill picker — anchored above the input card */}
         <SkillPicker
           open={pickerOpen}
@@ -1017,10 +1018,15 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            onBlur={() => {
-              // Close on blur so clicking outside dismisses the picker. Row
-              // clicks use onMouseDown+preventDefault so they fire before blur.
-              if (pickerOpen) closePicker();
+            onBlur={(e) => {
+              // Only close when focus leaves the whole input bar. Radix restores
+              // focus to the `+` trigger after "Use a skill"; that target is inside
+              // inputBarRef, so we must NOT close in that case. Skill-row clicks use
+              // onMouseDown+preventDefault and never blur the textarea.
+              const next = e.relatedTarget as Node | null;
+              if (pickerOpen && !inputBarRef.current?.contains(next)) {
+                closePicker();
+              }
             }}
             placeholder="Ask the agent..."
             rows={1}
