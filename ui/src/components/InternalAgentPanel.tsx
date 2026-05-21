@@ -1010,6 +1010,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           onActiveIndexChange={setPickerIndex}
           onSelect={handleSelectSkill}
           onFilteredChange={handleFilteredSkillsChange}
+          onClose={closePicker}
         />
         <div className="rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-brand-focus-ring focus-within:border-brand transition-shadow">
           {/* Textarea */}

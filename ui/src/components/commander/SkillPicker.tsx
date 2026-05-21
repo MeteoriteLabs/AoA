@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, Loader2, Wand2 } from "lucide-react";
+import { AlertCircle, Loader2, Wand2, X } from "lucide-react";
 import type { CompanySkillListItem } from "@armyofagents/shared";
 import { useCompany } from "../../context/CompanyContext";
 import { internalAgentApi } from "../../api/internal-agent";
@@ -25,10 +25,12 @@ interface SkillPickerProps {
    * without re-fetching or duplicating the filter logic.
    */
   onFilteredChange: (skills: CompanySkillListItem[]) => void;
+  /** Close the picker (header × button). */
+  onClose: () => void;
 }
 
-/** Max rows visible before the list scrolls. */
-const MAX_VISIBLE = 8;
+/** Max rows visible before the list scrolls (compact dropdown, not full-pane). */
+const MAX_VISIBLE = 5;
 const ROW_HEIGHT_PX = 56;
 
 /**
@@ -44,6 +46,7 @@ export function SkillPicker({
   onActiveIndexChange,
   onSelect,
   onFilteredChange,
+  onClose,
 }: SkillPickerProps) {
   const { selectedCompanyId } = useCompany();
   const companyId = selectedCompanyId ?? "";
@@ -84,6 +87,22 @@ export function SkillPicker({
         <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border text-xs font-medium text-muted-foreground">
           <Wand2 className="size-3.5" aria-hidden="true" />
           <span>Skills</span>
+          <span className="ml-auto flex items-center gap-2">
+            <kbd className="text-[10px] font-normal text-muted-foreground/60">Esc</kbd>
+            <button
+              type="button"
+              // onMouseDown+preventDefault: close without first blurring the
+              // textarea (mirrors the row-select pattern).
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onClose();
+              }}
+              aria-label="Close skills"
+              className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <X className="size-3.5" aria-hidden="true" />
+            </button>
+          </span>
         </div>
 
         {isLoading ? (

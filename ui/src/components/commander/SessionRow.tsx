@@ -31,8 +31,10 @@ export function SessionRow({
       className={cn(
         "group relative flex items-center gap-2 px-3 cursor-pointer transition-colors",
         "h-[var(--row-compact)]",
-        // Base hover
-        "hover:bg-hd",
+        // Base hover — a visible card-2 tint (lighter than the 80% active state).
+        // NOTE: --hd (oklch 0.16) is only ~0.005 lighter than the sidebar (0.155),
+        // so hover:bg-hd was effectively invisible. This mix reads clearly.
+        "hover:bg-[color:color-mix(in_srgb,var(--card-2)_60%,transparent)]",
         // Active: edge-to-edge bg + 1px top/bottom border — NO inset padding shift
         // so the indicator column stays at the same x-position as inactive rows.
         isActive
