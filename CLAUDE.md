@@ -205,6 +205,8 @@ Always-on AI assistant for coordination, proactive monitoring, and workflow mana
 - **Proactive checks:** default 4-hour interval. Scans blocked tasks, budget thresholds, stale work, dependency gaps, memory conflicts, workload imbalance. Results pushed to Inbox via notifications.
 - **Event-driven:** listens to LiveEvents (heartbeat completion, activity changes, MCP inbound, discussion entry creation) with debouncing.
 - **Per-agent context mode** (`runtimeConfig.contextMode`): minimal / standard / full. Default: `standard`. Prevents token waste for simple adapters. (Decision #87)
+- **Session management (UI):** multi-chat sidebar (`ui/src/components/commander/`) with pin, archive, rename, hard-delete, and **drag-to-reorder**. Manual order overrides the default date groups (TODAY/YESTERDAY/…) — the first drag collapses the non-pinned list into one flat "Arranged" list; a Reset control restores recency. Persisted via `internal_agent_conversations.sort_order` (nullable; null = recency). Routes: `PATCH …/conversations/reorder`, `DELETE …/conversations/order` — both owner-scoped (a founder viewing others' chats can't clobber their order). DnD uses dnd-kit with Mouse + Touch (long-press) + Keyboard sensors.
+- **Rich input (UI):** the composer is a contenteditable (`CommanderInput.tsx`), not a textarea. `/skill` and the `+` menu insert a **colored atomic skill token** showing only the skill name; it expands to the full `use_skill` directive on send (`commanderInputModel.ts`). Hovering a token shows a details card (name + description + key). Per-kind token colors live in `--token-skill` (extensible for future @mention/file tokens).
 
 ### Workflow Templates
 
@@ -366,7 +368,7 @@ All table definitions in `packages/db/src/schema/` (93 files). Schema changes us
 | Table | Purpose |
 |-------|---------|
 | `internal_agent_config` | Per-company: executionMode, provider, model, autonomyLevel, enabledCapabilities (12 types), budget, proactive interval |
-| `internal_agent_conversations` | One per user per company. `summarizedContext` for token management |
+| `internal_agent_conversations` | Multi-chat per user per company. `summarizedContext` for token management. `pinned` (sidebar pin), `sortOrder` (nullable manual drag-order; null = recency/date groups), `archivedAt` |
 | `internal_agent_messages` | `role`: user/assistant/system/tool_call/tool_result. `toolCalls`/`toolResults` JSON. `pageContext`, `departmentContext` |
 | `internal_agent_runs` | `triggerType`: conversation/proactive/event/sub_agent. `toolsCalled`, `tokenUsage`, `costCents` |
 | `internal_agent_reminders` | Scheduled reminders. `triggerAt`, `status`: pending/fired/cancelled |
