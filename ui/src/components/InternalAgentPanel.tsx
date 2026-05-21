@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AtSign,
@@ -21,6 +21,7 @@ import {
   internalAgentApi,
   streamAgentChat,
   conversationMessagesApi,
+  commanderConversationsApi,
   confirmAction,
   type AgentMessage,
   type SSEEvent,
@@ -35,6 +36,8 @@ import {
   SheetContent,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { ChatPaneCaption } from "./commander/ChatPaneCaption";
+import { CommanderEmptyState } from "./commander/CommanderEmptyState";
 
 /* ------------------------------------------------------------------ */
 /*  Tool call display names                                            */
@@ -106,9 +109,10 @@ function serverToLocal(m: AgentMessage): LocalMessage {
 
 interface AgentPanelContentProps {
   conversationId?: string | null;
+  onSelectConversation?: (id: string) => void;
 }
 
-export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {}) {
+export function AgentPanelContent({ conversationId, onSelectConversation }: AgentPanelContentProps = {}) {
   const { selectedCompanyId } = useCompany();
   const { breadcrumbs } = useBreadcrumbs();
   const { closePanel, setIsStreaming, setCurrentConversationId } = useAgentPanel();
@@ -150,6 +154,32 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
         : Promise.resolve(null),
     enabled: !!companyId && !!conversationId,
   });
+
+  // Conversations list — same cache key as SessionsSidebar (no extra fetch)
+  const { data: conversationsData } = useQuery({
+    queryKey: ["commander-conversations", companyId],
+    queryFn: () => commanderConversationsApi.list(companyId),
+    enabled: !!companyId,
+  });
+
+  const allConversations = conversationsData?.conversations ?? [];
+
+  // Active conversation row (for caption title/meta)
+  const activeConv = useMemo(
+    () => (conversationId ? allConversations.find((c) => c.id === conversationId) : undefined),
+    [allConversations, conversationId],
+  );
+
+  // Top 2 most-recent conversations (by updatedAt) for empty-state recent chats,
+  // excluding the currently-active one so the list isn't redundant.
+  const recentChats = useMemo(
+    () =>
+      [...allConversations]
+        .filter((c) => c.id !== conversationId)
+        .sort((a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt))
+        .slice(0, 2),
+    [allConversations, conversationId],
+  );
 
   // Reset messages when switching conversations
   useEffect(() => {
@@ -473,8 +503,17 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header removed: the Commander page topbar (in Commander.tsx) already shows
-          the breadcrumb. Mobile close button is now positioned as an absolute overlay below. */}
+      {/* Chat pane caption strip — shown only when there is an active conversation */}
+      {conversationId && (
+        <ChatPaneCaption
+          title={activeConv?.title ?? "New chat"}
+          messageCount={activeConv?.messageCount ?? messages.length}
+          updatedAt={activeConv?.updatedAt}
+          onOpenSessions={undefined}
+        />
+      )}
+
+      {/* Mobile close button (absolute overlay, not in flow) */}
       <Button
         variant="ghost"
         size="icon-sm"
@@ -493,22 +532,16 @@ export function AgentPanelContent({ conversationId }: AgentPanelContentProps = {
         aria-relevant="additions"
       >
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center gap-3 text-muted-foreground px-2">
-            <Bot className="h-8 w-8 opacity-40" />
-            {greeting ? (
-              <div className="space-y-1.5">
-                <p className="text-sm font-medium text-foreground">
-                  {greeting.findingCount > 0 ? "Here's what happened" : "All clear!"}
-                </p>
-                <p className="text-xs whitespace-pre-line">{greeting.greeting}</p>
-              </div>
-            ) : (
-              <>
-                <p className="text-sm">How can I help you today?</p>
-                <p className="text-xs">Ask me about your tasks, goals, agents, or anything else.</p>
-              </>
-            )}
-          </div>
+          <CommanderEmptyState
+            greetingText={
+              greeting
+                ? (greeting.findingCount > 0 ? "Here's what happened" : greeting.greeting)
+                : undefined
+            }
+            onPromptClick={sendText}
+            recentChats={recentChats}
+            onSelectChat={(id) => onSelectConversation?.(id)}
+          />
         )}
 
         {messages.map((msg) => (
