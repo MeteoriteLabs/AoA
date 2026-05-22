@@ -383,6 +383,16 @@ export function internalAgentRoutes(db: Db) {
         throw notFound(`No pending confirmation for id: ${confirmId}`);
       }
 
+      // Defense-in-depth: only the user who generated the pending action can
+      // approve or reject it. Prevents same-company actors from approving on
+      // behalf of a different user. Treat as not-found to avoid leaking existence.
+      // Note: today only board/user actors reach this handler; if agent-initiated
+      // confirmations are added, revisit the actorId comparison here.
+      const actor = getActorInfo(req);
+      if (pending.userId !== actor.actorId) {
+        throw notFound(`No pending confirmation for id: ${confirmId}`);
+      }
+
       pendingConfirmations.delete(confirmId);
 
       if (!approved) {
