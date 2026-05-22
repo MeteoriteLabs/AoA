@@ -26,8 +26,6 @@ export function SessionRow({
 
   return (
     <div
-      role="button"
-      tabIndex={0}
       className={cn(
         "group relative flex items-center gap-2 mx-1.5 px-2.5 rounded-md cursor-pointer transition-colors",
         "h-[var(--row-compact)]",

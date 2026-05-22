@@ -196,6 +196,12 @@ function SortableSessionRow({
       className={cn("cursor-grab active:cursor-grabbing", isDragging && "opacity-80")}
       {...attributes}
       {...listeners}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault(); // prevent page scroll on Space; prevent dnd-kit drag on Enter
+          onSelect();
+        }
+      }}
     >
       <SessionRow
         conversation={conversation}
