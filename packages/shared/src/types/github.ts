@@ -20,6 +20,9 @@ export interface GitHubPrCreateRequest {
    * runtime from git rather than stored in the DB).
    */
   head?: string;
+  reviewers?: string[];         // GitHub logins
+  labels?: string[];            // label names
+  milestoneNumber?: number;     // milestone number (not id)
 }
 
 export interface GitHubPrCreateResponse {
@@ -53,4 +56,42 @@ export interface GitHubPrSyncResponse {
   githubLastSyncedAt: string;
   githubSyncError: string | null;
   cached: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Repo metadata — used to populate CreatePrDialog selects
+// ---------------------------------------------------------------------------
+
+export interface GitHubRepoCollaborator {
+  login: string;
+  avatarUrl: string;
+}
+
+export interface GitHubRepoLabel {
+  id: number;
+  name: string;
+  color: string; // 6-char hex without '#'
+}
+
+export interface GitHubRepoMilestone {
+  number: number;
+  title: string;
+  openIssues: number;
+  dueOn: string | null; // ISO date or null
+}
+
+// ---------------------------------------------------------------------------
+// PR actions
+// ---------------------------------------------------------------------------
+
+export type GitHubPrMergeMethod = "merge" | "squash" | "rebase";
+
+export interface GitHubPrMergeRequest {
+  mergeMethod: GitHubPrMergeMethod;
+}
+
+export interface GitHubPrActionResponse {
+  success: boolean;
+  prState: "open" | "closed" | "merged";
+  prUrl: string;
 }
