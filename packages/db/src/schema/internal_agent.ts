@@ -7,10 +7,12 @@ import {
   index,
   uniqueIndex,
   jsonb,
+  boolean,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
+import { agents } from "./agents.js";
 
 // ── Table 5: internal_agent_config ──────────────────────────────────────────
 
@@ -83,6 +85,14 @@ export const internalAgentConfig = pgTable(
     // Metadata
     metadata: jsonb("metadata").default({}),
 
+    // Per-tool permission overrides for Commander. Keys are tool names.
+    // Null = use system defaults (enabled=true, requireConfirmation=false, minimumRole=team_member).
+    commanderToolPermissions: jsonb("commander_tool_permissions"),
+
+    agentId: uuid("agent_id").references(() => agents.id, {
+      onDelete: "set null",
+    }),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -115,6 +125,19 @@ export const internalAgentConversations = pgTable(
     summarizedUpToMessageId: uuid("summarized_up_to_message_id"), // last message included in summary
 
     messageCount: integer("message_count").notNull().default(0), // denormalized
+
+    // Multi-chat (Sprint 3): user-visible conversation title, archive timestamp,
+    // and founder-visible sharing flag (RBAC option C).
+    title: text("title"),            // null = auto-title from first message
+    archivedAt: timestamp("archived_at", { withTimezone: true }), // null = active
+    pinned: boolean("pinned").notNull().default(false),
+    sharedWithCompany: boolean("shared_with_company").notNull().default(false),
+
+    // Manual drag-and-drop ordering of the session list. null = not manually
+    // ordered (the list falls back to recency/date groups). Once the user drags,
+    // every visible conversation gets an explicit index here and the UI switches
+    // to a flat user-arranged list. (Batch 2: Commander session reorder.)
+    sortOrder: integer("sort_order"),
 
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -212,6 +235,9 @@ export const internalAgentRuns = pgTable(
       { onDelete: "set null" },
     ),
     userId: text("user_id"), // who triggered (null for proactive/event)
+    agentId: uuid("agent_id").references(() => agents.id, {
+      onDelete: "set null",
+    }),
     // Plain uuid, not a FK — mutual reference with messages.runId would create
     // insert ordering issues (message references run, run references message)
     conversationMessageId: uuid("conversation_message_id"),
@@ -248,6 +274,7 @@ export const internalAgentRuns = pgTable(
       table.relatedEntityType,
       table.relatedEntityId,
     ),
+    agentIdx: index("ia_runs_agent_idx").on(table.companyId, table.agentId),
   }),
 );
 
@@ -299,6 +326,10 @@ export const internalAgentConfigRelations = relations(
     company: one(companies, {
       fields: [internalAgentConfig.companyId],
       references: [companies.id],
+    }),
+    agent: one(agents, {
+      fields: [internalAgentConfig.agentId],
+      references: [agents.id],
     }),
   }),
 );

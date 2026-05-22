@@ -226,7 +226,8 @@ export function homeService(db: Db) {
             db
               .select({ count: sql<number>`count(*)` })
               .from(agents)
-              .where(eq(agents.companyId, companyId))
+              // Exclude platform (Commander-team) agents from user home count.
+              .where(and(eq(agents.companyId, companyId), eq(agents.kind, "org")))
               .then((rows) => Number(rows[0]?.count ?? 0)),
             db
               .select({ count: sql<number>`count(*)` })

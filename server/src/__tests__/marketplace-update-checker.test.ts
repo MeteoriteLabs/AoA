@@ -18,14 +18,6 @@ vi.mock("../services/marketplace-notifications.js", () => ({
     updateAvailable: vi.fn().mockResolvedValue(undefined),
   },
 }));
-vi.mock("../services/marketplace-settings.js", () => ({
-  marketplaceSettingsService: vi.fn(() => ({
-    get: vi.fn().mockResolvedValue({
-      skillUpdatePolicy: "notify",
-      updateWindow: "anytime",
-    }),
-  })),
-}));
 vi.mock("../services/marketplace-install/skill-auto-updater.js", () => ({
   applySkillUpdate: vi.fn().mockResolvedValue(undefined),
   isWithinUpdateWindow: vi.fn().mockReturnValue(true),
@@ -42,8 +34,7 @@ vi.mock("../middleware/logger.js", () => ({
 
 import { runUpdateCheck, upsertPendingUpdate, compareVersions } from "../services/marketplace-update-checker.js";
 import { marketplaceNotifications } from "../services/marketplace-notifications.js";
-import { marketplaceSettingsService } from "../services/marketplace-settings.js";
-import { applySkillUpdate, isWithinUpdateWindow, SkillCustomizedError, SkillDeletedError } from "../services/marketplace-install/skill-auto-updater.js";
+import { applySkillUpdate } from "../services/marketplace-install/skill-auto-updater.js";
 import type { CatalogItem } from "@armyofagents/shared";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -212,100 +203,46 @@ describe("upsertPendingUpdate", () => {
   });
 });
 
-// ─── runUpdateCheck auto-apply logic ─────────────────────────────────────────
+// ─── runUpdateCheck always-notify behavior ────────────────────────────────────
 
-describe("runUpdateCheck — notify policy", () => {
+describe("runUpdateCheck — always-notify behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(marketplaceSettingsService).mockReturnValue({
-      get: vi.fn().mockResolvedValue({ skillUpdatePolicy: "notify", updateWindow: "anytime" }),
-    } as any);
-    vi.mocked(isWithinUpdateWindow).mockReturnValue(true);
   });
 
-  it("fires updateAvailable and does NOT call applySkillUpdate when policy is notify", async () => {
+  it("fires updateAvailable for every detected skill update regardless of any policy", async () => {
     const db = buildMockDb();
     await runUpdateCheck(db as any, [SKILL_CATALOG_ITEM]);
 
     expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledOnce();
     expect(applySkillUpdate).not.toHaveBeenCalled();
   });
-});
 
-describe("runUpdateCheck — auto policy", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(marketplaceSettingsService).mockReturnValue({
-      get: vi.fn().mockResolvedValue({ skillUpdatePolicy: "auto", updateWindow: "anytime" }),
-    } as any);
-    vi.mocked(isWithinUpdateWindow).mockReturnValue(true);
-    vi.mocked(applySkillUpdate).mockResolvedValue(undefined);
-  });
-
-  it("calls applySkillUpdate (not updateAvailable) when policy=auto and in window", async () => {
-    const db = buildMockDb();
-    await runUpdateCheck(db as any, [SKILL_CATALOG_ITEM]);
-
-    expect(applySkillUpdate).toHaveBeenCalledOnce();
-    expect(marketplaceNotifications.updateAvailable).not.toHaveBeenCalled();
-  });
-
-  it("fires updateAvailable as fallback when outside update window", async () => {
-    vi.mocked(isWithinUpdateWindow).mockReturnValue(false);
+  it("does NOT call applySkillUpdate — auto-apply is removed", async () => {
     const db = buildMockDb();
     await runUpdateCheck(db as any, [SKILL_CATALOG_ITEM]);
 
     expect(applySkillUpdate).not.toHaveBeenCalled();
-    expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledOnce();
   });
 
-  it("fires updateAvailable as fallback when applySkillUpdate throws SkillCustomizedError", async () => {
-    vi.mocked(applySkillUpdate).mockRejectedValue(new SkillCustomizedError("skill:x"));
-    const db = buildMockDb();
-    await runUpdateCheck(db as any, [SKILL_CATALOG_ITEM]);
-
-    expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledOnce();
-  });
-
-  it("fires updateAvailable as fallback when applySkillUpdate throws a fetch error", async () => {
-    vi.mocked(applySkillUpdate).mockRejectedValue(new Error("HTTP 503"));
-    const db = buildMockDb();
-    await runUpdateCheck(db as any, [SKILL_CATALOG_ITEM]);
-
-    expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledOnce();
-  });
-
-  it("skips notification (but continues) when SkillDeletedError is thrown", async () => {
-    vi.mocked(applySkillUpdate).mockRejectedValue(new SkillDeletedError("skill:x"));
-    const db = buildMockDb();
-    await runUpdateCheck(db as any, [SKILL_CATALOG_ITEM]);
-
-    expect(marketplaceNotifications.updateAvailable).not.toHaveBeenCalled();
-  });
-
-  it("processes remaining skills even when one skill throws", async () => {
+  it("fires updateAvailable for each skill that has a newer catalog version", async () => {
     const SKILL_2: CatalogItem = { ...SKILL_CATALOG_ITEM, id: "skill:aoa-curated/web-search", name: "Web Search" };
-    vi.mocked(applySkillUpdate)
-      .mockRejectedValueOnce(new Error("Unexpected error for skill 1"))
-      .mockResolvedValueOnce(undefined);
-
-    const db = {
-      ...buildMockDb({
-        skillRows: [
-          { sourceLocator: SKILL_CATALOG_ITEM.id, sourceRef: "1.0.0" },
-          { sourceLocator: SKILL_2.id, sourceRef: "1.0.0" },
-        ],
-      }),
-    };
+    const db = buildMockDb({
+      skillRows: [
+        { sourceLocator: SKILL_CATALOG_ITEM.id, sourceRef: "1.0.0" },
+        { sourceLocator: SKILL_2.id, sourceRef: "1.0.0" },
+      ],
+      insertReturning: [{ id: "upd-1" }],
+    });
 
     await runUpdateCheck(db as any, [SKILL_CATALOG_ITEM, SKILL_2]);
 
-    // Both skills attempted; second succeeds
-    expect(applySkillUpdate).toHaveBeenCalledTimes(2);
+    expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledTimes(2);
+    expect(applySkillUpdate).not.toHaveBeenCalled();
   });
 
   it("processes remaining companies even when one company's checkCompany throws", async () => {
-    // Two companies — first one throws at settings fetch, second should still be processed
+    // Two companies — first one throws during skill rows query, second should still be processed
     let companySelectCall = 0;
     const twoCompanyDb = {
       select: () => {
@@ -314,7 +251,15 @@ describe("runUpdateCheck — auto policy", () => {
           // companies list
           return { from: () => Promise.resolve([{ id: "c1" }, { id: "c2" }]) };
         }
-        // skill rows for whichever company's checkCompany is running
+        if (companySelectCall === 2) {
+          // First company skill rows — throw
+          return {
+            from: () => ({
+              where: () => Promise.reject(new Error("DB error for c1")),
+            }),
+          };
+        }
+        // Second company skill rows — return one skill
         return { from: () => ({ where: () => Promise.resolve([{ sourceLocator: SKILL_CATALOG_ITEM.id, sourceRef: "1.0.0" }]) }) };
       },
       insert: () => ({
@@ -327,22 +272,9 @@ describe("runUpdateCheck — auto policy", () => {
       update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
     };
 
-    let settingsCallCount = 0;
-    vi.mocked(marketplaceSettingsService).mockImplementation(() => ({
-      get: vi.fn().mockImplementation(() => {
-        settingsCallCount++;
-        if (settingsCallCount === 1) {
-          // First company — throw to simulate a settings fetch failure
-          return Promise.reject(new Error("Settings DB error for c1"));
-        }
-        // Second company — return valid settings
-        return Promise.resolve({ skillUpdatePolicy: "auto", updateWindow: "anytime" });
-      }),
-    } as any));
-
     await runUpdateCheck(twoCompanyDb as any, [SKILL_CATALOG_ITEM]);
 
-    // applySkillUpdate should have been called for company c2 (despite c1 failing)
-    expect(applySkillUpdate).toHaveBeenCalledOnce();
+    // updateAvailable should have been called for company c2 (despite c1 failing)
+    expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledOnce();
   });
 });

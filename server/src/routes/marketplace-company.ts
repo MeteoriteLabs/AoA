@@ -19,6 +19,11 @@ import { assertBoard, assertCanManageInstanceSettings, assertCompanyAccess } fro
 import { marketplaceSettingsService } from "../services/marketplace-settings.js";
 import { computeSectionDiff, applyMergeDecisions } from "../services/marketplace-merge.js";
 import { marketplaceNotifications } from "../services/marketplace-notifications.js";
+import {
+  applySkillUpdate,
+  SkillCustomizedError,
+  SkillDeletedError,
+} from "../services/marketplace-install/skill-auto-updater.js";
 import type { MarketplaceCatalogFile } from "@armyofagents/shared";
 import type { PluginLifecycleManager } from "../services/plugin-lifecycle.js";
 
@@ -40,7 +45,7 @@ export interface MarketplaceCompanyRoutesDeps {
 
 const MarketplaceSettingsPatchSchema = z.object({
   pluginUpdatePolicy:          z.enum(["auto_patch", "auto_minor", "notify_all"]).optional(),
-  skillUpdatePolicy:           z.enum(["auto", "notify"]).optional(),
+  skillUpdatePolicy:           z.literal("notify").optional(),
   agentUpdatePolicy:           z.enum(["auto", "notify"]).optional(),
   teamUpdatePolicy:            z.enum(["auto", "notify"]).optional(),
   showTrustBadges:             z.boolean().optional(),
@@ -240,10 +245,40 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
-    // For snapshot types (skill/agent/team): use POST /updates/:id/merge for reviewed merges.
-    // Direct auto-apply is not implemented at V1.
+    if (update.itemType === "skill") {
+      const catalog = await deps.catalogService.readCache();
+      const catalogItem = catalog?.items.find((item) => item.id === update.catalogItemId);
+      if (!catalogItem) {
+        res.status(422).json({ error: "Catalog item not found — catalog may be stale." });
+        return;
+      }
+      try {
+        await applySkillUpdate({
+          db,
+          catalogItemId: update.catalogItemId,
+          catalogItemName: update.catalogItemName,
+          companyId,
+          catalogItem,
+        });
+        res.json({ ok: true, applied: true });
+      } catch (err) {
+        if (err instanceof SkillCustomizedError) {
+          res.status(409).json({
+            error: "Skill customized. Manual merge required.",
+            code: "SKILL_CUSTOMIZED",
+          });
+        } else if (err instanceof SkillDeletedError) {
+          res.status(410).json({ error: "Skill removed.", code: "SKILL_DELETED" });
+        } else {
+          res.status(500).json({ error: err instanceof Error ? err.message : "Apply failed" });
+        }
+      }
+      return;
+    }
+
+    // For agent/team snapshot types: not implemented at V1.
     res.status(501).json({
-      error: "Direct apply not supported for skill/agent/team updates. Use POST /updates/:id/merge for reviewed merge.",
+      error: "Direct apply not supported for agent/team updates. Use POST /updates/:id/merge for reviewed merge.",
     });
   });
 

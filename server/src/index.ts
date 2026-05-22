@@ -35,6 +35,7 @@ import {
   WORKER_INTERVAL_MS,
 } from "./services/index.js";
 import { getDbCapabilities, probeDbCapabilities } from "./services/db-capabilities.js";
+import { runExtractionSweep } from "./services/internal-agent/subagents/extraction-sweeper.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
   restartDesiredRuntimeServicesOnStartup,
@@ -414,6 +415,16 @@ if (config.databaseUrl) {
   startupDbInfo = { mode: "embedded-postgres", dataDir, port };
 }
 
+// Expose the active DB URL in process.env so MCP bridge child processes
+// (Commander bridge spawned by claude/codex CLI) can inherit it.
+// External-postgres sets process.env.DATABASE_URL before this point (it is
+// read by loadConfig via process.env.DATABASE_URL), so the set here is a
+// no-op for that path. Embedded-postgres builds the URL dynamically — this
+// is the only place it reaches process.env, ensuring the bridge gets it.
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = activeDatabaseConnectionString;
+}
+
 // Probe optional database capabilities (pgvector). Services read the result
 // via getDbCapabilities() to gate semantic-search paths and embedding columns.
 await probeDbCapabilities(db as any);
@@ -663,6 +674,20 @@ setInterval(() => {
 }, WORKER_INTERVAL_MS);
 // No immediate first tick — the first interval fires at T+15s, which is acceptable
 // since resetStuckJobs already ran synchronously above
+
+// Sub-agent #1: durable discussion-extraction sweeper (primary trigger).
+// Polls discussion_entries.extractionStatus='pending' (+ reclaims orphaned
+// 'processing') and runs extraction via the consumer under a bounded limiter.
+// Idempotency-safe alongside the reprocess path via the M2 atomic claim.
+const EXTRACTION_SWEEP_INTERVAL_MS = 45_000;
+let extractionSweepInFlight = false;
+setInterval(() => {
+  if (extractionSweepInFlight) return;
+  extractionSweepInFlight = true;
+  void runExtractionSweep(db as any, { limiterMax: 4, staleMs: 10 * 60 * 1000 })
+    .catch((err) => logger.warn({ err }, "extraction sweep tick failed"))
+    .finally(() => { extractionSweepInFlight = false; });
+}, EXTRACTION_SWEEP_INTERVAL_MS);
 
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;

@@ -10,6 +10,7 @@ function mockServices(): ServiceContainer {
     projects: { list: vi.fn().mockResolvedValue([{ id: "d1", name: "Dept 1", type: "department" }]) } as any,
     costs: { summary: vi.fn().mockResolvedValue({ totalCents: 5000, count: 10 }) } as any,
     activity: { list: vi.fn().mockResolvedValue([{ id: "act1", action: "created" }]) } as any,
+    companies: { get: vi.fn().mockResolvedValue({ name: "Test Co", vision: null, mission: null, issuePrefix: "TST", stage: null }) } as any,
     memory: {} as any,
     discussions: {} as any,
     dependencies: {} as any,
@@ -34,9 +35,9 @@ function makeCtx(services: ServiceContainer): ToolContext {
 }
 
 describe("Query Tools", () => {
-  it("creates 6 query tools", () => {
+  it("creates 7 query tools", () => {
     const tools = createQueryTools();
-    expect(tools).toHaveLength(6);
+    expect(tools).toHaveLength(7);
     expect(tools.every((t) => t.category === "query")).toBe(true);
   });
 

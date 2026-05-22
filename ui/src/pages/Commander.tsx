@@ -1,90 +1,101 @@
-import { useEffect } from "react";
-import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Info } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { queryKeys } from "../lib/queryKeys";
-import { goalsApi } from "../api/goals";
 import { AgentPanelContent } from "../components/InternalAgentPanel";
-import { Settings, Target, Brain, Compass } from "lucide-react";
-import { cn } from "../lib/utils";
+import { SessionsSidebar } from "../components/commander";
+import { commanderConversationsApi, internalAgentApi } from "../api/internal-agent";
+import { queryKeys } from "../lib/queryKeys";
+import { useBreakpoint } from "../lib/useBreakpoint";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
 export function Commander() {
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
+
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // Task 11: on mobile/tablet (< 1024px) the sessions list lives in a left
+  // drawer instead of an inline sidebar.
+  const { useDrawerSessions } = useBreakpoint();
+  const [sessionsDrawerOpen, setSessionsDrawerOpen] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Commander" }]);
   }, [setBreadcrumbs]);
 
-  const { data: goals } = useQuery({
-    queryKey: queryKeys.goals.list(selectedCompanyId!),
-    queryFn: () => goalsApi.list(selectedCompanyId!),
+  const { data: config } = useQuery({
+    queryKey: queryKeys.agentConfig(selectedCompanyId!),
+    queryFn: () => internalAgentApi.getConfig(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
-  const activeGoals = goals?.filter((g) => g.status === "active" || g.status === "at_risk").length ?? 0;
-  const hasVision = !!selectedCompany?.vision;
-  const hasMission = !!selectedCompany?.mission;
+  const handleNewConversation = async () => {
+    if (!selectedCompanyId) return;
+    const conv = await commanderConversationsApi.create(selectedCompanyId);
+    setActiveConversationId(conv.id);
+    // Close the drawer after starting a new chat on mobile/tablet.
+    setSessionsDrawerOpen(false);
+    queryClient.invalidateQueries({ queryKey: ["commander-conversations"] });
+  };
+
+  // Selecting a session closes the drawer (no-op on desktop where it's never open).
+  const handleSelectConversation = (id: string) => {
+    setActiveConversationId(id);
+    setSessionsDrawerOpen(false);
+  };
 
   return (
-    <div className="flex flex-col gap-4 h-[calc(100vh-8rem)]">
-      <div>
-        <h1 className="text-[1.6rem] font-bold tracking-tight">
-          Commander<span className="text-brand">.</span>
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Your always-on AI assistant for coordination and proactive monitoring.
-        </p>
-      </div>
-      <div className="flex gap-6 flex-1 min-h-0">
-      {/* Context sidebar */}
-      <div className="hidden lg:flex flex-col gap-3 w-64 shrink-0">
-        {/* Identity snapshot */}
-        <div className="rounded-lg border border-border p-3 space-y-2">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <Compass className="h-3 w-3" />
-            Identity
-          </div>
-          {hasVision ? (
-            <p className="text-xs text-foreground line-clamp-2">{selectedCompany!.vision}</p>
-          ) : (
-            <p className="text-xs text-muted-foreground italic">No vision set</p>
-          )}
-          {hasMission ? (
-            <p className="text-xs text-muted-foreground line-clamp-2">{selectedCompany!.mission}</p>
-          ) : (
-            <p className="text-xs text-muted-foreground italic">No mission set</p>
-          )}
-          <Link to="/objectives" className="text-[10px] text-primary hover:underline">
-            Edit in Objectives
-          </Link>
+    // Commander is a full-bleed route — Layout drops the global <main> padding
+    // for `/commander`, so we just fill main with h-full (no negative-margin
+    // hack, no 100vh math). main keeps its mobile bottom padding, which lifts the
+    // input clear of the MobileBottomNav and keeps main from scrolling (h-full
+    // resolves to main's content box, so content + pb == client → no outer
+    // scrollbar; only the message list scrolls).
+    <div className="flex flex-col h-full min-h-0">
+
+      {/* Best-effort badge (non-claude_cli warning) */}
+      {config?.cliTool && config.cliTool !== "claude_cli" && (
+        <div className="px-5 py-1.5 bg-amber-50 dark:bg-amber-950/20 border-b border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-200 inline-flex items-center gap-1.5 shrink-0">
+          <Info className="h-3 w-3 shrink-0" />
+          <span>Confirmation gates use best-effort detection on <code className="font-mono">{config.cliTool}</code>. Switch to Claude CLI for strict gating.</span>
+        </div>
+      )}
+
+      {/* Chat workspace — sessions + chat panel, fills remaining height */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Desktop/wide (>= 1024px): inline sessions sidebar — UNCHANGED */}
+        {!useDrawerSessions && (
+          <SessionsSidebar
+            activeConversationId={activeConversationId}
+            onSelect={setActiveConversationId}
+            onNewConversation={handleNewConversation}
+          />
+        )}
+
+        <div className="flex-1 min-w-0 overflow-hidden bg-bg">
+          <AgentPanelContent
+            conversationId={activeConversationId}
+            onSelectConversation={handleSelectConversation}
+            onOpenSessions={useDrawerSessions ? () => setSessionsDrawerOpen(true) : undefined}
+          />
         </div>
 
-        {/* Goals snapshot */}
-        <div className="rounded-lg border border-border p-3 space-y-1">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <Target className="h-3 w-3" />
-            Goals
-          </div>
-          <p className="text-sm font-semibold">{activeGoals} active</p>
-          <p className="text-xs text-muted-foreground">{goals?.length ?? 0} total</p>
-        </div>
-
-        {/* Quick links */}
-        <Link
-          to="/settings?tab=commander"
-          className="flex items-center gap-2 rounded-lg border border-border p-3 text-xs text-muted-foreground hover:text-foreground hover:border-foreground/20 transition-colors"
-        >
-          <Settings className="h-3 w-3" />
-          Commander Settings
-        </Link>
-      </div>
-
-      {/* Conversation area */}
-      <div className="flex-1 min-w-0 rounded-lg border border-border overflow-hidden bg-background">
-        <AgentPanelContent />
-      </div>
+        {/* Mobile/tablet (< 1024px): sessions in a left slide-in drawer.
+            Radix Dialog (Sheet) provides focus trap + Escape automatically. */}
+        {useDrawerSessions && (
+          <Sheet open={sessionsDrawerOpen} onOpenChange={setSessionsDrawerOpen}>
+            <SheetContent side="left" showCloseButton className="w-auto sm:max-w-[15rem] p-0">
+              <SheetTitle className="sr-only">Sessions</SheetTitle>
+              <SessionsSidebar
+                activeConversationId={activeConversationId}
+                onSelect={handleSelectConversation}
+                onNewConversation={handleNewConversation}
+              />
+            </SheetContent>
+          </Sheet>
+        )}
       </div>
     </div>
   );

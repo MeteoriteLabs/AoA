@@ -24,6 +24,7 @@ import {
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { isCodexLocalFastModeSupported, CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS } from "../index.js";
 import { prepareManagedCodexHome } from "./codex-home.js";
+import { writeCodexMcpConfigToml } from "./codex-config-toml.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const AOA_SKILLS_CANDIDATES = [
@@ -286,6 +287,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   env.CODEX_HOME = executionTarget.type === "sandbox-docker"
     ? "/tmp/aoa-codex-home"
     : managedCodexHome;
+
+  // MX3: deliver the internal-agent MCP bridge to codex via its native
+  // discovery mechanism — a [mcp_servers.aoa] (+ .env) table in the
+  // adapter-managed CODEX_HOME/config.toml that `codex exec` already runs
+  // against. codex does NOT accept a --mcp-config flag, so this is the only
+  // path. The managed home is adapter-owned (only holds auth.json + this
+  // file); writeCodexMcpConfigToml preserves any unrelated content and is
+  // idempotent. auth.json is untouched; CODEX_HOME's value is unchanged.
+  if (ctx.mcpBridge) {
+    if (executionTarget.type === "sandbox-docker") {
+      // MX3: sandbox-docker codex MCP wiring is a follow-up — CODEX_HOME there
+      // is the container path "/tmp/aoa-codex-home" which is not writable from
+      // the host at this point. The §17 acceptance path is type:"local".
+      await onLog(
+        "stderr",
+        `[aoa] codex MCP bridge config.toml is not yet wired for sandbox-docker execution targets; skipping (MX3 follow-up).\n`,
+      );
+    } else {
+      await writeCodexMcpConfigToml(managedCodexHome, ctx.mcpBridge);
+      await onLog(
+        "stderr",
+        `[aoa] Wrote managed Codex config.toml [mcp_servers.aoa] for company ${agent.companyId}\n`,
+      );
+    }
+  }
 
   const billingType = resolveCodexBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });

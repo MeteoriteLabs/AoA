@@ -15,6 +15,7 @@ import { validate } from "../middleware/validate.js";
 import { assertRole } from "../middleware/rbac.js";
 import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { seedAoaNativeSkills } from "../services/internal-agent/aoa-skills-seeder.js";
 
 export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) {
   const router = Router();
@@ -132,6 +133,9 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     const requireBoardApprovalForNewAgents = opts.deploymentMode !== "local_trusted";
     const company = await svc.create({ ...req.body, requireBoardApprovalForNewAgents });
     await access.ensureMembership(company.id, "user", req.actor.userId ?? "local-board", "owner", "active");
+    await seedAoaNativeSkills(db, company.id).catch(() => {
+      // Never block company creation on skill seeding failure
+    });
     await logActivity(db, {
       companyId: company.id,
       actorType: "user",

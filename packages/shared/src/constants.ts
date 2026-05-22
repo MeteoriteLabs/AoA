@@ -496,6 +496,18 @@ export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 export const USER_ROLES = ["founder", "team_lead", "team_member"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
+// Single source of truth for role rank comparisons.
+// founder > team_lead > team_member. Unknown roles map to 0 (below team_member).
+export const ROLE_RANK: Record<string, number> = {
+  founder: 3,
+  team_lead: 2,
+  team_member: 1,
+};
+
+export function roleAtLeast(userRole: string, required: string): boolean {
+  return (ROLE_RANK[userRole] ?? 0) >= (ROLE_RANK[required] ?? 0);
+}
+
 // ── V2: Artifacts ──────────────────────────────────────────────────────
 
 export const ARTIFACT_TYPES = [
@@ -695,6 +707,22 @@ export type IaConversationStatus = (typeof IA_CONVERSATION_STATUSES)[number];
 
 export const REMINDER_STATUSES = ["pending", "fired", "cancelled"] as const;
 export type ReminderStatus = (typeof REMINDER_STATUSES)[number];
+
+// ── V2.5: Commander Tool Permissions ─────────────────────────────────────
+
+export interface CommanderToolPermission {
+  enabled: boolean;            // whether the tool is available to Commander at all
+  requireConfirmation: boolean; // force confirmation even if tool.requiresConfirmation is false
+  minimumRole: "founder" | "team_lead" | "team_member"; // minimum human role needed to trigger via Commander
+}
+
+export type CommanderToolPermissions = Record<string, CommanderToolPermission>;
+
+export const COMMANDER_TOOL_PERMISSION_DEFAULT: CommanderToolPermission = {
+  enabled: true,
+  requireConfirmation: false,
+  minimumRole: "team_member",
+};
 
 export const NOTIFICATION_TYPES = [
   "discussion.extraction_complete",

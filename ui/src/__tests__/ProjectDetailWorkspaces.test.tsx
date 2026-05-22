@@ -251,9 +251,43 @@ function renderProjectDetail(initialPath: string) {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
-  projectsApiMock.get.mockResolvedValue(mockProject);
+  // resetAllMocks clears both call history AND implementations.
+  // This makes test order irrelevant: a test that sets list to []
+  // cannot pollute the next test even under full-suite parallelism.
+  vi.resetAllMocks();
+  // Re-establish ALL default implementations after the reset.
   executionWorkspacesApiMock.list.mockResolvedValue(mockWorkspaces);
+  executionWorkspacesApiMock.update.mockResolvedValue({});
+  executionWorkspacesApiMock.getCloseReadiness.mockResolvedValue({
+    workspaceId: "ws-1",
+    state: "ready",
+    blockingReasons: [],
+    warnings: [],
+    linkedIssues: [],
+    plannedActions: [
+      {
+        kind: "archive_record",
+        label: "Archive workspace record",
+        description: "Keep the execution workspace history.",
+        command: null,
+      },
+    ],
+    isDestructiveCloseAllowed: true,
+    isSharedWorkspace: false,
+    isProjectPrimaryWorkspace: false,
+    git: null,
+    runtimeServices: [],
+  });
+  projectsApiMock.get.mockResolvedValue(mockProject);
+  projectsApiMock.update.mockResolvedValue(mockProject);
+  projectsApiMock.listAgents.mockResolvedValue([]);
+  projectsApiMock.list.mockResolvedValue([mockProject]);
+  projectsApiMock.budget.mockResolvedValue({ agents: [], totalSpendCents: 0 });
+  projectsApiMock.createWorkspace.mockResolvedValue({});
+  projectsApiMock.updateWorkspace.mockResolvedValue({});
+  projectsApiMock.removeWorkspace.mockResolvedValue({});
+  projectsApiMock.getEnvironment.mockResolvedValue({ env: null });
+  projectsApiMock.updateEnvironment.mockResolvedValue({ env: null });
   // Archive now uses a Dialog instead of window.confirm
 });
 

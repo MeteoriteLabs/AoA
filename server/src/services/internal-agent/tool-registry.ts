@@ -8,6 +8,9 @@ import { createWorkflowTools } from "./tools/workflow-tools.js";
 import { createFileTools } from "./tools/file-tools.js";
 import { createCoordinationTools } from "./tools/coordination-tools.js";
 import { createAnalysisTools } from "./tools/analysis-tools.js";
+import { submitExtractedItemsTool } from "./tools/submit-extracted-items.js";
+import { delegateToSubagentTool } from "./tools/delegate-to-subagent.js";
+import { useSkillTool } from "./tools/skill-tools.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -15,14 +18,17 @@ export function createToolRegistry(): AgentTool[] {
     ...createActionTools(),
     ...createMemoryTools(),
     ...createDiscussionTools(),
+    submitExtractedItemsTool,
     ...createWorkflowTools(),
     ...createFileTools(),
     ...createCoordinationTools(),
+    delegateToSubagentTool,
     ...createAnalysisTools(),
+    useSkillTool,
   ];
 }
 
-const CORE_TOOLS = new Set(["query_tasks", "query_memory", "query_goals"]);
+const CORE_TOOLS = new Set(["query_tasks", "query_memory", "query_goals", "use_skill", "query_company"]);
 
 const INTENT_KEYWORDS: Record<string, string[]> = {
   action: ["create", "add", "new", "make", "assign", "wake", "wakeup", "trigger"],
@@ -98,11 +104,12 @@ export async function executeTool(
   params: unknown,
   ctx: ToolContext,
 ): Promise<ToolResult> {
-  // Role + capability gate (closes C13)
+  // Role + capability gate (closes C13) + D2 AoA tool allowlist gate
   const decision = authorizeToolInvocation(
     tool,
     ctx.userRole,
     ctx.enabledCapabilities,
+    { agentKind: ctx.agentKind, toolAllowlist: ctx.toolAllowlist },
   );
   if (!decision.allowed) {
     return {

@@ -1241,10 +1241,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
         await svc.notifyMentionedHumans(issue.companyId, commentBody, issue.id, actor);
       }
 
+      const aoaKinds = await svc
+        .resolveAgentKinds([...wakeups.keys()])
+        .catch(() => new Map<string, string>());
       for (const [agentId, wakeup] of wakeups.entries()) {
-        heartbeat
-          .wakeup(agentId, wakeup)
-          .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
+        if (aoaKinds.get(agentId) === "aoa") {
+          svc
+            .enqueueAoaMentionWakeup(issue.companyId, agentId, {
+              source: wakeup?.source,
+              reason: wakeup?.reason,
+              payload: wakeup?.payload,
+            })
+            .catch((err) =>
+              logger.warn({ err, issueId: issue.id, agentId }, "failed to enqueue aoa mention wakeup"),
+            );
+        } else {
+          heartbeat
+            .wakeup(agentId, wakeup)
+            .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
+        }
       }
     })();
 

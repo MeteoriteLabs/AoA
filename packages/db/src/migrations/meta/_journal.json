@@ -701,6 +701,62 @@
       "when": 1779386695708,
       "tag": "0099_square_spectrum",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1779013065734,
+      "tag": "0100_flat_christian_walker",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1779036537814,
+      "tag": "0101_hard_bill_hollister",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1779189317748,
+      "tag": "0102_purple_puppet_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1779264849201,
+      "tag": "0103_gorgeous_strong_guy",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1779277869669,
+      "tag": "0104_dry_gorgon",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1779340707525,
+      "tag": "0105_warm_gideon",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1779390998039,
+      "tag": "0106_yummy_night_thrasher",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1779436911290,
+      "tag": "0107_real_vulcan",
+      "breakpoints": true
     }
   ]
 }

@@ -4,6 +4,7 @@ const DEFAULT_AGENT_BUNDLE_FILES = {
   default: ["AGENTS.md"],
   cxo: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
   lead: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  commander: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -12,6 +13,7 @@ const DEFAULT_AGENT_BUNDLE_DIRS: Record<DefaultAgentBundleRole, string> = {
   default: "default",
   cxo: "cxo",
   lead: "lead",
+  commander: "commander",
 };
 
 function resolveDefaultAgentBundleUrl(role: DefaultAgentBundleRole, fileName: string) {

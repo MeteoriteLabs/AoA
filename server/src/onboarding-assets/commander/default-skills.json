@@ -1,0 +1,4 @@
+{
+  "_comment": "Catalog skill IDs to install when a new Commander is created. Add skill IDs here to seed them automatically.",
+  "skills": []
+}

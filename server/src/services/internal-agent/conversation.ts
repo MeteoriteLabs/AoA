@@ -1,10 +1,9 @@
-import { and, eq, desc, sql } from "drizzle-orm";
+import { and, eq, desc, gt, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   internalAgentConversations,
   internalAgentMessages,
 } from "@armyofagents/db";
-import type { LLMProvider, ChatMessage } from "./providers/types.js";
 
 export interface MessageInput {
   role: string;
@@ -82,10 +81,35 @@ export function conversationService(db: Db) {
         .then((rows: any[]) => rows.reverse());
     },
 
+    async getMessagesSince(conversationId: string, sinceMessageId: string | null, limit = 50) {
+      let markerCreatedAt: Date | null = null;
+      if (sinceMessageId) {
+        const markerRows = await db
+          .select({ createdAt: internalAgentMessages.createdAt })
+          .from(internalAgentMessages)
+          .where(eq(internalAgentMessages.id, sinceMessageId))
+          .then((r: { createdAt: Date }[]) => r);
+        markerCreatedAt = markerRows[0]?.createdAt ?? null;
+      }
+      const base = db
+        .select()
+        .from(internalAgentMessages)
+        .where(
+          markerCreatedAt
+            ? and(eq(internalAgentMessages.conversationId, conversationId), gt(internalAgentMessages.createdAt, markerCreatedAt))
+            : eq(internalAgentMessages.conversationId, conversationId),
+        );
+      // Chronological; cap at `limit` most-recent then re-sort ascending.
+      const rows = await base
+        .orderBy(desc(internalAgentMessages.createdAt), desc(internalAgentMessages.id))
+        .limit(limit)
+        .then((r: any[]) => r.reverse());
+      return rows;
+    },
+
     async summarizeIfNeeded(
       conversationId: string,
-      provider: LLMProvider,
-      config: { model: string },
+      summarize: (transcript: string) => Promise<string>,
     ) {
       const countResult = await db
         .select({ count: sql`count(*)` })
@@ -120,25 +144,8 @@ export function conversationService(db: Db) {
 
       if (!transcript.trim()) return;
 
-      const messages: ChatMessage[] = [
-        {
-          role: "user",
-          content: `Summarize this conversation history concisely, preserving key decisions, action items, and context:\n\n${transcript}`,
-        },
-      ];
-
-      let summary = "";
-      for await (const chunk of provider.chat({
-        messages,
-        tools: [],
-        model: config.model,
-        maxTokens: 1000,
-        systemPrompt: "You are a conversation summarizer. Be concise.",
-      })) {
-        if (chunk.type === "text") {
-          summary += chunk.delta;
-        }
-      }
+      const summary = await summarize(transcript);
+      if (!summary || !summary.trim()) return;
 
       const lastOldMessage = oldMessages[oldMessages.length - 1] as any;
       await db
@@ -149,6 +156,14 @@ export function conversationService(db: Db) {
           updatedAt: new Date(),
         })
         .where(eq(internalAgentConversations.id, conversationId));
+    },
+
+    async getById(conversationId: string) {
+      const [conv] = await db
+        .select()
+        .from(internalAgentConversations)
+        .where(eq(internalAgentConversations.id, conversationId));
+      return conv ?? null;
     },
 
     async reset(companyId: string, userId: string) {

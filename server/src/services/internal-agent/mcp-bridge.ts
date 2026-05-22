@@ -4,6 +4,7 @@
 // Spawned by CLI tools via MCP config. Exposes all internal agent tools.
 
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
+import { roleAtLeast } from "@armyofagents/shared";
 
 // ── Tool Call Handler (pure, testable) ──────────────────────────────────────
 
@@ -28,6 +29,27 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
       return {
         content: [{ type: "text", text: `Unknown tool: '${name}'. Available: ${deps.tools.map((t) => t.name).join(", ")}` }],
         isError: true,
+      };
+    }
+
+    if (tool.requiredRole !== undefined && !roleAtLeast(deps.toolContext.userRole, tool.requiredRole)) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Tool '${name}' requires role '${tool.requiredRole}' but caller has '${deps.toolContext.userRole}'.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    if (tool.requiresConfirmation) {
+      const confirmId = crypto.randomUUID();
+      const marker = `⚡CONFIRM:${JSON.stringify({ toolName: name, params: args, confirmId })}⚡ This action requires your approval before I can proceed. Please tell me to confirm or cancel, or modify the parameters.`;
+      return {
+        content: [{ type: "text", text: marker }],
+        isError: false,
       };
     }
 
@@ -95,6 +117,17 @@ export async function startBridge(): Promise<void> {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // D2: AoA agent kind + tool allowlist. Absent → undefined (non-AoA path).
+  const agentKind = process.env.AOA_AGENT_KIND || undefined;
+  const toolAllowlistRaw = process.env.AOA_TOOL_ALLOWLIST ?? "";
+  const toolAllowlist = toolAllowlistRaw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // Commander actor type: "commander" when invoked via Commander; "board" otherwise.
+  const actorType = process.env.AOA_ACTOR_TYPE ?? "board";
+
   const { createDb } = await import("@armyofagents/db");
   const { createServiceContainer } = await import("./service-container.js");
   const { createToolRegistry, executeTool } = await import("./tool-registry.js");
@@ -113,6 +146,9 @@ export async function startBridge(): Promise<void> {
     userId,
     userRole,
     enabledCapabilities,
+    agentKind,
+    toolAllowlist,
+    actorType,
     db,
     services,
   };
