@@ -38,14 +38,10 @@ vi.mock("../services/permissions.js", () => ({
 }));
 
 // ── Auth mocks ────────────────────────────────────────────────────────────────
-const mockGetActorInfo = vi.hoisted(() =>
-  vi.fn(() => ({
-    actorType: "user" as const,
-    actorId: USER_FOUNDER,
-    agentId: null,
-    runId: null,
-  })),
-);
+// NOTE: Do NOT reference module-scope constants (USER_FOUNDER etc.) inside the
+// vi.hoisted factory — those constants are in the temporal dead zone when
+// the hoisted factory executes. The implementation is set in beforeEach.
+const mockGetActorInfo = vi.hoisted(() => vi.fn());
 
 vi.mock("../routes/authz.js", () => ({
   assertCompanyAccess: vi.fn(),
