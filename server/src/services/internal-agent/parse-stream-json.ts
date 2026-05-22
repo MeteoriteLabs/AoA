@@ -87,10 +87,18 @@ function parseLine(line: string): AgentStreamChunk[] {
     }
   }
 
-  // Plain-text fallback: claude_cli emits the answer for an MCP-tool-using turn
-  // as plain text (not stream-json). Surface it as a text chunk so the response
-  // renders instead of being dropped. Re-add the newline that split() stripped
-  // so multi-line markdown reconstructs; a blank line is a paragraph break.
+  // Plain-text fallback: the claude CLI emits the answer for an MCP-tool-using turn as
+  // plain text (not stream-json). Re-add the newline that split() stripped so that
+  // multi-line markdown reconstructs correctly; a blank line is a paragraph break.
+  //
+  // This text is raw LLM output and may contain HTML markup injected via prompt attacks.
+  //
+  // SECURITY INVARIANT: this text reaches the client and is rendered by MarkdownBody.tsx,
+  // which uses react-markdown WITHOUT rehype-raw. Without rehype-raw, react-markdown
+  // escapes raw HTML rather than injecting it into the DOM, blocking XSS.
+  //
+  // Do NOT add rehype-raw to MarkdownBody without also adding rehype-sanitize with a
+  // strict allowlist — doing so opens an XSS vector through this code path.
   return [{ type: "text", delta: line + "\n" }];
 }
 
