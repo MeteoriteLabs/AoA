@@ -14,6 +14,10 @@ const mockGetGitStatus = vi.fn();
 const mockSafety = vi.fn();
 const mockGitCommit = vi.fn();
 const mockGitPush = vi.fn();
+const mockMergePr = vi.fn();
+const mockClosePr = vi.fn();
+const mockReopenPr = vi.fn();
+const mockRequestReview = vi.fn();
 let canMutateGit = true;
 
 vi.mock("../api/issues", () => ({
@@ -24,6 +28,13 @@ vi.mock("../api/github-integration", () => ({
   githubIntegrationApi: {
     createPR: (...args: unknown[]) => mockCreatePR(...args),
     syncWorkspacePR: (...args: unknown[]) => mockSyncWorkspacePR(...args),
+    getCollaborators: vi.fn().mockResolvedValue([]),
+    getLabels: vi.fn().mockResolvedValue([]),
+    getMilestones: vi.fn().mockResolvedValue([]),
+    mergePr: (...args: unknown[]) => mockMergePr(...args),
+    closePr: (...args: unknown[]) => mockClosePr(...args),
+    reopenPr: (...args: unknown[]) => mockReopenPr(...args),
+    requestReview: (...args: unknown[]) => mockRequestReview(...args),
   },
 }));
 
@@ -585,5 +596,119 @@ describe("GitPanel", () => {
 
     expect(await screen.findByTestId("git-local-section")).toHaveTextContent("No unpushed commits");
     expect(screen.queryByTestId("push-btn")).not.toBeInTheDocument();
+  });
+
+  describe("PR action buttons", () => {
+    const openPrWorkspace = makeWorkspace({
+      repoUrl: "https://github.com/myorg/myrepo",
+      branchName: "feat/my-task",
+      baseRef: "main",
+      metadata: {
+        pr: {
+          url: "https://github.com/myorg/myrepo/pull/42",
+          number: 42,
+          state: "open",
+          createdAt: "2026-01-01T00:00:00Z",
+          draft: false,
+        },
+      },
+    });
+
+    const closedPrWorkspace = makeWorkspace({
+      ...openPrWorkspace,
+      metadata: {
+        pr: {
+          url: "https://github.com/myorg/myrepo/pull/42",
+          number: 42,
+          state: "closed",
+          createdAt: "2026-01-01T00:00:00Z",
+          draft: false,
+        },
+      },
+    });
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      mockGetGitStatus.mockResolvedValue({
+        gitAvailable: true,
+        branch: "feat/my-task",
+        detachedHead: false,
+        remote: null,
+        ahead: null,
+        behind: null,
+        files: [],
+        clean: true,
+      });
+      mockSyncWorkspacePR.mockResolvedValue({
+        workspaceId: "ws-1",
+        repoUrl: "https://github.com/myorg/myrepo",
+        branchName: "feat/my-task",
+        baseRef: "main",
+        pr: null,
+        githubLastSyncedAt: "2026-05-16T00:00:00.000Z",
+        githubSyncError: null,
+        cached: false,
+      });
+      mockMergePr.mockResolvedValue({ success: true, prState: "merged", prUrl: "https://github.com/myorg/myrepo/pull/42" });
+      mockClosePr.mockResolvedValue({ success: true, prState: "closed", prUrl: "https://github.com/myorg/myrepo/pull/42" });
+      mockReopenPr.mockResolvedValue({ success: true, prState: "open", prUrl: "https://github.com/myorg/myrepo/pull/42" });
+    });
+
+    it("shows Merge, Close PR, and Request Review buttons when PR is open", async () => {
+      renderPanel({ workspace: openPrWorkspace as any });
+      expect(await screen.findByRole("button", { name: /merge/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /close pr/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /request review/i })).toBeInTheDocument();
+    });
+
+    it("shows Reopen button when PR is closed, hides Merge and Close", async () => {
+      renderPanel({ workspace: closedPrWorkspace as any });
+      expect(await screen.findByRole("button", { name: /reopen/i })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /merge/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /close pr/i })).not.toBeInTheDocument();
+    });
+
+    it("calls mergePr with squash method on Squash and Merge click", async () => {
+      const user = userEvent.setup();
+      renderPanel({ workspace: openPrWorkspace as any });
+
+      // Open merge dropdown
+      const mergeBtn = await screen.findByRole("button", { name: /merge/i });
+      await user.click(mergeBtn);
+
+      // Click squash option
+      const squashOption = await screen.findByRole("menuitem", { name: /squash/i });
+      await user.click(squashOption);
+
+      await waitFor(() =>
+        expect(mockMergePr).toHaveBeenCalledWith("ws-1", { mergeMethod: "squash" }),
+      );
+    });
+
+    it("calls closePr on Close PR click", async () => {
+      const user = userEvent.setup();
+      renderPanel({ workspace: openPrWorkspace as any });
+      await user.click(await screen.findByRole("button", { name: /close pr/i }));
+      await waitFor(() => expect(mockClosePr).toHaveBeenCalledWith("ws-1"));
+    });
+
+    it("calls reopenPr on Reopen click", async () => {
+      const user = userEvent.setup();
+      renderPanel({ workspace: closedPrWorkspace as any });
+      await user.click(await screen.findByRole("button", { name: /reopen/i }));
+      await waitFor(() => expect(mockReopenPr).toHaveBeenCalledWith("ws-1"));
+    });
+
+    it("does not show PR action buttons when no PR linked", async () => {
+      const noprWorkspace = makeWorkspace({
+        repoUrl: "https://github.com/myorg/myrepo",
+        branchName: "feat/my-task",
+        metadata: {},
+      });
+      renderPanel({ workspace: noprWorkspace as any });
+      await screen.findByRole("button", { name: /create pr/i }); // wait for render
+      expect(screen.queryByRole("button", { name: /merge/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /close pr/i })).not.toBeInTheDocument();
+    });
   });
 });

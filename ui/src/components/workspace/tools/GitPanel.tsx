@@ -15,7 +15,7 @@ import {
   RefreshCw,
   Upload,
 } from "lucide-react";
-import type { ExecutionWorkspace, GitHubPrMetadata } from "@armyofagents/shared";
+import type { ExecutionWorkspace, GitHubPrMetadata, GitHubPrMergeMethod } from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -177,6 +177,43 @@ function gitStatusChipLabel({
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
+
+function RequestReviewInline({
+  workspaceId: _workspaceId,
+  onClose,
+  onSubmit,
+}: {
+  workspaceId: string;
+  onClose: () => void;
+  onSubmit: (reviewers: string[]) => Promise<void>;
+}) {
+  const [input, setInput] = useState("");
+  const [pending, setPending] = useState(false);
+
+  async function handleSubmit() {
+    const reviewers = input.split(",").map((s) => s.trim()).filter(Boolean);
+    if (reviewers.length === 0) return;
+    setPending(true);
+    try { await onSubmit(reviewers); } finally { setPending(false); }
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 pt-1">
+      <input
+        autoFocus
+        className="flex-1 rounded-md border border-input bg-transparent px-2 py-1 text-xs outline-none"
+        placeholder="logins, comma-separated"
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") void handleSubmit(); if (e.key === "Escape") onClose(); }}
+      />
+      <Button size="sm" variant="default" className="h-7 text-xs" onClick={() => void handleSubmit()} disabled={pending || !input.trim()}>
+        {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Send"}
+      </Button>
+      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onClose}>Cancel</Button>
+    </div>
+  );
+}
 
 function CommitLogSection({ workspaceId, isExpanded }: { workspaceId: string; isExpanded: boolean }) {
   const [open, setOpen] = useState(false);
@@ -444,6 +481,40 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
       pushToast({ tone: "error", title: "Push failed", body: err.message });
     },
   });
+
+  // ── PR action mutations ──
+  const mergePrMutation = useMutation({
+    mutationFn: (mergeMethod: GitHubPrMergeMethod) =>
+      githubIntegrationApi.mergePr(workspace.id, { mergeMethod }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.detail(workspace.id) });
+      pushToast({ title: "PR merged successfully", tone: "success" });
+    },
+    onError: (err) =>
+      pushToast({ title: err instanceof Error ? err.message : "Merge failed", tone: "warn" }),
+  });
+
+  const closePrMutation = useMutation({
+    mutationFn: () => githubIntegrationApi.closePr(workspace.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.detail(workspace.id) });
+      pushToast({ title: "PR closed", tone: "success" });
+    },
+    onError: (err) =>
+      pushToast({ title: err instanceof Error ? err.message : "Close failed", tone: "warn" }),
+  });
+
+  const reopenPrMutation = useMutation({
+    mutationFn: () => githubIntegrationApi.reopenPr(workspace.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.detail(workspace.id) });
+      pushToast({ title: "PR reopened", tone: "success" });
+    },
+    onError: (err) =>
+      pushToast({ title: err instanceof Error ? err.message : "Reopen failed", tone: "warn" }),
+  });
+
+  const [showRequestReviewDialog, setShowRequestReviewDialog] = useState(false);
 
   // ── Copy branch name ──
   const handleCopy = async () => {
@@ -859,6 +930,94 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
 
         {workspace.cwd && <OpenInIdeButton cwd={workspace.cwd} compact />}
       </div>
+
+      {pr && pr.state !== "merged" && (
+        <div className="flex items-center gap-1.5 flex-wrap pt-1">
+          {pr.state === "open" && (
+            <>
+              {/* Merge dropdown */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="default"
+                    className="h-7 text-xs gap-1"
+                    disabled={mergePrMutation.isPending}
+                    aria-label="Merge"
+                  >
+                    {mergePrMutation.isPending ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <GitPullRequest className="h-3 w-3" />
+                    )}
+                    Merge
+                    <ChevronDown className="h-3 w-3" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuItem onSelect={() => mergePrMutation.mutate("merge")}>
+                    Merge commit
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => mergePrMutation.mutate("squash")}>
+                    Squash and merge
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => mergePrMutation.mutate("rebase")}>
+                    Rebase and merge
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              {/* Close */}
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => closePrMutation.mutate()}
+                disabled={closePrMutation.isPending}
+                aria-label="Close PR"
+              >
+                {closePrMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Close PR"}
+              </Button>
+
+              {/* Request Review */}
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => setShowRequestReviewDialog(true)}
+                aria-label="Request review"
+              >
+                Request Review
+              </Button>
+            </>
+          )}
+
+          {pr.state === "closed" && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => reopenPrMutation.mutate()}
+              disabled={reopenPrMutation.isPending}
+              aria-label="Reopen"
+            >
+              {reopenPrMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Reopen"}
+            </Button>
+          )}
+        </div>
+      )}
+
+      {pr && showRequestReviewDialog && (
+        <RequestReviewInline
+          workspaceId={workspace.id}
+          onClose={() => setShowRequestReviewDialog(false)}
+          onSubmit={async (reviewers) => {
+            await githubIntegrationApi.requestReview(workspace.id, reviewers);
+            setShowRequestReviewDialog(false);
+            pushToast({ title: "Review requested", tone: "success" });
+          }}
+        />
+      )}
 
       {gitAvailable && (
         <CommitLogSection workspaceId={workspace.id} isExpanded={isExpanded} />
