@@ -736,6 +736,13 @@
       "when": 1779390998039,
       "tag": "0104_yummy_night_thrasher",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1779436911290,
+      "tag": "0105_real_vulcan",
+      "breakpoints": true
     }
   ]
 }

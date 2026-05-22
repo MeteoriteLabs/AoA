@@ -13,25 +13,26 @@ vi.mock("../services/agent-instructions.js", () => ({
   })),
 }));
 import { ensureCommanderAgent, COMMANDER_TOOL_ALLOWLIST } from "../services/internal-agent/aoa-agents/ensure-commander.js";
-function sel(rows:unknown[]){const c:any={};c.from=()=>c;c.where=()=>c;c.then=(r:(v:unknown[])=>unknown)=>Promise.resolve(rows).then(r);return c;}
+function sel(rows:unknown[]){const c:any={};c.from=()=>c;c.where=()=>c;c.limit=()=>c;c.then=(r:(v:unknown[])=>unknown)=>Promise.resolve(rows).then(r);return c;}
 describe("ensureCommanderAgent", () => {
   beforeEach(() => { eqMock.mockClear(); andMock.mockClear(); seedBundleFn.mockClear(); });
   it("returns existing commander id, no insert (toolAllowlist already set → no update)", async () => {
-    const insert = vi.fn();
+    // With atomic INSERT ON CONFLICT, insert is always attempted but returns [] on conflict.
+    // The fallback SELECT then finds the existing commander.
+    const insert = vi.fn(()=>({values:()=>({onConflictDoNothing:()=>({returning:()=>Promise.resolve([])})})}));
     const update = vi.fn(()=>({set:()=>({where:()=>Promise.resolve([])})}));
     const existingRc = { aoa: { role: "lead", toolAllowlist: ["delegate_to_subagent"] }, heartbeat: { enabled:false, intervalSec:0 } };
     const db:any = { select:()=>sel([{id:"cmd-1", runtimeConfig: existingRc}]), insert, update };
     expect(await ensureCommanderAgent(db,"co-1")).toBe("cmd-1");
-    expect(insert).not.toHaveBeenCalled();
-    // update called once only for internalAgentConfig link (not for agent row since toolAllowlist already set)
-    const agentUpdateCalls = update.mock.calls.filter(()=>true);
-    // all update calls should be for internalAgentConfig (set agentId), not for agents row
+    // insert is called (attempt), but the conflict path means no new row was created
+    expect(insert).toHaveBeenCalled();
+    // update called for internalAgentConfig link; agent row NOT updated since toolAllowlist already set
     const setArgs = update.mock.results.map((r:any)=>r.value);
     expect(setArgs.length).toBeGreaterThan(0);
   });
   it("creates kind='aoa' role='general' runtimeConfig.aoa.role='lead' + toolAllowlist + links config", async () => {
     const av:any[]=[]; const sv:any[]=[];
-    const db:any = { select:()=>sel([]), insert:()=>({values:(v:any)=>{av.push(v);return{returning:()=>Promise.resolve([{id:"cmd-new"}])};}}), update:()=>({set:(v:any)=>{sv.push(v);return{where:()=>Promise.resolve([])};}}) };
+    const db:any = { select:()=>sel([]), insert:()=>({values:(v:any)=>{av.push(v);return{onConflictDoNothing:()=>({returning:()=>Promise.resolve([{id:"cmd-new"}])})};}}), update:()=>({set:(v:any)=>{sv.push(v);return{where:()=>Promise.resolve([])};}}) };
     expect(await ensureCommanderAgent(db,"co-1")).toBe("cmd-new");
     expect(av[0].kind).toBe("aoa");
     expect(av[0].role).toBe("general");
@@ -48,7 +49,8 @@ describe("ensureCommanderAgent", () => {
     const existingRc = { aoa: { role: "lead" }, heartbeat: { enabled:false, intervalSec:0 } };
     const db:any = {
       select:()=>sel([{id:"cmd-old", runtimeConfig: existingRc}]),
-      insert: vi.fn(),
+      // Conflict path: insert returns [] so fallback SELECT is used to find the existing row
+      insert: vi.fn(()=>({values:()=>({onConflictDoNothing:()=>({returning:()=>Promise.resolve([])})})})),
       update:()=>({set:(v:any)=>{agentUpdateVals.push(v);return{where:()=>Promise.resolve([])};}}),
     };
     expect(await ensureCommanderAgent(db,"co-1")).toBe("cmd-old");
@@ -65,7 +67,7 @@ describe("ensureCommanderAgent", () => {
     const db = {
       select: () => sel([{ id: "cmd1", runtimeConfig: { aoa: { toolAllowlist: ["x"] } }, companyId: "c1", name: "Commander", adapterConfig: {} }]),
       update: () => ({ set: (v: unknown) => { setCalls.push(v); return { where: () => Promise.resolve([]) }; } }),
-      insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "cmd1" }]) }) }),
+      insert: () => ({ values: () => ({ onConflictDoNothing: () => ({ returning: () => Promise.resolve([{ id: "cmd1" }]) }) }) }),
     };
     const { ensureCommanderAgent: eca } = await import("../services/internal-agent/aoa-agents/ensure-commander.js");
     const id = await eca(db as any, "c1");

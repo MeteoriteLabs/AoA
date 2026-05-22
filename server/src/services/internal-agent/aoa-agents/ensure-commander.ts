@@ -57,24 +57,53 @@ export const COMMANDER_TOOL_ALLOWLIST = [
  *  Discriminator: kind='aoa' + runtimeConfig.aoa.role='lead' (NOT agents.role
  *  — that is special-cased). */
 export async function ensureCommanderAgent(db: Db, companyId: string): Promise<string> {
-  const existing = await db.select({ id: agents.id, runtimeConfig: agents.runtimeConfig }).from(agents)
-    .where(and(eq(agents.companyId, companyId), eq(agents.kind, "aoa"), eq(agents.name, COMMANDER_AGENT_NAME)))
-    .then((r: { id: string; runtimeConfig: unknown }[]) => r[0] ?? null);
-  let agentId = existing?.id ?? null;
-  if (!agentId) {
-    const [created] = await db.insert(agents).values({
+  // Attempt atomic insert. ON CONFLICT (company_id, name) WHERE kind='aoa'
+  // silently no-ops if another process beat us to it.
+  const [inserted] = await db
+    .insert(agents)
+    .values({
       companyId, name: COMMANDER_AGENT_NAME, kind: "aoa", role: "general", status: "idle",
       adapterType: "process",
       runtimeConfig: {
         aoa: { role: "lead", toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST] },
         heartbeat: { enabled: false, intervalSec: 0 },
       },
-    }).returning();
-    agentId = created.id;
+    })
+    .onConflictDoNothing()
+    .returning({ id: agents.id, runtimeConfig: agents.runtimeConfig });
+
+  let agentId: string;
+  let existingRc: Record<string, unknown> | undefined;
+
+  if (inserted) {
+    agentId = inserted.id;
+    existingRc = inserted.runtimeConfig;
   } else {
-    // D2 idempotent backfill: merge toolAllowlist into existing row's runtimeConfig
-    // so pre-D2 rows aren't stranded by default-deny.
-    const rc = (existing.runtimeConfig as Record<string, unknown>) ?? {};
+    // Conflict: another concurrent caller inserted first. Fetch the winner.
+    const [existing] = await db
+      .select({ id: agents.id, runtimeConfig: agents.runtimeConfig })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.companyId, companyId),
+          eq(agents.kind, "aoa"),
+          eq(agents.name, COMMANDER_AGENT_NAME),
+        ),
+      )
+      .limit(1);
+    if (!existing) {
+      throw new Error(
+        `Commander agent for company ${companyId} disappeared after conflict`
+      );
+    }
+    agentId = existing.id;
+    existingRc = existing.runtimeConfig;
+  }
+
+  // D2 idempotent backfill: merge toolAllowlist into existing row's runtimeConfig
+  // so pre-D2 rows aren't stranded by default-deny.
+  if (!inserted) {
+    const rc = existingRc ?? {};
     const aoaCfg = (rc.aoa as Record<string, unknown>) ?? {};
     if (!Array.isArray(aoaCfg.toolAllowlist)) {
       const updatedRc = {
