@@ -23,7 +23,7 @@ export interface AgentConversation {
 export interface AgentMessage {
   id: string;
   role: "assistant" | "user" | "system" | "tool";
-  content: string;
+  content: string | null;
   toolCalls: unknown | null;
   pageContext: string | null;
   createdAt: string;

@@ -153,7 +153,7 @@ function serverToLocal(m: AgentMessage): LocalMessage {
   return {
     id: m.id,
     role: m.role === "tool" ? "system" : m.role,
-    content: m.content,
+    content: m.content ?? "",
     streamingDone: true,
     createdAt: m.createdAt,
   };
@@ -924,7 +924,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                   <div className="flex flex-wrap gap-2">
                     {msg.optionsPrompt.options.map((opt, i) => (
                       <button
-                        key={i}
+                        key={`${msg.id}-opt-${i}-${opt}`}
                         type="button"
                         onClick={() => {
                           // Dismiss the panel
