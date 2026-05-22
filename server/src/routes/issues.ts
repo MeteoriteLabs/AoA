@@ -1473,121 +1473,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
-      const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
-      const assigneeId = currentIssue.assigneeAgentId;
-      const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const isClosed = currentIssue.status === "done" || currentIssue.status === "cancelled";
-      const skipWake = selfComment || isClosed;
-      if (assigneeId && (reopened || !skipWake)) {
-        if (reopened) {
-          wakeups.set(assigneeId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_reopened_via_comment",
-            payload: {
-              issueId: currentIssue.id,
-              commentId: comment.id,
-              reopenedFrom: reopenFromStatus,
-              mutation: "comment",
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: currentIssue.id,
-              taskId: currentIssue.id,
-              commentId: comment.id,
-              source: "issue.comment.reopen",
-              wakeReason: "issue_reopened_via_comment",
-              reopenedFrom: reopenFromStatus,
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
-          });
-        } else {
-          wakeups.set(assigneeId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_commented",
-            payload: {
-              issueId: currentIssue.id,
-              commentId: comment.id,
-              mutation: "comment",
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: currentIssue.id,
-              taskId: currentIssue.id,
-              commentId: comment.id,
-              source: "issue.comment",
-              wakeReason: "issue_commented",
-              ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
-          });
-        }
-      }
-
-      let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
-      }
-
-      for (const mentionedId of mentionedIds) {
-        if (wakeups.has(mentionedId)) continue;
-        if (actorIsAgent && actor.actorId === mentionedId) continue;
-        // P3-G: also check the persisted comment's authorAgentId — when an
-        // agent posts via local-board / user / service actor (e.g.
-        // local_trusted curl with no auth), actorIsAgent is false and the
-        // above check is bypassed, but authorAgentId correctly identifies
-        // the agent.
-        if (comment?.authorAgentId === mentionedId) continue;
-        wakeups.set(mentionedId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_comment_mentioned",
-          payload: { issueId: id, commentId: comment.id },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: id,
-            taskId: id,
-            commentId: comment.id,
-            wakeCommentId: comment.id,
-            wakeReason: "issue_comment_mentioned",
-            source: "comment.mention",
-          },
-        });
-      }
-
-      // @human mention notifications — see issueService.notifyMentionedHumans for safety contract.
-      await svc.notifyMentionedHumans(issue.companyId, req.body.body, currentIssue.id, actor);
-
-      const aoaKinds = await svc
-        .resolveAgentKinds([...wakeups.keys()])
-        .catch(() => new Map<string, string>());
-      for (const [agentId, wakeup] of wakeups.entries()) {
-        if (aoaKinds.get(agentId) === "aoa") {
-          svc
-            .enqueueAoaMentionWakeup(currentIssue.companyId, agentId, {
-              source: wakeup?.source,
-              reason: wakeup?.reason,
-              payload: wakeup?.payload,
-            })
-            .catch((err) =>
-              logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to enqueue aoa mention wakeup"),
-            );
-        } else {
-          heartbeat
-            .wakeup(agentId, wakeup)
-            .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
-        }
-      }
-    })();
+    void enqueueIssueCommentWakeups({
+      issue,
+      currentIssue,
+      comment,
+      body: req.body.body,
+      actor,
+      reopened,
+      reopenFromStatus,
+      interruptedRunId,
+    });
 
     res.status(201).json(comment);
   });
