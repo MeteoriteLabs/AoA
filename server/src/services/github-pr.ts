@@ -165,6 +165,9 @@ export async function createPullRequest(
     title: string;
     body: string;
     draft: boolean;
+    reviewers?: string[];
+    labels?: string[];
+    milestoneNumber?: number;
   },
 ): Promise<GitHubPrCreateResponse> {
   const pat = await resolveGitHubPat(db, args.companyId, "github-pr");
@@ -181,9 +184,33 @@ export async function createPullRequest(
       body: args.body,
       draft: args.draft,
     });
+    const prNumber = data.number;
+
+    // Post-creation: reviewers, labels, milestone (separate GitHub API calls)
+    const postCalls: Promise<unknown>[] = [];
+
+    if (args.reviewers && args.reviewers.length > 0) {
+      postCalls.push(
+        octokit.pulls.requestReviewers({ owner, repo, pull_number: prNumber, reviewers: args.reviewers }),
+      );
+    }
+    if (args.labels && args.labels.length > 0) {
+      postCalls.push(
+        octokit.issues.addLabels({ owner, repo, issue_number: prNumber, labels: args.labels }),
+      );
+    }
+    if (args.milestoneNumber != null) {
+      postCalls.push(
+        octokit.issues.update({ owner, repo, issue_number: prNumber, milestone: args.milestoneNumber }),
+      );
+    }
+
+    // Best-effort — PR is created even if post-calls fail
+    await Promise.allSettled(postCalls);
+
     return {
       url: data.html_url,
-      number: data.number,
+      number: prNumber,
       state: data.state === "closed" ? "closed" : "open",
       draft: data.draft ?? false,
     };

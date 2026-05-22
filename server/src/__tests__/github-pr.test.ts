@@ -5,7 +5,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ---- Octokit mock ----
 const mockOctokit = vi.hoisted(() => ({
   users: { getAuthenticated: vi.fn() },
-  pulls: { create: vi.fn(), list: vi.fn() },
+  pulls: {
+    create: vi.fn(),
+    list: vi.fn(),
+    merge: vi.fn(),
+    update: vi.fn(),
+    requestReviewers: vi.fn(),
+  },
+  repos: { listCollaborators: vi.fn() },
+  issues: {
+    addLabels: vi.fn(),
+    update: vi.fn(),
+    listLabelsForRepo: vi.fn(),
+    listMilestones: vi.fn(),
+  },
 }));
 vi.mock("@octokit/rest", () => ({
   Octokit: vi.fn(() => mockOctokit),
@@ -253,6 +266,66 @@ describe("createPullRequest service", () => {
       status: 422,
       message: "No commits between main and feature/x",
     });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Unit tests: createPullRequest — with reviewers/labels/milestone
+// -----------------------------------------------------------------------------
+
+describe("createPullRequest — with reviewers/labels/milestone", () => {
+  const baseArgs = {
+    companyId: "company-1",
+    repoUrl: "https://github.com/myorg/myrepo",
+    base: "main",
+    head: "feat/my-task",
+    title: "My PR",
+    body: "description",
+    draft: false,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSvc.getByName.mockResolvedValue({ id: "secret-1", externalRef: "octocat" });
+    mockSvc.resolveSecretValue.mockResolvedValue("ghp_validtoken");
+    mockOctokit.pulls.create.mockResolvedValue({
+      data: { html_url: "https://github.com/myorg/myrepo/pull/42", number: 42, state: "open", draft: false },
+    });
+    mockOctokit.pulls.requestReviewers.mockResolvedValue({ data: {} });
+    mockOctokit.issues.addLabels.mockResolvedValue({ data: [] });
+    mockOctokit.issues.update.mockResolvedValue({ data: {} });
+  });
+
+  it("calls requestReviewers when reviewers provided", async () => {
+    await createPullRequest({} as any, { ...baseArgs, reviewers: ["alice", "bob"] });
+    expect(mockOctokit.pulls.requestReviewers).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewers: ["alice", "bob"], pull_number: 42 }),
+    );
+  });
+
+  it("does NOT call requestReviewers when reviewers is empty", async () => {
+    await createPullRequest({} as any, { ...baseArgs, reviewers: [] });
+    expect(mockOctokit.pulls.requestReviewers).not.toHaveBeenCalled();
+  });
+
+  it("calls issues.addLabels when labels provided", async () => {
+    await createPullRequest({} as any, { ...baseArgs, labels: ["bug", "priority:high"] });
+    expect(mockOctokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: ["bug", "priority:high"], issue_number: 42 }),
+    );
+  });
+
+  it("calls issues.update with milestone when milestoneNumber provided", async () => {
+    await createPullRequest({} as any, { ...baseArgs, milestoneNumber: 3 });
+    expect(mockOctokit.issues.update).toHaveBeenCalledWith(
+      expect.objectContaining({ milestone: 3, issue_number: 42 }),
+    );
+  });
+
+  it("does not call addLabels or milestone update when not provided", async () => {
+    await createPullRequest({} as any, baseArgs);
+    expect(mockOctokit.issues.addLabels).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.update).not.toHaveBeenCalled();
   });
 });
 
