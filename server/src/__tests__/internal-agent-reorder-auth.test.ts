@@ -5,8 +5,8 @@
  * requests (via supertest). They verify that:
  *   - PATCH .../conversations/reorder filters orderedIds to those owned by
  *     the actor, silently dropping foreign ids
- *   - PATCH .../conversations/reorder with empty orderedIds performs no DB
- *     writes and returns 200
+ *   - PATCH .../conversations/reorder with empty orderedIds nulls out all
+ *     owned conversations' sortOrder and returns 200
  *   - PATCH .../conversations/reorder with a missing/invalid body returns 400
  *   - DELETE .../conversations/order sets sortOrder: null scoped to the actor
  */
@@ -237,9 +237,12 @@ describe("C12 — reorder/reset owner-scoping (runtime HTTP)", () => {
       expect(selectWhereArgs.length).toBeGreaterThan(0); // userId scope was passed to WHERE
     });
 
-    it("empty orderedIds — no DB writes, returns 200", async () => {
+    it("empty orderedIds — nulls out all owned conversations, returns 200", async () => {
       // Even if the actor owns conversations, requesting [] means nothing to reorder.
-      const db = makeDb({ selectRows: [{ id: CONV_A }] });
+      // The null-out pass should set sortOrder=null for all owned conversations,
+      // making this equivalent to a full reset within a transaction.
+      const capturedSets: unknown[] = [];
+      const db = makeDb({ selectRows: [{ id: CONV_A }], captureSet: { values: capturedSets } });
 
       const res = await request(makeApp(db))
         .patch(`/api/companies/${COMPANY_ID}/internal-agent/conversations/reorder`)
@@ -248,9 +251,10 @@ describe("C12 — reorder/reset owner-scoping (runtime HTTP)", () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ ok: true });
 
-      // transaction is still called (the route always wraps in a transaction),
-      // but the loop body executes 0 times so tx.update is never called.
-      expect(db.__txUpdate).not.toHaveBeenCalled();
+      // transaction is still called and the null-out pass fires once (for CONV_A).
+      expect(db.__txUpdate).toHaveBeenCalledTimes(1);
+      expect(capturedSets).toHaveLength(1);
+      expect(capturedSets[0]).toMatchObject({ sortOrder: null });
     });
 
     it("missing body / invalid schema → 400", async () => {

@@ -2,7 +2,7 @@
 // Internal Agent HTTP endpoints — T13a
 import { Router, type Request } from "express";
 import { z } from "zod";
-import { and, eq, asc, desc, gte, lte, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, asc, desc, gte, lte, isNull, inArray, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   internalAgentConfig,
@@ -930,6 +930,18 @@ export function internalAgentRoutes(db: Db) {
             .update(internalAgentConversations)
             .set({ sortOrder: i })
             .where(and(eq(internalAgentConversations.id, finalIds[i]!), ...scope));
+        }
+
+        // Null out sortOrder for any owned active conversations NOT in this reorder.
+        // Makes every reorder an atomic "replace full order" — omitted conversations
+        // revert to recency order (sortOrder: null) instead of keeping stale indices.
+        const finalSet = new Set(finalIds);
+        const omittedIds = [...ownedSet].filter((id) => !finalSet.has(id));
+        if (omittedIds.length > 0) {
+          await tx
+            .update(internalAgentConversations)
+            .set({ sortOrder: null })
+            .where(and(inArray(internalAgentConversations.id, omittedIds), ...scope));
         }
       });
 
