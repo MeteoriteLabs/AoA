@@ -105,6 +105,14 @@ export function applyDeleteOptimistic(
   };
 }
 
+export function applyArchiveOptimistic(
+  data: { conversations: ConversationRow[] } | undefined,
+  convId: string,
+): { conversations: ConversationRow[] } {
+  const conversations = data?.conversations ?? [];
+  return { conversations: conversations.filter((c) => c.id !== convId) };
+}
+
 /**
  * Manual-order helpers (Batch 2: session drag reorder).
  *
@@ -225,7 +233,20 @@ export function SessionsSidebar({
   const archiveMutation = useMutation({
     mutationFn: (convId: string) =>
       commanderConversationsApi.archive(selectedCompanyId!, convId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["commander-conversations"] }),
+    onMutate: async (convId) => {
+      await qc.cancelQueries({ queryKey });
+      const previous = qc.getQueryData<{ conversations: ConversationRow[] }>(queryKey);
+      qc.setQueryData(queryKey, applyArchiveOptimistic(previous, convId));
+      return { previous };
+    },
+    onError: (_err, _convId, ctx) => {
+      if (ctx?.previous !== undefined) {
+        qc.setQueryData(queryKey, ctx.previous);
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["commander-conversations"] });
+    },
   });
 
   const pinMutation = useMutation({
