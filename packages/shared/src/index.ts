@@ -498,6 +498,8 @@ export type {
   GitHubPrMergeMethod,
   GitHubPrMergeRequest,
   GitHubPrActionResponse,
+  GitHubAppStatus,
+  GitHubAuthStatus,
   // Git Command Centre
   GitPrReviewState,
   GitCIStatus,

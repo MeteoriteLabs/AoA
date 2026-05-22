@@ -289,6 +289,8 @@ export type {
   GitHubPrMergeMethod,
   GitHubPrMergeRequest,
   GitHubPrActionResponse,
+  GitHubAppStatus,
+  GitHubAuthStatus,
 } from "./github.js";
 
 export type { Environment } from "./environment.js";

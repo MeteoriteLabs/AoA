@@ -95,3 +95,26 @@ export interface GitHubPrActionResponse {
   prState: "open" | "closed" | "merged";
   prUrl: string;
 }
+
+// ---------------------------------------------------------------------------
+// GitHub App installation status
+// ---------------------------------------------------------------------------
+
+export interface GitHubAppStatus {
+  installed: boolean;
+  accountLogin?: string;
+  accountType?: string;   // "User" | "Organization"
+  createdAt?: string;
+}
+
+export interface GitHubAuthStatus {
+  /** True when a GitHub App installation is active. */
+  appInstalled: boolean;
+  appAccountLogin?: string;
+  appAccountType?: string;
+  /** True when a PAT is stored (may coexist with App). */
+  patConfigured: boolean;
+  patGithubUser?: string;
+  /** Which method is actively used for token resolution. */
+  activeMethod: "app" | "pat" | null;
+}
