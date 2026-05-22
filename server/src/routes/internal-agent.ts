@@ -39,7 +39,13 @@ interface PendingConfirmation {
   params: unknown;
   companyId: string;
   userId: string;
-  actorType?: string;
+  /**
+   * Actor that triggered this confirmation. Currently always "commander".
+   * To add a new actor type (e.g. "mcp" for external MCP-triggered confirmations),
+   * widen this to: actorType: "commander" | "mcp"
+   * TypeScript will surface every callsite that needs updating.
+   */
+  actorType: "commander";
   expiresAt: number;  // Unix ms — TTL timestamp
 }
 
@@ -271,7 +277,7 @@ export function internalAgentRoutes(db: Db) {
                 // Permissions are re-fetched fresh at confirm time (see /confirm handler).
                 // Do NOT snapshot userRole or enabledCapabilities here — stale values
                 // must not flow into executeTool. [Codex-P1 fix, commit 0a1c9386]
-                actorType: "commander" as const,
+                actorType: "commander",
                 expiresAt: Date.now() + CONFIRMATION_TTL_MS,
               });
               const paramsSummary =
