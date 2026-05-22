@@ -2,7 +2,7 @@ import { Router, type Request } from "express";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@armyofagents/db";
-import { agents as agentsTable, companies, heartbeatRuns } from "@armyofagents/db";
+import { agents as agentsTable, aoaAgentTriggers, companies, heartbeatRuns, internalAgentRuns } from "@armyofagents/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   createAgentKeySchema,
@@ -122,8 +122,24 @@ export function agentRoutes(db: Db) {
     return allowedByGrant || canCreateAgents(actorAgent);
   }
 
-  async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
+  async function assertCanUpdateAgent(
+    req: Request,
+    targetAgent: { id: string; companyId: string; kind?: string | null },
+  ) {
     assertCompanyAccess(req, targetAgent.companyId);
+    // Spec §10 governance: only founders may edit AoA agents (Commander +
+    // sub-agents). assertRole is a NO-OP for agent actors (rbac.ts), so an
+    // agent actor MUST be rejected explicitly here — calling assertRole alone
+    // would let a cxo/creator agent escalate by rewriting an AoA agent's
+    // runtimeConfig.aoa.toolAllowlist (the D2 least-privilege boundary),
+    // adapterType/adapterConfig, or status. kind!=='aoa' path is unchanged.
+    if (targetAgent.kind === "aoa") {
+      if (req.actor.type !== "board") {
+        throw forbidden("Only a founder may modify AoA agents");
+      }
+      await assertRole(db, req, targetAgent.companyId, "founder");
+      return;
+    }
     if (req.actor.type === "board") {
       await assertRole(db, req, targetAgent.companyId, "founder");
       return;
@@ -303,8 +319,26 @@ export function agentRoutes(db: Db) {
     return path.resolve(cwd, trimmed);
   }
 
-  async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
+  async function assertCanManageInstructionsPath(
+    req: Request,
+    targetAgent: { id: string; companyId: string; kind?: string | null },
+  ) {
     assertCompanyAccess(req, targetAgent.companyId);
+    // Spec §10 governance: only founders may edit AoA agents (Commander +
+    // sub-agents). This is the single chokepoint for instructions path/bundle/
+    // file mutations, so the kind='aoa' gate lives here (mirrors the FX2
+    // assertCanUpdateAgent pattern). assertRole is a NO-OP for agent actors
+    // (rbac.ts), so an agent actor — and the unauthenticated board fall-through
+    // below — MUST be rejected explicitly here: without this, an ancestor
+    // manager agent or any non-founder board user could rewrite an AoA agent's
+    // instructions bundle. kind!=='aoa' path is byte-unchanged.
+    if (targetAgent.kind === "aoa") {
+      if (req.actor.type !== "board") {
+        throw forbidden("Only a founder may modify AoA agents");
+      }
+      await assertRole(db, req, targetAgent.companyId, "founder");
+      return;
+    }
     if (req.actor.type === "board") return;
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
@@ -459,13 +493,86 @@ export function agentRoutes(db: Db) {
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+    const kind = req.query.kind === "aoa" ? "aoa" as const : undefined;
+    const result = await svc.list(companyId, kind ? { kind } : undefined);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs || req.actor.type === "board") {
       res.json(result);
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+  });
+
+  router.get("/companies/:companyId/agents/:id/aoa-runs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const agentId = req.params.id as string;
+    const limit = Math.min(parseInt(String(req.query.limit ?? 50)), 200);
+    const runs = await db
+      .select()
+      .from(internalAgentRuns)
+      .where(and(eq(internalAgentRuns.companyId, companyId), eq(internalAgentRuns.agentId, agentId)))
+      .orderBy(desc(internalAgentRuns.createdAt))
+      .limit(limit);
+    res.json(runs);
+  });
+
+  router.get("/companies/:companyId/agents/:id/triggers", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const agentId = req.params.id as string;
+    const triggers = await db
+      .select()
+      .from(aoaAgentTriggers)
+      .where(and(eq(aoaAgentTriggers.companyId, companyId), eq(aoaAgentTriggers.agentId, agentId)));
+    res.json(triggers);
+  });
+
+  router.post("/companies/:companyId/agents/:id/triggers", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
+    const agentId = req.params.id as string;
+    const { kind, config, enabled } = req.body as { kind: string; config?: Record<string, unknown>; enabled?: boolean };
+    const created = await db
+      .insert(aoaAgentTriggers)
+      .values({ companyId, agentId, kind, config: config ?? {}, enabled: enabled ?? true })
+      .returning()
+      .then((rows) => rows[0]);
+    res.status(201).json(created);
+  });
+
+  router.patch("/companies/:companyId/agents/:id/triggers/:triggerId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
+    const agentId = req.params.id as string;
+    const triggerId = req.params.triggerId as string;
+    const { enabled, config } = req.body as { enabled?: boolean; config?: Record<string, unknown> };
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (enabled !== undefined) updates.enabled = enabled;
+    if (config !== undefined) updates.config = config;
+    const updated = await db
+      .update(aoaAgentTriggers)
+      .set(updates)
+      .where(and(eq(aoaAgentTriggers.id, triggerId), eq(aoaAgentTriggers.companyId, companyId)))
+      .returning()
+      .then((rows) => rows[0]);
+    if (!updated) throw notFound("Trigger not found");
+
+    // D3: Audit trigger config changes.
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "aoa_agent.trigger_changed",
+      entityType: "aoa_agent_trigger",
+      entityId: triggerId,
+      agentId,
+      details: { enabled: updated.enabled, kind: updated.kind },
+    });
+
+    res.json(updated);
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
@@ -954,6 +1061,21 @@ export function agentRoutes(db: Db) {
       details: { name: agent.name, role: agent.role },
     });
 
+    // D3: AoA-specific audit entry so governance queries can filter by kind.
+    if (agent.kind === "aoa") {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "aoa_agent.created",
+        entityType: "agent",
+        entityId: agent.id,
+        details: { name: agent.name, role: agent.role },
+      });
+    }
+
     res.status(201).json(agent);
   });
 
@@ -966,7 +1088,21 @@ export function agentRoutes(db: Db) {
     }
     assertCompanyAccess(req, existing.companyId);
 
-    if (req.actor.type === "agent") {
+    // Spec §10 governance: only founders may edit AoA agents (Commander +
+    // sub-agents). This handler uses neither shared authz helper, so the
+    // kind='aoa' gate is inline here, before any mutation/authz that could let
+    // a non-founder through. assertRole is a NO-OP for agent actors (rbac.ts),
+    // so the explicit non-board rejection is load-bearing: pre-fix a cxo agent
+    // (role==='cxo') passed the agent branch below and a non-founder board user
+    // had no gate at all, letting either toggle an AoA agent's canCreateAgents.
+    // Mirrors the FX2 assertCanUpdateAgent pattern. kind!=='aoa' byte-unchanged.
+    if (existing.kind === "aoa") {
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only a founder may modify AoA agents" });
+        return;
+      }
+      await assertRole(db, req, existing.companyId, "founder");
+    } else if (req.actor.type === "agent") {
       const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
       if (!actorAgent || actorAgent.companyId !== existing.companyId) {
         res.status(403).json({ error: "Forbidden" });
@@ -1191,6 +1327,9 @@ export function agentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (existing.kind === "aoa") {
+      await assertRole(db, req, existing.companyId, "founder");
+    }
 
     const agent = await svc.pause(id);
     if (!agent) {
@@ -1209,6 +1348,18 @@ export function agentRoutes(db: Db) {
       entityId: agent.id,
     });
 
+    // D3: AoA-specific audit entry.
+    if (existing.kind === "aoa") {
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "aoa_agent.paused",
+        entityType: "agent",
+        entityId: agent.id,
+      });
+    }
+
     res.json(agent);
   });
 
@@ -1221,6 +1372,9 @@ export function agentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (existing.kind === "aoa") {
+      await assertRole(db, req, existing.companyId, "founder");
+    }
 
     const agent = await svc.resume(id);
     if (!agent) {
@@ -1246,6 +1400,16 @@ export function agentRoutes(db: Db) {
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    // FX-del: AoA agents (Commander + sub-agents) are reserved framework
+    // agents. Terminate is hard-blocked for ALL actors (founders included) —
+    // before the company/role gate. kind='org' is unaffected.
+    if (existing.kind === "aoa") {
+      res.status(409).json({
+        error:
+          "AoA agents are reserved framework agents and cannot be deleted or terminated",
+      });
       return;
     }
     assertCompanyAccess(req, existing.companyId);
@@ -1276,6 +1440,16 @@ export function agentRoutes(db: Db) {
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    // FX-del: AoA agents (Commander + sub-agents) are reserved framework
+    // agents. Delete is hard-blocked for ALL actors (founders included) —
+    // before the founder gate. kind='org' is unaffected.
+    if (existing.kind === "aoa") {
+      res.status(409).json({
+        error:
+          "AoA agents are reserved framework agents and cannot be deleted or terminated",
+      });
       return;
     }
     await assertRole(db, req, existing.companyId, "founder");

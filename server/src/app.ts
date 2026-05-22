@@ -385,6 +385,7 @@ export async function createApp(
   // Marketplace catalog service + routes
   const marketplaceCatalogService = new MarketplaceCatalogService({
     db,
+    cdnUrl: process.env.AOA_MARKETPLACE_CDN_URL || undefined,
     bundledSnapshotProvider: async () => {
       // Lazy import to avoid bundling issues.
       // The snapshot file is gitignored — fetched at build time by
@@ -512,11 +513,13 @@ export async function createApp(
   if (opts.uiMode === "vite-dev") {
     const uiRoot = path.resolve(__dirname, "../../ui");
     const { createServer: createViteServer } = await import("vite");
+    const viteHmrPort = Number(process.env.AOA_VITE_HMR_PORT);
     const vite = await createViteServer({
       root: uiRoot,
       appType: "spa",
       server: {
         middlewareMode: true,
+        hmr: Number.isFinite(viteHmrPort) && viteHmrPort > 0 ? { port: viteHmrPort } : undefined,
         allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
       },
     });

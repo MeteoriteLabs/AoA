@@ -4,9 +4,29 @@ import { unlink } from "node:fs/promises";
 export type CLIToolType = "claude_cli" | "codex" | "opencode";
 
 export interface CLISession {
-  cliProcess: ChildProcess;
+  /**
+   * Long-lived CLI subprocess for providers with a PERSISTENT process model
+   * (claude_cli: turn-1 spawns, subsequent turns pipe to the same stdin).
+   * `null` for one-shot providers (codex: `codex exec` runs the turn and
+   * exits, so the conversation is carried by `codexSessionId`, not a
+   * process). MX-chatparse made this nullable; killSession guards on it.
+   */
+  cliProcess: ChildProcess | null;
   mcpProcess: ChildProcess | null; // null when CLI manages bridge internally
   cliTool: CLIToolType;
+  /**
+   * Codex conversation id (from a `thread.started` event). Present only for
+   * codex sessions; the next turn re-spawns `codex exec … resume <id> -`.
+   * Refreshed from each turn's parse. Undefined for claude (persistent
+   * process) — MX-chatparse.
+   *
+   * INVARIANT: Only ever assigned via validateSessionId() output (see cli-mode.ts
+   * onSessionId callback). Direct writes bypass the shell-injection guard — on
+   * Windows, spawn uses shell:true so raw metacharacters in codex args execute
+   * as shell commands. Re-validation also runs at the spawn boundary in
+   * spawnAndCollect() as defense-in-depth.
+   */
+  codexSessionId?: string;
   companyId: string;
   userId: string;
   userRole: string;
@@ -29,9 +49,13 @@ export function createCLISessionStore() {
 
   function killSession(session: CLISession): void {
     session.status = "ending";
-    try {
-      session.cliProcess.kill("SIGTERM");
-    } catch {}
+    // codex sessions are process-less (cliProcess === null); the guard
+    // keeps SIGTERM/SIGKILL a no-op for them while claude's persistent
+    // process is killed exactly as before (MX-chatparse).
+    if (session.cliProcess)
+      try {
+        session.cliProcess.kill("SIGTERM");
+      } catch {}
     if (session.mcpProcess)
       try {
         session.mcpProcess.kill("SIGTERM");
@@ -39,9 +63,10 @@ export function createCLISessionStore() {
 
     // Force kill after grace period
     setTimeout(() => {
-      try {
-        session.cliProcess.kill("SIGKILL");
-      } catch {}
+      if (session.cliProcess)
+        try {
+          session.cliProcess.kill("SIGKILL");
+        } catch {}
       if (session.mcpProcess)
         try {
           session.mcpProcess.kill("SIGKILL");

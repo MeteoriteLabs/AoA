@@ -4087,6 +4087,18 @@ export function heartbeatService(db: Db) {
       });
     };
 
+    // Runtime-boundary guard (B2, Decision #100): kind='aoa'/'platform'
+    // agents run ONLY via the AoA dispatcher, never the heartbeat runtime.
+    // Refuse to enqueue a heartbeat run for them at this single chokepoint so
+    // no call site (e.g. the issue-CREATE assignment path in routes/issues.ts)
+    // can drive an AoA agent through both runtimes = dual execution.
+    // Legitimate AoA triggering uses enqueueAoaMentionWakeup /
+    // delegate_to_subagent, which bypass enqueueWakeup entirely.
+    if (agent.kind === "aoa" || agent.kind === "platform") {
+      await writeSkippedRequest("heartbeat.skipped.aoa_kind");
+      return null;
+    }
+
     if (source === "timer" && !policy.enabled) {
       await writeSkippedRequest("heartbeat.disabled");
       return null;

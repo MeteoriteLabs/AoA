@@ -39,6 +39,7 @@ type GitStatus = {
   behind: number | null;
   files: Array<{ path: string; status: string }>;
 };
+type WorkspaceRuntimeConfig = Record<string, unknown>;
 
 const FINAL_RUN_STATUSES = new Set(["completed", "succeeded", "failed", "cancelled", "timed_out"]);
 
@@ -59,7 +60,7 @@ test.describe("software department product workspace journey", () => {
     const memoryToken = `AOA_MEMORY_PRODUCT_E2E_${unique}`;
     const outputToken = `AOA_OUTPUT_PRODUCT_E2E_${unique}`;
 
-    const project = await createSoftwareDepartment(request, company, repo.worktreeRoot);
+    const project = await createSoftwareDepartment(request, company, repo.worktreeRoot, productWorkspaceRuntime());
     const memory = await createDepartmentMemory(request, company.id, project.id, memoryToken);
     const agent = await hireProcessAgent(request, company.id, outputToken);
     await assignAgentToProject(request, company.id, project.id, agent.id);
@@ -87,7 +88,8 @@ test.describe("software department product workspace journey", () => {
     const confirmedArtifact = await confirmDetectedOutput(request, summaryOutput!);
     expect(confirmedArtifact.artifactId).toBeTruthy();
 
-    const service = await waitForRuntimeService(request, workspace.id);
+    const service = await waitForRuntimeService(request, workspace.id, (candidate) => candidate.provider === "local_process");
+    expect(service.command).toBeTruthy();
     expect(service.url).toBeTruthy();
 
     const dirtyStatus = await waitForGitStatus(request, workspace.id, (status) =>
@@ -192,6 +194,52 @@ async function createTemporaryRepo(testInfo: TestInfo) {
     path.join(worktreeRoot, "service-server.js"),
     "require('http').createServer((_req,res)=>res.end('AoA software e2e service')).listen(process.env.PORT);\n",
   );
+  await fs.writeFile(
+    path.join(worktreeRoot, "preview-child-server.js"),
+    [
+      "const http = require('http');",
+      "const port = Number(process.env.AOA_PREVIEW_PORT);",
+      "const token = process.env.AOA_PREVIEW_TOKEN || '';",
+      "const server = http.createServer((_req, res) => {",
+      "  res.writeHead(200, { 'content-type': 'text/plain' });",
+      "  res.end(token);",
+      "});",
+      "server.listen(port, '127.0.0.1', () => console.log(`http://127.0.0.1:${port}/`));",
+      "setTimeout(() => server.close(() => process.exit(0)), 120000);",
+      "",
+    ].join("\n"),
+  );
+  await fs.writeFile(
+    path.join(worktreeRoot, "preview-runner.js"),
+    [
+      "const cp = require('child_process');",
+      "const http = require('http');",
+      "const path = require('path');",
+      "const port = Number(process.env.AOA_PREVIEW_PORT);",
+      "const url = `http://127.0.0.1:${port}/`;",
+      "const child = cp.spawn(process.execPath, [path.join(__dirname, 'preview-child-server.js')], {",
+      "  detached: true,",
+      "  stdio: 'ignore',",
+      "  env: process.env,",
+      "});",
+      "child.unref();",
+      "const deadline = Date.now() + 5000;",
+      "function probe() {",
+      "  const req = http.get(url, (res) => {",
+      "    res.resume();",
+      "    console.log(`AOA_PREVIEW_URL=${url}`);",
+      "    process.exit(0);",
+      "  });",
+      "  req.on('error', () => {",
+      "    if (Date.now() < deadline) setTimeout(probe, 100);",
+      "    else process.exit(1);",
+      "  });",
+      "  req.setTimeout(500, () => req.destroy());",
+      "}",
+      "probe();",
+      "",
+    ].join("\n"),
+  );
   git(worktreeRoot, ["add", "."]);
   git(worktreeRoot, ["commit", "-m", "initial software e2e repo"]);
   execFileSync("git", ["init", "--bare", remoteRoot], { stdio: "pipe" });
@@ -204,7 +252,12 @@ function git(cwd: string, args: string[]) {
   execFileSync("git", args, { cwd, stdio: "pipe" });
 }
 
-async function createSoftwareDepartment(request: APIRequestContext, company: Company, cwd: string) {
+async function createSoftwareDepartment(
+  request: APIRequestContext,
+  company: Company,
+  cwd: string,
+  workspaceRuntime?: WorkspaceRuntimeConfig,
+) {
   const res = await request.post(`/api/companies/${company.id}/projects`, {
     data: {
       name: "Engineering Product E2E",
@@ -220,6 +273,7 @@ async function createSoftwareDepartment(request: APIRequestContext, company: Com
           baseRef: "main",
           branchTemplate: "{{issue.identifier}}-product-e2e",
         },
+        ...(workspaceRuntime ? { workspaceRuntime } : {}),
       },
       workspace: {
         name: "Local software product repo",
@@ -230,6 +284,28 @@ async function createSoftwareDepartment(request: APIRequestContext, company: Com
     },
   });
   return jsonOrThrow<Project>(res, "create software department");
+}
+
+function productWorkspaceRuntime(): WorkspaceRuntimeConfig {
+  return {
+    services: [
+      {
+        name: "web",
+        command: "node service-server.js",
+        lifecycle: "shared",
+        reuseScope: "execution_workspace",
+        port: { type: "auto", envKey: "PORT" },
+        expose: { urlTemplate: "http://127.0.0.1:{{port}}" },
+        readiness: {
+          type: "http",
+          urlTemplate: "http://127.0.0.1:{{port}}",
+          timeoutSec: 10,
+          intervalMs: 250,
+        },
+        stopPolicy: { type: "manual" },
+      },
+    ],
+  };
 }
 
 async function createDepartmentMemory(
@@ -273,25 +349,6 @@ async function hireProcessAgent(request: APIRequestContext, companyId: string, o
         injectCompanyContext: true,
         contextMode: "standard",
         autoRunSummary: true,
-        workspaceRuntime: {
-          services: [
-            {
-              name: "web",
-              command: "node service-server.js",
-              lifecycle: "shared",
-              reuseScope: "execution_workspace",
-              port: { type: "auto", envKey: "PORT" },
-              expose: { urlTemplate: "http://127.0.0.1:{{port}}" },
-              readiness: {
-                type: "http",
-                urlTemplate: "http://127.0.0.1:{{port}}",
-                timeoutSec: 10,
-                intervalMs: 250,
-              },
-              stopPolicy: { type: "manual" },
-            },
-          ],
-        },
       },
       adapterConfig: {
         command: "node",
@@ -311,23 +368,6 @@ async function hireProcessPreviewAgent(
   previewPort: number,
   previewToken: string,
 ) {
-  const childCode =
-    "http=require('http');" +
-    "port=Number(process.env.AOA_PREVIEW_PORT);" +
-    "token=process.env.AOA_PREVIEW_TOKEN;" +
-    "server=http.createServer((_req,res)=>{res.writeHead(200,{'content-type':'text/plain'});res.end(token);});" +
-    "server.listen(port,'127.0.0.1',()=>console.log('http://127.0.0.1:'+port+'/'));" +
-    "setTimeout(()=>server.close(()=>process.exit(0)),120000);";
-  const parentCode =
-    "cp=require('child_process');http=require('http');" +
-    "port=Number(process.env.AOA_PREVIEW_PORT);url='http://127.0.0.1:'+port+'/';" +
-    "child=cp.spawn(process.execPath,['-e',process.env.AOA_PREVIEW_CHILD_CODE],{detached:true,stdio:'ignore',env:process.env});" +
-    "child.unref();" +
-    "deadline=Date.now()+5000;" +
-    "function probe(){req=http.get(url,res=>{res.resume();console.log('AOA_PREVIEW_URL='+url);process.exit(0);});" +
-    "req.on('error',()=>Date.now()<deadline?setTimeout(probe,100):process.exit(1));req.setTimeout(500,()=>req.destroy());}" +
-    "probe();";
-
   const res = await request.post(`/api/companies/${companyId}/agent-hires`, {
     data: {
       name: "E2E Process Preview Agent",
@@ -340,9 +380,8 @@ async function hireProcessPreviewAgent(
       },
       adapterConfig: {
         command: "node",
-        args: ["-e", parentCode],
+        args: ["preview-runner.js"],
         env: {
-          AOA_PREVIEW_CHILD_CODE: childCode,
           AOA_PREVIEW_PORT: String(previewPort),
           AOA_PREVIEW_TOKEN: previewToken,
         },
@@ -645,7 +684,9 @@ async function assertWorkspaceViewers(
 }
 
 async function expectSidebarSections(page: Page, expectedIds: string[]) {
-  const sections = page.locator('[data-testid^="cockpit-section-"]:not([data-testid^="cockpit-section-trigger-"])');
+  const sections = page.locator(
+    expectedIds.map((id) => `[data-testid="cockpit-section-${id}"]`).join(", "),
+  );
   await expect(sections).toHaveCount(expectedIds.length);
   await expect.poll(async () => sections.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-testid")))).toEqual(
     expectedIds.map((id) => `cockpit-section-${id}`),

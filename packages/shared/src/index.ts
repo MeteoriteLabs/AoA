@@ -70,6 +70,8 @@ export {
   type MemoryScopeFilter,
   type MemoryWriteScope,
   USER_ROLES,
+  ROLE_RANK,
+  roleAtLeast,
   PERMISSION_KEYS,
   ARTIFACT_TYPES,
   ARTIFACT_STATUSES,
@@ -173,6 +175,9 @@ export {
   IA_CONVERSATION_STATUSES,
   REMINDER_STATUSES,
   NOTIFICATION_TYPES,
+  COMMANDER_TOOL_PERMISSION_DEFAULT,
+  type CommanderToolPermission,
+  type CommanderToolPermissions,
   // V2.5 types
   type DiscussionStatus,
   type DiscussionScopeType,

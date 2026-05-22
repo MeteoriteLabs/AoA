@@ -43,6 +43,13 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
         className,
       )}
     >
+      {/*
+  SECURITY INVARIANT: rehype-raw is intentionally absent.
+  Commander output (parse-stream-json.ts plaintext fallback) is raw LLM text.
+  Without rehype-raw, react-markdown escapes HTML tags — prevents XSS via prompt injection.
+  Do NOT add rehype-raw without also adding rehype-sanitize with a strict allowlist.
+  See: server/src/services/internal-agent/parse-stream-json.ts
+*/}
       <Markdown
         remarkPlugins={[remarkGfm]}
         components={{

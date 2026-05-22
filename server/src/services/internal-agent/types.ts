@@ -43,7 +43,13 @@ export interface ToolContext {
   companyId: string;
   userId: string;
   userRole: string;
-  enabledCapabilities: readonly string[];   // NEW: from internal_agent_config
+  enabledCapabilities: readonly string[];   // from internal_agent_config
+  /** D2: kind of the calling agent. 'aoa' triggers per-agent tool allowlist gate. */
+  agentKind?: string;
+  /** D2: explicit tool allowlist for AoA agents. Absent/empty = default-deny. */
+  toolAllowlist?: readonly string[];
+  /** Actor type: "commander" when invoked via Commander; "board" otherwise. */
+  actorType?: string;
   db: Db;
   services: ServiceContainer;
 }
@@ -53,7 +59,8 @@ export interface AgentTool {
   description: string;
   parameters: JsonSchema;
   category: ToolCategory;
-  requiredRole: "founder" | "team_lead" | "team_member";
+  /** When set, the caller's role must be at least this level. Absent = open to all roles. */
+  requiredRole?: "founder" | "team_lead" | "team_member";
   requiresConfirmation: boolean;
   execute: (params: unknown, ctx: ToolContext) => Promise<ToolResult>;
 }
@@ -73,5 +80,9 @@ export interface ServiceContainer {
   secrets: ReturnType<typeof secretService>;
   notifications: ReturnType<typeof notificationService>;
   discussions: ReturnType<typeof discussionService>;
+  companies: {
+    get: (id: string) => Promise<{ name: string | null; vision: string | null; mission: string | null; issuePrefix: string | null; stage: string | null } | null>;
+    update: (id: string, data: Partial<{ vision: string; mission: string }>) => Promise<{ id: string; name: string | null; vision: string | null; mission: string | null }>;
+  };
   workflows: null; // Placeholder — workflow service not yet implemented
 }

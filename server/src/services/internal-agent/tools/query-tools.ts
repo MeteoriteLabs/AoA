@@ -137,5 +137,35 @@ export function createQueryTools(): AgentTool[] {
         return { success: true, data: limited, summary: `Found ${count} activity entries` };
       },
     },
+    {
+      name: "query_company",
+      description:
+        "Get the current company's identity: name, vision, mission, issue prefix, and stage. Call this whenever you need to know who you are working for.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+      category: "query",
+      requiredRole: "team_member",
+      requiresConfirmation: false,
+      execute: async (_params: unknown, ctx) => {
+        const company = await ctx.services.companies.get(ctx.companyId);
+        if (!company) {
+          return { success: false, error: "Company not found", data: null, summary: "Company not found" };
+        }
+        return {
+          success: true,
+          data: {
+            name: company.name ?? null,
+            vision: company.vision ?? null,
+            mission: company.mission ?? null,
+            issuePrefix: company.issuePrefix ?? null,
+            stage: company.stage ?? null,
+          },
+          summary: `Company: ${company.name ?? "unnamed"}`,
+        };
+      },
+    },
   ];
 }

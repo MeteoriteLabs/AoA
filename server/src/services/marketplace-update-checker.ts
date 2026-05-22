@@ -16,13 +16,6 @@ import {
 } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
 import { marketplaceNotifications } from "./marketplace-notifications.js";
-import { marketplaceSettingsService } from "./marketplace-settings.js";
-import {
-  applySkillUpdate,
-  isWithinUpdateWindow,
-  SkillCustomizedError,
-  SkillDeletedError,
-} from "./marketplace-install/skill-auto-updater.js";
 import { logger } from "../middleware/logger.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -62,9 +55,6 @@ async function checkCompany(db: Db, catalogItems: CatalogItem[], companyId: stri
       catalogMap.set(item.id, { version: item.version, name: item.name, type: item.type });
     }
 
-    // Read settings once per company — not per skill
-    const settings = await marketplaceSettingsService(db).get(companyId);
-
     // Check skills (sourceType=catalog means they came from marketplace)
     const skillRows = await db
       .select({ sourceLocator: companySkills.sourceLocator, sourceRef: companySkills.sourceRef })
@@ -92,48 +82,11 @@ async function checkCompany(db: Db, catalogItems: CatalogItem[], companyId: stri
 
         if (!inserted) continue; // Already knew about this update — no action needed
 
-        if (
-          settings.skillUpdatePolicy === "auto" &&
-          isWithinUpdateWindow(settings.updateWindow)
-        ) {
-          // Note: customized flag is re-checked inside applySkillUpdate's transaction.
-          // We intentionally do NOT pre-check it here to avoid stale data.
-          const catalogItem = catalogItems.find((i) => i.id === skill.sourceLocator);
-          if (!catalogItem) {
-            // Defensive: full CatalogItem not in the provided list
-            void marketplaceNotifications
-              .updateAvailable(db, companyId, catalogEntry.name, skill.sourceRef, catalogEntry.version)
-              .catch((err) => logger.error({ err }, "marketplace: updateAvailable notification failed"));
-            continue;
-          }
-
-          try {
-            await applySkillUpdate({
-              db,
-              catalogItemId: skill.sourceLocator,
-              catalogItemName: catalogEntry.name,
-              companyId,
-              catalogItem,
-            });
-            // updateCompleted notification fired inside applySkillUpdate
-          } catch (err) {
-            if (err instanceof SkillDeletedError) {
-              // Skill was deleted between check and apply — skip silently
-              logger.error({ err, catalogItemId: skill.sourceLocator }, "marketplace: skill deleted during auto-apply");
-            } else {
-              // SkillCustomizedError or any other error — fall back to notify
-              logger.error({ err, catalogItemId: skill.sourceLocator }, "marketplace: auto-apply failed, falling back to notify");
-              void marketplaceNotifications
-                .updateAvailable(db, companyId, catalogEntry.name, skill.sourceRef, catalogEntry.version)
-                .catch((notifErr) => logger.error({ notifErr }, "marketplace: fallback updateAvailable failed"));
-            }
-          }
-        } else {
-          // notify-only path (policy=notify or outside window)
-          void marketplaceNotifications
-            .updateAvailable(db, companyId, catalogEntry.name, skill.sourceRef, catalogEntry.version)
-            .catch((err) => logger.error({ err }, "marketplace: updateAvailable notification failed"));
-        }
+        // All skill updates unconditionally fire an updateAvailable notification.
+        // The founder (or auto-apply endpoint) decides whether to apply.
+        void marketplaceNotifications
+          .updateAvailable(db, companyId, catalogEntry.name, skill.sourceRef, catalogEntry.version)
+          .catch((err) => logger.error({ err }, "marketplace: updateAvailable notification failed"));
       } catch (err) {
         // Per-skill isolation: one skill error doesn't block the rest
         logger.error({ err, catalogItemId: skill.sourceLocator, companyId }, "marketplace-update-checker: per-skill error");

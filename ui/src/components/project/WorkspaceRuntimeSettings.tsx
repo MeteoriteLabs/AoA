@@ -60,6 +60,12 @@ export function WorkspaceRuntimeSettings({ project, onUpdate }: WorkspaceRuntime
     onSuccess: invalidateProject,
   });
 
+  const updateWorkspace = useMutation({
+    mutationFn: ({ workspaceId, data }: { workspaceId: string; data: Record<string, unknown> }) =>
+      projectsApi.updateWorkspace(project.id, workspaceId, data),
+    onSuccess: invalidateProject,
+  });
+
   const updatePolicy = (patch: Record<string, unknown>) => {
     if (!onUpdate || !policy) return;
     onUpdate({
@@ -75,10 +81,28 @@ export function WorkspaceRuntimeSettings({ project, onUpdate }: WorkspaceRuntime
     if (!policy) return;
     updatePolicy({
       workspaceStrategy: {
+        type: project.functionType === "software_development" ? "git_worktree" : "project_primary",
         ...((policy.workspaceStrategy as Record<string, unknown> | null) ?? {}),
         ...patch,
       },
     });
+  };
+
+  const removeWorkspaceSource = (
+    workspace: Project["workspaces"][number],
+    source: "cwd" | "repoUrl",
+  ) => {
+    const hasUsableCwd = Boolean(workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL);
+    const hasRepoUrl = Boolean(workspace.repoUrl);
+    if (source === "cwd" && hasRepoUrl) {
+      updateWorkspace.mutate({ workspaceId: workspace.id, data: { cwd: null } });
+      return;
+    }
+    if (source === "repoUrl" && hasUsableCwd) {
+      updateWorkspace.mutate({ workspaceId: workspace.id, data: { repoUrl: null } });
+      return;
+    }
+    removeWorkspace.mutate(workspace.id);
   };
 
   const submitLocalWorkspace = (selectedPath: string) => {
@@ -139,7 +163,7 @@ export function WorkspaceRuntimeSettings({ project, onUpdate }: WorkspaceRuntime
                     <Button
                       variant="ghost"
                       size="icon-xs"
-                      onClick={() => removeWorkspace.mutate(workspace.id)}
+                      onClick={() => removeWorkspaceSource(workspace, "cwd")}
                       aria-label="Delete local folder"
                     >
                       <Trash2 className="h-3 w-3" />
@@ -161,7 +185,7 @@ export function WorkspaceRuntimeSettings({ project, onUpdate }: WorkspaceRuntime
                     <Button
                       variant="ghost"
                       size="icon-xs"
-                      onClick={() => removeWorkspace.mutate(workspace.id)}
+                      onClick={() => removeWorkspaceSource(workspace, "repoUrl")}
                       aria-label="Delete workspace repo"
                     >
                       <Trash2 className="h-3 w-3" />

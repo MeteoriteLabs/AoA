@@ -1075,6 +1075,14 @@ export function ProjectDetail() {
           environmentContent={project.id ? <ProjectEnvironmentSection projectId={project.id} /> : undefined}
         />
       )}
+
+      {activeTab === "settings" && (
+        <ProjectSettings
+          project={project}
+          onUpdate={(data) => updateProject.mutate(data)}
+          environmentContent={project.id ? <ProjectEnvironmentSection projectId={project.id} /> : undefined}
+        />
+      )}
     </>
   );
 

@@ -29,9 +29,15 @@ export function sniffsShellCommandFields(policy: unknown): boolean {
   if (!policy || typeof policy !== "object") return false;
   const p = policy as Record<string, unknown>;
   const ws = (p.workspaceStrategy ?? {}) as Record<string, unknown>;
+  const workspaceRuntime = (p.workspaceRuntime ?? {}) as Record<string, unknown>;
+  const services = Array.isArray(workspaceRuntime.services) ? workspaceRuntime.services : [];
+  const hasRuntimeServiceCommand = services.some(
+    (service) => typeof service === "object" && service !== null && typeof (service as Record<string, unknown>).command === "string",
+  );
   return typeof ws.provisionCommand === "string"
       || typeof ws.teardownCommand === "string"
-      || typeof ws.cleanupCommand === "string";
+      || typeof ws.cleanupCommand === "string"
+      || hasRuntimeServiceCommand;
 }
 
 export function projectRoutes(db: Db) {

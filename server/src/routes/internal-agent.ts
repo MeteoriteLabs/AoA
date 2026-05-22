@@ -1,8 +1,8 @@
 // server/src/routes/internal-agent.ts
 // Internal Agent HTTP endpoints — T13a
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
-import { and, eq, asc, desc, gte, lte, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, asc, desc, gte, lte, isNull, inArray, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   internalAgentConfig,
@@ -15,16 +15,64 @@ import { validate } from "../middleware/index.js";
 import { assertRole } from "../middleware/rbac.js";
 import { internalAgentChatLimiter } from "../middleware/rate-limit.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { HttpError, badRequest, notFound } from "../errors.js";
+import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
+import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
+import { companySkillService } from "../services/company-skills.js";
+import {
+  createToolRegistry,
+  executeTool,
+} from "../services/internal-agent/tool-registry.js";
+import { createServiceContainer } from "../services/internal-agent/service-container.js";
 import { permissionService } from "../services/permissions.js";
 import type { UserRole } from "@armyofagents/shared";
+import { COMMANDER_TOOL_PERMISSION_DEFAULT } from "@armyofagents/shared";
+
+// ── Pending Confirmation Store ───────────────────────────────────────────────
+// In-memory Map: confirmId → pending tool execution.
+// Populated when Commander emits a ⚡CONFIRM:...⚡ marker and cleared when the
+// user clicks Confirm or Cancel in the UI. Scoped to the server process;
+// cleared on restart (acceptable — pending confirmations are ephemeral).
+
+interface PendingConfirmation {
+  toolName: string;
+  params: unknown;
+  companyId: string;
+  userId: string;
+  /**
+   * Actor that triggered this confirmation. Currently always "commander".
+   * To add a new actor type (e.g. "mcp" for external MCP-triggered confirmations),
+   * widen this to: actorType: "commander" | "mcp"
+   * TypeScript will surface every callsite that needs updating.
+   */
+  actorType: "commander";
+  expiresAt: number;  // Unix ms — TTL timestamp
+}
+
+const pendingConfirmations = new Map<string, PendingConfirmation>();
+
+export const CONFIRMATION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+// Remove stale confirmations from users who closed the tab mid-confirmation.
+// unref() prevents this timer from keeping the process alive during shutdown.
+// _confirmationSweep: retained (not dead code) — unref() prevents the timer from
+// keeping the process alive after server shutdown. The interval callback runs every 5 min.
+const _confirmationSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of pendingConfirmations) {
+    if (entry.expiresAt < now) pendingConfirmations.delete(id);
+  }
+}, 5 * 60 * 1000); // sweep every 5 minutes
+if (typeof (_confirmationSweep as any).unref === "function") {
+  (_confirmationSweep as any).unref();
+}
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
 const chatMessageSchema = z.object({
   message: z.string().min(1).max(10000),
   pageContext: z.string().optional(),
+  conversationId: z.string().uuid().optional(),
 });
 
 const confirmActionSchema = z.object({
@@ -50,10 +98,58 @@ const cancelReminderSchema = z.object({
   status: z.literal("cancelled"),
 });
 
+const toolPermissionSchema = z.object({
+  enabled: z.boolean(),
+  requireConfirmation: z.boolean(),
+  minimumRole: z.enum(["founder", "team_lead", "team_member"]),
+});
+
+const updateToolPermissionsSchema = z.record(z.string(), toolPermissionSchema);
+
 // ── Route factory ────────────────────────────────────────────────────────────
 
 export function internalAgentRoutes(db: Db) {
   const router = Router();
+
+  // ── Conversation ownership helper ────────────────────────────────────────
+  // Resolves whether the actor is a founder-equivalent, then fetches the
+  // conversation enforcing ownership in the WHERE clause — not via a separate
+  // 403 check — to avoid leaking conversation existence to non-owners via a
+  // 403 vs 404 distinction. Shared by archive, pin, and rename routes.
+  async function loadOwnedConversation(req: Request, companyId: string, convId: string) {
+    const actor = getActorInfo(req);
+    const isLocalImplicit =
+      req.actor.type === "board" && req.actor.source === "local_implicit";
+    const isInstanceAdmin =
+      req.actor.type === "board" && req.actor.isInstanceAdmin === true;
+
+    let isFounderRole: boolean;
+    if (isLocalImplicit || isInstanceAdmin) {
+      isFounderRole = true;
+    } else {
+      const role = await permissionService(db).getEffectiveRole(
+        companyId,
+        actor.actorId,
+      );
+      isFounderRole = role === "founder";
+    }
+
+    const convConditions = [
+      eq(internalAgentConversations.id, convId),
+      eq(internalAgentConversations.companyId, companyId),
+    ];
+    if (!isFounderRole) {
+      convConditions.push(eq(internalAgentConversations.userId, actor.actorId));
+    }
+
+    const [existing] = await db
+      .select()
+      .from(internalAgentConversations)
+      .where(and(...convConditions));
+
+    if (!existing) throw notFound("Conversation not found");
+    return existing;
+  }
 
   // ── 2.1 Send Message (SSE Streaming) ─────────────────────────────────
   // Sprint 4 S4-F: rate-limit chat (LLM-billed). 60 requests per minute per
@@ -150,6 +246,7 @@ export function internalAgentRoutes(db: Db) {
           enabledCapabilities,
           content: req.body.message,
           pageContext: req.body.pageContext ?? undefined,
+          conversationId: req.body.conversationId ?? undefined,
         });
 
         for await (const chunk of stream) {
@@ -169,14 +266,43 @@ export function internalAgentRoutes(db: Db) {
                 `event: tool_result\ndata: ${JSON.stringify({ name: chunk.name })}\n\n`,
               );
               break;
-            case "action_confirmation":
-              // CLI-mode doesn't yield these today (no per-tool confirmations);
-              // the branch stays here to be explicit about the mapping.
+            case "action_confirmation": {
+              const confirmId = chunk.runId;
+              // Store the pending execution so /confirm can re-execute directly.
+              pendingConfirmations.set(confirmId, {
+                toolName: chunk.toolName,
+                params: chunk.params,
+                companyId,
+                userId: actor.actorId,
+                // Permissions are re-fetched fresh at confirm time (see /confirm handler).
+                // Do NOT snapshot userRole or enabledCapabilities here — stale values
+                // must not flow into executeTool. [Codex-P1 fix, commit 0a1c9386]
+                actorType: "commander",
+                expiresAt: Date.now() + CONFIRMATION_TTL_MS,
+              });
+              const paramsSummary =
+                chunk.params &&
+                typeof chunk.params === "object" &&
+                Object.keys(chunk.params as object).length > 0
+                  ? ` with ${Object.entries(chunk.params as Record<string, unknown>)
+                      .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+                      .join(", ")}`
+                  : "";
               res.write(
                 `event: action_confirm\ndata: ${JSON.stringify({
-                  confirmId: chunk.runId,
+                  confirmId,
                   action: chunk.toolName,
-                  description: chunk.toolName,
+                  description: `${chunk.toolName}${paramsSummary}`,
+                })}\n\n`,
+              );
+              break;
+            }
+            case "options_prompt":
+              res.write(
+                `event: options_prompt\ndata: ${JSON.stringify({
+                  promptId: chunk.promptId,
+                  question: chunk.question,
+                  options: chunk.options,
                 })}\n\n`,
               );
               break;
@@ -243,14 +369,133 @@ export function internalAgentRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
 
-      // Placeholder: confirm/reject pending action by confirmId
-      // Real implementation would look up pending confirmation and execute/reject
+      const { confirmId, approved } = req.body as { confirmId: string; approved: boolean };
+
+      const pending = pendingConfirmations.get(confirmId);
+      if (!pending) throw notFound(`No pending confirmation for id: ${confirmId}`);
+      // Treat expired entries the same as missing.
+      if (pending.expiresAt < Date.now()) {
+        pendingConfirmations.delete(confirmId);
+        throw notFound(`Confirmation expired for id: ${confirmId}`);
+      }
+
+      if (pending.companyId !== companyId) {
+        // Defense-in-depth: a confirmId from one company can't be replayed against
+        // another company's endpoint. Treat as not-found to avoid leaking existence.
+        throw notFound(`No pending confirmation for id: ${confirmId}`);
+      }
+
+      // Defense-in-depth: only the user who generated the pending action can
+      // approve or reject it. Prevents same-company actors from approving on
+      // behalf of a different user. Treat as not-found to avoid leaking existence.
+      // Note: today only board/user actors reach this handler; if agent-initiated
+      // confirmations are added, revisit the actorId comparison here.
+      const actor = getActorInfo(req);
+      if (pending.userId !== actor.actorId) {
+        throw notFound(`No pending confirmation for id: ${confirmId}`);
+      }
+
+      pendingConfirmations.delete(confirmId);
+
+      if (!approved) {
+        res.json({ confirmId, result: "rejected", entityType: null, entityId: null });
+        return;
+      }
+
+      // Direct re-execution: bypass Commander's LLM and run the tool with the
+      // exact stored params. Industry-standard pattern.
+      //
+      // Permissions are re-fetched fresh here — do NOT use pending.userRole or
+      // pending.enabledCapabilities. Those were snapshotted at prompt time and
+      // may be stale if the user's role or company capabilities changed within
+      // the TTL window. Using stale values would allow execution under
+      // revoked permissions (privilege-retention gap).
+      const isLocalImplicit =
+        req.actor.type === "board" && req.actor.source === "local_implicit";
+      const isInstanceAdmin =
+        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
+
+      let currentUserRole: UserRole;
+      if (isLocalImplicit || isInstanceAdmin) {
+        currentUserRole = "founder";
+      } else {
+        const role = await permissionService(db).getEffectiveRole(
+          companyId,
+          actor.actorId,
+        );
+        currentUserRole = role ?? "team_member";
+      }
+
+      const cfgRowsForConfirm = await db
+        .select({ enabledCapabilities: internalAgentConfig.enabledCapabilities })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId));
+      const currentCapabilities =
+        (cfgRowsForConfirm[0]?.enabledCapabilities as string[] | null) ?? [];
+
+      const tools = createToolRegistry();
+      const tool = tools.find((t) => t.name === pending.toolName);
+      if (!tool) {
+        throw notFound(`Tool not found: ${pending.toolName}`);
+      }
+
+      const services = createServiceContainer(db);
+      const toolContext = {
+        companyId: pending.companyId,
+        userId: pending.userId,
+        userRole: currentUserRole,           // fresh — not pending.userRole
+        enabledCapabilities: currentCapabilities, // fresh — not pending.enabledCapabilities
+        agentKind: undefined,
+        toolAllowlist: [] as string[],
+        actorType: pending.actorType,
+        db,
+        services,
+      };
+
+      const result = await executeTool(tool, pending.params, toolContext);
+
       res.json({
-        confirmId: req.body.confirmId,
-        result: "Action confirmation recorded",
+        confirmId,
+        result: result.success ? "executed" : "failed",
+        summary: result.summary ?? null,
+        error: result.error ?? null,
         entityType: null,
         entityId: null,
       });
+    },
+  );
+
+  // ── Tool Permissions ──────────────────────────────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/tool-permissions",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const [config] = await db
+        .select({ commanderToolPermissions: internalAgentConfig.commanderToolPermissions })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId));
+
+      const stored = (config?.commanderToolPermissions as Record<string, unknown> | null) ?? {};
+      res.json({ permissions: stored, default: COMMANDER_TOOL_PERMISSION_DEFAULT });
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/internal-agent/tool-permissions",
+    validate(updateToolPermissionsSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+
+      await db
+        .update(internalAgentConfig)
+        .set({ commanderToolPermissions: req.body })
+        .where(eq(internalAgentConfig.companyId, companyId));
+
+      res.json({ success: true });
     },
   );
 
@@ -606,6 +851,279 @@ export function internalAgentRoutes(db: Db) {
       }
 
       res.json(updated);
+    },
+  );
+
+  // ── Conversations: list ──────────────────────────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/conversations",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      // RBAC: local_implicit and isInstanceAdmin actors get founder-equivalent
+      // access (mirrors the chat route bypass semantics at lines 113-133).
+      // Otherwise, look up the actor's effective role.
+      const isLocalImplicit =
+        req.actor.type === "board" && req.actor.source === "local_implicit";
+      const isInstanceAdmin =
+        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
+
+      let isFounder: boolean;
+      if (isLocalImplicit || isInstanceAdmin) {
+        isFounder = true;
+      } else {
+        const role = await permissionService(db).getEffectiveRole(
+          companyId,
+          actor.actorId,
+        );
+        isFounder = role === "founder";
+      }
+
+      // Build conditions array — Drizzle's and() does not accept undefined.
+      const conditions: SQL[] = [
+        eq(internalAgentConversations.companyId, companyId),
+        isNull(internalAgentConversations.archivedAt),
+      ];
+      if (!isFounder) {
+        conditions.push(eq(internalAgentConversations.userId, actor.actorId));
+      }
+
+      const rows = await db
+        .select()
+        .from(internalAgentConversations)
+        .where(and(...conditions))
+        .orderBy(desc(internalAgentConversations.updatedAt));
+
+      res.json({ conversations: rows });
+    },
+  );
+
+  // ── Conversations: create new ────────────────────────────────────────
+  router.post(
+    "/companies/:companyId/internal-agent/conversations",
+    validate(z.object({ title: z.string().max(200).optional() })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      const [conv] = await db
+        .insert(internalAgentConversations)
+        .values({
+          companyId,
+          userId: actor.actorId,
+          // "pending" until conversation switching is wired (full multi-chat support).
+          // "active" is reserved for the conversation the agentLoop is currently using;
+          // creating a second "active" row would make chat routing non-deterministic.
+          status: "pending",
+          title: req.body.title ?? null,
+        })
+        .returning();
+
+      res.status(201).json(conv);
+    },
+  );
+
+  // ── Conversations: reorder (manual drag order) ───────────────────────
+  // Registered BEFORE the `/:convId` routes so "reorder"/"order" are not
+  // captured as a conversation id. Writes are always scoped to the actor's
+  // OWN conversations (even for founders) — manual order is a personal
+  // preference and must never clobber another user's arrangement.
+  router.patch(
+    "/companies/:companyId/internal-agent/conversations/reorder",
+    validate(z.object({ orderedIds: z.array(z.string().uuid()).max(1000) })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      const scope: SQL[] = [
+        eq(internalAgentConversations.companyId, companyId),
+        eq(internalAgentConversations.userId, actor.actorId),
+      ];
+
+      const { orderedIds } = req.body as { orderedIds: string[] };
+
+      // Only (re)order ids the actor owns and that are still active.
+      const owned = await db
+        .select({ id: internalAgentConversations.id })
+        .from(internalAgentConversations)
+        .where(and(...scope, isNull(internalAgentConversations.archivedAt)));
+      const ownedSet = new Set(owned.map((r) => r.id));
+      const finalIds = orderedIds.filter((id) => ownedSet.has(id));
+
+      await db.transaction(async (tx) => {
+        for (let i = 0; i < finalIds.length; i++) {
+          await tx
+            .update(internalAgentConversations)
+            .set({ sortOrder: i })
+            .where(and(eq(internalAgentConversations.id, finalIds[i]!), ...scope));
+        }
+
+        // Null out sortOrder for any owned active conversations NOT in this reorder.
+        // Makes every reorder an atomic "replace full order" — omitted conversations
+        // revert to recency order (sortOrder: null) instead of keeping stale indices.
+        const finalSet = new Set(finalIds);
+        const omittedIds = [...ownedSet].filter((id) => !finalSet.has(id));
+        if (omittedIds.length > 0) {
+          await tx
+            .update(internalAgentConversations)
+            .set({ sortOrder: null })
+            .where(and(inArray(internalAgentConversations.id, omittedIds), ...scope));
+        }
+      });
+
+      res.json({ ok: true });
+    },
+  );
+
+  // ── Conversations: reset manual order ────────────────────────────────
+  router.delete(
+    "/companies/:companyId/internal-agent/conversations/order",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+
+      await db
+        .update(internalAgentConversations)
+        .set({ sortOrder: null })
+        .where(
+          and(
+            eq(internalAgentConversations.companyId, companyId),
+            eq(internalAgentConversations.userId, actor.actorId),
+          ),
+        );
+
+      res.json({ ok: true });
+    },
+  );
+
+  // ── Conversations: archive ───────────────────────────────────────────
+  router.patch(
+    "/companies/:companyId/internal-agent/conversations/:convId/archive",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+
+      await loadOwnedConversation(req, companyId, convId);
+
+      const [updated] = await db
+        .update(internalAgentConversations)
+        .set({ archivedAt: new Date(), status: "archived" })
+        .where(eq(internalAgentConversations.id, convId))
+        .returning();
+
+      res.json(updated);
+    },
+  );
+
+  // ── Conversations: pin ───────────────────────────────────────────────
+  router.patch(
+    "/companies/:companyId/internal-agent/conversations/:convId/pin",
+    validate(z.object({ pinned: z.boolean() })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+
+      await loadOwnedConversation(req, companyId, convId);
+
+      const [updated] = await db
+        .update(internalAgentConversations)
+        .set({ pinned: req.body.pinned })
+        .where(eq(internalAgentConversations.id, convId))
+        .returning();
+
+      res.json(updated);
+    },
+  );
+
+  // ── Conversations: rename ────────────────────────────────────────────
+  router.patch(
+    "/companies/:companyId/internal-agent/conversations/:convId/rename",
+    validate(z.object({ title: z.string().min(1).max(200) })),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+
+      await loadOwnedConversation(req, companyId, convId);
+
+      const [updated] = await db
+        .update(internalAgentConversations)
+        .set({ title: req.body.title })
+        .where(eq(internalAgentConversations.id, convId))
+        .returning();
+
+      res.json(updated);
+    },
+  );
+
+  // ── Conversations: delete (hard) ────────────────────────────────────
+  // Permanently deletes a conversation and its messages (cascade). Distinct
+  // from the legacy DELETE /conversation endpoint which archives+resets.
+  router.delete(
+    "/companies/:companyId/internal-agent/conversations/:convId",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+
+      await loadOwnedConversation(req, companyId, convId);
+
+      await db
+        .delete(internalAgentConversations)
+        .where(eq(internalAgentConversations.id, convId));
+
+      res.json({ ok: true });
+    },
+  );
+
+  // ── Get Messages for a Specific Conversation ─────────────────────────
+  router.get(
+    "/companies/:companyId/internal-agent/conversations/:convId/messages",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const convId = req.params.convId as string;
+      assertCompanyAccess(req, companyId);
+
+      // loadOwnedConversation applies the same founder bypass used by
+      // archive/pin/rename/delete: founders can access any company conversation,
+      // non-founders are scoped to their own userId. Throws 404 (not 403) on
+      // mismatch to avoid leaking conversation existence.
+      const conv = await loadOwnedConversation(req, companyId, convId);
+
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      const messages = await db
+        .select()
+        .from(internalAgentMessages)
+        .where(eq(internalAgentMessages.conversationId, conv.id))
+        .orderBy(asc(internalAgentMessages.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      res.json({ messages, conversationId: convId });
+    },
+  );
+
+  // ── Commander skills: the agent's curated selection (for the chat skill picker) ──
+  router.get(
+    "/companies/:companyId/internal-agent/skills",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const agentId = await ensureCommanderAgent(db, companyId);
+      const skills = await companySkillService(db).listSkillListItemsForAgent(
+        companyId,
+        agentId,
+      );
+      res.json(skills);
     },
   );
 

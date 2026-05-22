@@ -36,7 +36,8 @@ export function shouldUseFullBleedMain(pathname: string, companyPrefix?: string)
     (section === "workspaces" && Boolean(detailId)) ||
     section === "settings" ||
     section === "memory" ||
-    section === "skills"
+    section === "skills" ||
+    section === "commander"
   );
 }
 

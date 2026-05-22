@@ -141,6 +141,12 @@ function createMockDb() {
         return {
           where: vi.fn().mockReturnThis(),
           catch: vi.fn().mockReturnThis(),
+          // Models `UPDATE ... WHERE status='pending' RETURNING` — returns the
+          // claimed row (entry was pending in these happy-path fixtures), which
+          // is the real Postgres behaviour the atomic claim relies on.
+          returning: vi.fn(() =>
+            Promise.resolve([{ id: "claimed", extractionStatus: "processing" }]),
+          ),
           then: vi.fn((fn?: (rows: any[]) => any) =>
             Promise.resolve(fn ? fn([]) : undefined),
           ),

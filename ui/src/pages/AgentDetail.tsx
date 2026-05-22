@@ -18,8 +18,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { AgentInstructionsTab } from "../components/AgentInstructionsTab";
 import { adapterLabels, roleLabels } from "../components/agent-config-primitives";
-import { Tabs } from "@/components/ui/tabs";
-import { PageTabBar } from "../components/PageTabBar";
+// Tabs and PageTabBar are now used via AgentDetailCore
 import { getUIAdapter, buildTranscript } from "../adapters";
 import type { TranscriptEntry } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
@@ -67,6 +66,7 @@ import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { AgentTrustScoreCard } from "../components/AgentTrustScoreCard";
 import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@armyofagents/shared";
 import { agentRouteRef } from "../lib/utils";
+import { AgentDetailCore } from "../components/agent-detail/AgentDetailCore";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -451,284 +451,213 @@ export function AgentDetail() {
   const activeSaveRef = activeView === "instructions" ? saveInstrActionRef : saveConfigActionRef;
   const activeCancelRef = activeView === "instructions" ? cancelInstrActionRef : cancelConfigActionRef;
 
+  const workerHeaderActions = (
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => openNewIssue({ assigneeAgentId: agent.id })}
+      >
+        <Plus className="h-3.5 w-3.5 sm:mr-1" />
+        <span className="hidden sm:inline">Assign Task</span>
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => agentAction.mutate("invoke")}
+        disabled={agentAction.isPending || isPendingApproval}
+      >
+        <Play className="h-3.5 w-3.5 sm:mr-1" />
+        <span className="hidden sm:inline">Invoke</span>
+      </Button>
+      {agent.status === "paused" ? (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => agentAction.mutate("resume")}
+          disabled={agentAction.isPending || isPendingApproval}
+        >
+          <Play className="h-3.5 w-3.5 sm:mr-1" />
+          <span className="hidden sm:inline">Resume</span>
+        </Button>
+      ) : (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => agentAction.mutate("pause")}
+          disabled={agentAction.isPending || isPendingApproval}
+        >
+          <Pause className="h-3.5 w-3.5 sm:mr-1" />
+          <span className="hidden sm:inline">Pause</span>
+        </Button>
+      )}
+      <span className="hidden sm:inline"><StatusBadge status={agent.status} /></span>
+      {mobileLiveRun && (
+        <Link
+          to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
+          className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
+        >
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+          </span>
+          <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">Live</span>
+        </Link>
+      )}
+      {/* Overflow menu */}
+      <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+        <PopoverTrigger asChild>
+          <Button variant="ghost" size="icon-xs">
+            <MoreHorizontal className="h-4 w-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-44 p-1" align="end">
+          <button
+            className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+            onClick={() => {
+              navigate(`/agents/${canonicalAgentRef}/configure`);
+              setMoreOpen(false);
+            }}
+          >
+            <Settings className="h-3 w-3" />
+            Configure Agent
+          </button>
+          <button
+            className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+            onClick={() => {
+              navigator.clipboard.writeText(agent.id);
+              setMoreOpen(false);
+            }}
+          >
+            <Copy className="h-3 w-3" />
+            Copy Agent ID
+          </button>
+          <button
+            className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+            onClick={() => {
+              resetTaskSession.mutate(null);
+              setMoreOpen(false);
+            }}
+          >
+            <RotateCcw className="h-3 w-3" />
+            Reset Sessions
+          </button>
+          <button
+            className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+            onClick={() => {
+              agentAction.mutate("terminate");
+              setMoreOpen(false);
+            }}
+          >
+            <Trash2 className="h-3 w-3" />
+            Terminate
+          </button>
+        </PopoverContent>
+      </Popover>
+    </>
+  );
+
   return (
-    <div className={cn("space-y-6", isMobile && showActionBar && "pb-24")}>
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
-          <AgentIconPicker
-            value={agent.icon}
-            onChange={(icon) => updateIcon.mutate(icon)}
-          >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
-              <AgentIcon icon={agent.icon} className="h-6 w-6" />
-            </button>
-          </AgentIconPicker>
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold truncate">{agent.name}</h1>
-            <p className="text-sm text-muted-foreground truncate">
-              {roleLabels[agent.role] ?? agent.role}
-              {agent.title ? ` - ${agent.title}` : ""}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => openNewIssue({ assigneeAgentId: agent.id })}
-          >
-            <Plus className="h-3.5 w-3.5 sm:mr-1" />
-            <span className="hidden sm:inline">Assign Task</span>
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => agentAction.mutate("invoke")}
-            disabled={agentAction.isPending || isPendingApproval}
-          >
-            <Play className="h-3.5 w-3.5 sm:mr-1" />
-            <span className="hidden sm:inline">Invoke</span>
-          </Button>
-          {agent.status === "paused" ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => agentAction.mutate("resume")}
-              disabled={agentAction.isPending || isPendingApproval}
-            >
-              <Play className="h-3.5 w-3.5 sm:mr-1" />
-              <span className="hidden sm:inline">Resume</span>
-            </Button>
-          ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => agentAction.mutate("pause")}
-              disabled={agentAction.isPending || isPendingApproval}
-            >
-              <Pause className="h-3.5 w-3.5 sm:mr-1" />
-              <span className="hidden sm:inline">Pause</span>
-            </Button>
-          )}
-          <span className="hidden sm:inline"><StatusBadge status={agent.status} /></span>
-          {mobileLiveRun && (
-            <Link
-              to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
-              className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
-            >
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-              </span>
-              <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">Live</span>
-            </Link>
-          )}
-
-          {/* Overflow menu */}
-          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-            <PopoverTrigger asChild>
-              <Button variant="ghost" size="icon-xs">
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="end">
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                onClick={() => {
-                  navigate(`/agents/${canonicalAgentRef}/configure`);
-                  setMoreOpen(false);
-                }}
-              >
-                <Settings className="h-3 w-3" />
-                Configure Agent
-              </button>
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                onClick={() => {
-                  navigator.clipboard.writeText(agent.id);
-                  setMoreOpen(false);
-                }}
-              >
-                <Copy className="h-3 w-3" />
-                Copy Agent ID
-              </button>
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                onClick={() => {
-                  resetTaskSession.mutate(null);
-                  setMoreOpen(false);
-                }}
-              >
-                <RotateCcw className="h-3 w-3" />
-                Reset Sessions
-              </button>
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                onClick={() => {
-                  agentAction.mutate("terminate");
-                  setMoreOpen(false);
-                }}
-              >
-                <Trash2 className="h-3 w-3" />
-                Terminate
-              </button>
-            </PopoverContent>
-          </Popover>
-        </div>
-      </div>
-
+    <>
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
         <p className="text-sm text-amber-500">
           This agent is pending board approval and cannot be invoked yet.
         </p>
       )}
-
-      {/* Floating Save/Cancel (desktop) */}
-      {!isMobile && (
-        <div
-          className={cn(
-            "sticky top-6 z-10 float-right transition-opacity duration-150",
-            showActionBar
-              ? "opacity-100"
-              : "opacity-0 pointer-events-none"
-          )}
-        >
-          <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-1.5 shadow-lg">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => activeCancelRef.current?.()}
-              disabled={activeSaving}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => activeSaveRef.current?.()}
-              disabled={activeSaving}
-            >
-              {activeSaving ? "Saving…" : "Save"}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Mobile bottom Save/Cancel bar */}
-      {isMobile && showActionBar && (
-        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 backdrop-blur-sm">
-          <div
-            className="flex items-center justify-end gap-2 px-3 py-2"
-            style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.5rem)" }}
-          >
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => activeCancelRef.current?.()}
-              disabled={activeSaving}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => activeSaveRef.current?.()}
-              disabled={activeSaving}
-            >
-              {activeSaving ? "Saving…" : "Save"}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Tab navigation */}
-      {!urlRunId && (
-        <Tabs
-          value={activeView}
-          onValueChange={(v) => {
-            const target = v === "overview"
-              ? `/agents/${canonicalAgentRef}`
-              : `/agents/${canonicalAgentRef}/${v}`;
-            navigate(target);
-          }}
-        >
-          <PageTabBar
-            items={[
-              { value: "overview", label: "Overview" },
-              { value: "instructions", label: "Instructions" },
-              { value: "runs", label: "Runs" },
-              { value: "skills", label: "Skills" },
-              { value: "configure", label: "Config" },
-            ]}
-            value={activeView}
-            onValueChange={(v) => {
-              const target = v === "overview"
-                ? `/agents/${canonicalAgentRef}`
-                : `/agents/${canonicalAgentRef}/${v}`;
-              navigate(target);
-            }}
-          />
-        </Tabs>
-      )}
-
-      {/* View content */}
-      {activeView === "overview" && (
-        <AgentOverview
-          agent={agent}
-          runs={heartbeats ?? []}
-          assignedIssues={assignedIssues}
-          runtimeState={runtimeState}
-          reportsToAgent={reportsToAgent ?? null}
-          directReports={directReports}
-          agentId={agent.id}
-          agentRouteId={canonicalAgentRef}
-          trustScore={trustScore}
-        />
-      )}
-
-      {activeView === "instructions" && (
-        <AgentInstructionsTab
-          agent={agent}
-          companyId={resolvedCompanyId ?? undefined}
-          onDirtyChange={setInstrDirty}
-          onSaveActionChange={setSaveInstrAction}
-          onCancelActionChange={setCancelInstrAction}
-          onSavingChange={setInstrSaving}
-        />
-      )}
-
-      {activeView === "configure" && (
-        <AgentConfigurePage
-          agent={agent}
-          agentId={agent.id}
-          companyId={resolvedCompanyId ?? undefined}
-          onDirtyChange={setConfigDirty}
-          onSaveActionChange={setSaveConfigAction}
-          onCancelActionChange={setCancelConfigAction}
-          onSavingChange={setConfigSaving}
-          updatePermissions={updatePermissions}
-        />
-      )}
-
-      {activeView === "runs" && (
-        <RunsTab
-          runs={heartbeats ?? []}
-          companyId={resolvedCompanyId!}
-          agentId={agent.id}
-          agentRouteId={canonicalAgentRef}
-          selectedRunId={urlRunId ?? null}
-          adapterType={agent.adapterType}
-        />
-      )}
-
-      {activeView === "skills" && resolvedCompanyId && (
-        <AgentSkillsTab
-          agentId={agent.id}
-          companyId={resolvedCompanyId}
-          skillKeys={(agent as any).skillKeys ?? []}
-        />
-      )}
-    </div>
+      <AgentDetailCore
+        agent={agent}
+        tabs={[
+          { value: "overview", label: "Overview" },
+          { value: "instructions", label: "Instructions" },
+          { value: "runs", label: "Runs" },
+          { value: "skills", label: "Skills" },
+          { value: "configure", label: "Config" },
+        ]}
+        activeView={activeView}
+        onViewChange={(v) => {
+          const target = v === "overview"
+            ? `/agents/${canonicalAgentRef}`
+            : `/agents/${canonicalAgentRef}/${v}`;
+          navigate(target);
+        }}
+        headerActions={workerHeaderActions}
+        actionBar={{
+          show: showActionBar,
+          saving: activeSaving,
+          onSave: () => activeSaveRef.current?.(),
+          onCancel: () => activeCancelRef.current?.(),
+        }}
+        urlRunId={urlRunId}
+        isMobile={isMobile}
+        onIconChange={(icon) => updateIcon.mutate(icon)}
+        renderTab={(view) => {
+          if (view === "overview") {
+            return (
+              <AgentOverview
+                agent={agent}
+                runs={heartbeats ?? []}
+                assignedIssues={assignedIssues}
+                runtimeState={runtimeState}
+                reportsToAgent={reportsToAgent ?? null}
+                directReports={directReports}
+                agentId={agent.id}
+                agentRouteId={canonicalAgentRef}
+                trustScore={trustScore}
+              />
+            );
+          }
+          if (view === "instructions") {
+            return (
+              <AgentInstructionsTab
+                agent={agent}
+                companyId={resolvedCompanyId ?? undefined}
+                onDirtyChange={setInstrDirty}
+                onSaveActionChange={setSaveInstrAction}
+                onCancelActionChange={setCancelInstrAction}
+                onSavingChange={setInstrSaving}
+              />
+            );
+          }
+          if (view === "configure") {
+            return (
+              <AgentConfigurePage
+                agent={agent}
+                agentId={agent.id}
+                companyId={resolvedCompanyId ?? undefined}
+                onDirtyChange={setConfigDirty}
+                onSaveActionChange={setSaveConfigAction}
+                onCancelActionChange={setCancelConfigAction}
+                onSavingChange={setConfigSaving}
+                updatePermissions={updatePermissions}
+              />
+            );
+          }
+          if (view === "runs") {
+            return (
+              <RunsTab
+                runs={heartbeats ?? []}
+                companyId={resolvedCompanyId!}
+                agentId={agent.id}
+                agentRouteId={canonicalAgentRef}
+                selectedRunId={urlRunId ?? null}
+                adapterType={agent.adapterType}
+              />
+            );
+          }
+          if (view === "skills" && resolvedCompanyId) {
+            return (
+              <AgentSkillsTab
+                agentId={agent.id}
+                companyId={resolvedCompanyId}
+                skillKeys={(agent as any).skillKeys ?? []}
+              />
+            );
+          }
+          return null;
+        }}
+      />
+    </>
   );
 }
 

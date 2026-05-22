@@ -13,14 +13,40 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
 }
 
-async function copySharedAuthJson(sharedHome: string, managedHome: string): Promise<boolean> {
+export function resolveSharedCodexHomeDir(env: NodeJS.ProcessEnv): string {
+  return env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+}
+
+/**
+ * Copy `<sharedHome>/auth.json` → `<targetHomeDir>/auth.json` when the
+ * source exists. Used to provision codex credentials into a managed /
+ * per-session CODEX_HOME so `codex exec` run with that home is
+ * authenticated (otherwise `codex exec` 401s with no bearer/basic auth).
+ *
+ * - `targetHomeDir` is created recursively if absent (defensive — the
+ *   caller may pass a dir that does not yet exist).
+ * - Returns `true` iff a file was copied. Never throws on a missing
+ *   source: returns `false` so callers can no-op gracefully (the user
+ *   may simply not have a shared codex login).
+ * - No-ops to `true` if source and target resolve to the same path
+ *   (sharing one home is already self-authenticated).
+ *
+ * `copySharedAuthJson` (used by `prepareManagedCodexHome`) delegates to
+ * this helper so the copy semantics stay single-sourced.
+ */
+export async function ensureCodexAuthInHome(
+  targetHomeDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  const sharedHome = resolveSharedCodexHomeDir(env);
   const source = path.join(sharedHome, "auth.json");
-  const target = path.join(managedHome, "auth.json");
+  const target = path.join(targetHomeDir, "auth.json");
   if (path.resolve(source) === path.resolve(target)) return true;
 
   const sourceStat = await fs.stat(source).catch(() => null);
   if (!sourceStat?.isFile()) return false;
 
+  await fs.mkdir(targetHomeDir, { recursive: true });
   await fs.rm(target, { force: true });
   await fs.copyFile(source, target);
   if (process.platform !== "win32") {
@@ -29,8 +55,8 @@ async function copySharedAuthJson(sharedHome: string, managedHome: string): Prom
   return true;
 }
 
-export function resolveSharedCodexHomeDir(env: NodeJS.ProcessEnv): string {
-  return env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+async function copySharedAuthJson(sharedHome: string, managedHome: string): Promise<boolean> {
+  return ensureCodexAuthInHome(managedHome, { CODEX_HOME: sharedHome });
 }
 
 export function resolveManagedCodexHomeDir(env: NodeJS.ProcessEnv, companyId: string): string {

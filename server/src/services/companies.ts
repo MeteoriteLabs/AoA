@@ -1,6 +1,9 @@
 import { eq, count, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
+import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-internal-agent-config.js";
+import { ensureCommanderAgent } from "./internal-agent/aoa-agents/ensure-commander.js";
+import { ensureExtractionAgent } from "./internal-agent/aoa-agents/ensure-extraction-agent.js";
 import { logger } from "../middleware/logger.js";
 import {
   companies,
@@ -62,16 +65,31 @@ export function companyService(db: Db) {
   }
 
   function isIssuePrefixConflict(error: unknown) {
-    const constraint = typeof error === "object" && error !== null && "constraint" in error
-      ? (error as { constraint?: string }).constraint
-      : typeof error === "object" && error !== null && "constraint_name" in error
-        ? (error as { constraint_name?: string }).constraint_name
-        : undefined;
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: string }).code === "23505"
-      && constraint === "companies_issue_prefix_idx";
+    let current: unknown = error;
+    const seen = new Set<unknown>();
+
+    while (typeof current === "object" && current !== null && !seen.has(current)) {
+      seen.add(current);
+      const candidate = current as {
+        cause?: unknown;
+        code?: unknown;
+        constraint?: unknown;
+        constraint_name?: unknown;
+      };
+      const constraint = typeof candidate.constraint === "string"
+        ? candidate.constraint
+        : typeof candidate.constraint_name === "string"
+          ? candidate.constraint_name
+          : undefined;
+
+      if (candidate.code === "23505" && constraint === "companies_issue_prefix_idx") {
+        return true;
+      }
+
+      current = candidate.cause;
+    }
+
+    return false;
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
@@ -89,6 +107,28 @@ export function companyService(db: Db) {
           companyId: company.id,
         }).catch((err: unknown) => {
           logger.warn({ err, companyId: company.id }, "memory company-root folder seeding failed");
+        });
+        // Decision #100 — the Commander Team comes with every company.
+        // Eagerly seed (1) the default internal_agent_config row, (2) the
+        // Commander kind='aoa' agent linked into that config, and (3) the
+        // Discussion Extraction kind='aoa' agent + its enabled `outbox`
+        // trigger. (1) MUST precede (2) — ensureCommanderAgent's
+        // internal_agent_config UPDATE no-ops without an existing config row.
+        // (3) creates the outbox trigger the AoA dispatcher's per-company
+        // listEnabledOutboxAgents gate requires (chicken-and-egg: without an
+        // eager trigger the dispatcher skips the company forever). All three
+        // are idempotent and seeded non-fatally — exactly mirroring the
+        // root-folder seed above — so a seed failure never breaks company
+        // create (the dispatcher's lazy ensureExtractionAgent is the
+        // idempotent safety-net).
+        await ensureInternalAgentConfig(db, company.id).catch((err: unknown) => {
+          logger.warn({ err, companyId: company.id }, "internal_agent_config seeding failed");
+        });
+        await ensureCommanderAgent(db, company.id).catch((err: unknown) => {
+          logger.warn({ err, companyId: company.id }, "Commander agent seeding failed");
+        });
+        await ensureExtractionAgent(db, company.id).catch((err: unknown) => {
+          logger.warn({ err, companyId: company.id }, "Discussion Extraction agent seeding failed");
         });
         return company;
       } catch (error) {
@@ -203,6 +243,8 @@ export function companyService(db: Db) {
         db
           .select({ companyId: agents.companyId, count: count() })
           .from(agents)
+          // Per-company agent counts exclude platform (Commander-team) agents.
+          .where(eq(agents.kind, "org"))
           .groupBy(agents.companyId),
         db
           .select({ companyId: issues.companyId, count: count() })

@@ -289,6 +289,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
     byteSize?: number | null;
   };
 
+  type IssueForCommentControl = {
+    id: string;
+    companyId: string;
+    identifier: string | null;
+    title: string;
+    status: string;
+    workMode: string | null;
+    assigneeAgentId: string | null;
+    executionRunId?: string | null;
+  };
+
   function attachmentWakeMetadata(attachments: CommentWakeAttachment[]) {
     return attachments.map((attachment) => ({
       id: attachment.id,
@@ -296,6 +307,112 @@ export function issueRoutes(db: Db, storage: StorageService) {
       contentType: attachment.contentType ?? null,
       byteSize: attachment.byteSize ?? null,
     }));
+  }
+
+  function parseMultipartBoolean(value: unknown): boolean {
+    return value === true || value === "true";
+  }
+
+  async function applyIssueCommentControlEffects(input: {
+    req: Request;
+    res: Response;
+    issue: IssueForCommentControl;
+    actor: ReturnType<typeof getActorInfo>;
+    reopenRequested: boolean;
+    interruptRequested: boolean;
+  }): Promise<
+    | {
+        ok: true;
+        currentIssue: IssueForCommentControl;
+        reopened: boolean;
+        reopenFromStatus: string | null;
+        interruptedRunId: string | null;
+      }
+    | { ok: false }
+  > {
+    const { req, res, issue, actor, reopenRequested, interruptRequested } = input;
+    const isClosed = issue.status === "done" || issue.status === "cancelled";
+    let reopened = false;
+    let reopenFromStatus: string | null = null;
+    let interruptedRunId: string | null = null;
+    let currentIssue: IssueForCommentControl = issue;
+
+    if (reopenRequested && isClosed) {
+      const reopenedIssue = await svc.update(issue.id, { status: "todo" });
+      if (!reopenedIssue) {
+        res.status(404).json({ error: "Issue not found" });
+        return { ok: false };
+      }
+      reopened = true;
+      reopenFromStatus = issue.status;
+      currentIssue = reopenedIssue;
+
+      await logActivity(db, {
+        companyId: currentIssue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: currentIssue.id,
+        details: {
+          status: "todo",
+          reopened: true,
+          reopenedFrom: reopenFromStatus,
+          source: "comment",
+          identifier: currentIssue.identifier,
+        },
+      });
+    }
+
+    if (interruptRequested) {
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
+        return { ok: false };
+      }
+
+      let runToInterrupt = currentIssue.executionRunId
+        ? await heartbeat.getRun(currentIssue.executionRunId)
+        : null;
+
+      if (
+        (!runToInterrupt || runToInterrupt.status !== "running") &&
+        currentIssue.assigneeAgentId
+      ) {
+        const activeRun = await heartbeat.getActiveRunForAgent(currentIssue.assigneeAgentId);
+        const activeIssueId =
+          activeRun &&
+            activeRun.contextSnapshot &&
+            typeof activeRun.contextSnapshot === "object" &&
+            typeof (activeRun.contextSnapshot as Record<string, unknown>).issueId === "string"
+            ? ((activeRun.contextSnapshot as Record<string, unknown>).issueId as string)
+            : null;
+        if (activeRun && activeRun.status === "running" && activeIssueId === currentIssue.id) {
+          runToInterrupt = activeRun;
+        }
+      }
+
+      if (runToInterrupt && runToInterrupt.status === "running") {
+        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+        if (cancelled) {
+          interruptedRunId = cancelled.id;
+          await logActivity(db, {
+            companyId: cancelled.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "heartbeat.cancelled",
+            entityType: "heartbeat_run",
+            entityId: cancelled.id,
+            details: { agentId: cancelled.agentId, source: "issue_comment_interrupt", issueId: currentIssue.id },
+          });
+        }
+      }
+    }
+
+    return { ok: true, currentIssue, reopened, reopenFromStatus, interruptedRunId };
   }
 
   async function enqueueIssueCommentWakeups(input: {
@@ -1124,10 +1241,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
         await svc.notifyMentionedHumans(issue.companyId, commentBody, issue.id, actor);
       }
 
+      const aoaKinds = await svc
+        .resolveAgentKinds([...wakeups.keys()])
+        .catch(() => new Map<string, string>());
       for (const [agentId, wakeup] of wakeups.entries()) {
-        heartbeat
-          .wakeup(agentId, wakeup)
-          .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
+        if (aoaKinds.get(agentId) === "aoa") {
+          svc
+            .enqueueAoaMentionWakeup(issue.companyId, agentId, {
+              source: wakeup?.source,
+              reason: wakeup?.reason,
+              payload: wakeup?.payload,
+            })
+            .catch((err) =>
+              logger.warn({ err, issueId: issue.id, agentId }, "failed to enqueue aoa mention wakeup"),
+            );
+        } else {
+          heartbeat
+            .wakeup(agentId, wakeup)
+            .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
+        }
       }
     })();
 
@@ -1305,88 +1437,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
 
     const actor = getActorInfo(req);
-    const reopenRequested = req.body.reopen === true;
-    const interruptRequested = req.body.interrupt === true;
-    const isClosed = issue.status === "done" || issue.status === "cancelled";
-    let reopened = false;
-    let reopenFromStatus: string | null = null;
-    let interruptedRunId: string | null = null;
-    let currentIssue = issue;
-
-    if (reopenRequested && isClosed) {
-      const reopenedIssue = await svc.update(id, { status: "todo" });
-      if (!reopenedIssue) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-      reopened = true;
-      reopenFromStatus = issue.status;
-      currentIssue = reopenedIssue;
-
-      await logActivity(db, {
-        companyId: currentIssue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "issue.updated",
-        entityType: "issue",
-        entityId: currentIssue.id,
-        details: {
-          status: "todo",
-          reopened: true,
-          reopenedFrom: reopenFromStatus,
-          source: "comment",
-          identifier: currentIssue.identifier,
-        },
-      });
-    }
-
-    if (interruptRequested) {
-      if (req.actor.type !== "board") {
-        res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
-        return;
-      }
-
-      let runToInterrupt = currentIssue.executionRunId
-        ? await heartbeat.getRun(currentIssue.executionRunId)
-        : null;
-
-      if (
-        (!runToInterrupt || runToInterrupt.status !== "running") &&
-        currentIssue.assigneeAgentId
-      ) {
-        const activeRun = await heartbeat.getActiveRunForAgent(currentIssue.assigneeAgentId);
-        const activeIssueId =
-          activeRun &&
-            activeRun.contextSnapshot &&
-            typeof activeRun.contextSnapshot === "object" &&
-            typeof (activeRun.contextSnapshot as Record<string, unknown>).issueId === "string"
-            ? ((activeRun.contextSnapshot as Record<string, unknown>).issueId as string)
-            : null;
-        if (activeRun && activeRun.status === "running" && activeIssueId === currentIssue.id) {
-          runToInterrupt = activeRun;
-        }
-      }
-
-      if (runToInterrupt && runToInterrupt.status === "running") {
-        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
-        if (cancelled) {
-          interruptedRunId = cancelled.id;
-          await logActivity(db, {
-            companyId: cancelled.companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            action: "heartbeat.cancelled",
-            entityType: "heartbeat_run",
-            entityId: cancelled.id,
-            details: { agentId: cancelled.agentId, source: "issue_comment_interrupt", issueId: currentIssue.id },
-          });
-        }
-      }
-    }
+    const control = await applyIssueCommentControlEffects({
+      req,
+      res,
+      issue,
+      actor,
+      reopenRequested: req.body.reopen === true,
+      interruptRequested: req.body.interrupt === true,
+    });
+    if (!control.ok) return;
+    const { currentIssue, reopened, reopenFromStatus, interruptedRunId } = control;
 
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
@@ -1468,6 +1528,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
+    const control = await applyIssueCommentControlEffects({
+      req,
+      res,
+      issue,
+      actor,
+      reopenRequested: parseMultipartBoolean(req.body?.reopen),
+      interruptRequested: parseMultipartBoolean(req.body?.interrupt),
+    });
+    if (!control.ok) return;
+    const { currentIssue, reopened, reopenFromStatus, interruptedRunId } = control;
+
     const comment = await svc.addComment(id, body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -1518,29 +1589,34 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     await logActivity(db, {
-      companyId: issue.companyId,
+      companyId: currentIssue.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
       action: "issue.comment_added",
       entityType: "issue",
-      entityId: issue.id,
+      entityId: currentIssue.id,
       details: {
         commentId: comment.id,
         bodySnippet: comment.body.slice(0, 120),
-        identifier: issue.identifier,
-        issueTitle: issue.title,
+        identifier: currentIssue.identifier,
+        issueTitle: currentIssue.title,
         attachmentCount: attachments.length,
+        ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+        ...(interruptedRunId ? { interruptedRunId } : {}),
       },
     });
 
     void enqueueIssueCommentWakeups({
       issue,
-      currentIssue: issue,
+      currentIssue,
       comment,
       body,
       actor,
+      reopened,
+      reopenFromStatus,
+      interruptedRunId,
       attachments,
     });
 

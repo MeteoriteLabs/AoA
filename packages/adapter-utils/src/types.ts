@@ -141,6 +141,20 @@ export interface AdapterInvocationMeta {
   context?: Record<string, unknown>;
 }
 
+/**
+ * Provider-neutral MCP bridge spec ({command,args,env}). Local copy of the
+ * shape produced by the server's buildMcpBridgeSpec — adapter-utils must not
+ * import from the server. Carried optionally on AdapterExecutionContext so a
+ * controller can hand adapters a ready-to-spawn MCP server description without
+ * the adapter reconstructing claude-specific config. Additive: nothing in this
+ * milestone reads it.
+ */
+export interface McpBridgeSpec {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
@@ -149,6 +163,12 @@ export interface AdapterExecutionContext {
   context: Record<string, unknown>;
   executionTarget?: AdapterExecutionTarget;
   runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
+  /**
+   * Optional provider-neutral MCP bridge spec. When present, an adapter may
+   * spawn this MCP server instead of building its own. Unset → adapter falls
+   * back to existing behavior. Wired by a later milestone.
+   */
+  mcpBridge?: McpBridgeSpec;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   authToken?: string;

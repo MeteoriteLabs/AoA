@@ -13,6 +13,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { OrgTreeTab, type OrgNodeAction } from "../components/team/OrgTreeTab";
 import { AgentsTab } from "../components/team/AgentsTab";
 import { HumansTab } from "../components/team/HumansTab";
+import { CommanderTeamTab } from "../components/team/CommanderTeamTab";
 import { TeamsListPage } from "./TeamsListPage";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -20,7 +21,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Tabs } from "@/components/ui/tabs";
 import { PageTabBar, type PageTabItem } from "../components/PageTabBar";
 
-const VALID_TABS = ["org", "agents", "humans", "teams"] as const;
+const VALID_TABS = ["org", "agents", "humans", "teams", "commander"] as const;
 type TeamTab = (typeof VALID_TABS)[number];
 
 function isValidTab(value: string | null): value is TeamTab {
@@ -32,6 +33,7 @@ const TAB_ITEMS: PageTabItem[] = [
   { value: "agents", label: "Agents" },
   { value: "humans", label: "Humans" },
   { value: "teams", label: "Teams" },
+  { value: "commander", label: "Commander Team" },
 ];
 
 export function TeamPage() {
@@ -61,6 +63,12 @@ export function TeamPage() {
       ? queryKeys.agents.list(selectedCompanyId)
       : ["agents", "none"],
     queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+
+  const commanderAgentsQuery = useQuery({
+    queryKey: selectedCompanyId ? ["aoa-agents", selectedCompanyId] : ["aoa-agents", "none"],
+    queryFn: () => agentsApi.listAoa(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
 
@@ -151,7 +159,8 @@ export function TeamPage() {
   const isLoading =
     (activeTab === "org" && orgTreeQuery.isLoading) ||
     (activeTab === "agents" && agentsQuery.isLoading) ||
-    (activeTab === "humans" && isTeamLoading);
+    (activeTab === "humans" && isTeamLoading) ||
+    (activeTab === "commander" && commanderAgentsQuery.isLoading);
 
   return (
     <TooltipProvider>
@@ -200,6 +209,14 @@ export function TeamPage() {
           )}
 
           {!isLoading && activeTab === "teams" && <TeamsListPage />}
+
+          {!isLoading && activeTab === "commander" && (
+            <CommanderTeamTab
+              agents={commanderAgentsQuery.data ?? []}
+              permissions={{ isFounder: role === "founder" }}
+              onMutationSuccess={invalidateAll}
+            />
+          )}
         </div>
       </Tabs>
     </TooltipProvider>

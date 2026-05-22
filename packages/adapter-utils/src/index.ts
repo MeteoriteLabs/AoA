@@ -12,6 +12,7 @@ export type {
   AdapterRuntimeServiceReport,
   AdapterInvocationMeta,
   AdapterExecutionContext,
+  McpBridgeSpec,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestStatus,

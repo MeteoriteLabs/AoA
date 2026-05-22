@@ -129,6 +129,7 @@ const projectsApiMock = {
   assignAgent: vi.fn(),
   unassignAgent: vi.fn(),
   createWorkspace: vi.fn().mockResolvedValue({}),
+  updateWorkspace: vi.fn().mockResolvedValue({}),
   removeWorkspace: vi.fn().mockResolvedValue({}),
   getEnvironment: vi.fn().mockResolvedValue({ env: null }),
   updateEnvironment: vi.fn().mockResolvedValue({ env: null }),
@@ -250,9 +251,43 @@ function renderProjectDetail(initialPath: string) {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
-  projectsApiMock.get.mockResolvedValue(mockProject);
+  // resetAllMocks clears both call history AND implementations.
+  // This makes test order irrelevant: a test that sets list to []
+  // cannot pollute the next test even under full-suite parallelism.
+  vi.resetAllMocks();
+  // Re-establish ALL default implementations after the reset.
   executionWorkspacesApiMock.list.mockResolvedValue(mockWorkspaces);
+  executionWorkspacesApiMock.update.mockResolvedValue({});
+  executionWorkspacesApiMock.getCloseReadiness.mockResolvedValue({
+    workspaceId: "ws-1",
+    state: "ready",
+    blockingReasons: [],
+    warnings: [],
+    linkedIssues: [],
+    plannedActions: [
+      {
+        kind: "archive_record",
+        label: "Archive workspace record",
+        description: "Keep the execution workspace history.",
+        command: null,
+      },
+    ],
+    isDestructiveCloseAllowed: true,
+    isSharedWorkspace: false,
+    isProjectPrimaryWorkspace: false,
+    git: null,
+    runtimeServices: [],
+  });
+  projectsApiMock.get.mockResolvedValue(mockProject);
+  projectsApiMock.update.mockResolvedValue(mockProject);
+  projectsApiMock.listAgents.mockResolvedValue([]);
+  projectsApiMock.list.mockResolvedValue([mockProject]);
+  projectsApiMock.budget.mockResolvedValue({ agents: [], totalSpendCents: 0 });
+  projectsApiMock.createWorkspace.mockResolvedValue({});
+  projectsApiMock.updateWorkspace.mockResolvedValue({});
+  projectsApiMock.removeWorkspace.mockResolvedValue({});
+  projectsApiMock.getEnvironment.mockResolvedValue({ env: null });
+  projectsApiMock.updateEnvironment.mockResolvedValue({ env: null });
   // Archive now uses a Dialog instead of window.confirm
 });
 
@@ -283,6 +318,9 @@ describe("ProjectDetail — Workspaces tab", () => {
 
     const settingsTab = await screen.findByRole("button", { name: "Settings" }, { timeout: 5000 });
     expect(settingsTab.className).toContain("border-foreground");
+    expect(await screen.findByRole("heading", { name: "Department details" })).toBeInTheDocument();
+    expect(await screen.findByText("Status", {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(await screen.findByText("Created", {}, { timeout: 5000 })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Workspace & Runtime" })).toBeInTheDocument();
     expect(screen.getByText(/Defaults for new tasks and future agent runs/i)).toBeInTheDocument();
     expect(await screen.findByText("Environment Variables")).toBeInTheDocument();
@@ -311,6 +349,39 @@ describe("ProjectDetail — Workspaces tab", () => {
     });
   });
 
+  it("removes only the selected workspace source when a row has both local folder and repo", async () => {
+    const user = userEvent.setup();
+    projectsApiMock.get.mockResolvedValue({
+      ...mockProject,
+      workspaces: [
+        {
+          id: "source-1",
+          name: "Primary",
+          cwd: "C:\\Work\\Repo",
+          repoUrl: "https://github.com/acme/app.git",
+          repoRef: null,
+          metadata: null,
+          isPrimary: true,
+          createdAt: "2026-04-01T09:00:00Z",
+          updatedAt: "2026-04-01T10:00:00Z",
+        },
+      ],
+    });
+
+    renderProjectDetail("/projects/ENG/settings");
+
+    await user.click(await screen.findByRole("button", { name: "Delete workspace repo" }));
+
+    await waitFor(() => {
+      expect(projectsApiMock.updateWorkspace).toHaveBeenCalledWith(
+        mockProject.id,
+        "source-1",
+        { repoUrl: null },
+      );
+    });
+    expect(projectsApiMock.removeWorkspace).not.toHaveBeenCalled();
+  });
+
   it("keeps department overview simple and moves controls out of the profile", async () => {
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/overview");
 
@@ -318,9 +389,9 @@ describe("ProjectDetail — Workspaces tab", () => {
     expect(await screen.findByTestId("project-function-type-badge")).toHaveTextContent(/Software department/i);
     expect(screen.queryByText("Properties")).not.toBeInTheDocument();
     expect(screen.queryByText("Environment Variables")).not.toBeInTheDocument();
-    expect(screen.queryByText("Workspaces")).toBeInTheDocument();
+    expect(await screen.findByText("Workspaces", {}, { timeout: 5000 })).toBeInTheDocument();
     expect(screen.queryByText("Add workspace local folder")).not.toBeInTheDocument();
-    expect(screen.queryByText("Goals")).toBeInTheDocument();
+    expect(await screen.findByText("Goals", {}, { timeout: 5000 })).toBeInTheDocument();
   });
 
   it("shows workspace list when workspaces tab is active", async () => {

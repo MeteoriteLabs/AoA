@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   assets,
   authUsers,
   companies,
@@ -126,6 +127,13 @@ export interface WorkspaceInheritanceSource {
   executionWorkspaceSettings: Record<string, unknown> | null;
 }
 
+export interface WorkspaceInheritanceWorkspace {
+  mode: string | null;
+  companyId: string;
+  projectId: string | null;
+  status: string;
+}
+
 export interface ResolvedWorkspaceInheritance {
   executionWorkspaceId: string;
   executionWorkspacePreference: "reuse_existing";
@@ -140,7 +148,9 @@ type IssueWorkspaceFields = {
 
 export function resolveExecutionWorkspaceInheritance(input: {
   sourceIssue: WorkspaceInheritanceSource | null;
-  sourceWorkspaceMode: string | null | undefined;
+  sourceWorkspace: WorkspaceInheritanceWorkspace | null;
+  targetCompanyId: string;
+  targetProjectId: string | null;
   isolatedWorkspacesEnabled: boolean;
   hasExplicitOverride: boolean;
 }): ResolvedWorkspaceInheritance | null {
@@ -148,14 +158,35 @@ export function resolveExecutionWorkspaceInheritance(input: {
   if (!input.isolatedWorkspacesEnabled) return null;
   if (input.hasExplicitOverride) return null;
   if (!input.sourceIssue.executionWorkspaceId) return null;
+  if (!input.sourceWorkspace) return null;
+  if (input.sourceWorkspace.companyId !== input.targetCompanyId) return null;
+  if (input.sourceWorkspace.projectId !== input.targetProjectId) return null;
+  if (input.sourceWorkspace.status === "archived") return null;
   return {
     executionWorkspaceId: input.sourceIssue.executionWorkspaceId,
     executionWorkspacePreference: "reuse_existing",
     executionWorkspaceSettings: {
       ...((input.sourceIssue.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? {}),
-      mode: issueExecutionWorkspaceModeForPersistedWorkspace(input.sourceWorkspaceMode),
+      mode: issueExecutionWorkspaceModeForPersistedWorkspace(input.sourceWorkspace.mode),
     },
   };
+}
+
+export function shouldClearExecutionWorkspaceForProjectChange(input: {
+  projectChanged: boolean;
+  companyId: string;
+  nextProjectId: string | null;
+  workspace: {
+    companyId: string;
+    projectId: string | null;
+    status: string;
+  } | null;
+}): boolean {
+  if (!input.projectChanged) return false;
+  if (!input.workspace) return true;
+  if (input.workspace.companyId !== input.companyId) return true;
+  if (input.workspace.projectId !== input.nextProjectId) return true;
+  return input.workspace.status === "archived";
 }
 
 export function resolveCreateIssueExecutionWorkspaceFields(input: {
@@ -794,18 +825,24 @@ export function issueService(db: Db) {
           if (sourceIssue == null && inheritExecutionWorkspaceFromIssueId) {
             throw notFound("Workspace inheritance issue not found");
           }
-          let sourceWorkspaceMode: string | null = null;
+          let sourceWorkspace: WorkspaceInheritanceWorkspace | null = null;
           if (sourceIssue?.executionWorkspaceId) {
-            const sourceWorkspace = await tx
-              .select({ mode: executionWorkspaces.mode })
+            sourceWorkspace = await tx
+              .select({
+                mode: executionWorkspaces.mode,
+                companyId: executionWorkspaces.companyId,
+                projectId: executionWorkspaces.projectId,
+                status: executionWorkspaces.status,
+              })
               .from(executionWorkspaces)
               .where(eq(executionWorkspaces.id, sourceIssue.executionWorkspaceId))
               .then((rows) => rows[0] ?? null);
-            sourceWorkspaceMode = sourceWorkspace?.mode ?? null;
           }
           const resolved = resolveExecutionWorkspaceInheritance({
             sourceIssue,
-            sourceWorkspaceMode,
+            sourceWorkspace,
+            targetCompanyId: companyId,
+            targetProjectId: (issueData as { projectId?: string | null }).projectId ?? null,
             isolatedWorkspacesEnabled,
             hasExplicitOverride: hasExplicitExecutionWorkspaceOverride,
           });
@@ -995,6 +1032,33 @@ export function issueService(db: Db) {
           }
           if ((issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined) {
             (issueData as Record<string, unknown>).executionWorkspaceSettings = normalizedWorkspacePatch.executionWorkspaceSettings;
+          }
+        } else if (
+          (issueData as { projectId?: string | null }).projectId !== undefined &&
+          (issueData as { projectId?: string | null }).projectId !== existing.projectId &&
+          existing.executionWorkspaceId
+        ) {
+          const nextProjectId = (issueData as { projectId?: string | null }).projectId ?? null;
+          const existingWorkspace = await db
+            .select({
+              companyId: executionWorkspaces.companyId,
+              projectId: executionWorkspaces.projectId,
+              status: executionWorkspaces.status,
+            })
+            .from(executionWorkspaces)
+            .where(eq(executionWorkspaces.id, existing.executionWorkspaceId))
+            .then((rows) => rows[0] ?? null);
+          if (
+            shouldClearExecutionWorkspaceForProjectChange({
+              projectChanged: true,
+              companyId: existing.companyId,
+              nextProjectId,
+              workspace: existingWorkspace,
+            })
+          ) {
+            (issueData as Record<string, unknown>).executionWorkspaceId = null;
+            (issueData as Record<string, unknown>).executionWorkspacePreference = null;
+            (issueData as Record<string, unknown>).executionWorkspaceSettings = null;
           }
         }
       }
@@ -1748,9 +1812,41 @@ export function issueService(db: Db) {
       let m: RegExpExecArray | null;
       while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
       if (tokens.size === 0) return [];
+      // @mention resolution resolves org + aoa (Commander-team) agents;
+      // platform stays excluded — platform agents are not mentionable by users.
       const rows = await db.select({ id: agents.id, name: agents.name })
-        .from(agents).where(eq(agents.companyId, companyId));
+        .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.kind, ["org", "aoa"])));
       return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+    },
+
+    resolveAgentKinds: async (ids: string[]): Promise<Map<string, string>> => {
+      const unique = [...new Set(ids)].filter(Boolean);
+      if (unique.length === 0) return new Map();
+      const rows = await db
+        .select({ id: agents.id, kind: agents.kind })
+        .from(agents)
+        .where(inArray(agents.id, unique));
+      return new Map(rows.map((r) => [r.id, r.kind]));
+    },
+
+    // F1: AoA agents are dispatched by the AoA dispatcher Phase-3, which drains
+    // agent_wakeup_requests {status:'queued', kind:'aoa'} with NO source filter.
+    // Calling heartbeat.wakeup for an aoa agent ALSO enqueues a heartbeat_run
+    // (dual execution). Mirror delegate-to-subagent.ts: insert the wakeup row
+    // directly and let Phase-3 own the single execution.
+    enqueueAoaMentionWakeup: async (
+      companyId: string,
+      agentId: string,
+      opts: { source?: string | null; reason?: string | null; payload?: unknown },
+    ): Promise<void> => {
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: opts.source ?? "automation",
+        reason: opts.reason ?? "issue_comment_mentioned",
+        payload: (opts.payload ?? null) as Record<string, unknown> | null,
+        status: "queued",
+      });
     },
 
     /**

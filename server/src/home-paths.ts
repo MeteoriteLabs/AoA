@@ -49,6 +49,10 @@ export function resolveDefaultLogsDir(): string {
   return path.resolve(resolveAoaInstanceRoot(), "logs");
 }
 
+export function resolveDefaultRunLogsDir(): string {
+  return path.resolve(resolveAoaInstanceRoot(), "data", "run-logs");
+}
+
 export function resolveDefaultSecretsKeyFilePath(): string {
   return path.resolve(resolveAoaInstanceRoot(), "secrets", "master.key");
 }

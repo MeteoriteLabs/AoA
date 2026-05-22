@@ -634,3 +634,48 @@ Implementation: pages opt in by passing `defaultCollapsed={true}` to `LobbyShell
 - Lobby — no secondary sidebar → `defaultCollapsed` not passed
 
 **Reference:** `ui/src/components/LobbySidebar.tsx` (state initializer), design-system §8.1.1.
+
+---
+
+## Decision #99 — Sub-Agent #1 (discussion extraction): durable poll, atomic claim, linked-run orphan recovery
+
+**Status:** Locked 2026-05-17.
+
+**Context:** Decision #95 deferred the team-under-Commander memory-access model until "a concrete consumer exists ... designs alongside the actual consumer." Sub-Agent #1 — the discussion-extraction consumer — is that first concrete consumer. It implements DA-17 (internal agent handles extraction, not a separate pipeline) as a durable background sub-agent, tracked via DA-27's `internal_agent_runs` (`triggerType='sub_agent'`, `triggerSource='discussion_entry'`).
+
+**Rule:**
+
+1. **Durable poll, NOT an event listener.** Sub-Agent #1's PRIMARY trigger is a durable sweep over `discussion_entries.extraction_status='pending'` (transactional-outbox pattern), registered on the server worker loop (`server/src/index.ts`, 45s interval, module-level in-flight guard). The committed `pending` row IS the work item — the in-memory LiveEvents bus is a lossy *secondary* nicety, never the correctness path. An entry committed while no listener is attached, or during a crash/restart, is still drained on the next tick.
+
+2. **Atomic `pending→processing` claim.** `extractFromDiscussionEntry` claims via a single guarded `UPDATE ... SET extraction_status='processing' WHERE id=? AND extraction_status='pending' RETURNING` (replaced a non-atomic read-then-check). Guarantees at-most-once extraction even under concurrent pickup (sweeper tick racing the reprocess direct-call path). This also fixes a pre-existing reprocess race that predates the sub-agent.
+
+3. **Linked-run orphan recovery.** The consumer links `discussion_entries.extraction_run_id` to its current `internal_agent_runs` row at run **creation — before** the atomic claim. The sweeper's orphan signal is: entry `processing` **AND** its LINKED run is `running` **AND** `created_at < staleCutoff`. Reclaim is atomic and guarded: terminalize that linked run → `failed` (so it can never re-trigger reclaim — no zombie `running` rows) **AND** reset the entry → `pending`, `extraction_run_id=null`. There is deliberately **NO** `extraction_run_id IS NULL` orphan branch: the only producer of (`processing`, `run_id` NULL) is the untouched reprocess direct-call path, which is *healthy in-flight* work — a NULL branch would false-reclaim it and cause double extraction. Reprocess-crash recovery is a tracked deferred follow-up, not in scope.
+
+4. **Reserved per-company platform agent.** Sub-agent runs are attributed to a real but **non-dispatchable** `agents` row, `kind='platform'` ("Commander Team"). It is excluded from every user-facing enumeration (`agentService.list` / `orgForCompany` / `getByUrlKey` / dashboard / home / companies / issues — kind='org' filter applied only at user-facing sites; by-id / cost / budget / heartbeat paths are NOT filtered) and is structurally non-dispatchable (`runtimeConfig.heartbeat={enabled:false,intervalSec:0}` → heartbeat `tickTimers()` skips it via the existing `intervalSec<=0` gate). It is a real row because `cost_events.agentId` is a FK. It owns an **inactive** `budget_policies` row (unlimited-until-configured) so Commander-team spend reuses the existing budget system per DA-25.
+
+5. **Trigger/executor-agnostic consumer + hard error boundary.** `runExtractionConsumer(db, companyId, entryId, platformAgentId)` does not know how it was triggered or where it runs. Any failure is caught and recorded (run → `failed` via a nested try/catch — Drizzle builders are thenables without `.catch`) and **never rethrown**, so extraction can never slow or break `addEntry` / chat / the sweep tick. Per Decision #95 this is a *minimal concrete consumer*, NOT a speculative sub-agent framework.
+
+6. **v1 cost is zeroed (budget PATH proven, not amounts).** The consumer emits a platform-agent-scoped `cost_event` through the existing `costService.createEvent → budgetService.evaluateCostEvent` path. v1 amounts are zeroed (`callLLM` surfaces no token usage yet); the platform agent's inactive policy makes enforcement a structural no-op. This proves the budget path end-to-end without billing real money. Accurate per-extraction token/cost accounting is deferred.
+
+**Reasoning:** The original event-listener design was lossy by construction (in-memory bus, no replay). Making the committed `pending` row the durable work item, plus an atomic claim, makes extraction crash-safe and exactly-once without a queue subsystem. Orphan recovery went through three TDD/review-caught bugs (never-resets → join-on-any-running zombie loop → null-branch double-extraction); the linked-run-only signal is the design that survives skeptical review. The platform agent reuses the existing budget/cost infrastructure rather than inventing a parallel one.
+
+**Implications:**
+- `packages/db/src/schema/agents.ts` gains a `kind text not null default 'org'` discriminator (migration `0098_flat_christian_walker.sql`); the default + backfill make it additive-safe for existing rows.
+- Adding org-agent filters is *selective* — only user-facing enumeration sites. Cost/budget/heartbeat/by-id paths intentionally still see the platform agent.
+- `staleMs` must stay conservatively larger than the longest legitimate extraction so healthy in-flight work is never reclaimed (server wires 10 min; the SQL `staleCutoff` predicate is the authority and is exercised by the Linux-CI integration test, not the Windows-runnable contract tests).
+- The reprocess direct-call path (Q2-b) is untouched and remains the only (`processing`, `run_id` NULL) producer; reprocess-crash recovery is a deferred follow-up.
+
+**Reference:** `server/src/services/internal-agent/subagents/{extraction-sweeper,extraction-consumer,platform-agent,concurrency-limiter}.ts`; `server/src/services/extraction.ts` (atomic claim); `server/src/index.ts` (sweep registration). Tests: `extraction-sweeper.test.ts`, `extraction-consumer.test.ts`, `extraction-consumer-contract.test.ts`, `extraction-atomic-claim.test.ts`, `platform-agent-seed.test.ts`, `concurrency-limiter.test.ts`, `extraction-sweeper-wiring.test.ts`, `agents-list-excludes-platform.test.ts` (+ `.integration.test.ts`, Linux-CI), `agents-kind-normalize.test.ts`, `agent-read-sites-org-filter.test.ts`. Implements DA-17; uses DA-27; cost attribution per DA-25; the concrete consumer Decision #95 / #91 (team-under-Commander) deferred for. Working spec/plan were `docs/superpowers/` material (gitignored); code is the authority per `CLAUDE.md`.
+
+---
+
+## Decision #100 — AoA Agents framework: Commander + sub-agents as trigger-driven first-class agents
+
+**Status:** Locked 2026-05-17.
+
+- **Uniform CLI-adapter execution:** every AoA agent (`kind='aoa'`: Commander + sub-agents) runs through the existing worker CLI adapter via a no-task runner; structured results persisted by the agent calling internal-agent MCP tools through the bridge (e.g. `submit-extracted-items`), not by parsing adapter stdout (`AdapterExecutionResult` returns no text). No hybrid/`structured_llm` executor. Provider-SDK stays a non-agent primitive (embeddings, transcription) — **Decision #91 honored, not superseded.**
+- **Supersedes DA-27** clauses (b) no queue, (c) no atomic checkout, (d) no adapter abstraction, and the *wakeup* half of (e) — AoA agents use atomic-claim dispatch, the worker adapter, and trigger/wakeup. **Keeps** DA-27 (a) separate `internal_agent_runs` table and the *assignment/task* half of (e) (no founder-managed issue/task lifecycle).
+- **Resolves Decision #95** — the deferred access model is implemented (per-agent tool allowlist, default-deny) against its now-concrete consumer.
+- **Extends Decision #99** — the durable transactional-outbox trigger, atomic claim and orphan-recovery generalize framework-wide; the extraction sub-agent is the first migrated `kind='aoa'` citizen, its #99/M2 correctness preserved (the runner re-asserts the atomic `pending→processing` claim).
+- **Discriminator:** `kind='aoa'` + `runtimeConfig.aoa.role` (`lead`|`member`); `agents.role` is NOT overloaded (it is special-cased: `role==='cxo'`, 0070 tiers).
+- **Rationale:** a growing internal automation team needs real agentic execution + a uniform reusable model; ~70–75% is reuse of existing `agents`-keyed infrastructure. Spec: `docs/superpowers/specs/2026-05-17-aoa-agents-framework-design.md`.

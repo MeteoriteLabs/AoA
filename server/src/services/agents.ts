@@ -375,8 +375,14 @@ export function agentService(db: Db) {
   return {
     backfillParentFields,
 
-    list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
-      const conditions = [eq(agents.companyId, companyId)];
+    list: async (companyId: string, options?: { includeTerminated?: boolean; kind?: "org" | "aoa" }) => {
+      // Centralized org-agent accessor: platform agents (Commander team,
+      // kind='platform') are excluded from user-facing enumeration. Backfill
+      // default is 'org', so this is a no-op for all pre-existing data.
+      const conditions = [
+        eq(agents.companyId, companyId),
+        eq(agents.kind, options?.kind ?? "org"),
+      ];
       if (!options?.includeTerminated) {
         conditions.push(ne(agents.status, "terminated"));
       }
@@ -643,7 +649,8 @@ export function agentService(db: Db) {
         db
           .select()
           .from(agents)
-          .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated"))),
+          // Org chart excludes platform (Commander-team) agents.
+          .where(and(eq(agents.companyId, companyId), eq(agents.kind, "org"), ne(agents.status, "terminated"))),
         db
           .select({
             userId: companyMemberships.principalId,
@@ -881,7 +888,11 @@ export function agentService(db: Db) {
         return { agent: null, ambiguous: false } as const;
       }
 
-      const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+      // Platform (Commander-team) agents are not resolvable via user-facing URL keys.
+      const rows = await db
+        .select()
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.kind, "org")));
       const matches = rows
         .map(normalizeAgentRow)
         .filter((agent) => agent.urlKey === urlKey && agent.status !== "terminated");

@@ -49,11 +49,12 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
 
 async function writeRunInputFile(input: {
   cwd: string | null | undefined;
+  inputId: string;
   filename: string;
   content: Buffer | string;
 }) {
   if (!input.cwd) return null;
-  const inputsDir = path.join(input.cwd, ".aoa", "inputs");
+  const inputsDir = path.join(input.cwd, ".aoa", "inputs", safeFilename(input.inputId));
   await fs.mkdir(inputsDir, { recursive: true });
   const localPath = path.join(inputsDir, safeFilename(input.filename));
   await fs.writeFile(localPath, input.content);
@@ -149,6 +150,7 @@ export async function buildRunInputBundle(input: {
             const object = await storage.getObject(input.companyId, attachment.objectKey);
             localPath = await writeRunInputFile({
               cwd: input.cwd,
+              inputId: item.id,
               filename: attachment.originalFilename ?? `${attachment.id}`,
               content: await streamToBuffer(object.stream),
             });
@@ -193,6 +195,7 @@ export async function buildRunInputBundle(input: {
           if (version?.content) {
             localPath = await writeRunInputFile({
               cwd: input.cwd,
+              inputId: item.id,
               filename: `${artifact.title}.${artifact.type === "markdown" ? "md" : "txt"}`,
               content: version.content,
             });

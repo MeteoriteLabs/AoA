@@ -4,13 +4,8 @@
 // See finding C13 in docs/superpowers/specs/2026-05-05-sprint-1-security-fixes-design.md.
 
 import type { AgentCapability, UserRole } from "@armyofagents/shared";
+import { ROLE_RANK } from "@armyofagents/shared";
 import type { AgentTool, ToolCategory } from "./types.js";
-
-const ROLE_RANK: Record<UserRole, number> = {
-  team_member: 0,
-  team_lead: 1,
-  founder: 2,
-};
 
 /**
  * Maps capabilities (as stored in internal_agent_config.enabledCapabilities)
@@ -28,22 +23,47 @@ export const CAPABILITY_TO_CATEGORY: Partial<Record<AgentCapability, ToolCategor
 
 export type ToolAuthDecision =
   | { allowed: true }
-  | { allowed: false; error: "FORBIDDEN_ROLE" | "CAPABILITY_DISABLED"; summary: string };
+  | { allowed: false; error: "FORBIDDEN_ROLE" | "CAPABILITY_DISABLED" | "NOT_IN_ALLOWLIST"; summary: string };
 
+/**
+ * D2: Per-agent tool allowlist for AoA agents (Decision #95 access model).
+ *
+ * When agentKind is 'aoa', the toolAllowlist is enforced with default-deny
+ * semantics: absent/empty allowlist = deny all. Non-AoA agents skip this gate
+ * entirely (existing behavior preserved).
+ */
 export function authorizeToolInvocation(
   tool: AgentTool,
   userRole: string,
   enabledCapabilities: readonly string[],
+  opts?: { agentKind?: string; toolAllowlist?: readonly string[] },
 ): ToolAuthDecision {
+  // D2: AoA-specific tool allowlist gate (default-deny for kind='aoa').
+  // Checked BEFORE role/capability gates so a misconfigured allowlist fails
+  // closed rather than silently falling through to the less-restrictive gates.
+  if (opts?.agentKind === "aoa") {
+    const allowlist = opts.toolAllowlist;
+    if (!allowlist || allowlist.length === 0 || !allowlist.includes(tool.name)) {
+      return {
+        allowed: false,
+        error: "NOT_IN_ALLOWLIST",
+        summary: `AoA agent tool allowlist does not include '${tool.name}'`,
+      };
+    }
+  }
+
   // Fail closed on unknown role strings (e.g., a malformed
   // AOA_SESSION_USER_ROLE env var). Unknown roles map to no rank.
+  // If requiredRole is absent the tool is open to all roles — skip the gate.
   const userRank = ROLE_RANK[userRole as UserRole];
-  if (userRank === undefined || userRank < ROLE_RANK[tool.requiredRole]) {
-    return {
-      allowed: false,
-      error: "FORBIDDEN_ROLE",
-      summary: `Role '${userRole}' cannot invoke '${tool.name}' (requires '${tool.requiredRole}')`,
-    };
+  if (tool.requiredRole !== undefined) {
+    if (userRank === undefined || userRank < ROLE_RANK[tool.requiredRole]) {
+      return {
+        allowed: false,
+        error: "FORBIDDEN_ROLE",
+        summary: `Role '${userRole}' cannot invoke '${tool.name}' (requires '${tool.requiredRole}')`,
+      };
+    }
   }
 
   // Capability check

@@ -7,7 +7,9 @@ import {
   timestamp,
   jsonb,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { environments } from "./environments.js";
 
@@ -18,6 +20,7 @@ export const agents = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     role: text("role").notNull().default("general"),
+    kind: text("kind").notNull().default("org"), // 'org' | 'platform' | 'aoa' — 'aoa' = Commander + sub-agents (trigger-driven)
     title: text("title"),
     icon: text("icon"),
     status: text("status").notNull().default("idle"),
@@ -43,10 +46,13 @@ export const agents = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => ({
-    companyStatusIdx: index("agents_company_status_idx").on(table.companyId, table.status),
-    companyReportsToIdx: index("agents_company_reports_to_idx").on(table.companyId, table.reportsTo),
-    companyParentIdx: index("agents_company_parent_idx").on(table.companyId, table.parentType, table.parentId),
-    templateOriginIdx: index("agents_template_origin_idx").on(table.companyId, table.templateOrigin),
-  }),
+  (table) => [
+    index("agents_company_status_idx").on(table.companyId, table.status),
+    index("agents_company_reports_to_idx").on(table.companyId, table.reportsTo),
+    index("agents_company_parent_idx").on(table.companyId, table.parentType, table.parentId),
+    index("agents_template_origin_idx").on(table.companyId, table.templateOrigin),
+    uniqueIndex("agents_aoa_name_per_company_idx")
+      .on(table.companyId, table.name)
+      .where(sql`${table.kind} = 'aoa'`),
+  ],
 );
