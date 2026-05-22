@@ -5,11 +5,12 @@
  *
  * Scenario:
  *   1. Chat endpoint fires → permissionService returns "founder"
- *      → pendingConfirmations stores userRole: "founder"
+ *      → pendingConfirmations stores confirmId, toolName, params, actorType.
+ *      Permissions (userRole, enabledCapabilities) are NOT snapshotted. [Codex-P1 fix]
  *   2. Role changes: permissionService now returns "team_member"
  *   3. User clicks Confirm → confirm endpoint fires
- *   4. After fix: executeTool is called with userRole: "team_member" (current)
- *   5. Before fix: executeTool would be called with userRole: "founder" (stale)
+ *   4. After fix: confirm handler re-fetches role from DB → executeTool gets "team_member"
+ *   5. Before fix (pre-P1): executeTool would have used the stale "founder" snapshot
  */
 
 import express from "express";
@@ -179,8 +180,9 @@ describe("POST /confirm — stale permissions (re-fetch at execute time)", () =>
     const db = makeDb();
     const app = makeApp(db);
 
-    // Phase 1: seed with founder role. The chat endpoint snapshots "founder"
-    // into pendingConfirmations.
+    // Phase 1: seed with founder role active. The chat endpoint stores the
+    // confirmation metadata (toolName, params, actorType) but does NOT snapshot
+    // the role — permissions are re-fetched at confirm time. [Codex-P1 fix]
     mockGetEffectiveRole.mockResolvedValue("founder");
     await seedPending(app, CONFIRM_1);
 
