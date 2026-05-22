@@ -9,6 +9,7 @@ import {
   type GitBranchInfo,
 } from "@armyofagents/shared";
 import { secretService } from "./secrets.js";
+import { getInstallation, mintInstallationToken } from "./github-app.js";
 
 /**
  * Error thrown by the GitHub PR service when we want to surface a specific
@@ -71,6 +72,30 @@ export async function resolveGitHubPat(
   return pat;
 }
 
+/**
+ * Resolve a GitHub access token for the given company.
+ *
+ * Resolution order:
+ *   1. GitHub App installation token (auto-rotating, org-wide)
+ *   2. Company PAT (manual, per-token scope)
+ *
+ * Throws GitHubPrError(412) if neither is configured.
+ */
+export async function resolveGitHubAuth(
+  db: Db,
+  companyId: string,
+  consumerId: string,
+): Promise<string> {
+  // 1. Try GitHub App installation
+  const installation = await getInstallation(db, companyId);
+  if (installation) {
+    return mintInstallationToken(installation.installationId);
+  }
+
+  // 2. Fall back to PAT
+  return resolveGitHubPat(db, companyId, consumerId);
+}
+
 function mapGitHubApiError(err: unknown, owner: string, repo: string): never {
   if (err instanceof GitHubPrError) throw err;
   const status = (err as { status?: number }).status ?? 500;
@@ -108,7 +133,7 @@ export async function findPullRequestForBranch(
     branchName: string;
   },
 ): Promise<{ pr: GitHubPrMetadata | null; baseRef: string | null }> {
-  const pat = await resolveGitHubPat(db, args.companyId, "github-pr-sync");
+  const pat = await resolveGitHubAuth(db, args.companyId, "github-pr-sync");
   const { owner, repo } = parseGitHubRepoUrl(args.repoUrl);
   const octokit = new Octokit({ auth: pat });
 
@@ -170,7 +195,7 @@ export async function createPullRequest(
     milestoneNumber?: number;
   },
 ): Promise<GitHubPrCreateResponse> {
-  const pat = await resolveGitHubPat(db, args.companyId, "github-pr");
+  const pat = await resolveGitHubAuth(db, args.companyId, "github-pr");
   const { owner, repo } = parseGitHubRepoUrl(args.repoUrl);
   const octokit = new Octokit({ auth: pat });
 
@@ -366,7 +391,7 @@ export async function mergeWorkspacePr(
     mergeMethod: "merge" | "squash" | "rebase";
   },
 ): Promise<{ sha: string }> {
-  const pat = await resolveGitHubPat(db, args.companyId, "github-pr");
+  const pat = await resolveGitHubAuth(db, args.companyId, "github-pr");
   const { owner, repo } = parseGitHubRepoUrl(args.repoUrl);
   const octokit = new Octokit({ auth: pat });
   try {
@@ -386,7 +411,7 @@ export async function closeWorkspacePr(
   db: Db,
   args: { companyId: string; repoUrl: string; prNumber: number },
 ): Promise<void> {
-  const pat = await resolveGitHubPat(db, args.companyId, "github-pr");
+  const pat = await resolveGitHubAuth(db, args.companyId, "github-pr");
   const { owner, repo } = parseGitHubRepoUrl(args.repoUrl);
   const octokit = new Octokit({ auth: pat });
   try {
@@ -400,7 +425,7 @@ export async function reopenWorkspacePr(
   db: Db,
   args: { companyId: string; repoUrl: string; prNumber: number },
 ): Promise<void> {
-  const pat = await resolveGitHubPat(db, args.companyId, "github-pr");
+  const pat = await resolveGitHubAuth(db, args.companyId, "github-pr");
   const { owner, repo } = parseGitHubRepoUrl(args.repoUrl);
   const octokit = new Octokit({ auth: pat });
   try {
@@ -414,7 +439,7 @@ export async function requestPrReview(
   db: Db,
   args: { companyId: string; repoUrl: string; prNumber: number; reviewers: string[] },
 ): Promise<void> {
-  const pat = await resolveGitHubPat(db, args.companyId, "github-pr");
+  const pat = await resolveGitHubAuth(db, args.companyId, "github-pr");
   const { owner, repo } = parseGitHubRepoUrl(args.repoUrl);
   const octokit = new Octokit({ auth: pat });
   try {

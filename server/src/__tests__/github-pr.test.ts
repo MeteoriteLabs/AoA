@@ -70,6 +70,13 @@ vi.mock("../services/git.js", () => ({
   push: mockPush,
 }));
 
+const mockGetInstallation = vi.hoisted(() => vi.fn());
+const mockMintInstallationToken = vi.hoisted(() => vi.fn());
+vi.mock("../services/github-app.js", () => ({
+  getInstallation: mockGetInstallation,
+  mintInstallationToken: mockMintInstallationToken,
+}));
+
 import { errorHandler } from "../middleware/index.js";
 import { GITHUB_PAT_ACTIVITY_KINDS, GITHUB_PAT_SECRET_NAME } from "@armyofagents/shared";
 import { githubRoutes } from "../routes/github.js";
@@ -82,6 +89,7 @@ import {
   closeWorkspacePr,
   reopenWorkspacePr,
   requestPrReview,
+  resolveGitHubAuth,
 } from "../services/github-pr.js";
 
 function createApp(actor: any) {
@@ -1035,5 +1043,45 @@ describe("requestPrReview", () => {
     expect(mockOctokit.pulls.requestReviewers).toHaveBeenCalledWith(
       expect.objectContaining({ pull_number: 42, reviewers: ["alice", "bob"] }),
     );
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Unit tests: resolveGitHubAuth — prefers App installation over PAT
+// -----------------------------------------------------------------------------
+
+describe("resolveGitHubAuth — prefers App installation over PAT", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns installation token when App installation exists", async () => {
+    mockGetInstallation.mockResolvedValue({ installationId: "12345", accountLogin: "myorg" });
+    mockMintInstallationToken.mockResolvedValue("ghs_installation_token");
+
+    const token = await resolveGitHubAuth({} as any, "company-1", "user-1");
+    expect(token).toBe("ghs_installation_token");
+    expect(mockMintInstallationToken).toHaveBeenCalledWith("12345");
+    // PAT should NOT be fetched when App installation exists
+    expect(mockSvc.getByName).not.toHaveBeenCalled();
+  });
+
+  it("falls back to PAT when no App installation", async () => {
+    mockGetInstallation.mockResolvedValue(null);
+    mockSvc.getByName.mockResolvedValue({ id: "secret-1" });
+    mockSvc.resolveSecretValue.mockResolvedValue("ghp_pat_token");
+
+    const token = await resolveGitHubAuth({} as any, "company-1", "user-1");
+    expect(token).toBe("ghp_pat_token");
+    expect(mockSvc.getByName).toHaveBeenCalled();
+  });
+
+  it("throws 412 when neither App installation nor PAT is configured", async () => {
+    mockGetInstallation.mockResolvedValue(null);
+    mockSvc.getByName.mockResolvedValue(null);
+
+    await expect(resolveGitHubAuth({} as any, "company-1", "user-1")).rejects.toMatchObject({
+      status: 412,
+    });
   });
 });
