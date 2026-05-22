@@ -2,6 +2,18 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const mockGetInstallUrl = vi.hoisted(() => vi.fn().mockReturnValue("https://github.com/apps/test-app/installations/new"));
+const mockSaveInstallation = vi.hoisted(() => vi.fn());
+const mockRemoveInstallation = vi.hoisted(() => vi.fn());
+const mockGetInstallation = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/github-app.js", () => ({
+  getInstallUrl: mockGetInstallUrl,
+  saveInstallation: mockSaveInstallation,
+  removeInstallation: mockRemoveInstallation,
+  getInstallation: mockGetInstallation,
+}));
+
 const mockOctokit = vi.hoisted(() => ({
   users: { getAuthenticated: vi.fn() },
   pulls: {
@@ -59,6 +71,7 @@ vi.mock("../services/github-pr.js", () => ({
     return { owner: m[1], repo: m[2].replace(/\.git$/, "") };
   }),
   resolveGitHubPat: vi.fn().mockResolvedValue("ghp_token"),
+  resolveGitHubAuth: vi.fn().mockResolvedValue("ghp_token"),
   createPullRequest: vi.fn(),
   findPullRequestForBranch: vi.fn(),
   mergeWorkspacePr: mockMergeWorkspacePr,
@@ -627,5 +640,94 @@ describe("POST /execution-workspaces/:id/github-pr/request-review", () => {
       .post("/api/execution-workspaces/ws-1/github-pr/request-review")
       .send({ reviewers: [] });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /companies/:companyId/github/app/install-url", () => {
+  it("returns the GitHub App install URL", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/companies/company-1/github/app/install-url");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ url: expect.stringContaining("github.com") });
+  });
+});
+
+describe("GET /api/github/callback", () => {
+  const installationData = {
+    installationId: "12345",
+    accountLogin: "myorg",
+    accountType: "Organization",
+  };
+
+  beforeEach(() => {
+    mockSaveInstallation.mockResolvedValue({ ...installationData, id: "inst-1", companyId: "company-1" });
+  });
+
+  it("saves installation and redirects to settings", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .get("/api/github/callback")
+      .query({
+        installation_id: "12345",
+        setup_action: "install",
+        state: "company-1",
+      });
+    // Should redirect (302) to settings page
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain("/settings");
+    expect(mockSaveInstallation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ companyId: "company-1", installationId: "12345" }),
+    );
+  });
+
+  it("returns 400 when installation_id is missing", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .get("/api/github/callback")
+      .query({ setup_action: "install", state: "company-1" });
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when state (companyId) is missing", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .get("/api/github/callback")
+      .query({ installation_id: "12345", setup_action: "install" });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("DELETE /companies/:companyId/github/app", () => {
+  it("removes App installation and returns success", async () => {
+    mockRemoveInstallation.mockResolvedValue(undefined);
+    const app = createApp(boardActor);
+    const res = await request(app).delete("/api/companies/company-1/github/app");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ removed: true });
+    expect(mockRemoveInstallation).toHaveBeenCalledWith(expect.anything(), "company-1");
+  });
+});
+
+describe("GET /companies/:companyId/github/app/status", () => {
+  it("returns installed=true with account info when installation exists", async () => {
+    mockGetInstallation.mockResolvedValue({
+      installationId: "12345",
+      accountLogin: "myorg",
+      accountType: "Organization",
+      createdAt: new Date("2026-05-01"),
+    });
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/companies/company-1/github/app/status");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ installed: true, accountLogin: "myorg", accountType: "Organization" });
+  });
+
+  it("returns installed=false when no installation", async () => {
+    mockGetInstallation.mockResolvedValue(null);
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/companies/company-1/github/app/status");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ installed: false });
   });
 });

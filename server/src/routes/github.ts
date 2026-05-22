@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Octokit } from "@octokit/rest";
+import { createAppAuth } from "@octokit/auth-app";
 import { activityLog, type Db } from "@armyofagents/db";
 import { and, desc, eq } from "drizzle-orm";
 import {
@@ -18,13 +19,19 @@ import {
   createPullRequest,
   findPullRequestForBranch,
   GitHubPrError,
-  resolveGitHubPat,
+  resolveGitHubAuth,
   mergeWorkspacePr,
   closeWorkspacePr,
   reopenWorkspacePr,
   requestPrReview,
   parseGitHubRepoUrl,
 } from "../services/github-pr.js";
+import {
+  getInstallUrl,
+  saveInstallation,
+  removeInstallation,
+  getInstallation,
+} from "../services/github-app.js";
 import { resolveGitRoot, runGit, push } from "../services/git.js";
 const setPatSchema = z.object({ pat: z.string().min(1) });
 const syncPrBodySchema = z.object({ force: z.boolean().optional().default(false) });
@@ -497,7 +504,7 @@ export function githubRoutes(db: Db) {
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
     try {
-      const pat = await resolveGitHubPat(db, ws.companyId, "github-metadata");
+      const pat = await resolveGitHubAuth(db, ws.companyId, "github-metadata");
       const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
       const octokit = new Octokit({ auth: pat });
       const { data } = await octokit.repos.listCollaborators({ owner, repo, per_page: 100 });
@@ -517,7 +524,7 @@ export function githubRoutes(db: Db) {
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
     try {
-      const pat = await resolveGitHubPat(db, ws.companyId, "github-metadata");
+      const pat = await resolveGitHubAuth(db, ws.companyId, "github-metadata");
       const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
       const octokit = new Octokit({ auth: pat });
       const { data } = await octokit.issues.listLabelsForRepo({ owner, repo, per_page: 100 });
@@ -537,7 +544,7 @@ export function githubRoutes(db: Db) {
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
     try {
-      const pat = await resolveGitHubPat(db, ws.companyId, "github-metadata");
+      const pat = await resolveGitHubAuth(db, ws.companyId, "github-metadata");
       const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
       const octokit = new Octokit({ auth: pat });
       const { data } = await octokit.issues.listMilestones({ owner, repo, state: "open", per_page: 100 });
@@ -658,6 +665,76 @@ export function githubRoutes(db: Db) {
       throw err;
     }
     res.json({ success: true });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GitHub App auth — install URL, OAuth callback, disconnect, status
+  // ---------------------------------------------------------------------------
+
+  router.get("/companies/:companyId/github/app/install-url", (req, res) => {
+    assertBoard(req);
+    assertCompanyAccess(req, req.params.companyId);
+    const url = getInstallUrl(req.params.companyId);
+    res.json({ url });
+  });
+
+  router.get("/github/callback", async (req, res) => {
+    const { installation_id, setup_action: _setup_action, state: companyId } = req.query as Record<string, string>;
+
+    if (!installation_id || typeof installation_id !== "string") {
+      res.status(400).json({ error: "Missing installation_id" });
+      return;
+    }
+    if (!companyId || typeof companyId !== "string") {
+      res.status(400).json({ error: "Missing state (companyId)" });
+      return;
+    }
+
+    const appId = process.env.GITHUB_APP_ID;
+    const privateKey = process.env.GITHUB_APP_PRIVATE_KEY_PEM;
+    let accountLogin = "unknown";
+    let accountType = "User";
+
+    if (appId && privateKey) {
+      try {
+        const auth = createAppAuth({ appId, privateKey });
+        const { token: appJwt } = await auth({ type: "app" });
+        const octokit = new Octokit({ auth: appJwt });
+        const { data } = await octokit.apps.getInstallation({ installation_id: Number(installation_id) });
+        accountLogin = (data.account as { login?: string })?.login ?? "unknown";
+        accountType = (data.account as { type?: string })?.type ?? "User";
+      } catch {
+        // Non-fatal — save with placeholder account info
+      }
+    }
+
+    await saveInstallation(db, { companyId, installationId: installation_id, accountLogin, accountType });
+
+    const uiBase = process.env.PUBLIC_BASE_URL ?? "http://localhost:5173";
+    res.redirect(`${uiBase}/settings/github`);
+  });
+
+  router.delete("/companies/:companyId/github/app", async (req, res) => {
+    assertBoard(req);
+    assertCompanyAccess(req, req.params.companyId);
+    await removeInstallation(db, req.params.companyId);
+    res.json({ removed: true });
+  });
+
+  router.get("/companies/:companyId/github/app/status", async (req, res) => {
+    assertBoard(req);
+    assertCompanyAccess(req, req.params.companyId);
+    const installation = await getInstallation(db, req.params.companyId);
+    if (!installation) {
+      res.json({ installed: false });
+      return;
+    }
+    res.json({
+      installed: true,
+      accountLogin: installation.accountLogin,
+      accountType: installation.accountType,
+      createdAt: installation.createdAt,
+    });
   });
 
   return router;
