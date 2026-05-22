@@ -6,7 +6,11 @@ import type { ReactNode } from "react";
 
 import { mockCompanyContext } from "./test-utils";
 
+// ── Mock functions ────────────────────────────────────────────────────────────
 const mockStatus = vi.fn();
+const mockAppStatus = vi.fn();
+const mockGetAppInstallUrl = vi.fn();
+const mockDisconnectApp = vi.fn();
 const mockSetPat = vi.fn();
 const mockRemovePat = vi.fn();
 const mockPushToast = vi.fn();
@@ -14,6 +18,9 @@ const mockPushToast = vi.fn();
 vi.mock("../api/github-integration", () => ({
   githubIntegrationApi: {
     status: (...args: unknown[]) => mockStatus(...args),
+    appStatus: (...args: unknown[]) => mockAppStatus(...args),
+    getAppInstallUrl: (...args: unknown[]) => mockGetAppInstallUrl(...args),
+    disconnectApp: (...args: unknown[]) => mockDisconnectApp(...args),
     setPat: (...args: unknown[]) => mockSetPat(...args),
     removePat: (...args: unknown[]) => mockRemovePat(...args),
   },
@@ -51,10 +58,85 @@ function renderCard() {
   return render(<GitHubIntegrationCard />, { wrapper: Wrapper });
 }
 
-describe("GitHubIntegrationCard", () => {
+// ── Shared defaults ───────────────────────────────────────────────────────────
+function setupDefaults() {
+  mockStatus.mockResolvedValue({ configured: false });
+  mockAppStatus.mockResolvedValue({ installed: false });
+  mockGetAppInstallUrl.mockResolvedValue({
+    url: "https://github.com/apps/test-app/installations/new",
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("GitHubIntegrationCard — App section", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSelectedCompanyId = "co-1";
+    setupDefaults();
+  });
+
+  it("shows Connect with GitHub button when App not installed", async () => {
+    renderCard();
+    expect(
+      await screen.findByRole("button", { name: /connect with github/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows App connected badge when installed", async () => {
+    mockAppStatus.mockResolvedValue({
+      installed: true,
+      accountLogin: "myorg",
+      accountType: "Organization",
+    });
+    renderCard();
+    expect(await screen.findByText(/myorg/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /disconnect app/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("calls disconnectApp on disconnect click", async () => {
+    const user = userEvent.setup();
+    mockAppStatus.mockResolvedValue({
+      installed: true,
+      accountLogin: "myorg",
+      accountType: "Organization",
+    });
+    mockDisconnectApp.mockResolvedValue({ removed: true });
+    renderCard();
+    await user.click(await screen.findByRole("button", { name: /disconnect app/i }));
+    await waitFor(() => expect(mockDisconnectApp).toHaveBeenCalledWith("co-1"));
+  });
+
+  it("still shows PAT section when App is installed (both coexist)", async () => {
+    mockAppStatus.mockResolvedValue({
+      installed: true,
+      accountLogin: "myorg",
+      accountType: "Organization",
+    });
+    renderCard();
+    await screen.findByText(/myorg/i);
+    // PAT input section should still be visible as fallback
+    expect(screen.getByPlaceholderText(/github_pat/i)).toBeInTheDocument();
+  });
+
+  it("shows PAT connected state when PAT configured but App not installed", async () => {
+    mockStatus.mockResolvedValue({
+      configured: true,
+      githubUser: "octocat",
+      createdAt: new Date().toISOString(),
+    });
+    renderCard();
+    expect(await screen.findByText(/@octocat/)).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("GitHubIntegrationCard — PAT section", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSelectedCompanyId = "co-1";
+    setupDefaults();
   });
 
   it("renders nothing when selectedCompanyId is null", () => {
@@ -65,8 +147,6 @@ describe("GitHubIntegrationCard", () => {
   });
 
   it("renders disconnected state with Connect button + PAT input when not configured", async () => {
-    mockStatus.mockResolvedValue({ configured: false });
-
     renderCard();
 
     await waitFor(() => expect(mockStatus).toHaveBeenCalledWith("co-1"));
@@ -80,7 +160,7 @@ describe("GitHubIntegrationCard", () => {
     expect(link).toHaveAttribute("href", expect.stringContaining("github.com/settings/tokens"));
   });
 
-  it("renders connected state + username + Disconnect when configured", async () => {
+  it("renders connected-PAT state with username + Disconnect when configured (App not installed)", async () => {
     mockStatus.mockResolvedValue({
       configured: true,
       githubUser: "octocat",
@@ -93,8 +173,9 @@ describe("GitHubIntegrationCard", () => {
       expect(screen.getByText(/connected as/i)).toBeInTheDocument(),
     );
     expect(screen.getByText(/@octocat/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /disconnect/i })).toBeInTheDocument();
-    // Input for PAT should not be visible.
+    // Disconnect button is present for the PAT
+    expect(screen.getByRole("button", { name: /^disconnect$/i })).toBeInTheDocument();
+    // In the connected-PAT state, the PAT input is NOT shown (replaced by connected banner)
     expect(
       screen.queryByLabelText(/github personal access token/i),
     ).not.toBeInTheDocument();
@@ -149,7 +230,7 @@ describe("GitHubIntegrationCard", () => {
     const user = userEvent.setup();
     renderCard();
 
-    const disconnectBtn = await screen.findByRole("button", { name: /disconnect/i });
+    const disconnectBtn = await screen.findByRole("button", { name: /^disconnect$/i });
     await user.click(disconnectBtn);
 
     await waitFor(() => expect(mockRemovePat).toHaveBeenCalledWith("co-1"));
