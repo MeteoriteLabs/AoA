@@ -1088,23 +1088,12 @@ export function internalAgentRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const convId = req.params.convId as string;
       assertCompanyAccess(req, companyId);
-      const actor = getActorInfo(req);
 
-      // Verify the conversation belongs to this company AND this user
-      const [conv] = await db
-        .select()
-        .from(internalAgentConversations)
-        .where(
-          and(
-            eq(internalAgentConversations.id, convId),
-            eq(internalAgentConversations.companyId, companyId),
-            eq(internalAgentConversations.userId, actor.actorId),
-          ),
-        );
-
-      if (!conv) {
-        throw notFound("Conversation not found");
-      }
+      // loadOwnedConversation applies the same founder bypass used by
+      // archive/pin/rename/delete: founders can access any company conversation,
+      // non-founders are scoped to their own userId. Throws 404 (not 403) on
+      // mismatch to avoid leaking conversation existence.
+      const conv = await loadOwnedConversation(req, companyId, convId);
 
       const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
       const offset = parseInt(req.query.offset as string) || 0;
@@ -1112,7 +1101,7 @@ export function internalAgentRoutes(db: Db) {
       const messages = await db
         .select()
         .from(internalAgentMessages)
-        .where(eq(internalAgentMessages.conversationId, convId))
+        .where(eq(internalAgentMessages.conversationId, conv.id))
         .orderBy(asc(internalAgentMessages.createdAt))
         .limit(limit)
         .offset(offset);

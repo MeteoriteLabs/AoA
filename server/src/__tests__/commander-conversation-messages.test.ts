@@ -18,9 +18,10 @@ describe("conversation messages endpoint — implementation contract", () => {
     expect(routeSrc).toContain("router.get");
   });
 
-  it("GET route filters by userId (actor.actorId) for ownership check", () => {
-    expect(routeSrc).toContain("actor.actorId");
-    expect(routeSrc).toContain("internalAgentConversations.userId");
+  it("GET route uses loadOwnedConversation for ownership check (includes founder bypass)", () => {
+    // The messages route delegates ownership to loadOwnedConversation, which
+    // applies the same founder bypass used by archive/pin/rename/delete.
+    expect(routeSrc).toContain("loadOwnedConversation");
   });
 
   it("GET route throws 404 when conversation not found", () => {
