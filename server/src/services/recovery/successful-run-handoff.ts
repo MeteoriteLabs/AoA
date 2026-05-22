@@ -109,12 +109,12 @@ export function buildSuccessfulRunHandoffNotice(input: {
   metadata: IssueCommentMetadata;
 } {
   return {
-    body: "AoA queued a recovery handoff because the previous run succeeded but left this task in progress.",
+    body: "The agent run finished, but the task is still in progress. AoA queued a recovery handoff so the agent can choose the final task status.",
     authorType: "system",
     presentation: {
       kind: "system_notice",
       tone: "warning",
-      title: "Missing task disposition",
+      title: "Task needs final status",
     },
     metadata: {
       version: 1,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildExecutionWorkspaceAdapterConfig,
   defaultIssueExecutionWorkspaceSettingsForProject,
+  enforceIssueExecutionWorkspaceOverridePolicy,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
@@ -85,6 +86,21 @@ describe("execution workspace policy helpers", () => {
     });
   });
 
+  it("does not synthesize a git worktree strategy for isolated mode without an explicit strategy", () => {
+    const result = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {},
+      projectPolicy: {
+        enabled: true,
+        defaultMode: "isolated_workspace",
+      },
+      issueSettings: null,
+      mode: "isolated_workspace",
+      legacyUseProjectWorkspace: null,
+    });
+
+    expect(result.workspaceStrategy).toBeUndefined();
+  });
+
   it("clears managed workspace strategy when issue opts out to project primary or agent default", () => {
     const baseConfig = {
       workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}" },
@@ -143,6 +159,185 @@ describe("execution workspace policy helpers", () => {
     });
   });
 
+  it("parses reuseWorkspaceId from issue workspace settings", () => {
+    expect(
+      parseIssueExecutionWorkspaceSettings({
+        mode: "reuse_existing",
+        reuseWorkspaceId: "11111111-1111-4111-8111-111111111111",
+      }),
+    ).toEqual({
+      mode: "reuse_existing",
+      reuseWorkspaceId: "11111111-1111-4111-8111-111111111111",
+    });
+  });
+
+  it("rejects issue-level workspace commands", () => {
+    expect(() =>
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: {
+          companyId: "company-1",
+          projectId: "project-1",
+        },
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        patch: {
+          executionWorkspaceSettings: {
+            mode: "isolated_workspace",
+            workspaceStrategy: {
+              type: "git_worktree",
+              provisionCommand: "pnpm install",
+            },
+          },
+        },
+        reuseWorkspace: null,
+      }),
+    ).toThrow("Issue workspace overrides cannot include commands");
+  });
+
+  it("rejects issue-level workspace command fields even when empty", () => {
+    expect(() =>
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: {
+          companyId: "company-1",
+          projectId: "project-1",
+        },
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        patch: {
+          executionWorkspaceSettings: {
+            mode: "isolated_workspace",
+            workspaceStrategy: {
+              type: "git_worktree",
+              provisionCommand: "",
+            },
+          },
+        },
+        reuseWorkspace: null,
+      }),
+    ).toThrow("Issue workspace overrides cannot include commands");
+  });
+
+  it("rejects issue workspace overrides when project policy disallows them", () => {
+    expect(() =>
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: {
+          companyId: "company-1",
+          projectId: "project-1",
+        },
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, allowIssueOverride: false },
+        patch: {
+          executionWorkspaceSettings: { mode: "isolated_workspace" },
+        },
+        reuseWorkspace: null,
+      }),
+    ).toThrow("Project workspace policy does not allow task-level overrides");
+  });
+
+  it("rejects reuse_existing workspaces from another project", () => {
+    expect(() =>
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: {
+          companyId: "company-1",
+          projectId: "project-1",
+        },
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        patch: {
+          executionWorkspaceSettings: {
+            mode: "reuse_existing",
+            reuseWorkspaceId: "workspace-1",
+          },
+        },
+        reuseWorkspace: {
+          id: "workspace-1",
+          companyId: "company-1",
+          projectId: "project-2",
+          status: "active",
+        },
+      }),
+    ).toThrow("Execution workspace must belong to the task project");
+  });
+
+  it("rejects archived reuse_existing workspaces", () => {
+    expect(() =>
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: {
+          companyId: "company-1",
+          projectId: "project-1",
+        },
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        patch: {
+          executionWorkspaceSettings: {
+            mode: "reuse_existing",
+            reuseWorkspaceId: "workspace-1",
+          },
+        },
+        reuseWorkspace: {
+          id: "workspace-1",
+          companyId: "company-1",
+          projectId: "project-1",
+          status: "archived",
+        },
+      }),
+    ).toThrow("Execution workspace is archived");
+  });
+
+  it("rejects direct executionWorkspaceId from another project", () => {
+    expect(() =>
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: {
+          companyId: "company-1",
+          projectId: "project-1",
+        },
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        patch: {
+          executionWorkspaceId: "workspace-1",
+        },
+        reuseWorkspace: {
+          id: "workspace-1",
+          companyId: "company-1",
+          projectId: "project-2",
+          status: "active",
+        },
+      }),
+    ).toThrow("Execution workspace must belong to the task project");
+  });
+
+  it("sets executionWorkspaceId for valid reuse_existing reuseWorkspaceId", () => {
+    expect(
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: {
+          companyId: "company-1",
+          projectId: "project-1",
+        },
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        patch: {
+          executionWorkspaceSettings: {
+            mode: "reuse_existing",
+            reuseWorkspaceId: "workspace-1",
+          },
+        },
+        reuseWorkspace: {
+          id: "workspace-1",
+          companyId: "company-1",
+          projectId: "project-1",
+          status: "active",
+        },
+      }),
+    ).toEqual({
+      executionWorkspaceId: "workspace-1",
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "reuse_existing",
+        reuseWorkspaceId: "workspace-1",
+      },
+    });
+  });
+
   it("maps persisted execution workspace modes back to issue settings", () => {
     expect(issueExecutionWorkspaceModeForPersistedWorkspace("isolated_workspace")).toBe("isolated_workspace");
     expect(issueExecutionWorkspaceModeForPersistedWorkspace("operator_branch")).toBe("operator_branch");
@@ -151,6 +346,73 @@ describe("execution workspace policy helpers", () => {
     expect(issueExecutionWorkspaceModeForPersistedWorkspace("cloud_sandbox")).toBe("agent_default");
     expect(issueExecutionWorkspaceModeForPersistedWorkspace(null)).toBe("agent_default");
     expect(issueExecutionWorkspaceModeForPersistedWorkspace(undefined)).toBe("agent_default");
+  });
+
+  it("normalizes create-time reuse_existing into executionWorkspaceId", () => {
+    expect(
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: { companyId: "company-1", projectId: "project-1" },
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        patch: {
+          executionWorkspacePreference: "reuse_existing",
+          executionWorkspaceSettings: {
+            mode: "reuse_existing",
+            reuseWorkspaceId: "workspace-1",
+          },
+        },
+        reuseWorkspace: {
+          id: "workspace-1",
+          companyId: "company-1",
+          projectId: "project-1",
+          status: "active",
+        },
+      }),
+    ).toEqual({
+      executionWorkspaceId: "workspace-1",
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "reuse_existing",
+        reuseWorkspaceId: "workspace-1",
+      },
+    });
+  });
+
+  it("strips create-time workspace override when isolated workspaces are disabled", () => {
+    expect(
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: { companyId: "company-1", projectId: "project-1" },
+        isolatedWorkspacesEnabled: false,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        patch: {
+          executionWorkspacePreference: "isolated_workspace",
+          executionWorkspaceSettings: { mode: "isolated_workspace" },
+        },
+        reuseWorkspace: null,
+      }),
+    ).toEqual({});
+  });
+
+  it("rejects issue-level runtime service command fields", () => {
+    expect(() =>
+      enforceIssueExecutionWorkspaceOverridePolicy({
+        existingIssue: {
+          companyId: "company-1",
+          projectId: "project-1",
+        },
+        isolatedWorkspacesEnabled: true,
+        projectPolicy: { enabled: true, allowIssueOverride: true },
+        patch: {
+          executionWorkspaceSettings: {
+            mode: "isolated_workspace",
+            workspaceRuntime: {
+              services: [{ name: "web", command: "pnpm dev" }],
+            },
+          },
+        },
+        reuseWorkspace: null,
+      }),
+    ).toThrow("Issue workspace overrides cannot include commands");
   });
 
   it("disables project execution workspace policy when the instance flag is off", () => {

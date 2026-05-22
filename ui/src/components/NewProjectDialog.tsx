@@ -216,6 +216,11 @@ export function NewProjectDialog() {
 
   async function handleSubmit() {
     if (!selectedCompanyId || !name.trim()) return;
+    if (functionType === "software_development" && workspaceSetup === "none") {
+      setWorkspaceError("Choose local folder, GitHub repo, or both before creating a software department.");
+      return;
+    }
+
     const localRequired = workspaceSetup === "local" || workspaceSetup === "both";
     const repoRequired = workspaceSetup === "repo" || workspaceSetup === "both";
     const localPath = workspaceLocalPath.trim();

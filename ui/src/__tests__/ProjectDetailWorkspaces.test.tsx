@@ -8,6 +8,7 @@
 // Workspaces) needs the same treatment as rows are added.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 // These tests render a multi-query page; give enough headroom for slow CI runs.
 vi.setConfig({ testTimeout: 15000 });
@@ -33,6 +34,20 @@ const mockProject = {
   companyId: "comp-1",
   issuePrefix: "TC",
   simpleId: "ENG",
+  functionType: "software_development",
+  goalIds: [],
+  goalId: null,
+  goals: [],
+  workspaces: [],
+  leadAgentId: null,
+  createdAt: "2026-04-01T09:00:00Z",
+  updatedAt: "2026-04-01T10:00:00Z",
+  executionWorkspacePolicy: {
+    enabled: true,
+    defaultMode: "isolated_workspace",
+    allowIssueOverride: true,
+    workspaceStrategy: { type: "git_worktree", baseRef: "main" },
+  },
 };
 
 function makeWorkspace(overrides: Record<string, unknown> = {}) {
@@ -113,6 +128,11 @@ const projectsApiMock = {
   budget: vi.fn().mockResolvedValue({ agents: [], totalSpendCents: 0 }),
   assignAgent: vi.fn(),
   unassignAgent: vi.fn(),
+  createWorkspace: vi.fn().mockResolvedValue({}),
+  updateWorkspace: vi.fn().mockResolvedValue({}),
+  removeWorkspace: vi.fn().mockResolvedValue({}),
+  getEnvironment: vi.fn().mockResolvedValue({ env: null }),
+  updateEnvironment: vi.fn().mockResolvedValue({ env: null }),
 };
 
 vi.mock("../components/TaskSlideOver", () => ({
@@ -131,6 +151,21 @@ vi.mock("../api/projects", () => ({
     {},
     { get: (_t, prop) => (projectsApiMock as any)[prop] },
   ),
+}));
+
+vi.mock("../api/filesystem", () => ({
+  filesystemApi: {
+    home: vi.fn().mockResolvedValue({ homePath: "C:\\Work", platform: "win32" }),
+    drives: vi.fn().mockResolvedValue({ drives: [{ name: "C:", path: "C:\\" }], platform: "win32" }),
+    browse: vi.fn().mockResolvedValue({
+      currentPath: "C:\\Work",
+      parentPath: "C:\\",
+      homePath: "C:\\Work",
+      platform: "win32",
+      entries: [{ name: "Repo", path: "C:\\Work\\Repo", type: "directory", isGitRepo: true }],
+    }),
+    mkdir: vi.fn().mockResolvedValue({ path: "C:\\Work\\New" }),
+  },
 }));
 
 vi.mock("../api/issues", () => ({
@@ -200,6 +235,7 @@ function renderProjectDetail(initialPath: string) {
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
+          <Route path="projects/:projectId/settings" element={<ProjectDetail />} />
           <Route path="projects/:projectId/discussions" element={<ProjectDetail />} />
           <Route path="projects/:projectId/issues" element={<ProjectDetail />} />
           <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
@@ -240,6 +276,88 @@ describe("ProjectDetail — Workspaces tab", () => {
     await screen.findByText("Budget");
     await screen.findByText("Discussions");
     await screen.findByText("Workspaces");
+    await screen.findByRole("button", { name: "Settings" });
+  });
+
+  it("renders the Settings tab with Workspace & Runtime content", async () => {
+    renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/settings");
+
+    const settingsTab = await screen.findByRole("button", { name: "Settings" }, { timeout: 5000 });
+    expect(settingsTab.className).toContain("border-foreground");
+    expect(await screen.findByRole("heading", { name: "Department details" })).toBeInTheDocument();
+    expect(await screen.findByText("Status", {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(await screen.findByText("Created", {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Workspace & Runtime" })).toBeInTheDocument();
+    expect(screen.getByText(/Defaults for new tasks and future agent runs/i)).toBeInTheDocument();
+    expect(await screen.findByText("Environment Variables")).toBeInTheDocument();
+    expect(screen.queryByTestId("project-workspaces-list")).not.toBeInTheDocument();
+  });
+
+  it("opens workspace source modals from Settings", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail("/projects/ENG/settings");
+
+    await user.click(await screen.findByRole("button", { name: /add local folder/i }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Add local folder");
+    expect(await screen.findByRole("button", { name: /select path/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /cancel/i }));
+
+    await user.click(await screen.findByRole("button", { name: /add github repo/i }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Add GitHub repo");
+    await user.type(screen.getByPlaceholderText("https://github.com/org/repo"), "https://github.com/acme/app");
+    await user.click(screen.getByRole("button", { name: /save repo/i }));
+
+    await waitFor(() => {
+      expect(projectsApiMock.createWorkspace).toHaveBeenCalledWith(
+        mockProject.id,
+        { cwd: "/__paperclip_repo_only__", repoUrl: "https://github.com/acme/app" },
+      );
+    });
+  });
+
+  it("removes only the selected workspace source when a row has both local folder and repo", async () => {
+    const user = userEvent.setup();
+    projectsApiMock.get.mockResolvedValue({
+      ...mockProject,
+      workspaces: [
+        {
+          id: "source-1",
+          name: "Primary",
+          cwd: "C:\\Work\\Repo",
+          repoUrl: "https://github.com/acme/app.git",
+          repoRef: null,
+          metadata: null,
+          isPrimary: true,
+          createdAt: "2026-04-01T09:00:00Z",
+          updatedAt: "2026-04-01T10:00:00Z",
+        },
+      ],
+    });
+
+    renderProjectDetail("/projects/ENG/settings");
+
+    await user.click(await screen.findByRole("button", { name: "Delete workspace repo" }));
+
+    await waitFor(() => {
+      expect(projectsApiMock.updateWorkspace).toHaveBeenCalledWith(
+        mockProject.id,
+        "source-1",
+        { repoUrl: null },
+      );
+    });
+    expect(projectsApiMock.removeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("keeps department overview simple and moves controls out of the profile", async () => {
+    renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/overview");
+
+    expect(await screen.findByPlaceholderText("Add a department description...")).toHaveValue("Engineering department");
+    expect(await screen.findByTestId("project-function-type-badge")).toHaveTextContent(/Software department/i);
+    expect(screen.queryByText("Properties")).not.toBeInTheDocument();
+    expect(screen.queryByText("Environment Variables")).not.toBeInTheDocument();
+    expect(await screen.findByText("Workspaces", {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(screen.queryByText("Add workspace local folder")).not.toBeInTheDocument();
+    expect(await screen.findByText("Goals", {}, { timeout: 5000 })).toBeInTheDocument();
   });
 
   it("shows workspace list when workspaces tab is active", async () => {
@@ -375,13 +493,15 @@ describe("ProjectDetail — Workspaces tab", () => {
     // parallel-suite CPU contention, React sometimes flushes the tab
     // shell before the executionWorkspaces query resolves. Use a generous
     // timeout to handle slow CI / parallel-suite runs.
-    await screen.findByText("Archived (2)", {}, { timeout: 5000 });
+    const archivedTrigger = await screen.findByTestId("archived-workspaces-trigger", {}, { timeout: 5000 });
+    expect(archivedTrigger).toHaveTextContent("Archived (2)");
 
     // Archived workspaces are NOT visible by default (collapsed)
     expect(screen.queryByTestId("archived-workspaces-list")).not.toBeInTheDocument();
 
     // Click to expand
-    fireEvent.click(screen.getByTestId("archived-workspaces-trigger"));
+    const user = userEvent.setup();
+    await user.click(archivedTrigger);
 
     expect(await screen.findByTestId("archived-workspaces-list")).toBeInTheDocument();
   });

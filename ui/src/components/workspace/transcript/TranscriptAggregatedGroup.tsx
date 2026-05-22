@@ -9,11 +9,11 @@ import { classifyToolEntry } from "./classify-entry";
 import { summarizeToolInput, displayToolName } from "./normalize-transcript";
 
 const GROUP_CONFIG: Record<string, { icon: LucideIcon; label: (n: number) => string }> = {
-  read_group: { icon: FileText, label: (n) => `Read · ${n} file${n !== 1 ? "s" : ""}` },
-  search_group: { icon: Search, label: (n) => `Search · ${n} quer${n !== 1 ? "ies" : "y"}` },
-  web_group: { icon: Globe, label: (n) => `Web · ${n} request${n !== 1 ? "s" : ""}` },
-  command_group_agg: { icon: Terminal, label: (n) => `Ran · ${n} command${n !== 1 ? "s" : ""}` },
-  generic_group: { icon: Wrench, label: (n) => `Tool · ${n} call${n !== 1 ? "s" : ""}` },
+  read_group: { icon: FileText, label: (n) => `Read ${n} file${n !== 1 ? "s" : ""}` },
+  search_group: { icon: Search, label: (n) => `Searched ${n} time${n !== 1 ? "s" : ""}` },
+  web_group: { icon: Globe, label: (n) => `Opened ${n} web request${n !== 1 ? "s" : ""}` },
+  command_group_agg: { icon: Terminal, label: (n) => `Ran ${n} command${n !== 1 ? "s" : ""}` },
+  generic_group: { icon: Wrench, label: (n) => `Used ${n} tool${n !== 1 ? "s" : ""}` },
 };
 
 interface TranscriptAggregatedGroupProps {
@@ -32,14 +32,14 @@ export function TranscriptAggregatedGroup({ group, departmentType, className }: 
       <button
         type="button"
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 w-full px-3 h-10 rounded-lg bg-muted/40 hover:bg-muted/60 text-left transition-colors"
+        className="flex h-8 w-full items-center gap-2 rounded-md bg-transparent px-1 text-left text-muted-foreground transition-colors hover:bg-card/50 hover:text-foreground"
       >
-        <Icon className="h-4 w-4 text-muted-foreground" />
-        <span className="text-[13px] text-foreground/80 flex-1">{config.label(group.count)}</span>
-        {expanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+        <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-[13px]">{config.label(group.count)}</span>
+        {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
       </button>
       {expanded && (
-        <div className="ml-4 mt-1 space-y-1">
+        <div className="ml-5 mt-1 space-y-0.5 border-l border-border pl-3">
           {group.items.map((item, i) => {
             const category = classifyToolEntry(item.name, item.input, departmentType);
             const summary = summarizeToolInput(item.name, item.input);

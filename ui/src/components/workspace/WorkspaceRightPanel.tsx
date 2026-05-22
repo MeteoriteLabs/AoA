@@ -7,7 +7,7 @@ import {
   FileBox,
   GitBranch,
   KeyRound,
-  MoreHorizontal,
+  MoreVertical,
   PanelRight,
   PanelRightClose,
   Paperclip,
@@ -377,39 +377,34 @@ export function WorkspaceRightPanel({
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden" data-testid="workspace-right-panel-expanded">
       <div
-        className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-2 py-2"
+        className="flex shrink-0 items-center gap-1 overflow-hidden border-b border-border px-2 py-2"
         data-testid="workspace-cockpit-header"
       >
-        <div className="min-w-0">
-          <div className="truncate text-xs font-semibold text-foreground">Workspace cockpit</div>
-          {selectedIssueIdentifier && (
-            <div
-              className="mt-0.5 inline-flex max-w-full rounded bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-brand"
-              data-testid="workspace-cockpit-ticket"
-            >
-              <span className="truncate">{selectedIssueIdentifier}</span>
-            </div>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <WorkspaceCockpitMenu
-            workspace={workspace}
-            onOpenSettings={onOpenSettings}
-            onOpenArchive={onOpenArchive}
-          />
-          {onToggleCollapse && (
+        {onToggleCollapse && (
           <button
             type="button"
             onClick={onToggleCollapse}
             title="Collapse context"
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
             data-testid="workspace-right-panel-collapse"
             aria-label="Collapse context panel"
           >
             <PanelRightClose className="h-4 w-4" />
           </button>
-          )}
+        )}
+        <div
+          className="min-w-0 flex-1 truncate pl-1 text-xs font-semibold text-foreground"
+          data-testid="workspace-cockpit-title"
+          title={selectedIssueIdentifier ? `Cockpit · ${selectedIssueIdentifier}` : "Cockpit"}
+        >
+          {selectedIssueIdentifier ? `Cockpit · ${selectedIssueIdentifier}` : "Cockpit"}
         </div>
+        <WorkspaceCockpitMenu
+          workspace={workspace}
+          onOpenSettings={onOpenSettings}
+          onOpenArchive={onOpenArchive}
+          triggerClassName="h-9 w-9"
+        />
       </div>
       <ScrollArea className="min-h-0 min-w-0 flex-1 overflow-hidden" data-testid="workspace-right-panel-scroll">
         <div className="w-full min-w-0 max-w-full space-y-2 overflow-hidden px-2 py-2" data-testid="workspace-right-sections">
@@ -472,7 +467,7 @@ function WorkspaceCockpitMenu({
           data-testid="workspace-cockpit-menu-trigger"
           className={`flex ${triggerClassName} items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground`}
         >
-          <MoreHorizontal className="h-4 w-4" />
+          <MoreVertical className="h-4 w-4" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">

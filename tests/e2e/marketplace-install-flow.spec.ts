@@ -359,7 +359,7 @@ test.describe("Marketplace install flow", () => {
     await page.getByRole("button", { name: /^install all$/i }).click();
     const cardModal = page.getByRole("dialog");
     await expect(cardModal).toBeVisible();
-    await expect(cardModal.getByRole("img", { name: "Garry Tan logo" })).toBeVisible();
+    await expect(cardModal.getByLabel("Garry Tan logo fallback")).toBeVisible();
     await cardModal.getByRole("button", { name: "Install all 2 skills" }).click();
     await expect
       .poll(() => submittedPayloads.length, { timeout: 5_000 })

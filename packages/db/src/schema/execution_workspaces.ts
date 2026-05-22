@@ -1,10 +1,14 @@
 import {
+  sql,
+} from "drizzle-orm";
+import {
   type AnyPgColumn,
   index,
   jsonb,
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
@@ -56,6 +60,9 @@ export const executionWorkspaces = pgTable(
       table.companyId,
       table.sourceIssueId,
     ),
+    activeTaskWorkspaceUq: uniqueIndex("execution_workspaces_active_task_workspace_uq")
+      .on(table.companyId, table.sourceIssueId)
+      .where(sql`source_issue_id IS NOT NULL AND status <> 'archived'`),
     companyLastUsedIdx: index("execution_workspaces_company_last_used_idx").on(
       table.companyId,
       table.lastUsedAt,

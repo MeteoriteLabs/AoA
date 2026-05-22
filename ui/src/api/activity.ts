@@ -9,6 +9,11 @@ export interface RunForIssue {
   finishedAt: string | null;
   createdAt: string;
   invocationSource: string;
+  logStore?: string | null;
+  logRef?: string | null;
+  processPid?: number | null;
+  processStartedAt?: string | null;
+  lastOutputAt?: string | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
   detectedOutputs: DetectedOutput[] | null;

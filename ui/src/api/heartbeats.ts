@@ -9,6 +9,9 @@ export interface ActiveRunForIssue extends HeartbeatRun {
   agentId: string;
   agentName: string;
   adapterType: string;
+  processPid?: number | null;
+  processStartedAt?: string | Date | null;
+  lastOutputAt?: string | Date | null;
 }
 
 export interface LiveRunForIssue {
@@ -19,6 +22,11 @@ export interface LiveRunForIssue {
   startedAt: string | null;
   finishedAt: string | null;
   createdAt: string;
+  logStore?: string | null;
+  logRef?: string | null;
+  processPid?: number | null;
+  processStartedAt?: string | Date | null;
+  lastOutputAt?: string | Date | null;
   agentId: string;
   agentName: string;
   adapterType: string;

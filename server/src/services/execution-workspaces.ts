@@ -27,6 +27,7 @@ import {
   listCurrentRuntimeServicesForProjectWorkspaces,
 } from "./workspace-runtime-read-model.js";
 import { runGit as runGitService } from "./git.js";
+import { isUniqueViolation } from "./db-errors.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -46,6 +47,21 @@ function readNullableString(value: unknown): string | null {
 function cloneRecord(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null;
   return { ...value };
+}
+
+export function mergeExecutionWorkspaceMetadataPatch(input: {
+  existingMetadata: unknown;
+  incomingMetadata: unknown;
+}): Record<string, unknown> | null {
+  const incoming = cloneRecord(input.incomingMetadata) ?? {};
+  delete incoming.config;
+
+  const existingConfig = cloneRecord(input.existingMetadata)?.config;
+  if (existingConfig !== undefined) {
+    incoming.config = existingConfig;
+  }
+
+  return Object.keys(incoming).length > 0 ? incoming : null;
 }
 
 async function pathExists(value: string | null | undefined) {
@@ -413,6 +429,54 @@ export async function loadEffectiveRuntimeServicesByExecutionWorkspace(
 }
 
 export function executionWorkspaceService(db: Db) {
+  async function findActiveTaskOwned(companyId: string, issueId: string) {
+    const rows = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(
+        and(
+          eq(executionWorkspaces.companyId, companyId),
+          eq(executionWorkspaces.sourceIssueId, issueId),
+          ne(executionWorkspaces.status, "archived"),
+        ),
+      )
+      .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
+    return rows[0] ? toExecutionWorkspace(rows[0]) : null;
+  }
+
+  async function create(data: typeof executionWorkspaces.$inferInsert) {
+    const row = await db
+      .insert(executionWorkspaces)
+      .values(data)
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    return row ? toExecutionWorkspace(row) : null;
+  }
+
+  async function update(id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) {
+    const row = await db
+      .update(executionWorkspaces)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(executionWorkspaces.id, id))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    return row ? toExecutionWorkspace(row) : null;
+  }
+
+  async function createTaskOwnedIdempotent(data: typeof executionWorkspaces.$inferInsert) {
+    if (!data.sourceIssueId) return create(data);
+    const existing = await findActiveTaskOwned(data.companyId, data.sourceIssueId);
+    if (existing) return update(existing.id, data);
+    try {
+      return await create(data);
+    } catch (error) {
+      if (!isUniqueViolation(error, "execution_workspaces_active_task_workspace_uq")) throw error;
+      const raced = await findActiveTaskOwned(data.companyId, data.sourceIssueId);
+      if (!raced) throw error;
+      return update(raced.id, data);
+    }
+  }
+
   return {
     list: async (companyId: string, filters?: {
       projectId?: string;
@@ -799,24 +863,13 @@ export function executionWorkspaceService(db: Db) {
       };
     },
 
-    create: async (data: typeof executionWorkspaces.$inferInsert) => {
-      const row = await db
-        .insert(executionWorkspaces)
-        .values(data)
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return row ? toExecutionWorkspace(row) : null;
-    },
+    findActiveTaskOwned,
 
-    update: async (id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) => {
-      const row = await db
-        .update(executionWorkspaces)
-        .set({ ...patch, updatedAt: new Date() })
-        .where(eq(executionWorkspaces.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return row ? toExecutionWorkspace(row) : null;
-    },
+    create,
+
+    createTaskOwnedIdempotent,
+
+    update,
   };
 }
 

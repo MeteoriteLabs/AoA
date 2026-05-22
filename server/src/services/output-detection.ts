@@ -65,6 +65,10 @@ const NOISE_FILENAMES = new Set([
   "desktop.ini",
   ".gitkeep",
   ".npmrc",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lockb",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -172,6 +176,29 @@ async function detectChangedFilesGit(cwd: string): Promise<string[]> {
   return Array.from(unique);
 }
 
+async function filterPathsChangedSince(
+  cwd: string,
+  paths: string[],
+  startedAt: Date,
+): Promise<string[]> {
+  const startMs = startedAt.getTime();
+  const result: string[] = [];
+
+  for (const relativePath of paths) {
+    const absPath = path.resolve(cwd, relativePath);
+    if (!isInsideWorkspace(cwd, absPath)) continue;
+    try {
+      const stat = await fs.stat(absPath);
+      if (!stat.isFile()) continue;
+      if (stat.mtimeMs >= startMs) result.push(relativePath);
+    } catch {
+      // Deleted git changes are not capturable outputs.
+    }
+  }
+
+  return result;
+}
+
 async function detectChangedFilesMtime(cwd: string, startedAt: Date): Promise<string[]> {
   const result: string[] = [];
   const startMs = startedAt.getTime();
@@ -257,7 +284,8 @@ async function detectAndCaptureImpl(
   const isGit = await isGitRepo(cwd);
   if (isGit) {
     try {
-      detectedPaths = await detectChangedFilesGit(cwd);
+      const gitPaths = await detectChangedFilesGit(cwd);
+      detectedPaths = await filterPathsChangedSince(cwd, gitPaths, startedAt);
     } catch (err) {
       logger.warn({ err, cwd }, "git detection failed, falling back to mtime");
       detectedPaths = await detectChangedFilesMtime(cwd, startedAt);

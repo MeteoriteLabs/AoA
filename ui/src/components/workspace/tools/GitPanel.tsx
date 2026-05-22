@@ -38,6 +38,7 @@ import { OpenInIdeButton } from "../OpenInIdeButton";
 import { CreatePrDialog } from "../CreatePrDialog";
 import { githubIntegrationApi } from "@/api/github-integration";
 import { useToast } from "../../../context/ToastContext";
+import { useWorkspacePermissions } from "../../../hooks/useWorkspacePermissions";
 import { queryKeys } from "../../../lib/queryKeys";
 import {
   executionWorkspacesApi,
@@ -282,6 +283,7 @@ function SafetyConfirmationDialog({
 export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProps) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const workspacePermissions = useWorkspacePermissions(workspace.companyId, workspace.projectId);
   const lastPrSyncAttemptRef = useRef<string | null>(null);
 
   // ── State ──
@@ -502,7 +504,7 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
   const hasRepoUrl = Boolean(workspace.repoUrl);
   const remoteLabel = remoteName(remote);
   const remoteBranch = remoteBranchLabel({ remote, branch: liveBranch, ahead, behind });
-  const canCreatePr = Boolean(issueId) && (hasRepoUrl || !!remote) && !!liveBranch;
+  const canCreatePr = workspacePermissions.canMutateGit && Boolean(issueId) && (hasRepoUrl || !!remote) && !!liveBranch;
   const statusChip = gitStatusChipLabel({
     gitAvailable,
     detachedHead,
@@ -775,7 +777,9 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
             className="min-w-0 flex-1 px-2"
             disabled={!canCreatePr}
             title={
-              !issueId
+              !workspacePermissions.canMutateGit
+                ? "Your role can view Git state but cannot mutate it"
+                : !issueId
                 ? "Link a task to this workspace to create a PR"
                 : !liveBranch
                   ? "Branch not yet provisioned"
@@ -822,7 +826,7 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
               Refresh GitHub PR
             </DropdownMenuItem>
             <DropdownMenuItem
-              disabled={isClean || detachedHead}
+              disabled={!workspacePermissions.canMutateGit || isClean || detachedHead}
               onSelect={() => {
                 setShowCommitForm(true);
                 if (selectedFiles.size === 0) selectAll();
@@ -832,7 +836,15 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
               Commit changes
             </DropdownMenuItem>
             <DropdownMenuItem
-              disabled={!gitAvailable || detachedHead || !remote || ahead === 0 || pushMutation.isPending || checkingSafetyFor === "push"}
+              disabled={
+                !workspacePermissions.canMutateGit ||
+                !gitAvailable ||
+                detachedHead ||
+                !remote ||
+                ahead === 0 ||
+                pushMutation.isPending ||
+                checkingSafetyFor === "push"
+              }
               onSelect={() => void runWithSafety("push", () => pushMutation.mutate())}
             >
               {pushMutation.isPending || checkingSafetyFor === "push" ? (

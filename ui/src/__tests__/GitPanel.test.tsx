@@ -14,6 +14,7 @@ const mockGetGitStatus = vi.fn();
 const mockSafety = vi.fn();
 const mockGitCommit = vi.fn();
 const mockGitPush = vi.fn();
+let canMutateGit = true;
 
 vi.mock("../api/issues", () => ({
   issuesApi: { get: (...args: unknown[]) => mockGetIssue(...args) },
@@ -42,6 +43,16 @@ vi.mock("../context/ToastContext", () => ({
     pushToast: (...args: unknown[]) => mockPushToast(...args),
     dismissToast: vi.fn(),
     clearToasts: vi.fn(),
+  }),
+}));
+
+vi.mock("../hooks/useWorkspacePermissions", () => ({
+  useWorkspacePermissions: () => ({
+    canEditDepartmentWorkspaceSettings: true,
+    canOverrideTaskWorkspace: true,
+    canControlRuntimeServices: true,
+    canConfigureRuntimeCommands: true,
+    canMutateGit,
   }),
 }));
 
@@ -111,6 +122,7 @@ function renderPanel(
 describe("GitPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    canMutateGit = true;
     // Default git status: git available, clean tree, branch matches workspace.branchName
     mockGetGitStatus.mockResolvedValue({
       gitAvailable: true,
@@ -409,6 +421,34 @@ describe("GitPanel", () => {
     await waitFor(() =>
       expect(screen.getByTestId("create-pr-dialog")).toBeInTheDocument(),
     );
+  });
+
+  it("disables Git mutation actions when the current user cannot mutate Git", async () => {
+    canMutateGit = false;
+    mockGetGitStatus.mockResolvedValue({
+      gitAvailable: true,
+      branch: "ENG-99-fix-auth",
+      detachedHead: false,
+      remote: { name: "origin", fetchUrl: "git@example.com:acme/repo.git", pushUrl: "git@example.com:acme/repo.git" },
+      ahead: 2,
+      behind: 0,
+      files: [{ path: "src/auth.ts", status: "modified", staged: false }],
+      clean: false,
+    });
+
+    const user = userEvent.setup();
+    renderPanel();
+
+    const createPrBtn = await screen.findByTestId("create-pr-btn");
+    expect(createPrBtn).toBeDisabled();
+    expect(createPrBtn).toHaveAttribute("title", "Your role can view Git state but cannot mutate it");
+
+    await user.click(await screen.findByRole("button", { name: /open git actions/i }));
+
+    const commitItem = screen.getByText("Commit changes").closest('[role="menuitem"]');
+    const pushItem = screen.getByText("Push 2 commits").closest('[role="menuitem"]');
+    expect(commitItem).toHaveAttribute("data-disabled");
+    expect(pushItem).toHaveAttribute("data-disabled");
   });
 
   it("asks for confirmation before committing when a run is active", async () => {

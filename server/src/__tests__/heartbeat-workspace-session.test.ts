@@ -30,8 +30,13 @@ vi.mock("drizzle-orm", () => ({
   eq: (..._args: unknown[]) => "eq",
   gt: (..._args: unknown[]) => "gt",
   inArray: (..._args: unknown[]) => "inArray",
+  lte: (..._args: unknown[]) => "lte",
+  ne: (..._args: unknown[]) => "ne",
   or: (..._args: unknown[]) => "or",
-  sql: new Proxy(() => "sql", { get: () => () => "sql", apply: () => "sql" }),
+  sql: new Proxy(() => ({ as: () => "sql" }), {
+    get: () => () => ({ as: () => "sql" }),
+    apply: () => ({ as: () => "sql" }),
+  }),
 }));
 
 vi.mock("../services/live-events.js", () => ({ publishLiveEvent: vi.fn() }));
@@ -53,10 +58,11 @@ vi.mock("../services/run-summary.js", () => ({ formatRunSummary: vi.fn() }));
 vi.mock("../middleware/logger.js", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) } }));
 
 import {
+  shouldUsePersistedExecutionWorkspaceForRun,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
-} from "../services/heartbeat-session.ts";
+} from "../services/heartbeat.ts";
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {
@@ -137,6 +143,30 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       workspaceId: "workspace-1",
     });
     expect(result.warning).toBeNull();
+  });
+});
+
+describe("shouldUsePersistedExecutionWorkspaceForRun", () => {
+  it("treats a selected executionWorkspaceId as authoritative even without reuse_existing preference", () => {
+    expect(
+      shouldUsePersistedExecutionWorkspaceForRun({
+        issueExecutionWorkspaceId: "workspace-1",
+        issueExecutionWorkspacePreference: null,
+        hasIssueScopedExecutionWorkspace: false,
+        existingExecutionWorkspaceStatus: "active",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not reuse archived persisted workspaces", () => {
+    expect(
+      shouldUsePersistedExecutionWorkspaceForRun({
+        issueExecutionWorkspaceId: "workspace-1",
+        issueExecutionWorkspacePreference: "reuse_existing",
+        hasIssueScopedExecutionWorkspace: false,
+        existingExecutionWorkspaceStatus: "archived",
+      }),
+    ).toBe(false);
   });
 });
 

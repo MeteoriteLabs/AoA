@@ -1,4 +1,5 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 
 /**
  * E2E: Planning mode dispatch gate (SKIP_LLM mode).
@@ -20,76 +21,70 @@ import { test, expect } from "@playwright/test";
 const SKIP_LLM = process.env.AOA_E2E_SKIP_LLM !== "false";
 
 test.describe("planning mode dispatch gate", () => {
-  test("creating a planning-mode task shows Planning pill", async ({ page }) => {
-    // Navigate to the home page (assumes a company exists).
-    await page.goto("/");
+  test.beforeEach(async ({ request }) => {
+    await cleanupTestCompanies(request, /^E2E-Planning-/);
+  });
 
-    // Wait for the page to load by checking for common home elements.
-    // Typically a "New Task" button or the main board.
+  async function openSeededIssues(page: Page, request: APIRequestContext) {
+    const company = await seedCompany(request, `E2E-Planning-${Date.now()}`);
+    await page.goto(`/${company.issuePrefix}/issues`);
+  }
+
+  async function createPlanningTask(page: Page, title: string) {
     await expect(page).toHaveTitle(/\w+/);
 
-    // Open the task creation dialog. The exact selector depends on current UI;
-    // common patterns: button with "new task" or "create task" text, or a + icon.
-    const newTaskButton = page
-      .getByRole("button")
-      .filter({ hasText: /new task|create task|\+/i })
-      .first();
+    const newTaskButton = page.getByRole("button", { name: /^new task$/i }).first();
     await expect(newTaskButton).toBeVisible({ timeout: 5_000 });
     await newTaskButton.click();
 
-    // Fill in the task title. Look for a placeholder or label matching "title", "task name", etc.
-    const titleInput = page
-      .locator('input[placeholder*="title" i], input[placeholder*="task" i]')
-      .first();
-    await expect(titleInput).toBeVisible({ timeout: 5_000 });
-    await titleInput.fill("Planning review: architecture");
+    const dialog = page.getByRole("dialog", { name: /^new task$/i });
+    await expect(dialog).toBeVisible({ timeout: 5_000 });
 
-    // Set the work mode to "Planning". This assumes a "Work mode" or "Mode" selector
-    // that shows options like "Standard" and "Planning".
-    const modeButton = page
-      .getByRole("button")
-      .filter({ hasText: /standard|mode|work/i })
-      .first();
+    const titleInput = dialog.getByRole("textbox", { name: /^task title$/i });
+    await expect(titleInput).toBeVisible({ timeout: 5_000 });
+    await titleInput.fill(title);
+
+    const modeButton = dialog.getByRole("button", { name: /^standard$/i });
     await expect(modeButton).toBeVisible({ timeout: 5_000 });
     await modeButton.click();
 
-    // Click the "Planning" button in the popover (PopoverContent renders <button>, not <option>).
     const planningOption = page.getByRole("button", { name: /^planning$/i }).last();
     await expect(planningOption).toBeVisible({ timeout: 5_000 });
     await planningOption.click();
+    await expect(dialog.getByRole("button", { name: /^planning$/i })).toBeVisible({ timeout: 5_000 });
 
-    // Submit the task creation dialog by clicking "Create" or "Save".
-    const createButton = page.getByRole("button", { name: /create|save/i }).last();
+    const createButton = dialog.getByRole("button", { name: /^create task$/i });
     await expect(createButton).toBeVisible({ timeout: 5_000 });
+    await expect(createButton).toBeEnabled({ timeout: 5_000 });
     await createButton.click();
 
-    // Verify the task appears on the board with the title.
-    const taskTitle = page.getByText("Planning review: architecture");
+    const taskTitle = page.getByText(title);
     await expect(taskTitle).toBeVisible({ timeout: 5_000 });
 
     // Verify the "Planning" pill is visible (indicating the work mode was set).
     // This may be rendered as a badge, chip, or label near the task title.
-    const planningPill = page
-      .locator("text=Planning")
-      .filter({ hasText: /planning/i });
-    await expect(planningPill.first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("Planning").first()).toBeVisible({ timeout: 5_000 });
+  }
+
+  test("creating a planning-mode task shows Planning pill", async ({ page, request }) => {
+    await openSeededIssues(page, request);
+    await createPlanningTask(page, "Planning review: architecture");
   });
 
-  test("planning-mode task does not trigger a heartbeat run", async ({ page }) => {
+  test("planning-mode task does not trigger a heartbeat run", async ({ page, request }) => {
     test.skip(SKIP_LLM, "skipped unless AOA_E2E_SKIP_LLM=false");
 
-    // Navigate to the home page.
-    await page.goto("/");
+    await openSeededIssues(page, request);
+    const title = "Planning review: heartbeat gate";
+    await createPlanningTask(page, title);
 
-    // Verify the task created in the previous test is still visible.
-    // This assumes test isolation or a persistent task across tests.
-    const taskTitle = page.getByText("Planning review: architecture");
+    const taskTitle = page.getByText(title);
     await expect(taskTitle).toBeVisible({ timeout: 5_000 });
 
     // Locate the task row and check its status is "todo" (not "in_progress").
     // The status may be shown as a badge, label, or column in a list/board view.
     const taskRow = page
-      .locator("text=Planning review: architecture")
+      .locator(`text=${title}`)
       .locator("..")
       .locator("..");
     const statusElement = taskRow.locator("text=todo");

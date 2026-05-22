@@ -280,14 +280,14 @@ test.describe("Marketplace UI", () => {
     ).toBeVisible({ timeout: 10_000 });
   });
 
-  test("/:prefix/marketplace-updates shows 'All up to date' for a new company", async ({
+  test("/:prefix/marketplace-updates shows the empty up-to-date state for a new company", async ({
     page,
     request,
   }) => {
     const company = await seedCompany(request, `E2E-MKT-${Date.now()}`);
     await page.goto(`/${company.issuePrefix}/marketplace-updates`);
 
-    await expect(page.getByText("All up to date")).toBeVisible({
+    await expect(page.getByText("All marketplace items are up to date")).toBeVisible({
       timeout: 15_000,
     });
   });
