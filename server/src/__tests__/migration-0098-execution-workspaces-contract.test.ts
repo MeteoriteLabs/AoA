@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 const MIGRATION_PATH = resolve(
   __dirname,
-  "../../../packages/db/src/migrations/0098_square_spectrum.sql",
+  "../../../packages/db/src/migrations/0099_square_spectrum.sql",
 );
 
 describe("Migration 0098 — execution workspace active task uniqueness", () => {
