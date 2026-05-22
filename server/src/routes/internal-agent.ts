@@ -258,7 +258,7 @@ export function internalAgentRoutes(db: Db) {
                 // Derive from the calling actor — Commander chat is the only path that hits
                 // requiresConfirmation today, but typing this properly future-proofs against
                 // other actors invoking confirmed tools.
-                actorType: actor.actorType ?? "commander",
+                actorType: "commander" as const,
               });
               const paramsSummary =
                 chunk.params &&
