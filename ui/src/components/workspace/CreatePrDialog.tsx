@@ -397,6 +397,8 @@ export function CreatePrDialog({
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Loading collaborators…
                 </div>
+              ) : collaboratorsQuery.isError ? (
+                <p className="text-xs text-destructive">Could not load collaborators.</p>
               ) : (collaboratorsQuery.data ?? []).length === 0 ? (
                 <p className="text-xs text-muted-foreground">No collaborators found.</p>
               ) : (
@@ -433,6 +435,10 @@ export function CreatePrDialog({
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Loading labels…
                 </div>
+              ) : labelsQuery.isError ? (
+                <p className="text-xs text-destructive">Could not load labels.</p>
+              ) : (labelsQuery.data ?? []).length === 0 ? (
+                <p className="text-xs text-muted-foreground">No labels found.</p>
               ) : (
                 <div className="flex flex-wrap gap-2">
                   {(labelsQuery.data ?? []).map((l: GitHubRepoLabel) => (
@@ -465,7 +471,7 @@ export function CreatePrDialog({
                   Milestone
                 </Label>
                 <select
-                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                  className="w-full rounded-md border border-input bg-transparent h-9 px-2.5 text-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
                   value={selectedMilestone ?? ""}
                   onChange={(e) =>
                     setSelectedMilestone(e.target.value ? Number(e.target.value) : null)
