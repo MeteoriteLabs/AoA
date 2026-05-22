@@ -1,5 +1,6 @@
 import { api } from "./client";
 import type {
+  GitHubAppStatus,
   GitHubPrCreateRequest,
   GitHubPrCreateResponse,
   GitHubPrSyncResponse,
@@ -11,6 +12,16 @@ import type {
 } from "@armyofagents/shared";
 
 export const githubIntegrationApi = {
+  // ── GitHub App auth ───────────────────────────────────────────────────────
+  getAppInstallUrl: (companyId: string) =>
+    api.get<{ url: string }>(`/companies/${companyId}/github/app/install-url`),
+
+  appStatus: (companyId: string) =>
+    api.get<GitHubAppStatus>(`/companies/${companyId}/github/app/status`),
+
+  disconnectApp: (companyId: string) =>
+    api.delete<{ removed: boolean }>(`/companies/${companyId}/github/app`),
+
   // ── Auth ──────────────────────────────────────────────────────────────────
   setPat: (companyId: string, pat: string) =>
     api.post<{ configured: boolean; githubUser: string }>(
