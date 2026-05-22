@@ -261,6 +261,136 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     );
   });
 
+  it("honors reopen=true for attachment comments and wakes with reopen context", async () => {
+    const closedIssue = makeIssue({ status: "done" });
+    const reopenedIssue = makeIssue({ status: "todo" });
+    mockIssueService.getById.mockResolvedValue(closedIssue);
+    mockIssueService.update.mockResolvedValue(reopenedIssue);
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments-with-attachments`)
+      .field("body", "Reopen with evidence")
+      .field("reopen", "true")
+      .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(issueId, { status: "todo" });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        entityId: issueId,
+        details: expect.objectContaining({
+          status: "todo",
+          reopened: true,
+          reopenedFrom: "done",
+          source: "comment",
+        }),
+      }),
+    );
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      assigneeAgentId,
+      expect.objectContaining({
+        reason: "issue_reopened_via_comment",
+        payload: expect.objectContaining({
+          issueId,
+          commentId: "comment-1",
+          reopenedFrom: "done",
+          attachmentCount: 1,
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId,
+          taskId: issueId,
+          wakeCommentId: "comment-1",
+          wakeReason: "issue_reopened_via_comment",
+          reopenedFrom: "done",
+          attachmentCount: 1,
+        }),
+      }),
+    );
+  });
+
+  it("honors interrupt=true for board attachment comments and includes interruptedRunId in wake context", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: "run-active" }));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-active",
+      companyId,
+      agentId: assigneeAgentId,
+      status: "running",
+    });
+    mockHeartbeatService.cancelRun.mockResolvedValue({
+      id: "run-active",
+      companyId,
+      agentId: assigneeAgentId,
+    });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments-with-attachments`)
+      .field("body", "Stop and inspect this")
+      .field("interrupt", "true")
+      .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+
+    expect(res.status).toBe(201);
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-active");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("run-active");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "heartbeat.cancelled",
+        entityType: "heartbeat_run",
+        entityId: "run-active",
+        details: expect.objectContaining({
+          agentId: assigneeAgentId,
+          source: "issue_comment_interrupt",
+          issueId,
+        }),
+      }),
+    );
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      assigneeAgentId,
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          issueId,
+          commentId: "comment-1",
+          interruptedRunId: "run-active",
+          attachmentCount: 1,
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId,
+          taskId: issueId,
+          wakeCommentId: "comment-1",
+          interruptedRunId: "run-active",
+          attachmentCount: 1,
+        }),
+      }),
+    );
+  });
+
+  it("rejects interrupt=true for non-board attachment comments before creating comments or attachments", async () => {
+    const res = await request(createApp({
+      type: "agent",
+      agentId: assigneeAgentId,
+      companyId,
+      runId: "agent-run-1",
+    }))
+      .post(`/api/issues/${issueId}/comments-with-attachments`)
+      .field("body", "Try to interrupt with evidence")
+      .field("interrupt", "true")
+      .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      error: "Only board users can interrupt active runs from issue comments",
+    });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("accepts common context document attachments, not only images", async () => {
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/comments-with-attachments`)
