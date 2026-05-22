@@ -572,7 +572,12 @@ export function githubRoutes(db: Db) {
     if (!pr) { res.status(400).json({ error: "No PR linked to this workspace" }); return; }
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
-    await mergeWorkspacePr(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number, mergeMethod: parsed.data.mergeMethod });
+    try {
+      await mergeWorkspacePr(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number, mergeMethod: parsed.data.mergeMethod });
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      throw err;
+    }
 
     const updatedPr = { ...pr, state: "merged" as const };
     await wsSvc.update(ws.id, { metadata: { ...meta, pr: updatedPr } });
@@ -593,7 +598,12 @@ export function githubRoutes(db: Db) {
     if (!pr) { res.status(400).json({ error: "No PR linked to this workspace" }); return; }
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
-    await closeWorkspacePr(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number });
+    try {
+      await closeWorkspacePr(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number });
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      throw err;
+    }
     await wsSvc.update(ws.id, { metadata: { ...meta, pr: { ...pr, state: "closed" as const } } });
 
     const response: GitHubPrActionResponse = { success: true, prState: "closed", prUrl: pr.url };
@@ -612,7 +622,12 @@ export function githubRoutes(db: Db) {
     if (!pr) { res.status(400).json({ error: "No PR linked to this workspace" }); return; }
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
-    await reopenWorkspacePr(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number });
+    try {
+      await reopenWorkspacePr(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number });
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      throw err;
+    }
     await wsSvc.update(ws.id, { metadata: { ...meta, pr: { ...pr, state: "open" as const } } });
 
     const response: GitHubPrActionResponse = { success: true, prState: "open", prUrl: pr.url };
@@ -633,7 +648,12 @@ export function githubRoutes(db: Db) {
     if (!pr) { res.status(400).json({ error: "No PR linked to this workspace" }); return; }
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
-    await requestPrReview(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number, reviewers: parsed.data.reviewers });
+    try {
+      await requestPrReview(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number, reviewers: parsed.data.reviewers });
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      throw err;
+    }
     res.json({ success: true });
   });
 
