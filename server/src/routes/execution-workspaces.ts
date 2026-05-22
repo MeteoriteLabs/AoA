@@ -358,6 +358,7 @@ export function executionWorkspaceRoutes(db: Db) {
     )?.workspaceRuntime ?? null;
 
     const effectiveRuntimeConfig = existing.config?.workspaceRuntime ?? projectWorkspaceRuntime ?? null;
+    const effectiveRuntimeServices = await svc.loadEffectiveRuntimeServicesByExecutionWorkspace(existing.id);
 
     let target: WorkspaceRuntimeControlTarget;
     try {
@@ -373,7 +374,7 @@ export function executionWorkspaceRoutes(db: Db) {
 
     if (
       target.runtimeServiceId
-      && !(existing.runtimeServices ?? []).some((service) => service.id === target.runtimeServiceId)
+      && !effectiveRuntimeServices.some((service) => service.id === target.runtimeServiceId)
     ) {
       res.status(404).json({ error: "Runtime service not found for this execution workspace" });
       return;
@@ -424,7 +425,7 @@ export function executionWorkspaceRoutes(db: Db) {
         recorder,
       );
 
-    let runtimeServiceCount = existing.runtimeServices?.length ?? 0;
+    let runtimeServiceCount = effectiveRuntimeServices.length;
     const stdout: string[] = [];
     const stderr: string[] = [];
     const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
@@ -468,7 +469,7 @@ export function executionWorkspaceRoutes(db: Db) {
 
       const currentDesiredState: "running" | "stopped" =
         existing.config?.desiredState
-        ?? ((existing.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running")
+        ?? (effectiveRuntimeServices.some((service) => service.status === "starting" || service.status === "running")
           ? "running"
           : "stopped");
       const nextRuntimeState = selectedRuntimeServiceId && selectedServiceIndex === null

@@ -71,7 +71,11 @@ export default defineConfig({
           AOA_BIND: "loopback",
           AOA_DEPLOYMENT_MODE: "local_trusted",
           AOA_DEPLOYMENT_EXPOSURE: "private",
+          AOA_VITE_HMR_PORT: String(PORT + 10_000),
           AOA_E2E_FAKE_AWS_SECRETS_MANAGER: "1",
+          // Pin e2e marketplace data to the copied bundled fixture. The
+          // service falls back to bundled data when the CDN cannot be reached.
+          AOA_MARKETPLACE_CDN_URL: "http://127.0.0.1:1/catalog.json",
         },
       },
   outputDir: "./test-results",

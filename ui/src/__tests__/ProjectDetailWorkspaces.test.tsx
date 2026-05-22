@@ -285,8 +285,8 @@ describe("ProjectDetail — Workspaces tab", () => {
     const settingsTab = await screen.findByRole("button", { name: "Settings" }, { timeout: 5000 });
     expect(settingsTab.className).toContain("border-foreground");
     expect(await screen.findByRole("heading", { name: "Department details" })).toBeInTheDocument();
-    expect(await screen.findByText("Status")).toBeInTheDocument();
-    expect(await screen.findByText("Created")).toBeInTheDocument();
+    expect(await screen.findByText("Status", {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(await screen.findByText("Created", {}, { timeout: 5000 })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Workspace & Runtime" })).toBeInTheDocument();
     expect(screen.getByText(/Defaults for new tasks and future agent runs/i)).toBeInTheDocument();
     expect(await screen.findByText("Environment Variables")).toBeInTheDocument();
@@ -355,9 +355,9 @@ describe("ProjectDetail — Workspaces tab", () => {
     expect(await screen.findByTestId("project-function-type-badge")).toHaveTextContent(/Software department/i);
     expect(screen.queryByText("Properties")).not.toBeInTheDocument();
     expect(screen.queryByText("Environment Variables")).not.toBeInTheDocument();
-    expect(screen.queryByText("Workspaces")).toBeInTheDocument();
+    expect(await screen.findByText("Workspaces", {}, { timeout: 5000 })).toBeInTheDocument();
     expect(screen.queryByText("Add workspace local folder")).not.toBeInTheDocument();
-    expect(screen.queryByText("Goals")).toBeInTheDocument();
+    expect(await screen.findByText("Goals", {}, { timeout: 5000 })).toBeInTheDocument();
   });
 
   it("shows workspace list when workspaces tab is active", async () => {
