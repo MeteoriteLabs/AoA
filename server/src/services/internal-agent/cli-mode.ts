@@ -12,6 +12,17 @@ import type { CLISession } from "./cli-session-store.js";
 import { StreamJsonParser } from "./parse-stream-json.js";
 import { logger } from "../../middleware/logger.js";
 
+// ── Session ID Validation ─────────────────────────────────────────────────────
+
+// Validate session IDs from external process output before using them as spawn args.
+// On Windows, spawn uses shell:true so metacharacters in args execute as shell commands.
+const SAFE_SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
+
+export function validateSessionId(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  return SAFE_SESSION_ID_RE.test(raw) ? raw : null;
+}
+
 // ── CLI Detection ─────────────────────────────────────────────────────────────
 
 // Maps config values (from DB/constants) to binary names
@@ -884,7 +895,9 @@ async function* runCodexTurn(
   const parsed = parseCodexJsonl(result.stdout);
 
   // Persist/refresh the codex sessionId for the NEXT turn's `resume`.
-  args.onSessionId(parsed.sessionId);
+  // Validate against safe-char allowlist before storing — on Windows, spawn
+  // uses shell:true so metacharacters in args execute as shell commands (C2).
+  args.onSessionId(validateSessionId(parsed.sessionId));
 
   const errorMessage =
     parsed.errorMessage ??
