@@ -56,6 +56,20 @@ import {
 } from "@/components/ui/tooltip";
 
 /* ------------------------------------------------------------------ */
+/*  Auto-scroll proximity helper (exported for unit-testing)          */
+/* ------------------------------------------------------------------ */
+
+/** Returns true if the scroll container is close enough to the bottom to auto-scroll. */
+export function shouldAutoScroll(
+  scrollHeight: number,
+  scrollTop: number,
+  clientHeight: number,
+  thresholdPx = 120,
+): boolean {
+  return scrollHeight - scrollTop - clientHeight <= thresholdPx;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Abort cleanup helper (exported for unit-testing)                  */
 /* ------------------------------------------------------------------ */
 
@@ -332,7 +346,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   useEffect(() => {
     const el = messagesContainerRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    if (shouldAutoScroll(el.scrollHeight, el.scrollTop, el.clientHeight)) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [messages.length, messages[messages.length - 1]?.content, messages[messages.length - 1]?.actionConfirm]);
 
   // Focus input when panel opens
