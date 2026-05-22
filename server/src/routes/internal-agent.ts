@@ -42,9 +42,26 @@ interface PendingConfirmation {
   userRole: UserRole;
   enabledCapabilities: string[];
   actorType?: string;
+  expiresAt: number;  // Unix ms — TTL timestamp
 }
 
 const pendingConfirmations = new Map<string, PendingConfirmation>();
+
+export const CONFIRMATION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+// Remove stale confirmations from users who closed the tab mid-confirmation.
+// unref() prevents this timer from keeping the process alive during shutdown.
+// _confirmationSweep: retained (not dead code) — unref() prevents the timer from
+// keeping the process alive after server shutdown. The interval callback runs every 5 min.
+const _confirmationSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of pendingConfirmations) {
+    if (entry.expiresAt < now) pendingConfirmations.delete(id);
+  }
+}, 5 * 60 * 1000); // sweep every 5 minutes
+if (typeof (_confirmationSweep as any).unref === "function") {
+  (_confirmationSweep as any).unref();
+}
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -259,6 +276,7 @@ export function internalAgentRoutes(db: Db) {
                 // requiresConfirmation today, but typing this properly future-proofs against
                 // other actors invoking confirmed tools.
                 actorType: "commander" as const,
+                expiresAt: Date.now() + CONFIRMATION_TTL_MS,
               });
               const paramsSummary =
                 chunk.params &&
@@ -352,8 +370,11 @@ export function internalAgentRoutes(db: Db) {
       const { confirmId, approved } = req.body as { confirmId: string; approved: boolean };
 
       const pending = pendingConfirmations.get(confirmId);
-      if (!pending) {
-        throw notFound(`No pending confirmation for id: ${confirmId}`);
+      if (!pending) throw notFound(`No pending confirmation for id: ${confirmId}`);
+      // Treat expired entries the same as missing.
+      if (pending.expiresAt < Date.now()) {
+        pendingConfirmations.delete(confirmId);
+        throw notFound(`Confirmation expired for id: ${confirmId}`);
       }
 
       if (pending.companyId !== companyId) {
