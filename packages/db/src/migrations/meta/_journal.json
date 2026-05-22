@@ -757,6 +757,13 @@
       "when": 1779436911290,
       "tag": "0107_real_vulcan",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1779477121243,
+      "tag": "0108_military_george_stacy",
+      "breakpoints": true
     }
   ]
 }
