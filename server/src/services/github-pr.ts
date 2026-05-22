@@ -39,7 +39,7 @@ export function parseGitHubRepoUrl(repoUrl: string): { owner: string; repo: stri
   return { owner: match[1]!, repo: match[2]! };
 }
 
-async function resolveGitHubPat(
+export async function resolveGitHubPat(
   db: Db,
   companyId: string,
   consumerId: string,
