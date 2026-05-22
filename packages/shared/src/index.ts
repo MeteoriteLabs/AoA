@@ -492,6 +492,12 @@ export type {
   GitHubPrMetadata,
   GitHubPrSyncMetadata,
   GitHubPrSyncResponse,
+  GitHubRepoCollaborator,
+  GitHubRepoLabel,
+  GitHubRepoMilestone,
+  GitHubPrMergeMethod,
+  GitHubPrMergeRequest,
+  GitHubPrActionResponse,
   // Git Command Centre
   GitPrReviewState,
   GitCIStatus,
