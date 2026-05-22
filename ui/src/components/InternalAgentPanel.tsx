@@ -56,6 +56,26 @@ import {
 } from "@/components/ui/tooltip";
 
 /* ------------------------------------------------------------------ */
+/*  Abort cleanup helper (exported for unit-testing)                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Returns a cleanup function that calls `abort()` on whatever AbortController
+ * is stored in `abortRef` at the time the cleanup runs.  This is the exact
+ * logic used inside `AgentPanelContent`'s unmount useEffect (B1).
+ *
+ * Exported so the behaviour can be unit-tested against the real production
+ * code rather than a test-local replica.
+ */
+export function createAbortCleanup(
+  abortRef: React.MutableRefObject<AbortController | null>,
+): () => void {
+  return () => {
+    abortRef.current?.abort();
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Tool call display names                                            */
 /* ------------------------------------------------------------------ */
 
@@ -200,6 +220,11 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const inputRef = useRef<CommanderInputHandle>(null);
   const inputBarRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Abort any in-flight SSE stream when the component unmounts (B1).
+  // Uses the exported createAbortCleanup helper (testable against production code).
+  useEffect(() => createAbortCleanup(abortRef), []);
+
   const localIdRef = useRef(0);
   const toolCallIdRef = useRef(0);
   // Track which message id had its Copy button recently clicked (for checkmark feedback)
