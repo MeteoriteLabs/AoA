@@ -115,6 +115,18 @@ export function agentLoopService(db: Db) {
           return;
         }
 
+        // Ownership guard: when a specific conversationId was requested, reject
+        // if the fetched conversation belongs to a different user or company.
+        // Treat as not-found to avoid leaking existence.
+        if (
+          params.conversationId &&
+          (conversation.companyId !== params.companyId ||
+            conversation.userId !== params.userId)
+        ) {
+          yield { type: "error", message: "Conversation not found." };
+          return;
+        }
+
         // 2. Persist the user message
         await convService.appendMessage(conversation.id, {
           role: "user",
