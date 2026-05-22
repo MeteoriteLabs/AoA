@@ -402,6 +402,34 @@ export function internalAgentRoutes(db: Db) {
 
       // Direct re-execution: bypass Commander's LLM and run the tool with the
       // exact stored params. Industry-standard pattern.
+      //
+      // Permissions are re-fetched fresh here — do NOT use pending.userRole or
+      // pending.enabledCapabilities. Those were snapshotted at prompt time and
+      // may be stale if the user's role or company capabilities changed within
+      // the TTL window. Using stale values would allow execution under
+      // revoked permissions (privilege-retention gap).
+      const isLocalImplicit =
+        req.actor.type === "board" && req.actor.source === "local_implicit";
+      const isInstanceAdmin =
+        req.actor.type === "board" && req.actor.isInstanceAdmin === true;
+
+      let currentUserRole: UserRole;
+      if (isLocalImplicit || isInstanceAdmin) {
+        currentUserRole = "founder";
+      } else {
+        const role = await permissionService(db).getEffectiveRole(
+          companyId,
+          actor.actorId,
+        );
+        currentUserRole = role ?? "team_member";
+      }
+
+      const cfgRowsForConfirm = await db
+        .select({ enabledCapabilities: internalAgentConfig.enabledCapabilities })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId));
+      const currentCapabilities =
+        (cfgRowsForConfirm[0]?.enabledCapabilities as string[] | null) ?? [];
 
       const tools = createToolRegistry();
       const tool = tools.find((t) => t.name === pending.toolName);
@@ -413,8 +441,8 @@ export function internalAgentRoutes(db: Db) {
       const toolContext = {
         companyId: pending.companyId,
         userId: pending.userId,
-        userRole: pending.userRole,
-        enabledCapabilities: pending.enabledCapabilities,
+        userRole: currentUserRole,           // fresh — not pending.userRole
+        enabledCapabilities: currentCapabilities, // fresh — not pending.enabledCapabilities
         agentKind: undefined,
         toolAllowlist: [] as string[],
         actorType: pending.actorType,
