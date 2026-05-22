@@ -157,4 +157,5 @@ These are read by tests and dev scripts; you should not need to set them in prod
 | `AOA_TEST_ARGS_PATH` | Path where test harnesses dump captured argv |
 | `AOA_TEST_CAPTURE_PATH` | Path where test harnesses dump captured stdin/env |
 | `AOA_CONTEXT` | CLI context-file override |
+| `AOA_E2E_FAKE_AWS_SECRETS_MANAGER` | Playwright/vitest harness flag for the fake AWS Secrets Manager provider |
 | `AOA_E2E_PORT` / `AOA_E2E_SKIP_LLM` / `AOA_E2E_SKIP_MCP` | Playwright e2e harness — see `tests/README.md` |
