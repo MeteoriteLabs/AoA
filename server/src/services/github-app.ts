@@ -1,7 +1,6 @@
 import { createAppAuth } from "@octokit/auth-app";
 import { eq } from "drizzle-orm";
-import { githubInstallations, type GitHubInstallation, type NewGitHubInstallation } from "@armyofagents/db";
-import type { Db } from "@armyofagents/db";
+import { githubInstallations, type Db, type GitHubInstallation, type NewGitHubInstallation } from "@armyofagents/db";
 
 // ---------------------------------------------------------------------------
 // Install URL
@@ -24,7 +23,10 @@ import type { Db } from "@armyofagents/db";
  * no tunnelling required for development.
  */
 export function getInstallUrl(state: string): string {
-  const slug = process.env.GITHUB_APP_SLUG ?? "";
+  const slug = process.env.GITHUB_APP_SLUG;
+  if (!slug) {
+    throw new Error("GITHUB_APP_SLUG must be set to generate a GitHub App install URL");
+  }
   return `https://github.com/apps/${slug}/installations/new?state=${encodeURIComponent(state)}`;
 }
 
@@ -71,6 +73,7 @@ export async function saveInstallation(
   // Upsert: delete existing row first (uniqueness is on company_id), then insert.
   await db.delete(githubInstallations).where(eq(githubInstallations.companyId, args.companyId));
   const [row] = await db.insert(githubInstallations).values(values).returning();
+  if (!row) throw new Error("Insert failed: no row returned from github_installations");
   return row;
 }
 

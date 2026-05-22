@@ -17,7 +17,6 @@ const mockDb = vi.hoisted(() => {
   const values = vi.fn(() => ({ returning: returningFn }));
   const insert = vi.fn(() => ({ values }));
 
-  const deleteFn = vi.fn().mockResolvedValue([]);
   // deleteWhere returns a promise-like so `await db.delete(table).where(cond)` resolves
   const deleteWhere = vi.fn().mockResolvedValue([]);
   // Drizzle uses `db.delete()` — the key MUST be the string "delete" (reserved word)
@@ -49,6 +48,11 @@ describe("getInstallUrl", () => {
     // Must NOT be the OAuth authorize URL
     expect(url).not.toContain("login/oauth/authorize");
   });
+
+  it("throws when GITHUB_APP_SLUG is not set", () => {
+    delete process.env.GITHUB_APP_SLUG;
+    expect(() => getInstallUrl("company-abc")).toThrow("GITHUB_APP_SLUG");
+  });
 });
 
 describe("saveInstallation", () => {
@@ -69,6 +73,8 @@ describe("saveInstallation", () => {
       accountType: "Organization",
     });
 
+    // upsert = delete-then-insert — both must be called
+    expect(mockDb.delete).toHaveBeenCalled();
     expect(mockDb.insert).toHaveBeenCalled();
     expect(result.installationId).toBe("12345");
   });
