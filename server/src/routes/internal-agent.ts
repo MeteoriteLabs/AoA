@@ -39,8 +39,6 @@ interface PendingConfirmation {
   params: unknown;
   companyId: string;
   userId: string;
-  userRole: UserRole;
-  enabledCapabilities: string[];
   actorType?: string;
   expiresAt: number;  // Unix ms — TTL timestamp
 }
@@ -270,11 +268,9 @@ export function internalAgentRoutes(db: Db) {
                 params: chunk.params,
                 companyId,
                 userId: actor.actorId,
-                userRole,
-                enabledCapabilities,
-                // Derive from the calling actor — Commander chat is the only path that hits
-                // requiresConfirmation today, but typing this properly future-proofs against
-                // other actors invoking confirmed tools.
+                // Permissions are re-fetched fresh at confirm time (see /confirm handler).
+                // Do NOT snapshot userRole or enabledCapabilities here — stale values
+                // must not flow into executeTool. [Codex-P1 fix, commit 0a1c9386]
                 actorType: "commander" as const,
                 expiresAt: Date.now() + CONFIRMATION_TTL_MS,
               });
