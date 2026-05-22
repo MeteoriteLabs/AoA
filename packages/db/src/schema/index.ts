@@ -97,7 +97,7 @@ export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { feedbackVotes } from "./feedback_votes.js";
 export { feedbackExports } from "./feedback_exports.js";
-export { githubInstallations } from "./github_installations.js";
+export { githubInstallations, type GitHubInstallation, type NewGitHubInstallation } from "./github_installations.js";
 
 // Plugin system
 export { plugins } from "./plugins.js";
