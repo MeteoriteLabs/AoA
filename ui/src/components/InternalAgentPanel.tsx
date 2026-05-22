@@ -290,7 +290,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     setStreamingLocal(false);
   }, [conversationId]);
 
-  // Populate messages from history when historyData arrives
+  // Populate messages from history when historyData arrives.
+  // conversationId is included so the effect re-fires when switching between
+  // cached conversations (TanStack Query returns the same object reference on a
+  // cache hit, so [historyData] alone would not trigger a re-run).
   useEffect(() => {
     if (!historyData?.messages?.length) return;
     const loaded: LocalMessage[] = historyData.messages
@@ -303,7 +306,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         createdAt: m.createdAt,
       }));
     setMessages(loaded);
-  }, [historyData]);
+  }, [historyData, conversationId]);
 
   // Sync server messages into local state (only when not streaming AND no specific conversation is selected)
   useEffect(() => {
