@@ -1,6 +1,6 @@
 {
-  "id": "b1c12412-2d1d-4087-a702-21dc1c8316d6",
-  "prevId": "1ad71d67-51b0-484c-a437-b41313ff1395",
+  "id": "25878b25-4e6a-49ef-83da-40c75722a93d",
+  "prevId": "7ffdbb0c-efa1-45e5-ab25-81056d9a4730",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1715,148 +1715,6 @@
             "id"
           ],
           "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.aoa_agent_triggers": {
-      "name": "aoa_agent_triggers",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "enabled": {
-          "name": "enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "config": {
-          "name": "config",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "aoa_triggers_company_agent_idx": {
-          "name": "aoa_triggers_company_agent_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "aoa_triggers_company_kind_enabled_idx": {
-          "name": "aoa_triggers_company_kind_enabled_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "enabled",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "aoa_agent_triggers_company_id_companies_id_fk": {
-          "name": "aoa_agent_triggers_company_id_companies_id_fk",
-          "tableFrom": "aoa_agent_triggers",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "aoa_agent_triggers_agent_id_agents_id_fk": {
-          "name": "aoa_agent_triggers_agent_id_agents_id_fk",
-          "tableFrom": "aoa_agent_triggers",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -5277,13 +5135,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "trigger_phrases": {
-          "name": "trigger_phrases",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'[]'::jsonb"
         },
         "markdown": {
           "name": "markdown",
@@ -10234,12 +10085,6 @@
           "notNull": false,
           "default": "'{}'::jsonb"
         },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -10284,19 +10129,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "internal_agent_config_agent_id_agents_id_fk": {
-          "name": "internal_agent_config_agent_id_agents_id_fk",
-          "tableFrom": "internal_agent_config",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -10840,12 +10672,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "conversation_message_id": {
           "name": "conversation_message_id",
           "type": "uuid",
@@ -10995,27 +10821,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "ia_runs_agent_idx": {
-          "name": "ia_runs_agent_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -11038,19 +10843,6 @@
           "tableTo": "projects",
           "columnsFrom": [
             "department_context"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "internal_agent_runs_agent_id_agents_id_fk": {
-          "name": "internal_agent_runs_agent_id_agents_id_fk",
-          "tableFrom": "internal_agent_runs",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "agent_id"
           ],
           "columnsTo": [
             "id"

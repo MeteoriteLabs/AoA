@@ -1,6 +1,6 @@
 {
-  "id": "1c7b259c-8f83-4275-987b-9d0221e8c09f",
-  "prevId": "59c8f348-1848-4d4f-9d87-530400f94874",
+  "id": "5927a960-e0a1-4e81-9314-a26db5b7341c",
+  "prevId": "6d437d45-4c81-4ced-bd72-34abe9897f80",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1672,28 +1672,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agents_aoa_name_per_company_idx": {
-          "name": "agents_aoa_name_per_company_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"agents\".\"kind\" = 'aoa'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -10416,12 +10394,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "sort_order": {
-          "name": "sort_order",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",

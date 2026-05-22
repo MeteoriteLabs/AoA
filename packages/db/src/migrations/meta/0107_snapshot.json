@@ -1,6 +1,6 @@
 {
-  "id": "1ad71d67-51b0-484c-a437-b41313ff1395",
-  "prevId": "25878b25-4e6a-49ef-83da-40c75722a93d",
+  "id": "1c7b259c-8f83-4275-987b-9d0221e8c09f",
+  "prevId": "59c8f348-1848-4d4f-9d87-530400f94874",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1672,6 +1672,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agents_aoa_name_per_company_idx": {
+          "name": "agents_aoa_name_per_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"agents\".\"kind\" = 'aoa'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -5277,6 +5299,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "trigger_phrases": {
+          "name": "trigger_phrases",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'[]'::jsonb"
         },
         "markdown": {
           "name": "markdown",
@@ -10227,6 +10256,12 @@
           "notNull": false,
           "default": "'{}'::jsonb"
         },
+        "commander_tool_permissions": {
+          "name": "commander_tool_permissions",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "agent_id": {
           "name": "agent_id",
           "type": "uuid",
@@ -10355,6 +10390,38 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "archived_at": {
+          "name": "archived_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pinned": {
+          "name": "pinned",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "shared_with_company": {
+          "name": "shared_with_company",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "sort_order": {
+          "name": "sort_order",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",

@@ -1,6 +1,6 @@
 {
-  "id": "59c8f348-1848-4d4f-9d87-530400f94874",
-  "prevId": "5927a960-e0a1-4e81-9314-a26db5b7341c",
+  "id": "6d437d45-4c81-4ced-bd72-34abe9897f80",
+  "prevId": "050e2738-dfe8-4a65-a4e1-d0b0ab3cefc8",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -10381,25 +10381,12 @@
           "primaryKey": false,
           "notNull": false
         },
-        "pinned": {
-          "name": "pinned",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "shared_with_company": {
           "name": "shared_with_company",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "sort_order": {
-          "name": "sort_order",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",
