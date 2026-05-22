@@ -179,11 +179,9 @@ function gitStatusChipLabel({
 // ---------------------------------------------------------------------------
 
 function RequestReviewInline({
-  workspaceId: _workspaceId,
   onClose,
   onSubmit,
 }: {
-  workspaceId: string;
   onClose: () => void;
   onSubmit: (reviewers: string[]) => Promise<void>;
 }) {
@@ -201,6 +199,7 @@ function RequestReviewInline({
     <div className="flex items-center gap-1.5 pt-1">
       <input
         autoFocus
+        aria-label="Reviewer logins, comma-separated"
         className="flex-1 rounded-md border border-input bg-transparent px-2 py-1 text-xs outline-none"
         placeholder="logins, comma-separated"
         value={input}
@@ -333,6 +332,7 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
     onContinue: () => void;
   } | null>(null);
   const [checkingSafetyFor, setCheckingSafetyFor] = useState<"commit" | "push" | null>(null);
+  const [showRequestReviewDialog, setShowRequestReviewDialog] = useState(false);
 
   // ── Live git status query ──
   const {
@@ -488,33 +488,34 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
       githubIntegrationApi.mergePr(workspace.id, { mergeMethod }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.detail(workspace.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(workspace.companyId) });
       pushToast({ title: "PR merged successfully", tone: "success" });
     },
-    onError: (err) =>
-      pushToast({ title: err instanceof Error ? err.message : "Merge failed", tone: "warn" }),
+    onError: (err: Error) =>
+      pushToast({ title: err.message || "Merge failed", tone: "error" }),
   });
 
   const closePrMutation = useMutation({
     mutationFn: () => githubIntegrationApi.closePr(workspace.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.detail(workspace.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(workspace.companyId) });
       pushToast({ title: "PR closed", tone: "success" });
     },
-    onError: (err) =>
-      pushToast({ title: err instanceof Error ? err.message : "Close failed", tone: "warn" }),
+    onError: (err: Error) =>
+      pushToast({ title: err.message || "Close failed", tone: "error" }),
   });
 
   const reopenPrMutation = useMutation({
     mutationFn: () => githubIntegrationApi.reopenPr(workspace.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.detail(workspace.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(workspace.companyId) });
       pushToast({ title: "PR reopened", tone: "success" });
     },
-    onError: (err) =>
-      pushToast({ title: err instanceof Error ? err.message : "Reopen failed", tone: "warn" }),
+    onError: (err: Error) =>
+      pushToast({ title: err.message || "Reopen failed", tone: "error" }),
   });
-
-  const [showRequestReviewDialog, setShowRequestReviewDialog] = useState(false);
 
   // ── Copy branch name ──
   const handleCopy = async () => {
@@ -1009,7 +1010,6 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
 
       {pr && showRequestReviewDialog && (
         <RequestReviewInline
-          workspaceId={workspace.id}
           onClose={() => setShowRequestReviewDialog(false)}
           onSubmit={async (reviewers) => {
             await githubIntegrationApi.requestReview(workspace.id, reviewers);
