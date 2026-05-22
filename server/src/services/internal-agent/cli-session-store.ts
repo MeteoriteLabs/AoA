@@ -15,13 +15,11 @@ export interface CLISession {
   mcpProcess: ChildProcess | null; // null when CLI manages bridge internally
   cliTool: CLIToolType;
   /**
-   * codex conversation id (from a `thread.started` event). Present only for
+   * Codex conversation id (from a `thread.started` event). Present only for
    * codex sessions; the next turn re-spawns `codex exec … resume <id> -`.
    * Refreshed from each turn's parse. Undefined for claude (persistent
    * process) — MX-chatparse.
-   */
-  /**
-   * Codex conversation id for multi-turn resume.
+   *
    * INVARIANT: Only ever assigned via validateSessionId() output (see cli-mode.ts
    * onSessionId callback). Direct writes bypass the shell-injection guard — on
    * Windows, spawn uses shell:true so raw metacharacters in codex args execute
