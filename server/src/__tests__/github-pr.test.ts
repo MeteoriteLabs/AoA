@@ -78,6 +78,10 @@ import {
   createPullRequest,
   findPullRequestForBranch,
   parseGitHubRepoUrl,
+  mergeWorkspacePr,
+  closeWorkspacePr,
+  reopenWorkspacePr,
+  requestPrReview,
 } from "../services/github-pr.js";
 
 function createApp(actor: any) {
@@ -890,5 +894,120 @@ describe("Task 11 follow-up: DELETE /companies/:companyId/github/pat", () => {
     expect(res.body).toEqual({ configured: false, removed: false });
     expect(mockSvc.delete).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Unit tests: mergeWorkspacePr
+// -----------------------------------------------------------------------------
+
+describe("mergeWorkspacePr", () => {
+  beforeEach(() => {
+    mockSvc.getByName.mockResolvedValue({ id: "secret-1" });
+    mockSvc.resolveSecretValue.mockResolvedValue("ghp_validtoken");
+    mockOctokit.pulls.merge.mockResolvedValue({
+      data: { merged: true, sha: "abc123", message: "Pull Request successfully merged" },
+    });
+    mockOctokit.pulls.list.mockResolvedValue({
+      data: [{ number: 42, html_url: "https://github.com/myorg/myrepo/pull/42" }],
+    });
+  });
+
+  it("calls pulls.merge with squash method", async () => {
+    await mergeWorkspacePr({} as any, {
+      companyId: "company-1",
+      repoUrl: "https://github.com/myorg/myrepo",
+      prNumber: 42,
+      mergeMethod: "squash",
+    });
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledWith(
+      expect.objectContaining({ pull_number: 42, merge_method: "squash", owner: "myorg", repo: "myrepo" }),
+    );
+  });
+
+  it("throws GitHubPrError 412 when PAT not configured", async () => {
+    mockSvc.getByName.mockResolvedValue(null);
+    await expect(
+      mergeWorkspacePr({} as any, {
+        companyId: "company-1",
+        repoUrl: "https://github.com/myorg/myrepo",
+        prNumber: 42,
+        mergeMethod: "merge",
+      }),
+    ).rejects.toMatchObject({ status: 412 });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Unit tests: closeWorkspacePr
+// -----------------------------------------------------------------------------
+
+describe("closeWorkspacePr", () => {
+  beforeEach(() => {
+    mockSvc.getByName.mockResolvedValue({ id: "secret-1" });
+    mockSvc.resolveSecretValue.mockResolvedValue("ghp_validtoken");
+    mockOctokit.pulls.update.mockResolvedValue({
+      data: { number: 42, state: "closed", html_url: "https://github.com/myorg/myrepo/pull/42" },
+    });
+  });
+
+  it("calls pulls.update with state=closed", async () => {
+    await closeWorkspacePr({} as any, {
+      companyId: "company-1",
+      repoUrl: "https://github.com/myorg/myrepo",
+      prNumber: 42,
+    });
+    expect(mockOctokit.pulls.update).toHaveBeenCalledWith(
+      expect.objectContaining({ pull_number: 42, state: "closed" }),
+    );
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Unit tests: reopenWorkspacePr
+// -----------------------------------------------------------------------------
+
+describe("reopenWorkspacePr", () => {
+  beforeEach(() => {
+    mockSvc.getByName.mockResolvedValue({ id: "secret-1" });
+    mockSvc.resolveSecretValue.mockResolvedValue("ghp_validtoken");
+    mockOctokit.pulls.update.mockResolvedValue({
+      data: { number: 42, state: "open", html_url: "https://github.com/myorg/myrepo/pull/42" },
+    });
+  });
+
+  it("calls pulls.update with state=open", async () => {
+    await reopenWorkspacePr({} as any, {
+      companyId: "company-1",
+      repoUrl: "https://github.com/myorg/myrepo",
+      prNumber: 42,
+    });
+    expect(mockOctokit.pulls.update).toHaveBeenCalledWith(
+      expect.objectContaining({ pull_number: 42, state: "open" }),
+    );
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Unit tests: requestPrReview
+// -----------------------------------------------------------------------------
+
+describe("requestPrReview", () => {
+  beforeEach(() => {
+    mockSvc.getByName.mockResolvedValue({ id: "secret-1" });
+    mockSvc.resolveSecretValue.mockResolvedValue("ghp_validtoken");
+    mockOctokit.pulls.requestReviewers.mockResolvedValue({ data: {} });
+  });
+
+  it("calls pulls.requestReviewers with the given logins", async () => {
+    await requestPrReview({} as any, {
+      companyId: "company-1",
+      repoUrl: "https://github.com/myorg/myrepo",
+      prNumber: 42,
+      reviewers: ["alice", "bob"],
+    });
+    expect(mockOctokit.pulls.requestReviewers).toHaveBeenCalledWith(
+      expect.objectContaining({ pull_number: 42, reviewers: ["alice", "bob"] }),
+    );
   });
 });

@@ -352,3 +352,79 @@ export async function enrichBranchPr(
     return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// PR action helpers
+// ---------------------------------------------------------------------------
+
+export async function mergeWorkspacePr(
+  db: Db,
+  args: {
+    companyId: string;
+    repoUrl: string;
+    prNumber: number;
+    mergeMethod: "merge" | "squash" | "rebase";
+  },
+): Promise<{ sha: string }> {
+  const pat = await resolveGitHubPat(db, args.companyId, "github-pr");
+  const { owner, repo } = parseGitHubRepoUrl(args.repoUrl);
+  const octokit = new Octokit({ auth: pat });
+  try {
+    const { data } = await octokit.pulls.merge({
+      owner,
+      repo,
+      pull_number: args.prNumber,
+      merge_method: args.mergeMethod,
+    });
+    return { sha: data.sha ?? "" };
+  } catch (err) {
+    mapGitHubApiError(err, owner, repo);
+  }
+}
+
+export async function closeWorkspacePr(
+  db: Db,
+  args: { companyId: string; repoUrl: string; prNumber: number },
+): Promise<void> {
+  const pat = await resolveGitHubPat(db, args.companyId, "github-pr");
+  const { owner, repo } = parseGitHubRepoUrl(args.repoUrl);
+  const octokit = new Octokit({ auth: pat });
+  try {
+    await octokit.pulls.update({ owner, repo, pull_number: args.prNumber, state: "closed" });
+  } catch (err) {
+    mapGitHubApiError(err, owner, repo);
+  }
+}
+
+export async function reopenWorkspacePr(
+  db: Db,
+  args: { companyId: string; repoUrl: string; prNumber: number },
+): Promise<void> {
+  const pat = await resolveGitHubPat(db, args.companyId, "github-pr");
+  const { owner, repo } = parseGitHubRepoUrl(args.repoUrl);
+  const octokit = new Octokit({ auth: pat });
+  try {
+    await octokit.pulls.update({ owner, repo, pull_number: args.prNumber, state: "open" });
+  } catch (err) {
+    mapGitHubApiError(err, owner, repo);
+  }
+}
+
+export async function requestPrReview(
+  db: Db,
+  args: { companyId: string; repoUrl: string; prNumber: number; reviewers: string[] },
+): Promise<void> {
+  const pat = await resolveGitHubPat(db, args.companyId, "github-pr");
+  const { owner, repo } = parseGitHubRepoUrl(args.repoUrl);
+  const octokit = new Octokit({ auth: pat });
+  try {
+    await octokit.pulls.requestReviewers({
+      owner,
+      repo,
+      pull_number: args.prNumber,
+      reviewers: args.reviewers,
+    });
+  } catch (err) {
+    mapGitHubApiError(err, owner, repo);
+  }
+}
