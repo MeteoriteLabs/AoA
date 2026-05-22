@@ -422,6 +422,9 @@ export function githubRoutes(db: Db) {
         title: parsed.data.title,
         body: parsed.data.body,
         draft: parsed.data.draft,
+        reviewers: parsed.data.reviewers,
+        labels: parsed.data.labels,
+        milestoneNumber: parsed.data.milestoneNumber,
       });
 
       const now = new Date().toISOString();

@@ -682,6 +682,32 @@ describe("POST /issues/:issueId/github-pr", () => {
     expect(res.body.error).toContain("not configured");
     expect(res.body.hint).toContain("Settings");
   });
+
+  it("forwards reviewers, labels, and milestoneNumber to createPullRequest", async () => {
+    mockHappyPath();
+    mockOctokit.pulls.requestReviewers.mockResolvedValue({ data: {} });
+    mockOctokit.issues.addLabels.mockResolvedValue({ data: [] });
+    mockOctokit.issues.update.mockResolvedValue({ data: {} });
+
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/issues/issue-1/github-pr")
+      .send({ ...validBody, reviewers: ["alice"], labels: ["bug"], milestoneNumber: 2 });
+
+    expect(res.status).toBe(200);
+    // reviewers forwarded → requestReviewers called by the service
+    expect(mockOctokit.pulls.requestReviewers).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewers: ["alice"] }),
+    );
+    // labels forwarded → addLabels called by the service
+    expect(mockOctokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: ["bug"] }),
+    );
+    // milestoneNumber forwarded → issues.update called by the service
+    expect(mockOctokit.issues.update).toHaveBeenCalledWith(
+      expect.objectContaining({ milestone: 2 }),
+    );
+  });
 });
 
 // -----------------------------------------------------------------------------
