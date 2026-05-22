@@ -70,7 +70,6 @@ vi.mock("../services/github-pr.js", () => ({
     if (!m) throw new Error("bad url");
     return { owner: m[1], repo: m[2].replace(/\.git$/, "") };
   }),
-  resolveGitHubPat: vi.fn().mockResolvedValue("ghp_token"),
   resolveGitHubAuth: vi.fn().mockResolvedValue("ghp_token"),
   createPullRequest: vi.fn(),
   findPullRequestForBranch: vi.fn(),
@@ -675,6 +674,7 @@ describe("GET /api/github/callback", () => {
     // Should redirect (302) to settings page
     expect(res.status).toBe(302);
     expect(res.headers.location).toContain("/settings");
+    expect(res.headers.location).toContain("tab=github");
     expect(mockSaveInstallation).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ companyId: "company-1", installationId: "12345" }),

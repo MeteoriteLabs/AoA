@@ -674,8 +674,13 @@ export function githubRoutes(db: Db) {
   router.get("/companies/:companyId/github/app/install-url", (req, res) => {
     assertBoard(req);
     assertCompanyAccess(req, req.params.companyId);
-    const url = getInstallUrl(req.params.companyId);
-    res.json({ url });
+    try {
+      const url = getInstallUrl(req.params.companyId);
+      res.json({ url });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to build install URL";
+      res.status(503).json({ error: msg });
+    }
   });
 
   router.get("/github/callback", async (req, res) => {
@@ -711,7 +716,9 @@ export function githubRoutes(db: Db) {
     await saveInstallation(db, { companyId, installationId: installation_id, accountLogin, accountType });
 
     const uiBase = process.env.PUBLIC_BASE_URL ?? "http://localhost:5173";
-    res.redirect(`${uiBase}/settings/github`);
+    // Redirect to the company's settings page with the GitHub tab active.
+    // companyId is used as the URL prefix (e.g. /acme/settings?tab=github).
+    res.redirect(`${uiBase}/${companyId}/settings?tab=github`);
   });
 
   router.delete("/companies/:companyId/github/app", async (req, res) => {
