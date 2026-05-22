@@ -829,6 +829,13 @@ async function* runCodexTurn(
   async function spawnAndCollect(
     resume: string | null,
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+    // Shell-boundary re-validation: validateSessionId() strips metacharacters
+    // that would execute as shell commands on Windows (spawn uses shell:true).
+    // The primary validation runs at onSessionId (store time); this is
+    // defense-in-depth so the shell boundary is safe even if a future write
+    // path bypasses the callback.
+    const safeResume = resume ? validateSessionId(resume) : null;
+
     // resolveCliInvocation writes the per-session CODEX_HOME/config.toml
     // (the bridge must be present on EVERY spawn — MX4 parity) and builds
     // the argv (`exec --json [resume <id>] -`).
@@ -836,7 +843,7 @@ async function* runCodexTurn(
       "codex",
       args.mcpParams,
       args.prompt, // codex prompt is delivered over stdin, NOT argv
-      resume,
+      safeResume,
     );
     if (!invocation) {
       // codex is a wired CLI — resolveCliInvocation never returns null for

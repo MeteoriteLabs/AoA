@@ -20,6 +20,14 @@ export interface CLISession {
    * Refreshed from each turn's parse. Undefined for claude (persistent
    * process) — MX-chatparse.
    */
+  /**
+   * Codex conversation id for multi-turn resume.
+   * INVARIANT: Only ever assigned via validateSessionId() output (see cli-mode.ts
+   * onSessionId callback). Direct writes bypass the shell-injection guard — on
+   * Windows, spawn uses shell:true so raw metacharacters in codex args execute
+   * as shell commands. Re-validation also runs at the spawn boundary in
+   * spawnAndCollect() as defense-in-depth.
+   */
   codexSessionId?: string;
   companyId: string;
   userId: string;
