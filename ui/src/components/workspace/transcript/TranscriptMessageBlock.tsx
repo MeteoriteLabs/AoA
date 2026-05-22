@@ -18,38 +18,31 @@ export function TranscriptMessageBlock({
   role,
   text,
   streaming,
-  ts,
   className,
 }: TranscriptMessageBlockProps) {
   const [showFull, setShowFull] = useState(false);
   const truncated = !showFull && text.length > MAX_COLLAPSED_LENGTH;
-  const displayText = truncated ? text.slice(0, MAX_COLLAPSED_LENGTH) + "..." : text;
+  const displayText = truncated ? `${text.slice(0, MAX_COLLAPSED_LENGTH)}...` : text;
 
   if (role === "user") {
     return null; // User messages handled by TimelineUserMessage
   }
 
   return (
-    <div className={cn("px-3 py-2", className)}>
-      {ts && (
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-[10px] text-muted-foreground ml-auto">{new Date(ts).toLocaleTimeString()}</span>
-          {streaming && <span className="text-xs text-blue-500 animate-pulse">typing...</span>}
-        </div>
-      )}
-      {!ts && streaming && (
+    <div className={cn("px-1 py-1.5", className)} data-testid="transcript-message-block">
+      {streaming && (
         <div className="mb-1">
-          <span className="text-xs text-blue-500 animate-pulse">typing...</span>
+          <span className="text-xs text-muted-foreground animate-pulse">Thinking</span>
         </div>
       )}
-      <div className="text-sm">
+      <div className="text-sm leading-6 text-foreground">
         <MarkdownBody>{displayText}</MarkdownBody>
       </div>
       {truncated && (
         <button
           type="button"
           onClick={() => setShowFull(true)}
-          className="text-xs text-primary hover:underline mt-1"
+          className="mt-1 text-xs text-muted-foreground hover:text-foreground"
         >
           Show more
         </button>

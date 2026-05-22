@@ -83,6 +83,12 @@ export type TranscriptBlock =
       lines: Array<{ ts: string; text: string }>;
     }
   | {
+      type: "diagnostic_group";
+      ts: string;
+      endTs?: string;
+      lines: Array<{ ts: string; text: string }>;
+    }
+  | {
       type: "stdout";
       ts: string;
       text: string;

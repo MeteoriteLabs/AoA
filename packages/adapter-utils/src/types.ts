@@ -89,6 +89,12 @@ export interface AdapterExecutionResult {
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
   clearSession?: boolean;
+  /**
+   * Absolute local directory the adapter actually used for file operations.
+   * Heartbeat uses this for output detection because configured cwd and
+   * persisted execution workspace cwd can intentionally differ.
+   */
+  executionCwd?: string | null;
   /** Adapter-hinted output files (paths relative to workspace) */
   outputFiles?: Array<{
     path: string;

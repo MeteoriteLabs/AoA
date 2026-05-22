@@ -1,7 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { errorHandler } from "../middleware/index.js";
 
 // --- Mock drizzle + db package ---
 
@@ -40,6 +39,7 @@ vi.mock("drizzle-orm", () => ({
 const mockSvc = vi.hoisted(() => ({
   getById: vi.fn(),
   getCloseReadiness: vi.fn(),
+  loadEffectiveRuntimeServicesByExecutionWorkspace: vi.fn(),
   update: vi.fn(),
   list: vi.fn(),
   listSummaries: vi.fn(),
@@ -81,12 +81,23 @@ vi.mock("../services/index.js", () => ({
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({
+  buildWorkspaceRuntimeDesiredStatePatch: vi.fn().mockReturnValue({ desiredState: "stopped", serviceStates: null }),
   stopRuntimeServicesForExecutionWorkspace: mockStopRuntimeServices,
+  ensurePersistedExecutionWorkspaceAvailable: vi.fn(),
+  listConfiguredRuntimeServiceEntries: vi.fn().mockReturnValue([]),
+  refreshPersistedAdapterManagedPreviewRuntimeServices: vi.fn(({ rows }) => rows),
+  startRuntimeServicesForWorkspaceControl: vi.fn(),
   cleanupExecutionWorkspaceArtifacts: mockCleanupArtifacts,
 }));
 
 vi.mock("../services/execution-workspace-policy.js", () => ({
   parseProjectExecutionWorkspacePolicy: vi.fn().mockReturnValue(null),
+}));
+
+vi.mock("../services/workspace-authz.js", () => ({
+  assertCanConfigureWorkspaceShellCommands: vi.fn().mockResolvedValue(undefined),
+  assertCanControlWorkspace: vi.fn().mockResolvedValue(undefined),
+  workspaceConfigPatchHasShellCommands: vi.fn().mockReturnValue(false),
 }));
 
 import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
@@ -163,7 +174,9 @@ function createApp() {
     next();
   });
   app.use("/api", executionWorkspaceRoutes(db as any));
-  app.use(errorHandler);
+  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  });
   return app;
 }
 
@@ -171,6 +184,7 @@ describe("PATCH /api/execution-workspaces/:id — archive flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockInstanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockSvc.loadEffectiveRuntimeServicesByExecutionWorkspace.mockResolvedValue([]);
     mockStopRuntimeServices.mockResolvedValue(undefined);
     mockCleanupArtifacts.mockResolvedValue({ cleaned: true, warnings: [] });
   });
@@ -321,5 +335,65 @@ describe("PATCH /api/execution-workspaces/:id — archive flow", () => {
         }),
       }),
     );
+  });
+});
+
+describe("POST /api/execution-workspaces/:id/runtime-services/stop", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockInstanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockStopRuntimeServices.mockResolvedValue(undefined);
+  });
+
+  it("accepts a persisted effective runtime service id instead of relying on getById embedding services", async () => {
+    const existing = buildExistingWorkspace({
+      cwd: "C:/tmp/ws-1",
+      config: { workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] } },
+      metadata: { config: { workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] } } },
+    });
+    const runtimeServiceId = "00000000-0000-4000-8000-000000000001";
+    const service = {
+      id: runtimeServiceId,
+      companyId: "co-1",
+      projectId: "proj-1",
+      projectWorkspaceId: null,
+      executionWorkspaceId: "ws-1",
+      issueId: null,
+      scopeType: "execution_workspace",
+      scopeId: "ws-1",
+      serviceName: "web",
+      status: "running",
+      lifecycle: "shared",
+      reuseKey: null,
+      command: "pnpm dev",
+      cwd: "C:/tmp/ws-1",
+      port: 3200,
+      url: "http://127.0.0.1:3200",
+      provider: "local_process",
+      providerRef: "12345",
+      ownerAgentId: null,
+      startedByRunId: null,
+      lastUsedAt: new Date(),
+      startedAt: new Date(),
+      stoppedAt: null,
+      stopPolicy: null,
+      healthStatus: "healthy",
+      healthCheckedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    mockSvc.getById.mockResolvedValue(existing);
+    mockSvc.loadEffectiveRuntimeServicesByExecutionWorkspace.mockResolvedValue([service]);
+    mockSvc.update.mockResolvedValue(existing);
+
+    const res = await request(createApp())
+      .post(`/api/execution-workspaces/ws-1/runtime-services/stop`)
+      .send({ runtimeServiceId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockStopRuntimeServices).toHaveBeenCalledWith(expect.objectContaining({
+      executionWorkspaceId: "ws-1",
+      runtimeServiceId,
+    }));
   });
 });

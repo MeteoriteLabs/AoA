@@ -107,6 +107,7 @@ describe("claude execute target", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
+      expect(result.executionCwd).toBe(workspace);
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
         argv: string[];

@@ -476,6 +476,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
         clearSession: clearSessionOnMissingSession,
+        executionCwd: cwd,
       };
     }
 
@@ -512,6 +513,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model,
       billingType,
       costUsd: null,
+      executionCwd: cwd,
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,

@@ -9,10 +9,12 @@ import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useEnvironments } from "../api/environments";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { useTeamAccess } from "../hooks/useTeamAccess";
+import { useWorkspacePermissions } from "../hooks/useWorkspacePermissions";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import {
   Dialog,
@@ -42,6 +44,8 @@ import {
   Hammer,
   ClipboardList,
   Layers,
+  FolderGit2,
+  GitBranch,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { pruneStaleId } from "../lib/issueDraft";
@@ -53,6 +57,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 
 const DRAFT_KEY = "aoa:issue-draft";
 const DEBOUNCE_MS = 800;
+type TaskWorkspaceMode = "inherit" | "shared_workspace" | "isolated_workspace" | "reuse_existing";
 
 /** Return black or white hex based on background luminance (WCAG perceptual weights). */
 function getContrastTextColor(hexColor: string): string {
@@ -218,6 +223,9 @@ export function NewIssueDialog() {
   const [workMode, setWorkMode] = useState<"standard" | "planning">("standard");
   const [envPickerOpen, setEnvPickerOpen] = useState(false);
   const [executionEnvironmentId, setExecutionEnvironmentId] = useState<string | null>(null);
+  const [taskWorkspaceMode, setTaskWorkspaceMode] = useState<TaskWorkspaceMode>("inherit");
+  const [reuseWorkspaceId, setReuseWorkspaceId] = useState("");
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -249,6 +257,29 @@ export function NewIssueDialog() {
   const { permissions } = useTeamAccess(effectiveCompanyId);
 
   const { data: environments } = useEnvironments(effectiveCompanyId ?? "");
+  const selectedProject = orderedProjects.find((project) => project.id === projectId);
+  const selectedProjectPolicy = selectedProject?.executionWorkspacePolicy;
+  const selectedProjectHasWorkspacePolicy = Boolean(selectedProjectPolicy?.enabled);
+  const allowTaskWorkspaceOverride = selectedProjectPolicy?.allowIssueOverride !== false;
+  const workspacePermissions = useWorkspacePermissions(effectiveCompanyId, projectId || null);
+  const canChooseTaskWorkspace =
+    selectedProjectHasWorkspacePolicy
+    && allowTaskWorkspaceOverride
+    && workspacePermissions.canOverrideTaskWorkspace;
+
+  const { data: reuseWorkspaceCandidates = [] } = useQuery({
+    queryKey: [
+      ...queryKeys.executionWorkspaces.list(effectiveCompanyId ?? ""),
+      "reuseCandidates",
+      projectId,
+    ] as const,
+    queryFn: () =>
+      executionWorkspacesApi.listSummaries(effectiveCompanyId ?? "", {
+        projectId: projectId || undefined,
+        reuseEligible: true,
+      }),
+    enabled: Boolean(newIssueOpen && effectiveCompanyId && projectId && selectedProjectHasWorkspacePolicy),
+  });
 
   const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === assigneeId)?.adapterType ?? null;
   const supportsAssigneeOverrides = Boolean(
@@ -423,6 +454,12 @@ export function NewIssueDialog() {
   }, [newIssueOpen, agents, projects]);
 
   useEffect(() => {
+    setTaskWorkspaceMode("inherit");
+    setReuseWorkspaceId("");
+    setWorkspacePickerOpen(false);
+  }, [projectId]);
+
+  useEffect(() => {
     if (!supportsAssigneeOverrides) {
       setAssigneeOptionsOpen(false);
       setAssigneeModelOverride("");
@@ -469,6 +506,9 @@ export function NewIssueDialog() {
     setWorkMode("standard");
     setExecutionEnvironmentId(null);
     setEnvPickerOpen(false);
+    setTaskWorkspaceMode("inherit");
+    setReuseWorkspaceId("");
+    setWorkspacePickerOpen(false);
   }
 
   function handleCompanyChange(companyId: string) {
@@ -480,6 +520,9 @@ export function NewIssueDialog() {
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
     setAssigneeUseProjectWorkspace(true);
+    setTaskWorkspaceMode("inherit");
+    setReuseWorkspaceId("");
+    setWorkspacePickerOpen(false);
     setFieldErrors({});
   }
 
@@ -499,6 +542,14 @@ export function NewIssueDialog() {
       chrome: assigneeChrome,
       useProjectWorkspace: assigneeUseProjectWorkspace,
     });
+    const executionWorkspaceSettings =
+      taskWorkspaceMode === "inherit"
+        ? undefined
+        : taskWorkspaceMode === "reuse_existing" && reuseWorkspaceId
+          ? { mode: "reuse_existing", reuseWorkspaceId }
+          : taskWorkspaceMode === "reuse_existing"
+            ? undefined
+            : { mode: taskWorkspaceMode };
     createIssue.mutate({
       companyId: effectiveCompanyId,
       title: title.trim(),
@@ -510,6 +561,12 @@ export function NewIssueDialog() {
       ...(projectId ? { projectId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
       ...(executionEnvironmentId ? { executionEnvironmentId } : {}),
+      ...(taskWorkspaceMode !== "inherit" && executionWorkspaceSettings
+        ? {
+          executionWorkspacePreference: taskWorkspaceMode,
+          executionWorkspaceSettings,
+        }
+        : {}),
     });
   }
 
@@ -539,7 +596,23 @@ export function NewIssueDialog() {
   const currentStatus = statuses.find((s) => s.value === status) ?? statuses[1]!;
   const currentPriority = priorities.find((p) => p.value === priority);
   const currentAssignee = (agents ?? []).find((a) => a.id === assigneeId);
-  const currentProject = orderedProjects.find((project) => project.id === projectId);
+  const currentProject = selectedProject;
+  const workspaceModeLabel =
+    taskWorkspaceMode === "shared_workspace"
+      ? "Shared workspace"
+      : taskWorkspaceMode === "isolated_workspace"
+        ? "Isolated workspace"
+        : taskWorkspaceMode === "reuse_existing"
+          ? "Reuse workspace"
+          : "Department default";
+  const defaultWorkspaceLabel =
+    selectedProjectPolicy?.defaultMode === "shared_workspace"
+      ? "Shared"
+      : selectedProjectPolicy?.defaultMode === "operator_branch"
+        ? "Operator branch"
+      : selectedProjectPolicy?.defaultMode === "adapter_default"
+          ? "Agent default"
+          : "Isolated";
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
       ? "Claude options"
@@ -1097,6 +1170,87 @@ export function NewIssueDialog() {
               )}
             </PopoverContent>
           </Popover>
+
+          {selectedProjectHasWorkspacePolicy && (
+            <Popover open={workspacePickerOpen} onOpenChange={setWorkspacePickerOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+                    canChooseTaskWorkspace ? "text-foreground" : "text-muted-foreground"
+                  )}
+                  disabled={!canChooseTaskWorkspace}
+                  title={
+                    canChooseTaskWorkspace
+                      ? undefined
+                      : !allowTaskWorkspaceOverride
+                        ? "Task-level workspace overrides are disabled in department Settings."
+                        : "Your role cannot change task workspace settings."
+                  }
+                >
+                  <FolderGit2 className="h-3 w-3" />
+                  {workspaceModeLabel}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-64 p-1" align="start">
+                <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
+                  Department default: {defaultWorkspaceLabel}
+                </div>
+                {[
+                  ["inherit", "Use department default"],
+                  ["shared_workspace", "Shared workspace"],
+                  ["isolated_workspace", "Isolated workspace"],
+                ].map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={cn(
+                      "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                      taskWorkspaceMode === mode && "bg-accent"
+                    )}
+                    onClick={() => {
+                      setTaskWorkspaceMode(mode as TaskWorkspaceMode);
+                      setReuseWorkspaceId("");
+                      setWorkspacePickerOpen(false);
+                    }}
+                  >
+                    <FolderGit2 className="h-3 w-3 text-muted-foreground" />
+                    {label}
+                  </button>
+                ))}
+                {reuseWorkspaceCandidates.length > 0 && (
+                  <div className="mt-1 border-t border-border pt-1">
+                    {reuseWorkspaceCandidates.slice(0, 6).map((workspace) => (
+                      <button
+                        key={workspace.id}
+                        type="button"
+                        className={cn(
+                          "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                          taskWorkspaceMode === "reuse_existing"
+                            && reuseWorkspaceId === workspace.id
+                            && "bg-accent"
+                        )}
+                        onClick={() => {
+                          setTaskWorkspaceMode("reuse_existing");
+                          setReuseWorkspaceId(workspace.id);
+                          setWorkspacePickerOpen(false);
+                        }}
+                      >
+                        <GitBranch className="h-3 w-3 text-muted-foreground" />
+                        <span className="truncate">{workspace.name}</span>
+                        {workspace.branchName && (
+                          <span className="ml-auto max-w-24 truncate text-muted-foreground">
+                            {workspace.branchName}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </PopoverContent>
+            </Popover>
+          )}
 
           {/* Labels chip (placeholder) */}
           <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">

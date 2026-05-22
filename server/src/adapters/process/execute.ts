@@ -27,6 +27,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
   }
+  const hasExplicitApiKey =
+    typeof envConfig.AOA_API_KEY === "string" && envConfig.AOA_API_KEY.trim().length > 0;
+  env.AOA_RUN_ID = runId;
+  const contextObject = parseObject(ctx.context);
+  const contextIssue = parseObject(contextObject.issue);
+  const wakeTaskId =
+    asString(contextObject.taskId, "") ||
+    asString(contextObject.issueId, "") ||
+    asString(contextIssue.id, "");
+  if (wakeTaskId) env.AOA_TASK_ID = wakeTaskId;
+  if (!hasExplicitApiKey && authToken) {
+    env.AOA_API_KEY = authToken;
+  }
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 15);
@@ -63,6 +76,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: proc.signal,
       timedOut: true,
       errorMessage: `Timed out after ${timeoutSec}s`,
+      executionCwd: cwd,
     };
   }
 
@@ -76,6 +90,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdout: proc.stdout,
         stderr: proc.stderr,
       },
+      executionCwd: cwd,
     };
   }
 
@@ -87,5 +102,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: proc.stdout,
       stderr: proc.stderr,
     },
+    executionCwd: cwd,
   };
 }

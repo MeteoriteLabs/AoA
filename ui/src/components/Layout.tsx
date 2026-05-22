@@ -25,6 +25,22 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AgentPanelProvider } from "../context/AgentPanelContext";
 
+export function shouldUseFullBleedMain(pathname: string, companyPrefix?: string) {
+  const normalizedPath = pathname.split(/[?#]/, 1)[0] ?? pathname;
+  const segments = normalizedPath.split("/").filter(Boolean);
+  const firstContentIndex = companyPrefix && segments[0]?.toUpperCase() === companyPrefix.toUpperCase() ? 1 : 0;
+  const section = segments[firstContentIndex];
+  const detailId = segments[firstContentIndex + 1];
+
+  return (
+    (section === "workspaces" && Boolean(detailId)) ||
+    section === "settings" ||
+    section === "memory" ||
+    section === "skills" ||
+    section === "commander"
+  );
+}
+
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile, setCollapsed, toggleCollapse } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
@@ -245,7 +261,7 @@ export function Layout() {
           tabIndex={-1}
           className={cn(
             "flex-1 overflow-auto",
-            !location.pathname.match(/\/(workspaces\/|settings(\?|$|\/)|memory(\?|$|\/)|skills(\?|$|\/)|commander(\?|$|\/))/) && "p-4 md:p-6",
+            !shouldUseFullBleedMain(location.pathname, companyPrefix) && "p-4 md:p-6",
             isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]",
           )}
           onScroll={handleMainScroll}

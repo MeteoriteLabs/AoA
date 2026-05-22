@@ -56,3 +56,44 @@ These files are essential. Read them.
 - `./HEARTBEAT.md` -- execution and extraction checklist. Run every heartbeat.
 - `./SOUL.md` -- who you are and how you should act.
 - `./TOOLS.md` -- tools you have access to.
+
+## Task Disposition Contract
+
+When you are assigned a task, finishing the CLI run is not enough. Before ending a successful run, explicitly decide the task disposition:
+
+- Move the task to `done` when the work is complete and does not need human review.
+- Move the task to `in_review` only when a valid review path exists, such as a human assignee or linked approval.
+- Leave the task `in_progress` with a concise progress comment when more work/runs are needed.
+- Move the task to `blocked` or leave a clear blocker comment when you cannot continue without help.
+- If you created files or other outputs, mention them in your final response and rely on AoA output capture to surface them as artifact candidates.
+
+Use `AOA_TASK_ID`, `AOA_RUN_ID`, `AOA_API_URL`, and `AOA_API_KEY` when available. In local trusted development, if no `AOA_API_KEY` is available but `AOA_RUN_ID` is available, include `X-Aoa-Run-Id: $AOA_RUN_ID` on AoA API calls so the server can associate the update with your run.
+
+Examples:
+
+```sh
+curl -s -X PATCH "$AOA_API_URL/api/issues/$AOA_TASK_ID" \
+  -H "Authorization: Bearer $AOA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-Aoa-Run-Id: $AOA_RUN_ID" \
+  -d '{"status":"done","comment":"Completed the requested work."}'
+```
+
+Local trusted fallback when `AOA_API_KEY` is unavailable:
+
+```sh
+curl -s -X PATCH "$AOA_API_URL/api/issues/$AOA_TASK_ID" \
+  -H "X-Aoa-Run-Id: $AOA_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"done","comment":"Completed the requested work."}'
+```
+
+Progress note when more runs are needed:
+
+```sh
+curl -s -X PATCH "$AOA_API_URL/api/issues/$AOA_TASK_ID" \
+  -H "Authorization: Bearer $AOA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-Aoa-Run-Id: $AOA_RUN_ID" \
+  -d '{"status":"in_progress","comment":"Progress update: completed the first pass; continuing next run with remaining verification."}'
+```

@@ -610,3 +610,48 @@ Baseline: `pnpm --filter ui run test` (was 234 files / 1675) and `pnpm vitest ru
 - **Spec coverage:** Issue 1 → Task 1. Issue 2 → Task 2. Issue 3a (backfill/seed) → Task 3. Issue 3b (enforce) → Task 4. Issue 3c (scoped picker) → Tasks 5 (backend) + 6 (frontend). Empty = no skills → enforced by `listSkillListItemsForAgent` (empty→[]) + `use_skill` rejection + the picker's "No skills available." copy. UAT → Task 7.
 - **Open implementer confirmations (flagged inline, not placeholders):** the exact existing service method that returns `CompanySkillListItem[]` (Task 5 Step 1), and whether `companySkillService`/`CompanySkillListItem` are already imported in the touched files. These are name-confirmations against existing code, with a documented fallback (map `listFull`).
 - **Type consistency:** `listSkillListItemsForAgent` returns `CompanySkillListItem[]`; `internalAgentApi.listSkills` types the same; `SkillPicker` already renders `CompanySkillListItem` (`{name, key, description}`). `skillKeys` is `string[]` everywhere. `actorType === "commander"` matches the bridge's `toolContext.actorType` value.
+
+---
+
+## Follow-on work shipped beyond the original 3 issues
+
+After the Issue 1–3 chain landed, additional Commander UX work shipped on the
+same branch (`commander-subagent-1`). Recorded here so this plan reflects what
+actually went out.
+
+### Skill-command "no response" root cause (post-QA)
+`claude_cli` emits the post-`use_skill` answer as plain text, but the stream-JSON
+parser `JSON.parse`d every line and silently dropped non-JSON → the answer never
+rendered. Fixes (commit `ef4951c9`): parser emits non-JSON lines as text;
+`use_skill` flexible key resolution (handles a dropped `skill:` prefix / slug /
+name); `cli-mode` logs subprocess stderr instead of swallowing it.
+
+### Batch 1 — UI polish (`0b9f7f70`)
+Centered, closeable skill picker (440px); rounded session rows + stronger hover;
+cleaner skill rows (name + source badge + description); slash-removal closes the
+picker.
+
+### Batch 3 — contenteditable rich input + colored skill tokens (`6b367bf5`, `6d038d61`)
+Replaced the textarea with an uncontrolled contenteditable (`CommanderInput.tsx`
++ `commanderInputModel.ts`). Selecting a skill inserts a blue atomic token (just
+the name) that expands to the full `use_skill` directive on send. Backspace
+deletes the whole token; Shift+Enter newline; paste-as-plain; placeholder is
+React-driven so it survives re-renders. Token color system via `--token-skill`.
+
+### Batch 2 — session drag-and-drop reorder (`cbc46d77`, `3a96fc7f`)
+Nullable `internal_agent_conversations.sort_order` (migration `0104`). Default
+view keeps date groups; the first drag collapses the non-pinned list into one
+flat "Arranged" order (Reset restores recency). Pinned stays on top, not
+draggable. Routes `PATCH …/conversations/reorder` + `DELETE …/conversations/order`,
+both owner-scoped. dnd-kit sortable list.
+
+### Post-audit fixes (`bdd24164`)
+- **Touch drag:** rows have `touch-action: manipulation`, so PointerSensor alone
+  lost finger-drags to scrolling. Switched to Mouse (distance) + Touch
+  (long-press) + Keyboard sensors.
+- **Skill token hover card:** hovering a token shows name + description + key
+  (description stashed on the token at insertion; never sent in the directive).
+
+### Deferred (intentional)
+`@mention`, voice input, and attach-file remain disabled "Coming soon"
+placeholders in the composer.

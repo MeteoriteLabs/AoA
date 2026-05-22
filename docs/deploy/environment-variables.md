@@ -24,6 +24,10 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `AOA_OPEN_ON_LISTEN` | `true` (CLI), `false` (server-only) | Auto-open default browser on first listen |
 | `AOA_CONFIG` | (default path) | Override path to instance `config.json` |
 | `AOA_LOG_DIR` | `<AOA_HOME>/instances/<id>/logs` | Override log directory |
+| `RUN_LOG_BASE_PATH` | `<AOA_HOME>/instances/<id>/data/run-logs` | Override local-file heartbeat run log storage. Use a durable mounted volume in Docker/cloud single-node deployments |
+| `WORKSPACE_OPERATION_LOG_BASE_PATH` | `<AOA_HOME>/instances/<id>/data/workspace-operation-logs` | Override local-file workspace operation log storage. Use a durable mounted volume in Docker/cloud single-node deployments |
+
+For horizontally scaled deployments, local-file run logs require sticky routing or shared durable storage. Object-storage-backed run logs are a future backend; do not rely on per-container ephemeral disk for production run history.
 
 ## Authentication
 
@@ -68,6 +72,7 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `AOA_STORAGE_S3_FORCE_PATH_STYLE` | `false` | Force path-style URLs (required for some S3-compatible services) |
 | `AOA_FILE_MAX_BYTES` | `52428800` (50 MB) | Max upload size for assets/artifacts |
 | `AOA_ATTACHMENT_MAX_BYTES` | (= `AOA_FILE_MAX_BYTES`) | Max upload size for issue attachments specifically |
+| `AOA_ATTACHMENTS_PER_COMMENT_MAX` | `5` | Max number of attachments accepted on a single issue comment |
 
 ## Database backups
 
@@ -77,6 +82,8 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `AOA_DB_BACKUP_DIR` | `<AOA_HOME>/instances/<id>/data/backups` | Backup directory |
 | `AOA_DB_BACKUP_INTERVAL_MINUTES` | `60` | Backup frequency in minutes |
 | `AOA_DB_BACKUP_RETENTION_DAYS` | `30` | Keep backups this many days, then prune |
+| `AOA_PG_DUMP_PATH` | `pg_dump` | Override the `pg_dump` executable used by backup export jobs |
+| `AOA_PSQL_PATH` | `psql` | Override the `psql` executable used by backup restore/import jobs |
 
 ## Migrations / startup
 
@@ -98,7 +105,9 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AOA_PLUGIN_DIR` | `<AOA_HOME>/plugins` | Plugin discovery directory |
+| `AOA_MARKETPLACE_CDN_URL` | AoA marketplace CDN | Override the marketplace catalog URL. Developer/e2e harnesses can point this at an unreachable local URL to force the bundled catalog snapshot fallback |
 | `AOA_UI_DEV_MIDDLEWARE` | `false` | Set to `true` to mount the Vite UI as Express middleware (used by `pnpm dev`) |
+| `AOA_VITE_HMR_PORT` | (Vite default) | Override the Vite hot-module-reload websocket port when the UI is mounted as Express middleware. Useful for parallel local/e2e AoA instances |
 | `AOA_OPENCODE_COMMAND` | `opencode` | Override path to the `opencode` CLI binary for the OpenCode Local adapter |
 | `AOA_WORKTREES_DIR` | `<AOA_HOME>/instances/<id>/workspaces` | Where the worktree provisioner places per-task git worktrees |
 | `AOA_ENABLE_COMPANY_DELETION` | `true` (dev), `false` (prod) | Feature flag for the destructive "delete company" action |

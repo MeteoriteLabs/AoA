@@ -19,6 +19,7 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
+import { useWorkspacePermissions } from "../hooks/useWorkspacePermissions";
 
 type Mode = "inherit" | "shared_workspace" | "isolated_workspace" | "reuse_existing";
 
@@ -56,6 +57,8 @@ export function IssueWorkspaceCard({
 
   const isSoftware = project?.functionType === "software_development";
   const policyEnabled = Boolean(project?.executionWorkspacePolicy?.enabled);
+  const allowTaskOverride = project?.executionWorkspacePolicy?.allowIssueOverride !== false;
+  const workspacePermissions = useWorkspacePermissions(companyId, projectId);
 
   const { data: reuseCandidates = [] } = useQuery({
     queryKey: [
@@ -87,6 +90,7 @@ export function IssueWorkspaceCard({
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
+      qc.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId ?? "") });
     },
   });
 
@@ -129,6 +133,17 @@ export function IssueWorkspaceCard({
           />
         </CollapsibleTrigger>
         <CollapsibleContent className="pt-3 space-y-3">
+          {(!allowTaskOverride || !workspacePermissions.canOverrideTaskWorkspace) ? (
+            <div className="rounded-md border border-border/70 px-3 py-2 text-sm">
+              <div className="font-medium text-foreground">Department default</div>
+              <div className="text-xs text-muted-foreground">
+                {!allowTaskOverride
+                  ? "Task-level workspace overrides are disabled in department Settings."
+                  : "You can view the department default, but your role cannot change task workspace settings."}
+              </div>
+            </div>
+          ) : (
+            <>
           <Select
             value={currentMode}
             onValueChange={(value) => {
@@ -143,19 +158,19 @@ export function IssueWorkspaceCard({
             }}
           >
             <SelectTrigger data-testid="issue-workspace-mode-trigger">
-              <SelectValue placeholder="Inherit from project" />
+              <SelectValue placeholder="Use department default" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="inherit">Inherit from project</SelectItem>
+              <SelectItem value="inherit">Use department default</SelectItem>
               <SelectItem value="shared_workspace">
-                Shared workspace (all tasks share)
+                Shared workspace
               </SelectItem>
               <SelectItem value="isolated_workspace">
-                Isolated (new worktree per task)
+                Isolated workspace
               </SelectItem>
               {showReuseOption && (
                 <SelectItem value="reuse_existing">
-                  Reuse existing workspace...
+                  Reuse existing workspace
                 </SelectItem>
               )}
             </SelectContent>
@@ -187,6 +202,8 @@ export function IssueWorkspaceCard({
                 ))}
               </SelectContent>
             </Select>
+          )}
+            </>
           )}
         </CollapsibleContent>
       </Collapsible>

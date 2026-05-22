@@ -101,26 +101,25 @@ export function TranscriptToolPill({
         type="button"
         onClick={() => hasExpandable && setExpanded(!expanded)}
         className={cn(
-          "flex items-center gap-2 w-full px-3 h-10 rounded-lg text-left transition-colors",
-          "bg-muted/30 hover:bg-muted/50",
-          status === "error" && "border-l-2 border-l-red-500",
+          "flex h-8 w-full items-center gap-2 rounded-md bg-transparent px-1 text-left text-muted-foreground transition-colors hover:bg-card/50 hover:text-foreground",
+          status === "error" && "text-destructive",
           hasExpandable && "cursor-pointer",
           !hasExpandable && "cursor-default",
         )}
         disabled={!hasExpandable}
         aria-label={`${name} ${summary}, ${status}`}
       >
-        <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
-        <span className="text-[13px] text-foreground/80 truncate flex-1">
+        <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-[13px]">
           {category === "file_read" || category === "file_edit" || category === "search" || category === "command"
             ? <span className="font-mono">{summary}</span>
             : summary}
         </span>
         {editStats && (editStats.additions > 0 || editStats.deletions > 0) && (
-          <span className="text-xs shrink-0">
-            {editStats.additions > 0 && <span className="text-emerald-500">+{editStats.additions}</span>}
+          <span className="shrink-0 text-xs">
+            {editStats.additions > 0 && <span className="text-emerald-500">{`+${editStats.additions}`}</span>}
             {editStats.additions > 0 && editStats.deletions > 0 && " "}
-            {editStats.deletions > 0 && <span className="text-red-400">-{editStats.deletions}</span>}
+            {editStats.deletions > 0 && <span className="text-red-400">{`-${editStats.deletions}`}</span>}
           </span>
         )}
         {status === "running" && <Loader2 className="h-3.5 w-3.5 text-blue-500 animate-spin shrink-0" />}
@@ -133,7 +132,7 @@ export function TranscriptToolPill({
         )}
       </button>
       {expanded && hasExpandable && (
-        <div className="ml-6 mt-1 mb-2 p-2 rounded-md bg-muted/20 text-xs font-mono max-h-[300px] overflow-auto whitespace-pre-wrap text-foreground/70">
+        <div className="mb-2 ml-5 mt-1 max-h-[300px] overflow-auto whitespace-pre-wrap border-l border-border py-1 pl-3 text-xs font-mono text-muted-foreground">
           {result ?? (typeof input === "string" ? input : (input != null ? JSON.stringify(input, null, 2) : ""))}
         </div>
       )}

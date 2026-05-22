@@ -9,6 +9,7 @@ import { DependencyChain } from "./DependencyChain";
 import { WorkspaceTimeline } from "./WorkspaceTimeline";
 import { WorkspacePreviewPanel, type PreviewMode, type PreviewTabKind, type WorkspacePreviewTab } from "./WorkspacePreviewPanel";
 import { WorkspaceRightPanel } from "./WorkspaceRightPanel";
+import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
 import { ExecutionWorkspaceCloseDialog } from "./ExecutionWorkspaceCloseDialog";
 import { WorkspaceSettingsSheet } from "./WorkspaceSettingsSheet";
 import { useSidebar } from "../../context/SidebarContext";
@@ -33,6 +34,8 @@ const MOBILE_TABS = [
   { key: "preview" as const, label: "Preview", icon: Eye },
   { key: "context" as const, label: "Context", icon: Layers },
 ];
+
+type PreviewFocusSource = "center" | "right-panel";
 
 interface WorkspaceLayoutProps {
   workspace: ExecutionWorkspace;
@@ -130,7 +133,18 @@ export function WorkspaceLayout({
     [setRightCollapsed],
   );
 
-  const openPreviewTab = useCallback((tab: WorkspacePreviewTab) => {
+  const applyPreviewFocus = useCallback(
+    (source: PreviewFocusSource) => {
+      if (isMobile) return;
+      setLeftCollapsed(true);
+      if (source === "center") {
+        setRightCollapsed(true);
+      }
+    },
+    [isMobile, setLeftCollapsed, setRightCollapsed],
+  );
+
+  const openPreviewTab = useCallback((tab: WorkspacePreviewTab, source: PreviewFocusSource = "center") => {
     setPreviewTabs((current) => {
       if (current.some((existing) => existing.id === tab.id)) {
         return current;
@@ -139,7 +153,8 @@ export function WorkspaceLayout({
     });
     setActivePreviewTabId(tab.id);
     setPreviewVisible(true);
-  }, []);
+    applyPreviewFocus(source);
+  }, [applyPreviewFocus]);
 
   const handlePreviewArtifact = useCallback(
     (artifact: ArtifactWithVersions, version: ArtifactVersion) => {
@@ -149,7 +164,7 @@ export function WorkspaceLayout({
         title: artifact.title,
         artifact,
         version,
-      });
+      }, "right-panel");
     },
     [openPreviewTab],
   );
@@ -161,7 +176,7 @@ export function WorkspaceLayout({
         kind: "output",
         title: output.filename,
         output,
-      });
+      }, "right-panel");
     },
     [openPreviewTab],
   );
@@ -174,7 +189,7 @@ export function WorkspaceLayout({
       title: path.split("/").pop() ?? path,
       issueId: selectedIssueId,
       path,
-    });
+    }, "right-panel");
   }, [openPreviewTab, selectedIssueId]);
 
   const handleOpenBrowser = useCallback((service: WorkspaceRuntimeService) => {
@@ -185,7 +200,7 @@ export function WorkspaceLayout({
       title: service.serviceName || "Browser",
       url: service.url,
       serviceId: service.id,
-    });
+    }, "right-panel");
   }, [openPreviewTab]);
 
   const handleOpenGenericTab = useCallback((kind: PreviewTabKind) => {
@@ -237,10 +252,11 @@ export function WorkspaceLayout({
     if (previewTabs.length > 0) {
       setPreviewVisible(true);
       if (!activePreviewTabId) setActivePreviewTabId(previewTabs[0].id);
+      applyPreviewFocus("center");
       return;
     }
     handleOpenGenericTab("home");
-  }, [activePreviewTabId, handleOpenGenericTab, previewTabs, previewVisible]);
+  }, [activePreviewTabId, applyPreviewFocus, handleOpenGenericTab, previewTabs, previewVisible]);
 
   useEffect(() => {
     setPreviewTabs((current) => {
@@ -292,8 +308,9 @@ export function WorkspaceLayout({
       )}
 
       {/* Header chrome — workspace title + actions kebab. Menu items are disabled pending later Phase I tasks. */}
-      {isMobile ? (
-        <>
+      <WorkspaceErrorBoundary resetKey={`${workspace.id}:${selectedIssueId ?? "none"}:${isMobile ? "mobile" : "desktop"}`}>
+        {isMobile ? (
+          <>
           {/* Mobile tab bar */}
           <div className="flex border-b border-border shrink-0" data-testid="workspace-mobile-tabs">
             {MOBILE_TABS.map(({ key, label, icon: Icon }) => (
@@ -402,8 +419,8 @@ export function WorkspaceLayout({
               )}
             </div>
           </div>
-        </>
-      ) : (
+          </>
+        ) : (
         /* Desktop layout — existing code */
         <div className="flex flex-1 min-h-0 overflow-hidden">
           {/* Left panel */}
@@ -540,7 +557,8 @@ export function WorkspaceLayout({
             )}
           </div>
         </div>
-      )}
+        )}
+      </WorkspaceErrorBoundary>
 
       {/* Archive / close flow dialog — opens from kebab. Only mounted when open
           to avoid unnecessary portal/query work on every WorkspaceLayout render. */}

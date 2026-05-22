@@ -40,20 +40,20 @@ const okResult: RunProcessResult = {
 
 describe("opencode sandbox-docker target", () => {
   let root = "";
-  const previousSecret = process.env.AOA_SECRET_LEAK;
+  const previousSecret = process.env.SHOULD_NOT_FORWARD_SECRET;
 
   beforeEach(async () => {
     vi.clearAllMocks();
     mocks.runAdapterExecutionTargetProcess.mockResolvedValue(okResult);
     root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-opencode-docker-target-"));
-    process.env.AOA_SECRET_LEAK = "do-not-forward";
+    process.env.SHOULD_NOT_FORWARD_SECRET = "do-not-forward";
   });
 
   afterEach(async () => {
     if (previousSecret === undefined) {
-      delete process.env.AOA_SECRET_LEAK;
+      delete process.env.SHOULD_NOT_FORWARD_SECRET;
     } else {
-      process.env.AOA_SECRET_LEAK = previousSecret;
+      process.env.SHOULD_NOT_FORWARD_SECRET = previousSecret;
     }
     await fs.rm(root, { recursive: true, force: true });
   });
@@ -96,6 +96,6 @@ describe("opencode sandbox-docker target", () => {
     const [, opts] = mocks.runAdapterExecutionTargetProcess.mock.calls[0]!;
     expect(opts.env.CUSTOM_ENV).toBe("custom-value");
     expect(opts.env.AOA_API_KEY).toBe("secret-run-token");
-    expect(opts.env.AOA_SECRET_LEAK).toBeUndefined();
+    expect(opts.env.SHOULD_NOT_FORWARD_SECRET).toBeUndefined();
   });
 });

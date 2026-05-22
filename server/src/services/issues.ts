@@ -35,7 +35,12 @@ import { dependencyService } from "./dependencies.js";
 import { heartbeatService } from "./heartbeat.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { deriveIssueUserContext } from "./issue-user-context.js";
-import { issueExecutionWorkspaceModeForPersistedWorkspace } from "./execution-workspace-policy.js";
+import {
+  enforceIssueExecutionWorkspaceOverridePolicy,
+  issueExecutionWorkspaceModeForPersistedWorkspace,
+  parseIssueExecutionWorkspaceSettings,
+  parseProjectExecutionWorkspacePolicy,
+} from "./execution-workspace-policy.js";
 import { notificationService } from "./notifications.js";
 import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
 import {
@@ -43,6 +48,10 @@ import {
   buildIssueMonitorClearedPatch,
   normalizeIssueMonitorPolicy,
 } from "./issue-execution-policy.js";
+import {
+  createIssueContextBundle,
+  type CreateIssueContextBundleItemInput,
+} from "./issue-context-bundles.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -118,15 +127,30 @@ export interface WorkspaceInheritanceSource {
   executionWorkspaceSettings: Record<string, unknown> | null;
 }
 
+export interface WorkspaceInheritanceWorkspace {
+  mode: string | null;
+  companyId: string;
+  projectId: string | null;
+  status: string;
+}
+
 export interface ResolvedWorkspaceInheritance {
   executionWorkspaceId: string;
   executionWorkspacePreference: "reuse_existing";
   executionWorkspaceSettings: Record<string, unknown>;
 }
 
+type IssueWorkspaceFields = {
+  executionWorkspaceId?: string | null;
+  executionWorkspacePreference?: string | null;
+  executionWorkspaceSettings?: Record<string, unknown> | null;
+};
+
 export function resolveExecutionWorkspaceInheritance(input: {
   sourceIssue: WorkspaceInheritanceSource | null;
-  sourceWorkspaceMode: string | null | undefined;
+  sourceWorkspace: WorkspaceInheritanceWorkspace | null;
+  targetCompanyId: string;
+  targetProjectId: string | null;
   isolatedWorkspacesEnabled: boolean;
   hasExplicitOverride: boolean;
 }): ResolvedWorkspaceInheritance | null {
@@ -134,13 +158,73 @@ export function resolveExecutionWorkspaceInheritance(input: {
   if (!input.isolatedWorkspacesEnabled) return null;
   if (input.hasExplicitOverride) return null;
   if (!input.sourceIssue.executionWorkspaceId) return null;
+  if (!input.sourceWorkspace) return null;
+  if (input.sourceWorkspace.companyId !== input.targetCompanyId) return null;
+  if (input.sourceWorkspace.projectId !== input.targetProjectId) return null;
+  if (input.sourceWorkspace.status === "archived") return null;
   return {
     executionWorkspaceId: input.sourceIssue.executionWorkspaceId,
     executionWorkspacePreference: "reuse_existing",
     executionWorkspaceSettings: {
       ...((input.sourceIssue.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? {}),
-      mode: issueExecutionWorkspaceModeForPersistedWorkspace(input.sourceWorkspaceMode),
+      mode: issueExecutionWorkspaceModeForPersistedWorkspace(input.sourceWorkspace.mode),
     },
+  };
+}
+
+export function shouldClearExecutionWorkspaceForProjectChange(input: {
+  projectChanged: boolean;
+  companyId: string;
+  nextProjectId: string | null;
+  workspace: {
+    companyId: string;
+    projectId: string | null;
+    status: string;
+  } | null;
+}): boolean {
+  if (!input.projectChanged) return false;
+  if (!input.workspace) return true;
+  if (input.workspace.companyId !== input.companyId) return true;
+  if (input.workspace.projectId !== input.nextProjectId) return true;
+  return input.workspace.status === "archived";
+}
+
+export function resolveCreateIssueExecutionWorkspaceFields(input: {
+  explicitPatch: IssueWorkspaceFields;
+  inherited: ResolvedWorkspaceInheritance | null;
+  existingIssue: {
+    companyId: string;
+    projectId: string | null;
+  };
+  isolatedWorkspacesEnabled: boolean;
+  projectPolicy: ReturnType<typeof parseProjectExecutionWorkspacePolicy>;
+  reuseWorkspace: {
+    id: string;
+    companyId: string;
+    projectId: string;
+    status: string;
+  } | null;
+}): IssueWorkspaceFields {
+  const hasExplicitOverride =
+    input.explicitPatch.executionWorkspaceId !== undefined ||
+    input.explicitPatch.executionWorkspacePreference !== undefined ||
+    input.explicitPatch.executionWorkspaceSettings !== undefined;
+
+  if (hasExplicitOverride) {
+    return enforceIssueExecutionWorkspaceOverridePolicy({
+      existingIssue: input.existingIssue,
+      isolatedWorkspacesEnabled: input.isolatedWorkspacesEnabled,
+      projectPolicy: input.projectPolicy,
+      patch: input.explicitPatch,
+      reuseWorkspace: input.reuseWorkspace,
+    });
+  }
+
+  if (!input.inherited) return {};
+  return {
+    executionWorkspaceId: input.inherited.executionWorkspaceId,
+    executionWorkspacePreference: input.inherited.executionWorkspacePreference,
+    executionWorkspaceSettings: input.inherited.executionWorkspaceSettings,
   };
 }
 
@@ -689,10 +773,20 @@ export function issueService(db: Db) {
       data: Omit<typeof issues.$inferInsert, "companyId"> & {
         labelIds?: string[];
         inheritExecutionWorkspaceFromIssueId?: string | null;
+        contextBundle?: {
+          sourceIssueId: string;
+          brief?: string | null;
+          items?: CreateIssueContextBundleItemInput[];
+        };
       },
       outerTx?: Parameters<Parameters<typeof db.transaction>[0]>[0],
     ) => {
-      const { labelIds: inputLabelIds, inheritExecutionWorkspaceFromIssueId, ...issueData } = data;
+      const {
+        labelIds: inputLabelIds,
+        inheritExecutionWorkspaceFromIssueId,
+        contextBundle,
+        ...issueData
+      } = data;
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
@@ -715,13 +809,11 @@ export function issueService(db: Db) {
           (issueData as Record<string, unknown>).executionWorkspacePreference !== undefined ||
           (issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined;
 
-        let inheritedExecutionWorkspaceId: string | null = null;
-        let inheritedExecutionWorkspacePreference: string | null = null;
-        let inheritedExecutionWorkspaceSettings: Record<string, unknown> | null = null;
+        const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental())
+          .enableIsolatedWorkspaces;
+        let inheritedExecutionWorkspace: ResolvedWorkspaceInheritance | null = null;
 
         if (workspaceInheritanceIssueId) {
-          const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental())
-            .enableIsolatedWorkspaces;
           const sourceIssue = await tx
             .select({
               executionWorkspaceId: issues.executionWorkspaceId,
@@ -733,27 +825,85 @@ export function issueService(db: Db) {
           if (sourceIssue == null && inheritExecutionWorkspaceFromIssueId) {
             throw notFound("Workspace inheritance issue not found");
           }
-          let sourceWorkspaceMode: string | null = null;
+          let sourceWorkspace: WorkspaceInheritanceWorkspace | null = null;
           if (sourceIssue?.executionWorkspaceId) {
-            const sourceWorkspace = await tx
-              .select({ mode: executionWorkspaces.mode })
+            sourceWorkspace = await tx
+              .select({
+                mode: executionWorkspaces.mode,
+                companyId: executionWorkspaces.companyId,
+                projectId: executionWorkspaces.projectId,
+                status: executionWorkspaces.status,
+              })
               .from(executionWorkspaces)
               .where(eq(executionWorkspaces.id, sourceIssue.executionWorkspaceId))
               .then((rows) => rows[0] ?? null);
-            sourceWorkspaceMode = sourceWorkspace?.mode ?? null;
           }
           const resolved = resolveExecutionWorkspaceInheritance({
             sourceIssue,
-            sourceWorkspaceMode,
+            sourceWorkspace,
+            targetCompanyId: companyId,
+            targetProjectId: (issueData as { projectId?: string | null }).projectId ?? null,
             isolatedWorkspacesEnabled,
             hasExplicitOverride: hasExplicitExecutionWorkspaceOverride,
           });
-          if (resolved) {
-            inheritedExecutionWorkspaceId = resolved.executionWorkspaceId;
-            inheritedExecutionWorkspacePreference = resolved.executionWorkspacePreference;
-            inheritedExecutionWorkspaceSettings = resolved.executionWorkspaceSettings;
-          }
+          inheritedExecutionWorkspace = resolved;
         }
+
+        const explicitWorkspacePatch: IssueWorkspaceFields = {
+          ...((issueData as Record<string, unknown>).executionWorkspaceId !== undefined
+            ? { executionWorkspaceId: (issueData as { executionWorkspaceId?: string | null }).executionWorkspaceId }
+            : {}),
+          ...((issueData as Record<string, unknown>).executionWorkspacePreference !== undefined
+            ? {
+              executionWorkspacePreference: (issueData as { executionWorkspacePreference?: string | null })
+                .executionWorkspacePreference,
+            }
+            : {}),
+          ...((issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined
+            ? {
+              executionWorkspaceSettings: (issueData as { executionWorkspaceSettings?: Record<string, unknown> | null })
+                .executionWorkspaceSettings,
+            }
+            : {}),
+        };
+        const projectId = (issueData as { projectId?: string | null }).projectId ?? null;
+        const projectPolicy = projectId
+          ? await tx
+            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+            .from(projects)
+            .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+            .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy ?? null))
+          : null;
+        const parsedIssueSettings = parseIssueExecutionWorkspaceSettings(explicitWorkspacePatch.executionWorkspaceSettings);
+        const reuseWorkspaceId =
+          parsedIssueSettings?.reuseWorkspaceId ?? explicitWorkspacePatch.executionWorkspaceId ?? null;
+        const reuseWorkspace = reuseWorkspaceId
+          ? await tx
+            .select({
+              id: executionWorkspaces.id,
+              companyId: executionWorkspaces.companyId,
+              projectId: executionWorkspaces.projectId,
+              status: executionWorkspaces.status,
+            })
+            .from(executionWorkspaces)
+            .where(eq(executionWorkspaces.id, reuseWorkspaceId))
+            .then((rows) => rows[0] ?? null)
+          : null;
+        const executionWorkspaceFields = resolveCreateIssueExecutionWorkspaceFields({
+          explicitPatch: explicitWorkspacePatch,
+          inherited: inheritedExecutionWorkspace,
+          existingIssue: {
+            companyId,
+            projectId,
+          },
+          isolatedWorkspacesEnabled,
+          projectPolicy,
+          reuseWorkspace,
+        });
+        const issueInsertData = { ...issueData } as Record<string, unknown>;
+        delete issueInsertData.executionWorkspaceId;
+        delete issueInsertData.executionWorkspacePreference;
+        delete issueInsertData.executionWorkspaceSettings;
 
         const [company] = await tx
           .update(companies)
@@ -765,14 +915,8 @@ export function issueService(db: Db) {
         const identifier = `${company.issuePrefix}-${issueNumber}`;
 
         const values = {
-          ...issueData,
-          ...(inheritedExecutionWorkspaceId ? { executionWorkspaceId: inheritedExecutionWorkspaceId } : {}),
-          ...(inheritedExecutionWorkspacePreference
-            ? { executionWorkspacePreference: inheritedExecutionWorkspacePreference }
-            : {}),
-          ...(inheritedExecutionWorkspaceSettings
-            ? { executionWorkspaceSettings: inheritedExecutionWorkspaceSettings }
-            : {}),
+          ...issueInsertData,
+          ...executionWorkspaceFields,
           companyId,
           issueNumber,
           identifier,
@@ -790,6 +934,17 @@ export function issueService(db: Db) {
         const [issue] = await tx.insert(issues).values(values).returning();
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
+        }
+        if (contextBundle) {
+          await createIssueContextBundle(tx, {
+            companyId,
+            sourceIssueId: contextBundle.sourceIssueId,
+            targetIssueId: issue.id,
+            brief: contextBundle.brief ?? null,
+            items: contextBundle.items ?? [],
+            createdByAgentId: issue.createdByAgentId ?? null,
+            createdByUserId: issue.createdByUserId ?? null,
+          });
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
@@ -816,6 +971,96 @@ export function issueService(db: Db) {
         delete (issueData as Record<string, unknown>).executionWorkspaceId;
         delete (issueData as Record<string, unknown>).executionWorkspacePreference;
         delete (issueData as Record<string, unknown>).executionWorkspaceSettings;
+      } else {
+        const hasWorkspaceOverride =
+          (issueData as Record<string, unknown>).executionWorkspaceId !== undefined ||
+          (issueData as Record<string, unknown>).executionWorkspacePreference !== undefined ||
+          (issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined;
+        if (hasWorkspaceOverride) {
+          const nextProjectId =
+            (issueData as { projectId?: string | null }).projectId !== undefined
+              ? ((issueData as { projectId?: string | null }).projectId ?? null)
+              : existing.projectId;
+          const projectPolicy = nextProjectId
+            ? await db
+              .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+              .from(projects)
+              .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)))
+              .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy ?? null))
+            : null;
+          const parsedIssueSettings = parseIssueExecutionWorkspaceSettings(
+            (issueData as Record<string, unknown>).executionWorkspaceSettings,
+          );
+          const reuseWorkspaceId =
+            parsedIssueSettings?.reuseWorkspaceId ??
+            ((issueData as { executionWorkspaceId?: string | null }).executionWorkspaceId ?? null);
+          const reuseWorkspace = reuseWorkspaceId
+            ? await db
+              .select({
+                id: executionWorkspaces.id,
+                companyId: executionWorkspaces.companyId,
+                projectId: executionWorkspaces.projectId,
+                status: executionWorkspaces.status,
+              })
+              .from(executionWorkspaces)
+              .where(eq(executionWorkspaces.id, reuseWorkspaceId))
+              .then((rows) => rows[0] ?? null)
+            : null;
+          const normalizedWorkspacePatch = enforceIssueExecutionWorkspaceOverridePolicy({
+            existingIssue: {
+              companyId: existing.companyId,
+              projectId: nextProjectId,
+            },
+            isolatedWorkspacesEnabled,
+            projectPolicy,
+            patch: {
+              executionWorkspaceId: (issueData as { executionWorkspaceId?: string | null }).executionWorkspaceId,
+              executionWorkspacePreference: (issueData as { executionWorkspacePreference?: string | null }).executionWorkspacePreference,
+              executionWorkspaceSettings: (issueData as { executionWorkspaceSettings?: Record<string, unknown> | null }).executionWorkspaceSettings,
+            },
+            reuseWorkspace,
+          });
+          if ((issueData as Record<string, unknown>).executionWorkspaceId !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspaceId = normalizedWorkspacePatch.executionWorkspaceId;
+          } else if (normalizedWorkspacePatch.executionWorkspaceId !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspaceId = normalizedWorkspacePatch.executionWorkspaceId;
+          }
+          if ((issueData as Record<string, unknown>).executionWorkspacePreference !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspacePreference = normalizedWorkspacePatch.executionWorkspacePreference;
+          } else if (normalizedWorkspacePatch.executionWorkspacePreference !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspacePreference = normalizedWorkspacePatch.executionWorkspacePreference;
+          }
+          if ((issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined) {
+            (issueData as Record<string, unknown>).executionWorkspaceSettings = normalizedWorkspacePatch.executionWorkspaceSettings;
+          }
+        } else if (
+          (issueData as { projectId?: string | null }).projectId !== undefined &&
+          (issueData as { projectId?: string | null }).projectId !== existing.projectId &&
+          existing.executionWorkspaceId
+        ) {
+          const nextProjectId = (issueData as { projectId?: string | null }).projectId ?? null;
+          const existingWorkspace = await db
+            .select({
+              companyId: executionWorkspaces.companyId,
+              projectId: executionWorkspaces.projectId,
+              status: executionWorkspaces.status,
+            })
+            .from(executionWorkspaces)
+            .where(eq(executionWorkspaces.id, existing.executionWorkspaceId))
+            .then((rows) => rows[0] ?? null);
+          if (
+            shouldClearExecutionWorkspaceForProjectChange({
+              projectChanged: true,
+              companyId: existing.companyId,
+              nextProjectId,
+              workspace: existingWorkspace,
+            })
+          ) {
+            (issueData as Record<string, unknown>).executionWorkspaceId = null;
+            (issueData as Record<string, unknown>).executionWorkspacePreference = null;
+            (issueData as Record<string, unknown>).executionWorkspaceSettings = null;
+          }
+        }
       }
 
       if (issueData.status) {
