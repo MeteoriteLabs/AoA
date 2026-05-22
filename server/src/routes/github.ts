@@ -41,6 +41,14 @@ const createPrBodySchema = z.object({
   milestoneNumber: z.number().int().positive().optional(),
 });
 
+const mergePrBodySchema = z.object({
+  mergeMethod: z.enum(["merge", "squash", "rebase"]),
+});
+
+const requestReviewBodySchema = z.object({
+  reviewers: z.array(z.string().min(1)).min(1),
+});
+
 async function resolveGithubUserFromConnectActivity(
   db: Db,
   companyId: string,
@@ -97,13 +105,6 @@ function readGitHubPrMetadata(value: unknown): GitHubPrMetadata | null {
 export function githubRoutes(db: Db) {
   const router = Router();
   const svc = secretService(db);
-
-  const mergePrBodySchema = z.object({
-    mergeMethod: z.enum(["merge", "squash", "rebase"]),
-  });
-  const requestReviewBodySchema = z.object({
-    reviewers: z.array(z.string().min(1)).min(1),
-  });
 
   /**
    * Save a GitHub PAT for this company. Verifies the PAT via Octokit before
@@ -492,10 +493,10 @@ export function githubRoutes(db: Db) {
     assertCompanyAccess(req, ws.companyId);
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
-    const pat = await resolveGitHubPat(db, ws.companyId, "github-metadata");
-    const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
-    const octokit = new Octokit({ auth: pat });
     try {
+      const pat = await resolveGitHubPat(db, ws.companyId, "github-metadata");
+      const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
+      const octokit = new Octokit({ auth: pat });
       const { data } = await octokit.repos.listCollaborators({ owner, repo, per_page: 100 });
       res.json(data.map((c) => ({ login: c.login, avatarUrl: c.avatar_url })));
     } catch (err) {
@@ -512,10 +513,10 @@ export function githubRoutes(db: Db) {
     assertCompanyAccess(req, ws.companyId);
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
-    const pat = await resolveGitHubPat(db, ws.companyId, "github-metadata");
-    const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
-    const octokit = new Octokit({ auth: pat });
     try {
+      const pat = await resolveGitHubPat(db, ws.companyId, "github-metadata");
+      const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
+      const octokit = new Octokit({ auth: pat });
       const { data } = await octokit.issues.listLabelsForRepo({ owner, repo, per_page: 100 });
       res.json(data.map((l) => ({ id: l.id, name: l.name, color: l.color })));
     } catch (err) {
@@ -532,10 +533,10 @@ export function githubRoutes(db: Db) {
     assertCompanyAccess(req, ws.companyId);
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
-    const pat = await resolveGitHubPat(db, ws.companyId, "github-metadata");
-    const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
-    const octokit = new Octokit({ auth: pat });
     try {
+      const pat = await resolveGitHubPat(db, ws.companyId, "github-metadata");
+      const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
+      const octokit = new Octokit({ auth: pat });
       const { data } = await octokit.issues.listMilestones({ owner, repo, state: "open", per_page: 100 });
       res.json(
         data.map((m) => ({

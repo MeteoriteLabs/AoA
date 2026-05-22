@@ -589,6 +589,10 @@ describe("POST /execution-workspaces/:id/github-pr/reopen", () => {
     const res = await request(app).post("/api/execution-workspaces/ws-1/github-pr/reopen");
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ success: true, prState: "open" });
+    expect(mockWsSvc.update).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ metadata: expect.objectContaining({ pr: expect.objectContaining({ state: "open" }) }) }),
+    );
   });
 });
 
