@@ -20,15 +20,19 @@ describe("ensureCommanderAgent", () => {
     // With atomic INSERT ON CONFLICT, insert is always attempted but returns [] on conflict.
     // The fallback SELECT then finds the existing commander.
     const insert = vi.fn(()=>({values:()=>({onConflictDoNothing:()=>({returning:()=>Promise.resolve([])})})}));
-    const update = vi.fn(()=>({set:()=>({where:()=>Promise.resolve([])})}));
+    const setCalls: Array<Record<string, unknown>> = [];
+    const update = vi.fn(()=>({set:(v:Record<string, unknown>)=>{setCalls.push(v);return{where:()=>Promise.resolve([])};}}));
     const existingRc = { aoa: { role: "lead", toolAllowlist: ["delegate_to_subagent"] }, heartbeat: { enabled:false, intervalSec:0 } };
     const db:any = { select:()=>sel([{id:"cmd-1", runtimeConfig: existingRc}]), insert, update };
     expect(await ensureCommanderAgent(db,"co-1")).toBe("cmd-1");
     // insert is called (attempt), but the conflict path means no new row was created
     expect(insert).toHaveBeenCalled();
-    // update called for internalAgentConfig link; agent row NOT updated since toolAllowlist already set
-    const setArgs = update.mock.results.map((r:any)=>r.value);
-    expect(setArgs.length).toBeGreaterThan(0);
+    // Agent row must NOT be updated when toolAllowlist is already set
+    const agentRcUpdates = setCalls.filter((s) => "runtimeConfig" in s);
+    expect(agentRcUpdates).toHaveLength(0);
+    // Only the internalAgentConfig.agentId link update is expected
+    const configLinkUpdates = setCalls.filter((s) => "agentId" in s);
+    expect(configLinkUpdates).toHaveLength(1);
   });
   it("creates kind='aoa' role='general' runtimeConfig.aoa.role='lead' + toolAllowlist + links config", async () => {
     const av:any[]=[]; const sv:any[]=[];
