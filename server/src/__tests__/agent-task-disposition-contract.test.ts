@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 describe("default agent task disposition contract", () => {
   it("is present in generated onboarding AGENTS.md files", async () => {
-    const root = path.resolve(process.cwd(), "server/src/onboarding-assets");
+    const root = path.resolve(process.cwd(), "src/onboarding-assets");
     const files = [
       "cxo/AGENTS.md",
       "default/AGENTS.md",
