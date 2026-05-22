@@ -283,6 +283,12 @@ export type {
   GitHubPrMetadata,
   GitHubPrSyncMetadata,
   GitHubPrSyncResponse,
+  GitHubRepoCollaborator,
+  GitHubRepoLabel,
+  GitHubRepoMilestone,
+  GitHubPrMergeMethod,
+  GitHubPrMergeRequest,
+  GitHubPrActionResponse,
 } from "./github.js";
 
 export type { Environment } from "./environment.js";
