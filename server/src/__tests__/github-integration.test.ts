@@ -4,6 +4,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockOctokit = vi.hoisted(() => ({
   users: { getAuthenticated: vi.fn() },
+  pulls: {
+    create: vi.fn(),
+    list: vi.fn(),
+    merge: vi.fn(),
+    update: vi.fn(),
+    requestReviewers: vi.fn(),
+  },
+  repos: { listCollaborators: vi.fn() },
+  issues: {
+    addLabels: vi.fn(),
+    update: vi.fn(),
+    listLabelsForRepo: vi.fn(),
+    listMilestones: vi.fn(),
+  },
 }));
 vi.mock("@octokit/rest", () => ({
   Octokit: vi.fn(() => mockOctokit),
@@ -18,6 +32,39 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 vi.mock("../services/index.js", () => ({
   secretService: () => mockSvc,
   logActivity: mockLogActivity,
+}));
+
+const mockWsSvc = vi.hoisted(() => ({
+  getById: vi.fn(),
+  update: vi.fn(),
+}));
+vi.mock("../services/execution-workspaces.js", () => ({
+  executionWorkspaceService: () => mockWsSvc,
+}));
+
+const mockMergeWorkspacePr = vi.hoisted(() => vi.fn());
+const mockCloseWorkspacePr = vi.hoisted(() => vi.fn());
+const mockReopenWorkspacePr = vi.hoisted(() => vi.fn());
+const mockRequestPrReview = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/github-pr.js", () => ({
+  // NOTE: real constructor is (message: string, status: number, scopeHint?: string)
+  // The parameter order below is intentional for the mock — do NOT use as reference for production code
+  GitHubPrError: class GitHubPrError extends Error {
+    constructor(public status: number, message: string, public scopeHint?: string) { super(message); }
+  },
+  parseGitHubRepoUrl: vi.fn((url: string) => {
+    const m = url.match(/github\.com\/([^/]+)\/([^/]+)/);
+    if (!m) throw new Error("bad url");
+    return { owner: m[1], repo: m[2].replace(/\.git$/, "") };
+  }),
+  resolveGitHubPat: vi.fn().mockResolvedValue("ghp_token"),
+  createPullRequest: vi.fn(),
+  findPullRequestForBranch: vi.fn(),
+  mergeWorkspacePr: mockMergeWorkspacePr,
+  closeWorkspacePr: mockCloseWorkspacePr,
+  reopenWorkspacePr: mockReopenWorkspacePr,
+  requestPrReview: mockRequestPrReview,
 }));
 
 import { errorHandler } from "../middleware/index.js";
@@ -346,5 +393,235 @@ describe("github integration routes", () => {
 
       expect(res.status).toBe(403);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Repo metadata routes
+// ---------------------------------------------------------------------------
+
+describe("GET /execution-workspaces/:id/github/collaborators", () => {
+  const ws = {
+    id: "ws-1",
+    companyId: "company-1",
+    repoUrl: "https://github.com/myorg/myrepo",
+    branchName: "feat/task",
+    metadata: {},
+  };
+
+  beforeEach(() => {
+    mockWsSvc.getById.mockResolvedValue(ws);
+    mockOctokit.repos.listCollaborators.mockResolvedValue({
+      data: [
+        { login: "alice", avatar_url: "https://avatars.githubusercontent.com/alice" },
+        { login: "bob", avatar_url: "https://avatars.githubusercontent.com/bob" },
+      ],
+    });
+  });
+
+  it("returns collaborator list camelCased", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/collaborators");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      { login: "alice", avatarUrl: "https://avatars.githubusercontent.com/alice" },
+      { login: "bob", avatarUrl: "https://avatars.githubusercontent.com/bob" },
+    ]);
+  });
+
+  it("returns 404 when workspace not found", async () => {
+    mockWsSvc.getById.mockResolvedValue(null);
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/collaborators");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 400 when workspace has no repoUrl", async () => {
+    mockWsSvc.getById.mockResolvedValue({ ...ws, repoUrl: null });
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/collaborators");
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /execution-workspaces/:id/github/labels", () => {
+  const ws = { id: "ws-1", companyId: "company-1", repoUrl: "https://github.com/myorg/myrepo", metadata: {} };
+
+  beforeEach(() => {
+    mockWsSvc.getById.mockResolvedValue(ws);
+    mockOctokit.issues.listLabelsForRepo.mockResolvedValue({
+      data: [{ id: 1, name: "bug", color: "d73a4a" }, { id: 2, name: "enhancement", color: "a2eeef" }],
+    });
+  });
+
+  it("returns label list", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/labels");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      { id: 1, name: "bug", color: "d73a4a" },
+      { id: 2, name: "enhancement", color: "a2eeef" },
+    ]);
+  });
+});
+
+describe("GET /execution-workspaces/:id/github/milestones", () => {
+  const ws = { id: "ws-1", companyId: "company-1", repoUrl: "https://github.com/myorg/myrepo", metadata: {} };
+
+  beforeEach(() => {
+    mockWsSvc.getById.mockResolvedValue(ws);
+    mockOctokit.issues.listMilestones.mockResolvedValue({
+      data: [
+        { number: 1, title: "v1.0", open_issues: 3, due_on: "2026-06-01T00:00:00Z" },
+        { number: 2, title: "v1.1", open_issues: 0, due_on: null },
+      ],
+    });
+  });
+
+  it("returns milestone list", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/milestones");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      { number: 1, title: "v1.0", openIssues: 3, dueOn: "2026-06-01T00:00:00Z" },
+      { number: 2, title: "v1.1", openIssues: 0, dueOn: null },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR action routes
+// ---------------------------------------------------------------------------
+
+describe("POST /execution-workspaces/:id/github-pr/merge", () => {
+  const ws = {
+    id: "ws-1",
+    companyId: "company-1",
+    repoUrl: "https://github.com/myorg/myrepo",
+    branchName: "feat/task",
+    baseRef: "main",
+    metadata: { pr: { url: "https://github.com/myorg/myrepo/pull/42", number: 42, state: "open", createdAt: "2026-01-01T00:00:00Z", draft: false } },
+  };
+
+  beforeEach(() => {
+    mockWsSvc.getById.mockResolvedValue(ws);
+    mockWsSvc.update.mockResolvedValue({ ...ws });
+    mockMergeWorkspacePr.mockResolvedValue({ sha: "abc123" });
+  });
+
+  it("calls mergeWorkspacePr and returns merged state", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/github-pr/merge")
+      .send({ mergeMethod: "squash" });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ success: true, prState: "merged" });
+    expect(mockMergeWorkspacePr).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ prNumber: 42, mergeMethod: "squash" }),
+    );
+    expect(mockWsSvc.update).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ metadata: expect.objectContaining({ pr: expect.objectContaining({ state: "merged" }) }) }),
+    );
+  });
+
+  it("returns 400 when workspace has no stored PR", async () => {
+    mockWsSvc.getById.mockResolvedValue({ ...ws, metadata: {} });
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/github-pr/merge")
+      .send({ mergeMethod: "merge" });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects invalid merge method", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/github-pr/merge")
+      .send({ mergeMethod: "octopus" });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /execution-workspaces/:id/github-pr/close", () => {
+  const ws = {
+    id: "ws-1",
+    companyId: "company-1",
+    repoUrl: "https://github.com/myorg/myrepo",
+    metadata: { pr: { url: "https://github.com/myorg/myrepo/pull/42", number: 42, state: "open", createdAt: "2026-01-01T00:00:00Z", draft: false } },
+  };
+
+  beforeEach(() => {
+    mockWsSvc.getById.mockResolvedValue(ws);
+    mockWsSvc.update.mockResolvedValue({});
+    mockCloseWorkspacePr.mockResolvedValue(undefined);
+  });
+
+  it("closes the PR and updates metadata state", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app).post("/api/execution-workspaces/ws-1/github-pr/close");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ success: true, prState: "closed" });
+    expect(mockWsSvc.update).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ metadata: expect.objectContaining({ pr: expect.objectContaining({ state: "closed" }) }) }),
+    );
+  });
+});
+
+describe("POST /execution-workspaces/:id/github-pr/reopen", () => {
+  const ws = {
+    id: "ws-1",
+    companyId: "company-1",
+    repoUrl: "https://github.com/myorg/myrepo",
+    metadata: { pr: { url: "https://github.com/myorg/myrepo/pull/42", number: 42, state: "closed", createdAt: "2026-01-01T00:00:00Z", draft: false } },
+  };
+
+  beforeEach(() => {
+    mockWsSvc.getById.mockResolvedValue(ws);
+    mockWsSvc.update.mockResolvedValue({});
+    mockReopenWorkspacePr.mockResolvedValue(undefined);
+  });
+
+  it("reopens the PR and updates metadata state", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app).post("/api/execution-workspaces/ws-1/github-pr/reopen");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ success: true, prState: "open" });
+  });
+});
+
+describe("POST /execution-workspaces/:id/github-pr/request-review", () => {
+  const ws = {
+    id: "ws-1",
+    companyId: "company-1",
+    repoUrl: "https://github.com/myorg/myrepo",
+    metadata: { pr: { url: "https://github.com/myorg/myrepo/pull/42", number: 42, state: "open", createdAt: "2026-01-01T00:00:00Z", draft: false } },
+  };
+
+  beforeEach(() => {
+    mockWsSvc.getById.mockResolvedValue(ws);
+    mockRequestPrReview.mockResolvedValue(undefined);
+  });
+
+  it("calls requestPrReview with given reviewers", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/github-pr/request-review")
+      .send({ reviewers: ["alice", "bob"] });
+    expect(res.status).toBe(200);
+    expect(mockRequestPrReview).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reviewers: ["alice", "bob"], prNumber: 42 }),
+    );
+  });
+
+  it("returns 400 when reviewers is empty", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/github-pr/request-review")
+      .send({ reviewers: [] });
+    expect(res.status).toBe(400);
   });
 });

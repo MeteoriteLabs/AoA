@@ -8,12 +8,23 @@ import {
   GITHUB_PAT_SECRET_NAME,
   type GitHubPrMetadata,
   type GitHubPrSyncResponse,
+  type GitHubPrActionResponse,
 } from "@armyofagents/shared";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { issueService } from "../services/issues.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
-import { createPullRequest, findPullRequestForBranch, GitHubPrError } from "../services/github-pr.js";
+import {
+  createPullRequest,
+  findPullRequestForBranch,
+  GitHubPrError,
+  resolveGitHubPat,
+  mergeWorkspacePr,
+  closeWorkspacePr,
+  reopenWorkspacePr,
+  requestPrReview,
+  parseGitHubRepoUrl,
+} from "../services/github-pr.js";
 import { resolveGitRoot, runGit, push } from "../services/git.js";
 const setPatSchema = z.object({ pat: z.string().min(1) });
 const syncPrBodySchema = z.object({ force: z.boolean().optional().default(false) });
@@ -25,6 +36,9 @@ const createPrBodySchema = z.object({
   draft: z.boolean().default(false),
   /** Explicit head branch — used when workspace.branchName is null (local_fs). */
   head: z.string().min(1).optional(),
+  reviewers: z.array(z.string().min(1)).optional(),
+  labels: z.array(z.string().min(1)).optional(),
+  milestoneNumber: z.number().int().positive().optional(),
 });
 
 async function resolveGithubUserFromConnectActivity(
@@ -83,6 +97,13 @@ function readGitHubPrMetadata(value: unknown): GitHubPrMetadata | null {
 export function githubRoutes(db: Db) {
   const router = Router();
   const svc = secretService(db);
+
+  const mergePrBodySchema = z.object({
+    mergeMethod: z.enum(["merge", "squash", "rebase"]),
+  });
+  const requestReviewBodySchema = z.object({
+    reviewers: z.array(z.string().min(1)).min(1),
+  });
 
   /**
    * Save a GitHub PAT for this company. Verifies the PAT via Octokit before
@@ -458,6 +479,161 @@ export function githubRoutes(db: Db) {
       }
       throw err;
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Repo metadata — feed CreatePrDialog selects
+  // ---------------------------------------------------------------------------
+
+  router.get("/execution-workspaces/:id/github/collaborators", async (req, res) => {
+    assertBoard(req);
+    const ws = await executionWorkspaceService(db).getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    const pat = await resolveGitHubPat(db, ws.companyId, "github-metadata");
+    const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
+    const octokit = new Octokit({ auth: pat });
+    try {
+      const { data } = await octokit.repos.listCollaborators({ owner, repo, per_page: 100 });
+      res.json(data.map((c) => ({ login: c.login, avatarUrl: c.avatar_url })));
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      const status = (err as { status?: number }).status ?? 502;
+      res.status(status).json({ error: "GitHub API error fetching collaborators" });
+    }
+  });
+
+  router.get("/execution-workspaces/:id/github/labels", async (req, res) => {
+    assertBoard(req);
+    const ws = await executionWorkspaceService(db).getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    const pat = await resolveGitHubPat(db, ws.companyId, "github-metadata");
+    const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
+    const octokit = new Octokit({ auth: pat });
+    try {
+      const { data } = await octokit.issues.listLabelsForRepo({ owner, repo, per_page: 100 });
+      res.json(data.map((l) => ({ id: l.id, name: l.name, color: l.color })));
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      const status = (err as { status?: number }).status ?? 502;
+      res.status(status).json({ error: "GitHub API error fetching labels" });
+    }
+  });
+
+  router.get("/execution-workspaces/:id/github/milestones", async (req, res) => {
+    assertBoard(req);
+    const ws = await executionWorkspaceService(db).getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    const pat = await resolveGitHubPat(db, ws.companyId, "github-metadata");
+    const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
+    const octokit = new Octokit({ auth: pat });
+    try {
+      const { data } = await octokit.issues.listMilestones({ owner, repo, state: "open", per_page: 100 });
+      res.json(
+        data.map((m) => ({
+          number: m.number,
+          title: m.title,
+          openIssues: m.open_issues,
+          dueOn: m.due_on ?? null,
+        })),
+      );
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      const status = (err as { status?: number }).status ?? 502;
+      res.status(status).json({ error: "GitHub API error fetching milestones" });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // PR actions — merge / close / reopen / request-review
+  // ---------------------------------------------------------------------------
+
+  router.post("/execution-workspaces/:id/github-pr/merge", async (req, res) => {
+    assertBoard(req);
+    const parsed = mergePrBodySchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: "Invalid body", details: parsed.error.format() }); return; }
+
+    const wsSvc = executionWorkspaceService(db);
+    const ws = await wsSvc.getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+
+    const meta = (ws.metadata as Record<string, unknown> | null) ?? {};
+    const pr = readGitHubPrMetadata(meta.pr);
+    if (!pr) { res.status(400).json({ error: "No PR linked to this workspace" }); return; }
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    await mergeWorkspacePr(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number, mergeMethod: parsed.data.mergeMethod });
+
+    const updatedPr = { ...pr, state: "merged" as const };
+    await wsSvc.update(ws.id, { metadata: { ...meta, pr: updatedPr } });
+
+    const response: GitHubPrActionResponse = { success: true, prState: "merged", prUrl: pr.url };
+    res.json(response);
+  });
+
+  router.post("/execution-workspaces/:id/github-pr/close", async (req, res) => {
+    assertBoard(req);
+    const wsSvc = executionWorkspaceService(db);
+    const ws = await wsSvc.getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+
+    const meta = (ws.metadata as Record<string, unknown> | null) ?? {};
+    const pr = readGitHubPrMetadata(meta.pr);
+    if (!pr) { res.status(400).json({ error: "No PR linked to this workspace" }); return; }
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    await closeWorkspacePr(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number });
+    await wsSvc.update(ws.id, { metadata: { ...meta, pr: { ...pr, state: "closed" as const } } });
+
+    const response: GitHubPrActionResponse = { success: true, prState: "closed", prUrl: pr.url };
+    res.json(response);
+  });
+
+  router.post("/execution-workspaces/:id/github-pr/reopen", async (req, res) => {
+    assertBoard(req);
+    const wsSvc = executionWorkspaceService(db);
+    const ws = await wsSvc.getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+
+    const meta = (ws.metadata as Record<string, unknown> | null) ?? {};
+    const pr = readGitHubPrMetadata(meta.pr);
+    if (!pr) { res.status(400).json({ error: "No PR linked to this workspace" }); return; }
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    await reopenWorkspacePr(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number });
+    await wsSvc.update(ws.id, { metadata: { ...meta, pr: { ...pr, state: "open" as const } } });
+
+    const response: GitHubPrActionResponse = { success: true, prState: "open", prUrl: pr.url };
+    res.json(response);
+  });
+
+  router.post("/execution-workspaces/:id/github-pr/request-review", async (req, res) => {
+    assertBoard(req);
+    const parsed = requestReviewBodySchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: "Invalid body", details: parsed.error.format() }); return; }
+
+    const ws = await executionWorkspaceService(db).getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+
+    const meta = (ws.metadata as Record<string, unknown> | null) ?? {};
+    const pr = readGitHubPrMetadata(meta.pr);
+    if (!pr) { res.status(400).json({ error: "No PR linked to this workspace" }); return; }
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    await requestPrReview(db, { companyId: ws.companyId, repoUrl: ws.repoUrl, prNumber: pr.number, reviewers: parsed.data.reviewers });
+    res.json({ success: true });
   });
 
   return router;
