@@ -1,14 +1,11 @@
 /**
  * GitGraphCanvas — D3 + Canvas renderer for the Git Command Centre.
  *
- * D3 computes lane layout; Canvas draws it; React owns pointer events.
- * Hit testing converts DOM coordinates through the D3 zoom transform.
+ * Uses a trunk-and-arcs layout: main branch is a central horizontal spine;
+ * feature branches arc above and below as bezier curves.
  *
- * Exposed via forwardRef as GitGraphCanvasHandle for imperative zoom controls
- * (zoomIn / zoomOut / resetZoom) from the parent toolbar.
- *
+ * Exposed via forwardRef as GitGraphCanvasHandle for imperative zoom controls.
  * Animation loop (RAF) only runs when running/in_review tasks are present.
- * Stops when document is hidden or no active nodes remain.
  */
 
 import React, {
@@ -22,18 +19,20 @@ import React, {
 import * as d3 from "d3";
 import type { GitBranchInfo, GitGraphData } from "@armyofagents/shared";
 import type { HoveredNode } from "./GitHoverCard";
+import {
+  computeArcLayout,
+  type ArcCommitLayout,
+  type ArcDefinition,
+  PAD_LEFT,
+} from "./git-arc-layout";
 
 // ---------------------------------------------------------------------------
-// Layout constants
+// Drawing constants
 // ---------------------------------------------------------------------------
 
-const X_SPACING = 60;   // px between commits (horizontal)
-const Y_SPACING = 60;   // px between branch lanes (vertical)
-const COMMIT_R = 5;     // commit circle radius
-const CARD_W = 28;      // task card marker width
-const CARD_H = 18;      // task card marker height
-const PAD_TOP = 32;
-const PAD_LEFT = 24;
+const COMMIT_R = 5;
+const CARD_W = 28;
+const CARD_H = 18;
 
 // Status → dot color
 function statusDotColor(status: string | null, fallback: string): string {
@@ -55,219 +54,22 @@ export interface GitGraphCanvasHandle {
   resetZoom(): void;
 }
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface CommitLayout {
-  sha: string;
-  x: number;
-  y: number;
-  isMerge: boolean;
-  /** The branch this commit's lane belongs to (set for every commit, not just tips). */
-  laneName: string;
-  /** Non-null only for tip commits — the branch whose tip is this SHA. */
-  branchName: string | null;
-  isTaskTip: boolean;
-  /** True when this commit is the tip of any branch (task or plain). */
-  isBranchTip: boolean;
-  /** Issue status of the linked task (only meaningful at task-tip nodes). */
-  issueStatus: string | null;
-  /** True when the branch this commit belongs to is done/cancelled (for fading). */
-  isDone: boolean;
-  /** True when the branch exists only on the remote, not locally. */
-  isRemoteOnly: boolean;
-  /** True when this node is the tip of the default branch (for HEAD label). */
-  isDefault: boolean;
-  tags: string[];
-  laneColor: string;
-}
-
-interface EdgeLayout {
-  fromX: number;
-  fromY: number;
-  toX: number;
-  toY: number;
-  color: string;
-  isMerge: boolean;
-  isDone: boolean;
-  isRemoteOnly: boolean;
-  /** Lane name — used for visibility filtering. */
-  laneName: string;
-}
-
-interface LayoutResult {
-  nodes: CommitLayout[];
-  edges: EdgeLayout[];
-  laneY: Map<string, number>;
-  /** X range of all nodes belonging to each lane (for flow pulse). */
-  laneRangeX: Map<string, { min: number; max: number }>;
-  totalWidth: number;
-  totalHeight: number;
-}
 
 export interface GitGraphCanvasProps {
   branches: GitBranchInfo[];
   graph: GitGraphData;
-  filter: "all" | "running" | "blocked" | "prs";
+  filter: "all" | "running" | "blocked" | "prs" | "merged";
   onHover: (node: HoveredNode | null, position: { x: number; y: number }) => void;
   onClick: (node: HoveredNode) => void;
-}
-
-// ---------------------------------------------------------------------------
-// Layout computation
-// ---------------------------------------------------------------------------
-
-function computeLayout(graph: GitGraphData, branches: GitBranchInfo[]): LayoutResult {
-  const laneColors = new Map(graph.branches.map((b) => [b.name, b.color]));
-  const taskTips = new Set(branches.filter((b) => b.linkedIssueId).map((b) => b.lastCommitSha));
-  const branchMap = new Map(branches.map((b) => [b.name, b]));
-
-  // Lane Y assignment
-  const laneY = new Map<string, number>();
-  graph.branches.forEach((b, idx) => {
-    laneY.set(b.name, PAD_TOP + idx * Y_SPACING);
-  });
-
-  // First-occurrence tip→lane (default branch wins for shared tips)
-  const tipShaToLane = new Map<string, string>();
-  for (const b of graph.branches) {
-    if (!tipShaToLane.has(b.tipSha)) {
-      tipShaToLane.set(b.tipSha, b.name);
-    }
-  }
-
-  // Propagate lanes backward through parent links (topological order: newest → oldest)
-  const commitLane = new Map<string, string>(tipShaToLane);
-  for (const commit of graph.commits) {
-    const lane = commitLane.get(commit.sha);
-    if (!lane) continue;
-    for (const parentSha of commit.parentShas) {
-      if (!commitLane.has(parentSha)) {
-        commitLane.set(parentSha, lane);
-      }
-    }
-  }
-
-  // Pre-compute per-lane branch info
-  const doneBranches = new Set(
-    branches
-      .filter((b) => b.linkedIssueStatus === "done" || b.linkedIssueStatus === "cancelled")
-      .map((b) => b.name),
-  );
-  const remoteOnlyBranches = new Set(
-    branches.filter((b) => !b.isLocal && b.isRemote).map((b) => b.name),
-  );
-
-  // Assign X: left-to-right = newest first in git log → flip so oldest is left
-  const maxIdx = Math.max(0, graph.commits.length - 1);
-
-  const nodes: CommitLayout[] = graph.commits.map((commit, idx) => {
-    const laneName = commitLane.get(commit.sha) ?? graph.defaultBranch;
-    const y = laneY.get(laneName) ?? PAD_TOP;
-    const x = PAD_LEFT + (maxIdx - idx) * X_SPACING;
-    const color = laneColors.get(laneName) ?? "#7E8AA8";
-
-    const tipBranchName = tipShaToLane.get(commit.sha) ?? null;
-    const tipBranch = tipBranchName ? branchMap.get(tipBranchName) : undefined;
-
-    return {
-      sha: commit.sha,
-      x,
-      y,
-      isMerge: commit.isMerge,
-      laneName,
-      branchName: tipBranchName,
-      isTaskTip: taskTips.has(commit.sha),
-      isBranchTip: tipShaToLane.has(commit.sha),
-      issueStatus: (tipBranch?.linkedIssueStatus as string | null | undefined) ?? null,
-      isDone: doneBranches.has(laneName),
-      isRemoteOnly: remoteOnlyBranches.has(laneName),
-      isDefault: tipBranchName === graph.defaultBranch,
-      tags: commit.tags,
-      laneColor: color,
-    };
-  });
-
-  const nodeByShá = new Map(nodes.map((n) => [n.sha, n]));
-
-  // Edges
-  const edges: EdgeLayout[] = [];
-  for (const commit of graph.commits) {
-    const to = nodeByShá.get(commit.sha);
-    if (!to) continue;
-    const laneName = commitLane.get(commit.sha) ?? graph.defaultBranch;
-    for (const parentSha of commit.parentShas) {
-      const from = nodeByShá.get(parentSha);
-      if (!from) continue;
-      edges.push({
-        fromX: from.x,
-        fromY: from.y,
-        toX: to.x,
-        toY: to.y,
-        color: to.laneColor,
-        isMerge: commit.isMerge,
-        isDone: doneBranches.has(laneName),
-        isRemoteOnly: remoteOnlyBranches.has(laneName),
-        laneName,
-      });
-    }
-  }
-
-  // Lane X ranges (for flow pulse positioning)
-  const laneRangeX = new Map<string, { min: number; max: number }>();
-  for (const node of nodes) {
-    const lane = commitLane.get(node.sha) ?? graph.defaultBranch;
-    const existing = laneRangeX.get(lane);
-    if (!existing) {
-      laneRangeX.set(lane, { min: node.x, max: node.x });
-    } else {
-      if (node.x < existing.min) existing.min = node.x;
-      if (node.x > existing.max) existing.max = node.x;
-    }
-  }
-
-  const totalWidth = PAD_LEFT * 2 + (graph.commits.length > 0 ? maxIdx * X_SPACING : 400);
-  const totalHeight = PAD_TOP * 2 + graph.branches.length * Y_SPACING;
-
-  return { nodes, edges, laneY, laneRangeX, totalWidth, totalHeight };
 }
 
 // ---------------------------------------------------------------------------
 // Drawing helpers
 // ---------------------------------------------------------------------------
 
-function drawEdges(ctx: CanvasRenderingContext2D, edges: EdgeLayout[]) {
-  for (const e of edges) {
-    ctx.save();
-    const alpha = e.isDone ? 0.15 : 0.6;
-    ctx.globalAlpha = alpha;
-
-    if (e.isRemoteOnly) {
-      ctx.setLineDash([6, 4]);
-    } else {
-      ctx.setLineDash([]);
-    }
-
-    ctx.beginPath();
-    if (e.isMerge && e.fromY !== e.toY) {
-      const mx = (e.fromX + e.toX) / 2;
-      ctx.moveTo(e.fromX, e.fromY);
-      ctx.bezierCurveTo(mx, e.fromY, mx, e.toY, e.toX, e.toY);
-    } else {
-      ctx.moveTo(e.fromX, e.fromY);
-      ctx.lineTo(e.toX, e.toY);
-    }
-    ctx.strokeStyle = e.color;
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-    ctx.restore();
-  }
-}
-
 function drawCommitNode(
   ctx: CanvasRenderingContext2D,
-  node: CommitLayout,
+  node: ArcCommitLayout,
   animPhase: number,
   branchStatus: string | null,
 ) {
@@ -400,7 +202,7 @@ function drawCommitNode(
 
 function drawCardLabel(
   ctx: CanvasRenderingContext2D,
-  node: CommitLayout,
+  node: ArcCommitLayout,
   branch: GitBranchInfo,
 ) {
   ctx.save();
@@ -432,7 +234,7 @@ function drawCardLabel(
 
 function drawCardBadges(
   ctx: CanvasRenderingContext2D,
-  node: CommitLayout,
+  node: ArcCommitLayout,
   branch: GitBranchInfo,
 ) {
   const rightEdgeX = node.x + CARD_W / 2;
@@ -492,7 +294,7 @@ function drawCardBadges(
   }
 }
 
-function drawTagPills(ctx: CanvasRenderingContext2D, node: CommitLayout) {
+function drawTagPills(ctx: CanvasRenderingContext2D, node: ArcCommitLayout) {
   if (node.tags.length === 0) return;
 
   ctx.save();
@@ -523,7 +325,7 @@ function drawTagPills(ctx: CanvasRenderingContext2D, node: CommitLayout) {
   ctx.restore();
 }
 
-function drawHeadLabel(ctx: CanvasRenderingContext2D, node: CommitLayout) {
+function drawHeadLabel(ctx: CanvasRenderingContext2D, node: ArcCommitLayout) {
   ctx.save();
   ctx.font = "9px 'Courier New', monospace";
   ctx.fillStyle = "#7E8AA8";
@@ -538,43 +340,255 @@ function drawHeadLabel(ctx: CanvasRenderingContext2D, node: CommitLayout) {
 }
 
 
-function drawFlowPulse(
+function drawTrunk(
   ctx: CanvasRenderingContext2D,
-  laneY: Map<string, number>,
-  laneRangeX: Map<string, { min: number; max: number }>,
-  branchMap: Map<string, GitBranchInfo>,
-  animPhase: number,
+  nodes: ArcCommitLayout[],
+  trunkY: number,
+  color: string,
+) {
+  const trunkNodes = nodes.filter((n) => n.isTrunk);
+  if (trunkNodes.length < 2) return;
+  const minX = Math.min(...trunkNodes.map((n) => n.x));
+  const maxX = Math.max(...trunkNodes.map((n) => n.x));
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(minX, trunkY);
+  ctx.lineTo(maxX, trunkY);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.globalAlpha = 0.7;
+  ctx.setLineDash([]);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawArcLines(
+  ctx: CanvasRenderingContext2D,
+  arcs: ArcDefinition[],
+  visibleNames: Set<string>,
+  canvasRightInLayout: number,
+  trunkY: number,
+) {
+  for (const arc of arcs) {
+    if (!visibleNames.has(arc.branchName)) continue;
+
+    ctx.save();
+    ctx.strokeStyle = arc.color;
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = arc.isDone ? 0.15 : 0.7;
+    ctx.setLineDash([]);
+
+    if (!arc.isOpen && arc.mergePointX != null) {
+      // Closed arc: two-segment cubic bezier
+      const span = arc.mergePointX - arc.branchPointX;
+      const apexX = (arc.branchPointX + arc.mergePointX) / 2;
+      const offset = span * 0.25;
+
+      ctx.beginPath();
+      ctx.moveTo(arc.branchPointX, trunkY);
+      ctx.bezierCurveTo(
+        arc.branchPointX + offset, trunkY,
+        apexX, arc.apexY,
+        apexX, arc.apexY,
+      );
+      ctx.bezierCurveTo(
+        apexX, arc.apexY,
+        arc.mergePointX - offset, trunkY,
+        arc.mergePointX, trunkY,
+      );
+      ctx.stroke();
+    } else {
+      // Open arc: curve up to rail height, then flat rail with dashed tail
+      const railStartX = arc.branchPointX + 60;
+      const curveOffset = railStartX - arc.branchPointX;
+      const tailX = canvasRightInLayout - 20;
+
+      ctx.beginPath();
+      ctx.moveTo(arc.branchPointX, trunkY);
+      ctx.bezierCurveTo(
+        arc.branchPointX + curveOffset * 0.4, trunkY,
+        railStartX, arc.apexY,
+        railStartX, arc.apexY,
+      );
+      ctx.lineTo(tailX, arc.apexY);
+      ctx.stroke();
+
+      // Dashed tail at right edge
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(tailX, arc.apexY);
+      ctx.lineTo(canvasRightInLayout, arc.apexY);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+function drawArcLabels(
+  ctx: CanvasRenderingContext2D,
+  arcs: ArcDefinition[],
   visibleNames: Set<string>,
 ) {
   ctx.save();
-  for (const [name, y] of laneY) {
-    if (!visibleNames.has(name)) continue; // respect filter
-    const branch = branchMap.get(name);
-    if (!branch) continue;
-    const isRunning = branch.linkedIssueStatus === "in_progress";
-    const isInReview = branch.linkedIssueStatus === "in_review";
-    if (!isRunning && !isInReview) continue;
+  ctx.font = `9px "Courier New", monospace`;
 
-    const range = laneRangeX.get(name);
-    if (!range || range.max - range.min < X_SPACING) continue;
+  for (const arc of arcs) {
+    if (!visibleNames.has(arc.branchName)) continue;
+    if (arc.isDone) continue; // labels only for active arcs
 
-    const span = range.max - range.min;
-    // t loops 0→1 continuously
-    const t = ((animPhase * 0.3) % (Math.PI * 2)) / (Math.PI * 2);
-    const dotX = range.min + t * span;
+    const labelX =
+      arc.isOpen || arc.mergePointX == null
+        ? arc.branchPointX + 80
+        : (arc.branchPointX + arc.mergePointX) / 2;
+    const labelY = arc.direction === "up" ? arc.apexY - 8 : arc.apexY + 14;
 
-    const dotColor = isRunning ? "#4FB67E" : "#D9A938";
+    ctx.globalAlpha = 0.7;
+    ctx.fillStyle = arc.color;
+    const name =
+      arc.branchName.length > 22
+        ? arc.branchName.slice(0, 21) + "…"
+        : arc.branchName;
+    ctx.fillText(name, labelX - ctx.measureText(name).width / 2, labelY);
+  }
+
+  ctx.restore();
+}
+
+function drawLabelDots(
+  ctx: CanvasRenderingContext2D,
+  node: ArcCommitLayout,
+  branch: GitBranchInfo,
+) {
+  const labels = branch.pr?.labels;
+  if (!labels || labels.length === 0) return;
+  const maxDots = Math.min(labels.length, 3);
+  const startX = node.x - CARD_W / 2;
+  const dotY = node.y + CARD_H / 2 + 28; // below card label text
+  ctx.save();
+  for (let i = 0; i < maxDots; i++) {
+    const color = labels[i]!.color;
+    ctx.fillStyle = color.startsWith("#") ? color : `#${color}`;
     ctx.beginPath();
-    ctx.arc(dotX, y, 4, 0, Math.PI * 2);
-    ctx.fillStyle = dotColor;
-    ctx.globalAlpha = 0.85;
-    ctx.fill();
-    // Glow
-    ctx.beginPath();
-    ctx.arc(dotX, y, 7, 0, Math.PI * 2);
-    ctx.fillStyle = dotColor + "30";
+    ctx.rect(startX + i * 8, dotY, 5, 5);
     ctx.fill();
   }
+  ctx.restore();
+}
+
+function drawFlowPulse(
+  ctx: CanvasRenderingContext2D,
+  arcs: ArcDefinition[],
+  trunkNodes: ArcCommitLayout[],
+  branchByName: Map<string, GitBranchInfo>,
+  animPhase: number,
+  visibleNames: Set<string>,
+  trunkY: number,
+  defaultBranch: string,
+) {
+  ctx.save();
+
+  // Helper: sample two-segment closed arc at t ∈ [0,1]
+  function closedArcPoint(arc: ArcDefinition, t: number): [number, number] {
+    const span = arc.mergePointX! - arc.branchPointX;
+    const apexX = (arc.branchPointX + arc.mergePointX!) / 2;
+    const offset = span * 0.25;
+    if (t <= 0.5) {
+      const tt = t * 2;
+      const u = 1 - tt;
+      const bx =
+        u ** 3 * arc.branchPointX +
+        3 * u ** 2 * tt * (arc.branchPointX + offset) +
+        3 * u * tt ** 2 * apexX +
+        tt ** 3 * apexX;
+      const by =
+        u ** 3 * trunkY +
+        3 * u ** 2 * tt * trunkY +
+        3 * u * tt ** 2 * arc.apexY +
+        tt ** 3 * arc.apexY;
+      return [bx, by];
+    } else {
+      const tt = (t - 0.5) * 2;
+      const u = 1 - tt;
+      const bx =
+        u ** 3 * apexX +
+        3 * u ** 2 * tt * apexX +
+        3 * u * tt ** 2 * (arc.mergePointX! - offset) +
+        tt ** 3 * arc.mergePointX!;
+      const by =
+        u ** 3 * arc.apexY +
+        3 * u ** 2 * tt * arc.apexY +
+        3 * u * tt ** 2 * trunkY +
+        tt ** 3 * trunkY;
+      return [bx, by];
+    }
+  }
+
+  const t = ((animPhase * 0.3) % (Math.PI * 2)) / (Math.PI * 2);
+
+  // Trunk pulse for default branch
+  const defaultInfo = branchByName.get(defaultBranch);
+  if (
+    defaultInfo &&
+    (defaultInfo.linkedIssueStatus === "in_progress" ||
+      defaultInfo.linkedIssueStatus === "in_review") &&
+    trunkNodes.length >= 2
+  ) {
+    const minX = Math.min(...trunkNodes.map((n) => n.x));
+    const maxX = Math.max(...trunkNodes.map((n) => n.x));
+    const dotX = minX + t * (maxX - minX);
+    const dotColor = defaultInfo.linkedIssueStatus === "in_progress" ? "#4FB67E" : "#D9A938";
+    ctx.beginPath(); ctx.arc(dotX, trunkY, 4, 0, Math.PI * 2);
+    ctx.fillStyle = dotColor; ctx.globalAlpha = 0.85; ctx.fill();
+    ctx.beginPath(); ctx.arc(dotX, trunkY, 7, 0, Math.PI * 2);
+    ctx.fillStyle = dotColor + "30"; ctx.fill();
+  }
+
+  // Arc pulses
+  for (const arc of arcs) {
+    if (!visibleNames.has(arc.branchName)) continue;
+    const info = branchByName.get(arc.branchName);
+    if (!info) continue;
+    const isRunning = info.linkedIssueStatus === "in_progress";
+    const isInReview = info.linkedIssueStatus === "in_review";
+    if (!isRunning && !isInReview) continue;
+
+    const dotColor = isRunning ? "#4FB67E" : "#D9A938";
+    let dotX: number;
+    let dotY: number;
+
+    if (!arc.isOpen && arc.mergePointX != null) {
+      [dotX, dotY] = closedArcPoint(arc, t);
+    } else {
+      // Open arc: 30% curve, 70% rail
+      const railStartX = arc.branchPointX + 60;
+      const curveOffset = railStartX - arc.branchPointX;
+      if (t <= 0.3) {
+        const tt = t / 0.3;
+        const u = 1 - tt;
+        dotX =
+          u ** 3 * arc.branchPointX +
+          3 * u ** 2 * tt * (arc.branchPointX + curveOffset * 0.4) +
+          3 * u * tt ** 2 * railStartX +
+          tt ** 3 * railStartX;
+        dotY =
+          u ** 3 * trunkY +
+          3 * u ** 2 * tt * trunkY +
+          3 * u * tt ** 2 * arc.apexY +
+          tt ** 3 * arc.apexY;
+      } else {
+        const railT = (t - 0.3) / 0.7;
+        dotX = railStartX + railT * 300;
+        dotY = arc.apexY;
+      }
+    }
+
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath(); ctx.arc(dotX, dotY, 4, 0, Math.PI * 2);
+    ctx.fillStyle = dotColor; ctx.fill();
+    ctx.beginPath(); ctx.arc(dotX, dotY, 7, 0, Math.PI * 2);
+    ctx.fillStyle = dotColor + "30"; ctx.fill();
+  }
+
   ctx.restore();
 }
 
@@ -583,10 +597,10 @@ function drawFlowPulse(
 // ---------------------------------------------------------------------------
 
 function hitTest(
-  nodes: CommitLayout[],
+  nodes: ArcCommitLayout[],
   cx: number,
   cy: number,
-): CommitLayout | null {
+): ArcCommitLayout | null {
   for (let i = nodes.length - 1; i >= 0; i--) {
     const n = nodes[i]!;
     if (n.isTaskTip) {
@@ -606,62 +620,74 @@ function hitTest(
   return null;
 }
 
-/** Perpendicular distance from point (px,py) to segment (ax,ay)→(bx,by). */
-function pointToSegmentDist(
-  px: number, py: number,
-  ax: number, ay: number,
-  bx: number, by: number,
-): number {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq === 0) return Math.sqrt((px - ax) ** 2 + (py - ay) ** 2);
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
-  return Math.sqrt((px - (ax + t * dx)) ** 2 + (py - (ay + t * dy)) ** 2);
-}
-
-/** Returns the lane name of the edge the cursor is closest to (within threshold px). */
-function hitTestEdge(
-  edges: EdgeLayout[],
+function hitTestArc(
+  arcs: ArcDefinition[],
+  visibleNames: Set<string>,
   cx: number,
   cy: number,
-  threshold = 6,
-): EdgeLayout | null {
-  let best: EdgeLayout | null = null;
+  trunkY: number,
+  threshold = 8,
+): ArcDefinition | null {
+  let best: ArcDefinition | null = null;
   let bestDist = threshold;
-  for (const e of edges) {
-    if (e.isDone) continue; // skip faded done edges — not worth hovering
-    let dist: number;
-    if (e.isMerge && e.fromY !== e.toY) {
-      // Bezier approximation: sample 8 points along the cubic and take the min
-      const mx = (e.fromX + e.toX) / 2;
-      let minD = Infinity;
-      for (let i = 0; i <= 8; i++) {
-        const t = i / 8;
-        const u = 1 - t;
-        // Cubic bezier: P0=from, P1=(mx,fromY), P2=(mx,toY), P3=to
-        const bx =
-          u ** 3 * e.fromX +
-          3 * u ** 2 * t * mx +
-          3 * u * t ** 2 * mx +
-          t ** 3 * e.toX;
-        const by =
-          u ** 3 * e.fromY +
-          3 * u ** 2 * t * e.fromY +
-          3 * u * t ** 2 * e.toY +
-          t ** 3 * e.toY;
-        const d = Math.sqrt((cx - bx) ** 2 + (cy - by) ** 2);
-        if (d < minD) minD = d;
+
+  for (const arc of arcs) {
+    if (!visibleNames.has(arc.branchName)) continue;
+    if (arc.isDone) continue;
+
+    const points: Array<[number, number]> = [];
+
+    if (!arc.isOpen && arc.mergePointX != null) {
+      const span = arc.mergePointX - arc.branchPointX;
+      const apexX = (arc.branchPointX + arc.mergePointX) / 2;
+      const offset = span * 0.25;
+
+      for (let i = 0; i <= 16; i++) {
+        const t = i / 16;
+        if (t <= 0.5) {
+          const tt = t * 2;
+          const u = 1 - tt;
+          points.push([
+            u ** 3 * arc.branchPointX + 3 * u ** 2 * tt * (arc.branchPointX + offset) + 3 * u * tt ** 2 * apexX + tt ** 3 * apexX,
+            u ** 3 * trunkY + 3 * u ** 2 * tt * trunkY + 3 * u * tt ** 2 * arc.apexY + tt ** 3 * arc.apexY,
+          ]);
+        } else {
+          const tt = (t - 0.5) * 2;
+          const u = 1 - tt;
+          points.push([
+            u ** 3 * apexX + 3 * u ** 2 * tt * apexX + 3 * u * tt ** 2 * (arc.mergePointX! - offset) + tt ** 3 * arc.mergePointX!,
+            u ** 3 * arc.apexY + 3 * u ** 2 * tt * arc.apexY + 3 * u * tt ** 2 * trunkY + tt ** 3 * trunkY,
+          ]);
+        }
       }
-      dist = minD;
     } else {
-      dist = pointToSegmentDist(cx, cy, e.fromX, e.fromY, e.toX, e.toY);
+      const railStartX = arc.branchPointX + 60;
+      const curveOffset = railStartX - arc.branchPointX;
+      for (let i = 0; i <= 16; i++) {
+        const t = i / 16;
+        if (t <= 0.5) {
+          const tt = t * 2;
+          const u = 1 - tt;
+          points.push([
+            u ** 3 * arc.branchPointX + 3 * u ** 2 * tt * (arc.branchPointX + curveOffset * 0.4) + 3 * u * tt ** 2 * railStartX + tt ** 3 * railStartX,
+            u ** 3 * trunkY + 3 * u ** 2 * tt * trunkY + 3 * u * tt ** 2 * arc.apexY + tt ** 3 * arc.apexY,
+          ]);
+        } else {
+          const railT = (t - 0.5) * 2;
+          points.push([railStartX + railT * 200, arc.apexY]);
+        }
+      }
     }
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = e;
+
+    for (const [px, py] of points) {
+      const d = Math.sqrt((cx - px) ** 2 + (cy - py) ** 2);
+      if (d < bestDist) {
+        bestDist = d;
+        best = arc;
+      }
     }
   }
+
   return best;
 }
 
@@ -694,21 +720,21 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       return m;
     }, [branches]);
 
-    // Filter branches for display
+    // Filter branches
     const visibleBranches = useMemo(() => {
       if (filter === "all") return branches;
-      return branches.filter((b) => {
-        if (filter === "running") return b.linkedIssueStatus === "in_progress";
-        if (filter === "blocked") return b.linkedIssueStatus === "blocked";
-        if (filter === "prs") return !!b.pr;
-        return true;
-      });
+      if (filter === "running") return branches.filter((b) => b.linkedIssueStatus === "in_progress");
+      if (filter === "blocked") return branches.filter((b) => b.linkedIssueStatus === "blocked");
+      if (filter === "prs")     return branches.filter((b) => !!b.pr);
+      if (filter === "merged")  return branches.filter(
+        (b) => b.linkedIssueStatus === "done" || b.linkedIssueStatus === "cancelled",
+      );
+      return branches;
     }, [branches, filter]);
 
-    // Always keep the default branch visible as the backbone even when filtering.
     const visibleNames = useMemo(() => {
       const names = new Set(visibleBranches.map((b) => b.name));
-      names.add(graph.defaultBranch); // main always shows for context
+      names.add(graph.defaultBranch); // trunk always visible
       return names;
     }, [visibleBranches, graph.defaultBranch]);
 
@@ -721,7 +747,10 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       [branches],
     );
 
-    const layout = useMemo(() => computeLayout(graph, branches), [graph, branches]);
+    const layout = useMemo(
+      () => computeArcLayout(graph, branches),
+      [graph, branches],
+    );
 
     // Always-current layout ref — prevents stale closure in ResizeObserver
     const layoutRef = useRef(layout);
@@ -767,20 +796,41 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       ctx.save();
       ctx.setTransform(t.k * dpr, 0, 0, t.k * dpr, t.x * dpr, t.y * dpr);
 
-      // Visible nodes + edges — filter by laneName so ALL commits in hidden
-      // lanes disappear, not just tips.
-      const visibleNodes = layout.nodes.filter((n) => visibleNames.has(n.laneName));
-      const visibleEdges = layout.edges.filter((e) => visibleNames.has(e.laneName));
+      // Canvas right edge in layout space (for open-arc rail endpoint)
+      const canvasRightInLayout = (canvas.width / dpr - t.x) / t.k;
 
-      // 1. Edges (behind everything)
-      drawEdges(ctx, visibleEdges);
+      // Default branch color for trunk line
+      const trunkColor =
+        graph.branches.find((b) => b.name === graph.defaultBranch)?.color ?? "#6470DC";
 
-      // 2. Flow pulse dots (on top of edges, under nodes)
+      // Filter nodes: trunk always shown; arc nodes filtered by arcBranchName
+      const visibleNodes = layout.nodes.filter((n) => {
+        if (n.isTrunk) return visibleNames.has(graph.defaultBranch);
+        return n.arcBranchName != null && visibleNames.has(n.arcBranchName);
+      });
+
+      // 1. Trunk line
+      drawTrunk(ctx, layout.nodes, layout.trunkY, trunkColor);
+
+      // 2. Arc lines (bezier + rail)
+      drawArcLines(ctx, layout.arcs, visibleNames, canvasRightInLayout, layout.trunkY);
+
+      // 3. Flow pulse dots
       if (hasActiveNodes) {
-        drawFlowPulse(ctx, layout.laneY, layout.laneRangeX, branchByName, animPhaseRef.current, visibleNames);
+        const trunkNodes = layout.nodes.filter((n) => n.isTrunk);
+        drawFlowPulse(
+          ctx,
+          layout.arcs,
+          trunkNodes,
+          branchByName,
+          animPhaseRef.current,
+          visibleNames,
+          layout.trunkY,
+          graph.defaultBranch,
+        );
       }
 
-      // 3. Commit nodes + task labels
+      // 4. Commit nodes + task labels + badges + label dots
       for (const node of visibleNodes) {
         const branchStatus =
           node.branchName != null
@@ -788,28 +838,31 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
             : null;
         drawCommitNode(ctx, node, animPhaseRef.current, branchStatus);
 
-        // Draw task labels + external badges for task cards
         if (node.isTaskTip) {
           let branch = node.branchName ? branchByName.get(node.branchName) : undefined;
           if (!branch?.linkedIssueId) branch = taskBranchByTipSha.get(node.sha);
           if (branch?.linkedIssueId) {
             drawCardLabel(ctx, node, branch);
             drawCardBadges(ctx, node, branch);
+            drawLabelDots(ctx, node, branch);
           }
         }
       }
 
-      // 4. Tag pills (above nodes)
+      // 5. Tag pills
       for (const node of visibleNodes) {
         if (node.tags.length > 0) drawTagPills(ctx, node);
       }
 
-      // 5. HEAD label on default branch tip
-      const defaultTip = visibleNodes.find((n) => n.isDefault && n.branchName !== null);
+      // 6. HEAD label on default branch tip
+      const defaultTip = visibleNodes.find((n) => n.isDefault && n.branchName != null);
       if (defaultTip) drawHeadLabel(ctx, defaultTip);
 
+      // 7. Arc labels (branch name near apex)
+      drawArcLabels(ctx, layout.arcs, visibleNames);
+
       ctx.restore();
-    }, [layout, visibleNames, branchByName, graph.defaultBranch, hasActiveNodes]);
+    }, [layout, visibleNames, branchByName, graph.defaultBranch, graph.branches, hasActiveNodes]);
 
     // ── RAF loop ────────────────────────────────────────────────────────────
 
@@ -914,16 +967,14 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
         const hit = hitTest(layout.nodes, cx, cy);
 
         if (!hit) {
-          // No node — check if cursor is over a branch line
-          const visEdges = layout.edges.filter((ed) => visibleNames.has(ed.laneName));
-          const edgeHit = hitTestEdge(visEdges, cx, cy);
-          if (edgeHit) {
+          // No node — check if cursor is over a branch arc
+          const arcHit = hitTestArc(layout.arcs, visibleNames, cx, cy, layout.trunkY);
+          if (arcHit) {
             canvas.style.cursor = "pointer";
-            const branch = branchByName.get(edgeHit.laneName);
+            const branch = branchByName.get(arcHit.branchName);
             if (branch) {
-              const hoverType = branch.linkedIssueId ? "task" : "plain_tip";
               onHover(
-                hoverType === "task"
+                branch.linkedIssueId
                   ? { type: "task", branch }
                   : { type: "plain_tip", branch },
                 { x: e.clientX, y: e.clientY },
@@ -980,7 +1031,7 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
           onHover({ type: "commit", commit }, { x: e.clientX, y: e.clientY });
         }
       },
-      [layout.nodes, layout.edges, visibleNames, branchByName, taskBranchByTipSha, graph.commits, onHover],
+      [layout.nodes, layout.arcs, visibleNames, branchByName, taskBranchByTipSha, graph.commits, onHover],
     );
 
     const handleMouseLeave = useCallback(() => {
