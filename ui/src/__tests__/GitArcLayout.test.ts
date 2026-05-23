@@ -12,6 +12,7 @@ import {
   computeFitTransform,
   type LayoutBounds,
 } from "../components/workspace/git-arc-layout";
+import { polylinePointAt } from "../components/workspace/git-arc-draw";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -477,5 +478,33 @@ describe("computeFitTransform", () => {
     const t = computeFitTransform(tallBounds, 1000, 364);
     // (364 - 64) / 300 = 1.0 → k clamps to 1.0
     expect(t.k).toBeCloseTo(1.0, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// polylinePointAt
+// ---------------------------------------------------------------------------
+
+describe("polylinePointAt", () => {
+  const line: Array<[number, number]> = [[0, 0], [10, 0], [10, 10]];
+
+  it("returns the first point at t=0 and last at t=1", () => {
+    expect(polylinePointAt(line, 0)).toEqual([0, 0]);
+    expect(polylinePointAt(line, 1)).toEqual([10, 10]);
+  });
+
+  it("returns the midpoint of total length at t=0.5", () => {
+    expect(polylinePointAt(line, 0.5)).toEqual([10, 0]);
+  });
+
+  it("clamps t outside [0,1]", () => {
+    expect(polylinePointAt(line, -1)).toEqual([0, 0]);
+    expect(polylinePointAt(line, 2)).toEqual([10, 10]);
+  });
+
+  it("handles empty, single-point, and zero-length inputs without throwing", () => {
+    expect(polylinePointAt([], 0.5)).toEqual([0, 0]);
+    expect(polylinePointAt([[5, 5]], 0.5)).toEqual([5, 5]);
+    expect(polylinePointAt([[3, 3], [3, 3]], 0.5)).toEqual([3, 3]);
   });
 });

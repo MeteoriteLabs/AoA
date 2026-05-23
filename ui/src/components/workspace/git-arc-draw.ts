@@ -10,6 +10,77 @@ import type { GitBranchInfo } from "@armyofagents/shared";
 import type { ArcCommitLayout, ArcDefinition } from "./git-arc-layout";
 
 // ---------------------------------------------------------------------------
+// Path helpers (shared by drawArcLines, drawFlowPulse, hit testing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Stroke a smooth Catmull-Rom curve that PASSES THROUGH every point. Because it
+ * passes through (not near) the points, commit dots placed at those points are
+ * always on the line. Falls back to a straight line for < 3 points.
+ */
+export function strokeSmoothPath(
+  ctx: CanvasRenderingContext2D,
+  points: Array<[number, number]>,
+) {
+  if (points.length < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(points[0]![0], points[0]![1]);
+  if (points.length === 2) {
+    ctx.lineTo(points[1]![0], points[1]![1]);
+    ctx.stroke();
+    return;
+  }
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] ?? points[i]!;
+    const p1 = points[i]!;
+    const p2 = points[i + 1]!;
+    const p3 = points[i + 2] ?? p2;
+    const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2[0], p2[1]);
+  }
+  ctx.stroke();
+}
+
+/**
+ * Point at parameter t ∈ [0,1] along a polyline (linear interpolation by
+ * cumulative segment length). Used by the flow pulse and hit testing so they
+ * follow the exact same path the line is drawn on.
+ */
+export function polylinePointAt(
+  points: Array<[number, number]>,
+  t: number,
+): [number, number] {
+  if (points.length === 0) return [0, 0];
+  if (points.length === 1) return points[0]!;
+  const clamped = Math.max(0, Math.min(1, t));
+  let total = 0;
+  const segLen: number[] = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const dx = points[i + 1]![0] - points[i]![0];
+    const dy = points[i + 1]![1] - points[i]![1];
+    const len = Math.hypot(dx, dy);
+    segLen.push(len);
+    total += len;
+  }
+  if (total === 0) return points[0]!;
+  let target = clamped * total;
+  for (let i = 0; i < segLen.length; i++) {
+    if (target <= segLen[i]!) {
+      const f = segLen[i] === 0 ? 0 : target / segLen[i]!;
+      return [
+        points[i]![0] + (points[i + 1]![0] - points[i]![0]) * f,
+        points[i]![1] + (points[i + 1]![1] - points[i]![1]) * f,
+      ];
+    }
+    target -= segLen[i]!;
+  }
+  return points[points.length - 1]!;
+}
+
+// ---------------------------------------------------------------------------
 // Drawing constants
 // ---------------------------------------------------------------------------
 
@@ -326,11 +397,12 @@ export function drawArcLines(
   ctx: CanvasRenderingContext2D,
   arcs: ArcDefinition[],
   visibleNames: Set<string>,
-  canvasRightInLayout: number,
-  trunkY: number,
+  _canvasRightInLayout: number, // no longer used (open arcs end with a stub); kept for call-site stability
+  _trunkY: number,
 ) {
   for (const arc of arcs) {
     if (!visibleNames.has(arc.branchName)) continue;
+    if (arc.points.length < 2) continue;
 
     ctx.save();
     ctx.strokeStyle = arc.color;
@@ -338,47 +410,19 @@ export function drawArcLines(
     ctx.globalAlpha = arc.isDone ? 0.4 : 0.7;
     ctx.setLineDash([]);
 
-    if (!arc.isOpen && arc.mergePointX != null) {
-      // Closed arc: two-segment cubic bezier
-      const span = arc.mergePointX - arc.branchPointX;
-      const apexX = (arc.branchPointX + arc.mergePointX) / 2;
-      const offset = span * 0.25;
-
-      ctx.beginPath();
-      ctx.moveTo(arc.branchPointX, trunkY);
-      ctx.bezierCurveTo(
-        arc.branchPointX + offset, trunkY,
-        apexX, arc.apexY,
-        apexX, arc.apexY,
-      );
-      ctx.bezierCurveTo(
-        apexX, arc.apexY,
-        arc.mergePointX - offset, trunkY,
-        arc.mergePointX, trunkY,
-      );
-      ctx.stroke();
-    } else {
-      // Open arc: curve up to rail height, then flat rail with dashed tail
-      const railStartX = arc.branchPointX + 60;
-      const curveOffset = railStartX - arc.branchPointX;
-      const tailX = canvasRightInLayout - 20;
-
-      ctx.beginPath();
-      ctx.moveTo(arc.branchPointX, trunkY);
-      ctx.bezierCurveTo(
-        arc.branchPointX + curveOffset * 0.4, trunkY,
-        railStartX, arc.apexY,
-        railStartX, arc.apexY,
-      );
-      ctx.lineTo(tailX, arc.apexY);
-      ctx.stroke();
-
-      // Dashed tail at right edge
+    if (arc.isOpen) {
+      const solid = arc.points.slice(0, -1);
+      const tail = arc.points[arc.points.length - 1]!;
+      strokeSmoothPath(ctx, solid);
+      const lastSolid = solid[solid.length - 1]!;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
-      ctx.moveTo(tailX, arc.apexY);
-      ctx.lineTo(canvasRightInLayout, arc.apexY);
+      ctx.moveTo(lastSolid[0], lastSolid[1]);
+      ctx.lineTo(tail[0], tail[1]);
       ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      strokeSmoothPath(ctx, arc.points);
     }
     ctx.restore();
   }
