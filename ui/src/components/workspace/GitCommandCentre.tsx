@@ -29,6 +29,7 @@ import { githubIntegrationApi } from "@/api/github-integration";
 import { cn } from "@/lib/utils";
 import { GitGraphCanvas, type GitGraphCanvasHandle } from "./GitGraphCanvas";
 import { GitHoverCard, type HoveredNode } from "./GitHoverCard";
+import { GitGraphLegend } from "./GitGraphLegend";
 import { GitPipelineView } from "./GitPipelineView";
 
 // ---------------------------------------------------------------------------
@@ -423,6 +424,7 @@ export function GitCommandCentre({
               onMouseEnter={handleCardMouseEnter}
               onMouseLeave={handleCardMouseLeave}
             />
+            <GitGraphLegend />
             {/* Zoom controls — bottom-right corner of canvas */}
             <div className="absolute bottom-3 right-3 flex flex-col gap-0.5 z-10">
               {(

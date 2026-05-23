@@ -88,13 +88,21 @@ export const COMMIT_R = 5;
 export const CARD_W = 28;
 export const CARD_H = 18;
 
-// Status → dot color
+/** Single source of truth for task-status → color. Used by the canvas
+ * (statusDotColor) and the legend, so they never drift apart. */
+export const STATUS_COLORS = {
+  in_progress: "#4FB67E",
+  in_review: "#D9A938",
+  blocked: "#ef4444",
+  done: "#7E8AA8",
+  cancelled: "#7E8AA8",
+  planning: "#D9A938",
+} as const;
+
 export function statusDotColor(status: string | null, fallback: string): string {
-  if (status === "in_progress") return "#4FB67E";
-  if (status === "in_review") return "#D9A938";
-  if (status === "blocked") return "#ef4444";
-  if (status === "done" || status === "cancelled") return "#7E8AA8";
-  if (status === "planning") return "#D9A938";
+  if (status && status in STATUS_COLORS) {
+    return STATUS_COLORS[status as keyof typeof STATUS_COLORS];
+  }
   return fallback;
 }
 
