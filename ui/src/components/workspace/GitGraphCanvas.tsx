@@ -5,7 +5,8 @@
  * feature branches arc above and below as bezier curves.
  *
  * Exposed via forwardRef as GitGraphCanvasHandle for imperative zoom controls.
- * Animation loop (RAF) only runs when running/in_review tasks are present.
+ * Animation loop (RAF) runs always while the tab is visible, throttled to ~30fps,
+ * so the trunk's left→right pulse animates continuously.
  */
 
 import React, {
@@ -135,6 +136,7 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
     const initialPanApplied = useRef(false);
     const rafRef = useRef<number | null>(null);
     const animPhaseRef = useRef(0);
+    const frameSkipRef = useRef(0);
 
     const branchByName = useMemo(
       () => new Map(branches.map((b) => [b.name, b])),
@@ -182,15 +184,6 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       names.add(graph.defaultBranch); // trunk always visible
       return names;
     }, [visibleBranches, graph.defaultBranch]);
-
-    // Check if any tasks are actively running/in_review (drives RAF loop)
-    const hasActiveNodes = useMemo(
-      () =>
-        branches.some(
-          (b) => b.linkedIssueStatus === "in_progress" || b.linkedIssueStatus === "in_review",
-        ),
-      [branches],
-    );
 
     const layout = useMemo(
       () => computeArcLayout(graph, branches),
@@ -260,13 +253,13 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       });
 
       // 1. Trunk line
-      drawTrunk(ctx, layout.nodes, layout.trunkY, trunkColor);
+      drawTrunk(ctx, layout.nodes, layout.trunkY, trunkColor, graph.defaultBranch);
 
       // 2. Arc lines (bezier + rail)
       drawArcLines(ctx, layout.arcs, visibleNames, canvasRightInLayout, layout.trunkY);
 
-      // 3. Flow pulse dots
-      if (hasActiveNodes) {
+      // 3. Flow pulse dots (trunk pulse always shows; arc pulses self-gate on status)
+      {
         const trunkNodes = layout.nodes.filter((n) => n.isTrunk);
         drawFlowPulse(
           ctx,
@@ -317,23 +310,24 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       drawArcLabels(ctx, layout.arcs, visibleNames, cardBranchNames);
 
       ctx.restore();
-    }, [layout, visibleNames, branchByName, taskBranchByTipSha, graph.defaultBranch, graph.branches, hasActiveNodes]);
+    }, [layout, visibleNames, branchByName, taskBranchByTipSha, graph.defaultBranch, graph.branches]);
 
     // ── RAF loop ────────────────────────────────────────────────────────────
 
     useEffect(() => {
-      if (!hasActiveNodes) return;
-
       function tick() {
         if (document.visibilityState === "hidden") {
           rafRef.current = null;
           return;
         }
-        animPhaseRef.current += 0.05;
-        redraw();
+        // Throttle to ~30fps: advance + redraw on every other frame.
+        frameSkipRef.current = (frameSkipRef.current + 1) % 2;
+        if (frameSkipRef.current === 0) {
+          animPhaseRef.current += 0.1; // larger step compensates for ~30fps
+          redraw();
+        }
         rafRef.current = requestAnimationFrame(tick);
       }
-
       rafRef.current = requestAnimationFrame(tick);
       return () => {
         if (rafRef.current !== null) {
@@ -341,12 +335,26 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
           rafRef.current = null;
         }
       };
-    }, [hasActiveNodes, redraw]);
+    }, [redraw]);
 
-    // Static redraw when no animation
+    // Resume animation when the tab becomes visible again.
     useEffect(() => {
-      if (!hasActiveNodes) redraw();
-    }, [hasActiveNodes, redraw]);
+      const onVis = () => {
+        if (document.visibilityState === "visible" && rafRef.current === null) {
+          rafRef.current = requestAnimationFrame(function tick() {
+            if (document.visibilityState === "hidden") { rafRef.current = null; return; }
+            frameSkipRef.current = (frameSkipRef.current + 1) % 2;
+            if (frameSkipRef.current === 0) {
+              animPhaseRef.current += 0.1;
+              redraw();
+            }
+            rafRef.current = requestAnimationFrame(tick);
+          });
+        }
+      };
+      document.addEventListener("visibilitychange", onVis);
+      return () => document.removeEventListener("visibilitychange", onVis);
+    }, [redraw]);
 
     // ── Resize handler ──────────────────────────────────────────────────────
 

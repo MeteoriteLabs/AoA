@@ -376,20 +376,34 @@ export function drawTrunk(
   nodes: ArcCommitLayout[],
   trunkY: number,
   color: string,
+  defaultBranch: string,
 ) {
   const trunkNodes = nodes.filter((n) => n.isTrunk);
   if (trunkNodes.length < 2) return;
   const minX = Math.min(...trunkNodes.map((n) => n.x));
   const maxX = Math.max(...trunkNodes.map((n) => n.x));
   ctx.save();
+  // Glow underlay
   ctx.beginPath();
   ctx.moveTo(minX, trunkY);
   ctx.lineTo(maxX, trunkY);
   ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
-  ctx.globalAlpha = 0.7;
+  ctx.globalAlpha = 0.18;
+  ctx.lineWidth = 8;
   ctx.setLineDash([]);
   ctx.stroke();
+  // Solid trunk
+  ctx.beginPath();
+  ctx.moveTo(minX, trunkY);
+  ctx.lineTo(maxX, trunkY);
+  ctx.globalAlpha = 0.95;
+  ctx.lineWidth = 3.5;
+  ctx.stroke();
+  // Label at the left end
+  ctx.globalAlpha = 0.85;
+  ctx.font = `bold 9px "Courier New", monospace`;
+  ctx.fillStyle = color;
+  ctx.fillText(defaultBranch, minX, trunkY - 8);
   ctx.restore();
 }
 
@@ -519,28 +533,23 @@ export function drawFlowPulse(
   animPhase: number,
   visibleNames: Set<string>,
   trunkY: number,
-  defaultBranch: string,
+  _defaultBranch: string,
 ) {
   ctx.save();
 
   const t = ((animPhase * 0.3) % (Math.PI * 2)) / (Math.PI * 2);
 
-  // Trunk pulse for default branch
-  const defaultInfo = branchByName.get(defaultBranch);
-  if (
-    defaultInfo &&
-    (defaultInfo.linkedIssueStatus === "in_progress" ||
-      defaultInfo.linkedIssueStatus === "in_review") &&
-    trunkNodes.length >= 2
-  ) {
+  // Always-on trunk pulse: a bright dot travels left→right along the trunk.
+  if (trunkNodes.length >= 2) {
     const minX = Math.min(...trunkNodes.map((n) => n.x));
     const maxX = Math.max(...trunkNodes.map((n) => n.x));
     const dotX = minX + t * (maxX - minX);
-    const dotColor = defaultInfo.linkedIssueStatus === "in_progress" ? "#4FB67E" : "#D9A938";
+    ctx.globalAlpha = 0.9;
     ctx.beginPath(); ctx.arc(dotX, trunkY, 4, 0, Math.PI * 2);
-    ctx.fillStyle = dotColor; ctx.globalAlpha = 0.85; ctx.fill();
-    ctx.beginPath(); ctx.arc(dotX, trunkY, 7, 0, Math.PI * 2);
-    ctx.fillStyle = dotColor + "30"; ctx.fill();
+    ctx.fillStyle = "#ffffff"; ctx.fill();
+    ctx.beginPath(); ctx.arc(dotX, trunkY, 9, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffffff22"; ctx.fill();
+    ctx.globalAlpha = 1;
   }
 
   // Arc pulses
