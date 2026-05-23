@@ -623,6 +623,10 @@ export function projectService(db: Db) {
         return row;
       });
 
+      // Removing a workspace can re-elect a different primary repo, so the
+      // cached graph for the old repo is now stale — invalidate it.
+      if (removed) invalidateProjectGitCache(existing.companyId, projectId);
+
       return removed ? toWorkspace(removed) : null;
     },
 
