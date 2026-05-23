@@ -3,7 +3,8 @@ import { STATUS_COLORS } from "./git-arc-draw";
 
 /** Collapsible legend explaining the Map's glyphs and status colors. */
 export function GitGraphLegend() {
-  const [open, setOpen] = useState(true);
+  // Default collapsed so the legend doesn't cover the graph on arrival.
+  const [open, setOpen] = useState(false);
 
   const statusRows: Array<{ color: string; label: string }> = [
     { color: STATUS_COLORS.in_progress, label: "In progress" },

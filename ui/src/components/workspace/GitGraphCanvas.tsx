@@ -102,9 +102,7 @@ function hitTestArc(
   visibleNames: Set<string>,
   cx: number,
   cy: number,
-  _trunkY: number,
   threshold = 8,
-  _railExtentX = 400,
 ): ArcDefinition | null {
   let best: ArcDefinition | null = null;
   let bestDist = threshold;
@@ -233,9 +231,6 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       ctx.save();
       ctx.setTransform(t.k * dpr, 0, 0, t.k * dpr, t.x * dpr, t.y * dpr);
 
-      // Canvas right edge in layout space (for open-arc rail endpoint)
-      const canvasRightInLayout = (canvas.width / dpr - t.x) / t.k;
-
       // Default branch color for trunk line
       const trunkColor =
         graph.branches.find((b) => b.name === graph.defaultBranch)?.color ?? "#6470DC";
@@ -249,8 +244,8 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       // 1. Trunk line
       drawTrunk(ctx, layout.nodes, layout.trunkY, trunkColor, graph.defaultBranch);
 
-      // 2. Arc lines (bezier + rail)
-      drawArcLines(ctx, layout.arcs, visibleNames, canvasRightInLayout, layout.trunkY);
+      // 2. Arc lines (smooth path through commit nodes + dashed open stub)
+      drawArcLines(ctx, layout.arcs, visibleNames);
 
       // 3. Flow pulse dots (trunk pulse always shows; arc pulses self-gate on status)
       {
@@ -306,10 +301,13 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       ctx.restore();
     }, [layout, visibleNames, branchByName, taskBranchByTipSha, graph.defaultBranch, graph.branches]);
 
-    // ── RAF loop ────────────────────────────────────────────────────────────
+    // ── RAF loop (throttled to ~30fps, pauses when the tab is hidden) ─────────
 
-    useEffect(() => {
-      function tick() {
+    // Single source of truth for the animation tick — used by both the mount
+    // effect and the visibilitychange resume handler (no duplicated tick).
+    const startRafLoop = useCallback(() => {
+      if (rafRef.current !== null) return; // already running
+      const tick = () => {
         if (document.visibilityState === "hidden") {
           rafRef.current = null;
           return;
@@ -321,34 +319,29 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
           redraw();
         }
         rafRef.current = requestAnimationFrame(tick);
-      }
+      };
       rafRef.current = requestAnimationFrame(tick);
+    }, [redraw]);
+
+    // Run the loop on mount / whenever redraw changes.
+    useEffect(() => {
+      startRafLoop();
       return () => {
         if (rafRef.current !== null) {
           cancelAnimationFrame(rafRef.current);
           rafRef.current = null;
         }
       };
-    }, [redraw]);
+    }, [startRafLoop]);
 
-    // Resume animation when the tab becomes visible again.
+    // Resume the loop when the tab becomes visible again.
     useEffect(() => {
       const onVis = () => {
-        if (document.visibilityState === "visible" && rafRef.current === null) {
-          rafRef.current = requestAnimationFrame(function tick() {
-            if (document.visibilityState === "hidden") { rafRef.current = null; return; }
-            frameSkipRef.current = (frameSkipRef.current + 1) % 2;
-            if (frameSkipRef.current === 0) {
-              animPhaseRef.current += 0.1;
-              redraw();
-            }
-            rafRef.current = requestAnimationFrame(tick);
-          });
-        }
+        if (document.visibilityState === "visible") startRafLoop();
       };
       document.addEventListener("visibilitychange", onVis);
       return () => document.removeEventListener("visibilitychange", onVis);
-    }, [redraw]);
+    }, [startRafLoop]);
 
     // ── Resize handler ──────────────────────────────────────────────────────
 
@@ -427,14 +420,12 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
         const t = transformRef.current;
         const cx = (e.clientX - rect.left - t.x) / t.k;
         const cy = (e.clientY - rect.top - t.y) / t.k;
-        const dpr = window.devicePixelRatio || 1;
-        const canvasRightInLayout = (canvas.width / dpr - t.x) / t.k;
 
         const hit = hitTest(layout.nodes, cx, cy);
 
         if (!hit) {
           // No node — check if cursor is over a branch arc
-          const arcHit = hitTestArc(layout.arcs, visibleNames, cx, cy, layout.trunkY, 8, canvasRightInLayout);
+          const arcHit = hitTestArc(layout.arcs, visibleNames, cx, cy);
           if (arcHit) {
             canvas.style.cursor = "pointer";
             const branch = branchByName.get(arcHit.branchName);

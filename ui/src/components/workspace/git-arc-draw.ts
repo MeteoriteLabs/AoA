@@ -419,8 +419,6 @@ export function drawArcLines(
   ctx: CanvasRenderingContext2D,
   arcs: ArcDefinition[],
   visibleNames: Set<string>,
-  _canvasRightInLayout: number, // no longer used (open arcs end with a stub); kept for call-site stability
-  _trunkY: number,
 ) {
   for (const arc of arcs) {
     if (!visibleNames.has(arc.branchName)) continue;

@@ -214,7 +214,6 @@ function render(
   }
   const trunkColor =
     graph.branches.find((b) => b.name === graph.defaultBranch)?.color ?? "#6470DC";
-  const canvasRightInLayout = (cw - t.x) / t.k;
 
   const visibleNodes = layout.nodes.filter((n) =>
     n.isTrunk
@@ -223,7 +222,7 @@ function render(
   );
 
   drawTrunk(ctx, layout.nodes, layout.trunkY, trunkColor, graph.defaultBranch);
-  drawArcLines(ctx, layout.arcs, visibleNames, canvasRightInLayout, layout.trunkY);
+  drawArcLines(ctx, layout.arcs, visibleNames);
 
   const cardBranchNames = new Set<string>();
   for (const node of visibleNodes) {
