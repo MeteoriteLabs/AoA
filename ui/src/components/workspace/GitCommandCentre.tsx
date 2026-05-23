@@ -27,7 +27,7 @@ import type { GitBranchInfo, LiveEvent } from "@armyofagents/shared";
 import { projectGitApi } from "@/api/project-git";
 import { githubIntegrationApi } from "@/api/github-integration";
 import { cn } from "@/lib/utils";
-import { GitGraphCanvas, type GitGraphCanvasHandle } from "./GitGraphCanvas";
+import { GitGraphCanvas, type GitGraphCanvasHandle, MAX_DEFAULT_BRANCHES } from "./GitGraphCanvas";
 import { GitHoverCard, type HoveredNode } from "./GitHoverCard";
 import { GitGraphLegend } from "./GitGraphLegend";
 import { GitPipelineView } from "./GitPipelineView";
@@ -303,6 +303,14 @@ export function GitCommandCentre({
     return <NoBranchesState />;
   }
 
+  const nonDoneCount = branches.filter(
+    (b) =>
+      b.name !== graphData?.graph.defaultBranch &&
+      b.linkedIssueStatus !== "done" &&
+      b.linkedIssueStatus !== "cancelled",
+  ).length;
+  const hiddenCount = filter === "all" ? Math.max(0, nonDoneCount - MAX_DEFAULT_BRANCHES) : 0;
+
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Toolbar */}
@@ -363,6 +371,16 @@ export function GitCommandCentre({
             </button>
           ))}
         </div>
+
+        {hiddenCount > 0 && (
+          <button
+            className="px-2.5 py-1 rounded-full text-[11px] border border-[#2e2c2a] text-[#7E8AA8] hover:text-foreground transition-colors"
+            title="Showing the most recent branches. Open the Pipeline tab for the full list."
+            onClick={() => setViewMode("pipeline")}
+          >
+            +{hiddenCount} more
+          </button>
+        )}
 
         {/* Spacer */}
         <div className="flex-1" />

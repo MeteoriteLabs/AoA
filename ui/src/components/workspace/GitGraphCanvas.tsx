@@ -48,7 +48,7 @@ import {
  * arcs layout has two lanes (up/down), so beyond ~12 branches the arcs overlap
  * into an unreadable band. Branches beyond the cap are still in the Pipeline tab.
  */
-const MAX_DEFAULT_BRANCHES = 12;
+export const MAX_DEFAULT_BRANCHES = 12;
 
 // ---------------------------------------------------------------------------
 // Public handle (for toolbar zoom controls)
