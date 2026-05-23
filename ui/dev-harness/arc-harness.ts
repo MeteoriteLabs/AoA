@@ -196,15 +196,15 @@ function render(
       )
     : branches;
 
+  const visibleNames = new Set(shownBranches.map((b) => b.name));
+  visibleNames.add(graph.defaultBranch);
+
   const layout = computeArcLayout(graph, branches);
-  const t = computeFitTransform(getLayoutBounds(layout), cw, ch);
+  const t = computeFitTransform(getLayoutBounds(layout, visibleNames), cw, ch);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.save();
   ctx.setTransform(t.k * dpr, 0, 0, t.k * dpr, t.x * dpr, t.y * dpr);
-
-  const visibleNames = new Set(shownBranches.map((b) => b.name));
-  visibleNames.add(graph.defaultBranch);
   const branchByName = new Map(branches.map((b) => [b.name, b]));
   const taskByTip = new Map<string, GitBranchInfo>();
   for (const b of branches) {

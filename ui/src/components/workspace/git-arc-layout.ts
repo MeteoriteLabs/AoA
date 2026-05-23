@@ -385,18 +385,33 @@ export interface LayoutBounds {
  *
  * Returns a sensible default box when the layout is empty.
  */
-export function getLayoutBounds(layout: ArcLayoutResult): LayoutBounds {
+export function getLayoutBounds(
+  layout: ArcLayoutResult,
+  /**
+   * When provided, only the trunk and arcs/nodes for these branch names are
+   * measured. Critical for repos with many hidden branches: an unfiltered
+   * bound would include hundreds of off-window, fallback-positioned arcs and
+   * wreck the fit. Trunk nodes are always included (they're the spine).
+   */
+  visibleBranchNames?: Set<string>,
+): LayoutBounds {
   let minX = Infinity;
   let maxX = -Infinity;
   let minY = Infinity;
   let maxY = -Infinity;
   for (const n of layout.nodes) {
+    const include =
+      n.isTrunk ||
+      (n.arcBranchName != null &&
+        (!visibleBranchNames || visibleBranchNames.has(n.arcBranchName)));
+    if (!include) continue;
     if (n.x < minX) minX = n.x;
     if (n.x > maxX) maxX = n.x;
     if (n.y < minY) minY = n.y;
     if (n.y > maxY) maxY = n.y;
   }
   for (const a of layout.arcs) {
+    if (visibleBranchNames && !visibleBranchNames.has(a.branchName)) continue;
     if (a.apexY < minY) minY = a.apexY;
     if (a.apexY > maxY) maxY = a.apexY;
   }

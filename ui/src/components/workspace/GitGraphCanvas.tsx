@@ -42,6 +42,13 @@ import {
   drawFlowPulse,
 } from "./git-arc-draw";
 
+/**
+ * Max non-trunk branches drawn in the default ("all") Map view. The trunk-and-
+ * arcs layout has two lanes (up/down), so beyond ~12 branches the arcs overlap
+ * into an unreadable band. Branches beyond the cap are still in the Pipeline tab.
+ */
+const MAX_DEFAULT_BRANCHES = 12;
+
 // ---------------------------------------------------------------------------
 // Public handle (for toolbar zoom controls)
 // ---------------------------------------------------------------------------
@@ -192,28 +199,28 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
     }, [branches]);
 
     // Filter branches.
-    // Default ("all") = ACTIVE view: the trunk plus task branches that are not
-    // done/cancelled. Done/cancelled branches and git-only branches (no linked
-    // task) are hidden by default — they're reachable via the "Merged" chip and
-    // the Pipeline tab. This keeps the Map readable on repos with many branches
-    // (e.g. 33 branches = 14 done + 14 git-only + 5 active → only 5 arcs shown).
+    // Default ("all") = the trunk + every branch that is NOT done/cancelled
+    // (both AoA task branches AND plain git branches), capped at the N most
+    // recently-committed so the Map stays readable. Done/cancelled show via the
+    // "Merged" chip; the full list lives in the Pipeline tab. The cap matters
+    // for real repos (e.g. SeaMaster has ~80 branches, paperclip ~296) where
+    // showing every branch at once is an unreadable smear.
     const visibleBranches = useMemo(() => {
-      if (filter === "all") {
-        return branches.filter(
-          (b) =>
-            b.name === graph.defaultBranch ||
-            (b.linkedIssueId != null &&
-              b.linkedIssueStatus !== "done" &&
-              b.linkedIssueStatus !== "cancelled"),
-        );
-      }
       if (filter === "running") return branches.filter((b) => b.linkedIssueStatus === "in_progress");
       if (filter === "blocked") return branches.filter((b) => b.linkedIssueStatus === "blocked");
       if (filter === "prs")     return branches.filter((b) => !!b.pr);
       if (filter === "merged")  return branches.filter(
         (b) => b.linkedIssueStatus === "done" || b.linkedIssueStatus === "cancelled",
       );
-      return branches;
+      // default "all"
+      const isDone = (b: GitBranchInfo) =>
+        b.linkedIssueStatus === "done" || b.linkedIssueStatus === "cancelled";
+      const trunk = branches.filter((b) => b.name === graph.defaultBranch);
+      const rest = branches
+        .filter((b) => b.name !== graph.defaultBranch && !isDone(b))
+        .sort((a, b) => (b.lastCommitAt ?? "").localeCompare(a.lastCommitAt ?? ""))
+        .slice(0, MAX_DEFAULT_BRANCHES);
+      return [...trunk, ...rest];
     }, [branches, filter, graph.defaultBranch]);
 
     const visibleNames = useMemo(() => {
@@ -239,6 +246,11 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
     // Always-current layout ref — prevents stale closure in ResizeObserver
     const layoutRef = useRef(layout);
     layoutRef.current = layout;
+
+    // Always-current visible-names ref — used by the fit-to-view bounds so it
+    // measures only shown branches (not hundreds of hidden/off-window arcs).
+    const visibleNamesRef = useRef(visibleNames);
+    visibleNamesRef.current = visibleNames;
 
     // Reset initial-pan flag whenever graph data changes
     useEffect(() => {
@@ -403,7 +415,7 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
         // center / right-align horizontally so the trunk AND branch arcs are
         // visible. Replaces the old pin-to-right pan that pushed arcs off-screen.
         if (!initialPanApplied.current && zoomRef.current && w > 0 && h > 0) {
-          const bounds = getLayoutBounds(layoutRef.current);
+          const bounds = getLayoutBounds(layoutRef.current, visibleNamesRef.current);
           const fit = computeFitTransform(bounds, w, h);
           const t = d3.zoomIdentity.translate(fit.x, fit.y).scale(fit.k);
           d3.select(canvas).call(zoomRef.current.transform, t);

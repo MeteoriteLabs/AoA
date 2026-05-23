@@ -343,6 +343,19 @@ describe("getLayoutBounds", () => {
     expect(b.maxY).toBeGreaterThan(layout.trunkY);
   });
 
+  it("with visibleBranchNames, excludes hidden arcs from vertical bounds", () => {
+    // feat/x arcs up; if we hide it, bounds should not extend to its apex.
+    const graph = makeGraph();
+    const branches = makeBranches();
+    const layout = computeArcLayout(graph, branches);
+    const all = getLayoutBounds(layout);
+    const trunkOnly = getLayoutBounds(layout, new Set(["main"]));
+    // Hiding feat/x should shrink the vertical span (its apex no longer counts).
+    const allSpan = all.maxY - all.minY;
+    const trunkSpan = trunkOnly.maxY - trunkOnly.minY;
+    expect(trunkSpan).toBeLessThan(allSpan);
+  });
+
   it("falls back to totalWidth/Height for an empty layout", () => {
     const empty: GitGraphData = {
       defaultBranch: "main",
