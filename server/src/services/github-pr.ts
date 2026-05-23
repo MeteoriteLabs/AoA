@@ -370,6 +370,10 @@ export async function enrichBranchPr(
       ciStatus: ciResult.status,
       ciUrl: ciResult.ciUrl,
       commentCount: commentData.data.comments + commentData.data.review_comments,
+      labels: (match.labels ?? []).map((l) => ({
+        name: l.name,
+        color: l.color.startsWith("#") ? l.color : `#${l.color}`,
+      })),
     };
   } catch (err) {
     if (err instanceof GitHubPrError) throw err;

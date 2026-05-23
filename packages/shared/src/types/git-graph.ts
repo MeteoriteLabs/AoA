@@ -69,6 +69,8 @@ export interface GitBranchInfo {
     ciStatus: GitCIStatus;
     ciUrl: string | null;
     commentCount: number;
+    /** GitHub label dots shown below task cards on the canvas. */
+    labels: Array<{ name: string; color: string }>;
   } | null;
 
   overlays: {
