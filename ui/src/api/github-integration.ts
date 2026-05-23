@@ -7,6 +7,7 @@ import type {
   GitHubRepoCollaborator,
   GitHubRepoLabel,
   GitHubRepoMilestone,
+  GitHubRepoBranch,
   GitHubPrMergeRequest,
   GitHubPrActionResponse,
 } from "@armyofagents/shared";
@@ -56,6 +57,10 @@ export const githubIntegrationApi = {
   getMilestones: (workspaceId: string) =>
     api.get<GitHubRepoMilestone[]>(
       `/execution-workspaces/${workspaceId}/github/milestones`,
+    ),
+  getBranches: (workspaceId: string) =>
+    api.get<GitHubRepoBranch[]>(
+      `/execution-workspaces/${workspaceId}/github/branches`,
     ),
 
   // ── PR actions ────────────────────────────────────────────────────────────

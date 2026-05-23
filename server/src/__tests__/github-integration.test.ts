@@ -23,7 +23,7 @@ const mockOctokit = vi.hoisted(() => ({
     update: vi.fn(),
     requestReviewers: vi.fn(),
   },
-  repos: { listCollaborators: vi.fn() },
+  repos: { listCollaborators: vi.fn(), listBranches: vi.fn() },
   issues: {
     addLabels: vi.fn(),
     update: vi.fn(),
@@ -82,6 +82,9 @@ vi.mock("../services/github-pr.js", () => ({
 import { errorHandler } from "../middleware/index.js";
 import { GITHUB_PAT_ACTIVITY_KINDS, GITHUB_PAT_SECRET_NAME } from "@armyofagents/shared";
 import { githubRoutes } from "../routes/github.js";
+// Pulled from the mocked module above so tests can drive auth-error paths.
+// NOTE: the mock's GitHubPrError ctor is (status, message, scopeHint?).
+import { GitHubPrError, resolveGitHubAuth } from "../services/github-pr.js";
 
 function createApp(actor: any, db: any = {}) {
   const app = express();
@@ -498,6 +501,58 @@ describe("GET /execution-workspaces/:id/github/milestones", () => {
       { number: 1, title: "v1.0", openIssues: 3, dueOn: "2026-06-01T00:00:00Z" },
       { number: 2, title: "v1.1", openIssues: 0, dueOn: null },
     ]);
+  });
+});
+
+describe("GET /execution-workspaces/:id/github/branches", () => {
+  const ws = { id: "ws-1", companyId: "company-1", repoUrl: "https://github.com/owner/repo", metadata: {} };
+
+  beforeEach(() => {
+    mockWsSvc.getById.mockResolvedValue(ws);
+    mockOctokit.repos.listBranches.mockResolvedValue({
+      data: [
+        { name: "main", commit: { sha: "abc123" } },
+        { name: "dev", commit: { sha: "def456" } },
+      ],
+    });
+  });
+
+  it("returns branch list", async () => {
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/branches");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      { name: "main", sha: "abc123" },
+      { name: "dev", sha: "def456" },
+    ]);
+    expect(mockOctokit.repos.listBranches).toHaveBeenCalledWith({
+      owner: "owner",
+      repo: "repo",
+      per_page: 100,
+    });
+  });
+
+  it("returns 400 when workspace has no repoUrl", async () => {
+    mockWsSvc.getById.mockResolvedValue({ ...ws, repoUrl: null });
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/branches");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when workspace not found", async () => {
+    mockWsSvc.getById.mockResolvedValue(null);
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/branches");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 412 when GitHub not configured", async () => {
+    (resolveGitHubAuth as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new GitHubPrError(412, "GitHub not configured"),
+    );
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/branches");
+    expect(res.status).toBe(412);
   });
 });
 

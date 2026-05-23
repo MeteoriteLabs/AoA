@@ -16,6 +16,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type {
   ExecutionWorkspace,
   GitHubPrCreateResponse,
@@ -23,6 +30,7 @@ import type {
   GitHubRepoCollaborator,
   GitHubRepoLabel,
   GitHubRepoMilestone,
+  GitHubRepoBranch,
 } from "@armyofagents/shared";
 import { issuesApi } from "../../api/issues";
 import { githubIntegrationApi } from "../../api/github-integration";
@@ -166,6 +174,13 @@ export function CreatePrDialog({
     queryFn: () => githubIntegrationApi.getMilestones(workspace.id),
     enabled: open && !!workspace.repoUrl,
     staleTime: 5 * 60 * 1000,
+  });
+
+  const branchesQuery = useQuery({
+    queryKey: ["github", "branches", workspace.id],
+    queryFn: () => githubIntegrationApi.getBranches(workspace.id),
+    enabled: open && !!workspace.repoUrl,
+    staleTime: 2 * 60 * 1000,
   });
 
   // Prefill when dialog opens / when the issue loads.
@@ -347,13 +362,36 @@ export function CreatePrDialog({
                 <Label htmlFor="pr-base" className="text-sm font-medium">
                   Base branch
                 </Label>
-                <Input
-                  id="pr-base"
+                <Select
                   value={base}
-                  onChange={(e) => setBase(e.target.value)}
+                  onValueChange={setBase}
                   disabled={mutation.isPending || checkingSafety}
-                  data-testid="pr-base-input"
-                />
+                >
+                  <SelectTrigger id="pr-base" data-testid="pr-base-input">
+                    <SelectValue placeholder="Select branch…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {branchesQuery.isLoading ? (
+                      <SelectItem value={base}>
+                        <Loader2 className="h-3 w-3 animate-spin inline mr-1" aria-hidden="true" />
+                        Loading branches…
+                      </SelectItem>
+                    ) : branchesQuery.data && branchesQuery.data.length > 0 ? (
+                      <>
+                        {!branchesQuery.data.some((b) => b.name === base) && (
+                          <SelectItem value={base}>{base}</SelectItem>
+                        )}
+                        {branchesQuery.data.map((b: GitHubRepoBranch) => (
+                          <SelectItem key={b.name} value={b.name}>
+                            {b.name}
+                          </SelectItem>
+                        ))}
+                      </>
+                    ) : (
+                      <SelectItem value={base}>{base}</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-muted-foreground">
                   The branch to merge into.
                 </p>

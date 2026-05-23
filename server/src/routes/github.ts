@@ -553,6 +553,26 @@ export function githubRoutes(db: Db) {
     }
   });
 
+  router.get("/execution-workspaces/:id/github/branches", async (req, res) => {
+    assertBoard(req);
+    const ws = await executionWorkspaceService(db).getById(req.params.id);
+    if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+    assertCompanyAccess(req, ws.companyId);
+    if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
+
+    try {
+      const pat = await resolveGitHubAuth(db, ws.companyId, "github-metadata");
+      const { owner, repo } = parseGitHubRepoUrl(ws.repoUrl);
+      const octokit = new Octokit({ auth: pat });
+      const { data } = await octokit.repos.listBranches({ owner, repo, per_page: 100 });
+      res.json(data.map((b) => ({ name: b.name, sha: b.commit.sha })));
+    } catch (err) {
+      if (err instanceof GitHubPrError) { res.status(err.status).json({ error: err.message, hint: err.scopeHint }); return; }
+      const status = (err as { status?: number }).status ?? 502;
+      res.status(status).json({ error: "GitHub API error fetching branches" });
+    }
+  });
+
   // ---------------------------------------------------------------------------
   // PR actions — merge / close / reopen / request-review
   // ---------------------------------------------------------------------------

@@ -80,6 +80,11 @@ export interface GitHubRepoMilestone {
   dueOn: string | null; // ISO date or null
 }
 
+export interface GitHubRepoBranch {
+  name: string;
+  sha: string;
+}
+
 // ---------------------------------------------------------------------------
 // PR actions
 // ---------------------------------------------------------------------------

@@ -286,6 +286,7 @@ export type {
   GitHubRepoCollaborator,
   GitHubRepoLabel,
   GitHubRepoMilestone,
+  GitHubRepoBranch,
   GitHubPrMergeMethod,
   GitHubPrMergeRequest,
   GitHubPrActionResponse,
