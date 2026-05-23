@@ -1096,7 +1096,17 @@ export function ProjectDetail() {
   );
 
   return (
-    <div className="space-y-6">
+    <div
+      className={
+        // The Map (Git Command Centre) needs to fill the viewport without the
+        // page scrolling, so the root becomes a bounded flex column ONLY for the
+        // workspaces tab; its flex-1 canvas wrapper then shrinks to fit. Other
+        // tabs keep the normal block + scroll layout.
+        activeTab === "workspaces"
+          ? "flex flex-col gap-6 h-full min-h-0"
+          : "space-y-6"
+      }
+    >
       {headerContent}
       {tabContent}
       <TaskSlideOver
