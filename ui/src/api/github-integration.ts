@@ -8,6 +8,7 @@ import type {
   GitHubRepoLabel,
   GitHubRepoMilestone,
   GitHubRepoBranch,
+  GitHubAuthorizedRepo,
   GitHubPrMergeRequest,
   GitHubPrActionResponse,
 } from "@armyofagents/shared";
@@ -22,6 +23,9 @@ export const githubIntegrationApi = {
 
   disconnectApp: (companyId: string) =>
     api.delete<{ removed: boolean }>(`/companies/${companyId}/github/app`),
+
+  getAuthorizedRepos: (companyId: string) =>
+    api.get<GitHubAuthorizedRepo[]>(`/companies/${companyId}/github/app/repositories`),
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   setPat: (companyId: string, pat: string) =>

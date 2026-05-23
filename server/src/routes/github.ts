@@ -31,6 +31,7 @@ import {
   saveInstallation,
   removeInstallation,
   getInstallation,
+  listInstallationRepositories,
 } from "../services/github-app.js";
 import { resolveGitRoot, runGit, push } from "../services/git.js";
 const setPatSchema = z.object({ pat: z.string().min(1) });
@@ -752,6 +753,25 @@ export function githubRoutes(db: Db) {
       accountType: installation.accountType,
       createdAt: installation.createdAt,
     });
+  });
+
+  /**
+   * List the repositories the GitHub App installation can access. Returns []
+   * when no installation is active for the company.
+   */
+  router.get("/companies/:companyId/github/app/repositories", async (req, res) => {
+    assertBoard(req);
+    assertCompanyAccess(req, req.params.companyId);
+    try {
+      const repos = await listInstallationRepositories(db, req.params.companyId);
+      res.json(repos);
+    } catch (err) {
+      if (err instanceof GitHubPrError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      res.status(502).json({ error: "GitHub API error fetching repositories" });
+    }
   });
 
   return router;

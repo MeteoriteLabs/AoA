@@ -496,6 +496,7 @@ export type {
   GitHubRepoLabel,
   GitHubRepoMilestone,
   GitHubRepoBranch,
+  GitHubAuthorizedRepo,
   GitHubPrMergeMethod,
   GitHubPrMergeRequest,
   GitHubPrActionResponse,

@@ -1,4 +1,5 @@
 import { createAppAuth } from "@octokit/auth-app";
+import { Octokit } from "@octokit/rest";
 import { eq } from "drizzle-orm";
 import { githubInstallations, type Db, type GitHubInstallation, type NewGitHubInstallation } from "@armyofagents/db";
 
@@ -102,4 +103,32 @@ export async function mintInstallationToken(installationId: string): Promise<str
   const auth = createAppAuth({ appId, privateKey });
   const { token } = await auth({ type: "installation", installationId });
   return token;
+}
+
+// ---------------------------------------------------------------------------
+// Installation repositories
+// ---------------------------------------------------------------------------
+
+/**
+ * List all repositories the GitHub App installation can access.
+ * Returns [] if no installation is active for the company.
+ */
+export async function listInstallationRepositories(
+  db: Db,
+  companyId: string,
+): Promise<Array<{ name: string; fullName: string; private: boolean; url: string }>> {
+  const installation = await getInstallation(db, companyId);
+  if (!installation) return [];
+
+  const token = await mintInstallationToken(installation.installationId);
+  const octokit = new Octokit({ auth: token });
+
+  const { data } = await octokit.apps.listReposAccessibleToInstallation({ per_page: 100 });
+
+  return data.repositories.map((r) => ({
+    name: r.name,
+    fullName: r.full_name,
+    private: r.private,
+    url: r.html_url,
+  }));
 }

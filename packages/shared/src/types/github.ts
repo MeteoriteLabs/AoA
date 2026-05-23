@@ -85,6 +85,13 @@ export interface GitHubRepoBranch {
   sha: string;
 }
 
+export interface GitHubAuthorizedRepo {
+  name: string;       // repo short name, e.g. "my-repo"
+  fullName: string;   // "owner/repo"
+  private: boolean;
+  url: string;        // html_url
+}
+
 // ---------------------------------------------------------------------------
 // PR actions
 // ---------------------------------------------------------------------------

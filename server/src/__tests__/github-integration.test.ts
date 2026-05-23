@@ -6,12 +6,14 @@ const mockGetInstallUrl = vi.hoisted(() => vi.fn().mockReturnValue("https://gith
 const mockSaveInstallation = vi.hoisted(() => vi.fn());
 const mockRemoveInstallation = vi.hoisted(() => vi.fn());
 const mockGetInstallation = vi.hoisted(() => vi.fn());
+const mockListInstallationRepositories = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/github-app.js", () => ({
   getInstallUrl: mockGetInstallUrl,
   saveInstallation: mockSaveInstallation,
   removeInstallation: mockRemoveInstallation,
   getInstallation: mockGetInstallation,
+  listInstallationRepositories: mockListInstallationRepositories,
 }));
 
 const mockOctokit = vi.hoisted(() => ({
@@ -784,5 +786,35 @@ describe("GET /companies/:companyId/github/app/status", () => {
     const res = await request(app).get("/api/companies/company-1/github/app/status");
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ installed: false });
+  });
+});
+
+describe("GET /companies/:companyId/github/app/repositories", () => {
+  it("returns the authorized repository list", async () => {
+    const repos = [
+      { name: "my-repo", fullName: "acme/my-repo", private: false, url: "https://github.com/acme/my-repo" },
+      { name: "secret-repo", fullName: "acme/secret-repo", private: true, url: "https://github.com/acme/secret-repo" },
+    ];
+    mockListInstallationRepositories.mockResolvedValue(repos);
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/companies/company-1/github/app/repositories");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(repos);
+    expect(mockListInstallationRepositories).toHaveBeenCalledWith(expect.anything(), "company-1");
+  });
+
+  it("returns an empty array when no installation is active", async () => {
+    mockListInstallationRepositories.mockResolvedValue([]);
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/companies/company-1/github/app/repositories");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it("returns 502 when the service throws unexpectedly", async () => {
+    mockListInstallationRepositories.mockRejectedValueOnce(new Error("GitHub API unavailable"));
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/companies/company-1/github/app/repositories");
+    expect(res.status).toBe(502);
   });
 });

@@ -54,6 +54,13 @@ export function GitHubIntegrationCard() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const authorizedReposQuery = useQuery({
+    queryKey: ["github", "authorized-repos", selectedCompanyId],
+    queryFn: () => githubIntegrationApi.getAuthorizedRepos(selectedCompanyId!),
+    enabled: !!selectedCompanyId && appStatusQuery.data?.installed === true,
+    staleTime: 5 * 60 * 1000,
+  });
+
   // ── Mutations ─────────────────────────────────────────────────────────────
 
   const invalidateAll = () => {
@@ -204,6 +211,40 @@ export function GitHubIntegrationCard() {
                   : "Disconnect App"}
               </Button>
             </div>
+            {authorizedReposQuery.data && authorizedReposQuery.data.length > 0 && (
+              <div className="space-y-1.5 pt-1">
+                <div className="text-xs font-medium text-muted-foreground">
+                  Authorized repositories ({authorizedReposQuery.data.length})
+                </div>
+                <div className="space-y-1 max-h-36 overflow-y-auto rounded-md border border-border/50 px-2 py-1.5">
+                  {authorizedReposQuery.data.map((repo) => (
+                    <div key={repo.fullName} className="flex items-center gap-2 text-xs">
+                      <span className="font-mono truncate flex-1 min-w-0">{repo.fullName}</span>
+                      {repo.private && (
+                        <span className="shrink-0 rounded px-1 py-0.5 text-[10px] bg-muted text-muted-foreground border border-border/60">
+                          private
+                        </span>
+                      )}
+                      <a
+                        href={repo.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="shrink-0 text-muted-foreground hover:text-foreground"
+                        aria-label={`Open ${repo.fullName} on GitHub`}
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {authorizedReposQuery.isLoading && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground pt-1">
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                Loading repositories…
+              </div>
+            )}
           </div>
         ) : (
           <Button
