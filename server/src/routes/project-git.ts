@@ -36,30 +36,14 @@ import { assertCompanyAccess } from "./authz.js";
 import { secretService } from "../services/secrets.js";
 import { getBranches, getCommitGraph, resolveGitRoot } from "../services/git.js";
 import { enrichBranchPr, GitHubPrError, parseGitHubRepoUrl } from "../services/github-pr.js";
+import {
+  graphCache,
+  enrichCache,
+  GRAPH_CACHE_TTL_MS,
+  ENRICH_CACHE_TTL_MS,
+  projectGitCacheKey,
+} from "../services/project-git-cache.js";
 import pLimit from "p-limit";
-
-// ---------------------------------------------------------------------------
-// In-memory cache (25s TTL, process-local)
-// ---------------------------------------------------------------------------
-
-interface GraphCacheEntry {
-  data: GitProjectGraphResponse;
-  expiresAt: number;
-}
-
-interface EnrichCacheEntry {
-  data: GitProjectEnrichResponse;
-  expiresAt: number;
-}
-
-const GRAPH_CACHE_TTL_MS = 25_000;
-const ENRICH_CACHE_TTL_MS = 25_000;
-const graphCache = new Map<string, GraphCacheEntry>();
-const enrichCache = new Map<string, EnrichCacheEntry>();
-
-function graphCacheKey(companyId: string, projectId: string): string {
-  return `${companyId}:${projectId}`;
-}
 
 // ---------------------------------------------------------------------------
 // Lane color palette (matches design system)
@@ -87,7 +71,7 @@ export function projectGitRoutes(db: Db) {
     const { companyId, projectId } = req.params as { companyId: string; projectId: string };
     assertCompanyAccess(req, companyId);
 
-    const cacheKey = graphCacheKey(companyId, projectId);
+    const cacheKey = projectGitCacheKey(companyId, projectId);
     const cached = graphCache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt) {
       res.json(cached.data);
@@ -273,7 +257,7 @@ export function projectGitRoutes(db: Db) {
     const { companyId, projectId } = req.params as { companyId: string; projectId: string };
     assertCompanyAccess(req, companyId);
 
-    const cacheKey = graphCacheKey(companyId, projectId);
+    const cacheKey = projectGitCacheKey(companyId, projectId);
     const cached = enrichCache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt) {
       res.json(cached.data);

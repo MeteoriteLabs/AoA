@@ -11,6 +11,7 @@ import {
 } from "@armyofagents/shared";
 import { conflict } from "../errors.js";
 import { isRepoOnlySentinel } from "./heartbeat.js";
+import { invalidateProjectGitCache } from "./project-git-cache.js";
 import { logger } from "../middleware/logger.js";
 import { memoryFoldersService, seedFoldersOnDepartmentCreate } from "./memory-folders.js";
 
@@ -448,6 +449,8 @@ export function projectService(db: Db) {
         return row;
       });
 
+      if (created) invalidateProjectGitCache(project.companyId, projectId);
+
       return created ? toWorkspace(created) : null;
     },
 
@@ -567,6 +570,8 @@ export function projectService(db: Db) {
 
         return row;
       });
+
+      if (updated) invalidateProjectGitCache(existing.companyId, projectId);
 
       return updated ? toWorkspace(updated) : null;
     },
