@@ -395,19 +395,9 @@ export function githubRoutes(db: Db) {
               { timeout: 5_000 },
             );
           } catch {
-            // No upstream — need to push. Retrieve PAT for auth.
-            const sSvc = secretService(db);
-            const secret = await sSvc.getByName(issue.companyId, GITHUB_PAT_SECRET_NAME);
-            const pat = secret
-              ? await sSvc.resolveSecretValue(issue.companyId, secret.id, "latest", {
-                  consumerType: "system",
-                  consumerId: "github:auto-push",
-                  actorType: "system",
-                  issueId: issue.id,
-                  configPath: "github.pat",
-                }).catch(() => null)
-              : null;
-            await push(gitRoot, "origin", headBranch, pat ? { pat } : undefined);
+            // No upstream — need to push. Resolve auth (App installation token or PAT).
+            const token = await resolveGitHubAuth(db, issue.companyId, "github:auto-push").catch(() => null);
+            await push(gitRoot, "origin", headBranch, token ? { pat: token } : undefined);
           }
         }
       } catch (pushErr) {
@@ -715,7 +705,7 @@ export function githubRoutes(db: Db) {
 
     await saveInstallation(db, { companyId, installationId: installation_id, accountLogin, accountType });
 
-    const uiBase = process.env.PUBLIC_BASE_URL ?? "http://localhost:5173";
+    const uiBase = process.env.AOA_AUTH_PUBLIC_BASE_URL ?? "http://localhost:5173";
     // Redirect to the company's settings page with the GitHub tab active.
     // companyId is used as the URL prefix (e.g. /acme/settings?tab=github).
     res.redirect(`${uiBase}/${companyId}/settings?tab=github`);
