@@ -25,6 +25,7 @@ import React, {
 import { useQuery } from "@tanstack/react-query";
 import type { GitBranchInfo, LiveEvent } from "@armyofagents/shared";
 import { projectGitApi } from "@/api/project-git";
+import { githubIntegrationApi } from "@/api/github-integration";
 import { cn } from "@/lib/utils";
 import { GitGraphCanvas, type GitGraphCanvasHandle } from "./GitGraphCanvas";
 import { GitHoverCard, type HoveredNode } from "./GitHoverCard";
@@ -35,7 +36,7 @@ import { GitPipelineView } from "./GitPipelineView";
 // ---------------------------------------------------------------------------
 
 type ViewMode = "map" | "pipeline";
-type FilterMode = "all" | "running" | "blocked" | "prs";
+type FilterMode = "all" | "running" | "blocked" | "prs" | "merged";
 
 interface GitCommandCentreProps {
   projectId: string;
@@ -162,6 +163,14 @@ export function GitCommandCentre({
     enabled: isWorkspacesTabActive && !graphData?.noWorkspaceYet && graphData?.hasGitHubPat,
   });
 
+  // Repo list for selector pill (only fetched when GitHub is connected)
+  const { data: repoList } = useQuery({
+    queryKey: ["github-repos", companyId],
+    queryFn: () => githubIntegrationApi.getAuthorizedRepos(companyId),
+    enabled: isWorkspacesTabActive && graphData?.hasGitHubPat === true,
+    staleTime: 60_000,
+  });
+
   // Merge enrichment patches onto graph branches
   const branches = useMemo(
     () => mergeEnrichments(graphData?.branches, enrichData?.enrichments),
@@ -261,6 +270,9 @@ export function GitCommandCentre({
 
   // ── Render ───────────────────────────────────────────────────────────────
 
+  const runningCount = branches.filter((b) => b.linkedIssueStatus === "in_progress").length;
+  const prCount = branches.filter((b) => b.pr !== null).length;
+
   if (!graphData) {
     if (graphError) {
       return (
@@ -312,15 +324,21 @@ export function GitCommandCentre({
           ))}
         </div>
 
-        {/* Filters */}
+        {/* Filter chips */}
         <div className="flex items-center gap-1">
           {(
             [
-              { key: "running", label: "Running", dot: "#4FB67E" },
-              { key: "blocked", label: "Blocked", dot: "#ef4444" },
-              { key: "prs",     label: "PRs",     dot: null },
-            ] as Array<{ key: FilterMode; label: string; dot: string | null }>
-          ).map(({ key, label, dot }) => (
+              { key: "running", label: "Running", dot: "#4FB67E", count: runningCount },
+              { key: "blocked", label: "Blocked", dot: "#ef4444", count: null },
+              { key: "prs",     label: "PRs",     dot: null,       count: prCount },
+              { key: "merged",  label: "Merged",  dot: null,       count: null },
+            ] as Array<{
+              key: FilterMode;
+              label: string;
+              dot: string | null;
+              count: number | null;
+            }>
+          ).map(({ key, label, dot, count }) => (
             <button
               key={key}
               className={cn(
@@ -338,6 +356,9 @@ export function GitCommandCentre({
                 />
               )}
               {label}
+              {count !== null && count > 0 && (
+                <span className="ml-0.5 text-[10px] opacity-60">{count}</span>
+              )}
             </button>
           ))}
         </div>
@@ -345,10 +366,31 @@ export function GitCommandCentre({
         {/* Spacer */}
         <div className="flex-1" />
 
-        {/* PAT notice */}
-        {!graphData.hasGitHubPat && (
-          <span className="text-[11px] text-amber-400">
-            Connect GitHub in Settings → Integrations to see PR & CI status
+        {/* ★ D1: Repo pill is DISPLAY-ONLY — no onClick handler.
+            TODO: repo switching requires a new server route before this can be interactive.
+            Using cursor-default intentionally (not cursor-pointer) to match the behavior. */}
+        {graphData?.hasGitHubPat && (
+          <div
+            className="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5 border border-[#2e2c2a]"
+            title="Connected GitHub repository"
+          >
+            {/* GitHub icon */}
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="#7E8AA8">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+            </svg>
+            {/* ★ D4: prefer repoUrl (actual connected repo) over repoList[0] (first authorized repo) */}
+            <span className="text-[10px] text-[#ccc] font-mono">
+              {graphData.repoUrl
+                ? graphData.repoUrl.replace(/.*github\.com[:/]/, "").replace(/\.git$/, "")
+                : repoList && repoList.length > 0
+                  ? repoList[0]!.fullName
+                  : "repo"}
+            </span>
+          </div>
+        )}
+        {!graphData?.hasGitHubPat && (
+          <span className="text-[11px] text-amber-400/70">
+            Connect GitHub →
           </span>
         )}
 
