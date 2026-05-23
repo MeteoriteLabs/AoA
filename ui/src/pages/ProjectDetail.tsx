@@ -1053,7 +1053,7 @@ export function ProjectDetail() {
         project.functionType === "software_development" ? (
           // Git Command Centre — only for software projects; D3 is lazy-loaded
           <Suspense fallback={<div className="flex-1 animate-pulse bg-muted/20 rounded m-4" style={{ minHeight: 200 }} />}>
-            <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex-1 flex flex-col overflow-hidden min-h-0">
               <GitCommandCentre
                 projectId={project.id}
                 companyId={resolvedCompanyId}

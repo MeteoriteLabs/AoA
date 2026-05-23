@@ -303,7 +303,7 @@ export function GitCommandCentre({
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-white/10 shrink-0">
         {/* View toggle */}
@@ -405,7 +405,7 @@ export function GitCommandCentre({
       </div>
 
       {/* Main content area */}
-      <div className="flex-1 relative overflow-hidden bg-[#0a0a0a]">
+      <div className="flex-1 relative overflow-hidden bg-[#0a0a0a] min-h-0">
         {viewMode === "map" ? (
           <>
             <GitGraphCanvas
