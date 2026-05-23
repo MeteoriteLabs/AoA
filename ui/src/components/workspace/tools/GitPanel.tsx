@@ -390,6 +390,10 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
 
   useEffect(() => {
     if (!isExpanded || !workspace.repoUrl || !liveBranch) return;
+    // Once the PR reaches a terminal state (merged/closed) there is nothing left
+    // to poll for — stop syncing. This also avoids a recurring lookup that could
+    // briefly miss the PR (deleted branch / fork) and churn the workspace.
+    if (pr?.state === "merged" || pr?.state === "closed") return;
     // Silent background sync: no toast spam, just keeps workspace.metadata.pr fresh
     const silentSync = () => syncPrMutation.mutate({ force: false, silent: true });
     silentSync(); // immediate on expand / key change
@@ -401,7 +405,7 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
       window.removeEventListener("focus", onFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isExpanded, liveBranch, workspace.id, workspace.repoUrl]);
+  }, [isExpanded, liveBranch, workspace.id, workspace.repoUrl, pr?.state]);
 
   // ── File selection helpers ──
   const committableFiles = useMemo(
@@ -867,7 +871,14 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
                 size="sm"
                 variant="default"
                 className="flex-1 rounded-none rounded-l-md border-0 gap-1 px-2"
-                disabled={mergePrMutation.isPending || closePrMutation.isPending}
+                disabled={
+                  mergePrMutation.isPending || closePrMutation.isPending || pr.draft
+                }
+                title={
+                  pr.draft
+                    ? "This PR is a draft — mark it ready for review on GitHub before merging"
+                    : undefined
+                }
                 onClick={() => mergePrMutation.mutate("squash")}
                 data-testid="pr-merge-btn"
               >
@@ -876,7 +887,7 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
                 ) : (
                   <GitPullRequest className="h-3.5 w-3.5" aria-hidden="true" />
                 )}
-                Merge
+                {pr.draft ? "Draft" : "Merge"}
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -892,15 +903,24 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="w-52">
-                  <DropdownMenuItem onSelect={() => mergePrMutation.mutate("merge")}>
+                  <DropdownMenuItem
+                    disabled={pr.draft}
+                    onSelect={() => mergePrMutation.mutate("merge")}
+                  >
                     <GitPullRequest className="h-4 w-4" />
                     Merge commit
                   </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => mergePrMutation.mutate("squash")}>
+                  <DropdownMenuItem
+                    disabled={pr.draft}
+                    onSelect={() => mergePrMutation.mutate("squash")}
+                  >
                     <GitPullRequest className="h-4 w-4" />
                     Squash and merge
                   </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => mergePrMutation.mutate("rebase")}>
+                  <DropdownMenuItem
+                    disabled={pr.draft}
+                    onSelect={() => mergePrMutation.mutate("rebase")}
+                  >
                     <GitPullRequest className="h-4 w-4" />
                     Rebase and merge
                   </DropdownMenuItem>

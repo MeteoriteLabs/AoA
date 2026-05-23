@@ -270,14 +270,24 @@ export function githubRoutes(db: Db) {
         branchName: ws.branchName,
       });
       const nextBaseRef = ws.baseRef ?? result.baseRef ?? null;
+      // A merged/closed PR is a historical fact. If the branch head-filter
+      // lookup stops matching (deleted branch, fork PR, rename), don't erase a
+      // terminal-state PR just because GitHub returned no match this poll.
+      // Only non-terminal (or absent) PRs get cleared.
+      const existingPr = readGitHubPrMetadata(existingMeta.pr);
+      const preserveTerminalPr =
+        !result.pr &&
+        !!existingPr &&
+        (existingPr.state === "merged" || existingPr.state === "closed");
+      const effectivePr = result.pr ?? (preserveTerminalPr ? existingPr : null);
       const nextMetadata: Record<string, unknown> = {
         ...existingMeta,
         githubLastSyncedAt: now,
         githubSyncError: null,
-        noPrFound: result.pr ? false : true,
+        noPrFound: effectivePr ? false : true,
       };
-      if (result.pr) {
-        nextMetadata.pr = result.pr;
+      if (effectivePr) {
+        nextMetadata.pr = effectivePr;
       } else {
         delete nextMetadata.pr;
       }
@@ -296,7 +306,7 @@ export function githubRoutes(db: Db) {
         repoUrl: ws.repoUrl,
         branchName: ws.branchName,
         baseRef: nextBaseRef,
-        pr: result.pr,
+        pr: effectivePr,
         githubLastSyncedAt: now,
         githubSyncError: null,
         cached: false,
@@ -767,10 +777,11 @@ export function githubRoutes(db: Db) {
       res.json(repos);
     } catch (err) {
       if (err instanceof GitHubPrError) {
-        res.status(err.status).json({ error: err.message });
+        res.status(err.status).json({ error: err.message, hint: err.scopeHint });
         return;
       }
-      res.status(502).json({ error: "GitHub API error fetching repositories" });
+      const status = (err as { status?: number }).status ?? 502;
+      res.status(status).json({ error: "GitHub API error fetching repositories" });
     }
   });
 

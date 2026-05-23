@@ -410,6 +410,63 @@ describe("CreatePrDialog", () => {
     }));
   });
 
+  it("populates the base-branch dropdown and submits with the selected base", async () => {
+    // Radix Select needs these jsdom shims to open + select.
+    const proto = window.HTMLElement.prototype;
+    proto.scrollIntoView = vi.fn();
+    proto.hasPointerCapture = vi.fn(() => false);
+    proto.setPointerCapture = vi.fn();
+    proto.releasePointerCapture = vi.fn();
+
+    mockGetIssue.mockResolvedValue({ id: "issue-1", title: "T", description: "B" });
+    mockGetBranches.mockResolvedValue([
+      { name: "main", sha: "a" },
+      { name: "dev", sha: "b" },
+    ]);
+    mockCreatePR.mockResolvedValue({
+      url: "https://github.com/acme/repo/pull/55",
+      number: 55,
+      state: "open",
+      draft: false,
+    });
+
+    const user = userEvent.setup();
+    renderDialog();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("pr-title-input")).toHaveValue("T"),
+    );
+    // Wait for the branches query to resolve so both options exist.
+    await waitFor(() => expect(mockGetBranches).toHaveBeenCalledWith("ws-1"));
+
+    // Open the Radix Select via its trigger.
+    const trigger = screen.getByTestId("pr-base-input");
+    await user.click(trigger);
+
+    // Both branch options are present in the open listbox.
+    const mainOption = await screen.findByRole("option", { name: "main" });
+    const devOption = await screen.findByRole("option", { name: "dev" });
+    expect(mainOption).toBeInTheDocument();
+    expect(devOption).toBeInTheDocument();
+
+    // Select "dev".
+    await user.click(devOption);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("pr-base-input")).toHaveTextContent("dev"),
+    );
+
+    // Submit the form and assert createPR carried base: "dev".
+    await user.click(screen.getByTestId("pr-submit"));
+
+    await waitFor(() =>
+      expect(mockCreatePR).toHaveBeenCalledWith(
+        "issue-1",
+        expect.objectContaining({ base: "dev" }),
+      ),
+    );
+  });
+
   it("uses checking copy while only the safety preflight is running", async () => {
     mockGetIssue.mockResolvedValue({ id: "issue-1", title: "T", description: "B" });
     mockCreatePR.mockResolvedValue({

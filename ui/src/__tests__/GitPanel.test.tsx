@@ -744,4 +744,118 @@ describe("GitPanel", () => {
       expect(screen.queryByRole("button", { name: /close pr/i })).not.toBeInTheDocument();
     });
   });
+
+  describe("review fixes — silent background sync, request review, draft, terminal polling", () => {
+    const openPrWorkspace = makeWorkspace({
+      repoUrl: "https://github.com/myorg/myrepo",
+      branchName: "feat/my-task",
+      baseRef: "main",
+      metadata: {
+        pr: {
+          url: "https://github.com/myorg/myrepo/pull/42",
+          number: 42,
+          state: "open",
+          createdAt: "2026-01-01T00:00:00Z",
+          draft: false,
+        },
+      },
+    });
+
+    // 1) Background sync failure emits NO toast (silent-flag guarantee).
+    it("does not toast when the silent background sync fails", async () => {
+      mockSyncWorkspacePR.mockRejectedValue(new Error("boom"));
+      // No PR + repoUrl + branch → the background effect runs an immediate
+      // silent sync on mount.
+      renderPanel();
+
+      // Let the rejected background mutation settle.
+      await waitFor(() =>
+        expect(mockSyncWorkspacePR).toHaveBeenCalledWith("ws-1", { force: false }),
+      );
+      // Give the rejection a tick to flow through onError.
+      await waitFor(() => {
+        expect(mockPushToast).not.toHaveBeenCalledWith(
+          expect.objectContaining({ title: "GitHub sync failed" }),
+        );
+      });
+    });
+
+    // 2) Request Review interaction → calls requestReview + success toast.
+    it("requests a review with the entered reviewers and toasts on success", async () => {
+      mockRequestReview.mockResolvedValue(undefined);
+      const user = userEvent.setup();
+      renderPanel({ workspace: openPrWorkspace as any });
+
+      await user.click(await screen.findByTestId("pr-merge-dropdown-trigger"));
+      await user.click(await screen.findByRole("menuitem", { name: /request review/i }));
+
+      // RequestReviewInline renders an input + "Send" button.
+      const input = await screen.findByLabelText(/reviewer logins/i);
+      await user.type(input, "alice, bob");
+      await user.click(screen.getByRole("button", { name: /^send$/i }));
+
+      await waitFor(() =>
+        expect(mockRequestReview).toHaveBeenCalledWith("ws-1", ["alice", "bob"]),
+      );
+      await waitFor(() =>
+        expect(mockPushToast).toHaveBeenCalledWith(
+          expect.objectContaining({ title: "Review requested" }),
+        ),
+      );
+    });
+
+    // 3) Draft PR disables merge + relabels primary button to "Draft".
+    it("disables merge and labels the button 'Draft' for a draft PR", async () => {
+      const draftPrWorkspace = makeWorkspace({
+        repoUrl: "https://github.com/myorg/myrepo",
+        branchName: "feat/my-task",
+        baseRef: "main",
+        metadata: {
+          pr: {
+            url: "https://github.com/myorg/myrepo/pull/42",
+            number: 42,
+            state: "open",
+            createdAt: "2026-01-01T00:00:00Z",
+            draft: true,
+          },
+        },
+      });
+      const user = userEvent.setup();
+      renderPanel({ workspace: draftPrWorkspace as any });
+
+      const mergeBtn = await screen.findByTestId("pr-merge-btn");
+      expect(mergeBtn).toBeDisabled();
+      expect(mergeBtn).toHaveTextContent("Draft");
+      expect(mergeBtn).not.toHaveTextContent("Merge");
+
+      // The dropdown menu items are also disabled when draft.
+      await user.click(screen.getByTestId("pr-merge-dropdown-trigger"));
+      const squashItem = await screen.findByRole("menuitem", { name: /squash and merge/i });
+      expect(squashItem).toHaveAttribute("data-disabled");
+    });
+
+    // 4) Terminal PR (merged) → effect early-returns, no background sync runs.
+    it("does not auto-sync when the PR is in a terminal (merged) state", async () => {
+      const mergedPrWorkspace = makeWorkspace({
+        repoUrl: "https://github.com/myorg/myrepo",
+        branchName: "feat/my-task",
+        baseRef: "main",
+        metadata: {
+          pr: {
+            url: "https://github.com/myorg/myrepo/pull/42",
+            number: 42,
+            state: "merged",
+            createdAt: "2026-01-01T00:00:00Z",
+            draft: false,
+          },
+        },
+      });
+      renderPanel({ workspace: mergedPrWorkspace as any });
+
+      // Wait for the panel to render the merged chip link, then confirm no sync ran.
+      // (Button uses asChild, so the inner <a> keeps its own data-testid="pr-link".)
+      expect(await screen.findByTestId("pr-link")).toHaveTextContent("Merged #42");
+      expect(mockSyncWorkspacePR).not.toHaveBeenCalled();
+    });
+  });
 });

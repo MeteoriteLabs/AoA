@@ -86,7 +86,11 @@ import { GITHUB_PAT_ACTIVITY_KINDS, GITHUB_PAT_SECRET_NAME } from "@armyofagents
 import { githubRoutes } from "../routes/github.js";
 // Pulled from the mocked module above so tests can drive auth-error paths.
 // NOTE: the mock's GitHubPrError ctor is (status, message, scopeHint?).
-import { GitHubPrError, resolveGitHubAuth } from "../services/github-pr.js";
+import {
+  GitHubPrError,
+  resolveGitHubAuth,
+  findPullRequestForBranch,
+} from "../services/github-pr.js";
 
 function createApp(actor: any, db: any = {}) {
   const app = express();
@@ -556,6 +560,130 @@ describe("GET /execution-workspaces/:id/github/branches", () => {
     const res = await request(app).get("/api/execution-workspaces/ws-1/github/branches");
     expect(res.status).toBe(412);
   });
+
+  it("forwards a non-GitHubPrError status (503) from the GitHub API", async () => {
+    mockOctokit.repos.listBranches.mockRejectedValueOnce({ status: 503 });
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/branches");
+    expect(res.status).toBe(503);
+  });
+
+  it("falls back to 502 when a generic error has no status", async () => {
+    mockOctokit.repos.listBranches.mockRejectedValueOnce(new Error("x"));
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/branches");
+    expect(res.status).toBe(502);
+  });
+
+  it("rejects a non-board actor with 403", async () => {
+    const app = createApp({
+      type: "agent",
+      agentId: "a1",
+      companyId: "company-1",
+    });
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/branches");
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects a board actor from a different company with 403", async () => {
+    const app = createApp({
+      type: "board",
+      source: "session",
+      userId: "user-x",
+      companyIds: ["other-company"],
+      isInstanceAdmin: false,
+    });
+    const res = await request(app).get("/api/execution-workspaces/ws-1/github/branches");
+    expect(res.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sync route — terminal-PR preservation
+// ---------------------------------------------------------------------------
+
+describe("POST /execution-workspaces/:id/github-pr/sync", () => {
+  const mergedPr = {
+    url: "https://github.com/myorg/myrepo/pull/5",
+    number: 5,
+    state: "merged" as const,
+    createdAt: "2026-01-01T00:00:00Z",
+    draft: false,
+  };
+
+  beforeEach(() => {
+    mockWsSvc.update.mockResolvedValue({});
+  });
+
+  it("preserves a terminal (merged) PR when the branch lookup returns no PR", async () => {
+    mockWsSvc.getById.mockResolvedValue({
+      id: "ws-1",
+      companyId: "company-1",
+      repoUrl: "https://github.com/myorg/myrepo",
+      branchName: "feat/task",
+      baseRef: "main",
+      metadata: { pr: mergedPr },
+    });
+    (findPullRequestForBranch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      pr: null,
+      baseRef: null,
+    });
+
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/github-pr/sync")
+      .send({ force: true });
+
+    expect(res.status).toBe(200);
+    // Response reflects the preserved merged PR.
+    expect(res.body.pr).toMatchObject({ number: 5, state: "merged" });
+    // The persisted metadata still carries the merged PR (NOT deleted).
+    expect(mockWsSvc.update).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          pr: expect.objectContaining({ number: 5, state: "merged" }),
+        }),
+      }),
+    );
+  });
+
+  it("clears a non-terminal (open) PR when the branch lookup returns no PR", async () => {
+    mockWsSvc.getById.mockResolvedValue({
+      id: "ws-1",
+      companyId: "company-1",
+      repoUrl: "https://github.com/myorg/myrepo",
+      branchName: "feat/task",
+      baseRef: "main",
+      metadata: {
+        pr: {
+          url: "https://github.com/myorg/myrepo/pull/9",
+          number: 9,
+          state: "open",
+          createdAt: "2026-01-01T00:00:00Z",
+          draft: false,
+        },
+      },
+    });
+    (findPullRequestForBranch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      pr: null,
+      baseRef: null,
+    });
+
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/execution-workspaces/ws-1/github-pr/sync")
+      .send({ force: true });
+
+    expect(res.status).toBe(200);
+    // The open PR is cleared from the response.
+    expect(res.body.pr).toBeNull();
+    // And the persisted metadata no longer has a `.pr` key.
+    const updateArg = mockWsSvc.update.mock.calls.at(-1)?.[1] as {
+      metadata: Record<string, unknown>;
+    };
+    expect(updateArg.metadata).not.toHaveProperty("pr");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -816,5 +944,36 @@ describe("GET /companies/:companyId/github/app/repositories", () => {
     const app = createApp(boardActor);
     const res = await request(app).get("/api/companies/company-1/github/app/repositories");
     expect(res.status).toBe(502);
+  });
+
+  it("forwards a GitHubPrError status (412) from the service", async () => {
+    mockListInstallationRepositories.mockRejectedValueOnce(
+      new GitHubPrError(412, "GitHub App not installed"),
+    );
+    const app = createApp(boardActor);
+    const res = await request(app).get("/api/companies/company-1/github/app/repositories");
+    expect(res.status).toBe(412);
+  });
+
+  it("rejects a non-board actor with 403", async () => {
+    const app = createApp({
+      type: "agent",
+      agentId: "a1",
+      companyId: "company-1",
+    });
+    const res = await request(app).get("/api/companies/company-1/github/app/repositories");
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects a board actor from a different company with 403", async () => {
+    const app = createApp({
+      type: "board",
+      source: "session",
+      userId: "user-x",
+      companyIds: ["other-company"],
+      isInstanceAdmin: false,
+    });
+    const res = await request(app).get("/api/companies/company-1/github/app/repositories");
+    expect(res.status).toBe(403);
   });
 });

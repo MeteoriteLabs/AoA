@@ -6,6 +6,14 @@ vi.mock("@octokit/auth-app", () => ({
   createAppAuth: vi.fn(() => mockCreateInstallationAccessToken),
 }));
 
+// ── mock @octokit/rest ────────────────────────────────────────────────────
+const mockOctokit = vi.hoisted(() => ({
+  apps: { listReposAccessibleToInstallation: vi.fn() },
+}));
+vi.mock("@octokit/rest", () => ({
+  Octokit: vi.fn(() => mockOctokit),
+}));
+
 // ── mock DB ───────────────────────────────────────────────────────────────
 const mockDb = vi.hoisted(() => {
   const limit = vi.fn().mockResolvedValue([]);
@@ -37,6 +45,7 @@ import {
   removeInstallation,
   mintInstallationToken,
   getInstallUrl,
+  listInstallationRepositories,
 } from "../services/github-app.js";
 
 describe("getInstallUrl", () => {
@@ -110,6 +119,47 @@ describe("mintInstallationToken", () => {
     expect(token).toBe("ghs_installation_token");
     expect(mockCreateInstallationAccessToken).toHaveBeenCalledWith(
       expect.objectContaining({ type: "installation" }),
+    );
+  });
+});
+
+describe("listInstallationRepositories", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns [] and does not mint a token when no installation exists", async () => {
+    mockDb.limit.mockResolvedValue([]); // getInstallation → null
+
+    const result = await listInstallationRepositories(mockDb as any, "company-1");
+
+    expect(result).toEqual([]);
+    expect(mockCreateInstallationAccessToken).not.toHaveBeenCalled();
+    expect(mockOctokit.apps.listReposAccessibleToInstallation).not.toHaveBeenCalled();
+  });
+
+  it("maps the accessible repositories when an installation exists", async () => {
+    mockDb.limit.mockResolvedValue([
+      { id: "inst-1", installationId: "12345", accountLogin: "myorg", suspendedAt: null },
+    ]);
+    mockCreateInstallationAccessToken.mockResolvedValue({ token: "ghs_token" });
+    process.env.GITHUB_APP_ID = "123456";
+    process.env.GITHUB_APP_PRIVATE_KEY_PEM = "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----";
+    mockOctokit.apps.listReposAccessibleToInstallation.mockResolvedValue({
+      data: {
+        repositories: [
+          { name: "r", full_name: "o/r", private: true, html_url: "u" },
+        ],
+      },
+    });
+
+    const result = await listInstallationRepositories(mockDb as any, "company-1");
+
+    expect(result).toEqual([
+      { name: "r", fullName: "o/r", private: true, url: "u" },
+    ]);
+    expect(mockCreateInstallationAccessToken).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "installation", installationId: "12345" }),
     );
   });
 });
