@@ -169,6 +169,40 @@ In `ui/src/__tests__/GitArcLayout.test.ts`, inside the existing `describe("compu
     expect(arc.points[0]![1]).toBe(result.trunkY);
     expect(arc.points[arc.points.length - 1]![1]).toBe(result.trunkY);
   });
+
+  it("open arc path starts on the trunk and ends at an off-trunk stub", () => {
+    // Reuse the open-branch graph: feat/y is unmerged (open).
+    const graph: GitGraphData = {
+      defaultBranch: "main",
+      commits: [
+        mkCommit("c2", ["c1"]),
+        mkCommit("f1", ["c1"]),
+        mkCommit("c1", []),
+      ],
+      branches: [
+        { name: "main", laneIndex: 0, color: "#6470DC", tipSha: "c2" },
+        { name: "feat/y", laneIndex: 1, color: "#4FB67E", tipSha: "f1" },
+      ],
+    };
+    const base: Omit<GitBranchInfo, "name" | "lastCommitSha"> = {
+      isLocal: true, isRemote: true, aheadCount: 0, behindCount: 0,
+      lastCommitMessage: "", lastCommitAt: "2024-01-01T00:00:00Z", lastCommitAuthor: "test",
+      linkedWorkspaceId: null, linkedIssueId: null, linkedIssueIdentifier: null,
+      linkedIssueTitle: null, linkedIssueStatus: null, linkedIssueWorkMode: null,
+      pr: null, overlays: { hasConflicts: false, isDiverged: false, isBehindRemote: false }, tags: [],
+    };
+    const branches: GitBranchInfo[] = [
+      { ...base, name: "main", lastCommitSha: "c2" },
+      { ...base, name: "feat/y", lastCommitSha: "f1" },
+    ];
+    const result = computeArcLayout(graph, branches);
+    const arc = result.arcs.find((a) => a.branchName === "feat/y")!;
+    expect(arc.isOpen).toBe(true);
+    expect(arc.points[0]![1]).toBe(result.trunkY); // starts on trunk
+    // last point is the stub: off the trunk (apex side), not back on trunkY
+    expect(arc.points[arc.points.length - 1]![1]).not.toBe(result.trunkY);
+    expect(arc.points.length).toBeGreaterThanOrEqual(2);
+  });
 ```
 
 - [ ] **Step 5: Run tests**
@@ -272,6 +306,42 @@ export function polylinePointAt(
   return points[points.length - 1]!;
 }
 ```
+
+- [ ] **Step 1b: Unit-test `polylinePointAt` (review decision — critical test gap)**
+
+`polylinePointAt` is the shared sampling primitive the flow pulse AND hit-testing both ride on, so it must be covered. Add to `ui/src/__tests__/GitArcLayout.test.ts` — import it from the draw module at the top of the file: `import { polylinePointAt } from "../components/workspace/git-arc-draw";` then add:
+
+```typescript
+describe("polylinePointAt", () => {
+  const line: Array<[number, number]> = [[0, 0], [10, 0], [10, 10]];
+
+  it("returns the first point at t=0 and last at t=1", () => {
+    expect(polylinePointAt(line, 0)).toEqual([0, 0]);
+    expect(polylinePointAt(line, 1)).toEqual([10, 10]);
+  });
+
+  it("returns the midpoint of total length at t=0.5", () => {
+    // total length 20; halfway = 10 along → end of first segment = [10,0]
+    expect(polylinePointAt(line, 0.5)).toEqual([10, 0]);
+  });
+
+  it("clamps t outside [0,1]", () => {
+    expect(polylinePointAt(line, -1)).toEqual([0, 0]);
+    expect(polylinePointAt(line, 2)).toEqual([10, 10]);
+  });
+
+  it("handles empty, single-point, and zero-length inputs without throwing", () => {
+    expect(polylinePointAt([], 0.5)).toEqual([0, 0]);
+    expect(polylinePointAt([[5, 5]], 0.5)).toEqual([5, 5]);
+    expect(polylinePointAt([[3, 3], [3, 3]], 0.5)).toEqual([3, 3]);
+  });
+});
+```
+
+```bash
+cd ui && npx vitest run src/__tests__/GitArcLayout.test.ts
+```
+Expected: pass (covers the new primitive before it's wired into pulse/hit-test).
 
 - [ ] **Step 2: Rewrite `drawArcLines` to use `points`**
 
@@ -499,7 +569,7 @@ In `GitGraphCanvas.tsx` `redraw`, update the `drawTrunk(...)` call to pass `grap
 
 - [ ] **Step 4: Run the RAF loop whenever the Map is visible (not only for active tasks)**
 
-In `GitGraphCanvas.tsx`, the RAF `useEffect` currently early-returns when `!hasActiveNodes`. Replace the guard so it always animates while the tab is visible:
+In `GitGraphCanvas.tsx`, the RAF `useEffect` currently early-returns when `!hasActiveNodes`. Replace the guard so it always animates while the tab is visible — but throttle to ~30fps (redraw every other rAF tick) so the always-on pulse does not peg a core (review decision A1). Add a frame-skip ref near the other refs: `const frameSkipRef = useRef(0);`
 
 ```typescript
     useEffect(() => {
@@ -508,8 +578,12 @@ In `GitGraphCanvas.tsx`, the RAF `useEffect` currently early-returns when `!hasA
           rafRef.current = null;
           return;
         }
-        animPhaseRef.current += 0.05;
-        redraw();
+        // Throttle to ~30fps: advance + redraw on every other frame.
+        frameSkipRef.current = (frameSkipRef.current + 1) % 2;
+        if (frameSkipRef.current === 0) {
+          animPhaseRef.current += 0.1; // larger step compensates for ~30fps
+          redraw();
+        }
         rafRef.current = requestAnimationFrame(tick);
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -521,6 +595,8 @@ In `GitGraphCanvas.tsx`, the RAF `useEffect` currently early-returns when `!hasA
       };
     }, [redraw]);
 ```
+
+> **Review note (A1):** A separate overlay canvas for the pulse (so the static graph is drawn once and only the pulse layer redraws) is the fully-correct architecture. Deferred as a P3 TODO; the 30fps throttle is the right-sized fix for now.
 
 Also handle resuming after the tab becomes visible again: add a `visibilitychange` listener effect:
 
@@ -734,23 +810,49 @@ git commit -m "fix(git-graph): bound the Map canvas to the viewport so zoom cont
 - Create: `ui/src/components/workspace/GitGraphLegend.tsx`
 - Modify: `ui/src/components/workspace/GitCommandCentre.tsx` (mount the legend over the canvas)
 
-- [ ] **Step 1: Create the legend component**
+- [ ] **Step 1: Extract a shared `STATUS_COLORS` map (review decision C1 — DRY)**
 
-Create `ui/src/components/workspace/GitGraphLegend.tsx`:
+In `git-arc-draw.ts`, add an exported map and rewrite `statusDotColor` to read it, so the canvas and the legend share one source of truth (change a color once, both update):
+
+```typescript
+/** Single source of truth for task-status → color. Used by the canvas
+ * (statusDotColor) and the legend, so they never drift apart. */
+export const STATUS_COLORS = {
+  in_progress: "#4FB67E",
+  in_review: "#D9A938",
+  blocked: "#ef4444",
+  done: "#7E8AA8",
+  cancelled: "#7E8AA8",
+  planning: "#D9A938",
+} as const;
+
+export function statusDotColor(status: string | null, fallback: string): string {
+  if (status && status in STATUS_COLORS) {
+    return STATUS_COLORS[status as keyof typeof STATUS_COLORS];
+  }
+  return fallback;
+}
+```
+
+(This replaces the existing `statusDotColor` if/return chain; behavior is identical.)
+
+- [ ] **Step 2: Create the legend component**
+
+Create `ui/src/components/workspace/GitGraphLegend.tsx` (its status rows read `STATUS_COLORS`, not literals):
 
 ```tsx
 import { useState } from "react";
-import { cn } from "@/lib/utils";
+import { STATUS_COLORS } from "./git-arc-draw";
 
 /** Collapsible legend explaining the Map's glyphs and status colors. */
 export function GitGraphLegend() {
   const [open, setOpen] = useState(true);
 
   const statusRows: Array<{ color: string; label: string }> = [
-    { color: "#4FB67E", label: "In progress" },
-    { color: "#D9A938", label: "In review" },
-    { color: "#ef4444", label: "Blocked" },
-    { color: "#7E8AA8", label: "Done / cancelled" },
+    { color: STATUS_COLORS.in_progress, label: "In progress" },
+    { color: STATUS_COLORS.in_review, label: "In review" },
+    { color: STATUS_COLORS.blocked, label: "Blocked" },
+    { color: STATUS_COLORS.done, label: "Done / cancelled" },
   ];
 
   return (
@@ -793,7 +895,7 @@ export function GitGraphLegend() {
 }
 ```
 
-- [ ] **Step 2: Mount the legend inside the canvas content area**
+- [ ] **Step 3: Mount the legend inside the canvas content area**
 
 In `GitCommandCentre.tsx`, import it and render it as a sibling of `<GitGraphCanvas>` inside the `flex-1 relative …` content div (so it overlays the canvas top-left):
 
@@ -803,22 +905,22 @@ import { GitGraphLegend } from "./GitGraphLegend";
 
 Inside the canvas content `<div className="flex-1 relative overflow-hidden bg-[#0a0a0a] min-h-0">`, add `<GitGraphLegend />` right after the `<GitGraphCanvas … />` element (before the zoom-controls div).
 
-- [ ] **Step 3: TypeScript check**
+- [ ] **Step 4: TypeScript check**
 
 ```bash
 cd ui && npx tsc --noEmit
 ```
-Expected: 0 errors.
+Expected: 0 errors. (The legend's `STATUS_COLORS` import resolves to `git-arc-draw.ts`; `statusDotColor` behavior is unchanged.)
 
-- [ ] **Step 4: Browser verify**
+- [ ] **Step 5: Browser verify**
 
 Load the Map; the legend appears top-left, collapsible. Confirm rows match what's drawn (status dots, trunk vs branch line, merge diamond, branch-tip circle, dashed open-branch stub, CI/PR/conflict badges).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add ui/src/components/workspace/GitGraphLegend.tsx ui/src/components/workspace/GitCommandCentre.tsx
-git commit -m "feat(git-graph): add a collapsible legend to the Map"
+git add ui/src/components/workspace/git-arc-draw.ts ui/src/components/workspace/GitGraphLegend.tsx ui/src/components/workspace/GitCommandCentre.tsx
+git commit -m "feat(git-graph): add a collapsible legend; share STATUS_COLORS with the canvas"
 ```
 
 ---
@@ -833,9 +935,24 @@ git commit -m "feat(git-graph): add a collapsible legend to the Map"
 
 **Why:** `git for-each-ref --format='%(refname:short)' refs/remotes/origin/HEAD` yields the bare remote name `origin` (not `origin/HEAD`), so the existing `if (localName === "HEAD") continue;` does not catch it and `origin` shows up as a branch.
 
-- [ ] **Step 1: Skip the remote symbolic HEAD ref**
+- [ ] **Step 1: Extract an exported `isSkippableRef` predicate (review decision T1)**
 
-In `git.ts`, find:
+So the test exercises the REAL code (not a copy), extract the skip rule into an exported function in `git.ts`. Near the top of `git.ts` (with the other exported helpers), add:
+
+```typescript
+/**
+ * True for refs that are not real branches and must be dropped from the branch
+ * list. `git for-each-ref --format='%(refname:short)' refs/remotes/origin/HEAD`
+ * yields the bare remote name "origin", so the plain "HEAD" check misses it.
+ */
+export function isSkippableRef(refShort: string): boolean {
+  const isRemote = refShort.startsWith("origin/");
+  const localName = isRemote ? refShort.slice("origin/".length) : refShort;
+  return localName === "HEAD" || refShort === "origin" || refShort.endsWith("/HEAD");
+}
+```
+
+Then in the parse loop, find:
 
 ```typescript
     const isRemote = refShort.startsWith("origin/");
@@ -845,18 +962,15 @@ In `git.ts`, find:
     if (localName === "HEAD") continue;
 ```
 
-Replace with:
+Replace with (reuse the exported predicate — single source of truth):
 
 ```typescript
     const isRemote = refShort.startsWith("origin/");
     const localName = isRemote ? refShort.slice("origin/".length) : refShort;
 
-    // Skip remote HEAD pointers in both forms:
-    //  - "refs/remotes/origin/HEAD" → short "origin"  (bare remote name)
-    //  - any "<remote>/HEAD"        → localName "HEAD"
-    if (localName === "HEAD" || refShort === "origin" || refShort.endsWith("/HEAD")) {
-      continue;
-    }
+    // Skip remote HEAD pointers in both forms (origin/HEAD → "HEAD",
+    // refs/remotes/origin/HEAD → bare "origin").
+    if (isSkippableRef(refShort)) continue;
 ```
 
 - [ ] **Step 2: TypeScript check (server)**
@@ -868,17 +982,11 @@ Expected: 0 errors.
 
 - [ ] **Step 3: Add a parse test**
 
-If `server/src/__tests__/` has a git-service parse test, add a case; otherwise create `server/src/__tests__/git-branch-parse.test.ts` testing the skip rule via a small exported helper. Minimal contract test:
+Create `server/src/__tests__/git-branch-parse.test.ts` importing the REAL exported `isSkippableRef` from `git.ts` (no copy — review decision T1):
 
 ```typescript
 import { describe, it, expect } from "vitest";
-
-// Mirrors the skip rule in getBranches' parse loop.
-function isSkippableRef(refShort: string): boolean {
-  const isRemote = refShort.startsWith("origin/");
-  const localName = isRemote ? refShort.slice("origin/".length) : refShort;
-  return localName === "HEAD" || refShort === "origin" || refShort.endsWith("/HEAD");
-}
+import { isSkippableRef } from "../services/git";
 
 describe("branch ref skip rule", () => {
   it("skips the bare remote HEAD symref 'origin'", () => {
@@ -992,58 +1100,127 @@ git commit -m "feat(git-graph): show a '+N more' chip linking to the Pipeline wh
 
 **Why:** `project-git.ts` caches the graph + enrich responses for 25s keyed by `(companyId, projectId)`. Changing a project workspace's `cwd`/`repoUrl` does not clear it, so the Map serves the old repo for up to 25s.
 
-- [ ] **Step 1: Export a cache-invalidation helper**
+- [ ] **Step 1: Create a shared cache module (review decision A2 — service-layer, no service→route import)**
 
-In `project-git.ts`, near the cache maps (`graphCache`, `enrichCache`), add and export:
+Create `server/src/services/project-git-cache.ts` owning the cache maps + invalidation. Both the route and the projects service import from here, so the dependency direction is clean (both depend on a service-layer module; no service→route import, no cycle):
 
 ```typescript
+/**
+ * Process-local cache for the project git graph + enrich responses (25s TTL).
+ * Lives in the service layer so both routes/project-git.ts (writer/reader) and
+ * services/projects.ts (invalidator on workspace change) can import it without
+ * a service→route dependency.
+ */
+export interface GraphCacheEntry<T = unknown> { data: T; expiresAt: number; }
+
+export const GRAPH_CACHE_TTL_MS = 25_000;
+export const ENRICH_CACHE_TTL_MS = 25_000;
+
+export const graphCache = new Map<string, GraphCacheEntry>();
+export const enrichCache = new Map<string, GraphCacheEntry>();
+
+export function projectGitCacheKey(companyId: string, projectId: string): string {
+  return `${companyId}:${projectId}`;
+}
+
 /** Clear cached graph + enrich responses for a project (call on workspace change). */
 export function invalidateProjectGitCache(companyId: string, projectId: string): void {
-  const key = graphCacheKey(companyId, projectId);
+  const key = projectGitCacheKey(companyId, projectId);
   graphCache.delete(key);
   enrichCache.delete(key);
 }
 ```
 
-(If `graphCacheKey` is not module-scoped, reuse the same string-build logic: `` `${companyId}:${projectId}` ``.)
+- [ ] **Step 2: Point `project-git.ts` at the shared module**
 
-- [ ] **Step 2: Call it from the workspace mutations**
-
-In `server/src/services/projects.ts`, import the helper at the top:
+In `project-git.ts`, delete the local `graphCache`/`enrichCache`/TTL/`graphCacheKey` declarations and import them from the new module instead:
 
 ```typescript
-import { invalidateProjectGitCache } from "../routes/project-git";
+import {
+  graphCache,
+  enrichCache,
+  GRAPH_CACHE_TTL_MS,
+  ENRICH_CACHE_TTL_MS,
+  projectGitCacheKey,
+} from "../services/project-git-cache";
 ```
 
-In `createWorkspace`, after the successful transaction returns `created`, add:
+Replace any `graphCacheKey(...)` call sites with `projectGitCacheKey(...)`. The cache get/set logic stays as-is (it now uses the imported maps). Cast the cached `data` to the route's response type at the read site if tsc requires it.
+
+- [ ] **Step 3: Call invalidation from the workspace mutations**
+
+In `server/src/services/projects.ts`, import:
+
+```typescript
+import { invalidateProjectGitCache } from "./project-git-cache";
+```
+
+In `createWorkspace`, after the transaction returns `created`:
 
 ```typescript
       if (created) invalidateProjectGitCache(project.companyId, projectId);
 ```
 
-In `updateWorkspace`, after the transaction returns `updated`, add:
+In `updateWorkspace`, after the transaction returns `updated`:
 
 ```typescript
       if (updated) invalidateProjectGitCache(existing.companyId, projectId);
 ```
 
-(If importing a route into a service creates an undesirable cycle, instead move the two cache `Map`s + `invalidateProjectGitCache` into a tiny new module `server/src/services/project-git-cache.ts` and import it from both `project-git.ts` and `projects.ts`. Prefer the simple import first; only split if tsc/eslint flags a cycle.)
+- [ ] **Step 4: Unit-test the invalidation (review decision — test gap)**
 
-- [ ] **Step 3: TypeScript check (server)**
+Create `server/src/__tests__/project-git-cache.test.ts`:
+
+```typescript
+import { describe, it, expect, beforeEach } from "vitest";
+import {
+  graphCache,
+  enrichCache,
+  projectGitCacheKey,
+  invalidateProjectGitCache,
+} from "../services/project-git-cache";
+
+describe("invalidateProjectGitCache", () => {
+  beforeEach(() => { graphCache.clear(); enrichCache.clear(); });
+
+  it("clears both graph and enrich entries for the project key", () => {
+    const key = projectGitCacheKey("c1", "p1");
+    graphCache.set(key, { data: { ok: true }, expiresAt: Date.now() + 9999 });
+    enrichCache.set(key, { data: { ok: true }, expiresAt: Date.now() + 9999 });
+    invalidateProjectGitCache("c1", "p1");
+    expect(graphCache.has(key)).toBe(false);
+    expect(enrichCache.has(key)).toBe(false);
+  });
+
+  it("does not touch other projects' entries", () => {
+    const keep = projectGitCacheKey("c1", "p2");
+    graphCache.set(keep, { data: 1, expiresAt: Date.now() + 9999 });
+    invalidateProjectGitCache("c1", "p1");
+    expect(graphCache.has(keep)).toBe(true);
+  });
+});
+```
+
+```bash
+cd server && npx vitest run src/__tests__/project-git-cache.test.ts
+```
+Expected: pass.
+
+- [ ] **Step 5: TypeScript check (server)**
 
 ```bash
 cd server && npx tsc --noEmit
 ```
 Expected: 0 errors.
 
-- [ ] **Step 4: Manual verify**
+- [ ] **Step 6: Manual verify**
 
 With the dev server running, PATCH the Engineering workspace `cwd` to a different repo and immediately GET `/api/companies/:cid/projects/:pid/git/graph`; the new repo's `defaultBranch`/branches should appear without waiting ~25s.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add server/src/routes/project-git.ts server/src/services/projects.ts
+git add server/src/services/project-git-cache.ts server/src/routes/project-git.ts server/src/services/projects.ts server/src/__tests__/project-git-cache.test.ts
 git commit -m "fix(git): invalidate the project graph cache when a workspace repo changes"
 ```
 
@@ -1098,4 +1275,45 @@ git commit -m "chore(git-graph): Map readability pass complete"
 
 **Type consistency:** `ArcDefinition.points: Array<[number, number]>` defined in 1.1 and consumed identically by `strokeSmoothPath`/`polylinePointAt` (1.2), `drawFlowPulse`/`hitTestArc` (1.3). `computeHeadFocusTransform` signature in 1.5 matches its call site. `MAX_DEFAULT_BRANCHES` exported in 3.2 matches its toolbar import. `drawTrunk` gains a `defaultBranch` param in 1.4 with the call site updated in the same task.
 
-**Risk notes:** Task 1.1 Step 2 keeps the existing `shaToArcY` population (used by the node-build pass) AND adds the `points` assembly from the same per-commit Y math, so nodes and path agree by construction. The always-on RAF (1.4) increases idle CPU on the Map view; it pauses on `visibilitychange` hidden. The cache-invalidation import direction (3.3) may need the small-module split if a cycle appears.
+**Risk notes:** Task 1.1 Step 2 keeps the existing `shaToArcY` population (used by the node-build pass) AND adds the `points` assembly from the same per-commit Y math, so nodes and path agree by construction. The always-on RAF (1.4) is throttled to ~30fps and pauses on `visibilitychange` hidden (review A1). The cache-invalidation now uses a dedicated service-layer module (review A2), so there is no service→route import.
+
+---
+
+## NOT in scope
+
+- **#3 same-commit / zero-ahead branch stacking** — when several branches sit on one commit (e.g. SeaMaster's active branches all at HEAD), they still render as one card + degenerate stubs. Deferred by agreement; needs a card-stacking design.
+- **Overlay-canvas for the pulse** — the fully-correct way to avoid full-canvas redraw. P3 TODO; the 30fps throttle is the right-sized fix now (review A1).
+- **`hitTestArc` resampling micro-opt** — it calls `polylinePointAt` 24×/arc/mousemove, rebuilding the length array each call. P3; bounded by the 12-arc cap. Could switch to point-to-segment distance later.
+- **Limiting `computeArcLayout` to visible branches** — it builds `points` for all branches even though only ~12 draw. Memoized, not per-frame; deferred.
+
+## What already exists (reused, not rebuilt)
+
+- `closedArcY` / `openArcY` node-Y math — reused to build `points` (no new Y formula).
+- `getLayoutBounds` / `computeFitTransform` — reused; `computeHeadFocusTransform` falls back to them.
+- `statusDotColor` — refactored to read the new shared `STATUS_COLORS` (no behavior change).
+- The 25s graph cache — moved to a shared module, not reinvented.
+- The visual harness — reused as the per-batch verification surface.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | not run (UI readability, not strategy) |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR | 5 issues raised, all resolved into the plan; 0 critical gaps |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | optional — this IS the UI polish work |
+| Outside Voice | `/codex` | Independent 2nd opinion | 0 | — | offered below |
+
+**Decisions resolved (all folded into the plan above):**
+- **A1** — Always-on RAF: throttle to ~30fps + visibility-gate; overlay-canvas deferred (P3).
+- **A2** — Cache invalidation: dedicated `services/project-git-cache.ts` module (no service→route import).
+- **C1** — Legend colors: shared `STATUS_COLORS` map (DRY; no canvas/legend drift).
+- **T1** — Origin filter: exported `isSkippableRef` in `git.ts`, test exercises the real function.
+- **Test adds** — `polylinePointAt` unit tests (critical primitive), open-arc `points` test, `invalidateProjectGitCache` test.
+
+**Test coverage:** pure layout + the new sampling primitive fully covered; canvas drawing verified via the harness + live checklist; server origin filter + cache invalidation unit-tested.
+
+**Failure modes:** no critical gaps (no untested + unhandled + silent path). Catmull-Rom overshoot between sparse points is a visual-only risk, caught by the harness step.
+
+**UNRESOLVED:** none.
+
+**VERDICT:** ENG CLEARED — ready to implement. Outside voice optional; Design Review not needed (the plan is the design polish).
