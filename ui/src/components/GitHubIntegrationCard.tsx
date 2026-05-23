@@ -211,7 +211,7 @@ export function GitHubIntegrationCard() {
             variant="default"
             className="gap-1.5"
             onClick={handleConnectWithGitHub}
-            disabled={installUrlQuery.isLoading}
+            disabled={installUrlQuery.isLoading || installUrlQuery.isError}
           >
             {installUrlQuery.isLoading ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
