@@ -1630,3 +1630,165 @@ git commit -m "chore: final verification — arc layout redesign complete"
 - `ArcDefinition` same — consistent
 - `GitBranchInfo.pr.labels` added in shared type, populated in server, consumed in `drawLabelDots` — consistent
 - `FilterMode` updated in `GitCommandCentre.tsx` and `GitGraphCanvasProps.filter` — consistent
+
+---
+
+## GSTACK REVIEW REPORT
+
+**Reviewed by:** plan-eng-review skill  
+**Date:** 2026-05-23  
+**Branch:** feat/git-command-centre  
+
+### Scope
+
+6 files — within limits. No complexity trigger. No TODOS.md references. Review complete.
+
+---
+
+### D1 — Repo selector pill: dead interactive element [P1] ✅ Resolved
+
+**Location:** Task 5, Step 5 — `GitCommandCentre.tsx` repo selector pill
+
+**Issue:** The pill has `cursor-pointer`, `hover:bg-white/10`, and a `▾` arrow but has no `onClick` handler. Users will click it and nothing will happen. No PATCH route exists on the server for switching the connected repo.
+
+**Decision:** Keep `▾` and hover styling but add a `// TODO` comment before the `onClick` is wired up.
+
+**Required fix before executing Task 5:**
+
+Add a `// TODO` comment and a stub `onClick` (or explicit no-op) to the pill div:
+
+```tsx
+{/* TODO: repo switching requires new server route PATCH /companies/:cid/projects/:pid/workspaces
+    For now this is display-only. The ▾ arrow is a placeholder for the future dropdown. */}
+<div
+  className="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5 border border-[#2e2c2a] cursor-default transition-colors"
+  title="Connected GitHub repository"
+>
+```
+
+Change `cursor-pointer` → `cursor-default` and remove `hover:bg-white/10` until the route is built, so the affordance matches the behaviour. The `▾` can stay as a future-intent marker.
+
+---
+
+### D2 — `computeArcHeight(1)` test description [P2] ✅ Resolved
+
+**Location:** Task 3, Step 1 — `GitArcLayout.test.ts`, line inside `describe("computeArcHeight")`
+
+**Issue:** `it("returns base 60px for 1 commit")` — misleading. `computeArcHeight(1)` returns **68** (BASE 60 + 8×1), not 60. The assertion `toBe(60 + 8 * 1)` is correct; only the English label is wrong.
+
+**Required fix:**
+
+```typescript
+// BEFORE
+it("returns base 60px for 1 commit", () => {
+  expect(computeArcHeight(1)).toBe(60 + 8 * 1); // 68
+
+// AFTER
+it("returns 68px for 1 commit (base 60 + 8×1)", () => {
+  expect(computeArcHeight(1)).toBe(68);
+```
+
+---
+
+### D3 — `getFeatureCommitShas` not directly tested [P2]
+
+**Location:** Task 3, Step 1 — `GitArcLayout.test.ts`
+
+**Issue:** `getFeatureCommitShas` is exported and used as a building block for `findMergePoint`, but has no `describe("getFeatureCommitShas")` block. If it regresses, the only signal is a broken `findMergePoint` test, which is indirect.
+
+**Recommended addition** (can be added at the end of Task 3 Step 1):
+
+```typescript
+describe("getFeatureCommitShas", () => {
+  it("returns only non-trunk commits reachable from feature tip", () => {
+    const graph = makeGraph();
+    const trunkShas = findTrunkShas(graph);
+    const commitMap = new Map(graph.commits.map((c) => [c.sha, c]));
+    const shas = getFeatureCommitShas(commitMap, trunkShas, "f2");
+    expect(shas).toContain("f1");
+    expect(shas).toContain("f2");
+    expect(shas).not.toContain("c1");
+    expect(shas).not.toContain("c2");
+    expect(shas).not.toContain("merge");
+  });
+});
+```
+
+---
+
+### D4 — `repoList[0]` may not be the connected repo [P2]
+
+**Location:** Task 5, Step 5 — `GitCommandCentre.tsx` repo pill label
+
+**Issue:** The pill shows `repoList[0]!.fullName` when `repoList` has entries. But `repoList` is all repos the GitHub App is authorized on — the first entry may not be the repo connected to *this project's workspace*. `graphData.repoUrl` (the git remote) is the accurate source.
+
+**Required fix:** Swap the preference order:
+
+```tsx
+// BEFORE
+{repoList && repoList.length > 0
+  ? repoList[0]!.fullName
+  : graphData.repoUrl
+    ? graphData.repoUrl.replace(/.*github\.com[:/]/, "").replace(/\.git$/, "")
+    : "repo"}
+
+// AFTER
+{graphData.repoUrl
+  ? graphData.repoUrl.replace(/.*github\.com[:/]/, "").replace(/\.git$/, "")
+  : repoList && repoList.length > 0
+    ? repoList[0]!.fullName
+    : "repo"}
+```
+
+---
+
+### P3 Minor — open-arc pulse hardcoded rail length
+
+**Location:** Task 4, Step 5 — `drawFlowPulse`, open-arc animation
+
+```typescript
+dotX = railStartX + railT * 300; // hardcoded 300
+```
+
+The dot travels 300px along the rail regardless of canvas width. On a narrow canvas the dot goes off-screen while animation is still active. Low priority — doesn't affect correctness, only animation polish.
+
+**Suggested fix when time allows:**
+
+```typescript
+const railLen = Math.max(200, canvasRightInLayout - railStartX);
+dotX = railStartX + railT * railLen;
+```
+
+(`canvasRightInLayout` needs to be passed into `drawFlowPulse` — it's already computed in the redraw callback.)
+
+---
+
+### Test Coverage Summary
+
+| Function | Covered | Test count |
+|----------|---------|-----------|
+| `findTrunkShas` | ✅ | 3 |
+| `findBranchPoint` | ✅ | 2 |
+| `findMergePoint` | ✅ | 2 |
+| `getFeatureCommitShas` | ⚠️ indirect only | 0 direct |
+| `computeArcHeight` | ✅ | 3 |
+| `assignArcDirections` | ✅ | 2 |
+| `computeArcLayout` | ✅ (merged case) | 4 |
+| `computeArcLayout` (open branch) | ❌ not tested | 0 |
+
+**Recommended additions** (see D3 above): one direct test for `getFeatureCommitShas`, one integration test for an open (unmerged) branch arc.
+
+---
+
+### Architecture Verdict
+
+The plan is **sound**. The trunk-and-arcs layout module is correctly isolated as a pure function, all D3/canvas code stays in `GitGraphCanvas.tsx`, and the enrichment pipeline correctly rides the existing `/git/enrich` route. First-parent-only traversal for `findTrunkShas` is the critical correctness invariant and is properly implemented.
+
+**Fixes required before execution:**
+1. D1: Change `cursor-pointer` → `cursor-default`, remove `hover:bg-white/10` on repo pill + add TODO comment (Task 5 Step 5)
+2. D2: Fix `it()` description for `computeArcHeight(1)` (Task 3 Step 1)
+3. D3: Add direct `getFeatureCommitShas` test block (Task 3 Step 1)
+4. D4: Invert `repoUrl` / `repoList` preference order in pill label (Task 5 Step 5)
+
+**Can be deferred:**
+- P3: Open-arc pulse rail length (`canvasRightInLayout` pass-through)
