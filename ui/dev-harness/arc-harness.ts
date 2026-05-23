@@ -222,7 +222,7 @@ function render(
       : n.arcBranchName != null && visibleNames.has(n.arcBranchName),
   );
 
-  drawTrunk(ctx, layout.nodes, layout.trunkY, trunkColor);
+  drawTrunk(ctx, layout.nodes, layout.trunkY, trunkColor, graph.defaultBranch);
   drawArcLines(ctx, layout.arcs, visibleNames, canvasRightInLayout, layout.trunkY);
 
   const cardBranchNames = new Set<string>();
