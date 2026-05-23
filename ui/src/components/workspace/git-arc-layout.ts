@@ -216,7 +216,7 @@ function openArcY(
   if (commitX >= railStartX) return apexY;
   const span = railStartX - branchPointX;
   if (span <= 0) return apexY;
-  const t = (commitX - branchPointX) / span;
+  const t = Math.max(0, Math.min(1, (commitX - branchPointX) / span));
   return trunkY + Math.sin(t * Math.PI * 0.5) * (apexY - trunkY);
 }
 
@@ -256,6 +256,8 @@ export function computeArcLayout(
   const remoteOnlyBranches = new Set(
     branches.filter((b) => !b.isLocal && b.isRemote).map((b) => b.name),
   );
+  // NOTE: uses lastCommitSha from GitBranchInfo (enriched list) not tipSha from graph.
+  // These can diverge if data is stale. A missing task badge is the failure mode.
   const taskTipShas = new Set(
     branches.filter((b) => b.linkedIssueId).map((b) => b.lastCommitSha),
   );
@@ -277,8 +279,8 @@ export function computeArcLayout(
     const direction = directions.get(fb.name) ?? "up";
     const isDone = doneBranches.has(fb.name);
 
-    const featureShaSha = getFeatureCommitShas(commitMap, trunkShas, fb.tipSha);
-    const featureShaSet = new Set(featureShaSha);
+    const featureCommitShas = getFeatureCommitShas(commitMap, trunkShas, fb.tipSha);
+    const featureShaSet = new Set(featureCommitShas);
 
     const branchPointSha = findBranchPoint(commitMap, trunkShas, fb.tipSha);
     const branchPointX = commitXMap.get(branchPointSha) ?? PAD_LEFT;
@@ -287,7 +289,7 @@ export function computeArcLayout(
     const mergePointX =
       mergePointSha != null ? (commitXMap.get(mergePointSha) ?? null) : null;
 
-    const arcHeight = computeArcHeight(featureShaSha.length);
+    const arcHeight = computeArcHeight(featureCommitShas.length);
     const apexY = direction === "up" ? TRUNK_Y - arcHeight : TRUNK_Y + arcHeight;
 
     // Rail starts 60px right of branch point for open arcs
@@ -305,7 +307,7 @@ export function computeArcLayout(
     });
 
     // Pre-compute Y for each feature commit
-    for (const sha of featureShaSha) {
+    for (const sha of featureCommitShas) {
       shaToArcBranch.set(sha, fb.name);
       const cx = commitXMap.get(sha) ?? branchPointX;
       let cy: number;
