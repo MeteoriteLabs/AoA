@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -64,6 +64,7 @@ interface GitPanelProps {
 
 const STATUS_POLL_INTERVAL = 10_000; // 10s — server cache is 5s
 const LOG_POLL_INTERVAL = 30_000;
+const PR_POLL_MS = 30_000; // 30s background poll for PR status
 
 const FILE_STATUS_COLORS: Record<string, string> = {
   modified: "text-yellow-400",
@@ -320,7 +321,6 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const workspacePermissions = useWorkspacePermissions(workspace.companyId, workspace.projectId);
-  const lastPrSyncAttemptRef = useRef<string | null>(null);
 
   // ── State ──
   const [createPrOpen, setCreatePrOpen] = useState(false);
@@ -365,16 +365,16 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
       : undefined;
 
   const syncPrMutation = useMutation({
-    mutationFn: (force: boolean) =>
+    mutationFn: ({ force }: { force: boolean; silent?: boolean }) =>
       githubIntegrationApi.syncWorkspacePR(workspace.id, { force }),
-    onSuccess: (result) => {
+    onSuccess: (result, { silent }) => {
       queryClient.invalidateQueries({
         queryKey: queryKeys.executionWorkspaces.detail(workspace.id),
       });
       queryClient.invalidateQueries({
         queryKey: queryKeys.executionWorkspaces.list(workspace.companyId),
       });
-      if (result.pr) {
+      if (!silent && result.pr) {
         pushToast({
           tone: "success",
           title: "GitHub PR synced",
@@ -382,17 +382,24 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
         });
       }
     },
-    onError: (err: Error) => {
-      pushToast({ tone: "warn", title: "GitHub sync failed", body: err.message });
+    onError: (err: Error, { silent }) => {
+      if (!silent) pushToast({ tone: "warn", title: "GitHub sync failed", body: err.message });
     },
   });
 
   useEffect(() => {
     if (!isExpanded || !workspace.repoUrl || !liveBranch) return;
-    const key = `${workspace.id}:${workspace.repoUrl}:${liveBranch}`;
-    if (lastPrSyncAttemptRef.current === key) return;
-    lastPrSyncAttemptRef.current = key;
-    syncPrMutation.mutate(false);
+    // Silent background sync: no toast spam, just keeps workspace.metadata.pr fresh
+    const silentSync = () => syncPrMutation.mutate({ force: false, silent: true });
+    silentSync(); // immediate on expand / key change
+    const id = setInterval(silentSync, PR_POLL_MS);
+    const onFocus = () => silentSync(); // re-sync when user tabs back
+    window.addEventListener("focus", onFocus);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isExpanded, liveBranch, workspace.id, workspace.repoUrl]);
 
   // ── File selection helpers ──
@@ -888,7 +895,7 @@ export function GitPanel({ workspace, issueId, isExpanded = true }: GitPanelProp
             )}
             <DropdownMenuItem
               disabled={!workspace.repoUrl || !liveBranch}
-              onSelect={() => syncPrMutation.mutate(true)}
+              onSelect={() => syncPrMutation.mutate({ force: true })}
             >
               {syncPrMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
