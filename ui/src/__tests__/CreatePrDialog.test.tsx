@@ -13,6 +13,7 @@ const mockSyncWorkspacePR = vi.fn();
 const mockGetCollaborators = vi.fn();
 const mockGetLabels = vi.fn();
 const mockGetMilestones = vi.fn();
+const mockGetBranches = vi.fn();
 const mockPushToast = vi.fn();
 const mockSafety = vi.fn();
 
@@ -27,6 +28,7 @@ vi.mock("../api/github-integration", () => ({
     getCollaborators: (...args: unknown[]) => mockGetCollaborators(...args),
     getLabels: (...args: unknown[]) => mockGetLabels(...args),
     getMilestones: (...args: unknown[]) => mockGetMilestones(...args),
+    getBranches: (...args: unknown[]) => mockGetBranches(...args),
   },
 }));
 
@@ -128,6 +130,7 @@ describe("CreatePrDialog", () => {
     mockGetCollaborators.mockResolvedValue([]);
     mockGetLabels.mockResolvedValue([]);
     mockGetMilestones.mockResolvedValue([]);
+    mockGetBranches.mockResolvedValue([{ name: "main", sha: "abc" }]);
   });
 
   it("prefills title/body from the linked task + base from workspace.baseRef", async () => {
@@ -143,7 +146,11 @@ describe("CreatePrDialog", () => {
       expect(screen.getByTestId("pr-title-input")).toHaveValue("Fix auth bug"),
     );
     expect(screen.getByTestId("pr-body-input")).toHaveValue("Users cannot log in.");
-    expect(screen.getByTestId("pr-base-input")).toHaveValue("main");
+    // Base branch is now a Radix Select trigger (a button), not a text input.
+    // It defaults to workspace.baseRef ?? "main" and renders the value as text.
+    await waitFor(() =>
+      expect(screen.getByTestId("pr-base-input")).toHaveTextContent("main"),
+    );
   });
 
   it("renders head branch as read-only from workspace.branchName", async () => {
@@ -466,6 +473,7 @@ describe("CreatePrDialog — enhanced fields (reviewers / labels / milestone)", 
     mockGetMilestones.mockResolvedValue([
       { number: 1, title: "v1.0", openIssues: 3, dueOn: null },
     ]);
+    mockGetBranches.mockResolvedValue([{ name: "main", sha: "abc" }]);
     mockCreatePR.mockResolvedValue({
       url: "https://github.com/acme/repo/pull/99",
       number: 99,

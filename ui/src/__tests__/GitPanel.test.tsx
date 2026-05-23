@@ -193,16 +193,24 @@ describe("GitPanel", () => {
   });
 
   it("keeps manual GitHub PR refresh available after a sync failure", async () => {
+    // Background sync is silent — a failing background sync no longer toasts.
+    // The manual "Refresh GitHub PR" action stays available and DOES toast on failure.
     mockSyncWorkspacePR.mockRejectedValue(new Error("Repository not found"));
     const user = userEvent.setup();
     renderPanel();
 
-    await waitFor(() => expect(mockPushToast).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "GitHub sync failed" }),
-    ));
     await user.click(await screen.findByRole("button", { name: /open git actions/i }));
 
-    expect(await screen.findByText("Refresh GitHub PR")).not.toHaveAttribute("data-disabled");
+    const refreshItem = await screen.findByText("Refresh GitHub PR");
+    expect(refreshItem.closest('[role="menuitem"]')).not.toHaveAttribute("data-disabled");
+
+    await user.click(refreshItem);
+
+    await waitFor(() =>
+      expect(mockPushToast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "GitHub sync failed" }),
+      ),
+    );
   });
 
   it("renders branch name, base ref, and repository link", async () => {
@@ -336,13 +344,14 @@ describe("GitPanel", () => {
 
     expect(await screen.findByText("#42")).toBeInTheDocument();
     expect(screen.getByText("open")).toBeInTheDocument();
-    // External "View PR #42" link is rendered in place of the Create PR button.
+    // For an open PR, the action row shows the Merge split button plus an
+    // icon-only link to the PR (no visible "View PR #N" text on the link).
     const viewPrLink = screen.getByTestId("pr-link");
     expect(viewPrLink).toHaveAttribute(
       "href",
       "https://github.com/acme/repo/pull/42",
     );
-    expect(viewPrLink).toHaveTextContent("View PR #42");
+    expect(screen.getByTestId("pr-merge-btn")).toBeInTheDocument();
   });
 
   it("labels the header as merged when the pull request is merged", async () => {
@@ -359,7 +368,8 @@ describe("GitPanel", () => {
     });
     renderPanel({ workspace: ws as any });
 
-    expect(await screen.findByTestId("pr-link")).toHaveTextContent("View PR #42");
+    // Merged state renders a purple chip link reading "Merged #42".
+    expect(await screen.findByTestId("pr-link")).toHaveTextContent("Merged #42");
     expect(screen.getByTestId("git-remote-section")).toHaveTextContent("PR #42 merged");
   });
 
@@ -654,11 +664,21 @@ describe("GitPanel", () => {
       mockReopenPr.mockResolvedValue({ success: true, prState: "open", prUrl: "https://github.com/myorg/myrepo/pull/42" });
     });
 
-    it("shows Merge, Close PR, and Request Review buttons when PR is open", async () => {
+    it("shows Merge, Close PR, and Request Review actions when PR is open", async () => {
+      const user = userEvent.setup();
       renderPanel({ workspace: openPrWorkspace as any });
-      expect(await screen.findByRole("button", { name: /merge/i })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /close pr/i })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /request review/i })).toBeInTheDocument();
+
+      // Merge is a direct split-button.
+      expect(await screen.findByTestId("pr-merge-btn")).toBeInTheDocument();
+
+      // Close PR and Request Review are now menuitems inside the merge dropdown.
+      await user.click(screen.getByTestId("pr-merge-dropdown-trigger"));
+      expect(
+        await screen.findByRole("menuitem", { name: /close pr/i }),
+      ).toBeInTheDocument();
+      expect(
+        await screen.findByRole("menuitem", { name: /request review/i }),
+      ).toBeInTheDocument();
     });
 
     it("shows Reopen button when PR is closed, hides Merge and Close", async () => {
@@ -668,27 +688,40 @@ describe("GitPanel", () => {
       expect(screen.queryByRole("button", { name: /close pr/i })).not.toBeInTheDocument();
     });
 
-    it("calls mergePr with squash method on Squash and Merge click", async () => {
+    it("calls mergePr with squash method on the primary Merge click", async () => {
       const user = userEvent.setup();
       renderPanel({ workspace: openPrWorkspace as any });
 
-      // Open merge dropdown
-      const mergeBtn = await screen.findByRole("button", { name: /merge/i });
-      await user.click(mergeBtn);
-
-      // Click squash option
-      const squashOption = await screen.findByRole("menuitem", { name: /squash/i });
-      await user.click(squashOption);
+      // The primary Merge button squashes directly (squash is the default).
+      // Use the testid — /merge/i is ambiguous now (the chevron is labelled
+      // "More merge options").
+      await user.click(await screen.findByTestId("pr-merge-btn"));
 
       await waitFor(() =>
         expect(mockMergePr).toHaveBeenCalledWith("ws-1", { mergeMethod: "squash" }),
       );
     });
 
+    it("calls mergePr with rebase method from the merge dropdown", async () => {
+      const user = userEvent.setup();
+      renderPanel({ workspace: openPrWorkspace as any });
+
+      await user.click(await screen.findByTestId("pr-merge-dropdown-trigger"));
+      await user.click(
+        await screen.findByRole("menuitem", { name: /rebase and merge/i }),
+      );
+
+      await waitFor(() =>
+        expect(mockMergePr).toHaveBeenCalledWith("ws-1", { mergeMethod: "rebase" }),
+      );
+    });
+
     it("calls closePr on Close PR click", async () => {
       const user = userEvent.setup();
       renderPanel({ workspace: openPrWorkspace as any });
-      await user.click(await screen.findByRole("button", { name: /close pr/i }));
+      // Close PR is now a menuitem inside the merge dropdown.
+      await user.click(await screen.findByTestId("pr-merge-dropdown-trigger"));
+      await user.click(await screen.findByRole("menuitem", { name: /close pr/i }));
       await waitFor(() => expect(mockClosePr).toHaveBeenCalledWith("ws-1"));
     });
 
