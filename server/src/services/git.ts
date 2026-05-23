@@ -590,6 +590,17 @@ async function resolveDefaultBranch(gitRoot: string): Promise<string> {
 }
 
 /**
+ * True for refs that are not real branches and must be dropped from the branch
+ * list. `git for-each-ref --format='%(refname:short)' refs/remotes/origin/HEAD`
+ * yields the bare remote name "origin", so the plain "HEAD" check misses it.
+ */
+export function isSkippableRef(refShort: string): boolean {
+  const isRemote = refShort.startsWith("origin/");
+  const localName = isRemote ? refShort.slice("origin/".length) : refShort;
+  return localName === "HEAD" || refShort === "origin" || refShort.endsWith("/HEAD");
+}
+
+/**
  * List all local + remote branches with ahead/behind counts, last-commit
  * metadata, and version tags. Batches tag lookup into a single git call.
  */
@@ -648,8 +659,9 @@ export async function getBranches(gitRoot: string): Promise<LocalBranchInfo[]> {
     const isRemote = refShort.startsWith("origin/");
     const localName = isRemote ? refShort.slice("origin/".length) : refShort;
 
-    // Skip remote HEAD pointer
-    if (localName === "HEAD") continue;
+    // Skip remote HEAD pointers in both forms (origin/HEAD → "HEAD",
+    // refs/remotes/origin/HEAD → bare "origin").
+    if (isSkippableRef(refShort)) continue;
 
     const [aheadStr, behindStr] = (aheadBehind ?? "0 0").split(" ");
     const ahead = parseInt(aheadStr ?? "0", 10) || 0;
