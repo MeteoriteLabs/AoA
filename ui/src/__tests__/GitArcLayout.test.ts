@@ -10,6 +10,7 @@ import {
   computeArcLayout,
   getLayoutBounds,
   computeFitTransform,
+  computeHeadFocusTransform,
   type LayoutBounds,
 } from "../components/workspace/git-arc-layout";
 import { polylinePointAt } from "../components/workspace/git-arc-draw";
@@ -478,6 +479,31 @@ describe("computeFitTransform", () => {
     const t = computeFitTransform(tallBounds, 1000, 364);
     // (364 - 64) / 300 = 1.0 → k clamps to 1.0
     expect(t.k).toBeCloseTo(1.0, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeHeadFocusTransform
+// ---------------------------------------------------------------------------
+
+describe("computeHeadFocusTransform", () => {
+  it("positions the default-branch tip near 70% of viewport width", () => {
+    const graph = makeGraph();
+    const branches = makeBranches();
+    const layout = computeArcLayout(graph, branches);
+    const head = layout.nodes.find((n) => n.isDefault && n.branchName === "main")!;
+    const t = computeHeadFocusTransform(layout, "main", 1000, 600);
+    const headScreenX = head.x * t.k + t.x;
+    expect(headScreenX).toBeCloseTo(700, 0);
+  });
+
+  it("falls back to a finite transform when there is no default tip", () => {
+    const graph = makeGraph();
+    const branches = makeBranches();
+    const layout = computeArcLayout(graph, branches);
+    const t = computeHeadFocusTransform(layout, "does-not-exist", 1000, 600);
+    expect(Number.isFinite(t.k)).toBe(true);
+    expect(Number.isFinite(t.x)).toBe(true);
   });
 });
 

@@ -457,6 +457,35 @@ export function getLayoutBounds(
 }
 
 /**
+ * Initial transform that opens the Map zoomed near HEAD: scales on height so
+ * arcs are readable, then positions the default-branch tip at ~70% of the
+ * viewport width so HEAD + nearby active branches are prominent and older
+ * history pans off to the left. Falls back to computeFitTransform when there
+ * is no default tip.
+ */
+export function computeHeadFocusTransform(
+  layout: ArcLayoutResult,
+  defaultBranch: string,
+  viewportW: number,
+  viewportH: number,
+  pad = 32,
+): { k: number; x: number; y: number } {
+  const headNode = layout.nodes.find(
+    (n) => n.isDefault && n.branchName === defaultBranch,
+  );
+  if (!headNode || viewportW <= 0 || viewportH <= 0) {
+    return computeFitTransform(getLayoutBounds(layout), viewportW, viewportH, pad);
+  }
+  // Height-fit so the trunk ± arc heights are visible.
+  const contentH = MAX_ARC_HEIGHT * 2 + 160; // trunk band + cards/labels
+  const k = Math.max(0.4, Math.min((viewportH - 2 * pad) / contentH, 1.2));
+  // Put HEAD at 70% width; center the trunk vertically.
+  const x = viewportW * 0.7 - headNode.x * k;
+  const y = viewportH / 2 - layout.trunkY * k;
+  return { k, x, y };
+}
+
+/**
  * Fit-to-view transform for the canvas.
  *
  * Scales to fit the content VERTICALLY (so arcs keep a readable height — never

@@ -22,8 +22,7 @@ import type { GitBranchInfo, GitGraphData } from "@armyofagents/shared";
 import type { HoveredNode } from "./GitHoverCard";
 import {
   computeArcLayout,
-  getLayoutBounds,
-  computeFitTransform,
+  computeHeadFocusTransform,
   type ArcCommitLayout,
   type ArcDefinition,
 } from "./git-arc-layout";
@@ -193,11 +192,6 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
     // Always-current layout ref — prevents stale closure in ResizeObserver
     const layoutRef = useRef(layout);
     layoutRef.current = layout;
-
-    // Always-current visible-names ref — used by the fit-to-view bounds so it
-    // measures only shown branches (not hundreds of hidden/off-window arcs).
-    const visibleNamesRef = useRef(visibleNames);
-    visibleNamesRef.current = visibleNames;
 
     // Reset initial-pan flag whenever graph data changes
     useEffect(() => {
@@ -377,8 +371,12 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
         // center / right-align horizontally so the trunk AND branch arcs are
         // visible. Replaces the old pin-to-right pan that pushed arcs off-screen.
         if (!initialPanApplied.current && zoomRef.current && w > 0 && h > 0) {
-          const bounds = getLayoutBounds(layoutRef.current, visibleNamesRef.current);
-          const fit = computeFitTransform(bounds, w, h);
+          const fit = computeHeadFocusTransform(
+            layoutRef.current,
+            graph.defaultBranch,
+            w,
+            h,
+          );
           const t = d3.zoomIdentity.translate(fit.x, fit.y).scale(fit.k);
           d3.select(canvas).call(zoomRef.current.transform, t);
           initialPanApplied.current = true;
