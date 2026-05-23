@@ -19,6 +19,9 @@ const BASE_ARC_HEIGHT = 60;          // minimum arc height (px)
 const ARC_HEIGHT_PER_COMMIT = 8;     // px added per extra feature commit
 const MAX_ARC_HEIGHT = 120;          // maximum arc height (px)
 
+/** How far an open branch's line extends past its tip before the dashed stub. */
+export const OPEN_ARC_STUB = 40;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -64,6 +67,13 @@ export interface ArcDefinition {
   isOpen: boolean;
   color: string;
   isDone: boolean;
+  /**
+   * Ordered path points in layout space: branch point on the trunk → each
+   * feature commit node (ascending x) → merge point on the trunk (closed) or
+   * the tip node + a short stub (open). The line is stroked through these, so
+   * commit dots always lie on the line. Length >= 2.
+   */
+  points: Array<[number, number]>;
 }
 
 export interface ArcLayoutResult {
@@ -295,18 +305,9 @@ export function computeArcLayout(
     // Rail starts 60px right of branch point for open arcs
     const railStartX = branchPointX + 60;
 
-    arcs.push({
-      branchName: fb.name,
-      direction,
-      branchPointX,
-      mergePointX,
-      apexY,
-      isOpen: mergePointX == null,
-      color,
-      isDone,
-    });
-
-    // Pre-compute Y for each feature commit
+    // Compute each feature commit's (x, y) ONCE: record Y by sha (for the
+    // node-build pass) and collect the ordered node points (for the arc path).
+    const featureNodeXY: Array<[number, number]> = [];
     for (const sha of featureCommitShas) {
       shaToArcBranch.set(sha, fb.name);
       const cx = commitXMap.get(sha) ?? branchPointX;
@@ -318,7 +319,35 @@ export function computeArcLayout(
         cy = openArcY(cx, branchPointX, railStartX, TRUNK_Y, apexY);
       }
       shaToArcY.set(sha, cy);
+      featureNodeXY.push([cx, cy]);
     }
+    featureNodeXY.sort((a, b) => a[0] - b[0]); // oldest → newest along the arc
+
+    // Assemble the ordered path: branch point → feature nodes → end
+    const points: Array<[number, number]> = [[branchPointX, TRUNK_Y]];
+    for (const xy of featureNodeXY) points.push(xy);
+    if (mergePointX != null && mergePointX > branchPointX) {
+      points.push([mergePointX, TRUNK_Y]); // closed arc returns to trunk
+    } else if (featureNodeXY.length > 0) {
+      // open arc: extend a short flat run past the tip (dashed at draw time)
+      const [tipX, tipY] = featureNodeXY[featureNodeXY.length - 1]!;
+      points.push([tipX + OPEN_ARC_STUB, tipY]);
+    } else {
+      // degenerate (no feature commits): a tiny stub off the branch point
+      points.push([branchPointX + OPEN_ARC_STUB, apexY]);
+    }
+
+    arcs.push({
+      branchName: fb.name,
+      direction,
+      branchPointX,
+      mergePointX,
+      apexY,
+      isOpen: mergePointX == null,
+      color,
+      isDone,
+      points,
+    });
   }
 
   // ── Build nodes ───────────────────────────────────────────────────────────

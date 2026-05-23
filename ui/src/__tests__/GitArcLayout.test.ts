@@ -315,6 +315,60 @@ describe("computeArcLayout", () => {
     expect(result.arcs[0]!.isOpen).toBe(true);
     expect(result.arcs[0]!.mergePointX).toBeNull();
   });
+
+  it("each feature commit node lies on its arc's points path", () => {
+    const graph = makeGraph();
+    const branches = makeBranches();
+    const result = computeArcLayout(graph, branches);
+    const arc = result.arcs.find((a) => a.branchName === "feat/x")!;
+    const f1 = result.nodes.find((n) => n.sha === "f1")!;
+    const f2 = result.nodes.find((n) => n.sha === "f2")!;
+    const onPath = (x: number, y: number) =>
+      arc.points.some((p) => Math.abs(p[0] - x) < 0.001 && Math.abs(p[1] - y) < 0.001);
+    expect(onPath(f1.x, f1.y)).toBe(true);
+    expect(onPath(f2.x, f2.y)).toBe(true);
+  });
+
+  it("closed arc path starts and ends on the trunk", () => {
+    const graph = makeGraph();
+    const branches = makeBranches();
+    const result = computeArcLayout(graph, branches);
+    const arc = result.arcs.find((a) => a.branchName === "feat/x")!;
+    expect(arc.points[0]![1]).toBe(result.trunkY);
+    expect(arc.points[arc.points.length - 1]![1]).toBe(result.trunkY);
+  });
+
+  it("open arc path starts on the trunk and ends at an off-trunk stub", () => {
+    const graph: GitGraphData = {
+      defaultBranch: "main",
+      commits: [
+        mkCommit("c2", ["c1"]),
+        mkCommit("f1", ["c1"]),
+        mkCommit("c1", []),
+      ],
+      branches: [
+        { name: "main", laneIndex: 0, color: "#6470DC", tipSha: "c2" },
+        { name: "feat/y", laneIndex: 1, color: "#4FB67E", tipSha: "f1" },
+      ],
+    };
+    const base: Omit<GitBranchInfo, "name" | "lastCommitSha"> = {
+      isLocal: true, isRemote: true, aheadCount: 0, behindCount: 0,
+      lastCommitMessage: "", lastCommitAt: "2024-01-01T00:00:00Z", lastCommitAuthor: "test",
+      linkedWorkspaceId: null, linkedIssueId: null, linkedIssueIdentifier: null,
+      linkedIssueTitle: null, linkedIssueStatus: null, linkedIssueWorkMode: null,
+      pr: null, overlays: { hasConflicts: false, isDiverged: false, isBehindRemote: false }, tags: [],
+    };
+    const branches: GitBranchInfo[] = [
+      { ...base, name: "main", lastCommitSha: "c2" },
+      { ...base, name: "feat/y", lastCommitSha: "f1" },
+    ];
+    const result = computeArcLayout(graph, branches);
+    const arc = result.arcs.find((a) => a.branchName === "feat/y")!;
+    expect(arc.isOpen).toBe(true);
+    expect(arc.points[0]![1]).toBe(result.trunkY);
+    expect(arc.points[arc.points.length - 1]![1]).not.toBe(result.trunkY);
+    expect(arc.points.length).toBeGreaterThanOrEqual(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
