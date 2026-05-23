@@ -21,9 +21,10 @@ import type { GitBranchInfo, GitGraphData } from "@armyofagents/shared";
 import type { HoveredNode } from "./GitHoverCard";
 import {
   computeArcLayout,
+  getLayoutBounds,
+  computeFitTransform,
   type ArcCommitLayout,
   type ArcDefinition,
-  PAD_LEFT,
 } from "./git-arc-layout";
 import {
   COMMIT_R,
@@ -190,9 +191,22 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       return m;
     }, [branches]);
 
-    // Filter branches
+    // Filter branches.
+    // Default ("all") = ACTIVE view: the trunk plus task branches that are not
+    // done/cancelled. Done/cancelled branches and git-only branches (no linked
+    // task) are hidden by default — they're reachable via the "Merged" chip and
+    // the Pipeline tab. This keeps the Map readable on repos with many branches
+    // (e.g. 33 branches = 14 done + 14 git-only + 5 active → only 5 arcs shown).
     const visibleBranches = useMemo(() => {
-      if (filter === "all") return branches;
+      if (filter === "all") {
+        return branches.filter(
+          (b) =>
+            b.name === graph.defaultBranch ||
+            (b.linkedIssueId != null &&
+              b.linkedIssueStatus !== "done" &&
+              b.linkedIssueStatus !== "cancelled"),
+        );
+      }
       if (filter === "running") return branches.filter((b) => b.linkedIssueStatus === "in_progress");
       if (filter === "blocked") return branches.filter((b) => b.linkedIssueStatus === "blocked");
       if (filter === "prs")     return branches.filter((b) => !!b.pr);
@@ -200,7 +214,7 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
         (b) => b.linkedIssueStatus === "done" || b.linkedIssueStatus === "cancelled",
       );
       return branches;
-    }, [branches, filter]);
+    }, [branches, filter, graph.defaultBranch]);
 
     const visibleNames = useMemo(() => {
       const names = new Set(visibleBranches.map((b) => b.name));
@@ -300,7 +314,10 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
         );
       }
 
-      // 4. Commit nodes + task labels + badges + label dots
+      // 4. Commit nodes + task labels + badges + label dots.
+      // Track which branches render a card so arc labels can skip them (the
+      // card already shows the identifier + title — drawing both collides).
+      const cardBranchNames = new Set<string>();
       for (const node of visibleNodes) {
         const branchStatus =
           node.branchName != null
@@ -315,6 +332,7 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
             drawCardLabel(ctx, node, branch);
             drawCardBadges(ctx, node, branch);
             drawLabelDots(ctx, node, branch);
+            if (node.arcBranchName) cardBranchNames.add(node.arcBranchName);
           }
         }
       }
@@ -328,8 +346,9 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       const defaultTip = visibleNodes.find((n) => n.isDefault && n.branchName != null);
       if (defaultTip) drawHeadLabel(ctx, defaultTip);
 
-      // 7. Arc labels (branch name near apex)
-      drawArcLabels(ctx, layout.arcs, visibleNames);
+      // 7. Arc labels (branch name near apex) — only for plain branches that
+      // don't already have a task card.
+      drawArcLabels(ctx, layout.arcs, visibleNames, cardBranchNames);
 
       ctx.restore();
     }, [layout, visibleNames, branchByName, taskBranchByTipSha, graph.defaultBranch, graph.branches, hasActiveNodes]);
@@ -380,10 +399,13 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
         canvas.style.width = `${w}px`;
         canvas.style.height = `${h}px`;
 
-        const totalWidth = layoutRef.current.totalWidth;
-        if (!initialPanApplied.current && zoomRef.current && w > 0 && totalWidth > w) {
-          const initialX = w - totalWidth - PAD_LEFT;
-          const t = d3.zoomIdentity.translate(initialX, 0);
+        // Initial fit-to-view: scale to fit vertically (arcs stay readable) and
+        // center / right-align horizontally so the trunk AND branch arcs are
+        // visible. Replaces the old pin-to-right pan that pushed arcs off-screen.
+        if (!initialPanApplied.current && zoomRef.current && w > 0 && h > 0) {
+          const bounds = getLayoutBounds(layoutRef.current);
+          const fit = computeFitTransform(bounds, w, h);
+          const t = d3.zoomIdentity.translate(fit.x, fit.y).scale(fit.k);
           d3.select(canvas).call(zoomRef.current.transform, t);
           initialPanApplied.current = true;
         }

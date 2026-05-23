@@ -33,7 +33,7 @@ export function drawCommitNode(
   animPhase: number,
   branchStatus: string | null,
 ) {
-  const doneAlpha = node.isDone ? 0.25 : 1;
+  const doneAlpha = node.isDone ? 0.45 : 1;
 
   if (node.isTaskTip) {
     const cardX = node.x - CARD_W / 2;
@@ -166,7 +166,7 @@ export function drawCardLabel(
   branch: GitBranchInfo,
 ) {
   ctx.save();
-  ctx.globalAlpha = node.isDone ? 0.25 : 1;
+  ctx.globalAlpha = node.isDone ? 0.45 : 1;
 
   const baseX = node.x - CARD_W / 2;
   const baseY = node.y + CARD_H / 2;
@@ -335,7 +335,7 @@ export function drawArcLines(
     ctx.save();
     ctx.strokeStyle = arc.color;
     ctx.lineWidth = 2;
-    ctx.globalAlpha = arc.isDone ? 0.15 : 0.7;
+    ctx.globalAlpha = arc.isDone ? 0.4 : 0.7;
     ctx.setLineDash([]);
 
     if (!arc.isOpen && arc.mergePointX != null) {
@@ -388,27 +388,59 @@ export function drawArcLabels(
   ctx: CanvasRenderingContext2D,
   arcs: ArcDefinition[],
   visibleNames: Set<string>,
+  /**
+   * Branch names that already render a task card. Those cards show the task
+   * identifier + title, so drawing the arc name label too just collides with
+   * the card. Only plain (no-task) branches get an arc name label.
+   */
+  cardBranchNames: Set<string>,
 ) {
   ctx.save();
   ctx.font = `9px "Courier New", monospace`;
 
+  // Track placed label rects (in layout space) to avoid two plain-branch
+  // labels landing on the same spot. Simple vertical nudge on collision.
+  const placed: Array<{ x: number; y: number; w: number }> = [];
+
   for (const arc of arcs) {
     if (!visibleNames.has(arc.branchName)) continue;
     if (arc.isDone) continue; // labels only for active arcs
+    if (cardBranchNames.has(arc.branchName)) continue; // card already labels it
 
     const labelX =
       arc.isOpen || arc.mergePointX == null
         ? arc.branchPointX + 80
         : (arc.branchPointX + arc.mergePointX) / 2;
-    const labelY = arc.direction === "up" ? arc.apexY - 8 : arc.apexY + 14;
+    const baseY = arc.direction === "up" ? arc.apexY - 8 : arc.apexY + 14;
+
+    const name =
+      arc.branchName.length > 18
+        ? arc.branchName.slice(0, 17) + "…"
+        : arc.branchName;
+    const w = ctx.measureText(name).width;
+    const drawX = labelX - w / 2;
+
+    // Nudge vertically if this label would overlap an already-placed one.
+    let labelY = baseY;
+    const step = arc.direction === "up" ? -11 : 11;
+    let guard = 0;
+    while (
+      guard < 6 &&
+      placed.some(
+        (p) =>
+          Math.abs(p.y - labelY) < 10 &&
+          drawX < p.x + p.w + 4 &&
+          drawX + w > p.x - 4,
+      )
+    ) {
+      labelY += step;
+      guard++;
+    }
+    placed.push({ x: drawX, y: labelY, w });
 
     ctx.globalAlpha = 0.7;
     ctx.fillStyle = arc.color;
-    const name =
-      arc.branchName.length > 22
-        ? arc.branchName.slice(0, 21) + "…"
-        : arc.branchName;
-    ctx.fillText(name, labelX - ctx.measureText(name).width / 2, labelY);
+    ctx.fillText(name, drawX, labelY);
   }
 
   ctx.restore();

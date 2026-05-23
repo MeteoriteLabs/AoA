@@ -365,3 +365,91 @@ export function computeArcLayout(
 
   return { nodes, arcs, trunkY: TRUNK_Y, totalWidth, totalHeight };
 }
+
+// ---------------------------------------------------------------------------
+// Content bounds — used to fit the whole graph into the viewport on load
+// ---------------------------------------------------------------------------
+
+export interface LayoutBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+/**
+ * Bounding box of all drawn content (commit nodes + arc apexes), padded for
+ * cards, the labels drawn below cards, and badges drawn to the right.
+ * Used by the canvas to compute an initial fit-to-view transform so the trunk
+ * AND the branch arcs are both visible (instead of arcs clipping off-screen).
+ *
+ * Returns a sensible default box when the layout is empty.
+ */
+export function getLayoutBounds(layout: ArcLayoutResult): LayoutBounds {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const n of layout.nodes) {
+    if (n.x < minX) minX = n.x;
+    if (n.x > maxX) maxX = n.x;
+    if (n.y < minY) minY = n.y;
+    if (n.y > maxY) maxY = n.y;
+  }
+  for (const a of layout.arcs) {
+    if (a.apexY < minY) minY = a.apexY;
+    if (a.apexY > maxY) maxY = a.apexY;
+  }
+  if (!isFinite(minX)) {
+    return { minX: 0, maxX: layout.totalWidth, minY: 0, maxY: layout.totalHeight };
+  }
+  // Pad for card width/height, the 2 label lines + dots below cards, and badges.
+  return {
+    minX: minX - 40,
+    maxX: maxX + 150,
+    minY: minY - 36,
+    maxY: maxY + 64,
+  };
+}
+
+/**
+ * Fit-to-view transform for the canvas.
+ *
+ * Scales to fit the content VERTICALLY (so arcs keep a readable height — never
+ * crushed to fit a long trunk's width), then:
+ *   - centers horizontally if the content fits, otherwise
+ *   - right-aligns so the newest commits + HEAD + active arcs are visible and
+ *     older history pans off the left edge.
+ *
+ * Returns a d3-style transform { k, x, y } where screenPoint = k*point + (x,y).
+ */
+export function computeFitTransform(
+  bounds: LayoutBounds,
+  viewportW: number,
+  viewportH: number,
+  pad = 32,
+): { k: number; x: number; y: number } {
+  const bw = bounds.maxX - bounds.minX;
+  const bh = bounds.maxY - bounds.minY;
+  if (bw <= 0 || bh <= 0 || viewportW <= 0 || viewportH <= 0) {
+    return { k: 1, x: pad, y: pad };
+  }
+
+  // Scale on HEIGHT so arcs stay readable; clamp to a sane zoom range.
+  const kFitHeight = (viewportH - 2 * pad) / bh;
+  const k = Math.max(0.2, Math.min(kFitHeight, 1.4));
+
+  const contentW = bw * k;
+  let x: number;
+  if (contentW <= viewportW - 2 * pad) {
+    // Fits horizontally → center.
+    x = pad - bounds.minX * k + (viewportW - 2 * pad - contentW) / 2;
+  } else {
+    // Too wide → right-align (show newest commits + HEAD; history pans left).
+    x = viewportW - pad - bounds.maxX * k;
+  }
+
+  const contentH = bh * k;
+  const y = pad - bounds.minY * k + (viewportH - 2 * pad - contentH) / 2;
+  return { k, x, y };
+}

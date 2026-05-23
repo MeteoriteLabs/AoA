@@ -8,6 +8,9 @@ import {
   computeArcHeight,
   assignArcDirections,
   computeArcLayout,
+  getLayoutBounds,
+  computeFitTransform,
+  type LayoutBounds,
 } from "../components/workspace/git-arc-layout";
 
 // ---------------------------------------------------------------------------
@@ -311,5 +314,101 @@ describe("computeArcLayout", () => {
     expect(result.arcs).toHaveLength(1);
     expect(result.arcs[0]!.isOpen).toBe(true);
     expect(result.arcs[0]!.mergePointX).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getLayoutBounds
+// ---------------------------------------------------------------------------
+
+describe("getLayoutBounds", () => {
+  it("covers all node X positions plus right-side padding for cards/badges", () => {
+    const graph = makeGraph();
+    const branches = makeBranches();
+    const layout = computeArcLayout(graph, branches);
+    const b = getLayoutBounds(layout);
+    const xs = layout.nodes.map((n) => n.x);
+    // minX is padded left of the leftmost node; maxX padded well right of the
+    // rightmost node (room for card + badges + label).
+    expect(b.minX).toBeLessThan(Math.min(...xs));
+    expect(b.maxX).toBeGreaterThan(Math.max(...xs) + 100);
+  });
+
+  it("vertical bounds span above and below the trunk (arcs go both ways)", () => {
+    const graph = makeGraph();
+    const branches = makeBranches();
+    const layout = computeArcLayout(graph, branches);
+    const b = getLayoutBounds(layout);
+    expect(b.minY).toBeLessThan(layout.trunkY);
+    expect(b.maxY).toBeGreaterThan(layout.trunkY);
+  });
+
+  it("falls back to totalWidth/Height for an empty layout", () => {
+    const empty: GitGraphData = {
+      defaultBranch: "main",
+      commits: [],
+      branches: [],
+    };
+    const layout = computeArcLayout(empty, []);
+    const b = getLayoutBounds(layout);
+    expect(b.minX).toBe(0);
+    expect(b.maxX).toBe(layout.totalWidth);
+    expect(b.minY).toBe(0);
+    expect(b.maxY).toBe(layout.totalHeight);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeFitTransform
+// ---------------------------------------------------------------------------
+
+describe("computeFitTransform", () => {
+  const tallBounds: LayoutBounds = { minX: 0, maxX: 200, minY: 0, maxY: 300 };
+
+  it("centers horizontally when content fits the viewport width", () => {
+    // Wide viewport, narrow content → should center, not right-align.
+    const t = computeFitTransform({ minX: 0, maxX: 200, minY: 0, maxY: 200 }, 1000, 400);
+    // Content width at scale k must be centered: left gap == right gap.
+    const k = t.k;
+    const contentW = 200 * k;
+    const leftGap = t.x; // minX is 0, pad cancels into centering
+    const rightGap = 1000 - (t.x + contentW);
+    expect(Math.abs(leftGap - rightGap)).toBeLessThan(1);
+  });
+
+  it("right-aligns when content is wider than the viewport", () => {
+    // Very wide content, narrow viewport → right edge of content near viewport
+    // right edge (minus pad), so newest commits + HEAD stay visible.
+    const wide: LayoutBounds = { minX: 0, maxX: 5000, minY: 0, maxY: 300 };
+    const vw = 800;
+    const pad = 32;
+    const t = computeFitTransform(wide, vw, 400, pad);
+    const rightEdgeOfContent = t.x + wide.maxX * t.k;
+    expect(rightEdgeOfContent).toBeCloseTo(vw - pad, 5);
+  });
+
+  it("scales on height so arcs keep a readable height (clamped ≤ 1.4)", () => {
+    // Short content in a tall viewport would over-zoom without the clamp.
+    const t = computeFitTransform({ minX: 0, maxX: 100, minY: 0, maxY: 50 }, 1000, 1000);
+    expect(t.k).toBeLessThanOrEqual(1.4);
+    expect(t.k).toBeGreaterThan(0);
+  });
+
+  it("never scales below the 0.2 floor", () => {
+    const t = computeFitTransform({ minX: 0, maxX: 100, minY: 0, maxY: 100000 }, 800, 400);
+    expect(t.k).toBeGreaterThanOrEqual(0.2);
+  });
+
+  it("returns a safe default for a degenerate (zero-size) box", () => {
+    const t = computeFitTransform({ minX: 0, maxX: 0, minY: 0, maxY: 0 }, 800, 400);
+    expect(Number.isFinite(t.k)).toBe(true);
+    expect(Number.isFinite(t.x)).toBe(true);
+    expect(Number.isFinite(t.y)).toBe(true);
+  });
+
+  it("uses the tall-bounds height to drive scale", () => {
+    const t = computeFitTransform(tallBounds, 1000, 364);
+    // (364 - 64) / 300 = 1.0 → k clamps to 1.0
+    expect(t.k).toBeCloseTo(1.0, 5);
   });
 });
