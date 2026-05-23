@@ -627,6 +627,7 @@ function hitTestArc(
   cy: number,
   trunkY: number,
   threshold = 8,
+  railExtentX = 400,
 ): ArcDefinition | null {
   let best: ArcDefinition | null = null;
   let bestDist = threshold;
@@ -674,7 +675,8 @@ function hitTestArc(
           ]);
         } else {
           const railT = (t - 0.5) * 2;
-          points.push([railStartX + railT * 200, arc.apexY]);
+          const railLen = Math.max(200, railExtentX - railStartX);
+          points.push([railStartX + railT * railLen, arc.apexY]);
         }
       }
     }
@@ -862,7 +864,7 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
       drawArcLabels(ctx, layout.arcs, visibleNames);
 
       ctx.restore();
-    }, [layout, visibleNames, branchByName, graph.defaultBranch, graph.branches, hasActiveNodes]);
+    }, [layout, visibleNames, branchByName, taskBranchByTipSha, graph.defaultBranch, graph.branches, hasActiveNodes]);
 
     // ── RAF loop ────────────────────────────────────────────────────────────
 
@@ -963,12 +965,14 @@ export const GitGraphCanvas = forwardRef<GitGraphCanvasHandle, GitGraphCanvasPro
         const t = transformRef.current;
         const cx = (e.clientX - rect.left - t.x) / t.k;
         const cy = (e.clientY - rect.top - t.y) / t.k;
+        const dpr = window.devicePixelRatio || 1;
+        const canvasRightInLayout = (canvas.width / dpr - t.x) / t.k;
 
         const hit = hitTest(layout.nodes, cx, cy);
 
         if (!hit) {
           // No node — check if cursor is over a branch arc
-          const arcHit = hitTestArc(layout.arcs, visibleNames, cx, cy, layout.trunkY);
+          const arcHit = hitTestArc(layout.arcs, visibleNames, cx, cy, layout.trunkY, 8, canvasRightInLayout);
           if (arcHit) {
             canvas.style.cursor = "pointer";
             const branch = branchByName.get(arcHit.branchName);
