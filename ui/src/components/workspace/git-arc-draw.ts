@@ -523,42 +523,6 @@ export function drawFlowPulse(
 ) {
   ctx.save();
 
-  // Helper: sample two-segment closed arc at t ∈ [0,1]
-  function closedArcPoint(arc: ArcDefinition, t: number): [number, number] {
-    const span = arc.mergePointX! - arc.branchPointX;
-    const apexX = (arc.branchPointX + arc.mergePointX!) / 2;
-    const offset = span * 0.25;
-    if (t <= 0.5) {
-      const tt = t * 2;
-      const u = 1 - tt;
-      const bx =
-        u ** 3 * arc.branchPointX +
-        3 * u ** 2 * tt * (arc.branchPointX + offset) +
-        3 * u * tt ** 2 * apexX +
-        tt ** 3 * apexX;
-      const by =
-        u ** 3 * trunkY +
-        3 * u ** 2 * tt * trunkY +
-        3 * u * tt ** 2 * arc.apexY +
-        tt ** 3 * arc.apexY;
-      return [bx, by];
-    } else {
-      const tt = (t - 0.5) * 2;
-      const u = 1 - tt;
-      const bx =
-        u ** 3 * apexX +
-        3 * u ** 2 * tt * apexX +
-        3 * u * tt ** 2 * (arc.mergePointX! - offset) +
-        tt ** 3 * arc.mergePointX!;
-      const by =
-        u ** 3 * arc.apexY +
-        3 * u ** 2 * tt * arc.apexY +
-        3 * u * tt ** 2 * trunkY +
-        tt ** 3 * trunkY;
-      return [bx, by];
-    }
-  }
-
   const t = ((animPhase * 0.3) % (Math.PI * 2)) / (Math.PI * 2);
 
   // Trunk pulse for default branch
@@ -589,34 +553,7 @@ export function drawFlowPulse(
     if (!isRunning && !isInReview) continue;
 
     const dotColor = isRunning ? "#4FB67E" : "#D9A938";
-    let dotX: number;
-    let dotY: number;
-
-    if (!arc.isOpen && arc.mergePointX != null) {
-      [dotX, dotY] = closedArcPoint(arc, t);
-    } else {
-      // Open arc: 30% curve, 70% rail
-      const railStartX = arc.branchPointX + 60;
-      const curveOffset = railStartX - arc.branchPointX;
-      if (t <= 0.3) {
-        const tt = t / 0.3;
-        const u = 1 - tt;
-        dotX =
-          u ** 3 * arc.branchPointX +
-          3 * u ** 2 * tt * (arc.branchPointX + curveOffset * 0.4) +
-          3 * u * tt ** 2 * railStartX +
-          tt ** 3 * railStartX;
-        dotY =
-          u ** 3 * trunkY +
-          3 * u ** 2 * tt * trunkY +
-          3 * u * tt ** 2 * arc.apexY +
-          tt ** 3 * arc.apexY;
-      } else {
-        const railT = (t - 0.3) / 0.7;
-        dotX = railStartX + railT * 300;
-        dotY = arc.apexY;
-      }
-    }
+    const [dotX, dotY] = polylinePointAt(arc.points, t);
 
     ctx.globalAlpha = 0.85;
     ctx.beginPath(); ctx.arc(dotX, dotY, 4, 0, Math.PI * 2);

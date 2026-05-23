@@ -40,6 +40,7 @@ import {
   drawArcLabels,
   drawLabelDots,
   drawFlowPulse,
+  polylinePointAt,
 } from "./git-arc-draw";
 
 /**
@@ -101,71 +102,24 @@ function hitTestArc(
   visibleNames: Set<string>,
   cx: number,
   cy: number,
-  trunkY: number,
+  _trunkY: number,
   threshold = 8,
-  railExtentX = 400,
+  _railExtentX = 400,
 ): ArcDefinition | null {
   let best: ArcDefinition | null = null;
   let bestDist = threshold;
-
   for (const arc of arcs) {
     if (!visibleNames.has(arc.branchName)) continue;
     if (arc.isDone) continue;
-
-    const points: Array<[number, number]> = [];
-
-    if (!arc.isOpen && arc.mergePointX != null) {
-      const span = arc.mergePointX - arc.branchPointX;
-      const apexX = (arc.branchPointX + arc.mergePointX) / 2;
-      const offset = span * 0.25;
-
-      for (let i = 0; i <= 16; i++) {
-        const t = i / 16;
-        if (t <= 0.5) {
-          const tt = t * 2;
-          const u = 1 - tt;
-          points.push([
-            u ** 3 * arc.branchPointX + 3 * u ** 2 * tt * (arc.branchPointX + offset) + 3 * u * tt ** 2 * apexX + tt ** 3 * apexX,
-            u ** 3 * trunkY + 3 * u ** 2 * tt * trunkY + 3 * u * tt ** 2 * arc.apexY + tt ** 3 * arc.apexY,
-          ]);
-        } else {
-          const tt = (t - 0.5) * 2;
-          const u = 1 - tt;
-          points.push([
-            u ** 3 * apexX + 3 * u ** 2 * tt * apexX + 3 * u * tt ** 2 * (arc.mergePointX! - offset) + tt ** 3 * arc.mergePointX!,
-            u ** 3 * arc.apexY + 3 * u ** 2 * tt * arc.apexY + 3 * u * tt ** 2 * trunkY + tt ** 3 * trunkY,
-          ]);
-        }
-      }
-    } else {
-      const railStartX = arc.branchPointX + 60;
-      const curveOffset = railStartX - arc.branchPointX;
-      for (let i = 0; i <= 16; i++) {
-        const t = i / 16;
-        if (t <= 0.5) {
-          const tt = t * 2;
-          const u = 1 - tt;
-          points.push([
-            u ** 3 * arc.branchPointX + 3 * u ** 2 * tt * (arc.branchPointX + curveOffset * 0.4) + 3 * u * tt ** 2 * railStartX + tt ** 3 * railStartX,
-            u ** 3 * trunkY + 3 * u ** 2 * tt * trunkY + 3 * u * tt ** 2 * arc.apexY + tt ** 3 * arc.apexY,
-          ]);
-        } else {
-          const railT = (t - 0.5) * 2;
-          const railLen = Math.max(200, railExtentX - railStartX);
-          points.push([railStartX + railT * railLen, arc.apexY]);
-        }
-      }
-    }
-
-    for (const [px, py] of points) {
-      const d = Math.sqrt((cx - px) ** 2 + (cy - py) ** 2);
+    for (let i = 0; i <= 24; i++) {
+      const [px, py] = polylinePointAt(arc.points, i / 24);
+      const d = Math.hypot(cx - px, cy - py);
       if (d < bestDist) {
         bestDist = d;
         best = arc;
       }
     }
   }
-
   return best;
 }
 
